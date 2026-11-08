@@ -1,12 +1,15 @@
 //! Codex 0.153.4 App Server JSONL. Protocol observations are untrusted data.
 pub mod approval;
 mod connection;
+mod launch;
 use crate::json;
 pub mod session;
 pub mod transport;
+pub mod tree;
 mod wire;
 
 pub use connection::{Connection, Event, Phase, TurnScope};
+pub use launch::{native_arguments, validate_native_configuration};
 pub use wire::{Decoder, Message, RequestId, RpcError, encode};
 
 /// Includes every byte preceding LF (including CR for CRLF input).

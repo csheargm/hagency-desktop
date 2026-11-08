@@ -174,7 +174,9 @@ impl UserInputRequest {
             .any(UserInputQuestion::is_codex_approval)
     }
 
-    pub(super) fn parse(id: RequestId, params: &Value) -> Result<Self, Error> {
+    /// Decode untrusted callback data. The caller must still bind this to an
+    /// original live connection and its exact native turn before responding.
+    pub fn parse(id: RequestId, params: &Value) -> Result<Self, Error> {
         if serde_json::to_vec(params)
             .map_err(|_| Error::Malformed)?
             .len()
@@ -234,6 +236,24 @@ impl UserInputRequest {
     /// answered in time, nothing could be shown, or the question was withdrawn.
     pub fn unanswered(&self) -> UserInputResponse {
         UserInputResponse::unanswered(self.id.clone(), &self.thread_id, &self.turn_id)
+    }
+
+    /// Data for a shared host UI; no native response or approval authority.
+    pub fn host_questions(&self) -> Vec<crate::questions::Question> {
+        self.questions.iter().map(crate::questions::Question::from).collect()
+    }
+
+    pub fn answer_host(&self, answers: &crate::questions::Answers) -> Result<UserInputResponse, Error> {
+        use crate::questions::Answer;
+        let answers = answers.iter().map(|(id, answer)| {
+            let answer = match answer {
+                Answer::Option(value) => UserInputAnswer::Option(value.clone()),
+                Answer::Text(value) => UserInputAnswer::Text(value.clone()),
+                Answer::Options(_) => return Err(Error::Malformed),
+            };
+            Ok((id.clone(), answer))
+        }).collect::<Result<_, _>>()?;
+        self.answer(&answers)
     }
 
     /// The collected answers, in the words Codex's own client uses. Every
@@ -299,6 +319,18 @@ impl UserInputRequest {
             turn_id: self.turn_id.clone(),
             result,
         })
+    }
+}
+
+impl From<&UserInputQuestion> for crate::questions::Question {
+    fn from(q: &UserInputQuestion) -> Self {
+        Self {
+            id: q.id.clone(), header: q.header.clone(), question: q.question.clone(),
+            options: q.options.iter().flatten().map(|o| crate::questions::QuestionOption {
+                label: o.label.clone(), description: o.description.clone(),
+            }).collect(),
+            other: q.accepts_text(), secret: q.is_secret, multi_select: false,
+        }
     }
 }
 

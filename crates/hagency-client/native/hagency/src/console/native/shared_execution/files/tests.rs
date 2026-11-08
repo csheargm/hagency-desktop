@@ -350,26 +350,36 @@ async fn chat_files_network_timeouts_preserve_unknown_outcomes_and_allow_safe_re
 }
 
 #[tokio::test]
-async fn chat_files_transfer_limit_still_allows_reading_existing_receipts() {
+async fn chat_files_long_turn_uses_durable_receipts_without_a_cumulative_transfer_cap() {
     let (_temp, endpoint, mut files, workspace) = fixture();
     std::fs::write(workspace.join("report.pdf"), b"bounded").unwrap();
     let mut receipt = Value::Null;
-    for n in 0..MAX_TRANSFERS {
+    for n in 0..32 {
         let mut op = send("report.pdf");
         if let RoomFileOperation::SendFile { call_id, .. } = &mut op {
             *call_id = format!("report-{n}");
         }
         receipt = files.send(&op).await.unwrap();
     }
-    assert_eq!(
-        files.receive("$attachment:test").await.unwrap_err(),
-        "file_transfer_limit"
-    );
-    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 0);
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 1);
     assert_eq!(
         files
             .delivery(receipt["delivery_id"].as_str().unwrap())
             .unwrap(),
         receipt
     );
+    drop(files);
+    let mut files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
+    for n in 0..32 {
+        let mut op = send("report.pdf");
+        if let RoomFileOperation::SendFile { call_id, .. } = &mut op {
+            *call_id = format!("report-{n}");
+        }
+        assert_eq!(files.send(&op).await.unwrap()["status"], "delivered");
+    }
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 1);
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 32);
+    assert_eq!(endpoint.events.lock().unwrap().len(), 32);
 }

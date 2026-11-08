@@ -218,7 +218,7 @@ fn wrong_owner_scope_execution_and_lease_fail_without_granting_run() {
     );
 }
 #[test]
-fn startup_seals_execution_and_releases_unreported_usage() {
+fn startup_seals_execution_and_preserves_unreported_usage() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("local.db");
     let mut l = setup(&path);
@@ -253,9 +253,9 @@ fn startup_seals_execution_and_releases_unreported_usage() {
             10
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
 }
 #[test]
 fn capacity_rejects_before_receipt_and_safe_lease_redelivery_preserves_execution_identity() {
@@ -531,7 +531,7 @@ fn uncertain_inbox_payload_budget_and_tool_evidence_survive_sent_compaction() {
         l.confirm_matrix_delivery(OWNER, &unknown.id, &uncertain.execution_id)
             .is_err()
     );
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
     assert_eq!(
         l.account(
             &unknown.scope(),
@@ -540,7 +540,7 @@ fn uncertain_inbox_payload_budget_and_tool_evidence_survive_sent_compaction() {
             10
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
     let approvals: i64 =
         l.db.query_row("SELECT count(*) FROM approvals", [], |r| r.get(0))
@@ -765,7 +765,7 @@ fn continuity_rejection_seals_only_proven_no_call_and_preserves_existing_unknown
     l.mark_unknown(&event().scope(), &p.execution_id).unwrap();
     l.finish_local_execution(OWNER, &event().id, &p.execution_id, Finish::Rejected)
         .unwrap();
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
     assert!(
         l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
             .unwrap()
@@ -1230,13 +1230,7 @@ fn no_provider_notice_never_overwrites_pending_unknown_or_settled_model_charges(
                 10
             )
             .unwrap(),
-            if state == "settled" {
-                (5, 0)
-            } else if state == "unknown" {
-                (0, 0)
-            } else {
-                (0, 50)
-            }
+            if state == "settled" { (5, 0) } else { (0, 50) }
         );
     }
 }
@@ -1327,7 +1321,7 @@ fn no_provider_notice_keeps_original_execution_unknown_but_new_requests_can_run(
             12
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
     assert_eq!(
         l.reserve(&event().scope(), "new-call", "new-dispatch", 1, 12)

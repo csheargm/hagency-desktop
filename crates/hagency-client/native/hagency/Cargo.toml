@@ -73,7 +73,7 @@ matrix-sdk-sqlite = { workspace = true, features = ["state-store", "bundled"] }
 matrix-sdk-store-encryption.workspace = true
 matrix-sdk-crypto.workspace = true
 ruma = { workspace = true, features = ["client-api-c", "events"] }
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 tempfile.workspace = true

@@ -219,6 +219,9 @@ impl Tracker {
         })
     }
     fn step(&mut self, payload: &Value) -> Result<Option<UsageEvidence>, ()> {
+        if payload["local_command_run"].is_object() {
+            return Ok(None);
+        }
         // A nested agent is not part of the main-loop partial sum.
         if let Some(parent) = payload.get("parent_tool_use_id").filter(|v| !v.is_null()) {
             return if parent.as_str().is_some_and(|s| !s.is_empty()) {
@@ -258,6 +261,37 @@ impl Tracker {
         let (counts, coverage, diagnostics, models) =
             match payload.get("modelUsage").filter(|v| !v.is_null()) {
                 Some(value) => {
+                    // A local CLI command with no model turns can have an
+                    // empty native model ledger. This is explicit zero-use
+                    // evidence, unlike absent counters or a crashed worker.
+                    if value.as_object().is_some_and(|models| models.is_empty())
+                        && payload["local_command"]
+                            .as_str()
+                            .is_some_and(|name| !name.is_empty())
+                        && payload["num_turns"] == 0
+                        && payload["is_error"] == false
+                        && [
+                            "input_tokens",
+                            "output_tokens",
+                            "cache_read_input_tokens",
+                            "cache_creation_input_tokens",
+                        ]
+                        .iter()
+                        .all(|field| payload["usage"][*field] == 0)
+                    {
+                        return Ok(UsageEvidence {
+                            counts: UsageCounts {
+                                input: Some(0),
+                                output: Some(0),
+                                cache_read: Some(0),
+                                cache_write: Some(0),
+                            },
+                            coverage: UsageCoverage::ReportedModelsResult,
+                            diagnostics: UsageDiagnostics::default(),
+                            steps: self.seen.len() as u32,
+                            models: 0,
+                        });
+                    }
                     let Some(models) = value.as_object().filter(|m| !m.is_empty()) else {
                         return Ok(UsageEvidence {
                             counts: UsageCounts::default(),

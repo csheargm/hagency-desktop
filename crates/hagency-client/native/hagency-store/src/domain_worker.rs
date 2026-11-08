@@ -5744,6 +5744,31 @@ mod approval_response_tests;
 
 // Separate instance-bound custody maintenance; never generic parked execution.
 impl DomainStore {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bind_owned_approval_tree_context(
+        &self,
+        cap: RunnerCapability,
+        expected: String,
+        context: hagency_core::approvals::HostApprovalContext,
+        source: hagency_runtime::codex::session::ObservationSource,
+        until: std::time::Instant,
+        expires_at: u64,
+    ) -> Result<crate::OwnedApprovalScope, Error> {
+        self.call(weight(&(&cap, &expected, &context, expires_at))?, move |db| {
+            db.bind_owned_approval_tree_clock(&cap, &expected, &context, source, until, expires_at, writer_time)
+        }).await
+    }
+    pub async fn register_owned_approval_descendant(
+        &self,
+        scope: &crate::OwnedApprovalScope,
+        context: hagency_core::approvals::HostApprovalContext,
+        native: hagency_runtime::codex::session::NativeTurnContext,
+    ) -> Result<(), Error> {
+        let proof = scope.proof();
+        self.call(weight(&(proof.weight(), &context))?, move |db| {
+            db.register_owned_approval_descendant_clock(&proof, &context, &native, writer_time)
+        }).await
+    }
     pub async fn bind_owned_approval_context(
         &self,
         cap: RunnerCapability,

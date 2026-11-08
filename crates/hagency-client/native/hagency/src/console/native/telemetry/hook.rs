@@ -35,7 +35,7 @@ pub(in crate::console::native) struct PendingUsage {
 }
 enum PendingKind {
     Usage(UsageEvidence),
-    Ended,
+    Ended(Option<UsageEvidence>),
     Dirty,
     Other,
 }
@@ -199,7 +199,7 @@ impl TurnTelemetry {
         let observation = event.observation();
         let kind = match observation.kind() {
             ObservationKind::Usage(e) => PendingKind::Usage(e.clone()),
-            ObservationKind::TurnEnded(_) => PendingKind::Ended,
+            ObservationKind::TurnEnded(_) => PendingKind::Ended(observation.terminal_usage().cloned()),
             ObservationKind::Tool(_) if event.is_authorized_tool() => PendingKind::Other,
             ObservationKind::Invalidated | ObservationKind::Tool(_) => PendingKind::Dirty,
             ObservationKind::Ignored => PendingKind::Other,
@@ -233,8 +233,14 @@ impl TurnTelemetry {
                     }
                 }
             },
-            PendingKind::Ended => {
+            PendingKind::Ended(terminal_usage) => {
                 self.finished = true;
+                if let Some(evidence) = terminal_usage {
+                    self.last_usage = codex_observation(&evidence).map(|usage| (pending.sequence, usage));
+                    self.clean &= !evidence.diagnostics().has_missing_fields()
+                        && !evidence.diagnostics().has_invalid_fields()
+                        && !evidence.diagnostics().has_unsupported_fields();
+                }
                 // Mirrors the sink's completeness rule: clean, terminal, live.
                 if self.clean
                     && let Some((_, observation)) = self.last_usage.clone()

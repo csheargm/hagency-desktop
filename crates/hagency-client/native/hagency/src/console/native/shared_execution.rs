@@ -5,7 +5,7 @@ mod e2ee;
 mod history;
 mod files;
 mod approvals;
-pub(in crate::console::native) mod questions;
+pub(in crate::console) mod questions;
 mod demand_io;
 mod demands;
 mod io;

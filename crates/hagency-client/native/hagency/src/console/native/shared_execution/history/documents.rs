@@ -186,7 +186,7 @@ mod tests {
             records: Records::default(),
             documents: Documents::default(),
             context_remaining: 0,
-            last_usage: None,
+            last_usage: None, child_budgets: HashMap::new(),
         };
         let mut record = record();
         reader.documents.describe(&mut record);

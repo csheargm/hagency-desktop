@@ -54,6 +54,7 @@ pub(in crate::console) struct AgentDevice {
     pub(in crate::console) approvals: crate::encrypted_approvals::Inbox,
     /// Room members' answers to this Agent's question cards.
     pub(in crate::console) questions: crate::agent_questions::Inbox,
+    pub(in crate::console) question_records: std::path::PathBuf,
     revoked: Arc<AtomicBool>,
     sync: tokio::task::AbortHandle,
 }
@@ -139,6 +140,7 @@ pub(super) async fn device<T: Transport>(
         return Err(RuntimeError::Transport);
     };
     let device = Arc::new(AgentDevice::open(grant, &directory, &config.agent_id).await?);
+    super::questions::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
 }
@@ -414,6 +416,7 @@ impl AgentDevice {
             client,
             approvals,
             questions,
+            question_records: root.join("question-cards.json"),
             revoked,
             sync,
         })

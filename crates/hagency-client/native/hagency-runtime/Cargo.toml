@@ -27,7 +27,7 @@ shared-context = []
 test-diagnostics = []
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 tempfile.workspace = true
 
 [lints]

@@ -71,8 +71,9 @@ for raw in sys.stdin:
         cwd = p['cwd']
         reply({'thread': {'id': thread, 'cwd': p['cwd'], 'status': {'type': 'idle'}, 'turns': []}, 'cwd': p['cwd'], 'model': p['model'],
                'modelProvider': 'openai', 'approvalPolicy': p['approvalPolicy'], 'approvalsReviewer': 'user',
-               'sandbox': {'type': 'readOnly', 'networkAccess': False}})
+               'sandbox': {'type': {'read-only':'readOnly','workspace-write':'workspaceWrite'}[p['sandbox']], 'networkAccess': False}})
     elif method == 'thread/name/set': reply({})
+    elif method == 'thread/read': reply({'thread': {'id': thread, 'cwd': cwd, 'status': {'type': 'idle'}}})
     elif method == 'turn/start':
         turn_number += 1
         with open(marker, 'a') as output:
@@ -82,6 +83,7 @@ for raw in sys.stdin:
         turn = 'turn-' + str(os.getpid()) + '-' + str(turn_number)
         reply({'turn': {'id': turn, 'status': 'inProgress', 'items': []}})
         usage = {'inputTokens': 3, 'outputTokens': 2, 'cachedInputTokens': 0, 'reasoningOutputTokens': 0, 'totalTokens': 5}
+        emit('rawResponse/completed', {'threadId': thread, 'turnId': turn, 'responseId': 'response-' + turn, 'usage': usage})
         emit('thread/tokenUsage/updated', {'threadId': thread, 'turnId': turn, 'tokenUsage': {'total': usage, 'last': usage}})
         emit('item/started', {'threadId': thread, 'turnId': turn, 'startedAtMs': 1, 'item': {'id': 'answer', 'type': 'agentMessage', 'text': '', 'phase': 'final_answer'}})
         emit('item/agentMessage/delta', {'threadId': thread, 'turnId': turn, 'itemId': 'answer', 'delta': 'OFFLINE_ENCRYPTED_DAEMON_ANSWER'})

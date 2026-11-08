@@ -66,6 +66,12 @@ fn keys(value: &Value, allowed: &[&str]) -> Result<(), Error> {
 
 /// Payloads may contain private tool arguments/text; deliberately no Debug.
 pub enum Message {
+    /// Private native SDK transport. Decoding alone supplies no room authority.
+    Mcp {
+        request_id: String,
+        server_name: String,
+        message: Value,
+    },
     Permission {
         request_id: String,
         tool_name: String,
@@ -100,6 +106,7 @@ pub enum EventKind {
     ToolSummary,
     AuthStatus,
     RateLimit,
+    CommandLifecycle,
 }
 impl Message {
     fn parse(value: Value) -> Result<Self, Error> {
@@ -110,6 +117,16 @@ impl Message {
                 let request_id = field(&value, "request_id")?.to_owned();
                 let request = value.get("request").ok_or(Error::Envelope)?;
                 object(request)?;
+                if field(request, "subtype")? == "mcp_message" {
+                    keys(request, &["subtype", "server_name", "message"])?;
+                    let message = request.get("message").ok_or(Error::Envelope)?;
+                    object(message)?;
+                    return Ok(Self::Mcp {
+                        request_id,
+                        server_name: field(request, "server_name")?.to_owned(),
+                        message: message.clone(),
+                    });
+                }
                 if field(request, "subtype")? != "can_use_tool" {
                     return Err(Error::Unsupported);
                 }
@@ -227,6 +244,11 @@ impl Message {
                     "tool_use_summary" => EventKind::ToolSummary,
                     "auth_status" => EventKind::AuthStatus,
                     "rate_limit_event" => EventKind::RateLimit,
+                    "command_lifecycle" => {
+                        field(&value, "command_uuid")?;
+                        field(&value, "state")?;
+                        EventKind::CommandLifecycle
+                    }
                     _ => return Err(Error::Unsupported),
                 };
                 // Binding this observation to an owned turn is the future Host's
@@ -358,19 +380,42 @@ pub fn prompt(text: &str, session_id: Option<&str>) -> Result<Vec<u8>, Error> {
         "parent_tool_use_id":null,"session_id":session_id.unwrap_or("")}),
     )
 }
-/// Fixed baseline only. Future owned launch must add its scoped MCP/approval
-/// configuration and prove effective policy before admitting real work.
+/// Base stdio transport arguments. The owned launch adds its scoped approval
+/// configuration before admitting work.
 pub fn arguments(model: &str) -> Result<Vec<String>, Error> {
     arguments_for_workspace(model, true)
 }
+
+/// Native Claude Code capabilities with Hagency's private approval transport.
+/// Preserve the owner's settings, skills, hooks, MCP servers and complete tool
+/// inventory. An ask rule routes native tools (including newly added tools and
+/// MCP tools) through the host; it does not grant permission to execute them.
+pub fn interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, Error> {
+    if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+        return Err(Error::Input);
+    }
+    let mut args = arguments(model)?;
+    args.extend([
+        "--include-partial-messages".into(),
+        "--effort".into(),
+        effort.into(),
+        "--settings".into(),
+        json!({"permissions":{"ask":["*"]},"sandbox":{"autoAllowBashIfSandboxed":false}})
+            .to_string(),
+    ]);
+    Ok(args)
+}
 fn arguments_for_workspace(model: &str, may_write: bool) -> Result<Vec<String>, Error> {
-    // Same model grammar as lib/claude-thread-runtime.js::claudeThreadModel.
+    // Native aliases include context suffixes (sonnet[1m]); Bedrock accepts
+    // full inference-profile ARNs. Keep these as one argv value, never a shell
+    // fragment or an extra option. Availability is checked by the native CLI.
     if model.is_empty()
-        || model.len() > 64
+        || model.len() > 1024
         || !model.as_bytes()[0].is_ascii_alphanumeric()
-        || !model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || !model.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'.' | b'_' | b'-' | b':' | b'/' | b'@' | b'[' | b']')
+        })
     {
         return Err(Error::Input);
     }

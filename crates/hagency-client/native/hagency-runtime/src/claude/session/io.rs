@@ -1,5 +1,6 @@
 use super::Error;
 use crate::claude::{Decoder, Message};
+use crate::deadline::Deadline;
 use std::{collections::VecDeque, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -95,7 +96,8 @@ pub(super) struct Wire<R, W, E> {
     decoder: Decoder,
     limits: Limits,
     origin: Instant,
-    lifetime: Instant,
+    lifetime: Deadline,
+    supervised: bool,
     input: [u8; READ_BYTES],
     start: usize,
     end: usize,
@@ -122,7 +124,8 @@ impl<R, W, E> Wire<R, W, E> {
             decoder: Decoder::default(),
             limits,
             origin,
-            lifetime: origin + Duration::from_millis(limits.lifetime_ms),
+            lifetime: (origin + Duration::from_millis(limits.lifetime_ms)).into(),
+            supervised: false,
             input: [0; READ_BYTES],
             start: 0,
             end: 0,
@@ -140,6 +143,41 @@ impl<R, W, E> Wire<R, W, E> {
     pub fn event_deadline(&self) -> Instant {
         Instant::now() + Duration::from_millis(self.limits.event_wait_ms)
     }
+    pub fn callback_deadline(&self, received: Instant) -> Instant {
+        received + Duration::from_millis(self.limits.event_wait_ms)
+    }
+    pub fn activity_deadline(&self) -> Deadline {
+        if self.supervised {
+            Deadline::UNBOUNDED
+        } else {
+            self.event_deadline().into()
+        }
+    }
+    pub fn supervise(&mut self) -> Result<(), Error> {
+        if self.supervised || self.termination.is_some() || self.writing.is_some() {
+            return Err(Error::State);
+        }
+        self.check(self.event_deadline())?;
+        self.supervised = true;
+        self.lifetime = Deadline::UNBOUNDED;
+        Ok(())
+    }
+    pub fn finish_activity(&mut self) {
+        // A local metadata command must still return promptly after a long run.
+        // It cannot extend any pending permission or question.
+        self.supervised = false;
+        self.lifetime = self.lifetime.limit(self.event_deadline());
+    }
+    pub(super) fn begin_turn(&mut self, limits: Limits) -> Result<(), Error> {
+        limits.validate()?;
+        if self.termination.is_some() || self.writing.is_some() {
+            return Err(Error::State);
+        }
+        self.limits = limits;
+        self.lifetime = Deadline::after(Duration::from_millis(limits.lifetime_ms));
+        self.supervised = false;
+        Ok(())
+    }
     pub fn permission_deadlines(
         &self,
         at: Instant,
@@ -156,7 +194,7 @@ impl<R, W, E> Wire<R, W, E> {
         }
         let owner = at + Duration::from_millis(owner_ms);
         let response = owner + Duration::from_millis(reserve_ms);
-        if owner <= Instant::now() || response > self.lifetime {
+        if owner <= Instant::now() || self.lifetime.at().is_some_and(|until| response > until) {
             return Err(Error::Timeout);
         }
         Ok((owner, response))
@@ -212,23 +250,24 @@ impl<R, W, E> Wire<R, W, E> {
             .try_into()
             .unwrap_or(u64::MAX)
     }
-    pub fn check(&mut self, until: Instant) -> Result<(), Error> {
+    pub fn check(&mut self, until: impl Into<Deadline>) -> Result<(), Error> {
         if self.termination.is_some() {
             return Err(Error::Closed);
         }
         self.decoder.check_deadline(self.now_ms())?;
-        if Instant::now() >= until.min(self.lifetime) {
+        if until.into().limit(self.lifetime).expired() {
             return Err(Error::Timeout);
         }
         Ok(())
     }
-    fn deadline(&self, until: Instant) -> Instant {
+    fn deadline(&self, until: Deadline) -> Deadline {
         let partial = self
             .decoder
             .deadline_ms()
             .and_then(|ms| self.origin.checked_add(Duration::from_millis(ms)))
-            .unwrap_or(self.lifetime);
-        until.min(self.lifetime).min(partial)
+            .map(Deadline::from)
+            .unwrap_or(Deadline::UNBOUNDED);
+        until.limit(self.lifetime).limit(partial)
     }
     fn parse(&mut self) -> Result<(), Error> {
         let before = self.decoder.buffered_bytes();
@@ -288,7 +327,9 @@ impl<R, W, E> Wire<R, W, E> {
 }
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, W, E> {
     pub async fn send(&mut self, bytes: Vec<u8>, until: Instant) -> Result<WriteProgress, Error> {
-        let until = until.min(Instant::now() + Duration::from_millis(self.limits.write_timeout_ms));
+        let until = Deadline::from(until).limit(Deadline::after(Duration::from_millis(
+            self.limits.write_timeout_ms,
+        )));
         self.check(until)?;
         if self.writing.is_some() {
             return Err(Error::State);
@@ -309,7 +350,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.step(until, true, false).await?;
         }
     }
-    pub async fn next(&mut self, until: Instant) -> Result<Received, Error> {
+    pub async fn next(&mut self, until: impl Into<Deadline>) -> Result<Received, Error> {
+        let until = until.into();
         loop {
             tokio::task::yield_now().await;
             self.check(until)?;
@@ -319,7 +361,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.step(until, false, false).await?;
         }
     }
-    async fn step(&mut self, until: Instant, write: bool, barrier: bool) -> Result<(), Error> {
+    async fn step(&mut self, until: Deadline, write: bool, barrier: bool) -> Result<(), Error> {
         let control = std::future::pending::<()>();
         tokio::pin!(control);
         self.step_control(until, write, barrier, control.as_mut())
@@ -328,7 +370,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     }
     async fn step_control<F: std::future::Future + ?Sized>(
         &mut self,
-        until: Instant,
+        until: Deadline,
         write: bool,
         barrier: bool,
         mut control: std::pin::Pin<&mut F>,
@@ -363,7 +405,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 .is_some_and(|w| w.offset == w.bytes.len() && !w.flushed);
         let observed = tokio::select! {
             biased;
-            _=tokio::time::sleep_until(deadline)=>Observed::Deadline,
+            _=deadline.wait()=>Observed::Deadline,
             result=streams.stdout.read(&mut self.input)=>Observed::Read(result),
             output=control.as_mut()=>Observed::Control(output),
             result=async {
@@ -416,7 +458,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     pub async fn next_or_control<F: std::future::Future + ?Sized>(
         &mut self,
         mut control: std::pin::Pin<&mut F>,
-        until: Instant,
+        until: Deadline,
     ) -> Result<Controlled<F::Output>, Error> {
         loop {
             tokio::task::yield_now().await;
@@ -435,14 +477,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     pub async fn send_prepared(
         &mut self,
         frame: &mut PreparedFrame,
-        control_deadline: Instant,
+        control_deadline: Deadline,
     ) -> Result<Controlled<WriteProgress>, Error> {
-        let until = (*frame.write_deadline.get_or_insert_with(|| {
+        let until = Deadline::from(*frame.write_deadline.get_or_insert_with(|| {
             frame
                 .deadline
                 .min(Instant::now() + Duration::from_millis(self.limits.write_timeout_ms))
         }))
-        .min(control_deadline);
+        .limit(control_deadline);
         self.check(until)?;
         match &self.writing {
             Some(writing) if writing.prepared == Some(frame.id) && frame.bytes.is_none() => {}

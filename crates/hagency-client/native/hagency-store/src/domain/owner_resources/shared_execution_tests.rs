@@ -223,6 +223,13 @@ async fn shared_execution_actual_usage_charges_overrun_without_double_cache_read
     run_actual_capture("text-usage", false).await;
 }
 #[tokio::test]
+#[ignore = "requires explicitly built offline supervised runtime probe"]
+async fn shared_execution_native_tree_totals_deduplicate_and_missing_child_keeps_hold() {
+    for mode in ["text-tree-measured", "text-tree-missing", "text-tree-eof"] {
+        run_actual_capture(mode, false).await;
+    }
+}
+#[tokio::test]
 #[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE built from the supervised offline runtime fixture"]
 async fn shared_execution_actual_escaped_output_keeps_usage_when_body_exceeds_wire_bound() {
     run_actual_capture("text-escaped", false).await;
@@ -520,6 +527,13 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
             !final_receipt.usage_complete,
             "terminal alone cannot invent usage"
         );
+    } else if mode.starts_with("text-tree-") {
+        assert_eq!(final_receipt.state, "completed");
+        assert_eq!(final_receipt.body.as_deref(), Some("Offline answer."));
+        let measured = mode == "text-tree-measured";
+        assert_eq!(final_receipt.known_consumed_tokens, if measured {28} else {14});
+        assert_eq!(final_receipt.retained_tokens, Some(if measured {28} else {14}));
+        assert_eq!(final_receipt.usage_complete, measured);
     } else {
         assert_eq!(final_receipt.state, "completed");
         if mode == "text-escaped" {

@@ -46,23 +46,12 @@ impl TaskMcp {
 /// profile does not itself grant a lease or enable managed-account admission.
 pub fn task_arguments(model: &str, may_write: bool) -> Result<Vec<String>, Error> {
     let mut args = super::arguments_for_workspace(model, may_write)?;
-    args.extend(
-        [
-            "--strict-mcp-config",
-            "--mcp-config={\"mcpServers\":{}}",
-            "--setting-sources=",
-            "--disable-slash-commands",
-            "--no-chrome",
-            "--no-session-persistence",
-        ]
-        .map(str::to_owned),
-    );
+    args.push("--include-partial-messages".into());
     // Port the existing managed Claude ask rules. Auto mode must not silently
     // bypass the owner's decision for GitHub operations or publishing commits.
     args.push(format!(
         "--settings={}",
-        json!({"disableAllHooks":true,
-        "permissions":{"ask":["Bash(gh *)","Bash(git push *)"]}})
+        json!({"permissions":{"ask":["Bash(gh *)","Bash(git push *)"]}})
     ));
     args.push(format!(
         "--allowedTools={}",

@@ -14,8 +14,9 @@ pub trait HostToolGate: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 }
 pub(super) struct HostFiles {
-    workspace: Workspace,
-    gate: Arc<dyn HostToolGate>,
+    workspace: Option<Workspace>,
+    directory: PathBuf,
+    gate: Option<Arc<dyn HostToolGate>>,
     calls: BTreeMap<String, (String, PreparedCall, Value)>,
 }
 #[derive(Deserialize)]
@@ -73,7 +74,7 @@ fn operation(params: &Value, owner: &str, scope: &Scope, dispatch: &str) -> Resu
 }
 impl HostFiles {
     pub(super) fn workspace_directory(&self) -> &std::path::Path {
-        self.workspace.canonical_directory()
+        &self.directory
     }
 }
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
@@ -88,10 +89,48 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             return Err(Error::Protocol("host capability already configured"));
         }
         self.host_files = Some(HostFiles {
-            workspace,
-            gate,
+            directory: workspace.canonical_directory().to_path_buf(),
+            workspace: Some(workspace),
+            gate: Some(gate),
             calls: BTreeMap::new(),
         });
+        Ok(())
+    }
+    /// Retain tool definitions, but never a previous dispatch's permission.
+    pub fn suspend_host_files(&mut self) {
+        if let Some(files) = self.host_files.as_mut() {
+            files.gate = None;
+            files.calls.clear();
+            // Release the per-room exclusive file lock while the native
+            // process is idle, including before a different requester's turn.
+            files.workspace = None;
+        }
+    }
+    pub fn rebind_host_files(
+        &mut self,
+        workspace: Workspace,
+        gate: Arc<dyn HostToolGate>,
+    ) -> Result<()> {
+        if !self.can_continue() {
+            return Err(Error::Protocol(
+                "host capability requires completed prior turn",
+            ));
+        }
+        let files = self
+            .host_files
+            .as_mut()
+            .ok_or(Error::Protocol("host capability missing"))?;
+        if files.gate.is_some()
+            || files.workspace.is_some()
+            || files.workspace_directory() != workspace.canonical_directory()
+        {
+            return Err(Error::Protocol(
+                "host capability still active or workspace changed",
+            ));
+        }
+        files.workspace = Some(workspace);
+        files.calls.clear();
+        files.gate = Some(gate);
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
@@ -123,7 +162,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 .await;
         };
         let digest = json(p)?;
-        if !files.gate.authorize(dispatch, execution).await {
+        let Some(gate) = files.gate.clone() else {
+            return self
+                .write(value!({"id":id,"result":failure("host_files_inactive")}))
+                .await;
+        };
+        if !gate.authorize(dispatch, execution).await {
             return self
                 .write(value!({"id":id,"result":failure("server_scope_unavailable")}))
                 .await;
@@ -150,7 +194,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     .await;
             }
         };
-        let prepared = match files.workspace.prepare(
+        let Some(workspace) = files.workspace.as_mut() else {
+            return self
+                .write(value!({"id":id,"result":failure("host_files_inactive")}))
+                .await;
+        };
+        let prepared = match workspace.prepare(
             ledger,
             scope,
             dispatch,
@@ -167,7 +216,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     .await;
             }
         };
-        let mut outcome = files.workspace.execute(ledger, &prepared, now());
+        let mut outcome = workspace.execute(ledger, &prepared, now());
         if matches!(outcome, Err(FileError::NeedsOwner)) {
             let (send, recv) = oneshot::channel();
             if queue
@@ -181,13 +230,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     tokio::time::timeout(Duration::from_secs(300), recv).await,
                     Ok(Ok(true))
                 )
-                && files.gate.authorize(dispatch, execution).await
+                && gate.authorize(dispatch, execution).await
                 && ledger
                     .approve_tool(owner, prepared.proposal(), now())
                     .is_ok()
             {
                 // execute consumes the exact permit; never consume it here.
-                outcome = files.workspace.execute(ledger, &prepared, now());
+                outcome = workspace.execute(ledger, &prepared, now());
             }
         }
         let result = match outcome {
@@ -530,6 +579,97 @@ mod tests {
         );
         assert!(ledger.context_session(&scope).unwrap().is_none());
         approval.await.unwrap();
+        peer.await.unwrap();
+    }
+    #[tokio::test]
+    async fn retained_session_rebinds_host_file_authority_and_call_cache_per_dispatch() {
+        let (_temp, mut ledger, scope, mut prior, _peer, root, old_gate) =
+            fixture(ToolPolicy::AskOwner);
+        let owner_directory = root.parent().unwrap().parent().unwrap().to_path_buf();
+        let (client, server) = tokio::io::duplex(65536);
+        let (r, w) = tokio::io::split(client);
+        let mut session = Session::new(r, w);
+        session.host_files = prior.host_files.take();
+        session.thread = Some("codex-thread".into());
+        session.cwd = Some(root.to_string_lossy().into());
+        session.bound_scope = Some(scope.clone());
+        let peer = tokio::spawn(async move {
+            let (r, mut w) = tokio::io::split(server);
+            let mut r = BufReader::new(r);
+            for round in 0..2 {
+                let mut line = String::new();
+                r.read_line(&mut line).await.unwrap();
+                let start: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(start["method"], "turn/start");
+                let turn = format!("turn-{round}");
+                let mut callback = request(900, &format!("answer-{round}.txt"));
+                callback["params"]["turnId"] = turn.clone().into();
+                for frame in [
+                    value!({"id":start["id"],"result":{"turn":{"id":turn}}}),
+                    callback,
+                ] {
+                    w.write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+                }
+                line.clear();
+                r.read_line(&mut line).await.unwrap();
+                let response: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(
+                    response["result"]["success"], true,
+                    "fresh gate and approval required for round {round}"
+                );
+                for frame in [
+                    value!({"method":"rawResponse/completed","params":{"threadId":"codex-thread","turnId":turn,"responseId":format!("response-{round}"),"usage":{"inputTokens":3,"outputTokens":2,"cachedInputTokens":0,"reasoningOutputTokens":0,"totalTokens":5}}}),
+                    value!({"method":"item/completed","params":{"threadId":"codex-thread","turnId":turn,"item":{"id":"answer","type":"agentMessage","text":"created"}}}),
+                    value!({"method":"turn/completed","params":{"threadId":"codex-thread","turn":{"id":turn,"status":"completed"}}}),
+                ] {
+                    w.write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+                }
+            }
+        });
+        for round in 0..2 {
+            if round != 0 {
+                old_gate.store(false, Ordering::Release);
+                assert!(session.can_continue());
+                session.suspend_host_files();
+                let workspace = Workspace::open(&owner_directory, "@alice:test", &scope).unwrap();
+                session
+                    .rebind_host_files(workspace, Arc::new(Gate(Arc::new(AtomicBool::new(true)))))
+                    .unwrap();
+            }
+            let dispatch = format!("dispatch-{round}");
+            let expected_dispatch = dispatch.clone();
+            let (queue, mut pending) = approval_queue(1).unwrap();
+            let approval = tokio::spawn(async move {
+                let proposed = pending.recv().await.unwrap();
+                assert_eq!(proposed.proposal.dispatch, expected_dispatch);
+                proposed.decide(true);
+            });
+            let completed = session
+                .run(
+                    &mut ledger,
+                    "@alice:test",
+                    &scope,
+                    &format!("call-{round}"),
+                    &dispatch,
+                    "create answer",
+                    BudgetMode::Estimated { reservation: 10 },
+                    &queue,
+                )
+                .await
+                .unwrap();
+            assert_eq!(completed.usage.input + completed.usage.output, 5);
+            assert_eq!(
+                std::fs::read_to_string(root.join(format!("answer-{round}.txt"))).unwrap(),
+                "room scoped"
+            );
+            approval.await.unwrap();
+        }
+        assert_eq!(
+            ledger
+                .account(&scope, Layer::Room, Period::Lifetime, now())
+                .unwrap(),
+            (10, 20)
+        );
         peer.await.unwrap();
     }
 }

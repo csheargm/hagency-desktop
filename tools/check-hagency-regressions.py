@@ -134,7 +134,7 @@ def main():
     run("native-question-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_execution::questions::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-question-recovery-auth", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "question_recovery_requires_authenticated_events_in_encrypted_rooms"], cwd=CLIENT, rust_tests=True)
     run("native-question-adapter", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--all-targets", "user_input"], cwd=CLIENT, rust_tests=True)
-    run("native-room-history", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::shared_execution::history::tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-room-history", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::shared_execution::history::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-room-history-fields", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::owned_runtime::e2ee::history::tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-key-wakeup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_work_sync_wakes", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-room-history-protocol", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--test", "session", "native_room_history", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
@@ -202,6 +202,7 @@ def main():
     run("native-chat-file-protocol", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--test", "session", "native_room_file", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-chat-file-service", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "chat_files_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-chat-file-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_chat_files_cross_", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-room-tools", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_session", "room_mcp", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     if not reached_start:
         raise SystemExit(f'Unknown start check: {args.start_at}')
 

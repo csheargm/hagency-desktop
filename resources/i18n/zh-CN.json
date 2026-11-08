@@ -2818,5 +2818,9 @@
   "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.": "本聊天室的任何成员都可以回答。到 {0} 仍无人回答时，Agent 将自行继续。",
   "A private question was not shown here and gets no answer.": "有一个私密问题未在此显示，也不会得到回答。",
   "{0} asks": "{0} 提问",
-  "{0} asks a question. Open the room to answer it under your message.": "{0} 提了一个问题。打开聊天室，在你的消息下方回答。"
+  "{0} asks a question. Open the room to answer it under your message.": "{0} 提了一个问题。打开聊天室，在你的消息下方回答。",
+  "Waiting for an authorized participant": "等待指定参与者回答",
+  "Only the named participants can answer. With no answer by {0}, the Agent continues on its own.": "仅下列参与者可以回答。到 {0} 仍无人回答时，Agent 将自行继续。",
+  "Select one or more options, then send your answer.": "可选择一个或多个选项，然后发送回答。",
+  "Select multiple": "可多选"
 }

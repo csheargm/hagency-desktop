@@ -1,7 +1,10 @@
-//! One disposable upstream conversation. No task, approval or cleanup authority.
+//! One native conversation stream. Task, approval and cleanup authority belong to the host.
 mod control;
 mod io;
+mod lifecycle;
 mod observation;
+mod questions;
+mod room_mcp;
 mod task_mcp;
 mod usage;
 use super::{ControlOutcome, EventKind, Message};
@@ -10,6 +13,7 @@ pub use control::{
 };
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};
 pub use observation::{MAX_OBSERVATIONS, Observation, ObservationKind, ObservationSource};
+pub use room_mcp::{PreparedRoomReply, RoomToolRequest};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 pub use usage::{UsageCounts, UsageCoverage, UsageDiagnostics, UsageEvidence};
@@ -18,6 +22,8 @@ const INITIALIZE_ID: &str = "hagency-claude-initialize-1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("invalid Claude question or answer data")]
+    Malformed,
     #[error("invalid Claude session limits")]
     Configuration,
     #[error("invalid Claude session state")]
@@ -44,6 +50,10 @@ pub enum Error {
     PermissionUnavailable,
     #[error("Claude scoped task helper was not connected with its exact tool inventory")]
     TaskWriterStartup,
+    #[error("Claude room tools were not connected with their exact inventory")]
+    RoomToolStartup,
+    #[error("Claude room tool request is cancelled or already answered")]
+    RoomToolUnavailable,
     #[error("Claude session was closed by its host")]
     HostClosed,
 }
@@ -68,11 +78,17 @@ pub struct SessionDriver<R, W, E> {
     wire: io::Wire<R, W, E>,
     phase: Phase,
     session_id: Option<String>,
+    prelude_session_id: Option<String>,
+    completion: lifecycle::Completion,
+    continuous: bool,
+    awaiting_init: bool,
+    prompt_id: Option<String>,
     control: control::State,
     source: Arc<()>,
     observations: observation::State,
     task_mcp: Option<super::TaskMcp>,
     task_mcp_attempted: bool,
+    room_mcp: Option<room_mcp::State>,
 }
 impl<R, W, E> SessionDriver<R, W, E> {
     pub fn new(stdout: R, stdin: W, stderr: E, limits: Limits) -> Result<Self, Error> {
@@ -80,11 +96,17 @@ impl<R, W, E> SessionDriver<R, W, E> {
             wire: io::Wire::new(stdout, stdin, stderr, limits)?,
             phase: Phase::New,
             session_id: None,
+            prelude_session_id: None,
+            completion: Default::default(),
+            continuous: false,
+            awaiting_init: false,
+            prompt_id: None,
             control: control::State::default(),
             source: Arc::new(()),
             observations: Default::default(),
             task_mcp: None,
             task_mcp_attempted: false,
+            room_mcp: None,
         })
     }
     pub fn phase(&self) -> Phase {
@@ -109,6 +131,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.phase = Phase::Closed;
         self.observations.retire();
         self.control.clear();
+        self.room_mcp = None;
         self.wire.close(error);
     }
     fn observe(&mut self, message: &Message, received: tokio::time::Instant) -> Result<(), Error> {
@@ -120,21 +143,66 @@ impl<R, W, E> SessionDriver<R, W, E> {
             } => {
                 let init = *kind == EventKind::System && payload["subtype"] == "init";
                 match &self.session_id {
-                    None if init => self.session_id = Some(session_id.clone()),
-                    Some(bound) if bound == session_id && !init => {}
+                    bound if init && self.awaiting_init => {
+                        if bound.as_ref().is_some_and(|id| id != session_id)
+                            || self
+                                .prompt_id
+                                .as_ref()
+                                .is_some_and(|id| !lifecycle::correlated(payload, id))
+                        {
+                            return Err(Error::Identity);
+                        }
+                        if self
+                            .prelude_session_id
+                            .as_ref()
+                            .is_some_and(|id| id != session_id)
+                        {
+                            return Err(Error::Identity);
+                        }
+                        self.session_id = Some(session_id.clone());
+                        self.awaiting_init = false;
+                    }
+                    Some(bound) if bound == session_id && !init && !self.awaiting_init => {}
                     _ => return Err(Error::Identity),
                 }
-                if *kind == EventKind::Result {
+                if *kind == EventKind::Result
+                    && self
+                        .prompt_id
+                        .as_ref()
+                        .is_some_and(|id| !lifecycle::correlated(payload, id))
+                {
+                    return Err(Error::Identity);
+                }
+                self.completion.observe(*kind, payload)?;
+                if (*kind == EventKind::Result && !self.completion.enabled())
+                    || self.completion.complete()
+                {
                     self.phase = Phase::ResultObserved;
                 }
             }
-            Message::Permission { .. } => {
-                if self.session_id.is_none() {
+            Message::Permission { request_id, .. } => {
+                if self.session_id.is_none()
+                    || self.room_mcp.as_ref().is_some_and(|s| s.seen(request_id))
+                {
                     return Err(Error::Identity);
                 }
                 self.control.admit(message, received, &self.wire)?;
             }
-            Message::ControlCancel { request_id } => self.control.cancel(request_id)?,
+            Message::Mcp { .. } => self.admit_room_request(message, received)?,
+            Message::ControlCancel { request_id } => {
+                if self
+                    .room_mcp
+                    .as_ref()
+                    .is_some_and(|state| state.seen(request_id))
+                {
+                    self.room_mcp
+                        .as_mut()
+                        .ok_or(Error::State)?
+                        .cancel(request_id)?;
+                } else {
+                    self.control.cancel(request_id)?;
+                }
+            }
             Message::ControlResponse { .. } => return Err(Error::Identity),
         }
         self.control.observed();
@@ -220,21 +288,64 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .task_mcp
             .as_ref()
             .map(|helper| format!("{}\n\nAssigned task input:\n{}", helper.guidance(), text));
-        let bytes = super::prompt(guided.as_deref().unwrap_or(text), None)?;
+        let bytes = super::prompt(
+            guided.as_deref().unwrap_or(text),
+            self.session_id.as_deref(),
+        )?;
+        let bytes = if self.continuous {
+            let id = lifecycle::prompt_id();
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| Error::State)?;
+            value["uuid"] = id.clone().into();
+            self.prompt_id = Some(id);
+            super::encode(value)?
+        } else {
+            bytes
+        };
+        self.awaiting_init = true;
         self.phase = Phase::Running;
         self.wire.send(bytes, self.wire.event_deadline()).await
     }
-    /// Observations alone authorize no reply. The configured execution Host must
-    /// still refuse Claude until its original private approval adapter exists.
+    /// Observations alone authorize no reply. The execution host binds them to
+    /// the admitted call and handles each original private approval request.
     pub async fn next_message(&mut self) -> Result<Message, Error> {
         let operation = Operation::new(self, Phase::Running)?;
         let result = operation.driver.next_inner().await;
         operation.finish(result)
     }
     async fn next_inner(&mut self) -> Result<Message, Error> {
-        let deadline = self.control.deadline(&self.wire)?;
-        let received = self.wire.next(deadline).await?;
-        self.observe(&received.message, received.at)?;
-        Ok(received.message)
+        let deadline = self.callback_deadline()?;
+        // Current Claude emits command/state metadata before system/init. It
+        // carries no usage or approval authority: bind its ID to the eventual
+        // init, retain the same deadline, and keep init as observation one.
+        for _ in 0..64 {
+            let received = self.wire.next(deadline).await?;
+            if self.awaiting_init
+                && let Message::Event {
+                    session_id,
+                    kind,
+                    payload,
+                } = &received.message
+                && (*kind == EventKind::CommandLifecycle
+                    || (*kind == EventKind::System
+                        && payload["subtype"] == "session_state_changed"))
+            {
+                if self
+                    .prelude_session_id
+                    .as_ref()
+                    .is_some_and(|id| id != session_id)
+                {
+                    return Err(Error::Identity);
+                }
+                if self.session_id.as_ref().is_some_and(|id| id != session_id) {
+                    return Err(Error::Identity);
+                }
+                self.prelude_session_id = Some(session_id.clone());
+                continue;
+            }
+            self.observe(&received.message, received.at)?;
+            return Ok(received.message);
+        }
+        Err(Error::Capacity)
     }
 }

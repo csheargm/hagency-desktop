@@ -602,7 +602,7 @@ async fn work_loop(
         .as_ref()
         .is_some_and(|p| p.mode == "standard");
     let mut approvals = super::approvals::Approvals::default();
-    let mut questions = super::questions::Questions::default();
+    let mut questions: super::questions::Questions = super::questions::Questions::default();
     let terminal_result: Result<SharedWorkReceipt, NativeError> = async {
       if approvals_enabled && start_stop.is_none() {super::approvals::enable(process)?;}
       if start_stop.is_none() {super::questions::enable(process)?;}
@@ -658,7 +658,7 @@ async fn work_loop(
             if !approvals_enabled { continue; }
             guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await?;
             let b=io.bound().await?;
-            let receipt=guarded(cancel,a.until,|| approvals.poll(io,&b,&work,&a.lease.authority,a.until,process,&mut capture,&mut usage)).await?;
+            let receipt=guarded(cancel,a.until,|| approvals.poll(io,&b,&work,&a.lease.authority,a.until,process,&mut capture,&mut usage,history.as_mut())).await?;
             // Question updates that arrived while a decision was being sent.
             let updates=approvals.take_questions();
             if let Some(receipt)=receipt {break receipt;}
@@ -669,7 +669,7 @@ async fn work_loop(
                 match call {
                     super::approvals::RoomCall::History(call) => {
                         let reader=history.as_mut().ok_or_else(invalid)?;
-                        let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read(call.cursor.as_deref())).await
+                        let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read_call(&call)).await
                             .unwrap_or_else(|e|serde_json::json!({"complete":false,"error":e.code}).to_string());
                         guarded(cancel,a.until,||async {process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed"))}).await?;
                     }
@@ -700,7 +700,7 @@ async fn work_loop(
         let withdrawn=event.user_input_resolved().cloned();
         let history_call=event.room_history_call().cloned();
         let file_call=event.room_file_call().cloned();
-        if let (Some(history),hagency_runtime::codex::session::ObservationKind::Usage(evidence))=(history.as_mut(),event.observation().kind()) {history.observe_usage(evidence);}
+        if let (Some(history), Some(context)) = (history.as_mut(), event.observation().context_usage()) { history.observe_context(context); }
         let ended = matches!(
             event.observation().kind(),
             hagency_runtime::codex::session::ObservationKind::TurnEnded(_)
@@ -735,7 +735,7 @@ async fn work_loop(
             // same process callback exactly once.
             let reader=history.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read(call.cursor.as_deref())).await
+            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read_call(&call)).await
                 .unwrap_or_else(|error| serde_json::json!({"complete":false,"error":error.code}).to_string());
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
             guarded(cancel,a.until,||async{ process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed")) }).await?;

@@ -308,6 +308,9 @@ impl OwnedSession {
     ) -> Result<tokio::time::Instant, session::Error> {
         self.session.approval_deadline(id)
     }
+    pub fn native_turn_context(&self, thread: &str, turn: &str) -> Result<session::NativeTurnContext, session::Error> {
+        self.session.native_turn_context(thread, turn)
+    }
     /// The host takes on owner-wait expiry for this session. Grants nothing.
     pub fn enable_owner_wait_expiry(&mut self) -> Result<(), session::Error> {
         self.session.enable_owner_wait_expiry()

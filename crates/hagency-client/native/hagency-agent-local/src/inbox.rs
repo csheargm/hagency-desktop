@@ -775,8 +775,7 @@ impl Ledger {
             "UPDATE local_inbox SET state='unknown' WHERE state IN ('prepared','running')",
             [],
         )?;
-        tx.execute("UPDATE calls SET state='unknown' WHERE state='pending'", [])?;
-        crate::settle_unreported_calls(&tx, None)?;
+        crate::recover_pending_calls(&tx, owner, None)?;
         compact_known_terminals(&tx)?;
         tx.commit()?;
         Ok(changed)
@@ -958,13 +957,12 @@ impl Ledger {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute("UPDATE local_inbox SET state='unknown' WHERE state IN ('prepared','running') AND binding IN (SELECT id FROM bindings WHERE agent=?)", [agent])?;
-        tx.execute("UPDATE calls SET state='unknown' WHERE state='pending' AND binding IN (SELECT id FROM bindings WHERE agent=?)", [agent])?;
         let bindings = tx
             .prepare("SELECT id FROM bindings WHERE agent=?")?
             .query_map([agent], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for binding in bindings {
-            crate::settle_unreported_calls(&tx, Some(&binding))?;
+            crate::recover_pending_calls(&tx, owner, Some(&binding))?;
         }
         compact_known_terminals(&tx)?;
         tx.commit()?;

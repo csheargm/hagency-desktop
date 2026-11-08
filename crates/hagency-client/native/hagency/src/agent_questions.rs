@@ -1,19 +1,18 @@
-//! Questions an Agent asks its room during a run (Codex `request_user_input`).
+//! Native questions an Agent asks its room during a run.
 //!
 //! The executor's Agent device posts a card as an ordinary room message with a
 //! custom msgtype, encrypted whenever the room is. Hagency clients draw it as
 //! buttons under the message that started the run and hide the message
-//! itself; other clients show its plain-text body. Any joined member answers
+//! itself; other clients show its plain-text body. A named participant answers
 //! with a custom room event that refers to the card. That event is not
 //! `m.room.message`, so it never becomes chat intake: plaintext ingress takes
 //! only `m.text` messages, and the executor's encrypted addressing check
 //! confirms only text messages. A text reply in the room stays a new message.
-//! The executor takes the first valid answer from a joined member, answers
-//! Codex and edits the card to show the outcome. Secret questions never reach
+//! The executor takes the first valid answer from its admitted participants,
+//! answers the native runtime and edits the card to show the outcome. Secret questions never reach
 //! the room.
-use hagency_runtime::codex::session::{
-    MAX_USER_INPUT_TEXT_BYTES, UserInputAnswer, UserInputQuestion,
-};
+use hagency_runtime::{codex::session::UserInputQuestion, questions::{self, Question}};
+pub use hagency_runtime::questions::Answer as AnswerValue;
 use matrix_sdk::{
     Client, Room,
     deserialized_responses::{EncryptionInfo, VerificationLevel, VerificationState},
@@ -33,16 +32,17 @@ pub const MSGTYPE: &str = "im.hagency.agent_question";
 /// A member's answer: a message-like event that is never a chat message.
 pub const ANSWER_EVENT: &str = "im.hagency.agent_question.answer";
 pub const VERSION: u64 = 1;
+pub const SCOPED_VERSION: u64 = 2;
 /// How long the room has to answer before the Agent continues on its own.
 pub const ANSWER_WAIT_MS: u64 = 600_000;
 /// Clock difference allowed between the Agent's host and the homeserver when
 /// a client checks a card's expiry against the card's own timestamp.
 pub const EXPIRY_SKEW_MS: u64 = 120_000;
 /// What one card shows. A request beyond it is answered with nothing.
-pub const MAX_CARD_QUESTIONS: usize = 3;
-pub const MAX_CARD_OPTIONS: usize = 4;
+pub const MAX_CARD_QUESTIONS: usize = questions::MAX_QUESTIONS;
+pub const MAX_CARD_OPTIONS: usize = questions::MAX_OPTIONS;
 /// One typed answer, the same bound the runtime enforces.
-pub const MAX_ANSWER_TEXT_BYTES: usize = MAX_USER_INPUT_TEXT_BYTES;
+pub const MAX_ANSWER_TEXT_BYTES: usize = questions::MAX_TEXT_BYTES;
 /// Encrypted and plaintext events alike stay far below the 64 KiB limit.
 const MAX_EVENT_BYTES: usize = 48 * 1024;
 const MAX_TEXT_BYTES: usize = 4096;
@@ -68,6 +68,8 @@ pub struct CardQuestion {
     pub options: Vec<CardOption>,
     /// A typed answer is offered ("Other", or a question without options).
     pub other: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
 }
 impl CardQuestion {
     pub fn accepts_text(&self) -> bool {
@@ -84,29 +86,6 @@ pub enum CardState {
     Expired,
 }
 
-/// One answer value in a member's answer event and in the answered card.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum AnswerValue {
-    /// One of the question's own option labels.
-    Option(String),
-    /// Typed text, where the question accepts it.
-    Text(String),
-}
-impl AnswerValue {
-    pub fn into_runtime(self) -> UserInputAnswer {
-        match self {
-            Self::Option(label) => UserInputAnswer::Option(label),
-            Self::Text(text) => UserInputAnswer::Text(text),
-        }
-    }
-    fn display(&self) -> &str {
-        match self {
-            Self::Option(label) | Self::Text(label) => label,
-        }
-    }
-}
-
 /// The structured card under the content key [`MSGTYPE`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -120,6 +99,10 @@ pub struct Card {
     pub thread_root: String,
     pub expires_at_ms: u64,
     pub questions: Vec<CardQuestion>,
+    /// Authenticated Matrix identities admitted by the host for this task.
+    /// Empty only on legacy v1 cards; v2 always binds its answering audience.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub responders: Vec<String>,
     /// Private questions the Agent also asked, never shown or answered here.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub withheld: u64,
@@ -211,10 +194,26 @@ impl Card {
         if questions.iter().any(UserInputQuestion::is_codex_approval) {
             return None;
         }
-        let withheld = questions.iter().filter(|q| q.is_secret).count() as u64;
+        Self::ask_inner(id, trigger_event_id, thread_root, expires_at_ms,
+            &questions.iter().map(Question::from).collect::<Vec<_>>(), Vec::new(), VERSION)
+    }
+
+    pub fn ask_questions(
+        id: String, trigger_event_id: String, thread_root: String, expires_at_ms: u64,
+        questions: &[Question], responders: Vec<String>,
+    ) -> Option<Self> {
+        Self::ask_inner(id, trigger_event_id, thread_root, expires_at_ms, questions, responders, SCOPED_VERSION)
+    }
+
+    fn ask_inner(
+        id: String, trigger_event_id: String, thread_root: String, expires_at_ms: u64,
+        questions: &[Question], responders: Vec<String>, version: u64,
+    ) -> Option<Self> {
+        if !questions::valid_questions(questions) { return None; }
+        let withheld = questions.iter().filter(|q| q.secret).count() as u64;
         let shown: Vec<CardQuestion> = questions
             .iter()
-            .filter(|q| !q.is_secret)
+            .filter(|q| !q.secret)
             .map(|q| CardQuestion {
                 id: q.id.clone(),
                 header: q.header.clone(),
@@ -222,22 +221,23 @@ impl Card {
                 options: q
                     .options
                     .iter()
-                    .flatten()
                     .map(|o| CardOption {
                         label: o.label.clone(),
                         description: o.description.clone(),
                     })
                     .collect(),
                 other: q.accepts_text(),
+                multi_select: q.multi_select,
             })
             .collect();
         let card = Self {
-            version: VERSION,
+            version,
             id,
             trigger_event_id,
             thread_root,
             expires_at_ms,
             questions: shown,
+            responders,
             withheld,
             state: CardState::Pending,
             answered_by: None,
@@ -248,7 +248,11 @@ impl Card {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         let invalid = Err("invalid_agent_question");
-        if self.version != VERSION
+        if !matches!(self.version, VERSION | SCOPED_VERSION)
+            || (self.version == SCOPED_VERSION && self.responders.is_empty())
+            || self.responders.len() > 2
+            || self.responders.iter().any(|r| !user_id(r) || is_agent(r))
+            || self.responders.iter().collect::<BTreeSet<_>>().len() != self.responders.len()
             || !self.id.strip_prefix("aq_").is_some_and(hex64)
             || !is_event_id(&self.trigger_event_id)
             || !is_event_id(&self.thread_root)
@@ -284,6 +288,7 @@ impl Card {
         match self.state {
             CardState::Answered => {
                 if !self.answered_by.as_deref().is_some_and(user_id)
+                    || !self.answered_by.as_deref().is_some_and(|who| self.may_answer(who))
                     || self.answers.is_empty()
                     || check_answers(self, &self.answers).is_err()
                 {
@@ -316,6 +321,10 @@ impl Card {
             answers,
             ..self.clone()
         }
+    }
+    pub fn may_answer(&self, who: &str) -> bool {
+        user_id(who) && !is_agent(who)
+            && (self.responders.is_empty() && self.version == VERSION || self.responders.iter().any(|r| r == who))
     }
     pub fn expired(&self) -> Self {
         Self {
@@ -362,7 +371,7 @@ impl Card {
             text.push_str(&q.question);
             text.push('\n');
             if self.state == CardState::Answered {
-                let answer = self.answers.get(&q.id).map_or("—", AnswerValue::display);
+                let answer = self.answers.get(&q.id).map_or_else(|| "—".into(), AnswerValue::display);
                 text.push_str(&format!("   → {answer}\n"));
                 continue;
             }
@@ -378,6 +387,9 @@ impl Card {
             }
         }
         if self.state == CardState::Pending {
+            if !self.responders.is_empty() {
+                text.push_str(&format!("\n回答人 / Answers accepted from: {}\n", self.responders.join(", ")));
+            }
             // An absolute time: the message may be read long after it was sent.
             let by = utc_minute(self.expires_at_ms);
             text.push_str(&format!(
@@ -421,7 +433,7 @@ impl Card {
         }
         check_answers(self, answers)?;
         Ok(json!({
-            "version": VERSION,
+            "version": self.version,
             "cardId": self.id,
             "answers": answers,
             "m.relates_to": {"rel_type":"m.reference","event_id":card_event_id},
@@ -435,7 +447,7 @@ impl Card {
         card_event_id: &str,
         content: &Value,
     ) -> Option<BTreeMap<String, AnswerValue>> {
-        if content["version"] != VERSION
+        if content["version"] != self.version
             || content["cardId"] != self.id.as_str()
             || content["m.relates_to"]["rel_type"] != "m.reference"
             || content["m.relates_to"]["event_id"] != card_event_id
@@ -459,6 +471,10 @@ fn check_answers(card: &Card, answers: &BTreeMap<String, AnswerValue>) -> Result
         };
         let valid = match value {
             AnswerValue::Option(label) => q.options.iter().any(|o| &o.label == label),
+            AnswerValue::Options(labels) => q.multi_select && !labels.is_empty()
+                && labels.len() <= q.options.len()
+                && labels.iter().all(|label| q.options.iter().any(|o| &o.label == label))
+                && labels.iter().collect::<BTreeSet<_>>().len() == labels.len(),
             AnswerValue::Text(text) => q.accepts_text() && prose(text, MAX_ANSWER_TEXT_BYTES),
         };
         if !valid {
@@ -783,6 +799,34 @@ mod tests {
             &questions(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn scoped_cards_support_native_question_counts_multiselect_and_bound_answers() {
+        let mut data: Vec<Question> = (0..8).map(|index| Question {
+            id: format!("q{index}"), header: "Choice".into(), question: format!("Question {index}?"),
+            options: (0..16).map(|i| questions::QuestionOption{label:format!("Option {i}"),description:String::new()}).collect(),
+            other:true, secret:false, multi_select:index == 0,
+        }).collect();
+        let card = Card::ask_questions(format!("aq_{}","e".repeat(64)),"$trigger".into(),"$root".into(),1,
+            &data,vec!["@requester:test".into(),"@owner:test".into()]).unwrap();
+        assert_eq!(card.questions.len(), 8);
+        assert_eq!(card.questions[7].options.len(), 16);
+        assert!(card.may_answer("@requester:test") && card.may_answer("@owner:test"));
+        assert!(!card.may_answer("@other_member:test") && !card.may_answer("@_hagency_agt_other:test"));
+        let answers = BTreeMap::from([("q0".into(),AnswerValue::Options(vec!["Option 0".into(),"Option 15".into()]))]);
+        let content = card.answer_content("$card",&answers).unwrap();
+        assert_eq!(card.parse_answer("$card",&content),Some(answers.clone()));
+        assert!(card.answered("@other_member:test",answers.clone()).validate().is_err());
+        assert!(card.answered("@owner:test",answers).validate().is_ok());
+        for answer in [AnswerValue::Options(vec!["Option 0".into(),"Option 0".into()]),AnswerValue::Options(vec![])] {
+            assert!(card.answer_content("$card",&[("q0".into(),answer)].into()).is_err());
+        }
+        assert!(card.answer_content("$card",&[("q1".into(),AnswerValue::Options(vec!["Option 0".into()]))].into()).is_err());
+        data[0].secret=true;
+        let hidden=Card::ask_questions(card.id,"$trigger".into(),"$root".into(),1,&data,card.responders).unwrap();
+        assert_eq!(hidden.questions.len(),7);
+        assert!(hidden.answer_content("$card",&[("q0".into(),AnswerValue::Text("secret".into()))].into()).is_err());
     }
 
     #[test]

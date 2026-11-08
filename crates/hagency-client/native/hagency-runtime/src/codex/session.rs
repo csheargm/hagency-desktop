@@ -23,10 +23,10 @@ pub use driver::{
     ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate, SessionDriver,
 };
 pub use observation::{
-    Observation, ObservationKind, ObservationSource, ToolEvidence, ToolKind, ToolResult, TurnResult,
+    NativeTurnContext, Observation, ObservationKind, ObservationSource, ToolEvidence, ToolKind, ToolResult, TurnResult,
 };
 pub use task_mcp::{TASK_MCP_ENV, TASK_MCP_TOOLS, TaskMcp};
-pub use usage::{UsageBreakdown, UsageDiagnostics, UsageEvidence};
+pub use usage::{ContextUsage, UsageBreakdown, UsageDiagnostics, UsageEvidence};
 
 use super::transport;
 use serde_json::{Value, json};
@@ -283,8 +283,11 @@ impl Settings {
             params["threadId"] = id.into();
             params["excludeTurns"] = true.into();
         } else {
-            params["ephemeral"] = true.into();
+            // Native fork_context subagents need the parent's retained rollout.
+            // Keep disposable storage only for the explicit text-only mode.
+            params["ephemeral"] = self.read_only.into();
             params["serviceName"] = "hagency".into();
+            params["experimentalRawEvents"] = true.into();
         }
         params
     }

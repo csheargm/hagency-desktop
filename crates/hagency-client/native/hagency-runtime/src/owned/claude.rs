@@ -2,7 +2,7 @@ use super::{Cleanup, StartError};
 use crate::claude::session::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
 };
-use crate::claude::session::{Observation, ObservationSource};
+use crate::claude::session::{Observation, ObservationSource, PreparedRoomReply, RoomToolRequest};
 use crate::claude::{
     Message,
     session::{Error, Limits, Phase, SessionDriver, StderrSnapshot, Termination, WriteProgress},
@@ -98,6 +98,45 @@ impl OwnedClaudeSession {
     pub fn stderr_snapshot(&self) -> StderrSnapshot {
         self.session.stderr_snapshot()
     }
+    pub fn enable_native_completion(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_native_completion();
+        operation.finish(result)
+    }
+    pub fn supervise_turn(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.supervise_turn();
+        operation.finish(result)
+    }
+    pub fn needs_usage_snapshot(&self) -> bool {
+        self.session.needs_usage_snapshot()
+    }
+    pub fn enable_continuous_session(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_continuous_session();
+        operation.finish(result)
+    }
+    pub fn can_followup(&self) -> bool {
+        self.session.can_followup()
+    }
+    pub fn begin_followup(&mut self, limits: Limits) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.begin_followup(limits);
+        operation.finish(result)
+    }
+    pub async fn prepare_followup(&mut self, limits: Limits) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.prepare_followup(limits).await;
+        operation.finish(result)
+    }
+    pub fn usage_snapshot_requested(&self) -> bool {
+        self.session.usage_snapshot_requested()
+    }
+    pub async fn request_usage_snapshot(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.request_usage_snapshot().await;
+        operation.finish(result)
+    }
     pub fn enable_approval_control(&mut self, policy: ApprovalControlPolicy) -> Result<(), Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.enable_approval_control(policy);
@@ -105,6 +144,21 @@ impl OwnedClaudeSession {
     }
     pub fn approval_deadline(&self, id: &str) -> Result<tokio::time::Instant, Error> {
         self.session.approval_deadline(id)
+    }
+    pub fn set_question_wait(&mut self, wait_ms: u64) -> Result<(), Error> {
+        self.session.set_question_wait(wait_ms)
+    }
+    pub fn question(&self, id: &str) -> Result<Vec<crate::questions::Question>, Error> {
+        self.session.question(id)
+    }
+    pub fn prepare_question(
+        &mut self,
+        id: &str,
+        answers: &crate::questions::Answers,
+    ) -> Result<PreparedApproval, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.prepare_question(id, answers);
+        operation.finish(result)
     }
     pub fn prepare_approval(
         &mut self,
@@ -137,6 +191,58 @@ impl OwnedClaudeSession {
     pub async fn bind_task_mcp(&mut self, helper: crate::claude::TaskMcp) -> Result<(), Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.bind_task_mcp(helper).await;
+        operation.finish(result)
+    }
+    pub async fn bind_room_tools(
+        &mut self,
+        tools: crate::room_tools::RoomTools,
+    ) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.bind_room_tools(tools).await;
+        operation.finish(result)
+    }
+    pub fn enable_room_tool_callbacks(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_room_tool_callbacks();
+        operation.finish(result)
+    }
+    pub fn room_tool_request(&self, id: &str) -> Result<RoomToolRequest, Error> {
+        self.session.room_tool_request(id)
+    }
+    pub fn prepare_room_tool_reply(
+        &mut self,
+        request: &RoomToolRequest,
+        text: &str,
+        is_error: bool,
+    ) -> Result<PreparedRoomReply, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .prepare_room_tool_reply(request, text, is_error);
+        operation.finish(result)
+    }
+    pub fn prepare_room_metadata_reply(
+        &mut self,
+        request: &RoomToolRequest,
+    ) -> Result<PreparedRoomReply, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .prepare_room_metadata_reply(request);
+        operation.finish(result)
+    }
+    pub async fn send_prepared_room_reply(
+        &mut self,
+        prepared: &mut PreparedRoomReply,
+    ) -> Result<PreparedUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .send_prepared_room_reply(prepared)
+            .await;
         operation.finish(result)
     }
     pub async fn next_message(&mut self) -> Result<Message, Error> {

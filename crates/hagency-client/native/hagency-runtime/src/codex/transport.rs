@@ -3,10 +3,9 @@ mod buffers;
 mod control;
 pub(super) use control::{Controlled, PreparedFrame};
 
-use super::{
-    Connection, Error as ProtocolError, Event, MAX_REQUEST_MS, Phase, RequestId, TurnScope,
-};
+use super::{Connection, Error as ProtocolError, Event, MAX_REQUEST_MS, Phase, RequestId, TurnScope};
 use buffers::{EventQueue, PrivateStderr};
+use crate::deadline::Deadline;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -92,8 +91,14 @@ pub enum Command {
         response_timeout_ms: u64,
     },
     Initialized,
-    RespondRoomHistory { id: RequestId, content: String },
-    RespondRoomFile { call: super::session::RoomFileCall, content: String },
+    RespondRoomHistory {
+        id: RequestId,
+        content: String,
+    },
+    RespondRoomFile {
+        call: super::session::RoomFileCall,
+        content: String,
+    },
     Request {
         method: String,
         params: Value,
@@ -333,9 +338,8 @@ impl<R, W, E> Driver<R, W, E> {
             return Err(Error::Configuration);
         }
         self.shared_activity = Some(clock);
-        // A silent model may outlive one activity epoch. The independently
-        // renewed, finite clock still ends every read promptly when not renewed.
-        self.limits.event_wait_ms = MAX_REQUEST_MS;
+        // Active reads follow the independently renewed finite lease. A quiet
+        // tool or model has no additional elapsed-time ceiling.
         Ok(())
     }
     /// Only the installed finite shared-text clock can retain a completed
@@ -449,11 +453,11 @@ impl<R, W, E> Driver<R, W, E> {
             .unwrap_or(u64::MAX)
     }
 
-    fn check(&mut self, deadline: Instant) -> Result<(), Error> {
+    fn check(&mut self, deadline: impl Into<Deadline>) -> Result<(), Error> {
         if self.termination.is_some() {
             return Err(Error::Closed);
         }
-        if Instant::now() >= deadline || Instant::now() >= self.effective_lifetime() {
+        if deadline.into().expired() || Instant::now() >= self.effective_lifetime() {
             return Err(Error::Timeout);
         }
         self.pending_before_call = (
@@ -463,13 +467,19 @@ impl<R, W, E> Driver<R, W, E> {
         self.connection.tick(self.now_ms()).map_err(Error::from)
     }
 
-    fn next_deadline(&self, operation: Instant) -> Instant {
+    fn next_deadline(&self, operation: impl Into<Deadline>) -> Instant {
+        let lifetime = self.effective_lifetime();
         let protocol = self
             .connection
             .deadline_ms()
             .and_then(|ms| self.origin.checked_add(Duration::from_millis(ms)))
-            .unwrap_or_else(|| self.effective_lifetime());
-        operation.min(self.effective_lifetime()).min(protocol)
+            .unwrap_or(lifetime);
+        operation
+            .into()
+            .at()
+            .unwrap_or(lifetime)
+            .min(lifetime)
+            .min(protocol)
     }
 }
 
@@ -527,8 +537,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
                 .initialize(&client_version, now, response_timeout_ms)
                 .map(|(id, bytes)| (Some(id), bytes)),
             Command::Initialized => self.connection.initialized(now).map(|bytes| (None, bytes)),
-            Command::RespondRoomFile { call, content } => self.connection.respond_room_file(&call, &content, now).map(|bytes| (None, bytes)),
-            Command::RespondRoomHistory { id, content } => self.connection.respond_room_history(&id, &content, now).map(|bytes| (None, bytes)),
+            Command::RespondRoomFile { call, content } => self
+                .connection
+                .respond_room_file(&call, &content, now)
+                .map(|bytes| (None, bytes)),
+            Command::RespondRoomHistory { id, content } => self
+                .connection
+                .respond_room_history(&id, &content, now)
+                .map(|bytes| (None, bytes)),
             Command::Request {
                 method,
                 params,
@@ -596,9 +612,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
     }
 
     async fn next_inner(&mut self) -> Result<Event, Error> {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_millis(self.limits.event_wait_ms))
-            .ok_or(Error::Timeout)?;
+        let deadline = self.event_deadline();
         loop {
             tokio::task::yield_now().await;
             self.check(deadline)?;
@@ -609,7 +623,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
         }
     }
 
-    async fn step(&mut self, operation_deadline: Instant) -> Result<(), Error> {
+    async fn step(&mut self, operation_deadline: impl Into<Deadline>) -> Result<(), Error> {
+        let operation_deadline = operation_deadline.into();
         self.check(operation_deadline)?;
         if self.input_start < self.input_end {
             self.parse_input()?;

@@ -10,7 +10,7 @@ mod managed_agent_budget_transport;
 pub use managed_agent_budget_transport::{AgentBudgetProgress, AgentBudgetTransport};
 mod managed_runtime;
 mod managed_runtime_transport;
-mod shared_execution;
+pub(in crate::console) mod shared_execution;
 mod shutdown;
 pub mod telemetry;
 pub use telemetry::{

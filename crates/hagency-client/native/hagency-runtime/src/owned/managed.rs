@@ -127,7 +127,12 @@ pub(super) fn quota(v: &Value) -> Result<String, Error> {
     canonical::digest(&json!({"provider":"openai.chatgpt","subject":subject}))
         .map_err(|_| Error::Policy)
 }
-pub(super) fn base_configuration_for_web(c: &Value, instructions: &Path, expected: &str, web: bool) -> Result<(), Error> {
+pub(super) fn base_configuration_for_web(
+    c: &Value,
+    instructions: &Path,
+    expected: &str,
+    web: bool,
+) -> Result<(), Error> {
     let metadata = std::fs::symlink_metadata(instructions).map_err(|_| Error::Policy)?;
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
@@ -160,7 +165,10 @@ pub(super) fn base_configuration_for_web(c: &Value, instructions: &Path, expecte
             "model_catalog_json",
             c.get("model_catalog_json").is_none_or(Value::is_null),
         ),
-        ("web_search", c["web_search"] == if web {"live"} else {"disabled"}),
+        (
+            "web_search",
+            c["web_search"] == if web { "live" } else { "disabled" },
+        ),
         ("project_doc_max_bytes", c["project_doc_max_bytes"] == 0),
         (
             "skills.include_instructions",
@@ -199,13 +207,28 @@ pub(super) fn configuration_for(
 ) -> Result<(), Error> {
     configuration_for_web(c, instructions, expected, false)
 }
-pub(super) fn configuration_for_web(c: &Value, instructions: &Path, expected: &str, web: bool) -> Result<(), Error> {
-    configuration_for_tools(c,instructions,expected,web,false)
+pub(super) fn configuration_for_web(
+    c: &Value,
+    instructions: &Path,
+    expected: &str,
+    web: bool,
+) -> Result<(), Error> {
+    configuration_for_tools(c, instructions, expected, web, false)
 }
 pub(super) fn feature_enabled(name: &str, web: bool, tools: bool) -> bool {
-    (web && matches!(name,"standalone_web_search"|"code_mode_host")) || (tools && matches!(name,"shell_tool"|"unified_exec"|"code_mode_host"))
+    (web && matches!(name, "standalone_web_search" | "code_mode_host"))
+        || (tools && matches!(name, "shell_tool" | "unified_exec" | "code_mode_host"))
 }
-pub(super) fn configuration_for_tools(c: &Value, instructions: &Path, expected: &str, web: bool, tools: bool) -> Result<(), Error> {
+pub(super) fn configuration_for_tools(
+    c: &Value,
+    instructions: &Path,
+    expected: &str,
+    web: bool,
+    tools: bool,
+) -> Result<(), Error> {
+    if tools {
+        return crate::codex::validate_native_configuration(c, true, Some(web));
+    }
     base_configuration_for_web(c, instructions, expected, web)?;
     if c.get("mcp_servers").is_some_and(|v| {
         !v.is_null()
@@ -218,7 +241,10 @@ pub(super) fn configuration_for_tools(c: &Value, instructions: &Path, expected: 
         .as_object()
         .filter(|m| m.len() <= 256)
         .ok_or(Error::Policy)?;
-    if features.iter().any(|(k,v)| *v != Value::Bool(feature_enabled(k, web, tools))) {
+    if features
+        .iter()
+        .any(|(k, v)| *v != Value::Bool(feature_enabled(k, web, tools)))
+    {
         return Err(Error::Policy);
     }
     for key in MANAGED_DISABLED_FEATURES {
@@ -269,12 +295,25 @@ impl OwnedSession {
         instructions: &Path,
         expected: &str,
     ) -> Result<ManagedPolicyOverrides, Error> {
-        self.discover_policy_for_web(instructions, expected, false).await
+        self.discover_policy_for_web(instructions, expected, false)
+            .await
     }
-    pub(super) async fn discover_policy_for_web(&mut self, instructions: &Path, expected: &str, web: bool) -> Result<ManagedPolicyOverrides, Error> {
-        self.discover_policy_for_tools(instructions,expected,web,false).await
+    pub(super) async fn discover_policy_for_web(
+        &mut self,
+        instructions: &Path,
+        expected: &str,
+        web: bool,
+    ) -> Result<ManagedPolicyOverrides, Error> {
+        self.discover_policy_for_tools(instructions, expected, web, false)
+            .await
     }
-    pub(super) async fn discover_policy_for_tools(&mut self, instructions: &Path, expected: &str, web: bool, tools: bool) -> Result<ManagedPolicyOverrides, Error> {
+    pub(super) async fn discover_policy_for_tools(
+        &mut self,
+        instructions: &Path,
+        expected: &str,
+        web: bool,
+        tools: bool,
+    ) -> Result<ManagedPolicyOverrides, Error> {
         if self.phase() != Phase::Ready || !self.managed_source.is_live() {
             return Err(Error::State);
         }
@@ -283,6 +322,14 @@ impl OwnedSession {
                 .qualification_read(QualificationRead::Configuration)
                 .await?;
             let c = &response["config"];
+            if tools {
+                crate::codex::validate_native_configuration(c, true, Some(web))?;
+                self.qualify_ready_owner(Duration::from_millis(100))?;
+                return Ok(ManagedPolicyOverrides {
+                    source: self.managed_source.clone(),
+                    values: Vec::new(),
+                });
+            }
             base_configuration_for_web(c, instructions, expected, web)?;
             tracing::debug!("managed fixed configuration accepted");
             let mut values = Vec::new();
@@ -319,7 +366,10 @@ impl OwnedSession {
                     return Err(Error::Policy);
                 }
                 if value != &Value::Bool(feature_enabled(name, web, tools)) {
-                    values.push(format!("features.{name}={}", feature_enabled(name, web, tools)));
+                    values.push(format!(
+                        "features.{name}={}",
+                        feature_enabled(name, web, tools)
+                    ));
                 }
             }
             for key in MANAGED_DISABLED_FEATURES {

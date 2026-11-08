@@ -13,6 +13,15 @@ const PAGE_BYTES: usize = 8 * 1024;
 // a page after escaping, including its identity and continuation metadata.
 const FRAGMENT_BYTES: usize = 1024;
 const PAGE_EVENTS: usize = 40;
+type ContextKey<'a> = Option<(&'a str, &'a str)>;
+
+struct ChildBudget {
+    remaining: usize,
+    sample: Option<hagency_runtime::codex::session::ContextUsage>,
+}
+impl Default for ChildBudget {
+    fn default() -> Self { Self { remaining: 32 * 1024, sample: None } }
+}
 
 pub(super) trait HistoryIo {
     fn document(&self, _room: &str, _event: &str) -> impl std::future::Future<Output = Result<crate::documents::Text, &'static str>> + Send {
@@ -85,7 +94,8 @@ pub(super) struct Reader<S = Source> {
     records: Records,
     documents: Documents,
     context_remaining: usize,
-    last_usage: Option<(u64, u64, u64)>,
+    last_usage: Option<hagency_runtime::codex::session::ContextUsage>,
+    child_budgets: HashMap<(String, String), ChildBudget>,
 }
 
 impl Reader {
@@ -109,7 +119,7 @@ impl Reader {
             records: Records::default(),
             documents: Documents::default(),
             context_remaining: 32 * 1024,
-            last_usage: None,
+            last_usage: None, child_budgets: HashMap::new(),
         }))
     }
 
@@ -170,37 +180,57 @@ impl<S: HistoryIo> Reader<S> {
         )
     }
 
-    pub(super) fn observe_usage(
+    pub(super) fn observe_context(
         &mut self,
-        evidence: &hagency_runtime::codex::session::UsageEvidence,
+        evidence: &hagency_runtime::codex::session::ContextUsage,
     ) {
         // A UTF-8 byte is a conservative token upper bound. Keep at least 25%
         // of the reported window (and 8192 tokens) for reasoning and output.
         // Each upstream usage update also accounts for automatic compaction.
-        if let (Some(window), Some(used), Some(total)) = (
-            evidence.model_context_window(),
-            evidence.last().total_tokens(),
-            evidence.total().total_tokens(),
-        ) {
-            if self.last_usage == Some((window, used, total)) {
-                return;
-            }
-            self.last_usage = Some((window, used, total));
-            self.context_remaining = window
-                .saturating_sub(used)
-                .saturating_sub((window / 4).max(8192))
-                .min(32 * 1024) as usize;
+        let (remaining, sample) = if evidence.is_root() {
+            (&mut self.context_remaining, &mut self.last_usage)
+        } else {
+            let budget = self.child_budgets.entry((evidence.thread_id().into(), evidence.turn_id().into())).or_default();
+            (&mut budget.remaining, &mut budget.sample)
+        };
+        if sample.as_ref() == Some(evidence) {
+            return;
         }
+        *sample = Some(evidence.clone());
+        *remaining = evidence.window()
+            .saturating_sub(evidence.used())
+            .saturating_sub((evidence.window() / 4).max(8192))
+            .min(usize::MAX as u64) as usize;
     }
 
     pub(super) async fn read(&mut self, cursor: Option<&str>) -> Result<String, NativeError> {
+        self.read_scoped(cursor, None).await
+    }
+    pub(super) async fn read_call(&mut self, call: &hagency_runtime::codex::session::RoomHistoryCall) -> Result<String, NativeError> {
+        let context = (!call.is_root()).then(|| (call.thread_id(), call.turn_id()));
+        self.read_scoped(call.cursor.as_deref(), context).await
+    }
+    fn available(&self, context: ContextKey<'_>) -> usize {
+        match context {
+            None => self.context_remaining,
+            Some((thread, turn)) => self.child_budgets.get(&(thread.into(), turn.into())).map_or(32 * 1024, |budget| budget.remaining),
+        }
+    }
+    fn charge(&mut self, context: ContextKey<'_>, bytes: usize) {
+        let remaining = match context {
+            None => &mut self.context_remaining,
+            Some((thread, turn)) => &mut self.child_budgets.entry((thread.into(), turn.into())).or_default().remaining,
+        };
+        *remaining = remaining.saturating_sub(bytes);
+    }
+    async fn read_scoped(&mut self, cursor: Option<&str>, context: ContextKey<'_>) -> Result<String, NativeError> {
         if let Some(cursor) = cursor.filter(|cursor| cursor.starts_with("attachment_")) {
-            if self.context_remaining < hagency_runtime::codex::session::ROOM_HISTORY_RESULT_BYTES {
+            if self.available(context) < hagency_runtime::codex::session::ROOM_HISTORY_RESULT_BYTES {
                 return Ok(json!({"complete":false,"nextCursor":cursor,"reason":"context_budget","instruction":"Summarize the pages already read. Do not claim the whole document was read."}).to_string());
             }
             let result = self.documents.read(self.device.as_ref(), &self.room, cursor).await?;
             if result.len() > hagency_runtime::codex::session::ROOM_HISTORY_RESULT_BYTES { return Err(invalid()); }
-            self.context_remaining = self.context_remaining.saturating_sub(result.len());
+            self.charge(context, result.len());
             return Ok(result);
         }
         let index = match cursor {
@@ -218,7 +248,7 @@ impl<S: HistoryIo> Reader<S> {
         }
         // Reserve the entire serialized tool result, including its envelope,
         // rather than only the message records and an estimated overhead.
-        if self.context_remaining < hagency_runtime::codex::session::ROOM_HISTORY_RESULT_BYTES {
+        if self.available(context) < hagency_runtime::codex::session::ROOM_HISTORY_RESULT_BYTES {
             return Ok(json!({"messages":[],"complete":false,"nextCursor":format!("history_{index}"),"reason":"context_budget","instruction":"Keep a compact summary and report the covered range. Do not claim the entire room was read. More history is still available after context compaction or in a follow-up request."}).to_string());
         }
         if !self.started {
@@ -272,7 +302,7 @@ impl<S: HistoryIo> Reader<S> {
         tracing::info!(room_id=%self.room, before_event_id=%self.anchor, page=index,
             records=messages.len(), result_bytes=result.len(), complete=next.is_none(),
             unavailable_messages=self.records.unavailable, "Shared room history page read");
-        self.context_remaining = self.context_remaining.saturating_sub(result.len());
+        self.charge(context, result.len());
         self.pages.push(next);
         Ok(result)
     }
@@ -372,13 +402,16 @@ fn fragments(record: Value) -> Vec<Value> {
 }
 
 #[cfg(test)]
+#[path = "history/budget_tests.rs"]
+mod budget_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     fn message(id: &str, sender: &str, body: &str) -> Value {
         json!({"eventId":id,"sender":sender,"body":body})
     }
 
-    struct Pages;
+    pub(super) struct Pages;
     impl HistoryIo for Pages {
         async fn start(&self, room: &str, anchor: &str) -> Result<Option<String>, NativeError> {
             assert_eq!(room, "!current:example.test");
@@ -403,7 +436,7 @@ mod tests {
             })
         }
     }
-    fn paged_reader() -> Reader<Pages> {
+    pub(super) fn paged_reader() -> Reader<Pages> {
         Reader {
             device: Arc::new(Pages),
             room: "!current:example.test".into(),
@@ -415,7 +448,7 @@ mod tests {
             records: Records::default(),
             documents: Documents::default(),
             context_remaining: 32 * 1024,
-            last_usage: None,
+            last_usage: None, child_budgets: HashMap::new(),
         }
     }
 
@@ -510,7 +543,7 @@ mod tests {
             records: Records::default(),
             documents: Documents::default(),
             context_remaining: 32 * 1024,
-            last_usage: None,
+            last_usage: None, child_budgets: HashMap::new(),
         };
         let first: Value = serde_json::from_str(&reader.read(None).await.unwrap()).unwrap();
         let ids: Vec<&str> = first["messages"].as_array().unwrap().iter().map(|m| m["eventId"].as_str().unwrap()).collect();
@@ -560,7 +593,7 @@ mod tests {
             anchor: "$current".into(), started: false, next: None, pages: Vec::new(),
             visited: HashSet::new(), records: Records::default(),
             documents: Documents::default(),
-            context_remaining: 32 * 1024, last_usage: None,
+            context_remaining: 32 * 1024, last_usage: None, child_budgets: HashMap::new(),
         };
         let mut cursor = None;
         let mut bodies = HashMap::<String, String>::new();

@@ -550,7 +550,7 @@ async fn work_loop(
     turn.started();
     let mut capture = issued.bind_started_turn(process).await.map_err(store)?;
     let mut usage = telemetry.shared_turn(sink.command(), &work, &call_id, process);
-    let mut questions = super::questions::Questions::default();
+    let mut questions: super::questions::Questions = super::questions::Questions::default();
     let terminal_result: Result<SharedWorkReceipt, NativeError> = async {
       if start_stop.is_none() { super::questions::enable(process)?; }
       let mut stop_reason = start_stop;
@@ -608,7 +608,7 @@ async fn work_loop(
         let withdrawn=event.user_input_resolved().cloned();
         let history_call=event.room_history_call().cloned();
         let file_call=event.room_file_call().cloned();
-        if let (Some(history),hagency_runtime::codex::session::ObservationKind::Usage(evidence))=(history.as_mut(),event.observation().kind()) {history.observe_usage(evidence);}
+        if let (Some(history), Some(context)) = (history.as_mut(), event.observation().context_usage()) { history.observe_context(context); }
         let ended = matches!(
             event.observation().kind(),
             hagency_runtime::codex::session::ObservationKind::TurnEnded(_)
@@ -640,7 +640,7 @@ async fn work_loop(
         if let Some(call)=history_call {
             let reader=history.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(sink.command())).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read(call.cursor.as_deref())).await
+            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read_call(&call)).await
                 .unwrap_or_else(|error| serde_json::json!({"complete":false,"error":error.code}).to_string());
             guarded(cancel,a.until,|| io.check_running(sink.command())).await?;
             guarded(cancel,a.until,||async{ process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed")) }).await?;

@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 # Offline stdio actor for the Desktop bridge; no provider or network calls.
-import json, sys, pathlib
+import json, sys, pathlib, os
 mode = __MODE__
 kind = __KIND__
 root = pathlib.Path(__ROOT__)
+continuous = mode.startswith('continuous:')
+if continuous:
+    mode = mode.split(':', 1)[1]
+approval_tool = 'Write'
+if mode.startswith('approval:'):
+    _, approval_tool = mode.split(':', 1)
+    mode = 'approval'
 
 def send(value):
     print(json.dumps(value), flush=True)
@@ -23,22 +30,85 @@ with (root / 'argv').open('a') as out:
 if kind == 'claude':
     init = read()
     send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {}}})
-    read()
-    session = 'offline-session'
-    send({'type': 'system', 'subtype': 'init', 'session_id': session})
-    if mode in ('approval', 'cancel', 'hold'):
-        send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
-        send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': 'Write', 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
-        if mode == 'cancel':
-            send({'type': 'control_cancel_request', 'request_id': 'approval-1'})
-        else:
-            response = read()['response']['response']
-            (root / 'decision').write_text(json.dumps(response))
-            if response['behavior'] == 'allow':
-                (root / 'effect').write_text('one')
-        send({'type': 'user', 'session_id': session, 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1', 'content': 'done'}]}})
-    usage = {} if mode == 'unknown' else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
-    send({'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage})
+    while True:
+        prompt = read()
+        if prompt.get('type') == 'control_request':
+            assert continuous and prompt['request']['subtype'] == 'mcp_status'
+            send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':{'mcpServers':[]}}})
+            continue
+        session = 'offline-session'
+        if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
+            send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
+            send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
+        send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
+        if mode in ('approval', 'cancel', 'hold'):
+            send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
+            send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': approval_tool, 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
+            if mode == 'cancel':
+                send({'type': 'control_cancel_request', 'request_id': 'approval-1'})
+            else:
+                response = read()['response']['response']
+                (root / 'decision').write_text(json.dumps(response))
+                if response['behavior'] == 'allow':
+                    (root / 'effect').write_text('one')
+            send({'type': 'user', 'session_id': session, 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1', 'content': 'done'}]}})
+        if mode in ('questions', 'question_cancel'):
+            questions = [{'question':f'Question {i}?','header':f'Q{i}','multiSelect':i == 0,
+                'options':[{'label':'One','description':'First'},{'label':'Two','description':'Second'}]} for i in range(4)]
+            send({'type':'control_request','request_id':'question-1','request':{'subtype':'can_use_tool','tool_name':'AskUserQuestion','tool_use_id':'question-tool','input':{'questions':questions}}})
+            if mode == 'question_cancel':
+                import time
+                time.sleep(0.1)
+                send({'type':'control_cancel_request','request_id':'question-1'})
+            else:
+                response = read()['response']['response']
+                (root / 'question-answer').write_text(json.dumps(response))
+        usage = {} if mode == 'unknown' else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        result = {'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
+        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof'):
+            count_file = root / 'count'
+            count = int(count_file.read_text()) + 1 if count_file.exists() else 1
+            count_file.write_text(str(count))
+            if mode != 'mixed_usage' or count > 1:
+                n = 0 if mode == 'regressing_usage' and count > 1 else count
+                result['modelUsage'] = {'main': {'inputTokens': 10*n, 'outputTokens': 7*n, 'cacheReadInputTokens': 3*n, 'cacheCreationInputTokens': 4*n}, 'subagent': {'inputTokens': 20*n, 'outputTokens': 10*n, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0}}
+        if mode.startswith('background_'):
+            send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[{'task_id':'child-one','task_type':'local_agent'}]})
+        send(result)
+        if mode.startswith('background_'):
+            if mode == 'background_approval':
+                send({'type':'control_request','request_id':'child-approval','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'offline-child-command'}}})
+                response = read()['response']['response']
+                if response['behavior'] == 'allow':
+                    (root / 'child-effect').write_text('one')
+            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+            import time
+            time.sleep(0.05)
+            (root / 'background-completed').write_text(str(count))
+            send({'type':'system','subtype':'task_notification','session_id':session,'task_id':'child-one','status':'completed'})
+            send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[]})
+            snapshot = read()
+            assert snapshot['message']['content'] == '/usage'
+            assert snapshot['session_id'] == session
+            if mode == 'background_snapshot_eof':
+                sys.exit(0)
+            send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
+            send({'type':'system','subtype':'init','session_id':session,'user_message_uuids':[snapshot['uuid']]})
+            result['modelUsage']['subagent']['outputTokens'] = 20 * count
+            if mode == 'background_regressing':
+                result['modelUsage'] = {'main': {'inputTokens': 0, 'outputTokens': 0, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0}}
+            result['result'] = 'local accounting report'
+            result['local_command'] = 'usage'
+            result['num_turns'] = 0
+            result['user_message_uuid'] = 'wrong-call' if mode == 'background_wrong_snapshot' else snapshot['uuid']
+            send(result)
+        if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
+            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+        if not continuous or mode == 'exit':
+            break
+        if mode == 'late_callback':
+            send({'type':'control_request','request_id':'late-callback','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'never-authorize-idle'}}})
+
 else:
     def answer(request, value):
         send({'jsonrpc': '2.0', 'id': request['id'], 'result': value})

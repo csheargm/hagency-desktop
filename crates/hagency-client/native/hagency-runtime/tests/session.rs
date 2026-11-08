@@ -32,6 +32,8 @@ mod unknown_tolerance;
 mod room_history;
 #[path = "session/user_input.rs"]
 mod user_input;
+#[path = "session/turn_tree.rs"]
+mod turn_tree;
 
 type Session = SessionDriver<DuplexStream, DuplexStream, DuplexStream>;
 struct Peer {

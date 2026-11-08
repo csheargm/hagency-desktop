@@ -1,16 +1,13 @@
-//! Desktop runtime bridge. Local accounts stay provider-owned; one disposable
-//! session per invocation shares the owner ledger and exact approval queue.
-use crate::codex::{
-    self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus,
-};
+//! Desktop runtime bridge. Native sessions may span many independently admitted
+//! calls. Accounts remain provider-owned; each call has its own ledger and approvals.
+use crate::codex::{self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus};
 use crate::{Ledger, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
 use hagency_runtime::{claude, octos};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use tokio::process::{Child, ChildStdin, ChildStdout};
 
 type Claude = hagency_runtime::owned::OwnedClaudeSession;
 type Octos = hagency_runtime::owned::OwnedOctosSession;
@@ -118,7 +115,10 @@ pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
     match kind(reference) {
         Kind::Claude
             if local_reference(Kind::Claude, &profile.codex_home, None) != reference
-                || !matches!(profile.effort.as_str(), "low" | "medium" | "high" | "max") =>
+                || !matches!(
+                    profile.effort.as_str(),
+                    "low" | "medium" | "high" | "xhigh" | "max"
+                ) =>
         {
             return Err(Error::Profile("Claude account or effort mismatch"));
         }
@@ -158,18 +158,11 @@ pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
 
 pub struct Process {
     pub session: Session,
-    child: Option<Child>,
 }
 impl Process {
     pub async fn stop(&mut self) -> Result<()> {
         match &mut self.session {
-            Session::Codex(_) => {
-                if let Some(child) = self.child.as_mut()
-                    && child.try_wait()?.is_none()
-                {
-                    child.kill().await?;
-                }
-            }
+            Session::Codex(wire) => require_stopped(wire.stop())?,
             Session::Claude { wire, .. } => require_stopped(wire.stop())?,
             Session::Octos { wire, .. } => require_stopped(wire.stop())?,
         }
@@ -185,12 +178,13 @@ fn require_stopped(cleanup: hagency_runtime::owned::Cleanup) -> Result<()> {
     }
 }
 pub enum Session {
-    Codex(Box<codex::Session<ChildStdout, ChildStdin>>),
+    Codex(Box<codex::Owned>),
     Claude {
         wire: Box<Claude>,
         profile: Profile,
         scope: Option<Scope>,
         context: String,
+        reusable: bool,
     },
     Octos {
         wire: Box<Octos>,
@@ -203,6 +197,13 @@ pub enum Session {
 
 pub async fn spawn(profile: &Profile, reference: &str) -> Result<Process> {
     spawn_inner(profile, reference, None, None).await
+}
+pub async fn spawn_with_guardian(
+    profile: &Profile,
+    reference: &str,
+    guardian: Option<&Path>,
+) -> Result<Process> {
+    spawn_inner(profile, reference, None, guardian).await
 }
 fn context_profile(profile: &Profile, reference: &str) -> Result<String> {
     crate::hash(&(reference, &profile.model, &profile.effort, &profile.cwd)).map_err(Into::into)
@@ -247,10 +248,11 @@ async fn spawn_inner(
     validate(profile, reference)?;
     let kind = kind(reference);
     if kind == Kind::Codex {
-        let process = profile.spawn().await?;
+        let guardian = guardian
+            .map(Path::to_path_buf)
+            .unwrap_or(std::env::current_exe()?);
         return Ok(Process {
-            session: Session::Codex(Box::new(process.session)),
-            child: Some(process.child),
+            session: Session::Codex(Box::new(codex::Owned::spawn(profile, &guardian)?)),
         });
     }
     let mut command = tokio::process::Command::new(&profile.executable);
@@ -270,32 +272,18 @@ async fn spawn_inner(
     }
     match kind {
         Kind::Claude => {
+            command
+                .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
+                .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1");
             if let Some(session) = resume {
                 crate::key(session)?;
                 command.args(["--resume", session]);
             }
             command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
-            let settings = json!({"disableAllHooks":true,"permissions":{"ask":["Bash","Read","Write","Edit","Glob","Grep"]},"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}});
-            command
-                .args(
-                    claude::arguments(&profile.model)
-                        .map_err(|_| Error::Profile("Claude model"))?,
-                )
-                .args([
-                    "--setting-sources",
-                    "",
-                    "--settings",
-                    &settings.to_string(),
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    "{\"mcpServers\":{}}",
-                    "--tools",
-                    "Bash,Read,Write,Edit,Glob,Grep",
-                    "--disable-slash-commands",
-                    "--no-chrome",
-                    "--effort",
-                    &profile.effort,
-                ]);
+            command.args(
+                claude::interactive_arguments(&profile.model, &profile.effort)
+                    .map_err(|_| Error::Profile("Claude model or effort"))?,
+            );
         }
         Kind::Octos => {
             let digest = crate::hash(&(reference, &profile.cwd))?;
@@ -384,19 +372,13 @@ async fn spawn_inner(
     let session = match kind {
         Kind::Claude => Session::Claude {
             wire: Box::new(
-                Claude::spawn(
-                    &guardian,
-                    &launch,
-                    claude::session::Limits {
-                        event_wait_ms: 1_200_000,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|_| Error::Profile("Claude process custody unavailable"))?,
+                Claude::spawn(&guardian, &launch, claude::session::Limits::default())
+                    .map_err(|_| Error::Profile("Claude process custody unavailable"))?,
             ),
             profile: profile.clone(),
             scope: None,
             context: context_profile(profile, reference)?,
+            reusable: false,
         },
         Kind::Octos => Session::Octos {
             wire: Box::new(
@@ -420,10 +402,7 @@ async fn spawn_inner(
         },
         Kind::Codex => unreachable!(),
     };
-    Ok(Process {
-        session,
-        child: None,
-    })
+    Ok(Process { session })
 }
 
 fn now() -> i64 {
@@ -448,10 +427,15 @@ impl Session {
             Self::Codex(session) => {
                 session.initialize().await?;
             }
-            Self::Claude { wire, .. } => wire
-                .initialize()
-                .await
-                .map_err(|_| Error::Protocol("Claude initialize"))?,
+            Self::Claude { wire, .. } => {
+                wire.enable_native_completion()
+                    .map_err(|_| Error::Protocol("Claude lifecycle"))?;
+                wire.enable_continuous_session()
+                    .map_err(|_| Error::Protocol("Claude continuous session"))?;
+                wire.initialize()
+                    .await
+                    .map_err(|_| Error::Protocol("Claude initialize"))?;
+            }
             Self::Octos { wire, .. } => wire
                 .hello()
                 .await
@@ -488,6 +472,73 @@ impl Session {
             _ => Err(Error::Profile("host files not released for this runtime")),
         }
     }
+    #[cfg(unix)]
+    pub fn rebind_host_files(
+        &mut self,
+        workspace: crate::room_files::Workspace,
+        gate: std::sync::Arc<dyn codex::HostToolGate>,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.rebind_host_files(workspace, gate),
+            _ => Err(Error::Profile("host files not released for this runtime")),
+        }
+    }
+    pub fn park(&mut self) {
+        if let Self::Codex(session) = self {
+            session.park();
+        }
+    }
+    pub fn can_continue(&self) -> bool {
+        match self {
+            Self::Codex(session) => session.can_continue(),
+            Self::Claude { wire, reusable, .. } => *reusable && wire.can_followup(),
+            Self::Octos { .. } => false,
+        }
+    }
+    /// Revalidate durable scope and the retained native process before a new
+    /// reservation. A failed probe has not transmitted this turn's model input.
+    pub async fn continue_context(
+        &mut self,
+        ledger: &mut Ledger,
+        scope: &Scope,
+        profile: &Profile,
+    ) -> Result<()> {
+        if !self.can_continue() {
+            return Err(Error::Protocol("native session cannot continue"));
+        }
+        match self {
+            Self::Codex(session) => session.continue_context(ledger, scope, profile).await,
+            Self::Claude {
+                wire,
+                profile: prior,
+                scope: bound,
+                context,
+                reusable,
+            } => {
+                crate::verify(&ledger.db, scope)?;
+                if bound.as_ref() != Some(scope) || prior != profile {
+                    return Err(Error::Protocol("retained context scope or profile differs"));
+                }
+                let (saved, counters): (String, String) = ledger.db.query_row(
+                    "SELECT session,counters FROM external_sessions WHERE scope=? AND profile=?",
+                    (scope.context_key(&ledger.owner)?, context.as_str()), |row| Ok((row.get(0)?, row.get(1)?)),
+                ).map_err(crate::Error::from)?;
+                if wire.session_id() != Some(saved.as_str())
+                    || counters.is_empty()
+                    || counters == "null"
+                {
+                    return Err(Error::Protocol(
+                        "retained native session or accounting baseline differs",
+                    ));
+                }
+                *reusable = false;
+                wire.prepare_followup(claude::session::Limits::default())
+                    .await
+                    .map_err(|_| Error::Protocol("retained Claude process unavailable"))
+            }
+            Self::Octos { .. } => Err(Error::Protocol("native session cannot continue")),
+        }
+    }
     pub async fn open_context(
         &mut self,
         ledger: &mut Ledger,
@@ -496,10 +547,19 @@ impl Session {
     ) -> Result<()> {
         match self {
             Self::Codex(session) => session.open_context(ledger, scope, profile).await,
-            Self::Claude { scope: bound, .. } | Self::Octos { scope: bound, .. } => {
+            Self::Claude {
+                scope: bound,
+                profile: original,
+                ..
+            }
+            | Self::Octos {
+                scope: bound,
+                profile: original,
+                ..
+            } => {
                 crate::verify(&ledger.db, scope)?;
-                if bound.is_some() {
-                    return Err(Error::Protocol("context already open"));
+                if bound.is_some() || original != profile {
+                    return Err(Error::Protocol("context already open or profile differs"));
                 }
                 *bound = Some(scope.clone());
                 Ok(())
@@ -519,7 +579,10 @@ impl Session {
         queue: &ApprovalQueue,
         started: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<Completed> {
-        self.run_with_started_observed(ledger, owner, scope, call, dispatch, input, mode, queue, started, None).await
+        self.run_with_started_observed(
+            ledger, owner, scope, call, dispatch, input, mode, queue, started, None,
+        )
+        .await
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn run_with_started_observed(
@@ -559,6 +622,9 @@ impl Session {
         if ledger.reserve(scope, call, dispatch, reservation, now())? != Reservation::New {
             return Err(Error::Protocol("refusing provider replay"));
         }
+        if let Self::Claude { reusable, .. } = self {
+            *reusable = false;
+        }
         let mut charge = Charge {
             ledger,
             scope: scope.clone(),
@@ -567,13 +633,20 @@ impl Session {
         };
         let began = Instant::now();
         let result = match self {
-            Self::Claude { wire, profile, .. } => {
+            Self::Claude {
+                wire,
+                profile,
+                context,
+                ..
+            } => {
                 run_claude(
                     wire,
                     profile,
                     charge.ledger,
                     owner,
                     scope,
+                    call,
+                    context,
                     dispatch,
                     input,
                     queue,
@@ -601,7 +674,7 @@ impl Session {
             _ => unreachable!(),
         };
         let (text, mut usage, failed, requests, returns, cumulative) = result?;
-        let is_octos = matches!(self, Self::Octos { .. });
+        let is_claude = matches!(self, Self::Claude { .. });
         let (context, session) = match self {
             Self::Claude { wire, context, .. } => {
                 (context.as_str(), wire.session_id().ok_or(Error::Unknown)?)
@@ -611,21 +684,28 @@ impl Session {
             }
             _ => unreachable!(),
         };
-        // Persist absolute Octos counters even when this turn only exposes turn usage.
-        // This keeps a later session-total event from charging earlier turns twice.
-        let counters = if is_octos && usage.accounting_version != crate::UNREPORTED_ZERO {
+        // Claude modelUsage includes restored previous turns and subagents;
+        // Octos session usage is also cumulative. A durable baseline belongs to
+        // this exact native session, not merely to the same Matrix room.
+        let counters = if usage.is_reported() {
             use rusqlite::OptionalExtension;
-            let baseline: Option<String> = charge
+            let baseline: Option<(String, String)> = charge
                 .ledger
                 .db
                 .query_row(
-                    "SELECT counters FROM external_sessions WHERE scope=? AND profile=?",
+                    "SELECT session,counters FROM external_sessions WHERE scope=? AND profile=?",
                     (scope.context_key(owner)?, context),
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(crate::Error::from)?;
-            let baseline_missing = baseline.as_deref() == Some("null");
+            if baseline.as_ref().is_some_and(|(prior, _)| prior != session) {
+                return Err(Error::Protocol("resumed native session identity differs"));
+            }
+            let baseline = baseline.map(|(_, counters)| counters);
+            let baseline_missing = baseline
+                .as_deref()
+                .is_some_and(|s| s.is_empty() || s == "null");
             let prior: Option<Usage> = baseline
                 .filter(|s| !s.is_empty() && s != "null")
                 .map(|s| serde_json::from_str(&s))
@@ -634,8 +714,7 @@ impl Session {
                 let absolute = serde_json::to_string(&usage)?;
                 if baseline_missing {
                     usage = crate::unreported_usage();
-                }
-                if let Some(prior) = prior {
+                } else if let Some(prior) = prior {
                     usage.input = usage.input.checked_sub(prior.input).ok_or(Error::Unknown)?;
                     usage.output = usage
                         .output
@@ -645,44 +724,61 @@ impl Session {
                         .cached_input
                         .checked_sub(prior.cached_input)
                         .ok_or(Error::Unknown)?;
-                    usage.cache_write_input = match (usage.cache_write_input, prior.cache_write_input) {
-                        (Some(current), Some(prior)) => Some(current.checked_sub(prior).ok_or(Error::Unknown)?),
-                        _ => None,
-                    };
+                    usage.cache_write_input =
+                        match (usage.cache_write_input, prior.cache_write_input) {
+                            (Some(current), Some(prior)) => {
+                                Some(current.checked_sub(prior).ok_or(Error::Unknown)?)
+                            }
+                            _ => None,
+                        };
                 }
                 absolute
             } else {
-                let mut absolute = usage.clone();
-                if let Some(prior) = prior {
-                    absolute.input = absolute
-                        .input
-                        .checked_add(prior.input)
-                        .ok_or(Error::Unknown)?;
-                    absolute.output = absolute
-                        .output
-                        .checked_add(prior.output)
-                        .ok_or(Error::Unknown)?;
-                    absolute.cached_input = absolute
-                        .cached_input
-                        .checked_add(prior.cached_input)
-                        .ok_or(Error::Unknown)?;
-                    absolute.cache_write_input = match (absolute.cache_write_input, prior.cache_write_input) {
-                        (Some(current), Some(prior)) => Some(current.checked_add(prior).ok_or(Error::Unknown)?),
-                        _ => None,
-                    };
+                // Claude main-loop counters exclude subagents, so they cannot
+                // establish a whole-session baseline for a future modelUsage.
+                if is_claude || baseline_missing {
+                    "null".into()
+                } else {
+                    let mut absolute = usage.clone();
+                    if let Some(prior) = prior {
+                        absolute.input = absolute
+                            .input
+                            .checked_add(prior.input)
+                            .ok_or(Error::Unknown)?;
+                        absolute.output = absolute
+                            .output
+                            .checked_add(prior.output)
+                            .ok_or(Error::Unknown)?;
+                        absolute.cached_input = absolute
+                            .cached_input
+                            .checked_add(prior.cached_input)
+                            .ok_or(Error::Unknown)?;
+                        absolute.cache_write_input =
+                            match (absolute.cache_write_input, prior.cache_write_input) {
+                                (Some(current), Some(prior)) => {
+                                    Some(current.checked_add(prior).ok_or(Error::Unknown)?)
+                                }
+                                _ => None,
+                            };
+                    }
+                    serde_json::to_string(&absolute)?
                 }
-                serde_json::to_string(&absolute)?
             }
         } else {
             String::new()
         };
-        if let Some(observer) = observer { observer(&usage); }
+        if let Some(observer) = observer {
+            observer(&usage);
+        }
         charge
             .ledger
             .settle_external(scope, call, &usage, context, session, &counters)?;
         charge.settled = true;
         if failed {
             return Err(Error::Failed);
+        }
+        if let Self::Claude { reusable, .. } = self {
+            *reusable = usage.is_reported() && cumulative;
         }
         Ok(Completed {
             text,
@@ -744,6 +840,8 @@ async fn run_claude(
     ledger: &mut Ledger,
     owner: &str,
     scope: &Scope,
+    call: &str,
+    context: &str,
     dispatch: &str,
     input: &str,
     queue: &ApprovalQueue,
@@ -766,25 +864,64 @@ async fn run_claude(
     ) {
         return Err(Error::Protocol("Claude session init"));
     }
+    ledger.bind_external_session(
+        scope,
+        call,
+        context,
+        wire.session_id().ok_or(Error::Unknown)?,
+        &Usage {
+            input: 0,
+            output: 0,
+            cached_input: 0,
+            cache_write_input: Some(0),
+            reasoning_output: 0,
+            accounting_version: "claude-reported-v1".into(),
+        },
+    )?;
+    wire.supervise_turn()
+        .map_err(|_| Error::Protocol("Claude turn supervision"))?;
     wire.enable_approval_control(claude::session::ApprovalControlPolicy {
         owner_wait_ms: 300_000,
         response_reserve_ms: 10_000,
     })
     .map_err(|_| Error::Protocol("Claude control"))?;
+    wire.set_question_wait(610_000)
+        .map_err(|_| Error::Protocol("Claude question wait"))?;
     if let Some(send) = started {
         let _ = send.send(());
     }
     let mut requests = std::collections::BTreeSet::new();
     let mut returns = std::collections::BTreeSet::new();
     let mut buffered = std::collections::VecDeque::new();
+    let mut completed: Option<(String, Usage, bool, bool)> = None;
+    let unresolved = |completed: Option<(String, Usage, bool, bool)>,
+                      requested,
+                      returned|
+     -> Result<TurnResult> {
+        let (text, _, failed, _) = completed.ok_or(Error::Unknown)?;
+        Ok((
+            text,
+            crate::unreported_usage(),
+            failed,
+            requested,
+            returned,
+            false,
+        ))
+    };
     for _ in 0..16384 {
         let (message, observation) = if let Some(item) = buffered.pop_front() {
             item
         } else {
-            let message = wire
-                .next_message()
-                .await
-                .map_err(|_| Error::Protocol("Claude event"))?;
+            let message = match wire.next_message().await {
+                Ok(message) => message,
+                Err(_) if wire.usage_snapshot_requested() => {
+                    // The original answer and idle state were already proven.
+                    // A failed accounting query must not discard that answer;
+                    // its unknown charge remains held for reconciliation.
+                    return unresolved(completed.take(), requests.len(), returns.len());
+                }
+                Err(_) => return Err(Error::Protocol("Claude event")),
+            };
             (message, wire.last_observation().cloned())
         };
         match message {
@@ -795,16 +932,48 @@ async fn run_claude(
                 ..
             } => {
                 let directory = approval_directory(&profile.cwd, &input);
-                let decision = permission(
-                    ledger,
-                    owner,
-                    scope,
-                    dispatch,
-                    format!("claude.{tool_name}"),
-                    input,
-                    &directory,
-                    queue,
-                );
+                enum Decision {
+                    Tool(bool),
+                    Question(Option<crate::questions::SubmittedAnswer>),
+                }
+                let questions = if tool_name == "AskUserQuestion" {
+                    Some(
+                        wire.question(&request_id)
+                            .map_err(|_| Error::Protocol("Claude question"))?,
+                    )
+                } else {
+                    None
+                };
+                let question_id = request_id.clone();
+                let question_deadline = wire
+                    .approval_deadline(&request_id)
+                    .map_err(|_| Error::Protocol("Claude question deadline"))?
+                    .min(tokio::time::Instant::now() + Duration::from_secs(600));
+                let decision = async {
+                    if let Some(questions) = questions {
+                        return Decision::Question(match &queue.questions {
+                            Some(channel) => {
+                                channel
+                                    .ask(scope, dispatch, question_id, questions, question_deadline)
+                                    .await
+                            }
+                            None => None,
+                        });
+                    }
+                    Decision::Tool(
+                        permission(
+                            ledger,
+                            owner,
+                            scope,
+                            dispatch,
+                            format!("claude.{tool_name}"),
+                            input,
+                            &directory,
+                            queue,
+                        )
+                        .await,
+                    )
+                };
                 tokio::pin!(decision);
                 let allow = loop {
                     match wire
@@ -815,13 +984,7 @@ async fn run_claude(
                         claude::session::ControlUpdate::Control(allow) => break Some(allow),
                         claude::session::ControlUpdate::Message(message) => {
                             let cancelled = matches!(&message,claude::Message::ControlCancel {request_id:id} if id==&request_id);
-                            let ended = matches!(
-                                &message,
-                                claude::Message::Event {
-                                    kind: claude::EventKind::Result,
-                                    ..
-                                }
-                            );
+                            let ended = wire.phase() == claude::session::Phase::ResultObserved;
                             if buffered.len() >= 256 {
                                 return Err(Error::Unknown);
                             }
@@ -832,19 +995,29 @@ async fn run_claude(
                         }
                     }
                 };
-                let Some(allow) = allow else {
+                let Some(decision) = allow else {
                     continue;
                 };
-                let mut prepared = wire
-                    .prepare_approval(
+                let mut submitted = None;
+                let mut prepared = match decision {
+                    Decision::Question(answer) => {
+                        let answers = answer
+                            .as_ref()
+                            .map(|a| a.answers.clone())
+                            .unwrap_or_default();
+                        submitted = answer;
+                        wire.prepare_question(&request_id, &answers)
+                    }
+                    Decision::Tool(allow) => wire.prepare_approval(
                         &request_id,
                         if allow {
                             claude::session::PermissionDecision::Allow
                         } else {
                             claude::session::PermissionDecision::Deny
                         },
-                    )
-                    .map_err(|_| Error::Protocol("Claude decision"))?;
+                    ),
+                }
+                .map_err(|_| Error::Protocol("Claude decision"))?;
                 loop {
                     match wire
                         .send_prepared_approval(&mut prepared)
@@ -859,6 +1032,9 @@ async fn run_claude(
                             buffered.push_back((message, wire.last_observation().cloned()));
                         }
                     }
+                }
+                if let Some(answer) = submitted {
+                    answer.accepted();
                 }
             }
             claude::Message::Event { kind, payload, .. } => {
@@ -886,6 +1062,8 @@ async fn run_claude(
                         return Err(Error::Unknown);
                     };
                     let counts = usage.counts();
+                    let cumulative =
+                        usage.coverage() == claude::session::UsageCoverage::ReportedModelsResult;
                     let usage = match (
                         counts.input(),
                         counts.cache_read(),
@@ -905,17 +1083,54 @@ async fn run_claude(
                         },
                         _ => crate::unreported_usage(),
                     };
-                    return Ok((
-                        payload["result"].as_str().unwrap_or("").into(),
-                        usage,
-                        *is_error,
-                        requests.len(),
-                        returns.len(),
-                        false,
-                    ));
+                    if wire.usage_snapshot_requested() {
+                        let original = completed.as_mut().ok_or(Error::Unknown)?;
+                        if usage.is_reported()
+                            && original.1.is_reported()
+                            && (usage.input < original.1.input
+                                || usage.output < original.1.output
+                                || usage.cached_input < original.1.cached_input
+                                || matches!((usage.cache_write_input, original.1.cache_write_input), (Some(next), Some(prior)) if next < prior))
+                        {
+                            return unresolved(completed.take(), requests.len(), returns.len());
+                        }
+                        original.1 = if *is_error || !cumulative {
+                            crate::unreported_usage()
+                        } else {
+                            usage
+                        };
+                        original.3 = cumulative;
+                    } else {
+                        completed = Some((
+                            payload["result"].as_str().unwrap_or("").into(),
+                            usage,
+                            *is_error,
+                            cumulative,
+                        ));
+                    }
                 }
             }
             _ => {}
+        }
+        if buffered.is_empty() && wire.phase() == claude::session::Phase::ResultObserved {
+            if wire.needs_usage_snapshot() && !wire.usage_snapshot_requested() {
+                if wire.request_usage_snapshot().await.is_err() {
+                    return unresolved(completed.take(), requests.len(), returns.len());
+                }
+                continue;
+            }
+            let (text, mut usage, failed, cumulative) = completed.take().ok_or(Error::Unknown)?;
+            if wire.needs_usage_snapshot() {
+                usage = crate::unreported_usage();
+            }
+            return Ok((
+                text,
+                usage,
+                failed,
+                requests.len(),
+                returns.len(),
+                cumulative,
+            ));
         }
     }
     Err(Error::Unknown)

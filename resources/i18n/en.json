@@ -2818,5 +2818,9 @@
   "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.": "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.",
   "A private question was not shown here and gets no answer.": "A private question was not shown here and gets no answer.",
   "{0} asks": "{0} asks",
-  "{0} asks a question. Open the room to answer it under your message.": "{0} asks a question. Open the room to answer it under your message."
+  "{0} asks a question. Open the room to answer it under your message.": "{0} asks a question. Open the room to answer it under your message.",
+  "Waiting for an authorized participant": "Waiting for an authorized participant",
+  "Only the named participants can answer. With no answer by {0}, the Agent continues on its own.": "Only the named participants can answer. With no answer by {0}, the Agent continues on its own.",
+  "Select one or more options, then send your answer.": "Select one or more options, then send your answer.",
+  "Select multiple": "Select multiple"
 }

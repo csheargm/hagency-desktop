@@ -233,6 +233,30 @@ class Review:
         assert not any(x.get('ty') == 'Button' for x in self.card('single'))
         self.capture('single-answered-elsewhere')
         self.checks.append("the Agent's answered edit replaces the buttons with the answer")
+        self.event('question:multi')
+        assert 'Native question 3?' in self.texts('single'), 'the fourth native question is visible'
+        for label in ('Q0 A', 'Q0 B', 'Q0 A', 'Q1 A', 'Q2 B', 'Q3 B'):
+            self.click(self.button('single', label))
+        assert not self.inspect()['requests'], 'multi-select waits for the explicit Send button'
+        assert self.button('single', 'Q0 B')['t'] == '✓ Q0 B'
+        assert self.button('single', 'Q0 A')['t'] == 'Q0 A'
+        send = self.button('single', w['send'])
+        assert send.get('enabled', True)
+        self.inside_window()
+        self.capture('native-four-multiselect')
+        self.click(send)
+        answer = self.inspect()['requests'][0]['content']
+        assert answer['version'] == 2
+        assert answer['answers'] == {'q0': {'options': ['Q0 B']}, 'q1': {'option': 'Q1 A'},
+                                      'q2': {'option': 'Q2 B'}, 'q3': {'option': 'Q3 B'}}
+        self.checks.append('four native questions: multi-select toggles independently and Send returns exact arrays')
+        self.event('question:scoped-other')
+        assert '@alice:example.invalid' in '\n'.join(self.texts('single'))
+        assert not self.button('single', 'Q0 A').get('enabled', True)
+        self.click(self.button('single', 'Q0 A'))
+        assert not self.inspect()['requests'], 'a different joined member cannot answer'
+        self.capture('native-scoped-readonly')
+        self.checks.append('question audience is displayed and other room members cannot submit')
         # A script error in a widget definition silently drops it from the app.
         log = (self.output / 'native.log').read_text()
         errors = [line for line in log.splitlines() if line.startswith('[E] ') or 'panicked at' in line]

@@ -77,7 +77,13 @@ async fn bind_peer(p: &mut Peer, send: bool, receive: bool, mode: &str) {
         reply(p, &before["request_id"], status(false, false)).await;
         return;
     }
-    reply(p, &before["request_id"], json!({"mcpServers":[]})).await;
+    let native = json!({"name":"owner_extension","status":"connected","tools":[{"name":"custom"}]});
+    let original = if matches!(mode, "native" | "native-lost") {
+        json!([native.clone()])
+    } else {
+        json!([])
+    };
+    reply(p, &before["request_id"], json!({"mcpServers":original})).await;
     let set = read(p).await;
     assert_eq!(set["request"]["subtype"], "mcp_set_servers");
     let server = &set["request"]["servers"]["hagency_task_writer"];
@@ -115,6 +121,9 @@ async fn bind_peer(p: &mut Peer, send: bool, receive: bool, mode: &str) {
     let after = read(p).await;
     assert_eq!(after["request"], json!({"subtype":"mcp_status"}));
     let mut s = status(send, receive);
+    if mode == "native" {
+        s["mcpServers"].as_array_mut().unwrap().push(native);
+    }
     match mode {
         "pending" => s["mcpServers"][0]["status"] = json!("pending"),
         "missing" => {
@@ -137,9 +146,16 @@ async fn bind_peer(p: &mut Peer, send: bool, receive: bool, mode: &str) {
 fn native_claude_task_mcp_profile() {
     let args = task_arguments("sonnet", true).unwrap();
     assert!(args.windows(2).any(|a| a == ["--permission-mode", "auto"]));
-    assert!(args.contains(&"--strict-mcp-config".into()));
-    assert!(args.contains(&"--mcp-config={\"mcpServers\":{}}".into()));
-    assert!(args.contains(&"--setting-sources=".into()));
+    for restricted in [
+        "--strict-mcp-config",
+        "--mcp-config",
+        "--setting-sources",
+        "--disable-slash-commands",
+        "--no-chrome",
+        "--no-session-persistence",
+    ] {
+        assert!(!args.iter().any(|a| a.starts_with(restricted)));
+    }
     let settings: Value = serde_json::from_str(
         args.iter()
             .find_map(|s| s.strip_prefix("--settings="))
@@ -148,7 +164,7 @@ fn native_claude_task_mcp_profile() {
     .unwrap();
     assert_eq!(
         settings,
-        json!({"disableAllHooks":true,"permissions":{"ask":["Bash(gh *)","Bash(git push *)"]}})
+        json!({"permissions":{"ask":["Bash(gh *)","Bash(git push *)"]}})
     );
     let rules = args
         .iter()
@@ -218,11 +234,11 @@ fn native_claude_launch_ts_parity() {
             "claude opus",
             "../other",
             "模型",
-            &"x".repeat(65),
+            &"x".repeat(1025),
         ] {
             assert!(task_arguments(model, may_write).is_err(), "{model}");
         }
-        assert!(task_arguments(&"x".repeat(64), may_write).is_ok());
+        assert!(task_arguments(&"x".repeat(1024), may_write).is_ok());
     }
 }
 #[tokio::test]
@@ -249,10 +265,21 @@ async fn native_claude_task_mcp_binding() {
         assert_eq!(d.phase(), Phase::Closed);
     }
 }
+#[tokio::test]
+async fn native_claude_task_mcp_preserves_owner_extensions() {
+    let (mut d, mut p) = ready().await;
+    let (result, ()) = tokio::join!(
+        d.bind_task_mcp(helper(true, true)),
+        bind_peer(&mut p, true, true, "native")
+    );
+    result.unwrap();
+    assert_eq!(d.phase(), Phase::Ready);
+}
 #[tokio::test(start_paused = true)]
 async fn native_claude_task_mcp_refusals() {
     for mode in [
         "before",
+        "native-lost",
         "errors",
         "removed",
         "added",

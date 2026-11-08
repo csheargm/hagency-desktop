@@ -110,6 +110,9 @@ impl SharedCallSink {
             }
             ObservationKind::TurnEnded(result) => {
                 self.terminal = Some(*result);
+                if let Some(usage) = o.terminal_usage() {
+                    self.usage = Some(usage.clone());
+                }
                 true
             }
             ObservationKind::Tool(_) if event.is_authorized_tool() => false,

@@ -143,7 +143,7 @@ fn personal_audit_retains_pending_unknown_and_private_evidence() {
 }
 
 #[test]
-fn personal_audit_zero_after_recovery_is_still_unreported_history() {
+fn personal_audit_recovery_preserves_unknown_usage_and_reservation() {
     let (_root, _path, mut ledger) = fixture();
     bind(&mut ledger);
     call(&ledger, "interrupted", "pending", 700, None);
@@ -166,7 +166,9 @@ fn personal_audit_zero_after_recovery_is_still_unreported_history() {
     let before = snapshot(&ledger);
     let audit = ledger.reconciliation_audit(&authority()).unwrap();
     assert_eq!(audit.history.pending_calls, 0);
-    assert_eq!(audit.history.unreported_zero_usage, 1);
+    assert_eq!(audit.history.unreported_zero_usage, 0);
+    assert_eq!(audit.history.unknown_calls, 1);
+    assert_eq!(audit.history.missing_or_invalid_usage, 1);
     assert_eq!(audit.history.reported_usage_records, 1);
     assert_eq!(audit.history.no_provider_usage_records, 1);
     assert!(audit.history.explicit_usage_gaps > 0);

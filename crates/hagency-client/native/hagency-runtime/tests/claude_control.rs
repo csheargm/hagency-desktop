@@ -98,6 +98,33 @@ async fn callback(driver: &mut Driver, peer: &mut Peer, id: &str, input: Value) 
 }
 
 #[tokio::test]
+async fn native_claude_many_sequential_tools_keep_replay_protection() {
+    let (mut driver, mut peer) = running(4096, true).await;
+    for n in 0..40 {
+        let id = format!("request-{n}");
+        let input = json!({"command":format!("step {n}")});
+        callback(&mut driver, &mut peer, &id, input.clone()).await;
+        let mut response = driver
+            .prepare_approval(&id, PermissionDecision::Allow)
+            .unwrap();
+        let (sent, reply) = tokio::join!(
+            driver.send_prepared_approval(&mut response),
+            read(&mut peer)
+        );
+        assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+        assert_eq!(reply["response"]["response"]["updatedInput"], input);
+    }
+    assert!(matches!(
+        event(
+            &mut driver,
+            &mut peer,
+            request("request-0", json!({"command":"changed"}))
+        )
+        .await,
+        Err(Error::Identity)
+    ));
+}
+#[tokio::test]
 async fn native_claude_permission_exact_response() {
     for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
         let (mut driver, mut peer) = running(4096, true).await;
@@ -176,6 +203,73 @@ async fn native_claude_permission_exact_response() {
         driver.prepare_approval("once", PermissionDecision::Allow),
         Err(Error::PermissionUnavailable)
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_supervised_turn_survives_silence_without_renewing_approval() {
+    let (mut driver, mut peer) = running(4096, false).await;
+    driver.supervise_turn().unwrap();
+    driver.enable_approval_control(policy()).unwrap();
+    let started = tokio::time::Instant::now();
+    let (received, ()) = tokio::join!(driver.next_message(), async {
+        tokio::time::sleep(Duration::from_secs(1801)).await;
+        peer.output.write_all(&frame(notice())).await.unwrap();
+    });
+    assert!(matches!(received.unwrap(), Message::Event { .. }));
+    assert_eq!(started.elapsed(), Duration::from_secs(1801));
+    callback(
+        &mut driver,
+        &mut peer,
+        "fixed-owner-wait",
+        json!({"command":"write"}),
+    )
+    .await;
+    let deadline = driver.approval_deadline("fixed-owner-wait").unwrap();
+    assert_eq!(
+        driver.supervise_turn(),
+        Err(Error::State),
+        "cannot extend a pending grant"
+    );
+    assert_eq!(
+        driver.approval_deadline("fixed-owner-wait").unwrap(),
+        deadline
+    );
+    tokio::time::advance(Duration::from_millis(1001)).await;
+    assert!(matches!(
+        driver.prepare_approval("fixed-owner-wait", PermissionDecision::Allow),
+        Err(Error::Timeout)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_supervised_wait_keeps_partial_frame_and_host_stop() {
+    for partial in [false, true] {
+        let (mut driver, mut peer) = running(4096, false).await;
+        driver.supervise_turn().unwrap();
+        driver.enable_approval_control(policy()).unwrap();
+        let source = driver.observation_source().unwrap();
+        tokio::time::advance(Duration::from_secs(1801)).await;
+        if partial {
+            peer.output.write_all(b"{").await.unwrap();
+        }
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(20), driver.next_message()).await;
+        if partial {
+            assert!(matches!(
+                result,
+                Ok(Err(Error::Protocol(
+                    hagency_runtime::claude::Error::Timeout
+                )))
+            ));
+            assert_eq!(started.elapsed(), Duration::from_secs(10));
+        } else {
+            assert!(result.is_err());
+            assert_eq!(driver.termination().unwrap().cause, Error::Cancelled);
+        }
+        assert!(source.is_retired());
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert!(peer.output.write_all(b"no replay").await.is_err());
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -536,4 +630,120 @@ async fn native_claude_permission_answer_before_flush_completes_the_write() {
         PreparedUpdate::WriteAccepted(progress) if progress.flushed
     ));
     assert!(driver.termination().is_none());
+}
+
+fn question_input() -> Value {
+    json!({"questions": (0..4).map(|i| json!({
+        "question":format!("Question {i}?"), "header":format!("Q{i}"), "multiSelect":i == 0,
+        "options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]
+    })).collect::<Vec<_>>(), "metadata":{"source":"native"}, "answers":{"injected":"ignored"}})
+}
+async fn question(driver: &mut Driver, peer: &mut Peer, input: Value) {
+    let mut value = request("question", input);
+    value["request"]["tool_name"] = json!("AskUserQuestion");
+    event(driver, peer, value).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_question_four_questions_multiselect_and_text_return_original_input() {
+    use hagency_runtime::questions::Answer;
+    let (mut driver, mut peer) = running(8192, true).await;
+    let input = question_input();
+    question(&mut driver, &mut peer, input.clone()).await;
+    let data = driver.question("question").unwrap();
+    assert_eq!(data.len(), 4);
+    assert!(data[0].multi_select && data[3].accepts_text());
+    let answers = [
+        (
+            "q0".into(),
+            Answer::Options(vec!["Two".into(), "One".into()]),
+        ),
+        ("q1".into(), Answer::Option("One".into())),
+        ("q2".into(), Answer::Text("Custom answer".into())),
+        ("q3".into(), Answer::Option("Two".into())),
+    ]
+    .into();
+    let mut response = driver.prepare_question("question", &answers).unwrap();
+    let (sent, value) = tokio::join!(
+        driver.send_prepared_approval(&mut response),
+        read(&mut peer)
+    );
+    assert!(matches!(sent, Ok(PreparedUpdate::WriteAccepted(_))));
+    let native = &value["response"]["response"];
+    assert_eq!(native["behavior"], "allow");
+    assert_eq!(native["updatedInput"]["questions"], input["questions"]);
+    assert_eq!(native["updatedInput"]["metadata"], input["metadata"]);
+    assert_eq!(
+        native["updatedInput"]["answers"],
+        json!({"Question 0?":"Two, One","Question 1?":"One","Question 2?":"Custom answer","Question 3?":"Two"})
+    );
+    assert!(native.get("updatedPermissions").is_none());
+    assert!(
+        driver.prepare_question("question", &answers).is_err(),
+        "cannot replay a consumed callback"
+    );
+}
+
+#[tokio::test]
+async fn question_channel_cannot_approve_tools_or_encode_invalid_native_answers() {
+    use hagency_runtime::questions::Answer;
+    let (mut driver, mut peer) = running(8192, true).await;
+    callback(&mut driver, &mut peer, "tool", question_input()).await;
+    assert!(driver.question("tool").is_err());
+    assert!(
+        driver
+            .prepare_question("tool", &Default::default())
+            .is_err()
+    );
+    for answers in [
+        [(
+            "q1".into(),
+            Answer::Options(vec!["One".into(), "Two".into()]),
+        )]
+        .into(),
+        [(
+            "q0".into(),
+            Answer::Options(vec!["One".into(), "One".into()]),
+        )]
+        .into(),
+        [("q0".into(), Answer::Option("Not an option".into()))].into(),
+        [("foreign".into(), Answer::Text("Injected".into()))].into(),
+    ] {
+        let (mut driver, mut peer) = running(8192, true).await;
+        question(&mut driver, &mut peer, question_input()).await;
+        assert!(driver.prepare_question("question", &answers).is_err());
+    }
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    assert!(
+        driver
+            .prepare_approval("question", PermissionDecision::Allow)
+            .is_err(),
+        "a Boolean tool grant cannot invent an answer"
+    );
+}
+
+#[tokio::test]
+async fn unanswered_question_continues_without_interrupt_and_cancelled_question_cannot_send() {
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    let mut response = driver
+        .prepare_question("question", &Default::default())
+        .unwrap();
+    let (sent, value) = tokio::join!(
+        driver.send_prepared_approval(&mut response),
+        read(&mut peer)
+    );
+    assert!(matches!(sent, Ok(PreparedUpdate::WriteAccepted(_))));
+    assert_eq!(value["response"]["response"]["behavior"], "deny");
+    assert_eq!(value["response"]["response"]["interrupt"], false);
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    let mut response = driver
+        .prepare_question("question", &Default::default())
+        .unwrap();
+    event(&mut driver, &mut peer, cancel("question"))
+        .await
+        .unwrap();
+    assert!(driver.send_prepared_approval(&mut response).await.is_err());
 }

@@ -1,5 +1,7 @@
 #[path = "control.rs"]
 mod control;
+#[path = "turn_tree.rs"]
+mod turn_tree;
 pub use control::{ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate};
 
 use super::state::{State, scope};
@@ -28,6 +30,8 @@ pub struct SessionDriver<R, W, E> {
     wire: transport::Driver<R, W, E>,
     settings: Settings,
     state: State,
+    tree: Option<turn_tree::Streams>,
+    legacy_usage_allowed: bool,
     response_timeout_ms: u64,
     /// The operation ceiling the session was granted (`transport::Limits`
     /// `lifetime_ms`). The acknowledgement budget is `min` of it and
@@ -40,6 +44,7 @@ pub struct SessionDriver<R, W, E> {
     observation_live: Arc<AtomicBool>,
     observation_sequence: u64,
     observation_kind: super::ObservationKind,
+    context_usage: Option<super::ContextUsage>,
     observation_evidence: super::observation::EvidenceTracker,
     last_server_request: Option<&'static str>,
     /// The refused request's OWN method name, bounded and printable. The shape
@@ -94,6 +99,8 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 .map_err(Error::Transport)?,
             settings,
             state: State::default(),
+            tree: None,
+            legacy_usage_allowed: true,
             response_timeout_ms,
             lifetime_ms,
             deferred: VecDeque::new(),
@@ -103,6 +110,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             observation_live: Arc::new(AtomicBool::new(true)),
             observation_sequence: 0,
             observation_kind: super::ObservationKind::Ignored,
+            context_usage: None,
             observation_evidence: super::observation::EvidenceTracker::default(),
             last_server_request: None,
             last_server_request_method: None,
@@ -278,6 +286,14 @@ impl<R, W, E> SessionDriver<R, W, E> {
             && !source.is_retired()
             && self.bound_source().is_ok_and(|value| &value == source)
     }
+    pub fn native_turn_context(&self, thread: &str, turn: &str) -> Result<super::NativeTurnContext, Error> {
+        if self.phase() != Phase::Running || !self.active_turn(thread, turn) {
+            return Err(Error::Scope);
+        }
+        Ok(super::NativeTurnContext {
+            source: self.bound_source()?, thread: thread.into(), turn: turn.into(),
+        })
+    }
     /// Explicit host opt-in after the upstream thread and turn were validated.
     pub fn enable_approvals(&mut self) -> Result<(), Error> {
         if self.phase() != Phase::Running || self.approvals_enabled {
@@ -318,12 +334,15 @@ impl<R, W, E> SessionDriver<R, W, E> {
         }
         Ok(asked == Asked::Withdrawn
             || self.phase() != Phase::Running
-            || self.thread_id() != Some(response.thread_id.as_str())
-            || self.turn_id() != Some(response.turn_id.as_str())
+            || !self.active_turn(&response.thread_id, &response.turn_id)
             || !self.wire.server_request_open(&response.id))
     }
     pub fn phase(&self) -> Phase {
-        self.state.phase
+        if self.tree.as_ref().is_some_and(|tree| !tree.finished) {
+            Phase::Running
+        } else {
+            self.state.phase
+        }
     }
     pub fn thread_id(&self) -> Option<&str> {
         self.state.thread.as_deref()
@@ -332,7 +351,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.state.turn.as_deref()
     }
     pub fn outcome(&self) -> Option<&Outcome> {
-        self.state.outcome.as_ref()
+        if self.phase() == Phase::Running { None } else { self.state.outcome.as_ref() }
     }
     pub fn item_count(&self) -> usize {
         self.state.item_count()
@@ -384,7 +403,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
     }
 
     pub fn close(&mut self) {
-        if self.state.phase != Phase::Ended {
+        if self.phase() != Phase::Ended {
             self.fail(Error::Cancelled);
         }
         if !matches!(self.outcome(), Some(Outcome::Completed { .. })) {
@@ -393,6 +412,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.wire.close();
     }
     fn fail(&mut self, error: Error) {
+        if let Some(tree) = &mut self.tree { tree.finished = true; }
         self.observation_live.store(false, Ordering::Release);
         self.state.failed(error);
         self.wire.close();
@@ -427,12 +447,11 @@ impl<R, W, E> SessionDriver<R, W, E> {
         {
             return Err(Error::Scope);
         }
-        scope(
-            method,
-            params,
-            self.state.thread.as_deref(),
-            self.state.turn.as_deref(),
-        )?;
+        // During turn/start the root identity is not acknowledged yet. Child
+        // events can already be queued; bind them in order after that response.
+        if self.state.phase != Phase::StartingTurn && self.tree.is_none() {
+            scope(method, params, self.state.thread.as_deref(), self.state.turn.as_deref())?;
+        }
         let charge = transport::event_bytes(&event).map_err(Error::Transport)?;
         let total = self
             .deferred_bytes
@@ -447,6 +466,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         Ok(())
     }
     fn validate_deferred(&self) -> Result<(), Error> {
+        let mut tree = self.tree.as_ref().map(|tree| tree.graph.clone());
         for event in &self.deferred {
             let Event::Notification {
                 method,
@@ -455,12 +475,12 @@ impl<R, W, E> SessionDriver<R, W, E> {
             else {
                 return Err(Error::Malformed);
             };
-            scope(
-                method,
-                params,
-                self.state.thread.as_deref(),
-                self.state.turn.as_deref(),
-            )?;
+            if let Some(tree) = &mut tree {
+                turn_tree::Streams::check_scope(tree, &self.state, self.legacy_usage_allowed, method, params)?;
+                tree.observe(method, params, false)?;
+            } else {
+                scope(method, params, self.state.thread.as_deref(), self.state.turn.as_deref())?;
+            }
         }
         Ok(())
     }
@@ -614,7 +634,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     }
     pub async fn respond_room_file(&mut self, call: &super::RoomFileCall, content: String) -> Result<(), Error> {
         if self.phase() != Phase::Running || !self.settings.room_files
-            || self.thread_id() != Some(call.thread.as_str()) || self.turn_id() != Some(call.turn.as_str())
+            || !self.active_turn(&call.thread, &call.turn)
             || !self.file_pending.contains(&call.id) || content.len() > super::ROOM_FILE_RESULT_BYTES { return Err(Error::Scope); }
         self.wire.send(transport::Command::RespondRoomFile { call: call.clone(), content }).await.map_err(Error::Transport)?;
         self.file_pending.remove(&call.id);
@@ -649,6 +669,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     ) -> Result<(), Error> {
         if self.phase() != Phase::Running
             || !self.settings.room_history
+            || !self.active_turn(&call.thread, &call.turn)
             || !self.history_pending.contains(&call.id)
             || content.len() > super::ROOM_HISTORY_RESULT_BYTES
         {
@@ -684,6 +705,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         operation.finish(result)
     }
     async fn open_thread_inner(&mut self, resume: Option<&str>) -> Result<String, Error> {
+        self.legacy_usage_allowed = resume.is_none();
         self.state.phase = Phase::OpeningThread;
         // For resume, reject a substituted notification even before its response.
         self.state.thread = resume.map(str::to_owned);
@@ -735,6 +757,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .call("turn/start", self.settings.turn_request(thread, input))
             .await?;
         let id = self.state.observe_turn(&result)?;
+        self.tree = Some(turn_tree::Streams::new(self.thread_id().ok_or(Error::State)?, &id)?);
         self.validate_deferred()?;
         Ok(id)
     }
@@ -767,6 +790,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         loop {
             match self.receive().await? {
                 Event::InterruptAcknowledged { scope: observed } if observed == scope => {
+                    self.validate_deferred()?;
                     return Ok(InterruptDisposition::Acknowledged);
                 }
                 Event::InterruptRejected {
@@ -788,12 +812,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if self.phase() != Phase::Running || !self.approvals_enabled || self.control.enabled() {
             return Err(Error::State);
         }
-        if self.thread_id() != Some(response.request.thread_id())
-            || self.turn_id() != Some(response.request.turn_id())
+        if !self.active_turn(response.request.thread_id(), response.request.turn_id())
             || response
                 .request
                 .mcp_item()
-                .is_some_and(|id| !self.mcp.active(id))
+                .is_some_and(|id| !self.mcp.active(response.request.thread_id(), response.request.turn_id(), id))
         {
             return Err(Error::Scope);
         }
@@ -848,6 +871,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             finished: false,
         };
         let mut result = operation.session.update_inner().await;
+        if let Err(error) = result.as_ref()
+            && let Some(update) = operation.session.finish_root_after_eof(*error) {
+                result = Ok(update);
+            }
         if result.is_ok()
             && let Err(error) = operation.session.advance_observation()
         {
@@ -861,6 +888,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             source: self.bound_source()?,
             sequence: self.observation_sequence,
             kind: self.observation_kind.clone(),
+            terminal_usage: self.terminal_usage(),
+            context_usage: self.context_usage.clone(),
         };
         Ok((update, observation))
     }
@@ -873,6 +902,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.accept_update(event).await
     }
     async fn accept_update(&mut self, event: Event) -> Result<Update, Error> {
+        self.context_usage = None;
         let event = match event {
             Event::ServerRequest { id, method, params } if method == super::USER_INPUT_METHOD => {
                 self.last_server_request = Some(server_request_shape(&method));
@@ -884,20 +914,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 method,
                 params: Some(params),
             } if method == "item/tool/call" && (self.settings.room_history || self.settings.room_files) => {
-                if self.phase() != Phase::Running
-                    || params["threadId"].as_str() != self.thread_id()
-                    || params["turnId"].as_str() != self.turn_id()
-                {
-                    let other_thread = params["threadId"].as_str() != self.thread_id();
-                    let other_turn = params["turnId"].as_str() != self.turn_id();
-                    tracing::warn!(
-                        phase = ?self.phase(),
-                        other_thread,
-                        other_turn,
-                        "Codex room history call outside the running turn"
-                    );
-                    return Err(Error::Scope);
-                }
+                self.callback_scope(&params)?;
                 if self.settings.room_files && super::ROOM_FILE_TOOLS.iter().any(|name| params["tool"] == *name) {
                     let call = super::RoomFileCall::parse(id.clone(), &params)?;
                     if !self.file_pending.insert(id) { return Err(Error::Scope); }
@@ -905,7 +922,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     return Ok(Update::RoomFile(call));
                 }
                 if !self.settings.room_history { return Err(Error::UnsupportedRequest); }
-                let call = super::RoomHistoryCall::parse(id.clone(), &params)?;
+                let mut call = super::RoomHistoryCall::parse(id.clone(), &params)?;
+                call.root = self.state.thread.as_deref() == Some(call.thread.as_str())
+                    && self.state.turn.as_deref() == Some(call.turn.as_str());
                 if !self.history_pending.insert(id) {
                     return Err(Error::Scope);
                 }
@@ -928,18 +947,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 let elicitation = method == "mcpServer/elicitation/request";
                 let original = id.clone();
                 let declinable = crate::codex::approval::policy_decline(&method, &params).is_some();
-                let parsed = if params.get("threadId").and_then(Value::as_str) != self.thread_id()
-                    || params.get("turnId").and_then(Value::as_str) != self.turn_id()
-                {
-                    let other_thread =
-                        params.get("threadId").and_then(Value::as_str) != self.thread_id();
-                    let other_turn = params.get("turnId").and_then(Value::as_str) != self.turn_id();
-                    tracing::warn!(
-                        method = %method_name,
-                        other_thread,
-                        other_turn,
-                        "Codex server request outside the running turn"
-                    );
+                let parsed = if self.callback_scope(&params).is_err() {
                     Err(Error::Scope)
                 } else if elicitation {
                     self.mcp.request(id, params)
@@ -1017,9 +1025,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         return Err(error);
                     }
                 };
-                if self.thread_id() != Some(request.thread_id())
-                    || self.turn_id() != Some(request.turn_id())
-                {
+                if !self.active_turn(request.thread_id(), request.turn_id()) {
                     return Err(Error::Scope);
                 }
                 // Patch and permission requests can precede item/started in
@@ -1057,9 +1063,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         else {
             return Err(Error::Scope);
         };
-        let mut update = self.state.notification(&method, &params).inspect_err(|_| {
-            self.refused_notification = Some(notification_shape(&method, &params));
-        })?;
+        let (mut update, observation) = self.tree.as_mut().ok_or(Error::State)?
+            .notification(&mut self.state, &mut self.observation_evidence, self.legacy_usage_allowed, &method, &params)
+            .inspect_err(|_| { self.refused_notification = Some(notification_shape(&method, &params)); })?;
+        if method == "thread/tokenUsage/updated"
+            && self.active_turn(params["threadId"].as_str().unwrap_or_default(), params["turnId"].as_str().unwrap_or_default())
+        {
+            let root = params["threadId"].as_str() == self.state.thread.as_deref()
+                && params["turnId"].as_str() == self.state.turn.as_deref();
+            self.context_usage = super::ContextUsage::project(&params, root);
+        }
         self.observe_rate_limits(&method, &params);
         self.mcp.observe(&method, &params)?;
         if method == "serverRequest/resolved"
@@ -1089,12 +1102,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 self.wire.close();
             }
         }
-        self.observation_kind = if method == "thread/tokenUsage/updated" {
-            super::ObservationKind::Usage(super::usage::project(&params))
-        } else {
-            self.observation_evidence
-                .project(&update, &params, self.state.outcome.as_ref())
-        };
+        self.observation_kind = observation;
         Ok(update)
     }
 
@@ -1127,7 +1135,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 Some(Event::Notification {
                     method,
                     params: Some(params),
-                }) => self.state.terminal_suffix(&method, &params)?,
+                }) => self.tree.as_mut().ok_or(Error::State)?.terminal_suffix(&mut self.state, &method, &params)?,
                 // Same deferral as the post-loop check below (F1): with
                 // approvals enabled a request arriving DURING the drain is
                 // the host coordinator's armed callback, not an unowned
@@ -1187,8 +1195,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         let thread = params.get("threadId").and_then(Value::as_str);
         let turn = params.get("turnId").and_then(Value::as_str);
         if self.phase() != Phase::Running
-            || thread != self.thread_id()
-            || turn != self.turn_id()
+            || !thread.zip(turn).is_some_and(|(thread, turn)| self.active_turn(thread, turn))
             || self.user_input.contains_key(&id)
         {
             tracing::warn!(
@@ -1366,6 +1373,9 @@ fn notification_shape(method: &str, params: &Value) -> &'static str {
         "account/rateLimits/updated" => "account_limits",
         "account/updated" => "account",
         "thread/tokenUsage/updated" => "turn_usage",
+        "rawResponse/completed" => "response_usage",
+        "rawResponseItem/completed" => "raw_item",
+        "warning" | "configWarning" => "warning",
         "item/commandExecution/terminalInteraction" => "terminal_interaction",
         "item/fileChange/patchUpdated" => "patch_updated",
         // Fixed diagnostic labels only. Recognition here does not admit these

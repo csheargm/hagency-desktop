@@ -434,6 +434,11 @@ impl State {
             (String::new(), None)
         };
         let old = existing.map_or(0, |item| item.text.len());
+        // Some native providers complete an assistant item without streaming
+        // output_text deltas, or include a final suffix only in item/completed.
+        // Forward exactly the unseen suffix; the prefix was checked above.
+        let unseen = (kind == "agentMessage" && text.len() > old)
+            .then(|| text[old..].to_owned());
         self.text_bytes = self
             .text_bytes
             .checked_sub(old)
@@ -457,10 +462,9 @@ impl State {
                 message_phase,
             },
         );
-        Ok(Update::Item {
-            id: item_id.into(),
-            kind: kind.into(),
-            phase,
+        Ok(match unseen {
+            Some(delta) => Update::TextDelta { item_id: item_id.into(), delta },
+            None => Update::Item { id: item_id.into(), kind: kind.into(), phase },
         })
     }
 

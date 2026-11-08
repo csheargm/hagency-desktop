@@ -9,6 +9,11 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::{fs, path::PathBuf};
 
+#[path = "runtime/continuous.rs"]
+mod continuous;
+#[path = "runtime/questions.rs"]
+mod questions;
+
 struct Fixture {
     root: tempfile::TempDir,
     ledger: Ledger,
@@ -170,8 +175,10 @@ async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_
         let argv = fs::read_to_string(f.path("argv")).unwrap();
         if kind == Kind::Claude {
             assert!(argv.contains("--resume"));
-            assert!(argv.contains("--strict-mcp-config"));
-            assert!(argv.contains("disableAllHooks"));
+            assert!(!argv.contains("--strict-mcp-config"));
+            assert!(!argv.contains("disableAllHooks"));
+            assert!(!argv.contains("--disable-slash-commands"));
+            assert!(argv.contains("--include-partial-messages"));
         }
         let frames = fs::read_to_string(f.path("frames")).unwrap();
         if kind == Kind::Octos {
@@ -179,6 +186,224 @@ async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_
             assert!(frames.contains("on-request"));
         }
     }
+}
+#[tokio::test]
+async fn claude_resumed_model_totals_charge_each_turn_and_subagent_once() {
+    for mode in ["cumulative", "mixed_usage"] {
+        let mut f = Fixture::new(Kind::Claude, mode, ToolPolicy::Deny);
+        for call in ["first", "second", "third"] {
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, _) = codex::approval_queue(1).unwrap();
+            let reply = process
+                .session
+                .run_with_started(
+                    &mut f.ledger,
+                    "@owner:test",
+                    &f.scope,
+                    call,
+                    call,
+                    "hello",
+                    BudgetMode::Estimated { reservation: 100 },
+                    &queue,
+                    None,
+                )
+                .await
+                .unwrap();
+            if mode == "mixed_usage" && call == "second" {
+                // Earlier main-loop usage is not a whole-session baseline.
+                assert!(!reply.usage.is_reported());
+            } else {
+                assert!(reply.usage.is_reported());
+                assert_eq!(
+                    reply.usage.input + reply.usage.output,
+                    if mode == "mixed_usage" && call == "first" {
+                        24
+                    } else {
+                        54
+                    }
+                );
+            }
+            process.stop().await.unwrap();
+            f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
+        }
+        assert_eq!(
+            f.spent(),
+            if mode == "cumulative" {
+                (162, 0)
+            } else {
+                (78, 100)
+            }
+        );
+    }
+}
+#[tokio::test]
+async fn claude_background_usage_is_settled_on_its_original_call_before_resume() {
+    let mut f = Fixture::new(Kind::Claude, "background_usage", ToolPolicy::Deny);
+    for (call, spent) in [("first", 64), ("second", 128)] {
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, _) = codex::approval_queue(1).unwrap();
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            process.session.run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                call,
+                call,
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.text, "offline reply");
+        assert_eq!(reply.usage.input + reply.usage.output, 64);
+        assert!(f.path("background-completed").exists());
+        assert_eq!(f.spent(), (spent, 0));
+        process.stop().await.unwrap();
+        f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
+    }
+    let frames = fs::read_to_string(f.path("frames")).unwrap();
+    assert_eq!(
+        frames
+            .lines()
+            .filter(|line| line.contains("/usage"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn claude_background_invalid_snapshot_keeps_the_answer_and_unknown_hold() {
+    for mode in ["background_wrong_snapshot", "background_regressing", "background_snapshot_eof"] {
+        let mut f = Fixture::new(Kind::Claude, mode, ToolPolicy::Deny);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, _) = codex::approval_queue(1).unwrap();
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            process.session.run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "first",
+                "dispatch",
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        let reply = reply.unwrap();
+        assert_eq!(reply.text, "offline reply");
+        assert!(!reply.usage.is_reported());
+        assert_eq!(f.spent(), (0, 100));
+        assert_eq!(
+            f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
+            "unknown"
+        );
+        process.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn claude_background_tools_after_main_reply_still_wait_for_the_owner() {
+    for allow in [false, true] {
+        let mut f = Fixture::new(Kind::Claude, "background_approval", ToolPolicy::AskOwner);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut ui) = codex::approval_queue(1).unwrap();
+        let effect = f.path("child-effect");
+        let expected_scope = f.scope.clone();
+        let owner = async {
+            let pending = tokio::time::timeout(std::time::Duration::from_secs(5), ui.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!effect.exists());
+            assert_eq!(pending.proposal.scope, expected_scope);
+            assert_eq!(pending.proposal.tool, "claude.Bash");
+            pending.decide(allow);
+        };
+        let turn = process.session.run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            "first",
+            "dispatch",
+            "hello",
+            BudgetMode::Estimated { reservation: 100 },
+            &queue,
+            None,
+        );
+        let (reply, ()) = tokio::join!(turn, owner);
+        assert_eq!(reply.unwrap().text, "offline reply");
+        assert_eq!(effect.exists(), allow);
+        assert_eq!(f.spent(), (64, 0));
+        process.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn claude_resumed_counters_cannot_go_backwards_or_release_a_hold() {
+    let mut f = Fixture::new(Kind::Claude, "regressing_usage", ToolPolicy::Deny);
+    for call in ["first", "second"] {
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, _) = codex::approval_queue(1).unwrap();
+        let result = process
+            .session
+            .run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                call,
+                call,
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            )
+            .await;
+        if call == "first" {
+            result.unwrap();
+        } else {
+            assert!(matches!(result, Err(Error::Unknown)));
+        }
+        process.stop().await.unwrap();
+    }
+    assert_eq!(f.spent(), (54, 100));
+    assert_eq!(
+        f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
+        "unknown"
+    );
 }
 #[tokio::test]
 async fn octos_turn_usage_followed_by_session_usage_never_charges_previous_turn_twice() {
@@ -339,7 +564,7 @@ async fn cancelled_callbacks_do_not_send_late_verdicts_or_lose_terminal_usage() 
     }
 }
 #[tokio::test]
-async fn missing_usage_is_zero_and_failed_known_usage_is_charged() {
+async fn missing_usage_stays_unknown_and_failed_known_usage_is_charged() {
     for kind in [Kind::Claude, Kind::Octos] {
         for mode in ["unknown", "failed"] {
             let mut f = Fixture::new(kind, mode, ToolPolicy::Deny);
@@ -368,7 +593,8 @@ async fn missing_usage_is_zero_and_failed_known_usage_is_charged() {
                 let completed = result.unwrap();
                 assert_eq!(completed.usage.input, 0);
                 assert_eq!(completed.usage.output, 0);
-                assert_eq!(f.spent(), (0, 0));
+                assert!(!completed.usage.is_reported());
+                assert_eq!(f.spent(), (0, 100));
                 assert_eq!(
                     f.ledger
                         .reserve(&f.scope, "new-call", "new-dispatch", 100, now())
@@ -390,7 +616,7 @@ async fn missing_usage_is_zero_and_failed_known_usage_is_charged() {
     }
 }
 #[tokio::test]
-async fn cancelling_running_model_releases_usage_before_process_stop() {
+async fn cancelling_running_model_keeps_unknown_usage_after_process_stop() {
     for kind in [Kind::Claude, Kind::Octos] {
         let mut f = Fixture::new(kind, "hold", ToolPolicy::AskOwner);
         let mut process = f.process().await;
@@ -415,15 +641,27 @@ async fn cancelling_running_model_releases_usage_before_process_stop() {
             tokio::pin!(turn);
             tokio::select! {pending=ui.recv()=>assert!(pending.is_some()),result=&mut turn=>panic!("unexpected result: {result:?}")};
         }
-        assert!(
-            f.ledger
-                .outstanding_calls("@owner:test")
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
+            "unknown"
         );
-        assert_eq!(f.spent(), (0, 0));
+        assert_eq!(f.spent(), (0, 100));
         process.stop().await.unwrap();
         assert!(!f.path("effect").exists());
+        if kind == Kind::Claude {
+            // Even a first turn interrupted during approval keeps its native
+            // conversation, while its original call remains unrepeatable.
+            f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
+            let mut next = f.process().await;
+            let argv = fs::read_to_string(f.path("argv")).unwrap();
+            let last: Vec<String> = serde_json::from_str(argv.lines().last().unwrap()).unwrap();
+            assert!(
+                last.windows(2)
+                    .any(|pair| pair == ["--resume", "offline-session"])
+            );
+            next.stop().await.unwrap();
+            assert_eq!(f.spent(), (0, 100));
+        }
     }
 }
 #[tokio::test]
@@ -458,6 +696,54 @@ async fn different_room_or_requester_never_resumes_another_context() {
     let invocations = fs::read_to_string(f.path("argv")).unwrap();
     let last: Vec<String> = serde_json::from_str(invocations.lines().last().unwrap()).unwrap();
     assert!(!last.contains(&"--resume".to_owned()));
+}
+
+#[tokio::test]
+async fn native_claude_extension_tools_require_the_same_exact_owner_decision() {
+    for tool in ["Agent", "Skill", "WebFetch", "mcp__owner_server__publish"] {
+        for allow in [false, true] {
+            let mut f = Fixture::new(
+                Kind::Claude,
+                &format!("approval:{tool}"),
+                ToolPolicy::AskOwner,
+            );
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, mut ui) = codex::approval_queue(1).unwrap();
+            let expected_scope = f.scope.clone();
+            let effect = f.path("effect");
+            let owner = async {
+                let pending = tokio::time::timeout(std::time::Duration::from_secs(15), ui.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(pending.proposal.scope, expected_scope);
+                assert_eq!(pending.proposal.tool, format!("claude.{tool}"));
+                assert!(!effect.exists());
+                pending.decide(allow);
+            };
+            let turn = process.session.run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "call",
+                "dispatch",
+                "use the configured native tool",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            );
+            let (result, ()) = tokio::join!(turn, owner);
+            assert_eq!(result.unwrap().tool_requests, 1);
+            assert_eq!(f.path("effect").exists(), allow);
+            assert_eq!(f.spent(), (24, 0));
+            process.stop().await.unwrap();
+        }
+    }
 }
 #[test]
 fn octos_profile_model_or_provider_changes_invalidate_saved_reference() {

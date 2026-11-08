@@ -75,6 +75,7 @@ fn card(digit: char, trigger: &str, questions: Vec<CardQuestion>, withheld: u64)
         thread_root: trigger.into(),
         expires_at_ms: now_ms() + 600_000,
         questions,
+        responders: Vec::new(),
         withheld,
         state: CardState::Pending,
         answered_by: None,
@@ -94,10 +95,11 @@ fn database() -> CardQuestion {
             option("SQLite", "Simplest to run on one machine."),
         ],
         other: true,
+        multi_select: false,
     }
 }
 fn fixtures() {
-    pending_questions::forget_identity();
+    pending_questions::review_identity("@alice:example.invalid");
     let several = card(
         'b',
         "$trigger_several",
@@ -112,6 +114,7 @@ fn fixtures() {
                     option("Python", ""),
                 ],
                 other: false,
+                multi_select: false,
             },
             CardQuestion {
                 id: "cadence".into(),
@@ -119,6 +122,7 @@ fn fixtures() {
                 question: "How often should the report run?".into(),
                 options: Vec::new(),
                 other: true,
+                multi_select: false,
             },
         ],
         1,
@@ -172,6 +176,19 @@ fn fixtures() {
         AGENT,
         expired.expired(),
     );
+}
+
+fn scoped_fixture(other_member: bool) {
+    pending_questions::review_identity(if other_member {"@other:example.invalid"}else{"@alice:example.invalid"});
+    let questions=(0..4).map(|index| CardQuestion {
+        id:format!("q{index}"),header:String::new(),question:format!("Native question {index}?"),
+        options:vec![option(&format!("Q{index} A"),""),option(&format!("Q{index} B"),"")],
+        other:false,multi_select:index==0,
+    }).collect();
+    let mut card=card('e',"$trigger_single",questions,0);
+    card.version=hagency::agent_questions::SCOPED_VERSION;
+    card.responders=vec!["@alice:example.invalid".into()];
+    pending_questions::posted("!room:example.invalid","$card_single",AGENT,"小黄瓜",now_ms(),card);
 }
 
 #[derive(Script, ScriptHook)]
@@ -246,6 +263,12 @@ impl AppMain for App {
                     fixtures();
                     self.requests.clear();
                     self.shown = vec!["single".into(), "several".into()];
+                    self.render(cx);
+                }
+                "question:multi" | "question:scoped-other" => {
+                    scoped_fixture(command == "question:scoped-other");
+                    self.requests.clear();
+                    self.shown=vec!["single".into()];
                     self.render(cx);
                 }
                 "question:inspect" => self.report(),

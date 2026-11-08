@@ -34,6 +34,12 @@ impl UsageDiagnostics {
 #[derive(Clone, PartialEq, Eq)]
 pub struct UsageBreakdown([Option<u64>; 6]);
 impl UsageBreakdown {
+    /// Strict wire decoding only; these values establish no execution authority.
+    pub fn from_native(value: &Value) -> Option<Self> {
+        let mut diagnostics = UsageDiagnostics::default();
+        let result = breakdown(Some(value), &mut diagnostics);
+        (!diagnostics.missing && !diagnostics.invalid && !diagnostics.unsupported).then_some(result)
+    }
     pub fn total_tokens(&self) -> Option<u64> {
         self.0[0]
     }
@@ -63,7 +69,93 @@ pub struct UsageEvidence {
     context_window: Option<u64>,
     diagnostics: UsageDiagnostics,
 }
+
+/// Native context occupancy for paging input. Deliberately separate from
+/// chargeable response receipts: fork/resume history is not this call's bill.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContextUsage {
+    thread: String,
+    turn: String,
+    root: bool,
+    window: u64,
+    used: u64,
+    // Native cumulative counters identify a new sample, including compaction.
+    // Replaying the same sample must not restore already-spent input space.
+    sample: UsageBreakdown,
+}
+impl ContextUsage {
+    pub fn thread_id(&self) -> &str {
+        &self.thread
+    }
+    pub fn turn_id(&self) -> &str {
+        &self.turn
+    }
+    pub fn is_root(&self) -> bool {
+        self.root
+    }
+    pub fn window(&self) -> u64 {
+        self.window
+    }
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+    pub(super) fn project(params: &Value, root: bool) -> Option<Self> {
+        let usage = project(params);
+        let diagnostics = usage.diagnostics();
+        if diagnostics.has_invalid_fields()
+            || diagnostics.has_missing_fields()
+            || diagnostics.has_unsupported_fields()
+        {
+            return None;
+        }
+        let window = usage.model_context_window().filter(|window| *window > 0)?;
+        let used = usage.last().total_tokens()?;
+        if usage
+            .last()
+            .input_tokens()?
+            .checked_add(usage.last().output_tokens()?)
+            != Some(used)
+        {
+            return None;
+        }
+        Some(Self {
+            thread: params["threadId"].as_str()?.into(),
+            turn: params["turnId"].as_str()?.into(),
+            root,
+            window,
+            used,
+            sample: usage.total,
+        })
+    }
+}
 impl UsageEvidence {
+    pub(super) fn responses(
+        values: Option<(
+            crate::codex::tree::ResponseTotals,
+            crate::codex::tree::ResponseTotals,
+        )>,
+    ) -> Self {
+        let b = |value: Option<crate::codex::tree::ResponseTotals>| match value {
+            Some(v) => UsageBreakdown([
+                v.input.checked_add(v.output),
+                Some(v.input),
+                Some(v.cached_input),
+                Some(v.cache_write_input),
+                Some(v.output),
+                Some(v.reasoning_output),
+            ]),
+            None => UsageBreakdown([None; 6]),
+        };
+        Self {
+            total: b(values.map(|v| v.0)),
+            last: b(values.map(|v| v.1)),
+            context_window: None,
+            diagnostics: UsageDiagnostics {
+                missing: values.is_none(),
+                ..UsageDiagnostics::default()
+            },
+        }
+    }
     pub fn total(&self) -> &UsageBreakdown {
         &self.total
     }

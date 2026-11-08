@@ -2,19 +2,15 @@
 //! The host fixes the room/workspace; the model supplies only event IDs and paths.
 use super::*;
 use crate::console::owned_runtime::e2ee::{AgentDevice, RoomFile};
-use hagency_runtime::{codex::session::RoomFileOperation, owned::OwnedSession};
+use hagency_runtime::{room_tools::RoomFileOperation, owned::OwnedSession};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 mod storage;
 #[cfg(test)]
 pub(super) mod tests;
 use storage::{ReceiveRecord, SendRecord, Store, Workspace};
-const MAX_TRANSFERS: usize = 16;
 const MAX_BYTES: usize = crate::documents::MAX_FILE_BYTES;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
 type Result<T> = std::result::Result<T, &'static str>;
@@ -106,7 +102,6 @@ pub(super) struct Files<S = Source> {
     scope: String,
     workspace: Workspace,
     store: Store,
-    transfers: HashSet<String>,
     transfer_timeout: Duration,
 }
 impl Files {
@@ -171,7 +166,6 @@ impl<S: FileIo> Files<S> {
             scope,
             workspace: Workspace::open(workspace)?,
             store: Store::open(records)?,
-            transfers: HashSet::new(),
             transfer_timeout: TRANSFER_TIMEOUT,
         })
     }
@@ -202,13 +196,6 @@ impl<S: FileIo> Files<S> {
             Err(error) => json!({"error":error}).to_string(),
         }
     }
-    fn admit(&mut self, id: &str) -> Result<()> {
-        if !self.transfers.contains(id) && self.transfers.len() >= MAX_TRANSFERS {
-            return Err("file_transfer_limit");
-        }
-        self.transfers.insert(id.into());
-        Ok(())
-    }
     async fn receive(&mut self, event: &str) -> Result<Value> {
         tokio::time::timeout(self.transfer_timeout, self.receive_inner(event))
             .await
@@ -216,7 +203,6 @@ impl<S: FileIo> Files<S> {
     }
     async fn receive_inner(&mut self, event: &str) -> Result<Value> {
         let id = format!("receive_{}", sha(format!("{}|{event}", self.scope)));
-        self.admit(&id)?;
         if let Some(saved) = self.store.read::<ReceiveRecord>(&id)? {
             return self.workspace.receive_receipt(&saved);
         }
@@ -298,7 +284,6 @@ impl<S: FileIo> Files<S> {
             return Err("file_filename_refused");
         }
         let id = self.send_id(call_id);
-        self.admit(&id)?;
         let selection_digest =
             sha(serde_json::to_vec(operation).map_err(|_| "invalid_file_arguments")?);
         let mut saved = match self.store.read::<SendRecord>(&id)? {

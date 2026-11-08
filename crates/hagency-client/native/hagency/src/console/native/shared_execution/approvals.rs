@@ -165,6 +165,7 @@ impl Approvals {
         process: &mut OwnedSession,
         capture: &mut SharedCallSink,
         usage: &mut crate::console::native::telemetry::TurnTelemetry,
+        mut history_reader: Option<&mut super::history::Reader>,
     ) -> Result<Option<SharedWorkReceipt>, NativeError> {
         let mut i = 0;
         while i < self.pending.len() {
@@ -279,6 +280,7 @@ impl Approvals {
                         let file = event.room_file_call().cloned();
                         let question = event.user_input().cloned();
                         let withdrawn = event.user_input_resolved().cloned();
+                        let context = event.observation().context_usage().cloned();
                         let ended =
                             matches!(event.observation().kind(), ObservationKind::TurnEnded(_));
                         let pending = usage.pending(&event);
@@ -288,6 +290,9 @@ impl Approvals {
                         })?;
                         usage.accept(pending);
                         usage.quota(process);
+                        if let (Some(reader), Some(context)) = (history_reader.as_mut(), context.as_ref()) {
+                            reader.observe_context(context);
+                        }
                         if ended {
                             return Ok(Some(receipt.ok_or_else(invalid)?));
                         }

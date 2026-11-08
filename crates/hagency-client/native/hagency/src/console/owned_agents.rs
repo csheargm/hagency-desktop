@@ -1145,7 +1145,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     .status(host, &agent)
                     .await
                     .map_err(runtime_error)?;
-                return Ok(json!({"runtime":state,"nativeTools":false,"strictTokenCap":false}));
+                let native_tools = state.as_ref().is_some_and(|status| status.native_tools);
+                return Ok(json!({"runtime":state,"nativeTools":native_tools,"strictTokenCap":false}));
             }
             if parts.len() == 3 && parts[2] == "approvals" && method == Method::GET {
                 let approvals = host
@@ -1281,7 +1282,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     )
                     .await
                     .map_err(runtime_error)?;
-                return Ok(json!({"runtime":state,"nativeTools":false,"strictTokenCap":false}));
+                let native_tools = state.native_tools;
+                return Ok(json!({"runtime":state,"nativeTools":native_tools,"strictTokenCap":false}));
             }
             return Err(error(404, "not_found"));
         }

@@ -21,6 +21,13 @@ fn main() -> io::Result<()> {
     };
     let mode = mode.to_string_lossy();
     let root = Path::new(root);
+    let overrides = if overrides.starts_with(&[
+        "app-server".into(), "--listen".into(), "stdio://".into(),
+    ]) {
+        &overrides[3..]
+    } else {
+        overrides
+    };
     fs::write(root.join("process-id"), std::process::id().to_string())?;
     let mut quota = 0;
     let mut history = history_probe::Probe::default();
@@ -35,7 +42,7 @@ fn main() -> io::Result<()> {
             files.response(root,&v)?;
             continue;
         }
-        if mode == "text-room-history-usage" && v.get("method").is_none() {
+        if mode.starts_with("text-room-history") && v.get("method").is_none() {
             history.response(root, &v)?;
             continue;
         }
@@ -55,7 +62,7 @@ fn main() -> io::Result<()> {
         }
         if (mode.starts_with("text-workspace")
             || mode.starts_with("text-question")
-            || mode == "text-room-history-usage")
+            || mode.starts_with("text-room-history"))
             && matches!(method, "thread/start" | "turn/start")
         {
             let name = if method == "thread/start" {
@@ -65,7 +72,7 @@ fn main() -> io::Result<()> {
             };
             fs::write(root.join(name), serde_json::to_vec(&v["params"])?)?;
         }
-        if mode == "text-room-history-usage"
+        if mode.starts_with("text-room-history")
             && method == "thread/start"
             && v["params"]["dynamicTools"][0]["name"] != "read_room_history"
         {
@@ -133,7 +140,8 @@ fn main() -> io::Result<()> {
                         ["mcp_servers", name, "enabled"] if value == "false" => {
                             config["mcp_servers"][*name]["enabled"] = false.into()
                         }
-                        ["web_search" | "model_instructions_file"] => {
+                        ["web_search" | "model_instructions_file" | "model_provider"
+                            | "chatgpt_base_url" | "cli_auth_credentials_store"] => {
                             let value: String =
                                 serde_json::from_str(value).map_err(io::Error::other)?;
                             config[key] = value.into();
@@ -208,8 +216,8 @@ fn main() -> io::Result<()> {
                 files.begin()?;
                 continue;
             }
-            if mode == "text-room-history-usage" {
-                history.begin()?;
+            if mode.starts_with("text-room-history") {
+                history.begin(mode == "text-room-history-context-usage")?;
                 continue;
             }
             if mode.starts_with("text-question") {
@@ -301,6 +309,14 @@ fn main() -> io::Result<()> {
             } else {
                 "Offline answer.".into()
             };
+            if mode.starts_with("text-tree-") {
+                let usage = json!({"totalTokens":14,"inputTokens":10,"cachedInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1});
+                for _ in 0..2 {
+                    println!("{}", json!({"method":"rawResponse/completed","params":{"threadId":"text-thread","turnId":"text-turn","responseId":"root-response","usage":usage}}));
+                }
+                println!("{}", json!({"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn","rootTurnId":"text-turn","status":"inProgress","items":[]}}}));
+                println!("{}", json!({"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"child-turn","tokenUsage":{"total":{"totalTokens":99999}}}}));
+            }
             if matches!(
                 &*mode,
                 "text-workspace-standard-usage"
@@ -391,6 +407,17 @@ fn main() -> io::Result<()> {
                 "{}",
                 json!({"method":"turn/completed","params":{"threadId":"text-thread","turn":{"id":"text-turn","status":"completed","items":[]}}})
             );
+            if mode.starts_with("text-tree-") {
+                if mode == "text-tree-eof" {
+                    io::stdout().flush()?;
+                    return Ok(());
+                }
+                if mode == "text-tree-measured" {
+                    let usage = json!({"totalTokens":14,"inputTokens":10,"cachedInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1});
+                    println!("{}", json!({"method":"rawResponse/completed","params":{"threadId":"child-thread","turnId":"child-turn","responseId":"child-response","usage":usage}}));
+                }
+                println!("{}", json!({"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","rootTurnId":"text-turn","status":"completed","items":[]}}}));
+            }
         }
         io::stdout().flush()?;
     }

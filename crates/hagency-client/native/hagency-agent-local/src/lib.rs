@@ -4,6 +4,7 @@
 //! a retry which can charge again requires a fresh call ID under the original requester.
 pub mod codex;
 pub mod inbox;
+pub mod questions;
 pub mod reconciliation;
 #[cfg(unix)]
 pub mod room_files;
@@ -41,8 +42,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 const APP_ID: i64 = 0x48414c32;
 const MAX: u64 = 9_007_199_254_740_991;
 const UNREPORTED_ZERO: &str = "unreported-zero-v1";
+const UNREPORTED_USAGE: &str = "unreported-v2";
 
-/// Missing usage is charged as zero; this does not prove execution succeeded.
+/// Missing usage has no measured categories and cannot settle a reservation.
 fn unreported_usage() -> Usage {
     Usage {
         input: 0,
@@ -50,7 +52,7 @@ fn unreported_usage() -> Usage {
         cached_input: 0,
         cache_write_input: None,
         reasoning_output: 0,
-        accounting_version: UNREPORTED_ZERO.into(),
+        accounting_version: UNREPORTED_USAGE.into(),
     }
 }
 
@@ -168,20 +170,38 @@ pub struct Usage {
     pub accounting_version: String,
 }
 impl Usage {
+    pub fn is_reported(&self) -> bool {
+        !matches!(
+            self.accounting_version.as_str(),
+            UNREPORTED_ZERO | UNREPORTED_USAGE
+        )
+    }
     /// Provider-measured categories for analytics. Reservations and historical
     /// records without cache-write evidence must never become measured zeros.
     pub fn category_counts(&self) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
-        if self.accounting_version == UNREPORTED_ZERO {
+        if !self.is_reported() {
             return (None, None, None, None);
         }
-        let fresh = self.cache_write_input.and_then(|write|
-            self.input.checked_sub(self.cached_input)?.checked_sub(write));
-        (fresh, Some(self.cached_input), self.cache_write_input, Some(self.output))
+        let fresh = self.cache_write_input.and_then(|write| {
+            self.input
+                .checked_sub(self.cached_input)?
+                .checked_sub(write)
+        });
+        (
+            fresh,
+            Some(self.cached_input),
+            self.cache_write_input,
+            Some(self.output),
+        )
     }
     fn total(&self) -> Result<u64> {
         key(&self.accounting_version)?;
-        if self.cached_input > self.input || self.reasoning_output > self.output
-            || self.cache_write_input.is_some_and(|write| write > self.input - self.cached_input) {
+        if self.cached_input > self.input
+            || self.reasoning_output > self.output
+            || self
+                .cache_write_input
+                .is_some_and(|write| write > self.input - self.cached_input)
+        {
             return Err(Error::Invalid("usage subcategory exceeds total"));
         }
         bounded(
@@ -533,7 +553,6 @@ impl Ledger {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        settle_unreported_calls(&tx, Some(&scope.binding))?;
         let previous: Option<(String, String, Option<String>)> = tx
             .query_row(
                 "SELECT digest,state,usage FROM calls WHERE id=?",
@@ -707,7 +726,7 @@ impl Ledger {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         settle_transaction(&tx, scope, call, usage)?;
-        let counters = if usage.accounting_version == UNREPORTED_ZERO && counters.is_empty() {
+        let counters = if !usage.is_reported() && counters.is_empty() {
             "null"
         } else {
             counters
@@ -716,25 +735,73 @@ impl Ledger {
         tx.commit()?;
         Ok(())
     }
+    /// Retain the native session as soon as the admitted call observes its
+    /// identity. A crash before the result must not discard the conversation.
+    pub(crate) fn bind_external_session(
+        &mut self,
+        scope: &Scope,
+        call: &str,
+        profile: &str,
+        session: &str,
+        initial: &Usage,
+    ) -> Result<()> {
+        verify(&self.db, scope)?;
+        key(profile)?;
+        key(session)?;
+        let context = scope.context_key(&self.owner)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM calls WHERE id=? AND scope=? AND state='pending')",
+            (call, json(scope)?),
+            |r| r.get(0),
+        )?;
+        if !active {
+            return Err(Error::Unauthorized);
+        }
+        let prior: Option<String> = tx
+            .query_row(
+                "SELECT session FROM external_sessions WHERE scope=? AND profile=?",
+                (&context, profile),
+                |r| r.get(0),
+            )
+            .optional()?;
+        if prior.as_deref().is_some_and(|id| id != session) {
+            return Err(Error::Conflict);
+        }
+        tx.execute(
+            "INSERT INTO external_sessions VALUES (?,?,?,?) ON CONFLICT(scope,profile) DO NOTHING",
+            (&context, profile, session, json(initial)?),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn mark_unknown(&mut self, scope: &Scope, call: &str) -> Result<()> {
         verify(&self.db, scope)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        settle_transaction(&tx, scope, call, &unreported_usage())?;
-        mark_usage_gap(&tx, scope, &self.owner)?;
+        let pending = tx.query_row(
+            "SELECT state!='settled' FROM calls WHERE id=? AND scope=?",
+            (call, json(scope)?),
+            |r| r.get::<_, bool>(0),
+        )?;
+        if pending {
+            settle_transaction(&tx, scope, call, &unreported_usage())?;
+            mark_usage_gap(&tx, scope, &self.owner)?;
+        }
         tx.commit()?;
         Ok(())
     }
-    /// Exclusive execution-device restart: release interrupted estimates as zero.
-    /// Original execution records remain unknown and cannot be replayed.
+    /// Exclusive execution-device restart: keep interrupted usage unresolved.
+    /// Estimates remain held until a measured or explicitly reconciled receipt.
     pub fn recover_interrupted(&mut self, owner: &str) -> Result<usize> {
         self.owner(owner)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = tx.execute("UPDATE calls SET state='unknown' WHERE state='pending'", [])?;
-        settle_unreported_calls(&tx, None)?;
+        let changed = recover_pending_calls(&tx, owner, None)?;
         tx.commit()?;
         Ok(changed)
     }
@@ -1014,22 +1081,22 @@ impl Ledger {
         Ok(())
     }
 }
-/// Runs in the same transaction as recovery/admission, so concurrent requests
-/// cannot release the same historical reservation twice.
-fn settle_unreported_calls(tx: &rusqlite::Transaction, binding: Option<&str>) -> Result<()> {
-    let calls = tx
-        .prepare("SELECT id,scope FROM calls WHERE state='unknown' AND (? IS NULL OR binding=?)")?
-        .query_map((binding, binding), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
+fn recover_pending_calls(
+    tx: &rusqlite::Transaction,
+    owner: &str,
+    binding: Option<&str>,
+) -> Result<usize> {
+    let interrupted = tx
+        .prepare("SELECT scope FROM calls WHERE state='pending' AND (? IS NULL OR binding=?)")?
+        .query_map((binding, binding), |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let owner: String = tx.query_row("SELECT owner FROM identity", [], |r| r.get(0))?;
-    for (call, encoded) in calls {
-        let scope: Scope = serde_json::from_str(&encoded)?;
-        settle_transaction(tx, &scope, &call, &unreported_usage())?;
-        mark_usage_gap(tx, &scope, &owner)?;
+    for encoded in &interrupted {
+        mark_usage_gap(tx, &serde_json::from_str(encoded)?, owner)?;
     }
-    Ok(())
+    Ok(tx.execute(
+        "UPDATE calls SET state='unknown' WHERE state='pending' AND (? IS NULL OR binding=?)",
+        (binding, binding),
+    )?)
 }
 
 // Preserve conversation history, while marking cumulative accounting as missing.
@@ -1069,11 +1136,23 @@ fn settle_transaction(
     if stored != json(scope)? {
         return Err(Error::Unauthorized);
     }
+    if !usage.is_reported() {
+        if state != "settled" {
+            tx.execute(
+                "UPDATE calls SET state='unknown',usage=NULL WHERE id=?",
+                [call],
+            )?;
+        }
+        return Ok(());
+    }
     if state == "settled" && old.as_deref() == Some(&json(usage)?) {
         return Ok(());
     }
     // A later genuine usage receipt may replace the provisional zero once.
-    let provisional_zero = old.as_deref() == Some(&json(&unreported_usage())?);
+    let provisional_zero = old
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Usage>(s).ok())
+        .is_some_and(|u| u.accounting_version == UNREPORTED_ZERO);
     if state == "settled" && !provisional_zero {
         return Err(Error::Conflict);
     }
@@ -1169,6 +1248,12 @@ fn validate_tool(db: &Connection, proposal: &ToolProposal, now: i64) -> Result<P
                 }
             }
         }
+    }
+    // A tool/directory rule is not a grant of broader native permissions.
+    // These callbacks must consume the owner's exact one-use decision even
+    // when ordinary calls to that tool are allowed by a saved rule.
+    if proposal.risk == "permission_expansion" {
+        effective.high_risk = ToolPolicy::AskOwner;
     }
     Ok(effective)
 }

@@ -3,6 +3,59 @@ use hagency_runtime::claude::{
     PARTIAL_FRAME_MS,
 };
 use serde_json::{Value, json};
+
+#[test]
+fn interactive_profile_loads_native_capabilities_and_routes_all_tools_to_host() {
+    let args = claude::interactive_arguments("sonnet", "xhigh").unwrap();
+    assert!(args.iter().any(|arg| arg == "--include-partial-messages"));
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--permission-prompt-tool", "stdio"])
+    );
+    let settings: Value =
+        serde_json::from_str(&args[args.iter().position(|arg| arg == "--settings").unwrap() + 1])
+            .unwrap();
+    assert_eq!(settings["permissions"]["ask"], json!(["*"]));
+    assert_eq!(settings["sandbox"]["autoAllowBashIfSandboxed"], false);
+    assert!(settings.get("disableAllHooks").is_none());
+    for restricted in [
+        "--tools",
+        "--allowedTools",
+        "--disallowedTools",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "--setting-sources",
+        "--disable-slash-commands",
+        "--no-chrome",
+        "--no-session-persistence",
+        "--dangerously-skip-permissions",
+    ] {
+        assert!(!args.iter().any(|arg| arg == restricted), "{restricted}");
+    }
+    assert!(claude::interactive_arguments("sonnet", "--dangerously-skip-permissions").is_err());
+}
+#[test]
+fn native_model_aliases_context_suffixes_and_provider_ids_are_single_arguments() {
+    for model in [
+        "sonnet[1m]",
+        "opus[1m]",
+        "opusplan",
+        "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0",
+        "claude-sonnet-4-6@20260217",
+    ] {
+        for args in [
+            claude::interactive_arguments(model, "medium").unwrap(),
+            claude::task_arguments(model, true).unwrap(),
+        ] {
+            assert_eq!(
+                args.iter()
+                    .filter(|arg| arg.starts_with("--model="))
+                    .collect::<Vec<_>>(),
+                vec![&format!("--model={model}")]
+            );
+        }
+    }
+}
 fn line(value: Value) -> Vec<u8> {
     let mut bytes = serde_json::to_vec(&value).unwrap();
     bytes.push(b'\n');

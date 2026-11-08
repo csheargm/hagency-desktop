@@ -22,6 +22,8 @@ use hagency_core::{approvals::*, replies::*, tasks::*};
 use hagency_store::{DomainRepository, DomainStore, EffectOutcome, Error};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+#[path = "approvals/owned_tree.rs"]
+mod owned_tree;
 
 struct Fixture {
     root: tempfile::TempDir,

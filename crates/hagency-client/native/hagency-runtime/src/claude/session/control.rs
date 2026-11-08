@@ -1,7 +1,13 @@
 //! Wire mechanics only. Original durable owner grants remain the Host's duty.
 use super::{Error, Message, Operation, Phase, SessionDriver, WriteProgress, io};
+use crate::deadline::Deadline;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::Instant,
@@ -53,6 +59,7 @@ enum Stage {
 }
 struct Callback {
     stage: Stage,
+    tool: String,
     input: Option<Value>,
     owner: Option<Instant>,
     response: Option<Instant>,
@@ -60,13 +67,31 @@ struct Callback {
 #[derive(Default)]
 pub(super) struct State {
     policy: Option<ApprovalControlPolicy>,
+    question_wait_ms: Option<u64>,
     entries: BTreeMap<String, Callback>,
-    read_deadline: Option<Instant>,
+    seen: BTreeSet<String>,
+    read_deadline: Option<Deadline>,
     sequence: u64,
 }
 impl State {
+    pub(super) fn seen(&self, id: &str) -> bool {
+        self.seen.contains(id)
+    }
+    pub(super) fn next_sequence(&mut self) -> Result<u64, Error> {
+        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
+        Ok(self.sequence)
+    }
+    pub(super) fn untouched(&self) -> bool {
+        self.policy.is_none() && self.entries.is_empty() && self.seen.is_empty()
+    }
+    pub(super) fn quiescent(&self) -> bool {
+        self.entries
+            .values()
+            .all(|entry| matches!(entry.stage, Stage::Sent | Stage::Cancelled))
+    }
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.seen.clear();
     }
     pub fn observed(&mut self) {
         self.read_deadline = None;
@@ -78,15 +103,24 @@ impl State {
         wire: &io::Wire<R, W, E>,
     ) -> Result<(), Error> {
         let Message::Permission {
-            request_id, input, ..
+            request_id,
+            tool_name,
+            input,
+            ..
         } = message
         else {
             return Err(Error::State);
         };
-        if self.entries.contains_key(request_id) {
+        if self.seen.contains(request_id) {
             return Err(Error::Identity);
         }
-        if self.entries.len() >= MAX_CALLBACKS {
+        // Bound concurrent waits, not the number of tools in a long native
+        // turn. Retain only IDs for replay detection once a callback is done.
+        self.entries
+            .retain(|_, callback| matches!(callback.stage, Stage::Waiting | Stage::Prepared(_)));
+        if self.entries.len() >= MAX_CALLBACKS
+            || self.seen.len() >= super::MAX_OBSERVATIONS as usize
+        {
             return Err(Error::Capacity);
         }
         let (input, owner, response) = if let Some(policy) = self.policy {
@@ -101,17 +135,23 @@ impl State {
             }
             let (owner, response) = wire.permission_deadlines(
                 received,
-                policy.owner_wait_ms,
+                if tool_name == super::questions::TOOL {
+                    self.question_wait_ms.unwrap_or(policy.owner_wait_ms)
+                } else {
+                    policy.owner_wait_ms
+                },
                 policy.response_reserve_ms,
             )?;
             (Some(input.clone()), Some(owner), Some(response))
         } else {
             (None, None, None)
         };
+        self.seen.insert(request_id.clone());
         self.entries.insert(
             request_id.clone(),
             Callback {
                 stage: Stage::Waiting,
+                tool: tool_name.clone(),
                 input,
                 owner,
                 response,
@@ -128,9 +168,9 @@ impl State {
         callback.input = None;
         Ok(())
     }
-    pub fn deadline<R, W, E>(&mut self, wire: &io::Wire<R, W, E>) -> Result<Instant, Error> {
+    pub fn deadline<R, W, E>(&mut self, wire: &io::Wire<R, W, E>) -> Result<Deadline, Error> {
         if self.policy.is_none() {
-            return Ok(wire.event_deadline());
+            return Ok(wire.activity_deadline());
         }
         let until = self
             .entries
@@ -141,18 +181,28 @@ impl State {
                 Stage::Sent | Stage::Cancelled => None,
             })
             .min()
+            .map(Deadline::from)
             .unwrap_or_else(|| {
                 *self
                     .read_deadline
-                    .get_or_insert_with(|| wire.event_deadline())
+                    .get_or_insert_with(|| wire.activity_deadline())
             });
-        if Instant::now() >= until {
+        if until.expired() {
             return Err(Error::Timeout);
         }
         Ok(until)
     }
 }
 impl<R, W, E> SessionDriver<R, W, E> {
+    /// The host's ordinary-question wait may differ from owner approval time.
+    /// It does not extend the connection's admitted lifetime.
+    pub fn set_question_wait(&mut self, wait_ms: u64) -> Result<(), Error> {
+        if !self.control.entries.is_empty() || wait_ms == 0 {
+            return Err(Error::State);
+        }
+        self.control.question_wait_ms = Some(wait_ms);
+        Ok(())
+    }
     /// Explicit host opt-in after original stream identity binding and before
     /// any callback is consumed. Does not authorize an allow or durable response.
     pub fn enable_approval_control(&mut self, policy: ApprovalControlPolicy) -> Result<(), Error> {
@@ -199,10 +249,49 @@ impl<R, W, E> SessionDriver<R, W, E> {
         id: &str,
         decision: PermissionDecision,
     ) -> Result<PreparedApproval, Error> {
+        self.prepare_response(id, |tool, input| match decision {
+            PermissionDecision::Allow if tool == super::questions::TOOL => Err(Error::PermissionUnavailable),
+            PermissionDecision::Allow => Ok(json!({"behavior":"allow","updatedInput":input})),
+            PermissionDecision::Deny => Ok(json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})),
+        })
+    }
+
+    /// A question is data from the original native callback. A similarly
+    /// shaped Bash/MCP input can never enter the question channel.
+    pub fn question(&self, id: &str) -> Result<Vec<crate::questions::Question>, Error> {
+        let callback = self.control.entries.get(id).ok_or(Error::Identity)?;
+        if callback.tool != super::questions::TOOL || !matches!(callback.stage, Stage::Waiting) {
+            return Err(Error::PermissionUnavailable);
+        }
+        super::questions::parse(callback.input.as_ref().ok_or(Error::State)?)
+    }
+
+    /// Answers replace only the original AskUserQuestion answers. This API
+    /// cannot change a tool's input or grant any ordinary tool permission.
+    pub fn prepare_question(
+        &mut self,
+        id: &str,
+        answers: &crate::questions::Answers,
+    ) -> Result<PreparedApproval, Error> {
+        let operation = Operation::new(self, Phase::Running)?;
+        let result = operation.driver.prepare_response(id, |tool, input| {
+            if tool != super::questions::TOOL {
+                return Err(Error::PermissionUnavailable);
+            }
+            super::questions::response(input, answers)
+        });
+        operation.finish(result)
+    }
+
+    fn prepare_response(
+        &mut self,
+        id: &str,
+        response: impl FnOnce(&str, Value) -> Result<Value, Error>,
+    ) -> Result<PreparedApproval, Error> {
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
-        let until = self.control.deadline(&self.wire)?;
+        let until = self.callback_deadline()?;
         self.wire.check(until)?;
         let callback = self.control.entries.get_mut(id).ok_or(Error::Identity)?;
         if !matches!(callback.stage, Stage::Waiting) {
@@ -212,12 +301,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             return Err(Error::Timeout);
         }
         let input = callback.input.take().ok_or(Error::State)?;
-        let response = match decision {
-            PermissionDecision::Allow => json!({"behavior":"allow","updatedInput":input}),
-            PermissionDecision::Deny => {
-                json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})
-            }
-        };
+        let response = response(&callback.tool, input)?;
         let bytes = crate::claude::encode(json!({"type":"control_response","response":{
             "subtype":"success","request_id":id,"response":response}}))?;
         let response_deadline = callback.response.ok_or(Error::State)?;
@@ -256,7 +340,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
-        let until = self.control.deadline(&self.wire)?;
+        let until = self.callback_deadline()?;
         match self.wire.next_or_control(control, until).await? {
             io::Controlled::Message(received) => {
                 self.observe(&received.message, received.at)?;
@@ -298,7 +382,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
-        let until = self.control.deadline(&self.wire)?;
+        let until = self.callback_deadline()?;
         self.wire.check(until)?;
         let callback = self
             .control
