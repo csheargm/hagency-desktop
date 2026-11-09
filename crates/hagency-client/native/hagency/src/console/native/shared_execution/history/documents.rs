@@ -185,6 +185,7 @@ mod tests {
             visited: HashSet::new(),
             records: Records::default(),
             documents: Documents::default(),
+            native_compaction: false,
             context_remaining: 0,
             last_usage: None, child_budgets: HashMap::new(),
         };

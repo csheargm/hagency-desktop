@@ -244,6 +244,9 @@ async fn work(
             super::history::Reader::new(&live.io, &b, &work).await
         })
         .await?;
+    if let Some(reader) = &mut history {
+        reader.use_native_compaction();
+    }
     let input = active
         .wait(cancel, async {
             let (b, p, state) = live.proof().await?;

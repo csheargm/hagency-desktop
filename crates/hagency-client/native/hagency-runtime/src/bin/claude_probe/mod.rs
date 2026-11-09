@@ -1,6 +1,7 @@
 //! Explicit offline peer mode; never invokes Claude or another provider.
 use serde_json::{Value, json};
 mod shared_session;
+mod shared_history;
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -34,6 +35,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "shared-result-exit"
             | "shared-wait"
             | "shared-session"
+            | "shared-history"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -66,9 +68,13 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         }
     }
     emit(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":initialization}}))?;
-    line.clear();
-    stdin.read_line(&mut line)?;
-    let prompt: Value = serde_json::from_str(&line)?;
+    let prompt: Value = if mode == "shared-history" {
+        shared_history::bind_and_prompt(&mut stdin)?
+    } else {
+        line.clear();
+        stdin.read_line(&mut line)?;
+        serde_json::from_str(&line)?
+    };
     if mode == "shared-session" {
         drop(stdin);
         return shared_session::run(marker, &prompt);
@@ -83,7 +89,10 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
     )?;
     emit(json!({"type":"system","subtype":"init","session_id":"owned-claude","user_message_uuid":prompt["uuid"]}))?;
     if mode.starts_with("shared-") {
-        if matches!(mode, "shared-usage" | "shared-result-exit") {
+        if mode == "shared-history" {
+            shared_history::read_all(&mut stdin, marker)?;
+        }
+        if matches!(mode, "shared-usage" | "shared-result-exit" | "shared-history") {
             emit(json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":false,"result":"shared offline answer","user_message_uuid":prompt["uuid"],"user_message_uuids":[prompt["uuid"]],"modelUsage":{"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}}}))?;
             if mode == "shared-result-exit" { return Ok(()); }
             emit(json!({"type":"system","subtype":"session_state_changed","session_id":"owned-claude","state":"idle"}))?;

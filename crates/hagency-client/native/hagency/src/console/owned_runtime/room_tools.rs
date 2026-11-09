@@ -176,8 +176,12 @@ impl Host {
                 &self.workspace,
                 &self.records,
             )?;
+            let mut history = Reader::from_source(source.clone(), &dispatch.room_id, &dispatch.event_id);
+            if runtime::kind(&self.config.credential_ref) == runtime::Kind::Claude {
+                history.use_native_compaction();
+            }
             self.state = Some(State {
-                history: Reader::from_source(source.clone(), &dispatch.room_id, &dispatch.event_id),
+                history,
                 files,
                 source,
             });

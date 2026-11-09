@@ -2,6 +2,63 @@
 use super::*;
 use hagency_runtime::claude::account::{AccountBinding, PROVIDER};
 
+#[tokio::test]
+#[ignore = "requires explicit offline Claude probe; real host history reader and native MCP pipes"]
+async fn native_shared_claude_full_host_reads_history_beyond_fallback_context_allowance() {
+    let binding = AccountBinding::from_authenticated_profile(
+        "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
+        "owner@example.test", Instant::now() + Duration::from_secs(45)).unwrap();
+    let (f, transport, reserve) = prepared_with(Fixture::with_provider(PROVIDER, binding.subject()).await).await;
+    let (f, transport, mut command) = runtime_fixture(f, transport, reserve).await;
+    command.version = 4;
+    command.capability = SHARED_CLAUDE_CAPABILITY.into();
+    command.policy = SHARED_CLAUDE_POLICY.into();
+    let work = {
+        let mut state = f.state.lock().unwrap();
+        state.shared.command = Some(command.clone());
+        let w = state.shared.work.as_mut().unwrap();
+        w.runtime_command_digest = digest(&command).unwrap();
+        w.encrypted = true;
+        w.body = w.event_id.clone();
+        w.body_digest = format!("{:x}", Sha256::digest(w.body.as_bytes()));
+        w.clone()
+    };
+    let root = f._root.path().join("claude-native-history");
+    hagency_store::private::directory(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let (transport, sent) = transport.with_crypto_fixture(Some("Summarize the entire room".into()));
+    let pages = (0..16).map(|page| (0..8).map(|message| json!({
+        "eventId":format!("$history-{}:test",page * 8 + message),
+        "sender":"@participant:test", "body":format!("Message {} {}",page * 8 + message,"x".repeat(700))
+    })).collect()).collect();
+    let (transport, reads) = transport.with_history_fixture(work.room_id, work.event_id, pages);
+    transport.poll_claude_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
+        binding, "shared-history").await.unwrap();
+    stopped(&f).await;
+    let pages: Vec<Value> = serde_json::from_slice(&std::fs::read(root.join("work/agent_fixture/shared-claude.history")).unwrap()).unwrap();
+    assert!(pages.last().is_some_and(|p| p["complete"] == true));
+    assert_eq!(pages[0]["alreadyRead"], true, "initial preview is not repeated by the tool");
+    assert!(pages.iter().all(|p| p.to_string().len() <= 12 * 1024 && p.get("reason").is_none()));
+    assert!(pages.iter().map(|p| p.to_string().len()).sum::<usize>() > 64 * 1024);
+    let mut seen = std::collections::HashSet::new();
+    for page in &pages {
+        for message in page["messages"].as_array().unwrap() {
+            assert!(seen.insert(message["eventId"].as_str().unwrap().to_owned()));
+        }
+    }
+    assert_eq!(seen.len(), 120, "eight preview messages plus 120 tool messages cover the room");
+    assert_eq!(reads.lock().unwrap().len(), 17, "one start and sixteen Matrix pages");
+    assert!(sent.lock().unwrap().iter().any(|(_, text)| text == "shared offline answer"));
+    {
+        let state = f.state.lock().unwrap();
+        let receipt = state.shared.receipts.values().max_by_key(|r| r.ledger_revision).unwrap();
+        assert_eq!(receipt.state, "completed");
+        assert!(receipt.usage_complete);
+        assert_eq!(receipt.known_consumed_tokens, 16, "history bytes never become billable token estimates");
+    }
+    f.stop().await;
+}
+
 #[cfg(feature = "shared-successors")]
 #[tokio::test]
 #[ignore = "requires explicit offline Claude probe; real host, SQLite and HTTP routing"]
