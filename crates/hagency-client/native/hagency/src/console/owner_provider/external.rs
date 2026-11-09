@@ -181,6 +181,28 @@ pub(crate) fn paths_for_reference(
         shared: true,
     })
 }
+/// The original owner-selected local provider, without accepting a path or
+/// credential reference from a resource command.
+pub(in crate::console) fn connected_paths(
+    root: &Path,
+    origin: &str,
+    issuer: &str,
+    subject: &str,
+    owner: &str,
+    kind: Kind,
+) -> Result<ProviderPaths, ProviderError> {
+    let directory = directory(root, origin, issuer, subject, owner)?;
+    let (home, folder) = homes(kind)?;
+    if !connected(&directory, kind, &folder)? {
+        return Err(failure(409, "provider_profile_mismatch"));
+    }
+    Ok(ProviderPaths {
+        home,
+        credential_ref: reference(kind, &folder, None)?,
+        codex_home: folder,
+        shared: true,
+    })
+}
 pub(crate) fn verify_reference(home: &Path, selected: &str) -> Result<(), ProviderError> {
     let (kind, profile) =
         managed_reference(selected).ok_or(failure(409, "provider_profile_mismatch"))?;

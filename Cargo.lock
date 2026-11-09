@@ -4784,6 +4784,7 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
 ]
 
 [[package]]

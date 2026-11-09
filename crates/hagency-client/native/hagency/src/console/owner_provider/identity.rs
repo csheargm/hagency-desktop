@@ -180,6 +180,16 @@ pub(in crate::console) async fn verify(
     console: &Console,
     cookie: &str,
 ) -> Result<(VerifiedProviderAccount, Instant), ProviderError> {
+    verify_runtime(console, cookie, hagency_agent_local::runtime::Kind::Codex).await
+}
+
+pub(in crate::console) async fn verify_runtime(
+    console: &Console,
+    cookie: &str,
+    runtime: hagency_agent_local::runtime::Kind,
+) -> Result<(VerifiedProviderAccount, Instant), ProviderError> {
+    use hagency_agent_local::runtime::Kind;
+    if !matches!(runtime, Kind::Codex | Kind::Claude) { return Err(unavailable()); }
     let tasks = &console.0.owner_provider.tasks;
     let _activity = tasks.enter().map_err(|_| failure(409, "provider_closing"))?;
     let reply = console
@@ -205,13 +215,12 @@ pub(in crate::console) async fn verify(
         .server_login
         .state_directory()
         .ok_or(failure(503, "provider_directory_unavailable"))?;
-    let paths = paths(
-        &root,
-        &reply.origin,
-        &reply.issuer,
-        &reply.subject,
-        &reply.owner,
-    )?;
+    let select = || match runtime {
+        Kind::Codex => paths(&root, &reply.origin, &reply.issuer, &reply.subject, &reply.owner),
+        Kind::Claude => super::external::connected_paths(&root, &reply.origin, &reply.issuer, &reply.subject, &reply.owner, runtime),
+        _ => Err(unavailable()),
+    };
+    let paths = select()?;
     let deadline = device
         .valid_until()
         .min(Instant::now() + Duration::from_secs(30));
@@ -219,6 +228,15 @@ pub(in crate::console) async fn verify(
     // being adopted. Shared homes use the existing sealed backend-origin and
     // no-tools configuration. Dedicated homes reject ambient configuration.
     let result = tokio::time::timeout(Duration::from_secs(25), async {
+        if runtime == Kind::Claude {
+            let binding = super::claude_identity::observe(&paths, deadline).await?;
+            let proof = VerifiedProviderAccount::from_claude_binding(binding).map_err(|_| unavailable())?;
+            let current = select()?;
+            if current.home != paths.home || current.codex_home != paths.codex_home
+                || current.credential_ref != paths.credential_ref || current.shared != paths.shared
+            { return Err(failure(409, "provider_account_changed")); }
+            return Ok(proof);
+        }
         let mut process = Process::spawn_inner(&paths, &executable()?, true, tasks).await?;
         let result = observe(&mut process, &paths, deadline).await;
         let _ = process.child.kill().await;

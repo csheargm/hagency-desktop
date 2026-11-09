@@ -5,7 +5,9 @@ use hagency_store::{management::Permission, owner_resources::VerifiedProviderAcc
 impl NativeManagement {
     /// Obtain a short-lived, non-deserializable identity from an already
     /// connected provider. This does not enroll a resource, merge old ledgers,
-    /// approve capacity, read credential files, or initiate provider login.
+    /// approve capacity or initiate provider login. Claude reuses its selected
+    /// native OAuth credential transiently for the fixed provider profile API;
+    /// neither the credential nor public account metadata leaves the adapter.
     /// The native host must still obtain owner consent for registry enrollment.
     pub async fn verified_provider_account(
         &self,
@@ -18,20 +20,18 @@ impl NativeManagement {
                 .authorize(&context, permission)
                 .map_err(|_| failure(403, "management_permission_required"))?;
         }
-        // Claude's public auth status currently has email/orgId, not the
-        // individual quota account UUID. Octos profiles expose no such proof.
-        // Their existing onboarding remains usable; neither can mint a new
-        // installation-level capacity declaration from a path or email.
-        if runtime != ManagementRuntime::Codex {
+        if runtime == ManagementRuntime::Octos {
             return Err(failure(409, "provider_identity_unavailable"));
         }
         let cookie = self.owner.0.cookie.lock().await.clone();
         let raw_cookie = cookie
             .strip_prefix("hagency_console=")
             .ok_or_else(|| failure(401, "owner_authorization_required"))?;
-        let result = crate::console::owner_provider::identity::verify(
+        let result = crate::console::owner_provider::identity::verify_runtime(
             &self.owner.0.host.console,
             raw_cookie,
+            if runtime == ManagementRuntime::Claude { hagency_agent_local::runtime::Kind::Claude }
+            else { hagency_agent_local::runtime::Kind::Codex },
         )
         .await;
         let (fresh, live) = self.authorized().await?;

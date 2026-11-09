@@ -1,5 +1,6 @@
 //! Claude Code streaming JSONL observations, not dispatch or approval authority.
 //! No process, credential, owner-authorization or canonical-completion API lives here.
+pub mod account;
 use serde_json::{Value, json};
 
 pub mod session;

@@ -46,6 +46,7 @@ hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 http-body-util.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "json"] }
+unicode-normalization.workspace = true
 thiserror.workspace = true
 salvo = { workspace = true, features = ["server", "server-handle", "http1", "test"] }
 clap = { workspace = true, features = ["derive"] }

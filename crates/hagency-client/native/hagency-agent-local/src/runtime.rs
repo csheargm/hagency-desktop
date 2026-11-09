@@ -1425,6 +1425,34 @@ async fn run_octos(
 
 /// Read only the CLI's public authentication verdict. Never reads credentials.
 pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result<bool> {
+    claude_account_status(binary, home, config)
+        .await
+        .map(|account| account.authenticated)
+}
+
+/// Public native CLI metadata, not a verified provider identity or quota key.
+/// No credential fields, Debug or serialization escape this adapter.
+#[derive(PartialEq, Eq)]
+pub struct ClaudeAccountStatus {
+    authenticated: bool,
+    method: Option<String>,
+    provider: Option<String>,
+    email: Option<String>,
+    organization: Option<String>,
+}
+impl ClaudeAccountStatus {
+    pub fn oauth_metadata(&self) -> Option<(&str, &str)> {
+        if !self.authenticated || self.method.as_deref() != Some("claude.ai")
+            || self.provider.as_deref() != Some("firstParty") { return None; }
+        Some((self.email.as_deref()?, self.organization.as_deref()?))
+    }
+}
+
+pub async fn claude_account_status(
+    binary: &Path,
+    home: &Path,
+    config: &Path,
+) -> Result<ClaudeAccountStatus> {
     use tokio::io::AsyncReadExt;
     let mut command = tokio::process::Command::new(binary);
     command
@@ -1459,7 +1487,20 @@ pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result
         return Err(Error::Protocol("account response bound"));
     }
     let value: Value = serde_json::from_slice(&bytes)?;
-    Ok(status.success() && value["loggedIn"] == true)
+    let field = |key: &str| -> Result<Option<String>> {
+        match value.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) if !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control) => Ok(Some(s.clone())),
+            _ => Err(Error::Protocol("account metadata")),
+        }
+    };
+    Ok(ClaudeAccountStatus {
+        authenticated: status.success() && value["loggedIn"] == true,
+        method: field("authMethod")?,
+        provider: field("apiProvider")?,
+        email: field("email")?,
+        organization: field("orgId")?,
+    })
 }
 
 fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {

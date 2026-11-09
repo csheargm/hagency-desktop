@@ -78,6 +78,20 @@ impl OwnedClaudeSession {
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
     }
+    /// Corroborate a host-authenticated account binding with this process's
+    /// native initialization. The host must additionally retain and recheck
+    /// the original selected credential namespace and launch policy. This
+    /// receipt itself grants no task, capacity or provider-login authority.
+    pub fn qualify_account(
+        &self,
+        binding: &crate::claude::account::AccountBinding,
+    ) -> Result<crate::claude::account::AccountObservation, Error> {
+        if self.cleanup != Cleanup::Pending { return Err(Error::Closed); }
+        self.session.qualify_account(binding)
+    }
+    pub fn matches_account_observation(&self, receipt: &crate::claude::account::AccountObservation) -> bool {
+        self.cleanup == Cleanup::Pending && self.session.matches_account_observation(receipt)
+    }
     pub fn observation_source(&self) -> Result<ObservationSource, Error> {
         self.session.observation_source()
     }

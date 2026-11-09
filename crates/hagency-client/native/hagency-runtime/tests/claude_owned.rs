@@ -71,6 +71,36 @@ fn stopped(marker: &Path) {
 }
 
 #[tokio::test]
+async fn native_claude_account_observation_binds_original_process_and_rejects_shadowed_auth() {
+    use hagency_runtime::claude::account::AccountBinding;
+    let binding = AccountBinding::from_authenticated_profile(
+        "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
+        "owner@example.test", Instant::now() + Duration::from_secs(45),
+    ).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut first = spawn(root.path(), "account-match", &root.path().join("first"));
+    let mut second = spawn(root.path(), "account-match", &root.path().join("second"));
+    assert!(first.qualify_account(&binding).is_err());
+    first.initialize().await.unwrap();
+    second.initialize().await.unwrap();
+    let receipt = first.qualify_account(&binding).unwrap();
+    assert_eq!(receipt.provider_digest(), binding.provider_digest());
+    assert!(first.matches_account_observation(&receipt));
+    assert!(!second.matches_account_observation(&receipt));
+    assert!(!root.path().join("first.prompt").exists(), "qualification must not send model input");
+    cleanup(first.stop());
+    assert!(!first.matches_account_observation(&receipt));
+    cleanup(second.stop());
+    for mode in ["account-wrong-email", "account-api-key", "account-provider", "account-missing"] {
+        let mut runner = spawn(root.path(), mode, &root.path().join(mode));
+        runner.initialize().await.unwrap();
+        assert!(runner.qualify_account(&binding).is_err(), "{mode}");
+        assert_eq!(runner.phase(), Phase::Ready, "missing shared proof must not break personal execution");
+        cleanup(runner.stop());
+    }
+}
+
+#[tokio::test]
 async fn native_claude_interrupt_foreign_or_repeated_preparation_cannot_stop_current_process() {
     let root = tempfile::tempdir().unwrap();
     let first_marker = root.path().join("first");

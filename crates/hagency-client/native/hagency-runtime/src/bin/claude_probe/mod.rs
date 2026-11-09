@@ -24,6 +24,11 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "permission-hold"
             | "usage"
             | "usage-conflict"
+            | "account-match"
+            | "account-wrong-email"
+            | "account-api-key"
+            | "account-provider"
+            | "account-missing"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -45,9 +50,17 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         drop(stdin);
         return super::pulse(marker);
     }
-    emit(
-        json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{}}}),
-    )?;
+    let mut initialization = json!({});
+    if mode.starts_with("account-") && mode != "account-missing" {
+        initialization["account"] = json!({"email":"owner@example.test","apiProvider":"firstParty"});
+        match mode {
+            "account-wrong-email" => initialization["account"]["email"] = json!("another@example.test"),
+            "account-api-key" => initialization["account"]["apiKeySource"] = json!("user"),
+            "account-provider" => initialization["account"]["apiProvider"] = json!("bedrock"),
+            _ => {}
+        }
+    }
+    emit(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":initialization}}))?;
     line.clear();
     stdin.read_line(&mut line)?;
     let prompt: Value = serde_json::from_str(&line)?;

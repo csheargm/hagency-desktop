@@ -91,12 +91,26 @@ pub struct SessionDriver<R, W, E> {
     control: control::State,
     interrupt: interrupt::State,
     source: Arc<()>,
+    account: Option<super::account::Metadata>,
     observations: observation::State,
     task_mcp: Option<super::TaskMcp>,
     task_mcp_attempted: bool,
     room_mcp: Option<room_mcp::State>,
 }
 impl<R, W, E> SessionDriver<R, W, E> {
+    pub(crate) fn qualify_account(
+        &self, binding: &super::account::AccountBinding,
+    ) -> Result<super::account::AccountObservation, Error> {
+        binding.check()?;
+        if self.phase != Phase::Ready || !self.account.as_ref().is_some_and(|a| a.matches(binding)) {
+            return Err(Error::Identity);
+        }
+        Ok(super::account::AccountObservation { source: self.source.clone(), binding: binding.clone() })
+    }
+    pub(crate) fn matches_account_observation(&self, receipt: &super::account::AccountObservation) -> bool {
+        self.phase != Phase::Closed && Arc::ptr_eq(&self.source, &receipt.source)
+            && self.account.as_ref().is_some_and(|a| a.matches(&receipt.binding))
+    }
     pub fn new(stdout: R, stdin: W, stderr: E, limits: Limits) -> Result<Self, Error> {
         Ok(Self {
             wire: io::Wire::new(stdout, stdin, stderr, limits)?,
@@ -110,6 +124,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             control: control::State::default(),
             interrupt: Default::default(),
             source: Arc::new(()),
+            account: None,
             observations: Default::default(),
             task_mcp: None,
             task_mcp_attempted: false,
@@ -269,7 +284,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 request_id,
                 outcome,
             } if request_id == INITIALIZE_ID => match outcome {
-                ControlOutcome::Success(_) => {
+                ControlOutcome::Success(value) => {
+                    // Missing identity metadata does not prevent personal
+                    // execution. A shared account qualification requires it.
+                    self.account = super::account::Metadata::read(&value["account"]);
                     self.phase = Phase::Ready;
                     Ok(())
                 }

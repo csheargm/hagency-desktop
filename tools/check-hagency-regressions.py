@@ -217,6 +217,9 @@ def main():
     run("native-chat-file-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_chat_files_cross_", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-claude-room-tools", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_session", "room_mcp", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-claude-usage", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_usage"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-provider-identity", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "claude_identity"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-account-binding", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "claude_native_provider_binding"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-process-identity", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_owned", "native_claude_account_observation"], cwd=CLIENT, rust_tests=True)
     run("native-claude-interrupt", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_session", "--test", "claude_owned", "native_claude_interrupt", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-host", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "--", "--test-threads=1", "typed_http_postpaid_overrun", "typed_http_runtime_unreported_failure", "typed_http_runtime_budget_notice"], cwd=CLIENT, rust_tests=True)
     if not reached_start:

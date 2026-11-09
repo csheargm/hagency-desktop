@@ -152,6 +152,7 @@ pub struct VerifiedProviderAccount {
     digest: String,
     runtime: String,
     expires: Instant,
+    claude: Option<hagency_runtime::claude::account::AccountBinding>,
 }
 impl VerifiedProviderAccount {
     pub fn new(
@@ -180,7 +181,22 @@ impl VerifiedProviderAccount {
             digest: canonical::digest(&json!({"provider":provider,"subject":subject}))?,
             runtime: runtime.into(),
             expires,
+            claude: None,
         })
+    }
+    pub fn from_claude_binding(binding: hagency_runtime::claude::account::AccountBinding) -> Result<Self, Error> {
+        binding.check().map_err(|_| Error::LocalAuthority)?;
+        let mut proof = Self::new("claude", hagency_runtime::claude::account::PROVIDER, binding.subject(), binding.expires())?;
+        if proof.digest != binding.provider_digest() { return Err(Error::LocalAuthority); }
+        proof.claude = Some(binding);
+        Ok(proof)
+    }
+    /// The original native provider probe, never reconstructed from a resource
+    /// row. A shared Claude process must also produce its own matching receipt.
+    pub fn claude_binding(&self) -> Result<&hagency_runtime::claude::account::AccountBinding, Error> {
+        let binding = self.claude.as_ref().ok_or(Error::LocalAuthority)?;
+        binding.check().map_err(|_| Error::LocalAuthority)?;
+        Ok(binding)
     }
 }
 #[derive(Clone, Serialize, Deserialize)]

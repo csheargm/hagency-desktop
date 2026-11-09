@@ -1,4 +1,29 @@
 use super::*;
+
+#[test]
+fn claude_native_provider_binding_preserves_quota_identity_without_email_or_path_keys() {
+    use hagency_runtime::claude::account::{AccountBinding, PROVIDER};
+    let binding = |account: &str, email: &str| AccountBinding::from_authenticated_profile(
+        account, "89abcdef-0123-4567-89ab-cdef01234567", email,
+        Instant::now() + Duration::from_secs(30),
+    ).unwrap();
+    let original = binding("01234567-89AB-CDEF-0123-456789ABCDEF", "before@example.test");
+    let proof = VerifiedProviderAccount::from_claude_binding(original.clone()).unwrap();
+    assert_eq!(proof.digest, original.provider_digest());
+    assert_eq!(proof.runtime, "claude");
+    assert!(proof.claude_binding().is_ok());
+    let renamed = VerifiedProviderAccount::from_claude_binding(
+        binding("01234567-89ab-cdef-0123-456789abcdef", "after@example.test")
+    ).unwrap();
+    assert_eq!(proof.digest, renamed.digest, "email rename does not create another capacity account");
+    let other = VerifiedProviderAccount::from_claude_binding(
+        binding("01234567-89ab-cdef-0123-456789abcdee", "before@example.test")
+    ).unwrap();
+    assert_ne!(proof.digest, other.digest);
+    let unbound = VerifiedProviderAccount::new("claude", PROVIDER, original.subject(), original.expires()).unwrap();
+    assert_eq!(unbound.digest, proof.digest);
+    assert!(unbound.claude_binding().is_err(), "restored identity is not a fresh native credential observation");
+}
 #[path = "managed_agent_tests.rs"]
 mod managed_agents;
 #[path = "parent_tests.rs"]
