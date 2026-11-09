@@ -1,7 +1,7 @@
-//! Existing owner database acceptance, not a migration or live-provider test.
+//! Populated current account history, without a live provider.
 use super::*;
 use crate::console::native::web_overview::{WebAccountCapacityQuery,WebOverviewQuery};
-use hagency_store::management::{AccountInventoryQuery,WebAlertsQuery};
+use hagency_store::management::{AccountInventoryQuery,WebAlertsQuery,WebCatalogChange,WebCatalogCommand};
 
 fn history_package()->ManagementPackage {
     let mut p=package();p.instance=1061;
@@ -9,19 +9,19 @@ fn history_package()->ManagementPackage {
 }
 fn snapshots(path:&std::path::Path)->Vec<(String,Vec<Vec<String>>)> {
     let db=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    ["resources","role_offers","ceiling_alerts","ceiling_alert_notes"].into_iter().map(|table|{
+    ["resources","owner_web_catalog_settings","management_commands","ceiling_alerts","ceiling_alert_notes"].into_iter().map(|table|{
         let mut q=db.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();let n=q.column_count();
         let rows=q.query_map([],|r|Ok((0..n).map(|c|format!("{:?}",r.get_ref(c).unwrap())).collect())).unwrap().collect::<Result<Vec<_>,_>>().unwrap();(table.into(),rows)
     }).collect()
 }
 #[tokio::test]
-async fn native_populated_old_account_history_pagination_owner_guard_and_restart() {
+async fn native_populated_current_account_history_pagination_owner_guard_and_restart() {
     let (mut f,original)=fixture().await;
     let database=f._root.path().join("registry/domain.sqlite3");
     let scope=f.transport.scope(Permission::PublishGrants).await.unwrap();
     let id=original.clone();
     let source=f.registry.with_repository_for_tests(move |db|db.resource_configuration(&id)).await.unwrap();
-    let mut setup=history_package();setup.instance+=100;setup.permissions.push(Permission::ConfigureResources);
+    let mut setup=history_package();setup.instance+=100;setup.permissions.extend([Permission::ConfigureResources,Permission::ManageWebCatalog]);
     let manager=f.owner.management(setup).await.unwrap();
     let (context,session)=manager.authorized().await.unwrap();
     for i in 0..35 {
@@ -38,10 +38,16 @@ async fn native_populated_old_account_history_pagination_owner_guard_and_restart
             ).unwrap().approve().await.unwrap();
         }
     }
+    let offer_revision=session.web_offers(&context,original.clone()).await.unwrap().revision;
+    // Persist the offer through the current profile writer and its original
+    // receipt. The read-only view must never expose this private command ID.
+    session.apply_web_catalog(&context,WebCatalogCommand{
+        command_id:"private-current-writer".into(),resource_id:original.clone(),expected_revision:offer_revision,
+        change:WebCatalogChange::Offer{role:"documentation".into(),count:Some(2),budget_cap_per_engagement:Some(500),rate_cap:Some(100),published:true},
+    }).await.unwrap();
     drop(session);drop(manager);drop(scope);
     f.registry.with_repository_for_tests(|db|{
         for i in 0..19 {db.add_alert_note("fixture:original","older-owner",&format!("Retained note / 历史记录 {i}"),100+i)?;}
-        db.set_offer("documentation",Some(2),Some(500),Some(100),true,"private-old-writer",110)?;
         Ok(())
     }).await.unwrap();
     {
@@ -56,11 +62,14 @@ async fn native_populated_old_account_history_pagination_owner_guard_and_restart
         after=page.next_after;if after.is_none(){break}
     }
     assert_eq!(account_ids.len(),18);let shared=shared.unwrap();
-    let offers=m.web_offers(original.clone()).await.unwrap();assert!(!offers.offers_editable);assert_eq!(offers.offer_editing_reason.as_deref(),Some("legacy_owner_read_only"));
-    let retained=offers.items.iter().find(|v|v.role=="documentation").unwrap();assert_eq!((retained.count,retained.budget_cap_per_engagement,retained.rate_cap,retained.published),(Some(2),Some(500),Some(100),true));assert!(!retained.catalog_published);
-    assert!(!serde_json::to_string(&offers).unwrap().contains("private-old-writer"));
+    let offers=m.web_offers(original.clone()).await.unwrap();assert!(offers.offers_editable);assert_eq!(offers.offer_editing_reason,None);
+    let retained=offers.items.iter().find(|v|v.role=="documentation").unwrap();assert_eq!((retained.count,retained.budget_cap_per_engagement,retained.rate_cap,retained.published),(Some(2),Some(500),Some(100),true));
+    // Current enrollment supplies published, qualified capacity. The owner's
+    // explicit offer therefore remains advertised after a real registry reopen.
+    assert!(retained.qualified);assert!(retained.catalog_published);
+    assert!(!serde_json::to_string(&offers).unwrap().contains("private-current-writer"));
     let capabilities=m.web_capability(WebOverviewQuery::default()).await.unwrap();assert_eq!(capabilities["items"].as_array().unwrap().len(),16);assert!(capabilities["nextAfter"].is_string());
-    for row in capabilities["items"].as_array().unwrap(){assert_eq!(row["offersEditable"],false);assert_eq!(row["offerEditingReason"],"legacy_owner_read_only");}
+    for row in capabilities["items"].as_array().unwrap(){assert_eq!(row["offersEditable"],true);assert_eq!(row["offerEditingReason"],Value::Null);}
     let first=m.web_account_capacity(WebAccountCapacityQuery{id:Some(shared.clone()),..Default::default()}).await.unwrap();
     let row=&first["items"][0];assert_eq!(row["resources"].as_array().unwrap().len(),16);assert_eq!(row["aggregateComplete"],false);assert_eq!(row["oversubscribedTokens"],Value::Null);
     let next=row["nextResourceAfter"].as_str().unwrap().to_owned();
@@ -78,6 +87,7 @@ async fn native_populated_old_account_history_pagination_owner_guard_and_restart
     assert_eq!(m.account_inventory(AccountInventoryQuery{id:Some(shared),after:None}).await.unwrap().account.unwrap().resource_count,19);
     assert_eq!(m.web_alerts(Default::default()).await.unwrap().counts.total,21);
     assert_eq!(m.resource_alert(query(&original)).await.unwrap().notes.len(),16);
+    assert_eq!(serde_json::to_value(m.web_offers(original.clone()).await.unwrap()).unwrap(),serde_json::to_value(offers).unwrap());
     assert_eq!(snapshots(&database),before,"reads/restart preserve populated original history");
     f.owner.suspend().await.unwrap();f.stop().await;
 }

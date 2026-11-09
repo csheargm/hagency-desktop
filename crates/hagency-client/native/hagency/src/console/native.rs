@@ -1325,6 +1325,34 @@ impl NativeOwner {
     async fn execute_locked(&self, command: Command) -> Result<Value, NativeError> {
         self.execute_admitted_locked(command, None).await
     }
+    async fn check_command_matrix_source(&self) -> Result<(), NativeError> {
+        let cookie = self.0.cookie.lock().await.clone();
+        let raw = cookie
+            .strip_prefix("hagency_console=")
+            .ok_or(failure(401, "owner_authorization_required"))?;
+        self.0
+            .host
+            .console
+            .0
+            .server_login
+            .check_matrix_source(raw)
+            .await
+            .map_err(|code| failure(if code.ends_with("unavailable") { 503 } else { 401 }, code))
+    }
+    async fn command_matrix_error(&self, error: NativeError, stage: &'static str) -> NativeError {
+        if error.status == 503 {
+            tracing::warn!(
+                stage,
+                code = %error.code,
+                "Matrix authorization temporarily unavailable; preserving recovery state"
+            );
+        } else {
+            // A source/account transition retires local execution before the
+            // next await. Only explicit logout withdraws the saved session.
+            let _ = self.suspend().await;
+        }
+        error
+    }
     async fn execute_admitted_locked(&self, command: Command, admitted: Option<&Arc<dyn Fn() -> bool + Send + Sync>>) -> Result<Value, NativeError> {
         let server_administration = self.admit_owner_command(&command).await?;
         let matrix_managed = self
@@ -1343,17 +1371,18 @@ impl NativeOwner {
             return Err(failure(400, "sdk_owns_matrix_login"));
         }
         if matrix_managed && !matches!(command, Command::Logout) {
-            if server_administration {
-                self.sync_management_matrix().await?;
-                // Renewal can reuse a cached server grant. The SDK's current
-                // account remains authority for each administration request.
-                let cookie = self.0.cookie.lock().await.clone();
-                let raw = cookie.strip_prefix("hagency_console=")
-                    .ok_or(failure(401, "owner_authorization_required"))?;
-                self.0.host.console.0.server_login.check_matrix_source(raw).await
-                    .map_err(|code| failure(if code.ends_with("unavailable") {503} else {401}, code))?;
-            } else {
-                self.sync_matrix().await?;
+            let authorization = async {
+                if server_administration {
+                    self.sync_management_matrix().await?;
+                    // Renewal can reuse a cached server grant. The SDK's current
+                    // account remains authority for each administration request.
+                    self.check_command_matrix_source().await
+                } else {
+                    self.sync_matrix().await
+                }
+            }.await;
+            if let Err(error) = authorization {
+                return Err(self.command_matrix_error(error, "sdk_pre_request").await);
             }
         }
         // Authorization may await the SDK. Recheck custody and the originating
@@ -1454,38 +1483,8 @@ impl NativeOwner {
         if matrix_managed {
             // Logout is allowed to finish without needing a live SDK token.
             if !is_logout {
-                let cookie = self.0.cookie.lock().await.clone();
-                let raw = cookie
-                    .strip_prefix("hagency_console=")
-                    .ok_or(failure(401, "owner_authorization_required"))?;
-                if let Err(code) = self
-                    .0
-                    .host
-                    .console
-                    .0
-                    .server_login
-                    .check_matrix_source(raw)
-                    .await
-                {
-                    if code == "matrix_authorization_unavailable" {
-                        tracing::warn!(
-                            stage = "sdk_post_request",
-                            code,
-                            "Matrix authorization temporarily unavailable; preserving recovery state"
-                        );
-                    } else {
-                        // A source/account transition retires local execution;
-                        // only explicit logout withdraws the saved session.
-                        let _ = self.suspend().await;
-                    }
-                    return Err(failure(
-                        if code.ends_with("unavailable") {
-                            503
-                        } else {
-                            401
-                        },
-                        code,
-                    ));
+                if let Err(error) = self.check_command_matrix_source().await {
+                    return Err(self.command_matrix_error(error, "sdk_post_request").await);
                 }
             }
         }

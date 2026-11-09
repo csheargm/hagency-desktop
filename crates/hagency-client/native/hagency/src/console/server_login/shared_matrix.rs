@@ -1336,7 +1336,10 @@ mod tests {
         }
         let (origin, _, task) = fixture("@owner:test", None).await;
         let root = tempfile::tempdir().unwrap();
-        crate::native_owner::initialize_resource_activation_fixture(root.path()).unwrap();
+        // tempfile uses platform-default permissions. Let the fixture provision
+        // its own owner-private installation directory, as current setup does.
+        crate::native_owner::initialize_resource_activation_fixture(&root.path().join("installation"))
+            .unwrap();
         let source = Arc::new(Source {
             token: std::sync::Mutex::new("sdk-first".into()),
             current: Arc::new(AtomicBool::new(true)),

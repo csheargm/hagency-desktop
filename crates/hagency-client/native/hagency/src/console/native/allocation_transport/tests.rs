@@ -149,6 +149,8 @@ struct State {
     unavailable_contribution: bool,
     generation: u64,
     source: Option<Arc<AtomicBool>>,
+    project_reads: usize,
+    fail_source_at_projects: Option<Arc<AtomicBool>>,
     invalidate_at_contribution: bool,
     invalidate_at_result: bool,
     lose_before_publication: bool,
@@ -435,6 +437,14 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             json!({"validUntilMs":at+30000})
                         }
                         "/hagency/api/v1/sessions/current" => json!({}),
+                        "/hagency/api/v1/projects" => {
+                            let mut state = state.lock().unwrap();
+                            state.project_reads += 1;
+                            if let Some(failed) = &state.fail_source_at_projects {
+                                failed.store(true, Ordering::Release);
+                            }
+                            json!({"projects":[]})
+                        }
                         _ => panic!("unexpected authentication route"),
                     })
                 };

@@ -447,9 +447,9 @@ async fn native_shared_question_device_opening_comes_out_of_the_same_wait() {
 #[tokio::test]
 #[ignore = "requires explicit offline supervised runtime probe"]
 async fn native_shared_question_plaintext_room_uses_only_an_open_device() {
-    // A plaintext room never needed the Agent's device: no device login starts
-    // in the middle of a turn for it. An Agent whose device is open anyway
-    // still asks there.
+    // Keep the base fixture's required V3 history adapter. The question path
+    // must not open a device for a plaintext room; it can ask only when the
+    // question device is already open.
     for open in [false, true] {
         let (f, t, _) = Box::pin(fixture()).await;
         let requester = f.state.lock().unwrap().shared.work.as_ref().unwrap().requester_mxid.clone();
@@ -463,7 +463,6 @@ async fn native_shared_question_plaintext_room_uses_only_an_open_device() {
                 .unwrap()
                 .encrypted
         );
-        let (t, _sent) = t.with_crypto_fixture(None);
         let (t, room) = t.with_question_fixture(&[&requester], Duration::from_secs(60));
         room.device_open
             .store(open, std::sync::atomic::Ordering::SeqCst);
