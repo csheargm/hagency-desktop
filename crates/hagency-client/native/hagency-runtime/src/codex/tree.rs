@@ -109,6 +109,13 @@ impl TurnTree {
             .get(&(thread.into(), turn.into()))
             .is_some_and(|turn| !turn.completed)
     }
+    /// Context evidence is accepted only for an observed active native turn.
+    pub fn context_usage(&self, params: &Value) -> Option<super::session::ContextUsage> {
+        let thread = params["threadId"].as_str()?;
+        let turn = params["turnId"].as_str()?;
+        if !self.is_active(thread, turn) { return None; }
+        super::session::ContextUsage::project(params, thread == self.root_thread)
+    }
     pub fn contains_thread(&self, thread: &str) -> bool {
         self.turns.keys().any(|(id, _)| id == thread) || self.expected.contains(thread)
     }

@@ -2,8 +2,8 @@
 //! Original central commands, local holds and process evidence remain distinct.
 mod context_io;
 mod e2ee;
-mod history;
-mod files;
+pub(in crate::console) mod history;
+pub(in crate::console) mod files;
 mod approvals;
 pub(in crate::console) mod questions;
 mod demand_io;

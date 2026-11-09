@@ -99,7 +99,7 @@ impl ContextUsage {
     pub fn used(&self) -> u64 {
         self.used
     }
-    pub(super) fn project(params: &Value, root: bool) -> Option<Self> {
+    pub(in crate::codex) fn project(params: &Value, root: bool) -> Option<Self> {
         let usage = project(params);
         let diagnostics = usage.diagnostics();
         if diagnostics.has_invalid_fields()

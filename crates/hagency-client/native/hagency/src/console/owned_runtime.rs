@@ -3,6 +3,7 @@ mod drain;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
 mod questions;
+mod room_tools;
 mod service;
 #[cfg(unix)]
 mod working_directory;
@@ -2120,7 +2121,6 @@ async fn fresh_running<T: Transport>(
         .await
         .is_ok()
 }
-#[cfg(unix)]
 struct LiveToolGate {
     console: PinnedConsole,
     lease: LeaseRef,
@@ -2135,7 +2135,11 @@ impl codex::HostToolGate for LiveToolGate {
         dispatch: &'a str,
         execution: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(async move {
+        Box::pin(self.check(dispatch, execution))
+    }
+}
+impl LiveToolGate {
+    async fn check(&self, dispatch: &str, execution: &str) -> bool {
             if *self.cancel.borrow() || dispatch != self.expected.id || execution != self.execution
             {
                 return false;
@@ -2167,7 +2171,6 @@ impl codex::HostToolGate for LiveToolGate {
                 && event.dispatch_device_id == self.expected.dispatch_device_id
                 && event.execution_id.as_deref() == Some(execution)
                 && event.state == "running"
-        })
     }
 }
 /// Best-effort cancellation: 5s sampling plus at most 5s for the proof RPC.
@@ -2332,7 +2335,7 @@ async fn run_turn<T: Transport>(
         working_directory::for_turn(&config.profile, owner, &scope, config.host_files)?;
     let (queue, mut receiver) = codex::approval_queue(1).map_err(|_| RuntimeError::Profile)?;
     let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
-    let queue = queue.with_questions(question_queue);
+    let mut queue = queue.with_questions(question_queue);
     let host = transport.approval_host();
     let has_approval_host = host.is_some();
     let bridge = host.clone().map(|console| {
@@ -2385,6 +2388,22 @@ async fn run_turn<T: Transport>(
             Ok(None)
         };
     }
+    let mut room_bridge = if runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
+        if let Some(console) = host.as_ref() {
+            let gate = Arc::new(LiveToolGate { console: console.clone(), lease: lease.clone(),
+                expected: prepared.dispatch.clone(), execution: prepared.execution_id.clone(), cancel: cancel.clone() });
+            let host = room_tools::Host::new(gate, config, &profile.cwd)?;
+            let (channel, receiver) = hagency_agent_local::room_tools::room_queue(&scope, &prepared.dispatch.id)
+                .map_err(|_| RuntimeError::Profile)?;
+            queue = queue.with_room_tools(channel);
+            Some((host, receiver))
+        } else { None }
+    } else { None };
+    let room_tools = room_bridge.is_some();
+    let input = match room_bridge.as_mut() {
+        Some((host, _)) => host.prompt(input).await,
+        None => input,
+    };
     // Native extensions may execute during startup. Admit the request before
     // opening a provider or disturbing the retained conversation.
     let provider_tasks = transport
@@ -2494,6 +2513,10 @@ async fn run_turn<T: Transport>(
             provider.session.initialize().await.inspect_err(|error|{provider_failure("provider_initialize", error);})?;
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
+            if room_tools {
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files()).await
+                    .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
+            }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
         }
         if !fresh_running(transport,lease,&prepared.dispatch,&prepared.execution_id,&mut pre_model_cancel).await {return Err(codex::Error::Protocol("running dispatch authorization lost"));}
@@ -2503,6 +2526,12 @@ async fn run_turn<T: Transport>(
             tokio::select! {
                 result = model => result,
                 _ = questions::serve(transport, lease, config, owner, &prepared, question_cancel, question_receiver) => Err(codex::Error::Protocol("question bridge closed")),
+                _ = async {
+                    match room_bridge {
+                        Some((host, receiver)) => host.serve(receiver).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => Err(codex::Error::Protocol("room bridge closed")),
             }
         };
         let notice = async {

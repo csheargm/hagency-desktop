@@ -1,0 +1,227 @@
+use super::*;
+use hagency_agent_local::room_tools::{room_queue, RoomReply};
+use hagency_runtime::room_tools::{RoomTools, RoomOperation};
+
+#[tokio::test]
+async fn claude_slow_room_operation_returns_an_error_before_native_callback_expires() {
+    let mut f = Fixture::new(Kind::Claude, "room_timeout", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process.session.enable_room_tools(RoomTools::history_and_files()).await.unwrap();
+    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let (room, mut requests) = room_queue(&f.scope, "dispatch").unwrap();
+    let queue = queue.with_room_tools(room);
+    let run = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope, "call",
+        "dispatch", "Read slow history", BudgetMode::Postpaid, &queue, None);
+    let host = async {
+        let mut request = requests.recv().await.unwrap();
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(55)).await;
+        tokio::time::resume();
+        request.closed().await;
+        assert!(request.is_closed());
+    };
+    let (done, ()) = tokio::join!(run, host);
+    assert_eq!(done.unwrap().text, "offline reply");
+    assert_eq!(f.spent(), (24, 0));
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn claude_room_tools_use_each_dispatch_channel_and_preserve_external_approvals() {
+    let mut f = Fixture::new(Kind::Claude, "continuous:room", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process
+        .session
+        .enable_room_tools(RoomTools::history_and_files())
+        .await
+        .unwrap();
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    for round in 0..2 {
+        if round != 0 {
+            assert!(process.session.can_continue());
+            process.session.park();
+            process
+                .session
+                .continue_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+        }
+        let dispatch = format!("call-{round}");
+        let (queue, mut approvals) = codex::approval_queue(1).unwrap();
+        let (room, mut requests) = room_queue(&f.scope, &dispatch).unwrap();
+        let queue = queue.with_room_tools(room);
+        let run = process.session.run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            &dispatch,
+            &dispatch,
+            "Read the uploaded file and send output",
+            BudgetMode::Postpaid,
+            &queue,
+            None,
+        );
+        let host = async {
+            let history = requests.recv().await.unwrap();
+            assert!(matches!(history.operation, RoomOperation::History { .. }));
+            history.reply(RoomReply::new("ROOM_HISTORY_RECEIPT".into(), false).unwrap());
+            let file = requests.recv().await.unwrap();
+            assert!(matches!(file.operation, RoomOperation::File(_)));
+            file.reply(RoomReply::new("ROOM_FILE_RECEIPT".into(), false).unwrap());
+        };
+        let (done, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(run, host)
+        })
+        .await
+        .unwrap();
+        assert_eq!(done.unwrap().text, "offline reply");
+        assert!(approvals.try_recv().is_err());
+    }
+    assert_eq!(f.spent(), (108, 0));
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn claude_cancelled_room_callback_withdraws_host_operation() {
+    let mut f = Fixture::new(Kind::Claude, "room_cancel", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process
+        .session
+        .enable_room_tools(RoomTools::history_and_files())
+        .await
+        .unwrap();
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, mut approvals) = codex::approval_queue(1).unwrap();
+    let (room, mut requests) = room_queue(&f.scope, "dispatch").unwrap();
+    let queue = queue.with_room_tools(room);
+    let run = process.session.run_with_started(
+        &mut f.ledger,
+        "@owner:test",
+        &f.scope,
+        "call",
+        "dispatch",
+        "Read history",
+        BudgetMode::Postpaid,
+        &queue,
+        None,
+    );
+    let host = async {
+        let mut request = requests.recv().await.unwrap();
+        request.closed().await;
+        assert!(request.is_closed());
+    };
+    let (done, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(run, host)
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.unwrap().text, "offline reply");
+    assert!(approvals.try_recv().is_err());
+    assert_eq!(f.spent(), (24, 0));
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "explicit installed Claude; isolated localhost model, no provider account or paid request"]
+async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use std::process::Stdio;
+    let executable = PathBuf::from(
+        std::env::var_os("HAGENCY_TEST_CLAUDE_EXECUTABLE").expect("explicit Claude executable"),
+    )
+    .canonicalize()
+    .unwrap();
+    let mut f = Fixture::new(Kind::Claude, "room", ToolPolicy::Deny);
+    f.profile.model = "sonnet".into();
+    let model_source = include_str!("../../../hagency-runtime/tests/claude_question_fixture.py")
+        .replace("AskUserQuestion", "mcp__hagency_matrix__read_room_history")
+        .replace(
+            "\"input\": {\"questions\": questions}",
+            "\"input\": {\"cursor\": None}",
+        );
+    let model_file = f.path("model.py");
+    fs::write(&model_file, model_source).unwrap();
+    let mut model = tokio::process::Command::new("python3")
+        .arg(model_file)
+        .arg(f.path(""))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut port = String::new();
+    BufReader::new(model.stdout.take().unwrap())
+        .read_line(&mut port)
+        .await
+        .unwrap();
+    let port: u16 = port.trim().parse().unwrap();
+    let binary = serde_json::to_string(&executable).unwrap();
+    fs::write(&f.profile.executable, format!("#!/usr/bin/env python3\nimport os,sys\nos.environ['ANTHROPIC_API_KEY']='offline-contract'\nos.environ['ANTHROPIC_BASE_URL']='http://127.0.0.1:{port}'\nos.environ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1'\nos.execv({binary}, [{binary}]+sys.argv[1:])\n")).unwrap();
+    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let mut process = spawn_for_scope_with_guardian(
+        &f.profile,
+        &f.reference,
+        &mut f.ledger,
+        &f.scope,
+        Some(guardian),
+    )
+    .await
+    .unwrap();
+    process.session.initialize().await.unwrap();
+    process
+        .session
+        .enable_room_tools(RoomTools::history_and_files())
+        .await
+        .unwrap();
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, mut approvals) = codex::approval_queue(1).unwrap();
+    let (room, mut requests) = room_queue(&f.scope, "dispatch").unwrap();
+    let queue = queue.with_room_tools(room);
+    let run = process.session.run_with_started(
+        &mut f.ledger,
+        "@owner:test",
+        &f.scope,
+        "call",
+        "dispatch",
+        "Read room history",
+        BudgetMode::Postpaid,
+        &queue,
+        None,
+    );
+    let host = async {
+        let request = requests.recv().await.unwrap();
+        assert!(matches!(
+            request.operation,
+            RoomOperation::History { cursor: None }
+        ));
+        request.reply(RoomReply::new("ROOM_HISTORY_RECEIPT".into(), false).unwrap());
+    };
+    let (done, ()) = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        tokio::join!(run, host)
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.unwrap().text, "Offline native question completed.");
+    assert!(approvals.try_recv().is_err());
+    assert!(
+        fs::read_to_string(f.path("native-answer.json"))
+            .unwrap()
+            .contains("ROOM_HISTORY_RECEIPT")
+    );
+    process.stop().await.unwrap();
+    model.kill().await.unwrap();
+}

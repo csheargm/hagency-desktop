@@ -15,6 +15,8 @@ mod continuous;
 mod questions;
 #[path = "runtime/postpaid.rs"]
 mod postpaid;
+#[path = "runtime/room.rs"]
+mod room;
 
 struct Fixture {
     root: tempfile::TempDir,

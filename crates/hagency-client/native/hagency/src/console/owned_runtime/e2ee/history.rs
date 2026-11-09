@@ -8,6 +8,14 @@ pub(in crate::console) struct HistoryBatch {
 }
 
 impl AgentDevice {
+    pub(in crate::console) async fn history_request(&self, room: &str, event: &str) -> Result<Option<Value>, RuntimeError> {
+        let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
+        let event_id = OwnedEventId::try_from(event).map_err(|_| RuntimeError::Request)?;
+        let room = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
+        let event = room.event(&event_id, None).await.map_err(|_| RuntimeError::Transport)?;
+        if event.kind.parse_event_id().as_ref() != Some(&event_id) { return Err(RuntimeError::Transport); }
+        Ok(history_event(&event))
+    }
     /// The SDK enforces this Agent's membership/history visibility and decrypts
     /// with its own keys. The caller pins the room and anchor from admitted work.
     pub(in crate::console) async fn history_start(

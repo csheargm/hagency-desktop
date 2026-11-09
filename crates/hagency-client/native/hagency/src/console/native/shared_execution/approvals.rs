@@ -165,7 +165,7 @@ impl Approvals {
         process: &mut OwnedSession,
         capture: &mut SharedCallSink,
         usage: &mut crate::console::native::telemetry::TurnTelemetry,
-        mut history_reader: Option<&mut super::history::Reader>,
+        mut history_reader: Option<&mut super::history::Reader<super::history::Source>>,
     ) -> Result<Option<SharedWorkReceipt>, NativeError> {
         let mut i = 0;
         while i < self.pending.len() {

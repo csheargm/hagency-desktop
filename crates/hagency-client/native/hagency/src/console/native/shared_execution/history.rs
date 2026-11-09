@@ -23,7 +23,7 @@ impl Default for ChildBudget {
     fn default() -> Self { Self { remaining: 32 * 1024, sample: None } }
 }
 
-pub(super) trait HistoryIo {
+pub(in crate::console) trait HistoryIo {
     fn document(&self, _room: &str, _event: &str) -> impl std::future::Future<Output = Result<crate::documents::Text, &'static str>> + Send {
         async { Err("attachment_unavailable") }
     }
@@ -83,7 +83,7 @@ impl HistoryIo for Source {
     }
 }
 
-pub(super) struct Reader<S = Source> {
+pub(in crate::console) struct Reader<S> {
     device: Arc<S>,
     room: String,
     anchor: String,
@@ -98,7 +98,7 @@ pub(super) struct Reader<S = Source> {
     child_budgets: HashMap<(String, String), ChildBudget>,
 }
 
-impl Reader {
+impl Reader<Source> {
     pub(super) async fn new(
         io: &Io,
         b: &Bound,
@@ -108,19 +108,7 @@ impl Reader {
             return Ok(None);
         }
         let Some(device) = Self::source(io, b, work).await? else { return Ok(None); };
-        Ok(Some(Self {
-            device,
-            room: work.room_id.clone(),
-            anchor: work.event_id.clone(),
-            started: false,
-            next: None,
-            pages: Vec::new(),
-            visited: HashSet::new(),
-            records: Records::default(),
-            documents: Documents::default(),
-            context_remaining: 32 * 1024,
-            last_usage: None, child_budgets: HashMap::new(),
-        }))
+        Ok(Some(Self::from_source(device, &work.room_id, &work.event_id)))
     }
 
     async fn source(io: &Io, b: &Bound, work: &SharedWorkItem) -> Result<Option<Arc<Source>>, NativeError> {
@@ -161,10 +149,25 @@ impl HistoryIo for Fixture {
 }
 
 impl<S: HistoryIo> Reader<S> {
+    pub(in crate::console) fn from_source(device: Arc<S>, room: &str, anchor: &str) -> Self {
+        Self { device, room: room.into(), anchor: anchor.into(), started: false,
+            next: None, pages: Vec::new(), visited: HashSet::new(), records: Records::default(),
+            documents: Documents::default(), context_remaining: 32 * 1024,
+            last_usage: None, child_budgets: HashMap::new() }
+    }
+    /// The request text is already in the prompt. Index only its attachment so
+    /// a request sent as a file can also be read/downloaded without duplicating it.
+    pub(in crate::console) fn request_attachment(&mut self, mut record: Value) -> Option<Value> {
+        if record["eventId"] != self.anchor || !record["attachment"].is_object() || record.get("status").is_some() {
+            return None;
+        }
+        self.documents.describe(&mut record);
+        Some(json!({"eventId":self.anchor,"attachment":record["attachment"]}))
+    }
     pub(super) fn contains_attachment(&self, event: &str) -> bool { self.documents.contains(event) }
     pub(super) fn list_attachments(&self, after: usize, limit: usize) -> Value { self.documents.list(after, limit) }
 
-    pub(super) async fn prompt(&mut self, text: String) -> String {
+    pub(in crate::console) async fn prompt(&mut self, text: String) -> String {
         self.context_remaining = self.context_remaining.saturating_sub(text.len());
         // Keep the original question intact even when it nearly fills the
         // existing input bound. The tool remains available without a preview.
@@ -180,7 +183,7 @@ impl<S: HistoryIo> Reader<S> {
         )
     }
 
-    pub(super) fn observe_context(
+    pub(in crate::console) fn observe_context(
         &mut self,
         evidence: &hagency_runtime::codex::session::ContextUsage,
     ) {
@@ -203,8 +206,13 @@ impl<S: HistoryIo> Reader<S> {
             .min(usize::MAX as u64) as usize;
     }
 
-    pub(super) async fn read(&mut self, cursor: Option<&str>) -> Result<String, NativeError> {
+    pub(in crate::console) async fn read(&mut self, cursor: Option<&str>) -> Result<String, NativeError> {
         self.read_scoped(cursor, None).await
+    }
+    pub(in crate::console) async fn read_native(&mut self, cursor: Option<&str>, evidence: Option<&hagency_runtime::codex::session::ContextUsage>) -> Result<String, NativeError> {
+        if let Some(evidence) = evidence { self.observe_context(evidence); }
+        let context = evidence.filter(|v| !v.is_root()).map(|v| (v.thread_id(), v.turn_id()));
+        self.read_scoped(cursor, context).await
     }
     pub(super) async fn read_call(&mut self, call: &hagency_runtime::codex::session::RoomHistoryCall) -> Result<String, NativeError> {
         let context = (!call.is_root()).then(|| (call.thread_id(), call.turn_id()));
@@ -407,6 +415,21 @@ mod budget_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn personal_request_attachment_is_indexed_without_duplicating_request_text() {
+        let mut reader = Reader::from_source(Arc::new(Pages), "!current:example.test", "$current");
+        let record = json!({"eventId":"$current","sender":"@member:test","body":"request.pdf","attachment":{"filename":"request.pdf","status":"not_read"}});
+        let metadata = reader.request_attachment(record.clone()).unwrap();
+        assert!(metadata.get("body").is_none());
+        assert_eq!(metadata["attachment"]["readCursor"], "attachment_0_0");
+        assert!(reader.contains_attachment("$current"));
+        assert!(reader.request_attachment(json!({"eventId":"$other","attachment":{"filename":"wrong.pdf"}})).is_none());
+        let mut unavailable = record;
+        unavailable["status"] = "unavailable_encrypted_message".into();
+        assert!(reader.request_attachment(unavailable).is_none());
+        assert_eq!(reader.list_attachments(0,16)["files"].as_array().unwrap().len(), 1);
+        assert!(reader.records.buffer.is_empty());
+    }
     fn message(id: &str, sender: &str, body: &str) -> Value {
         json!({"eventId":id,"sender":sender,"body":body})
     }

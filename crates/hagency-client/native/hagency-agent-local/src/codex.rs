@@ -14,6 +14,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 mod questions;
+mod room_mcp;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -486,6 +487,7 @@ pub fn capabilities() -> Capabilities {
 pub struct ApprovalQueue {
     sender: mpsc::Sender<PendingApproval>,
     pub(crate) questions: Option<crate::questions::QuestionQueue>,
+    pub(crate) room: Option<crate::room_tools::RoomQueue>,
 }
 pub struct PendingApproval {
     pub proposal: ToolProposal,
@@ -506,6 +508,10 @@ pub fn pending_approval(proposal: ToolProposal) -> (PendingApproval, oneshot::Re
     (PendingApproval { proposal, decision }, receiver)
 }
 impl ApprovalQueue {
+    pub fn with_room_tools(mut self, room: crate::room_tools::RoomQueue) -> Self {
+        self.room = Some(room);
+        self
+    }
     pub fn with_questions(mut self, questions: crate::questions::QuestionQueue) -> Self {
         self.questions = Some(questions);
         self
@@ -523,6 +529,7 @@ pub fn approval_queue(capacity: usize) -> Result<(ApprovalQueue, mpsc::Receiver<
         ApprovalQueue {
             sender,
             questions: None,
+            room: None,
         },
         receiver,
     ))
@@ -663,6 +670,7 @@ pub struct Session<R, W> {
     callbacks_enabled: bool,
     shared_home: Option<std::path::PathBuf>,
     web_search: bool,
+    room_mcp: Option<room_mcp::Bridge>,
     #[cfg(unix)]
     host_files: Option<host_files::HostFiles>,
 }
@@ -689,6 +697,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             callbacks_enabled: true,
             shared_home: None,
             web_search: true,
+            room_mcp: None,
             #[cfg(unix)]
             host_files: None,
         }
@@ -840,12 +849,23 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .rpc("config/read", value!({"includeLayers":false}))
             .await?;
         let c = &response["config"];
+        if self.room_mcp.is_some() && c["mcp_servers"].get(room_mcp::SERVER).is_some() {
+            return Err(Error::Profile("owner MCP server uses reserved Matrix name"));
+        }
         hagency_runtime::codex::validate_native_configuration(
             c,
             self.shared_home.is_some(),
             Some(self.web_search),
         )
         .map_err(|_| Error::Profile("provider account or web search policy differs"))
+    }
+    pub async fn enable_room_tools(&mut self, tools: hagency_runtime::room_tools::RoomTools) -> Result<()> {
+        if let Some(bridge) = &self.room_mcp {
+            return if bridge.tools() == tools { Ok(()) } else { Err(Error::Protocol("room tools changed")) };
+        }
+        if self.thread.is_some() { return Err(Error::Protocol("room tools require context preparation")); }
+        self.room_mcp = Some(room_mcp::Bridge::new(tools).await?);
+        Ok(())
     }
     pub async fn open_context(
         &mut self,
@@ -864,6 +884,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         verify(&ledger.db, scope)?;
         let context_key = self.accounting_context_key(scope, &ledger.owner)?;
         self.verify_host_environment().await?;
+        if self.room_mcp.is_some() {
+            let effective = self.rpc("config/read", value!({"includeLayers":false,"cwd":profile.cwd})).await?;
+            if effective["config"]["mcp_servers"].get(room_mcp::SERVER).is_some() {
+                return Err(Error::Profile("project MCP server uses reserved Matrix name"));
+            }
+        }
         let mut prior: Option<String> = ledger
             .db
             .query_row(
@@ -883,6 +909,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // Exact per-response usage is inherited by native child listeners.
         params["experimentalRawEvents"] = true.into();
         params["config"]["features.default_mode_request_user_input"] = true.into();
+        if let Some(bridge) = &self.room_mcp {
+            params["config"][format!("mcp_servers.{}", room_mcp::SERVER)] = bridge.config();
+        }
         // Preserve native system/project instructions and extensions. Only
         // the scoped execution policy and Hagency tools are supplied here.
         params["config"]["web_search"] = if self.web_search { "live" } else { "disabled" }.into();
@@ -1196,6 +1225,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let _ = execution;
         let started = Instant::now();
         let mut tools = TurnTools::default();
+        if queue.room.as_ref().is_some_and(|room| !room.matches(scope, dispatch))
+            || self.room_mcp.is_some() != queue.room.is_some() {
+            return Err(Error::Protocol("room tool dispatch differs"));
+        }
         self.items.clear();
         self.server_ids.clear();
         let reply=self.rpc("turn/start",value!({"threadId":thread,"input":[{"type":"text","text":input,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true},"environments":[]})).await?;
@@ -1211,6 +1244,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut text = String::new();
         let mut tree = hagency_runtime::codex::tree::TurnTree::new(thread, &turn)
             .map_err(|_| Error::Protocol("invalid root turn"))?;
+        let room_turn = match (&self.room_mcp, &queue.room) {
+            (Some(bridge), Some(room)) if room.matches(scope, dispatch) => Some(bridge.begin(room, thread, &turn)?),
+            (None, None) => None,
+            _ => return Err(Error::Protocol("room tool dispatch differs")),
+        };
         let mut root_status = None;
         let mut questions = questions::Questions::default();
         let mut answer: Option<questions::Answer> = None;
@@ -1294,6 +1332,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             };
             let event_thread = event_scope.thread.as_str();
             let event_turn = event_scope.turn.as_str();
+            if let Some(room) = &room_turn {
+                room.observe(&event_scope, &tree);
+                if method == "thread/tokenUsage/updated" && let Some(evidence) = tree.context_usage(params) {
+                    room.context(evidence);
+                }
+            }
             questions.retain_active(&tree);
             if frame.get("id").is_some() {
                 if method == hagency_runtime::codex::session::USER_INPUT_METHOD {

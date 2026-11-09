@@ -31,7 +31,18 @@ class Provider(http.server.BaseHTTPRequestHandler):
             counts[(thread, turn)] = n + 1
             sequence += 1
             response_id = 'offline-response-' + str(sequence)
-        if mode == "questions" and n == 0:
+        if mode == "room" and n < 2:
+            assert any(t.get('name') == 'mcp__hagency_matrix' for t in body['tools'])
+            if n == 1:
+                assert 'ROOM_HISTORY_RECEIPT' in json.dumps(body['input'])
+            item = {'type':'function_call','id':response_id+'-room','call_id':response_id+'-room',
+                    'namespace':'mcp__hagency_matrix', 'name':'read_room_history' if n == 0 else 'send_file',
+                    'arguments':json.dumps({'cursor':None} if n == 0 else {'call_id':'fixture-file','path':'result.txt'})}
+        elif mode == "room":
+            assert 'ROOM_FILE_RECEIPT' in json.dumps(body['input'])
+            item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
+                    'content':[{'type':'output_text','text':'ROOM_REPLY','annotations':[]}]}
+        elif mode == "questions" and n == 0:
             assert any(t.get('name') == 'request_user_input' for t in body['tools'])
             item = {'type':'function_call','id':response_id+'-ask','call_id':response_id+'-ask',
                     'name':'request_user_input','arguments':json.dumps({'questions':[{'id':'db','header':'Database','question':'Which database?',

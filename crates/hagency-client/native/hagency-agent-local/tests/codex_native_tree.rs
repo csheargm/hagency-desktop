@@ -13,6 +13,9 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+#[path = "codex_native_tree/room.rs"]
+mod room;
+
 #[tokio::test]
 #[ignore = "requires explicit installed Codex; local Responses fixture only, no account or paid model"]
 async fn native_codex_continuous_turns_measure_children_and_cold_resume_keeps_unknown_held() {

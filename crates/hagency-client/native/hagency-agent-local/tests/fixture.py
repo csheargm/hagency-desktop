@@ -30,17 +30,53 @@ with (root / 'argv').open('a') as out:
 if kind == 'claude':
     init = read()
     send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {}}})
+    room_bound = False
+    room_tools = []
+    def room_metadata(ident, message):
+        send({'type':'control_request','request_id':ident,'request':{'subtype':'mcp_message','server_name':'hagency_matrix','message':message}})
+        return read()['response']['response']['mcp_response']
     while True:
         prompt = read()
         if prompt.get('type') == 'control_request':
-            assert continuous and prompt['request']['subtype'] == 'mcp_status'
-            send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':{'mcpServers':[]}}})
+            subtype = prompt['request']['subtype']
+            if subtype == 'mcp_set_servers' and mode.startswith('room'):
+                assert prompt['request']['servers'] == {'hagency_matrix':{'type':'sdk','name':'hagency_matrix','alwaysLoad':True}}
+                room_metadata('room-init', {'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'fixture','version':'1'}}})
+                room_metadata('room-ready', {'jsonrpc':'2.0','method':'notifications/initialized'})
+                room_tools = room_metadata('room-list', {'jsonrpc':'2.0','id':1,'method':'tools/list','params':{}})['result']['tools']
+                room_bound = True
+                response = {'added':['hagency_matrix'],'removed':[],'errors':{}}
+            else:
+                assert subtype == 'mcp_status' and (continuous or mode.startswith('room'))
+                response = {'mcpServers':[{'name':'hagency_matrix','status':'connected','transport':'sdk','scope':'dynamic','source':'sdk','tools':[{'name':t['name']} for t in room_tools]}] if room_bound else []}
+            send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':response}})
             continue
         session = 'offline-session'
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
+        if mode.startswith('room'):
+            # An unrelated external MCP tool is never approved by Matrix IO.
+            send({'type':'control_request','request_id':'external','request':{'subtype':'can_use_tool','tool_name':'mcp__external__send_file','input':{'path':'result.txt'}}})
+            assert read()['response']['response']['behavior'] == 'deny'
+            for index, (name, arguments) in enumerate([('read_room_history', {'cursor':None}), ('send_file', {'call_id':'generated','path':'result.txt'})]):
+                tool = 'mcp__hagency_matrix__' + name
+                send({'type':'control_request','request_id':f'room-permission-{index}','request':{'subtype':'can_use_tool','tool_name':tool,'tool_use_id':f'room-tool-{index}','input':arguments}})
+                assert read()['response']['response']['behavior'] == 'allow'
+                ident = f'room-call-{index}'
+                send({'type':'control_request','request_id':ident,'request':{'subtype':'mcp_message','server_name':'hagency_matrix','message':{'jsonrpc':'2.0','id':index,'method':'tools/call','params':{'name':name,'arguments':arguments,'_meta':{'claudecode/toolUseId':f'room-tool-{index}'}}}}})
+                if mode == 'room_cancel':
+                    import time
+                    time.sleep(0.1)
+                    send({'type':'control_cancel_request','request_id':ident})
+                    break
+                reply = read()['response']['response']['mcp_response']['result']
+                if mode == 'room_timeout':
+                    assert reply['isError'] and 'room_tool_unavailable' in reply['content'][0]['text']
+                    break
+                assert reply['content'][0]['text'] == ('ROOM_HISTORY_RECEIPT' if index == 0 else 'ROOM_FILE_RECEIPT')
+                assert not reply['isError']
         if mode in ('approval', 'cancel', 'hold'):
             send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
             send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': approval_tool, 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})

@@ -461,6 +461,16 @@ impl Session {
         }
         Ok(())
     }
+    /// Bind once after initialize, before opening/running the native context.
+    /// Every call's host authority is supplied separately by ApprovalQueue.
+    pub async fn enable_room_tools(&mut self, tools: hagency_runtime::room_tools::RoomTools) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.enable_room_tools(tools).await,
+            Self::Claude { wire, .. } => wire.bind_room_tools(tools).await
+                .map_err(|_| Error::Protocol("Claude room tools startup")),
+            Self::Octos { .. } => Err(Error::Profile("room tools unavailable for this runtime")),
+        }
+    }
     #[cfg(unix)]
     pub fn enable_host_files(
         &mut self,
@@ -844,6 +854,9 @@ async fn run_claude(
     queue: &ApprovalQueue,
     started: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<TurnResult> {
+    if queue.room.as_ref().is_some_and(|room| !room.matches(scope, dispatch)) {
+        return Err(Error::Protocol("room tool dispatch differs"));
+    }
     wire.prompt(input)
         .await
         .map_err(|_| Error::Protocol("Claude prompt"))?;
@@ -884,6 +897,9 @@ async fn run_claude(
     .map_err(|_| Error::Protocol("Claude control"))?;
     wire.set_question_wait(610_000)
         .map_err(|_| Error::Protocol("Claude question wait"))?;
+    if queue.room.is_some() {
+        wire.enable_room_tool_callbacks().map_err(|_| Error::Protocol("Claude room tools"))?;
+    }
     if let Some(send) = started {
         let _ = send.send(());
     }
@@ -922,6 +938,48 @@ async fn run_claude(
             (message, wire.last_observation().cloned())
         };
         match message {
+            claude::Message::Mcp { request_id, .. } => {
+                let request = wire.room_tool_request(&request_id)
+                    .map_err(|_| Error::Protocol("Claude room callback"))?;
+                let mut prepared = if let Some(operation) = request.operation() {
+                    let channel = queue.room.as_ref().ok_or(Error::Protocol("Claude room authority missing"))?;
+                    // Leave the native writer its own ten-second bound so a
+                    // slow Matrix operation can return an error and reasoning
+                    // can continue instead of expiring the entire callback.
+                    let deadline = request.response_deadline().checked_sub(Duration::from_secs(10))
+                        .unwrap_or_else(tokio::time::Instant::now)
+                        .min(tokio::time::Instant::now() + Duration::from_secs(65));
+                    let reply = channel.call(operation.clone(), request.tool_use_id().unwrap_or(&request_id).into(), deadline);
+                    tokio::pin!(reply);
+                    let answer = loop {
+                        match wire.next_or_control(reply.as_mut()).await
+                            .map_err(|_| Error::Protocol("Claude room wait"))? {
+                            claude::session::ControlUpdate::Control(answer) => break Some(answer),
+                            claude::session::ControlUpdate::Message(message) => {
+                                let cancelled = matches!(&message, claude::Message::ControlCancel { request_id: id } if id == &request_id);
+                                let ended = wire.phase() == claude::session::Phase::ResultObserved;
+                                if buffered.len() >= 256 { return Err(Error::Unknown); }
+                                buffered.push_back((message, wire.last_observation().cloned()));
+                                if cancelled || ended { break None; }
+                            }
+                        }
+                    };
+                    let Some(answer) = answer else { continue; };
+                    wire.prepare_room_tool_reply(&request, answer.text(), answer.is_error())
+                } else {
+                    wire.prepare_room_metadata_reply(&request)
+                }.map_err(|_| Error::Protocol("Claude room response"))?;
+                loop {
+                    match wire.send_prepared_room_reply(&mut prepared).await
+                        .map_err(|_| Error::Protocol("Claude room response write"))? {
+                        claude::session::PreparedUpdate::WriteAccepted(_) => break,
+                        claude::session::PreparedUpdate::Message(message) => {
+                            if buffered.len() >= 256 { return Err(Error::Unknown); }
+                            buffered.push_back((message, wire.last_observation().cloned()));
+                        }
+                    }
+                }
+            }
             claude::Message::Permission {
                 request_id,
                 tool_name,
@@ -947,6 +1005,13 @@ async fn run_claude(
                     .map_err(|_| Error::Protocol("Claude question deadline"))?
                     .min(tokio::time::Instant::now() + Duration::from_secs(600));
                 let decision = async {
+                    // Only our bound, closed-schema Matrix SDK tools inherit
+                    // this dispatch's room authority. External MCP tools still
+                    // use the owner's ordinary permission policy below.
+                    if let Some(name) = tool_name.strip_prefix("mcp__hagency_matrix__") {
+                        return Decision::Tool(queue.room.is_some()
+                            && hagency_runtime::room_tools::RoomTools::history_and_files().parse(name, &input).is_ok());
+                    }
                     if let Some(questions) = questions {
                         return Decision::Question(match &queue.questions {
                             Some(channel) => {

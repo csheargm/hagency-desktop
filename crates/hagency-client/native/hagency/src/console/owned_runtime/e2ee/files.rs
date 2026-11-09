@@ -43,6 +43,11 @@ impl AgentDevice {
         transaction: &str,
         content: serde_json::Value,
     ) -> Result<String, &'static str> {
+        self.publish_room_file_with_security(room, transaction, content, true).await
+    }
+    pub(in crate::console) async fn publish_room_file_with_security(
+        &self, room: &str, transaction: &str, content: serde_json::Value, encrypted: bool,
+    ) -> Result<String, &'static str> {
         self.file_device_id()?;
         let room_id = OwnedRoomId::try_from(room).map_err(|_| "file_room_unavailable")?;
         let joined = self
@@ -50,11 +55,11 @@ impl AgentDevice {
             .get_room(&room_id)
             .ok_or("file_room_unavailable")?;
         if joined.state() != matrix_sdk::RoomState::Joined
-            || !joined
+            || joined
                 .latest_encryption_state()
                 .await
                 .map_err(|_| "file_room_unavailable")?
-                .is_encrypted()
+                .is_encrypted() != encrypted
         {
             return Err("file_room_unavailable");
         }

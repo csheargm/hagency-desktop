@@ -18,7 +18,7 @@ fn sha(bytes: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(bytes.as_ref()))
 }
 
-pub(super) trait FileIo: Send + Sync {
+pub(in crate::console) trait FileIo: Send + Sync {
     fn identity(&self) -> Result<String>;
     fn receive(
         &self,
@@ -94,7 +94,15 @@ async fn authorize(io: &Io, work: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) struct Files<S = Source> {
+/// Host-selected immutable reply scope, independent of provider/runtime type.
+pub(in crate::console) struct Conversation<'a> {
+    pub namespace: &'a str,
+    pub room: &'a str,
+    pub event: &'a str,
+    pub requester: &'a str,
+    pub thread: Option<&'a str>,
+}
+pub(in crate::console) struct Files<S> {
     source: Arc<S>,
     room: String,
     reply_to: String,
@@ -104,7 +112,7 @@ pub(super) struct Files<S = Source> {
     store: Store,
     transfer_timeout: Duration,
 }
-impl Files {
+impl Files<Source> {
     pub(super) async fn new(
         io: &Io,
         b: &Bound,
@@ -151,25 +159,31 @@ impl<S: FileIo> Files<S> {
         workspace: &Path,
         records: &Path,
     ) -> Result<Self> {
+        Self::for_room(source, Conversation { namespace: &work.assignment_id, room: &work.room_id,
+            event: &work.event_id, requester: &work.requester_mxid,
+            thread: (work.thread_root != work.event_id).then_some(work.thread_root.as_str()) }, workspace, records)
+    }
+    pub(in crate::console) fn for_room(source: Arc<S>, room: Conversation<'_>, workspace: &Path, records: &Path) -> Result<Self> {
+        // Preserve the shared-agent receipt namespace byte-for-byte.
         let scope = sha(serde_json::to_vec(&json!([
-            work.assignment_id,
-            work.room_id,
-            work.event_id,
-            work.requester_mxid
+            room.namespace,
+            room.room,
+            room.event,
+            room.requester
         ]))
         .map_err(|_| "file_scope_invalid")?);
         Ok(Self {
             source,
-            room: work.room_id.clone(),
-            reply_to: work.event_id.clone(),
-            thread: (work.thread_root != work.event_id).then(|| work.thread_root.clone()),
+            room: room.room.into(),
+            reply_to: room.event.into(),
+            thread: room.thread.map(str::to_owned),
             scope,
             workspace: Workspace::open(workspace)?,
             store: Store::open(records)?,
             transfer_timeout: TRANSFER_TIMEOUT,
         })
     }
-    pub(super) async fn handle<H: super::history::HistoryIo>(
+    pub(in crate::console) async fn handle<H: super::history::HistoryIo>(
         &mut self,
         operation: &RoomFileOperation,
         history: &super::history::Reader<H>,

@@ -115,6 +115,23 @@ fn fixture() -> (tempfile::TempDir, Arc<Endpoint>, Files<Endpoint>, PathBuf) {
     let files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
     (temp, endpoint, files, workspace)
 }
+
+#[tokio::test]
+async fn chat_files_common_constructor_preserves_receipts_and_separates_personal_bindings() {
+    let (_temp, endpoint, mut original, workspace) = fixture();
+    std::fs::write(workspace.join("report.pdf"), b"original content").unwrap();
+    let delivered = original.send(&send("report.pdf")).await.unwrap();
+    drop(original);
+    let work = work();
+    let from_scope = |namespace| Files::for_room(endpoint.clone(), Conversation {
+        namespace, room: &work.room_id, event: &work.event_id, requester: &work.requester_mxid, thread: None,
+    }, &workspace, &endpoint.records).unwrap();
+    let mut same = from_scope(&work.assignment_id);
+    assert_eq!(same.send(&send("report.pdf")).await.unwrap(), delivered);
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 1);
+    let new_binding = from_scope("personal-agent-binding-generation-2");
+    assert_eq!(new_binding.delivery(delivered["delivery_id"].as_str().unwrap()).unwrap_err(), "file_delivery_not_found");
+}
 fn send(path: &str) -> RoomFileOperation {
     RoomFileOperation::SendFile {
         call_id: "report-1".into(),

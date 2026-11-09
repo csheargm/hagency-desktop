@@ -64,6 +64,7 @@ impl Owned {
         })
     }
     pub fn stop(&mut self) -> Cleanup {
+        self.session.room_mcp.take();
         if !matches!(self.cleanup, Cleanup::Observed(report) if report.scope.whole_tree_stopped) {
             self.cleanup = match self.owner.stop(Duration::from_secs(3)) {
                 Ok(report) => Cleanup::Observed(report),

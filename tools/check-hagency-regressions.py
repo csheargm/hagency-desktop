@@ -132,6 +132,8 @@ def main():
     run("owner-dashboard", ["cargo", "test", "--locked", "--manifest-path", "crates/owner-dashboard/Cargo.toml", "--lib"], rust_tests=True)
     run("native-question-protocol", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "agent_questions::tests"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-personal", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--all-targets", "postpaid"], cwd=CLIENT, rust_tests=True)
+    run("native-personal-room-bridge", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "room_"], cwd=CLIENT, rust_tests=True)
+    run("native-personal-claude-room", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--test", "runtime", "room::"], cwd=CLIENT, rust_tests=True)
     run("native-question-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_execution::questions::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-question-recovery-auth", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "question_recovery_requires_authenticated_events_in_encrypted_rooms"], cwd=CLIENT, rust_tests=True)
     run("native-question-adapter", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--all-targets", "user_input"], cwd=CLIENT, rust_tests=True)
