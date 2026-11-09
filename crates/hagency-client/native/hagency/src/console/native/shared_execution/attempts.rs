@@ -99,14 +99,34 @@ impl SharedExecutionTransport {
     }
     #[cfg(all(test, feature = "shared-successors"))]
     pub(in crate::console::native) async fn poll_claude_successor_fixture(
-        &self, r: &OwnerResourceRegistry, resource_id: String, root: std::path::PathBuf,
-        binding: hagency_runtime::claude::account::AccountBinding, mode: &str,
+        &self,
+        r: &OwnerResourceRegistry,
+        resource_id: String,
+        root: std::path::PathBuf,
+        binding: hagency_runtime::claude::account::AccountBinding,
+        mode: &str,
     ) -> Result<SharedExecutionProgress, NativeError> {
         let b = self.io.bound().await?;
-        let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
-        let launch = launch::ClaudeLaunch::fixture(r.clone(), b.scope.profile, &resource, root, binding, mode);
-        self.process_attempt_scoped(r, attempt_io::AttemptAction::Poll { after: None }, None,
-            Some(launch::Launch::Claude(launch)), None).await
+        let resource = r
+            .resource(&b.scope.profile, resource_id)
+            .await
+            .map_err(store)?;
+        let launch = launch::ClaudeLaunch::fixture(
+            r.clone(),
+            b.scope.profile,
+            &resource,
+            root,
+            binding,
+            mode,
+        );
+        self.process_attempt_scoped(
+            r,
+            attempt_io::AttemptAction::Poll { after: None },
+            None,
+            Some(launch::Launch::Claude(launch)),
+            None,
+        )
+        .await
     }
     pub(super) async fn process_attempt(
         &self,
@@ -187,6 +207,16 @@ impl SharedExecutionTransport {
             &b.scope,
         )?;
         let c = &d.command;
+        if let Some(saved) = &d.recorded {
+            saved.validate_for(c).map_err(store)?;
+            if historical
+                .as_ref()
+                .and_then(|v| v.2.as_deref())
+                .is_some_and(|id| id != saved.observation_id)
+            {
+                return Err(invalid());
+            }
+        }
         if historical.is_none() && d.cleanup_allowed {
             let authority = b
                 .cleanup(r, &c.original_runtime_command)
@@ -224,7 +254,19 @@ impl SharedExecutionTransport {
                 command_id: c.command_id.clone(),
             });
         }
-        let a = b.cleanup(r, &c.original_runtime_command).await?;
+        // Only read-only history may advance without local evidence, after
+        // the original live-process checks. Cleanup/execution tickets retain
+        // their strict proof path and cannot skip a fence, stop or claim.
+        let a = if !d.execution_allowed && !d.cleanup_allowed {
+            let Some(authority) = b.find_cleanup(r, &c.original_runtime_command).await? else {
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
+            };
+            authority
+        } else {
+            b.cleanup(r, &c.original_runtime_command).await?
+        };
         // An unclaimed fenced attempt already yields its not_started receipt.
         let mut local = r
             .recover_shared_attempt_process(
@@ -248,19 +290,11 @@ impl SharedExecutionTransport {
                 )
                 .await
                 .map_err(store)?
-            {
-                local = Some(timeout);
+        {
+            local = Some(timeout);
         }
         b.transport.check_scope(&b.scope, false).await?;
         if let Some(saved) = &d.recorded {
-            saved.validate_for(c).map_err(store)?;
-            if historical
-                .as_ref()
-                .and_then(|v| v.2.as_deref())
-                .is_some_and(|id| id != saved.observation_id)
-            {
-                return Err(invalid());
-            }
             if let Some(latest) = &local {
                 if latest.ledger_revision > saved.ledger_revision && latest.reason.is_some() {
                     // A time-bound end is accepted only on a cleanup ticket;

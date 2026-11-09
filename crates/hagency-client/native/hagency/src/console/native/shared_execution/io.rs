@@ -606,6 +606,38 @@ impl Bound {
         self.transport.check_scope(&self.scope, false).await?;
         Ok(a)
     }
+    /// Read-only lookup used only for non-executable successor deliveries.
+    /// Current scope and immutable command checks still bracket missing history.
+    pub async fn find_cleanup(
+        &self,
+        r: &OwnerResourceRegistry,
+        c: &SharedRuntimeCommand,
+    ) -> Result<Option<ManagedCleanupAuthority>, NativeError> {
+        binding(&self.scope, c, false)?;
+        self.transport.check_scope(&self.scope, false).await?;
+        let grant = if let Some(grant) = &c.reserve_command.pool_grant {
+            grant.clone()
+        } else {
+            let project = r.find_managed_agent_project_history(
+                self.scope.profile.clone(),
+                self.scope.device.device_id().into(),
+                c.reserve_command.allocation_id.clone(),
+                c.reserve_command.allocation_receipt_digest.clone(),
+            ).await.map_err(store)?;
+            let Some(project) = project else {
+                self.transport.check_scope(&self.scope, false).await?;
+                return Ok(None);
+            };
+            project.grant_receipt
+        };
+        if digest(&grant)? != c.reserve_command.grant_receipt_digest {
+            return Err(invalid());
+        }
+        let enrollment = self.transport.enrollment(&self.scope, &grant, false).await?;
+        let result = r.find_shared_cleanup_authority(enrollment, c.clone()).await.map_err(store)?;
+        self.transport.check_scope(&self.scope, false).await?;
+        Ok(result)
+    }
 }
 pub(super) fn binding(s: &Scope, c: &SharedRuntimeCommand, fresh: bool) -> Result<(), NativeError> {
     c.validate(s.device.owner_mxid()).map_err(store)?;

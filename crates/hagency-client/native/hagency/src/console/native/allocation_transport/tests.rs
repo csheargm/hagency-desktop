@@ -586,38 +586,8 @@ impl Fixture {
         provider: &str, subject: &str, total: u64, grant_tokens: u64, lifetime_ms: u64,
         calendar: Option<hagency_core::recurring_quota::Calendar>, per_request_tokens: Option<u64>,
     ) -> Self {
-        let state = Arc::new(Mutex::new(State::default()));
-        let (origin, task) = server(state.clone()).await;
-        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-        let current = Arc::new(AtomicBool::new(true));
-        state.lock().unwrap().source = Some(current.clone());
-        let owner = NativeOwner::open_with_matrix(
-            &root.path().join("host"),
-            &origin,
-            "@owner:test",
-            Arc::new(Source(current.clone())),
-        )
-        .await
-        .unwrap();
-        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
-        let registry =
-            OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
-        let scope = transport.scope(Permission::PublishGrants).await.unwrap();
-        // Use the same canonical initializer as a fresh current account. The
-        // fixture never constructs a writable profile-domain management session.
-        let mut setup_package=package(90);
-        setup_package.permissions.push(Permission::ReadResources);
-        let setup=owner.management(setup_package).await.unwrap();
-        let journal=setup.current_setup_journal().await.unwrap();
-        let profile=crate::console::owned_agents::profile_identity(scope.device.origin(),scope.device.issuer(),scope.device.subject(),scope.device.owner_mxid()).unwrap();
-        let authority=hagency_store::owner_resources::adoption::ProfileInitializationAuthority::new(registry.clone(),scope.profile.clone(),scope.deadline,||true).unwrap();
-        registry.initialize_current_profile(authority,"current_fixture".into(),journal).await.unwrap();
-        let selection=super::super::CurrentProfileSelection::completed(&owner,registry.clone(),"current_fixture".into(),profile,scope.device.device_id().into());
-        selection.persist(&owner).unwrap();
-        drop(scope);drop(setup);drop(transport);
-        owner.suspend().await.unwrap();drop(owner);
-        let owner=selection.open_with_matrix_guarded(&root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone())),|_|Ok(())).await.unwrap();
-        let transport=AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        let Self { _root: root, owner, transport, registry, state, task, current } =
+            Self::empty_current().await;
         let scope=transport.scope(Permission::PublishGrants).await.unwrap();
         let claude = provider == hagency_runtime::claude::account::PROVIDER;
         let resource = registry
@@ -689,6 +659,42 @@ impl Fixture {
             task,
             current,
         }
+    }
+    // A real initialized current profile with no business/resource evidence.
+    async fn empty_current() -> Self {
+        let state = Arc::new(Mutex::new(State::default()));
+        let (origin, task) = server(state.clone()).await;
+        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let current = Arc::new(AtomicBool::new(true));
+        state.lock().unwrap().source = Some(current.clone());
+        let owner = NativeOwner::open_with_matrix(
+            &root.path().join("host"),
+            &origin,
+            "@owner:test",
+            Arc::new(Source(current.clone())),
+        )
+        .await
+        .unwrap();
+        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        let registry =
+            OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
+        let scope = transport.scope(Permission::PublishGrants).await.unwrap();
+        // Use the same canonical initializer as a fresh current account. The
+        // fixture never constructs a writable profile-domain management session.
+        let mut setup_package=package(90);
+        setup_package.permissions.push(Permission::ReadResources);
+        let setup=owner.management(setup_package).await.unwrap();
+        let journal=setup.current_setup_journal().await.unwrap();
+        let profile=crate::console::owned_agents::profile_identity(scope.device.origin(),scope.device.issuer(),scope.device.subject(),scope.device.owner_mxid()).unwrap();
+        let authority=hagency_store::owner_resources::adoption::ProfileInitializationAuthority::new(registry.clone(),scope.profile.clone(),scope.deadline,||true).unwrap();
+        registry.initialize_current_profile(authority,"current_fixture".into(),journal).await.unwrap();
+        let selection=super::super::CurrentProfileSelection::completed(&owner,registry.clone(),"current_fixture".into(),profile,scope.device.device_id().into());
+        selection.persist(&owner).unwrap();
+        drop(scope);drop(setup);drop(transport);
+        owner.suspend().await.unwrap();drop(owner);
+        let owner=selection.open_with_matrix_guarded(&root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone())),|_|Ok(())).await.unwrap();
+        let transport=AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        Self { _root: root, owner, transport, registry, state, task, current }
     }
     async fn reopen(self) -> Self {
         let Self { _root, owner, transport, registry, state, task, current } = self;

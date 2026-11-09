@@ -14,8 +14,26 @@ impl OwnerResourceRegistry {
         enrollment: VerifiedManagementEnrollment,
         c: SharedRuntimeCommand,
     ) -> Result<ManagedCleanupAuthority, Error> {
+        self.find_shared_cleanup_authority(enrollment, c)
+            .await?
+            .ok_or(Error::LocalAuthority)
+    }
+    /// An authenticated historical delivery may outlive all local business
+    /// records. Missing original custody is distinct from a failed gate or a
+    /// mismatched existing row, and cannot authorize any write or execution.
+    pub async fn find_shared_cleanup_authority(
+        &self,
+        enrollment: VerifiedManagementEnrollment,
+        c: SharedRuntimeCommand,
+    ) -> Result<Option<ManagedCleanupAuthority>, Error> {
         enrollment.check()?;
         c.validate(&enrollment.profile.account)?;
+        if let Some(grant) = &c.reserve_command.pool_grant
+            && (!enrollment.matches_cleanup(grant)
+                || enrollment.executor_generation < grant.executor_generation)
+        {
+            return Err(Error::LocalAuthority);
+        }
         let a = ManagedCleanupAuthority {
             expires: enrollment.expires,
             child: c.agent_reservation_id.clone(),
@@ -29,6 +47,15 @@ impl OwnerResourceRegistry {
             .store
             .call(32 * 1024, move |db| {
                 a.check(&registry)?;
+                let exists: bool = db.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM owner_managed_agents WHERE id=?1)",
+                    [&a.child],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    a.check(&registry)?;
+                    return Ok(None);
+                }
                 let b = authority::cleanup(&db.db, &a)?;
                 if b.digest != c.reserve_command_digest
                     || canonical::digest(&serde_json::to_value(&b.command)?)?
@@ -37,7 +64,7 @@ impl OwnerResourceRegistry {
                     return Err(Error::Conflict);
                 }
                 a.check(&registry)?;
-                Ok(a)
+                Ok(Some(a))
             })
             .await?;
         after(&p, &self.0, expires)?;

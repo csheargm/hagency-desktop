@@ -1,6 +1,8 @@
 //! Actual child plus fixed HTTP routes: start-reply loss never regenerates intent,
 //! an original stopped process is retained, and new work binds only to v2.
 use super::*;
+#[path = "attempt_history_tests.rs"]
+mod missing_history;
 #[derive(Default)]
 pub(super) struct State {
     pub(super) command: Option<SharedAttemptCommand>,
@@ -12,9 +14,34 @@ pub(super) struct State {
     lose_start_reply: bool,
     retire_start_caller: Option<Arc<AtomicBool>>,
     pub(super) fail_work_reports: bool,
+    historical_poll: Option<Vec<SharedAttemptCommand>>,
+    poll_after: Vec<Option<String>>,
+    refused_poll: bool,
+    retire_poll_gate: Option<Arc<AtomicBool>>,
+    requests: Vec<String>,
 }
 pub(super) fn management(path: &str, body: &Value, s: &mut super::super::State) -> Option<Value> {
+    s.shared.attempts.requests.push(path.into());
     let at = now();
+    let historical_poll = path.ends_with("/attempts/poll") && s.shared.attempts.historical_poll.is_some();
+    if historical_poll {
+        let after = body["after"].as_str();
+        s.shared.attempts.poll_after.push(after.map(str::to_owned));
+        if s.shared.attempts.refused_poll {
+            return Some(json!({"fixtureStatus":401,"error":"executor_authorization_revoked"}));
+        }
+        if let Some(gate) = &s.shared.attempts.retire_poll_gate {
+            gate.store(false, Ordering::Release);
+        }
+        // Same wrap ordering as central polling: missing evidence remains in
+        // history, while a cursor visits later commands before returning to it.
+        let selected = s.shared.attempts.historical_poll.as_ref().unwrap().iter()
+            .min_by_key(|c| (after.is_some_and(|id| c.command_id.as_str() <= id), &c.command_id)).cloned();
+        let Some(command) = selected else {
+            return Some(json!({"delivery":null,"observedAtMs":at}));
+        };
+        s.shared.attempts.command = Some(command);
+    }
     let start = path.ends_with("/attempts/start");
     let replay = s.shared.attempts.command.is_some();
     if start {
@@ -95,10 +122,11 @@ pub(super) fn management(path: &str, body: &Value, s: &mut super::super::State) 
         .attempts
         .processes
         .values()
+        .filter(|r| r.command_id == c.command_id)
         .filter(|r| selected.is_none_or(|id| id == r.observation_id))
         .max_by_key(|r| r.ledger_revision)
         .cloned();
-    let executable = if history { s.historical_executable } else { !s.shared.cleanup && recorded.is_none() };
+    let executable = if history || historical_poll { s.historical_executable } else { !s.shared.cleanup && recorded.is_none() };
     let until = if s.expired_ticket { at - 1 } else if executable { (at + 20000).min(c.expires_at_ms) } else { at + 20000 };
     // This fixture serves one selected command. Execute tickets are bounded per
     // original command, as on the server, rather than across unrelated turns.
@@ -114,7 +142,7 @@ pub(super) fn management(path: &str, body: &Value, s: &mut super::super::State) 
     assert!(s.shared.attempts.tickets.len() < 64);
     s.shared.attempts.tickets.insert(token.clone(), (executable, until));
     Some(
-        json!({"delivery":{"command":c,"commandDigest":h,"token":token,"leaseUntilMs":until,"executionAllowed":executable,"cleanupAllowed":!history&&s.shared.cleanup,"recorded":recorded},"observedAtMs":at}),
+        json!({"delivery":{"command":c,"commandDigest":if s.tamper_digest {"f".repeat(64)} else {h},"token":token,"leaseUntilMs":until,"executionAllowed":executable,"cleanupAllowed":!history&&s.shared.cleanup,"recorded":recorded},"observedAtMs":at}),
     )
 }
 pub(super) async fn predecessor() -> (Fixture, SharedExecutionTransport, SharedRuntimeCommand) {
