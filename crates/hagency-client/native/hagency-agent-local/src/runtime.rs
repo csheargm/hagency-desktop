@@ -940,7 +940,7 @@ async fn run_claude(
             cumulative: false,
         })
     };
-    for _ in 0..16384 {
+    loop {
         if buffered.is_empty()
             && controls.settled()
             && wire.phase() == claude::session::Phase::ResultObserved
@@ -1007,8 +1007,7 @@ async fn run_claude(
                             claude_controls::Update::Message((message, observation)) => {
                                 let cancelled = matches!(&message, claude::Message::ControlCancel { request_id: id } if id == &request_id);
                                 let ended = wire.phase() == claude::session::Phase::ResultObserved;
-                                if buffered.len() >= 256 { return Err(Error::Unknown); }
-                                buffered.push_back((message, observation));
+                                claude_controls::defer(&mut buffered, message, observation)?;
                                 if cancelled || ended { break None; }
                             }
                         }
@@ -1024,8 +1023,7 @@ async fn run_claude(
                         claude::session::PreparedUpdate::WriteAccepted(_) => break,
                         claude::session::PreparedUpdate::Message(message) => {
                             controls.observe_output(&message);
-                            if buffered.len() >= 256 { return Err(Error::Unknown); }
-                            buffered.push_back((message, wire.last_observation().cloned()));
+                            claude_controls::defer(&mut buffered, message, wire.last_observation().cloned())?;
                         }
                     }
                 }
@@ -1097,10 +1095,7 @@ async fn run_claude(
                         claude_controls::Update::Message((message, observation)) => {
                             let cancelled = matches!(&message,claude::Message::ControlCancel {request_id:id} if id==&request_id);
                             let ended = wire.phase() == claude::session::Phase::ResultObserved;
-                            if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
-                            }
-                            buffered.push_back((message, observation));
+                            claude_controls::defer(&mut buffered, message, observation)?;
                             if cancelled || ended {
                                 break None;
                             }
@@ -1139,10 +1134,7 @@ async fn run_claude(
                         claude::session::PreparedUpdate::WriteAccepted(_) => break,
                         claude::session::PreparedUpdate::Message(message) => {
                             controls.observe_output(&message);
-                            if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
-                            }
-                            buffered.push_back((message, wire.last_observation().cloned()));
+                            claude_controls::defer(&mut buffered, message, wire.last_observation().cloned())?;
                         }
                     }
                 }
@@ -1156,12 +1148,12 @@ async fn run_claude(
                         if block["type"] == "tool_use"
                             && let Some(id) = block["id"].as_str()
                         {
-                            requests.insert(id.to_owned());
+                            claude_controls::remember_tool(&mut requests, id)?;
                         }
                         if block["type"] == "tool_result"
                             && let Some(id) = block["tool_use_id"].as_str()
                         {
-                            returns.insert(id.to_owned());
+                            claude_controls::remember_tool(&mut returns, id)?;
                         }
                     }
                 }
@@ -1232,7 +1224,6 @@ async fn run_claude(
             _ => {}
         }
     }
-    Err(Error::Unknown)
 }
 #[allow(clippy::too_many_arguments)]
 async fn run_octos(

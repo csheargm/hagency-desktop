@@ -244,7 +244,11 @@ impl Tracker {
             };
         }
         if self.seen.len() >= MAX_STEPS {
-            return Err(());
+            // This is only a partial main-loop lower bound. Freeze it once
+            // the replay cache is full; evicting IDs could charge a duplicate
+            // again. The native result's modelUsage remains independent and
+            // can still settle the complete call, including subagents.
+            return Ok(None);
         }
         self.totals.add(counts)?;
         self.diagnostics.merge(diagnostics);

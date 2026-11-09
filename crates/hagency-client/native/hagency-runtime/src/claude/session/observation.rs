@@ -4,8 +4,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-pub const MAX_OBSERVATIONS: u64 = 16_384;
-
 #[derive(Clone)]
 pub struct ObservationSource {
     live: Arc<AtomicBool>,
@@ -74,7 +72,6 @@ impl State {
         self.sequence = self
             .sequence
             .checked_add(1)
-            .filter(|n| *n <= MAX_OBSERVATIONS)
             .ok_or(Error::Capacity)?;
         let kind = match message {
             Message::Event { kind, payload, .. } => self.usage.project(*kind, payload),

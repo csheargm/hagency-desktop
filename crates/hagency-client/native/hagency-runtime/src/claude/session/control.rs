@@ -119,7 +119,7 @@ impl State {
         self.entries
             .retain(|_, callback| matches!(callback.stage, Stage::Waiting | Stage::Prepared(_)));
         if self.entries.len() >= MAX_CALLBACKS
-            || self.seen.len() >= super::MAX_OBSERVATIONS as usize
+            || self.seen.len() >= super::MAX_CALLBACK_IDS
         {
             return Err(Error::Capacity);
         }

@@ -41,6 +41,11 @@ if kind == 'claude':
         response = {'subtype':'error','request_id':request['request_id'],'error':'refused'} if refused else {'subtype':'success','request_id':request['request_id'],'response':{'still_queued':[]}}
         send({'type':'control_response','response':response})
         return not refused
+    def long_stream(session, marker):
+        send({'type':'stream_event','session_id':session,'event':{'type':'message_start','message':{'id':'stream-message'}}})
+        for n in range(20_000):
+            send({'type':'stream_event','session_id':session,'event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'streamed text '}}})
+        (root / marker).write_text('flushed')
     while True:
         prompt = read()
         if prompt.get('type') == 'control_request':
@@ -63,6 +68,12 @@ if kind == 'claude':
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
         aborted = False
+        if mode in ('long_stream', 'long_stream_unknown'):
+            long_stream(session, 'stream-drained')
+        if mode == 'long_usage':
+            for n in range(1200):
+                send({'type':'assistant','session_id':session,'message':{'id':f'usage-{n}','content':[],
+                    'usage':{'input_tokens':10,'output_tokens':1,'cache_read_input_tokens':0,'cache_creation_input_tokens':0}}})
         if mode.startswith('control_'):
             question = 'question' in mode
             tool = 'AskUserQuestion' if question else 'Write'
@@ -92,18 +103,22 @@ if kind == 'claude':
                     time.sleep(0.1)
                     send({'type':'control_cancel_request','request_id':ident})
                     break
+                if mode == 'room_stream_wait':
+                    long_stream(session, f'room-drained-{index}')
                 reply = read()['response']['response']['mcp_response']['result']
                 if mode == 'room_timeout':
                     assert reply['isError'] and 'room_tool_unavailable' in reply['content'][0]['text']
                     break
                 assert reply['content'][0]['text'] == ('ROOM_HISTORY_RECEIPT' if index == 0 else 'ROOM_FILE_RECEIPT')
                 assert not reply['isError']
-        if mode in ('approval', 'cancel', 'hold'):
+        if mode in ('approval', 'cancel', 'hold', 'long_wait'):
             send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
             send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': approval_tool, 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
             if mode == 'cancel':
                 send({'type': 'control_cancel_request', 'request_id': 'approval-1'})
             else:
+                if mode == 'long_wait':
+                    long_stream(session, 'stream-drained')
                 response = read()['response']['response']
                 (root / 'decision').write_text(json.dumps(response))
                 if response['behavior'] == 'allow':
@@ -120,10 +135,12 @@ if kind == 'claude':
             else:
                 response = read()['response']['response']
                 (root / 'question-answer').write_text(json.dumps(response))
-        usage = {} if mode == 'unknown' else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        usage = {} if mode in ('unknown', 'long_stream_unknown') else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
         result = {'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
         if aborted:
             result.update({'is_error':True,'terminal_reason':'aborted_streaming'})
+        if mode == 'long_usage':
+            result['modelUsage'] = {'main':{'inputTokens':12000,'outputTokens':1200,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
         if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof'):
             count_file = root / 'count'
             count = int(count_file.read_text()) + 1 if count_file.exists() else 1

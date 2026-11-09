@@ -119,7 +119,7 @@ impl State {
         if self.seen.contains(id) {
             return Err(Error::Identity);
         }
-        if self.seen.len() >= super::MAX_OBSERVATIONS as usize {
+        if self.seen.len() >= super::MAX_CALLBACK_IDS {
             return Err(Error::Capacity);
         }
         self.seen.insert(id.into());

@@ -14,13 +14,16 @@ pub use control::{
 };
 pub use interrupt::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};
-pub use observation::{MAX_OBSERVATIONS, Observation, ObservationKind, ObservationSource};
+pub use observation::{Observation, ObservationKind, ObservationSource};
 pub use room_mcp::{PreparedRoomReply, RoomToolRequest};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 pub use usage::{UsageCounts, UsageCoverage, UsageDiagnostics, UsageEvidence};
 
 const INITIALIZE_ID: &str = "hagency-claude-initialize-1";
+// These IDs are retained for replay detection. Stream observations retain only
+// their latest receipt and must not share this cumulative storage bound.
+const MAX_CALLBACK_IDS: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

@@ -19,6 +19,8 @@ mod postpaid;
 mod room;
 #[path = "runtime/controls.rs"]
 mod controls;
+#[path = "runtime/long_stream.rs"]
+mod long_stream;
 
 struct Fixture {
     root: tempfile::TempDir,

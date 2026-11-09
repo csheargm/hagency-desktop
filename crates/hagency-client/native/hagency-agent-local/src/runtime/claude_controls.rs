@@ -10,6 +10,49 @@ use hagency_runtime::claude::{
 use std::{future::Future, pin::Pin};
 
 pub(super) type Observed = (Message, Option<Observation>);
+
+pub(super) fn remember_tool(ids: &mut std::collections::BTreeSet<String>, id: &str) -> Result<()> {
+    // Preserve the previous memory bound for diagnostic identities while
+    // allowing a text stream to outlive the former total-event ceiling.
+    if !ids.contains(id) && ids.len() >= 16_384 {
+        return Err(Error::Protocol("Claude tool diagnostic capacity"));
+    }
+    ids.insert(id.to_owned());
+    Ok(())
+}
+
+/// The native driver has already consumed lifecycle and usage observations,
+/// and Controls has already published text deltas. Only callbacks, final
+/// results and tool-count diagnostics need a later host dispatch. Retaining
+/// every text frame here makes an unrelated long stream exhaust a waiting
+/// approval's queue.
+pub(super) fn defer(
+    buffered: &mut std::collections::VecDeque<Observed>,
+    message: Message,
+    observation: Option<Observation>,
+) -> Result<()> {
+    let needed = match &message {
+        Message::Permission { .. } | Message::Mcp { .. } => true,
+        Message::Event { kind, payload, .. } => {
+            *kind == hagency_runtime::claude::EventKind::Result
+                || payload["message"]["content"]
+                    .as_array()
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|block| {
+                            block["type"] == "tool_use" || block["type"] == "tool_result"
+                        })
+                    })
+        }
+        _ => false,
+    };
+    if needed {
+        if buffered.len() >= 256 {
+            return Err(Error::Unknown);
+        }
+        buffered.push_back((message, observation));
+    }
+    Ok(())
+}
 // Keep native events inline on this hot read path. Boxing every text delta
 // would add an allocation solely to shrink the occasional empty control arm.
 #[allow(clippy::large_enum_variant)]

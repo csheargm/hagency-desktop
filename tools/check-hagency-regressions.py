@@ -136,6 +136,7 @@ def main():
     run("native-run-controls", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "controls::"], cwd=CLIENT, rust_tests=True)
     run("native-shared-run-controls", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "session", "run_controls::"], cwd=CLIENT, rust_tests=True)
     run("native-claude-run-controls", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--test", "runtime", "controls::"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-long-stream", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--test", "runtime", "long_stream::"], cwd=CLIENT, rust_tests=True)
     run("native-run-preview", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "live_text::"], cwd=CLIENT, rust_tests=True)
     run("native-cooperative-host-files", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "codex::host_files::tests"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-personal", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--all-targets", "postpaid"], cwd=CLIENT, rust_tests=True)
@@ -215,6 +216,7 @@ def main():
     run("native-chat-file-service", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "chat_files_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-chat-file-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_chat_files_cross_", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-claude-room-tools", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_session", "room_mcp", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-usage", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_usage"], cwd=CLIENT, rust_tests=True)
     run("native-claude-interrupt", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_session", "--test", "claude_owned", "native_claude_interrupt", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-host", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "--", "--test-threads=1", "typed_http_postpaid_overrun", "typed_http_runtime_unreported_failure", "typed_http_runtime_budget_notice"], cwd=CLIENT, rust_tests=True)
     if not reached_start:

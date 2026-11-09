@@ -262,14 +262,7 @@ async fn native_claude_usage_bounds() {
         event(&mut d, &mut p, step("later")).await;
         assert_eq!(counts(usage(&d)), [None, None, Some(40), Some(60)]);
     }
-    for mode in [
-        "conflict",
-        "missing-id",
-        "long-id",
-        "overflow",
-        "models",
-        "steps",
-    ] {
+    for mode in ["conflict", "missing-id", "long-id", "overflow", "models"] {
         let (mut d, mut p) = running().await;
         match mode {
             "conflict" => {
@@ -296,11 +289,6 @@ async fn native_claude_usage_bounds() {
                 v["modelUsage"] =
                     Value::Object((0..65).map(|n| (n.to_string(), json!({}))).collect());
                 event(&mut d, &mut p, v).await;
-            }
-            "steps" => {
-                for n in 0..1025 {
-                    event(&mut d, &mut p, step(&n.to_string())).await;
-                }
             }
             _ => unreachable!(),
         }
@@ -334,9 +322,13 @@ async fn native_claude_usage_bounds() {
         d.last_observation().unwrap().kind(),
         ObservationKind::Invalidated
     ));
+}
+
+#[tokio::test]
+async fn native_claude_long_stream_keeps_source_and_sequence() {
     let (mut d, mut p) = running().await;
     let source = d.observation_source().unwrap();
-    for _ in 1..MAX_OBSERVATIONS {
+    for _ in 0..40_000 {
         event(
             &mut d,
             &mut p,
@@ -344,12 +336,76 @@ async fn native_claude_usage_bounds() {
         )
         .await;
     }
-    p.output
-        .write_all(&encoded(
-            json!({"type":"system","subtype":"status","session_id":"same-session"}),
-        ))
-        .await
-        .unwrap();
-    assert!(matches!(d.next_message().await, Err(Error::Capacity)));
-    assert!(source.is_retired());
+    assert_eq!(d.last_observation().unwrap().sequence(), 40_001);
+    assert!(!source.is_retired());
+    assert!(d.matches_observation_source(&source));
+    event(&mut d, &mut p, result()).await;
+    assert_eq!(d.last_observation().unwrap().sequence(), 40_002);
+    assert_eq!(d.phase(), Phase::ResultObserved);
+    assert_eq!(
+        counts(usage(&d)),
+        [Some(101), Some(202), Some(303), Some(404)]
+    );
+}
+
+#[tokio::test]
+async fn native_claude_partial_cache_saturation_keeps_final_usage_and_duplicate_checks() {
+    for finish in ["reported", "missing", "conflict"] {
+        let (mut d, mut p) = running().await;
+        for n in 0..1024 {
+            event(&mut d, &mut p, step(&n.to_string())).await;
+        }
+        assert_eq!(usage(&d).steps(), 1024);
+        assert_eq!(
+            counts(usage(&d)),
+            [Some(10_240), None, Some(20_480), Some(30_720)]
+        );
+        for n in 1024..4096 {
+            event(&mut d, &mut p, step(&n.to_string())).await;
+            assert!(matches!(
+                d.last_observation().unwrap().kind(),
+                ObservationKind::Ignored
+            ));
+        }
+        // Never evict original IDs and count them as fresh usage again.
+        event(&mut d, &mut p, step("0")).await;
+        assert!(matches!(
+            d.last_observation().unwrap().kind(),
+            ObservationKind::Ignored
+        ));
+        if finish == "conflict" {
+            let mut conflicting = step("0");
+            conflicting["message"]["usage"]["input_tokens"] = json!(11);
+            event(&mut d, &mut p, conflicting).await;
+            event(&mut d, &mut p, result()).await;
+            assert!(matches!(
+                d.last_observation().unwrap().kind(),
+                ObservationKind::Invalidated
+            ));
+            continue;
+        }
+        let mut final_result = result();
+        final_result["modelUsage"] = if finish == "reported" {
+            json!({"main":{"inputTokens":40_960,"outputTokens":200,
+                "cacheReadInputTokens":81_920,"cacheCreationInputTokens":122_880}})
+        } else {
+            json!({"main":{"inputTokens":40_960}})
+        };
+        event(&mut d, &mut p, final_result).await;
+        let evidence = usage(&d);
+        assert_eq!(evidence.steps(), 1024, "bounded partial cache is retained");
+        assert!(evidence.coverage() == UsageCoverage::ReportedModelsResult);
+        assert_eq!(
+            evidence.diagnostics().has_missing_fields(),
+            finish == "missing"
+        );
+        assert_eq!(
+            counts(evidence),
+            if finish == "reported" {
+                [Some(40_960), Some(200), Some(81_920), Some(122_880)]
+            } else {
+                [Some(40_960), None, None, None]
+            }
+        );
+    }
 }
