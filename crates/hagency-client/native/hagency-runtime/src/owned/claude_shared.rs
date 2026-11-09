@@ -68,7 +68,18 @@ impl SharedClaudePolicy {
         }
         Ok(args)
     }
-    fn matches(self, launch: &Launch) -> bool {
+    pub fn arguments_resuming(self, model: &str, effort: &str, resume: Option<&str>) -> Result<Vec<String>, claude::Error> {
+        let mut args = self.arguments(model, effort)?;
+        if let Some(id) = resume {
+            if id.is_empty() || id.starts_with('-') || id.len() > 128
+                || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                return Err(claude::Error::Input);
+            }
+            args.extend(["--resume".into(), id.into()]);
+        }
+        Ok(args)
+    }
+    fn matches_resume(self, launch: &Launch, resume: Option<&str>) -> bool {
         let args: Option<Vec<&str>> = launch.arguments.iter().map(|v| v.to_str()).collect();
         let Some(args) = args else {
             return false;
@@ -82,7 +93,7 @@ impl SharedClaudePolicy {
         else {
             return false;
         };
-        self.arguments(model, effort)
+        self.arguments_resuming(model, effort, resume)
             .is_ok_and(|expected| expected == args)
             && [
                 "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
@@ -106,6 +117,7 @@ pub(super) struct State {
     pub(super) source: SharedTextProcessSource,
     policy: SharedClaudePolicy,
     account: Option<AccountObservation>,
+    resume: Option<String>,
 }
 
 impl OwnedClaudeSession {
@@ -115,7 +127,16 @@ impl OwnedClaudeSession {
         limits: Limits,
         policy: SharedClaudePolicy,
     ) -> Result<Self, StartError> {
-        if !policy.matches(launch) {
+        Self::spawn_shared_resuming(guardian, launch, limits, policy, None)
+    }
+    pub fn spawn_shared_resuming(
+        guardian: &Path,
+        launch: &Launch,
+        limits: Limits,
+        policy: SharedClaudePolicy,
+        resume: Option<&str>,
+    ) -> Result<Self, StartError> {
+        if !policy.matches_resume(launch, resume) {
             return Err(StartError::Settings);
         }
         let mut session = Self::spawn(guardian, launch, limits)?;
@@ -123,6 +144,7 @@ impl OwnedClaudeSession {
             source: SharedTextProcessSource::new(),
             policy,
             account: None,
+            resume: resume.map(str::to_owned),
         });
         session
             .enable_native_completion()
@@ -130,7 +152,13 @@ impl OwnedClaudeSession {
         session
             .enable_continuous_session()
             .map_err(|_| StartError::Settings)?;
+        if let Some(id) = resume {
+            session.expect_shared_resume(id).map_err(|_| StartError::Settings)?;
+        }
         Ok(session)
+    }
+    pub fn shared_resume_id(&self) -> Result<Option<&str>, Error> {
+        Ok(self.shared.as_ref().ok_or(Error::State)?.resume.as_deref())
     }
     pub fn shared_process_source(&self) -> Result<SharedTextProcessSource, Error> {
         Ok(self.shared.as_ref().ok_or(Error::State)?.source.clone())

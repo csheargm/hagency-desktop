@@ -2,10 +2,10 @@
 use super::*;
 type Result<T> = std::result::Result<T, Error>;
 const MAX_EXACT: u64 = JSON_SAFE_MAX;
-fn key(value: &str) -> Result<()> {
+pub(super) fn key(value: &str) -> Result<()> {
     Ok(identifier(value, 128)?)
 }
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()

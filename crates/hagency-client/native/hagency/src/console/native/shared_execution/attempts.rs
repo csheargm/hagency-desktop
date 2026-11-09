@@ -97,6 +97,17 @@ impl SharedExecutionTransport {
         )
         .await
     }
+    #[cfg(all(test, feature = "shared-successors"))]
+    pub(in crate::console::native) async fn poll_claude_successor_fixture(
+        &self, r: &OwnerResourceRegistry, resource_id: String, root: std::path::PathBuf,
+        binding: hagency_runtime::claude::account::AccountBinding, mode: &str,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
+        let launch = launch::ClaudeLaunch::fixture(r.clone(), b.scope.profile, &resource, root, binding, mode);
+        self.process_attempt_scoped(r, attempt_io::AttemptAction::Poll { after: None }, None,
+            Some(launch::Launch::Claude(launch)), None).await
+    }
     pub(super) async fn process_attempt(
         &self,
         r: &OwnerResourceRegistry,
@@ -104,7 +115,7 @@ impl SharedExecutionTransport {
         historical: Option<(String, String, Option<String>)>,
         prepared: Option<super::super::managed_runtime::PreparedLaunch>,
     ) -> Result<SharedExecutionProgress, NativeError> {
-        self.process_attempt_scoped(r, action, historical, prepared, None)
+        self.process_attempt_scoped(r, action, historical, prepared.map(Into::into), None)
             .await
     }
     async fn process_attempt_scoped(
@@ -112,7 +123,7 @@ impl SharedExecutionTransport {
         r: &OwnerResourceRegistry,
         action: attempt_io::AttemptAction,
         historical: Option<(String, String, Option<String>)>,
-        prepared: Option<super::super::managed_runtime::PreparedLaunch>,
+        prepared: Option<launch::Launch>,
         caller_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<SharedExecutionProgress, NativeError> {
         if !cfg!(feature = "shared-successors") {
@@ -374,7 +385,7 @@ impl SharedExecutionTransport {
             return Err(failure(409, "shared_execution_resource_changed"));
         }
         let launch = if let Some(prepared) = prepared {
-            launch::Launch::from(prepared)
+            prepared
         } else {
             let root = self
                 .manager

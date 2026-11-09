@@ -7,6 +7,7 @@ use hagency_runtime::owned::{ManagedProcessState, OwnedClaudeSession};
 use tokio::sync::{oneshot, watch};
 mod authority;
 mod bridge;
+mod session_route;
 pub(super) use authority::Claimed;
 use authority::{Active, Authority, Live};
 
@@ -23,7 +24,15 @@ pub(super) async fn run(
     sender: oneshot::Sender<Result<SharedExecutionProgress, NativeError>>,
 ) -> Result<(), DrainFailure> {
     let mut sender = Some(sender);
-    let mut process = match launch.spawn(until) {
+    let session = guarded(&mut cancel, until, || claimed.prepare_session(&io, &launch, until)).await;
+    let session = match session {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = sender.take().unwrap().send(Err(error));
+            return Err(DrainFailure::Unknown);
+        }
+    };
+    let mut process = match launch.spawn(until, session.resume_id()) {
         Ok(p) => p,
         Err(error) => {
             let _ = sender.take().unwrap().send(Err(error));
@@ -74,7 +83,7 @@ pub(super) async fn run(
                 .send(Ok(SharedExecutionProgress::Running {
                     command_id: authority.id().into(),
                 }));
-            work(&mut active, &launch, &mut process, &mut cancel).await
+            work(&mut active, &launch, &mut process, session, &mut cancel).await
         }
         Err(error) => Err(error),
     };
@@ -111,6 +120,7 @@ async fn work(
     active: &mut Active,
     launch: &launch::ClaudeLaunch,
     process: &mut OwnedClaudeSession,
+    mut session: SharedClaudeSession,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<(), NativeError> {
     let live = active.live.clone();
@@ -224,6 +234,10 @@ async fn work(
             })
             .await?;
     };
+    active.wait(cancel, async {
+        let (_, proof, _) = live.proof().await?;
+        session.attach(proof, work.clone(), process).await.map_err(store)
+    }).await?;
     let mut history = active
         .wait(cancel, async {
             let (b, _, _) = live.proof().await?;
@@ -236,7 +250,7 @@ async fn work(
             if cfg!(feature = "shared-context") && work.encrypted {
                 let mut text = super::e2ee::input(&live.io, &b, &work).await?;
                 if let Some(reader) = &mut history {
-                    text = reader.prompt(text).await;
+                    text = if session.is_resuming() { reader.followup_prompt(text) } else { reader.prompt(text).await };
                 }
                 let (_, fresh, _) = live.proof().await?;
                 let prepared = if history.is_some() {
@@ -406,7 +420,7 @@ async fn work(
         }
     };
     let text = issued.model_input().to_owned();
-    let (mut host, mut capture) = bridge::capture(live.clone(), launch.policy, issued);
+    let (mut host, mut capture) = bridge::capture(live.clone(), launch.policy, issued, session);
     let (started, mut began) = oneshot::channel();
     let result=active.wait(cancel,async{
         let native=claude_turn::run(process,&launch.profile,&scope,&work.id,&text,&queue,Some(started),Some(stream),&mut host,&mut capture);

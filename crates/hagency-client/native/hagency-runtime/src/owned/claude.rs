@@ -80,6 +80,9 @@ impl OwnedClaudeSession {
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
     }
+    pub(super) fn expect_shared_resume(&mut self, id: &str) -> Result<(), Error> {
+        self.session.expect_resume(id)
+    }
     /// Corroborate a host-authenticated account binding with this process's
     /// native initialization. The host must additionally retain and recheck
     /// the original selected credential namespace and launch policy. This

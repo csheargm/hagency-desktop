@@ -6,7 +6,7 @@ use hagency_runtime::{
 };
 use sha2::{Digest, Sha256};
 
-async fn fixture_claude() -> (Fixture, AccountBinding) {
+pub(super) async fn fixture_claude() -> (Fixture, AccountBinding) {
     let temp = tempfile::tempdir().unwrap();
     let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
     let profile = authority('a');

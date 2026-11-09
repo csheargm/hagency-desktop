@@ -7,10 +7,10 @@ use hagency_runtime::{
 };
 
 pub struct SharedNativeSession {
-    work: SharedWorkItem,
-    source: SharedTextProcessSource,
-    process_digest: String,
-    previous: Option<String>,
+    pub(super) work: SharedWorkItem,
+    pub(super) source: SharedTextProcessSource,
+    pub(super) process_digest: String,
+    pub(super) previous: Option<String>,
 }
 impl SharedNativeSession {
     pub fn is_resuming(&self) -> bool {
@@ -39,7 +39,7 @@ impl SharedNativeSession {
     }
 }
 
-fn scope_digest(
+pub(super) fn scope_digest(
     a: &VerifiedSharedActivity,
     w: &SharedWorkItem,
     settings: &str,
@@ -57,22 +57,46 @@ fn scope_digest(
             sink.command().tool_policy.as_ref().map(|p| p.mode.as_str()),
         )?,
     };
-    // Ordinary room messages share one conversation per requester. An explicit
-    // Matrix thread has its own native session. No member can select another
-    // requester's context merely by replying in the same room/thread.
-    let thread = (w.thread_root != w.event_id).then_some(&w.thread_root);
+    scope_key(root, &a.enrollment, a.sink.provider(), policy, settings,
+        Conversation::work(w))
+}
+
+pub(super) struct Conversation<'a> {
+    pub room: &'a str,
+    pub binding: &'a Option<SharedRoomBinding>,
+    pub requester: &'a str,
+    pub thread: Option<&'a str>,
+    pub encrypted: bool,
+}
+impl<'a> Conversation<'a> {
+    pub(super) fn work(w: &'a SharedWorkItem) -> Self {
+        Self { room: &w.room_id, binding: &w.room_binding, requester: &w.requester_mxid,
+            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()), encrypted: w.encrypted }
+    }
+    pub(super) fn route(w: &'a SharedSessionRoute) -> Self {
+        Self { room: &w.room_id, binding: &w.room_binding, requester: &w.requester_mxid,
+            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()), encrypted: w.encrypted }
+    }
+}
+pub(super) fn scope_key(root: &SharedRuntimeCommand, e: &VerifiedManagementEnrollment,
+    provider: &str, policy: &str, settings: &str, room: Conversation<'_>) -> Result<String, Error> {
+    // Flat room messages share one context per requester; Matrix threads remain
+    // separate. Effective provider, policy and executor identity all participate.
     Ok(canonical::digest(&json!({
-        "version":1,"runtime":root.runtime()?,"profile":a.enrollment.profile.digest,
-        "executor":a.enrollment.executor_device_id,"generation":a.enrollment.executor_generation,
-        "provider":a.sink.provider(),"resource":root.reserve_command.resource_id,
+        "version":1,"runtime":root.runtime()?,"profile":e.profile.digest,
+        "executor":e.executor_device_id,"generation":e.executor_generation,
+        "provider":provider,"resource":root.reserve_command.resource_id,
         "resourceRevision":root.reserve_command.resource_revision,
         "assignment":root.assignment_id,"assignmentGeneration":root.assignment_generation,
-        "settings":settings,"policy":policy,"room":w.room_id,"binding":w.room_binding,
-        "requester":w.requester_mxid,"thread":thread,"encrypted":w.encrypted,
+        "settings":settings,"policy":policy,"room":room.room,"binding":room.binding,
+        "requester":room.requester,"thread":room.thread,"encrypted":room.encrypted,
     }))?)
 }
 
 fn previous(db: &Connection, scope: &str) -> Result<Option<String>, Error> {
+    Ok(previous_checkpoint(db, scope)?.map(|(native, _)| native))
+}
+pub(super) fn previous_checkpoint(db: &Connection, scope: &str) -> Result<Option<(String, SharedWorkReceipt)>, Error> {
     type Row = (
         Option<String>,
         Option<String>,
@@ -124,7 +148,7 @@ fn previous(db: &Connection, scope: &str) -> Result<Option<String>, Error> {
         return Ok(None);
     }
     ResumeThreadId::new(native.clone()).map_err(|_| Error::Conflict)?;
-    Ok(Some(native))
+    Ok(Some((native, receipt)))
 }
 
 impl OwnerResourceRegistry {
@@ -222,8 +246,10 @@ impl SharedCallSink {
             .ok_or(Error::LocalAuthority)?
             .to_owned();
         ResumeThreadId::new(native.clone()).map_err(|_| Error::LocalAuthority)?;
+        self.persist_native_checkpoint(session.process_digest, native).await
+    }
+    pub(super) async fn persist_native_checkpoint(&self, process: String, native: String) -> Result<(), Error> {
         let work = self.custody.work.clone();
-        let process = session.process_digest;
         self.custody.call.scope.registry.store.call(64*1024,move |db| {
             let tx=db.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let payload:String=tx.query_row("SELECT payload FROM owner_shared_work_observations WHERE work_id=?1 ORDER BY ledger_revision DESC LIMIT 1",[&work.id],|r|r.get(0))?;

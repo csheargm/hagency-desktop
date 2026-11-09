@@ -158,6 +158,17 @@ impl<R, W, E> SessionDriver<R, W, E> {
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
+    /// Pin the CLI's explicit resume argument before initialization or input.
+    /// The original system/init must report this same native identity.
+    pub(crate) fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
+        if self.phase != Phase::New || self.session_id.is_some()
+            || id.is_empty() || id.starts_with('-') || id.len() > 128
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            return Err(Error::Identity);
+        }
+        self.session_id = Some(id.to_owned());
+        Ok(())
+    }
     pub fn termination(&self) -> Option<&Termination> {
         self.wire.termination()
     }
@@ -219,7 +230,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 self.completion.observe(*kind, payload)?;
             }
             Message::Permission { request_id, .. } => {
-                if self.session_id.is_none()
+                if self.session_id.is_none() || self.awaiting_init
                     || self.room_mcp.as_ref().is_some_and(|s| s.seen(request_id))
                 {
                     return Err(Error::Identity);

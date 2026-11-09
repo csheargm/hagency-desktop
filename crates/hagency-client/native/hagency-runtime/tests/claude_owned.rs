@@ -458,10 +458,16 @@ fn shared_launch(root: &Path, mode: &str) -> Launch {
     value
 }
 async fn shared_session(root: &Path, mode: &str, until: Instant) -> OwnedClaudeSession {
+    shared_session_resuming(root, mode, until, None).await
+}
+async fn shared_session_resuming(root: &Path, mode: &str, until: Instant, resume: Option<&str>) -> OwnedClaudeSession {
     use hagency_runtime::{claude::account::AccountBinding, owned::SharedClaudePolicy};
     let policy = SharedClaudePolicy::Standard { web: false };
+    let mut launch = shared_launch(root, mode);
+    launch.arguments = policy.arguments_resuming("sonnet", "medium", resume).unwrap()
+        .into_iter().map(Into::into).collect();
     let mut session =
-        OwnedClaudeSession::spawn_shared(&binary(), &shared_launch(root, mode), limits(), policy)
+        OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy, resume)
             .unwrap();
     session.initialize().await.unwrap();
     let binding = AccountBinding::from_authenticated_profile(
@@ -487,6 +493,36 @@ async fn shared_session(root: &Path, mode: &str, until: Instant) -> OwnedClaudeS
     );
     session.install_renewable_shared_activity(1, until).unwrap();
     session
+}
+#[tokio::test]
+async fn shared_claude_resume_rejects_mismatched_launch_and_native_identity() {
+    use hagency_runtime::owned::SharedClaudePolicy;
+    let root = tempfile::tempdir().unwrap();
+    let policy = SharedClaudePolicy::Standard { web: false };
+    let mut launch = shared_launch(root.path(), "shared-session");
+    assert!(OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy,
+        Some("original-native")).is_err());
+    launch.arguments = policy.arguments_resuming("sonnet", "medium", Some("original-native"))
+        .unwrap().into_iter().map(Into::into).collect();
+    assert!(OwnedClaudeSession::spawn_shared(&binary(), &launch, limits(), policy).is_err());
+    assert!(OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy,
+        Some("different-native")).is_err());
+    for bad in ["", "../other", "--dangerously-skip-permissions", "with space", "a\nb"] {
+        // Leading '-' is a valid identifier character but may never be a CLI option.
+        assert!(policy.arguments_resuming("sonnet", "medium", Some(bad)).is_err(), "{bad}");
+    }
+    assert!(!root.path().join("shared-claude.entered").exists());
+    fs::write(root.path().join("original-native.json"), b"[]").unwrap();
+    for marker in ["shared-claude.wrong_identity", "shared-claude.early_permission"] {
+        fs::write(root.path().join(marker), b"offline").unwrap();
+        let mut session = shared_session_resuming(root.path(), "shared-session",
+            Instant::now() + Duration::from_secs(5), Some("original-native")).await;
+        session.prompt("new work").await.unwrap();
+        assert!(matches!(session.next_message().await, Err(Error::Identity)));
+        assert!(session.observation_source().is_err());
+        cleanup(session.stop());
+        fs::remove_file(root.path().join(marker)).unwrap();
+    }
 }
 #[tokio::test]
 async fn shared_claude_original_native_source_requires_account_policy_and_idle() {

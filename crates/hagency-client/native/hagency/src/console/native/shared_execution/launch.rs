@@ -317,7 +317,13 @@ impl ClaudeLaunch {
             .as_ref()
             .ok_or_else(|| failure(409, "provider_identity_unavailable"))
     }
-    pub fn spawn(&self, until: Instant) -> Result<OwnedClaudeSession, NativeError> {
+    pub fn session_settings_digest(&self) -> Result<String, NativeError> {
+        digest(&serde_json::json!({"version":1,"executable":self.profile.executable,
+            "home":self.profile.home,"config":self.profile.codex_home,"cwd":self.profile.cwd,
+            "model":self.profile.model,"effort":self.profile.effort,"policy":self.policy.name(),
+            "roomTools":cfg!(feature = "shared-context")}))
+    }
+    pub fn spawn(&self, until: Instant, resume: Option<&str>) -> Result<OwnedClaudeSession, NativeError> {
         self.check()?;
         self.binding()?
             .check()
@@ -351,7 +357,7 @@ impl ClaudeLaunch {
             directory: self.profile.cwd.clone(),
             arguments: self
                 .policy
-                .arguments(&self.profile.model, &self.profile.effort)
+                .arguments_resuming(&self.profile.model, &self.profile.effort, resume)
                 .map_err(|_| invalid())?
                 .into_iter()
                 .map(Into::into)
@@ -367,7 +373,7 @@ impl ClaudeLaunch {
         } else {
             guardian
         };
-        OwnedClaudeSession::spawn_shared(&guardian, &launch, Default::default(), self.policy)
+        OwnedClaudeSession::spawn_shared_resuming(&guardian, &launch, Default::default(), self.policy, resume)
             .map_err(|_| failure(409, "shared_execution_launch_unavailable"))
     }
 }

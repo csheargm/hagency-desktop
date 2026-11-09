@@ -6,6 +6,8 @@ use hagency_runtime::{
 mod claude;
 mod native_session;
 pub use native_session::SharedNativeSession;
+mod claude_native_session;
+pub use claude_native_session::SharedClaudeSession;
 
 enum Source {
     Codex(ObservationSource),
@@ -34,6 +36,7 @@ pub struct SharedCallSink {
     terminal: Option<TurnResult>,
     usage: Option<Usage>,
     claude_result: Option<bool>,
+    claude_baseline: Option<[u64; 4]>,
     output: String,
     output_overflow: bool,
     last_text_item: Option<String>,
@@ -88,6 +91,7 @@ impl SharedCallCustody {
             terminal: None,
             usage: None,
             claude_result: None,
+            claude_baseline: None,
             output: String::new(),
             output_overflow: false,
             last_text_item: None,
@@ -197,6 +201,7 @@ impl SharedCallSink {
             Some(Usage::Claude(evidence)) => ManagedUsageObservation::shared_claude_capture(
                 format!("{id}_usage"),
                 evidence,
+                self.claude_baseline,
                 terminal,
                 complete,
             ),

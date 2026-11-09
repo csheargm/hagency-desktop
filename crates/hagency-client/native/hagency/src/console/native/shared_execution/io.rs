@@ -7,6 +7,7 @@ use std::sync::Weak;
 
 pub(in crate::console::native) struct ServerOperation(Box<Action>, bool);
 pub(super) enum Action {
+    SessionRoute { id: String, input: SharedSessionRouteInput },
     Crypto(super::e2ee::CryptoAction),
     ApprovalRegister {
         authority: SharedActivityRef,
@@ -57,6 +58,10 @@ pub(super) enum Action {
 impl ServerOperation {
     fn new(action: Action) -> Result<Self, NativeError> {
         match &action {
+            Action::SessionRoute { id, input } => {
+                super::super::key(id)?;
+                input.validate().map_err(store)?;
+            }
             Action::Crypto(_) => {}
             Action::ApprovalRegister {
                 authority,
@@ -150,6 +155,7 @@ impl ServerOperation {
         }
         let read = matches!(&*self.0,Action::Demand(a) if matches!(&**a,super::demand_io::DemandAction::Control{..}));
         let (mut path, body) = match *self.0 {
+            Action::SessionRoute { id, input } => (format!("runtime/{id}/session-route"), json!(input)),
             Action::Crypto(v) => v.body(),
             Action::ApprovalRegister {
                 authority,

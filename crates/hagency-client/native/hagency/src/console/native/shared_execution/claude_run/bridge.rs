@@ -27,11 +27,13 @@ pub(super) struct Capture {
     receive: Option<oneshot::Receiver<SharedCallCustody>>,
     sink: Option<SharedCallSink>,
     receipt: Option<SharedWorkReceipt>,
+    native_session: Option<SharedClaudeSession>,
 }
 pub(super) fn capture(
     live: Live,
     policy: SharedClaudePolicy,
     pending: SharedCallCustody,
+    native_session: SharedClaudeSession,
 ) -> (Host, Capture) {
     let work = pending.work().clone();
     let (send, receive) = oneshot::channel();
@@ -48,6 +50,7 @@ pub(super) fn capture(
             receive: Some(receive),
             sink: None,
             receipt: None,
+            native_session: Some(native_session),
         },
     )
 }
@@ -131,6 +134,9 @@ impl claude_turn::Capture for Capture {
                 .await
                 .map_err(|_| codex::Error::Unknown)?,
         );
+        self.native_session.as_ref().ok_or(codex::Error::Unknown)?
+            .bind_capture(self.sink.as_mut().ok_or(codex::Error::Unknown)?, process)
+            .map_err(|_| codex::Error::Unknown)?;
         Ok(())
     }
     async fn observe(
@@ -158,6 +164,10 @@ impl claude_turn::Capture for Capture {
                 .await
                 .map_err(|_| codex::Error::Unknown)?,
         );
+        if let Some(session) = self.native_session.take()
+            && session.retain(self.sink.as_ref().ok_or(codex::Error::Unknown)?, process).await.is_err() {
+            tracing::warn!("Shared Claude completed without a reusable native checkpoint");
+        }
         Ok(())
     }
 }

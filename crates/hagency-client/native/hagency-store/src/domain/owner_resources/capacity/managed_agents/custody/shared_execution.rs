@@ -36,12 +36,14 @@ pub use start_inventory::{SharedSuccessorPage, SharedSuccessorSummary};
 pub use start_selection::SharedSuccessorSelection;
 pub use start_intent::{SharedAttemptStartInput,SharedAttemptStartIntent};
 mod work;
-pub use capture::{SharedCallSink, SharedNativeSession};
+pub use capture::{SharedCallSink, SharedNativeSession, SharedClaudeSession};
 pub use process::SharedProcessSink;
 pub use recovery::SharedSavedWork;
 pub use successor::{SharedSuccessorBudget, SharedSuccessorBudgetState};
 pub use work::{SharedCallCustody, SharedStartAttempt, VerifiedSharedActivity};
 mod types;
+mod native_session_types;
+pub use native_session_types::*;
 pub use claim::{
     SharedRuntimeClaim, SharedRuntimeCustody, SharedRuntimeHistory, VerifiedSharedRuntimeDelivery,
 };

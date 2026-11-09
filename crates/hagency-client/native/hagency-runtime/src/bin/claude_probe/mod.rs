@@ -1,5 +1,6 @@
 //! Explicit offline peer mode; never invokes Claude or another provider.
 use serde_json::{Value, json};
+mod shared_session;
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -32,6 +33,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "shared-usage"
             | "shared-result-exit"
             | "shared-wait"
+            | "shared-session"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -67,6 +69,10 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
     line.clear();
     stdin.read_line(&mut line)?;
     let prompt: Value = serde_json::from_str(&line)?;
+    if mode == "shared-session" {
+        drop(stdin);
+        return shared_session::run(marker, &prompt);
+    }
     if prompt["type"] != "user" || prompt["message"]["role"] != "user" || prompt["session_id"] != ""
     {
         return Err(io::ErrorKind::InvalidInput.into());

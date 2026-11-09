@@ -2,6 +2,8 @@
 use super::*;
 #[path = "shared_successor_call_tests.rs"]
 mod calls;
+#[path = "shared_claude_session_tests.rs"]
+mod claude_sessions;
 use hagency_runtime::{
     codex::{session::Settings, transport::Limits},
     owned::{

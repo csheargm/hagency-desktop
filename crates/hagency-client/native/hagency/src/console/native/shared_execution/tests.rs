@@ -53,6 +53,7 @@ pub(crate) struct State {
     work: Option<SharedWorkItem>,
     receipts: BTreeMap<String, SharedWorkReceipt>,
     starts: usize,
+    work_starts: std::collections::BTreeSet<String>,
     activity_epoch: u64,
     refuse_renewal: bool,
     delay_renewal_reply: bool,
@@ -66,6 +67,7 @@ pub(crate) struct State {
     lose_work_result: bool,
     lose_completed_work_result: bool,
     work_recover_calls: usize,
+    session_routes: usize,
     forged_work: bool,
     lose_stop_before_write: bool,
     cleanup: bool,
@@ -98,6 +100,22 @@ pub(crate) fn claude_enabled(s: &super::State) -> bool {
     s.shared.command.as_ref().is_some_and(|c| c.version == 4)
 }
 pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Option<Value> {
+    #[cfg(feature = "shared-successors")]
+    if path.ends_with("/session-route") {
+        let c = s.shared.attempts.command.as_ref().unwrap();
+        assert!(path.ends_with(&format!("/runtime/{}/session-route", c.command_id)));
+        assert_eq!(body["commandDigest"], digest(c).unwrap());
+        assert!(s.shared.attempts.tickets.get(body["token"].as_str().unwrap())
+            .is_some_and(|(execute, until)| *execute && *until > now()));
+        let w = s.shared.work.as_ref().unwrap();
+        let route = SharedSessionRoute { version: 1, runtime_command_id: c.command_id.clone(),
+            runtime_command_digest: digest(c).unwrap(), assignment_id: w.assignment_id.clone(),
+            event_id: w.event_id.clone(), body_digest: w.body_digest.clone(), room_id: w.room_id.clone(),
+            requester_mxid: w.requester_mxid.clone(), thread_root: w.thread_root.clone(),
+            room_binding: w.room_binding.clone(), encrypted: w.encrypted };
+        s.shared.session_routes += 1;
+        return Some(json!({"route": route, "observedAtMs": now()}));
+    }
     if path.ends_with("/crypto/device") {
         // Plaintext execution fixtures have no Agent device grant. Run cards
         // are optional presentation: an unavailable grant must neither create
@@ -246,11 +264,12 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     if path.ends_with("/work/start") {
         assert_eq!(body["workDigest"], wh);
         s.shared.starts += 1;
+        let newly_started = s.shared.work_starts.insert(w.id.clone());
         if std::mem::take(&mut s.shared.lose_start) {
             return None;
         }
         return Some(
-            json!({"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":!s.shared.false_start && s.shared.starts==1,"observedAtMs":at}),
+            json!({"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":!s.shared.false_start && newly_started,"observedAtMs":at}),
         );
     }
     if path.contains("/work/") && path.ends_with("/recover") {
