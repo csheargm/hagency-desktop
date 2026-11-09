@@ -266,18 +266,34 @@ mod tests {
         let quoted_pid_file = pid_file.to_string_lossy().replace('\'', "'\\''");
         std::fs::write(
             &executable,
-            format!("#!/bin/sh\necho $$ > '{quoted_pid_file}'\nexec /bin/sleep 30\n"),
+            format!("#!/bin/sh\necho $$ > '{quoted_pid_file}'\nexec /bin/sleep 120\n"),
         )
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let result = pdf_with(b"%PDF-fixture".to_vec(), executable, Duration::from_secs(1)).await;
+        // Start the real child before advancing the Tokio deadline. On a busy
+        // build host it can otherwise be killed before the shell writes its
+        // PID, making a correct timeout fail at read_to_string below.
+        let operation = pdf_with(b"%PDF-fixture".to_vec(), executable, Duration::from_secs(30));
+        let observe_start = async {
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            let pid = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<i32>().ok())
+                    .and_then(rustix::process::Pid::from_raw)
+                {
+                    break pid;
+                }
+                assert!(std::time::Instant::now() < until, "document parser did not start");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(31)).await;
+            pid
+        };
+        let (result, pid) = tokio::join!(operation, observe_start);
+        tokio::time::resume();
         assert!(matches!(result, Err("document_reader_timeout")));
-        let pid = std::fs::read_to_string(pid_file)
-            .unwrap()
-            .trim()
-            .parse::<i32>()
-            .unwrap();
-        let pid = rustix::process::Pid::from_raw(pid).unwrap();
         for _ in 0..100 {
             if rustix::process::test_kill_process(pid).is_err() {
                 return;
