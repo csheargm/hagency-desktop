@@ -8,6 +8,9 @@ use rinx::article_app::ArticleAction;
 use rinx::home::sidebar_action_menu::{SidebarActionMenuWidgetRefExt, SidebarMenuKind, new_or_join_menu_pos};
 use rinx::shared::navigation_bar_button::NavigationBarButtonWidgetRefExt;
 use rinx::theme::{self, Accent, Appearance, Selection};
+#[cfg(all(feature = "onboarding-test-support", target_os = "macos"))]
+#[path = "support/native_webview_probe.rs"]
+mod native_webview_probe;
 app_main!(App);
 script_mod! {
     use mod.prelude.widgets.*
@@ -183,6 +186,13 @@ impl AppMain for App {
         }
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         if let Event::Custom(command) = event {
+            #[cfg(all(feature = "onboarding-test-support", target_os = "macos"))]
+            if command == "dock:inspect-native" {
+                let main = self.ui.window(cx, ids!(main_window)).window_id();
+                let floating = self.ui.mini_apps_window_host(cx, ids!(popped)).window_id();
+                native_webview_probe::inspect(cx, [main, floating].into_iter().flatten().collect(),
+                    rinx::app_data_dir().join("dock-native.json"));
+            }
             #[cfg(feature = "onboarding-test-support")]
             if let Some(url) = command.strip_prefix("dock:review-web:") {
                 let url = url::Url::parse(url).unwrap();
@@ -205,7 +215,25 @@ impl AppMain for App {
                     serde_json::json!({"tabs":tabs,"selected":region.selected().map(|id|format!("{id:?}")),
                         "reader":region.reader(cx).session(), "browser":format!("{:?}",region.reader(cx).browser_id())})
                 };
-                let data = serde_json::json!({"docked":snapshot(&dock),"floating":snapshot(&floating),
+                let docked = snapshot(&dock);
+                let floating = snapshot(&floating);
+                let icon = self.ui.widget(cx, ids!(agent_button.icon));
+                let label = self.ui.label(cx, ids!(agent_button.label));
+                let palette = cx.with_vm(|vm| {
+                    let mut value = icon.current_to_value(vm);
+                    for key in [id!(draw_icon), id!(color)] {
+                        value = value.as_object().map(|object| vm.bx.heap.value(object, key.into(), NoTrap)).unwrap_or(ScriptValue::NIL);
+                    }
+                    let widgets = vm.module(id!(widgets));
+                    let colors: Vec<_> = [id!(RBX_NAV_BG), id!(RBX_NAV_FG), id!(RINX_INK)].into_iter().map(|key| {
+                        let value = vm.bx.heap.value(widgets, key.into(), NoTrap);
+                        rinx::theme::argb(Vec4f::script_from_value(vm, value))
+                    }).collect();
+                    serde_json::json!({"icon":rinx::theme::argb(Vec4f::script_from_value(vm,value)),
+                        "label":label.borrow().map(|label|rinx::theme::argb(label.draw_text.color)),
+                        "nav_bg":colors[0],"nav_fg":colors[1],"page_ink":colors[2]})
+                });
+                let data = serde_json::json!({"docked":docked,"floating":floating,"agent_palette":palette,
                     "window":host.window_id().map(|id|id.id()),"open":host.is_open()});
                 std::fs::write(rinx::app_data_dir().join("dock-inspection.json"), data.to_string()).unwrap();
             }

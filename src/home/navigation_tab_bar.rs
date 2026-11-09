@@ -258,6 +258,7 @@ script_mod! {
     }
 
     mod.widgets.NavigationTabBar = #(NavigationTabBar::register_widget(vm)) {
+        agent_idle_color: RBX_NAV_FG
         // Dark navy anchor rail (robrix2 visual spec §2/§5.6). SolidView fills its
         // column edge-to-edge (no rounded-SDF anti-aliased border), so the navy is
         // perfectly flush to the window's left edge AND to the rooms list.
@@ -559,6 +560,8 @@ impl ProfileIconRef {
 pub struct NavigationTabBar {
     #[rust]
     appearance: ThemeSnapshot,
+    #[live]
+    agent_idle_color: Vec4f,
     #[deref]
     view: AdaptiveView,
 
@@ -571,13 +574,14 @@ pub struct NavigationTabBar {
     #[rust] selected_tab: SelectedTab,
     #[rust] mobile_palette: Option<(WidgetUid, SelectedTab)>,
     /// Whether the Agent tab currently shows the pending-permission alert.
-    #[rust] approval_alert: Option<bool>,
+    #[rust] approval_alert: Option<(WidgetUid, bool)>,
 }
 
 impl ScriptHook for NavigationTabBar {
     fn on_after_apply(&mut self, vm: &mut ScriptVm, _: &Apply, _: &mut Scope, _: ScriptValue) {
         self.appearance = crate::theme::snapshot_for_vm(vm);
         self.mobile_palette = None;
+        self.approval_alert = None;
     }
     fn on_after_new(&mut self, vm: &mut ScriptVm) {
         vm.with_cx_mut(|cx| {
@@ -651,13 +655,19 @@ impl NavigationTabBar {
         let pending = crate::hagency::pending_approvals::total();
         let alert = pending > 0;
         let label = self.view.label(cx, ids!(agent_button.label));
+        let mut icon = self.view.icon(cx, ids!(agent_button.icon));
+        // AdaptiveView has no desktop children until its first draw, and can
+        // replace them on a layout switch. Never cache an absent widget.
+        if icon.is_empty() || label.is_empty() { return; }
+        let palette = (icon.widget_uid(), alert);
         let text = if alert { format!("{} ●", crate::i18n::tr("Agent")) } else { crate::i18n::tr("Agent").to_owned() };
-        if self.approval_alert == Some(alert) && label.text() == text {
+        if self.approval_alert == Some(palette) && label.text() == text {
             return;
         }
-        self.approval_alert = Some(alert);
-        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.ink };
-        let mut icon = self.view.icon(cx, ids!(agent_button.icon));
+        self.approval_alert = Some(palette);
+        // The rail has its own dark surface even in the light theme. Page ink
+        // makes this launcher look disabled; use the same role as its neighbours.
+        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.agent_idle_color };
         script_apply_eval!(cx, icon, {draw_icon +: {color: #(color)}});
         label.set_text(cx, &text);
         label.set_text_color(cx, color);
@@ -1066,6 +1076,42 @@ mod rail_tests {
         let button = bar.view.navigation_bar_button(cx, button);
         let inner = button.borrow().expect("rail button exists");
         inner.animator_in_state(cx, ids!(active.on))
+    }
+
+    fn agent_icon_color(cx: &mut Cx, bar: &NavigationTabBar) -> Vec4f {
+        let icon = bar.view.widget(cx, ids!(agent_button.icon));
+        cx.with_vm(|vm| {
+            let mut value = icon.current_to_value(vm);
+            for key in [id!(draw_icon), id!(color)] {
+                value = vm.bx.heap.value(value.as_object().unwrap(), key.into(), NoTrap);
+            }
+            Vec4f::script_from_value(vm, value)
+        })
+    }
+
+    #[test]
+    fn agent_launcher_keeps_rail_foreground_after_click_and_palette_reapply() {
+        let (mut cx, mut bar) = rail();
+        bar.apply_approval_alert(&mut cx);
+        draw(&mut cx, &mut bar);
+        let initial = bar.agent_idle_color;
+        assert_eq!(agent_icon_color(&mut cx, &bar), initial);
+        assert_eq!(bar.view.label(&mut cx, ids!(agent_button.label)).borrow().unwrap().draw_text.color, initial);
+        let actions = click(&mut cx, &mut bar, ids!(agent_button));
+        assert!(actions.iter().any(|a| matches!(a.downcast_ref(), Some(crate::miniapps::MiniAppsAction::OpenAgent))));
+        draw(&mut cx, &mut bar);
+        assert!(!selected(&mut cx, &bar, ids!(agent_button)), "Agent launches a workspace item, not a navigation root");
+        assert_eq!(agent_icon_color(&mut cx, &bar), initial);
+
+        // A restyle with the same approval count must still apply its new rail palette.
+        let next = vec4(0.78, 0.86, 0.94, 1.0);
+        cx.with_vm(|vm| {
+            let value = script_eval!(vm, {mod.widgets.NavigationTabBar {agent_idle_color: #(next)}});
+            bar.script_apply(vm, &Apply::ScriptReapply, &mut Scope::empty(), value);
+        });
+        draw(&mut cx, &mut bar);
+        assert_eq!(agent_icon_color(&mut cx, &bar), next);
+        assert_eq!(bar.view.label(&mut cx, ids!(agent_button.label)).borrow().unwrap().draw_text.color, next);
     }
 
     fn rect(cx: &mut Cx, bar: &NavigationTabBar, path: &[LiveId; 1]) -> Rect {
