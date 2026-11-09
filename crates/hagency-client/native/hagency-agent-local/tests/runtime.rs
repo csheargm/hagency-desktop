@@ -764,3 +764,30 @@ fn octos_profile_model_or_provider_changes_invalidate_saved_reference() {
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
+
+#[tokio::test]
+async fn claude_missing_native_context_rebuilds_once_without_replaying_or_rewriting_usage() {
+    let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
+    for call in ["before_missing", "after_missing"] {
+        if call == "after_missing" { fs::write(f.path("missing-context"), "deleted").unwrap(); }
+        let mut process = f.process().await;
+        process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+        let (queue, _) = codex::approval_queue(1).unwrap();
+        let reply = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope,
+            call, call, call, BudgetMode::Estimated { reservation: 100 }, &queue, None).await.unwrap();
+        assert!(reply.usage.is_reported());
+        process.stop().await.unwrap();
+    }
+    let argv = fs::read_to_string(f.path("argv")).unwrap();
+    let launches: Vec<serde_json::Value> = argv.lines().map(|l|serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(launches.len(), 3);
+    assert!(launches[1].as_array().unwrap().iter().any(|v|v == "--resume"));
+    assert!(!launches[2].as_array().unwrap().iter().any(|v|v == "--resume"));
+    let frames = fs::read_to_string(f.path("frames")).unwrap();
+    let prompts: Vec<serde_json::Value> = frames.lines().map(|l|serde_json::from_str(l).unwrap())
+        .filter(|v:&serde_json::Value|v["type"] == "user").collect();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0]["message"]["content"], "before_missing");
+    assert_eq!(prompts[1]["message"]["content"], "after_missing");
+    assert_eq!(f.spent(), (48, 0));
+}

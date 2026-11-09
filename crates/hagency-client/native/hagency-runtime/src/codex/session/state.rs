@@ -1,5 +1,5 @@
 use super::{
-    Error, ItemPhase, MAX_EVENTS, MAX_ITEMS, MAX_TEXT_BYTES, Outcome, Phase, Settings, Update, id,
+    Error, ItemPhase, MAX_ITEMS, MAX_TEXT_BYTES, Outcome, Phase, Settings, Update, id,
     object, string,
 };
 use serde_json::Value;
@@ -178,7 +178,6 @@ impl State {
         self.events = self
             .events
             .checked_add(1)
-            .filter(|&n| n <= MAX_EVENTS)
             .ok_or(Error::Capacity)?;
         scope(method, params, self.thread.as_deref(), self.turn.as_deref())?;
         match method {
@@ -313,7 +312,6 @@ impl State {
         self.events = self
             .events
             .checked_add(1)
-            .filter(|&n| n <= MAX_EVENTS)
             .ok_or(Error::Capacity)?;
         scope(method, params, self.thread.as_deref(), self.turn.as_deref())?;
         match method {

@@ -589,3 +589,22 @@ async fn shared_claude_renewal_keeps_original_pending_read_until_actual_expiry()
         "actual lease expiry closes the process"
     );
 }
+
+#[tokio::test]
+async fn missing_resume_requires_original_refusal_and_whole_process_stop() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("missing");
+    let mut l = launch(root.path(), "shared-session", &marker);
+    l.arguments.extend(["--resume".into(), "missing-native".into()]);
+    let mut process = OwnedClaudeSession::spawn(&binary(), &l, limits()).unwrap();
+    process.enable_native_completion().unwrap();
+    process.enable_continuous_session().unwrap();
+    process.expect_resume("missing-native").unwrap();
+    assert_eq!(process.missing_resume_id(), None);
+    assert_eq!(process.initialize().await, Err(Error::MissingResume));
+    cleanup(process.cleanup());
+    assert_eq!(process.missing_resume_id(), Some("missing-native"));
+    assert!(!marker.with_extension("prompt").exists());
+    process.stop();
+    assert_eq!(process.missing_resume_id(), Some("missing-native"));
+}

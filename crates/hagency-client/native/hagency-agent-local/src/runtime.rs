@@ -239,7 +239,26 @@ pub async fn spawn_for_scope_with_guardian(
         )
         .optional()
         .map_err(crate::Error::from)?;
-    spawn_inner(profile, reference, session.as_deref(), guardian).await
+    let mut process = spawn_inner(profile, reference, session.as_deref(), guardian).await?;
+    if let (Some(saved), Session::Claude { wire, .. }) = (session.as_deref(), &mut process.session) {
+        wire.enable_native_completion().map_err(|_| Error::Protocol("Claude lifecycle"))?;
+        wire.enable_continuous_session().map_err(|_| Error::Protocol("Claude continuous session"))?;
+        wire.expect_resume(saved).map_err(|_| Error::Protocol("Claude resume identity"))?;
+        if wire.initialize().await.is_err() {
+            if wire.missing_resume_id() != Some(saved) {
+                return Err(Error::Protocol("Claude initialize"));
+            }
+            // This is only a context pointer. Preserve every original usage,
+            // reservation and uncertain call; verify authority again after IO.
+            crate::verify(&ledger.db, scope)?;
+            let removed = ledger.db.execute(
+                "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
+                (&context, &profile_key, saved)).map_err(crate::Error::from)?;
+            if removed != 1 { return Err(Error::Protocol("Claude context changed")); }
+            process = spawn_inner(profile, reference, None, guardian).await?;
+        }
+    }
+    Ok(process)
 }
 async fn spawn_inner(
     profile: &Profile,
@@ -430,6 +449,7 @@ impl Session {
                 session.initialize().await?;
             }
             Self::Claude { wire, .. } => {
+                if wire.phase() == claude::session::Phase::Ready { return Ok(()); }
                 wire.enable_native_completion()
                     .map_err(|_| Error::Protocol("Claude lifecycle"))?;
                 wire.enable_continuous_session()

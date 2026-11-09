@@ -575,7 +575,8 @@ fn main() -> io::Result<()> {
             mode.to_str().ok_or(io::ErrorKind::InvalidInput)?,
             Path::new(marker),
         ),
-        [command, mode, marker] if command == "fake-claude" => claude_probe::run(
+        [command, mode, marker, tail @ ..] if command == "fake-claude"
+            && (tail.is_empty() || matches!(tail, [flag, _] if flag == "--resume")) => claude_probe::run(
             mode.to_str().ok_or(io::ErrorKind::InvalidInput)?,
             Path::new(marker),
         ),

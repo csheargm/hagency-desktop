@@ -908,13 +908,9 @@ async fn native_codex_session_items_text_identity_and_event_caps_do_not_truncate
         .unwrap();
     }
     assert_eq!(session.event_count(), MAX_EVENTS);
-    assert_eq!(
-        update(&mut session, &mut peer, note("warning", json!({})))
-            .await
-            .err(),
-        Some(Error::Capacity)
-    );
-    unknown(&session, Error::Capacity);
+    update(&mut session, &mut peer, note("warning", json!({}))).await.unwrap();
+    assert_eq!(session.event_count(), MAX_EVENTS + 1);
+    assert_eq!(session.item_count(), 0, "telemetry does not retain items");
 }
 
 #[tokio::test]

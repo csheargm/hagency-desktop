@@ -3,6 +3,20 @@
 use super::*;
 
 #[tokio::test]
+async fn room_history_native_prompt_leaves_earlier_pages_for_explicit_reads() {
+    let mut reader = super::tests::paged_reader();
+    reader.use_native_compaction();
+    let input = reader.followup_prompt("Only this new request".into());
+    assert_eq!(input.matches("Only this new request").count(), 1);
+    assert!(!input.contains("长记录"));
+    assert!(!reader.started);
+    assert!(input.contains("fresh session"));
+    let first: Value = serde_json::from_str(&reader.read(None).await.unwrap()).unwrap();
+    assert!(!first["messages"].as_array().unwrap().is_empty());
+    assert!(first.get("alreadyRead").is_none());
+}
+
+#[tokio::test]
 async fn room_history_native_compaction_reads_thousand_messages_without_cumulative_ceiling() {
     let mut reader = super::tests::paged_reader();
     reader.use_native_compaction();

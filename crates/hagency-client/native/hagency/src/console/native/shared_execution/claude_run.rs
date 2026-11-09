@@ -25,7 +25,7 @@ pub(super) async fn run(
 ) -> Result<(), DrainFailure> {
     let mut sender = Some(sender);
     let session = guarded(&mut cancel, until, || claimed.prepare_session(&io, &launch, until)).await;
-    let session = match session {
+    let mut session = match session {
         Ok(session) => session,
         Err(error) => {
             let _ = sender.take().unwrap().send(Err(error));
@@ -39,6 +39,23 @@ pub(super) async fn run(
             return Err(DrainFailure::Unknown);
         }
     };
+    // Initialization cannot consume model input or bind work. A missing native
+    // file may be rebuilt once, only after the original process is proven stopped.
+    // Even failed initialization is bound below so original cleanup is durable.
+    let initialized = guarded(&mut cancel, until, || async {
+        io.check_running(claimed.root()).await?;
+        launch.check()?;
+        if process.initialize().await.is_err() {
+            session.rebuild_missing(&process)
+                .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
+            io.check_running(claimed.root()).await?;
+            launch.check()?;
+            process = launch.spawn(until, None)?;
+            process.initialize().await
+                .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
+        }
+        Ok(())
+    }).await;
     let authority = match process
         .shared_process_source()
         .map_err(|_| invalid())
@@ -52,12 +69,7 @@ pub(super) async fn run(
         }
     };
     let setup = guarded(&mut cancel, until, || async {
-        io.check_running(authority.root()).await?;
-        launch.check()?;
-        process
-            .initialize()
-            .await
-            .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
+        initialized?;
         io.check_running(authority.root()).await?;
         launch.check()?;
         let observation = process

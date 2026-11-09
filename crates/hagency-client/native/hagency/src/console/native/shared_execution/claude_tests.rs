@@ -63,18 +63,18 @@ async fn native_shared_claude_full_host_reads_history_beyond_fallback_context_al
 #[tokio::test]
 #[ignore = "requires explicit offline Claude probe; real host, SQLite and HTTP routing"]
 async fn native_shared_claude_full_host_resumes_encrypted_successor_without_double_billing() {
-    resumed_host(false).await;
+    resumed_host(false, false).await;
 }
 
 #[cfg(feature = "shared-successors")]
 #[tokio::test]
 #[ignore = "requires explicit offline Claude probe; original native processes and frozen V3 inputs"]
 async fn native_shared_claude_full_host_resumes_plaintext_v3_without_history_reinjection() {
-    resumed_host(true).await;
+    resumed_host(true, false).await;
 }
 
 #[cfg(feature = "shared-successors")]
-async fn resumed_host(plaintext: bool) {
+async fn resumed_host(plaintext: bool, missing: bool) {
     let binding = AccountBinding::from_authenticated_profile(
         "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
         "owner@example.test", Instant::now() + Duration::from_secs(45)).unwrap();
@@ -112,6 +112,7 @@ async fn resumed_host(plaintext: bool) {
     }).await.expect("original process stops without closing the host");
     let native: String = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap()
         .query_row("SELECT native_id FROM owner_shared_native_checkpoints", [], |r| r.get(0)).unwrap();
+    if missing { std::fs::remove_file(root.join(format!("work/agent_fixture/{native}.json"))).unwrap(); }
     attempts::prepare_lost_start(&f, &transport, &command).await;
     {
         let mut state = f.state.lock().unwrap();
@@ -130,10 +131,10 @@ async fn resumed_host(plaintext: bool) {
         binding, "shared-session").await.unwrap();
     attempts::wait_stopped(&f).await;
     let prompt: Value = serde_json::from_slice(&std::fs::read(root.join("work/agent_fixture/shared-claude.prompt")).unwrap()).unwrap();
-    assert_eq!(prompt["session_id"], native);
-    if !plaintext {
+    assert_eq!(prompt["session_id"], if missing { "" } else { &native });
+    if !plaintext && !missing {
         assert!(sent.lock().unwrap().iter().any(|(_, text)| text.contains("Remember encrypted blue comet")));
-    } else {
+    } else if plaintext {
         let input = prompt["message"]["content"].as_str().unwrap();
         assert!(!input.contains("Remember encrypted blue comet"), "old question is absent from the new input");
         let current: Value = serde_json::from_str(input.split_once('\n').unwrap().1).unwrap();
@@ -147,7 +148,7 @@ async fn resumed_host(plaintext: bool) {
         assert_eq!(state.shared.session_routes, 1);
         let completed: Vec<_> = state.shared.receipts.values().filter(|r| r.state == "completed").collect();
         assert_eq!(completed.len(), 2);
-        if plaintext {
+        if plaintext && !missing {
             assert!(completed.iter().any(|r| r.body.as_ref().is_some_and(|text| text.contains("Remember encrypted blue comet"))));
         }
         assert!(completed.iter().all(|r| r.usage_complete && r.known_consumed_tokens == 16));
@@ -251,4 +252,11 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
         assert_eq!(prompt["message"]["content"], "Offline synthetic prompt");
         f.stop().await;
     }
+}
+
+#[tokio::test]
+#[ignore = "requires explicit HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised process"]
+async fn native_shared_claude_full_host_rebuilds_missing_rollout_before_input() {
+    resumed_host(false, true).await;
+    resumed_host(true, true).await;
 }

@@ -17,6 +17,14 @@ pub(super) enum Authority {
     Budget(Arc<SharedBudgetAttemptProcessSink>, budget_io::Delivery),
 }
 impl Claimed {
+    pub(super) fn root(&self) -> &SharedRuntimeCommand {
+        match self {
+            Self::Root(c) => &c.1.command,
+            Self::Attempt(c) => &c.1.command.original_runtime_command,
+            #[cfg(feature = "shared-budget-execution")]
+            Self::Budget(c) => &c.1.command.original_runtime_command,
+        }
+    }
     pub(super) fn bind(self, source: SharedTextProcessSource) -> Result<Authority, NativeError> {
         Ok(match self {
             Self::Root(claimed) => {

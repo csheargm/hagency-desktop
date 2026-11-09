@@ -29,6 +29,13 @@ with (root / 'argv').open('a') as out:
 
 if kind == 'claude':
     init = read()
+    if '--resume' in sys.argv and (root / 'missing-context').exists():
+        saved = sys.argv[sys.argv.index('--resume') + 1]
+        send({'type':'result','session_id':saved,'subtype':'error_during_execution',
+            'is_error':True,'num_turns':0,'duration_api_ms':0,'total_cost_usd':0,
+            'modelUsage':{},'permission_denials':[],'errors':['No conversation found with session ID: ' + saved],
+            'usage':{'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}})
+        sys.exit(1)
     send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {}}})
     room_bound = False
     room_tools = []

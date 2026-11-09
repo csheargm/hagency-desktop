@@ -57,6 +57,17 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         drop(stdin);
         return super::pulse(marker);
     }
+    if mode == "shared-session" {
+        let args: Vec<_> = std::env::args().collect();
+        if let Some(id) = args.windows(2).find(|p| p[0] == "--resume").map(|p| &p[1])
+            && !marker.with_file_name(format!("{id}.json")).exists() {
+                emit(json!({"type":"result","session_id":id,"subtype":"error_during_execution",
+                    "is_error":true,"num_turns":0,"duration_api_ms":0,"total_cost_usd":0,
+                    "modelUsage":{},"permission_denials":[],"errors":[format!("No conversation found with session ID: {id}")],
+                    "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}))?;
+                return Ok(());
+        }
+    }
     let mut initialization = json!({});
     if (mode.starts_with("account-") && mode != "account-missing") || mode.starts_with("shared-") {
         initialization["account"] = json!({"email":"owner@example.test","apiProvider":"firstParty"});

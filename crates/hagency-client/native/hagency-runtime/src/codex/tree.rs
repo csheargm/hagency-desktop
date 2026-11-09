@@ -214,7 +214,6 @@ impl TurnTree {
         self.sequence = self
             .sequence
             .checked_add(1)
-            .filter(|n| *n <= super::session::MAX_EVENTS as u64)
             .ok_or(Error::Capacity)?;
         // Raw items duplicate canonical items and include inter-turn native
         // notifications. They never carry usage or callback authority.

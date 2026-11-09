@@ -4,6 +4,8 @@ use crate::room_files::{FileError, Operation, PreparedCall, Workspace};
 use std::{future::Future, pin::Pin, sync::Arc};
 use hagency_runtime::codex::tree::TurnTree;
 
+mod cache;
+
 type Decision = Pin<Box<dyn Future<Output = bool> + Send>>;
 struct Waiting {
     answer: Answer,
@@ -131,7 +133,7 @@ pub(super) struct HostFiles {
     workspace: Option<Workspace>,
     directory: PathBuf,
     gate: Option<Arc<dyn HostToolGate>>,
-    calls: BTreeMap<String, (String, PreparedCall, Value)>,
+    calls: cache::Cache,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -206,7 +208,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             directory: workspace.canonical_directory().to_path_buf(),
             workspace: Some(workspace),
             gate: Some(gate),
-            calls: BTreeMap::new(),
+            calls: Default::default(),
         });
         Ok(())
     }
@@ -214,7 +216,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
     pub fn suspend_host_files(&mut self) {
         if let Some(files) = self.host_files.as_mut() {
             files.gate = None;
-            files.calls.clear();
+            files.calls = Default::default();
             // Release the per-room exclusive file lock while the native
             // process is idle, including before a different requester's turn.
             files.workspace = None;
@@ -243,7 +245,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             ));
         }
         files.workspace = Some(workspace);
-        files.calls.clear();
+        files.calls = Default::default();
         files.gate = Some(gate);
         Ok(())
     }
@@ -290,19 +292,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 .write(value!({"id":id,"result":failure("server_scope_unavailable")}))
                 .await;
         }
-        if let Some((prior, prepared, result)) = files.calls.get(call) {
-            if prior != &digest {
+        if let Some((prior, prepared, result)) = files.calls.get(call)? {
+            if prior != digest {
                 return Err(Error::Protocol("host call arguments changed"));
             }
-            let result = if ledger.tool_disposition(prepared.proposal(), now()).is_ok() {
+            let result = if ledger.tool_disposition(&prepared, now()).is_ok() {
                 result.clone()
             } else {
                 failure("local_policy_changed")
             };
             return self.write(value!({"id":id,"result":result})).await;
-        }
-        if files.calls.len() >= 128 {
-            return Err(Error::Protocol("host call capacity"));
         }
         let operation = match operation(p, owner, scope, dispatch) {
             Ok(op) => op,
@@ -358,7 +357,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let result = file_result(outcome)?;
         files
             .calls
-            .insert(call.into(), (digest, prepared, result.clone()));
+            .insert(call, &digest, prepared.proposal(), &result)?;
         self.write(value!({"id":id,"result":result})).await
     }
 
@@ -385,10 +384,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         } else {
             failure("host_file_denied")
         };
-        files.calls.insert(
-            answer.call,
-            (answer.digest, answer.prepared, result.clone()),
-        );
+        files.calls.insert(&answer.call, &answer.digest, answer.prepared.proposal(), &result)?;
         Ok(value!({"id":answer.id,"result":result}))
     }
 
@@ -481,6 +477,9 @@ mod tests {
         ledger.register_binding("@alice:test", &scope).unwrap();
         let workspace = Workspace::open(&owner, "@alice:test", &scope).unwrap();
         let root = workspace.canonical_directory().to_path_buf();
+        let policy = if let ToolPolicy::AllowWithRules { tools, .. } = policy {
+            ToolPolicy::AllowWithRules { tools, directories: vec![root.to_str().unwrap().into()] }
+        } else { policy };
         for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
             let p = Policy {
                 budget: Budget {
@@ -522,6 +521,35 @@ mod tests {
         let mut line = String::new();
         peer.read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+    #[tokio::test]
+    async fn host_file_replays_survive_more_than_128_calls_without_reexecution() {
+        let (_temp, mut ledger, scope, mut session, mut peer, root, live) = fixture(
+            ToolPolicy::AllowWithRules { tools: vec!["room.create".into()], directories: vec![] });
+        let (queue, _) = approval_queue(1).unwrap();
+        let mut original = Value::Null;
+        for n in 0..200 {
+            let mut frame = request(n + 1, &format!("file-{n}.txt"));
+            frame["params"]["callId"] = format!("call-{n}").into();
+            session.host_file_call(&mut ledger, "@alice:test", &scope, "dispatch", "execution",
+                &frame, "codex-thread", "turn", &queue).await.unwrap();
+            let reply = response(&mut peer).await;
+            assert_eq!(reply["result"]["success"], true, "call {n}: {reply}");
+            if n == 0 { original = reply["result"].clone(); }
+        }
+        std::fs::write(root.join("file-0.txt"), "changed after execution").unwrap();
+        let mut replay = request(201, "file-0.txt"); replay["params"]["callId"] = "call-0".into();
+        session.host_file_call(&mut ledger,"@alice:test",&scope,"dispatch","execution",&replay,
+            "codex-thread","turn",&queue).await.unwrap();
+        assert_eq!(response(&mut peer).await["result"], original);
+        assert_eq!(std::fs::read_to_string(root.join("file-0.txt")).unwrap(), "changed after execution");
+        replay["id"] = 202.into(); replay["params"]["arguments"]["content"] = "different".into();
+        assert!(session.host_file_call(&mut ledger,"@alice:test",&scope,"dispatch","execution",&replay,
+            "codex-thread","turn",&queue).await.is_err());
+        live.store(false, Ordering::Release); replay["id"] = 203.into();
+        session.host_file_call(&mut ledger,"@alice:test",&scope,"dispatch","execution",&replay,
+            "codex-thread","turn",&queue).await.unwrap();
+        assert_eq!(response(&mut peer).await["result"]["success"], false);
     }
     #[tokio::test]
     async fn waiting_host_file_is_withdrawable_and_duplicate_ready_call_cannot_ask_twice() {

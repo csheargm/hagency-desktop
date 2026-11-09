@@ -8,6 +8,7 @@ mod questions;
 mod room_mcp;
 mod task_mcp;
 mod usage;
+mod missing_resume;
 use super::{ControlOutcome, EventKind, Message};
 pub use control::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
@@ -47,6 +48,8 @@ pub enum Error {
     Capacity,
     #[error("Claude session protocol failed: {0}")]
     Protocol(super::Error),
+    #[error("Claude native resume context is missing before input")]
+    MissingResume,
     #[error("Claude initialization was refused")]
     Refused,
     #[error("Claude session identity or control response mismatch")]
@@ -328,6 +331,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 }
                 ControlOutcome::Refused => Err(Error::Refused),
             },
+            Message::Event { session_id, kind: EventKind::Result, payload }
+                if missing_resume::exact(self.session_id.as_deref(), &session_id, &payload) =>
+                Err(Error::MissingResume),
             _ => Err(Error::Identity),
         }
     }

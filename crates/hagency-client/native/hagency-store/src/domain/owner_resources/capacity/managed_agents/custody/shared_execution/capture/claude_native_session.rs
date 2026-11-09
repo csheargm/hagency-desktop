@@ -236,6 +236,17 @@ impl SharedClaudeSession {
     pub fn is_resuming(&self) -> bool {
         self.previous.is_some()
     }
+    /// Rebuild only before binding a call, from this exact stopped native
+    /// process's explicit missing-resume result. No old usage is rewritten.
+    pub fn rebuild_missing(&mut self, process: &OwnedClaudeSession) -> Result<(), Error> {
+        if self.bound.is_some() || self.previous.is_none()
+            || process.missing_resume_id() != self.resume_id()
+            || process.shared_resume_id().map_err(|_| Error::LocalAuthority)? != self.resume_id() {
+            return Err(Error::LocalAuthority);
+        }
+        self.previous = None;
+        Ok(())
+    }
     /// Only after the original process is qualified and exact work is received
     /// can a planned resume be bound. This fences older contexts before input.
     pub async fn attach(

@@ -80,6 +80,16 @@ impl OwnedClaudeSession {
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
     }
+    pub fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
+        self.session.expect_resume(id)
+    }
+    /// Original pre-input refusal plus observed physical cleanup, never an EOF guess.
+    pub fn missing_resume_id(&self) -> Option<&str> {
+        if self.termination().is_some_and(|t| t.cause == Error::MissingResume)
+            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped) {
+            self.session_id()
+        } else { None }
+    }
     pub(super) fn expect_shared_resume(&mut self, id: &str) -> Result<(), Error> {
         self.session.expect_resume(id)
     }

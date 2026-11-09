@@ -209,7 +209,10 @@ impl Host {
                 ),
                 _ => text.clone(),
             };
-            Ok::<_, &'static str>(state.history.prompt(request).await)
+            // Native warm and cold sessions own their conversation history.
+            // Leave earlier room pages for explicit reads instead of appending
+            // the same recent transcript to every new user turn.
+            Ok::<_, &'static str>(state.history.followup_prompt(request))
         })
         .await;
         match prepared {
