@@ -63,6 +63,18 @@ async fn native_shared_claude_full_host_reads_history_beyond_fallback_context_al
 #[tokio::test]
 #[ignore = "requires explicit offline Claude probe; real host, SQLite and HTTP routing"]
 async fn native_shared_claude_full_host_resumes_encrypted_successor_without_double_billing() {
+    resumed_host(false).await;
+}
+
+#[cfg(feature = "shared-successors")]
+#[tokio::test]
+#[ignore = "requires explicit offline Claude probe; original native processes and frozen V3 inputs"]
+async fn native_shared_claude_full_host_resumes_plaintext_v3_without_history_reinjection() {
+    resumed_host(true).await;
+}
+
+#[cfg(feature = "shared-successors")]
+async fn resumed_host(plaintext: bool) {
     let binding = AccountBinding::from_authenticated_profile(
         "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
         "owner@example.test", Instant::now() + Duration::from_secs(45)).unwrap();
@@ -74,16 +86,23 @@ async fn native_shared_claude_full_host_resumes_encrypted_successor_without_doub
     {
         let mut state = f.state.lock().unwrap();
         state.shared.command = Some(command.clone());
+        state.shared.contexts.active = plaintext;
+        state.shared.contexts.v2 = plaintext;
+        state.shared.contexts.v3 = plaintext;
         let w = state.shared.work.as_mut().unwrap();
         w.runtime_command_digest = digest(&command).unwrap();
-        w.encrypted = true;
-        w.body = w.event_id.clone();
+        w.encrypted = !plaintext;
+        w.body = if plaintext { "Remember encrypted blue comet".into() } else { w.event_id.clone() };
         w.body_digest = format!("{:x}", Sha256::digest(w.body.as_bytes()));
     }
     let root = f._root.path().join("claude-native-context");
     hagency_store::private::directory(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let (transport, _) = transport.with_crypto_fixture(Some("Remember encrypted blue comet".into()));
+    let transport = if plaintext {
+        let work = f.state.lock().unwrap().shared.work.clone().unwrap();
+        transport.with_history_fixture(work.room_id, work.event_id, vec![]).0
+    } else { transport };
     transport.poll_claude_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
         binding.clone(), "shared-session").await.unwrap();
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -99,22 +118,38 @@ async fn native_shared_claude_full_host_resumes_encrypted_successor_without_doub
         let w = state.shared.work.as_mut().unwrap();
         w.event_id = "$claude_followup".into();
         w.thread_root = w.event_id.clone();
-        w.body = w.event_id.clone();
+        w.body = if plaintext { "What did I say?".into() } else { w.event_id.clone() };
         w.body_digest = format!("{:x}", Sha256::digest(w.body.as_bytes()));
     }
     let (second, sent) = transport.with_crypto_fixture(Some("What did I say?".into()));
+    let second = if plaintext {
+        let work = f.state.lock().unwrap().shared.work.clone().unwrap();
+        second.with_history_fixture(work.room_id, work.event_id, vec![]).0
+    } else { second };
     second.poll_claude_successor_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
         binding, "shared-session").await.unwrap();
     attempts::wait_stopped(&f).await;
     let prompt: Value = serde_json::from_slice(&std::fs::read(root.join("work/agent_fixture/shared-claude.prompt")).unwrap()).unwrap();
     assert_eq!(prompt["session_id"], native);
-    assert!(sent.lock().unwrap().iter().any(|(_, text)| text.contains("Remember encrypted blue comet")));
+    if !plaintext {
+        assert!(sent.lock().unwrap().iter().any(|(_, text)| text.contains("Remember encrypted blue comet")));
+    } else {
+        let input = prompt["message"]["content"].as_str().unwrap();
+        assert!(!input.contains("Remember encrypted blue comet"), "old question is absent from the new input");
+        let current: Value = serde_json::from_str(input.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(current["version"], 3);
+        assert_eq!(current["context"]["history"], json!([]));
+        assert_eq!(current["currentRequest"]["body"], "What did I say?");
+    }
     {
         let state = f.state.lock().unwrap();
         assert_eq!(state.shared.starts, 2);
         assert_eq!(state.shared.session_routes, 1);
         let completed: Vec<_> = state.shared.receipts.values().filter(|r| r.state == "completed").collect();
         assert_eq!(completed.len(), 2);
+        if plaintext {
+            assert!(completed.iter().any(|r| r.body.as_ref().is_some_and(|text| text.contains("Remember encrypted blue comet"))));
+        }
         assert!(completed.iter().all(|r| r.usage_complete && r.known_consumed_tokens == 16));
         assert_ne!(completed[0].call_id, completed[1].call_id);
         assert_ne!(completed[0].process_digest, completed[1].process_digest);

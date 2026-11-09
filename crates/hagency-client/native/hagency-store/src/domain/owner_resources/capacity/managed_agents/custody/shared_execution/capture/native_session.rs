@@ -194,9 +194,9 @@ impl OwnerResourceRegistry {
                 if !work::exact_work(&tx, a.sink.child(), &w)? {
                     return Err(Error::LocalAuthority);
                 }
-                // Plaintext context V1/V2 pins a server-rendered transcript. Keep
-                // those immutable input bytes until that protocol supports deltas.
-                let prior = if w.encrypted || !cfg!(feature = "shared-context") {
+                // V1/V2 retain their original full transcript. V3 pins only
+                // the current request and supplies a separately scoped history tool.
+                let prior = if w.encrypted || !cfg!(feature = "shared-context") || context::native_input(&tx, &w)? {
                     previous(&tx, &scope)?
                 } else {
                     None

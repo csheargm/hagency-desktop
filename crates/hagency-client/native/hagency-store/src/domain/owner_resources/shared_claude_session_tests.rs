@@ -255,6 +255,7 @@ async fn open(
         thread_root: work.thread_root.clone(),
         room_binding: work.room_binding.clone(),
         encrypted: work.encrypted,
+        native_context_version: None,
     };
     let SharedAttemptClaim::Issued(custody) = f
         .registry

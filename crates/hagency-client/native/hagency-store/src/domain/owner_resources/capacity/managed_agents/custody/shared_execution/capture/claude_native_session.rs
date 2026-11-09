@@ -120,7 +120,7 @@ async fn prepare(
             return Err(Error::LocalAuthority);
         }
         // Plaintext V1/V2 still has an immutable complete-history input contract.
-        if route.encrypted || !cfg!(feature = "shared-context") {
+        if route.encrypted || route.native_context_version == Some(3) || !cfg!(feature = "shared-context") {
             scope = Some(scope_key(
                 root,
                 enrollment,
@@ -285,6 +285,7 @@ impl SharedClaudeSession {
                 work::live(&tx, &a)?;
                 if !work::exact_work(&tx, a.sink.child(), &w)?
                     || expected.is_some() && previous(&tx, &scope, &child)? != expected
+                    || expected.is_some() && !w.encrypted && cfg!(feature = "shared-context") && !context::native_input(&tx, &w)?
                 {
                     return Err(Error::LocalAuthority);
                 }

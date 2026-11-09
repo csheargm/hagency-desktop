@@ -1,4 +1,4 @@
-//! File exchange for an admitted encrypted conversation, separate from task MCP.
+//! File exchange for an admitted conversation, separate from task MCP.
 //! The host fixes the room/workspace; the model supplies only event IDs and paths.
 use super::*;
 use crate::console::owned_runtime::e2ee::{AgentDevice, RoomFile};
@@ -38,6 +38,7 @@ pub(super) enum Source {
         device: Arc<AgentDevice>,
         io: Io,
         work: String,
+        encrypted: bool,
     },
     #[cfg(test)]
     Fixture(Arc<tests::Endpoint>),
@@ -59,7 +60,7 @@ impl FileIo for Source {
     }
     async fn upload(&self, bytes: Vec<u8>) -> Result<String> {
         match self {
-            Self::Device { device, io, work } => {
+            Self::Device { device, io, work, .. } => {
                 authorize(io, work).await?;
                 device.upload_room_file(bytes).await
             }
@@ -69,9 +70,13 @@ impl FileIo for Source {
     }
     async fn send(&self, room: &str, txn: &str, content: Value) -> Result<String> {
         match self {
-            Self::Device { device, io, work } => {
+            Self::Device { device, io, work, encrypted } => {
                 authorize(io, work).await?;
-                device.publish_room_file(room, txn, content).await
+                if *encrypted {
+                    device.publish_room_file(room, txn, content).await
+                } else {
+                    device.publish_room_file_with_security(room, txn, content, false).await
+                }
             }
             #[cfg(test)]
             Self::Fixture(f) => f.send(room, txn, content).await,
@@ -118,6 +123,7 @@ impl Files<Source> {
         b: &Bound,
         work: &SharedWorkItem,
         process: &OwnedSession,
+        input: Option<&SharedPreparedInput>,
     ) -> std::result::Result<Option<Self>, NativeError> {
         Self::for_workspace(
             io,
@@ -125,6 +131,7 @@ impl Files<Source> {
             work,
             process.shared_workspace(),
             process.shared_tools_enabled(),
+            input,
         )
         .await
     }
@@ -134,9 +141,13 @@ impl Files<Source> {
         work: &SharedWorkItem,
         workspace: &Path,
         enabled: bool,
+        input: Option<&SharedPreparedInput>,
     ) -> std::result::Result<Option<Self>, NativeError> {
-        if !work.encrypted || !enabled {
+        if !enabled || !work.encrypted && !input.is_some_and(SharedPreparedInput::uses_native_history) {
             return Ok(None);
+        }
+        if !work.encrypted {
+            input.and_then(SharedPreparedInput::context).ok_or_else(invalid)?.render_for(work).map_err(store)?;
         }
         #[cfg(test)]
         if let Some(fixture) = &io.crypto_fixture {
@@ -159,6 +170,7 @@ impl Files<Source> {
                 device,
                 io: io.clone(),
                 work: work.id.clone(),
+                encrypted: work.encrypted,
             }),
             work,
             workspace,

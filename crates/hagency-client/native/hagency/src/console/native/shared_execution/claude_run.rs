@@ -234,6 +234,36 @@ async fn work(
             })
             .await?;
     };
+    let plaintext_input = if cfg!(feature = "shared-context") && !work.encrypted {
+        active.wait(cancel, async {
+            let (b, p, state) = live.proof().await?;
+            #[cfg(feature = "shared-budget-execution")]
+            if live.authority.is_budget() {
+                return super::budget_context_io::prepare(
+                    &live.io,
+                    &b,
+                    &live.registry,
+                    p,
+                    &work,
+                    state.lease.authority,
+                    state.until,
+                )
+                .await
+                .map(Some);
+            }
+            super::context_io::prepare(
+                &live.io,
+                &b,
+                &live.registry,
+                p,
+                &work,
+                state.lease.authority,
+                state.until,
+            )
+            .await
+            .map(Some)
+        }).await?
+    } else { None };
     active.wait(cancel, async {
         let (_, proof, _) = live.proof().await?;
         session.attach(proof, work.clone(), process).await.map_err(store)
@@ -241,7 +271,7 @@ async fn work(
     let mut history = active
         .wait(cancel, async {
             let (b, _, _) = live.proof().await?;
-            super::history::Reader::new(&live.io, &b, &work).await
+            super::history::Reader::new(&live.io, &b, &work, plaintext_input.as_ref()).await
         })
         .await?;
     if let Some(reader) = &mut history {
@@ -249,7 +279,7 @@ async fn work(
     }
     let input = active
         .wait(cancel, async {
-            let (b, p, state) = live.proof().await?;
+            let (b, _, _) = live.proof().await?;
             if cfg!(feature = "shared-context") && work.encrypted {
                 let mut text = super::e2ee::input(&live.io, &b, &work).await?;
                 if let Some(reader) = &mut history {
@@ -266,34 +296,8 @@ async fn work(
                         .await
                 };
                 Ok(Some(prepared.map_err(store)?))
-            } else if cfg!(feature = "shared-context") {
-                #[cfg(feature = "shared-budget-execution")]
-                if live.authority.is_budget() {
-                    return super::budget_context_io::prepare(
-                        &live.io,
-                        &b,
-                        &live.registry,
-                        p,
-                        &work,
-                        state.lease.authority,
-                        state.until,
-                    )
-                    .await
-                    .map(Some);
-                }
-                super::context_io::prepare(
-                    &live.io,
-                    &b,
-                    &live.registry,
-                    p,
-                    &work,
-                    state.lease.authority,
-                    state.until,
-                )
-                .await
-                .map(Some)
             } else {
-                Ok(None)
+                Ok(plaintext_input)
             }
         })
         .await?;
@@ -306,6 +310,7 @@ async fn work(
                 &work,
                 &launch.profile.cwd,
                 launch.policy.tools(),
+                input.as_ref(),
             )
             .await
         })

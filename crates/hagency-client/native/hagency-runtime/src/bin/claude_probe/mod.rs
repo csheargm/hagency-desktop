@@ -68,13 +68,13 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         }
     }
     emit(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":initialization}}))?;
-    let prompt: Value = if mode == "shared-history" {
-        shared_history::bind_and_prompt(&mut stdin)?
-    } else {
-        line.clear();
-        stdin.read_line(&mut line)?;
-        serde_json::from_str(&line)?
-    };
+    line.clear();
+    stdin.read_line(&mut line)?;
+    let first: Value = serde_json::from_str(&line)?;
+    let prompt: Value = if matches!(mode, "shared-history" | "shared-session")
+        && first["request"]["subtype"] == "mcp_status" {
+        shared_history::bind_and_prompt(&mut stdin, first)?
+    } else { first };
     if mode == "shared-session" {
         drop(stdin);
         return shared_session::run(marker, &prompt);

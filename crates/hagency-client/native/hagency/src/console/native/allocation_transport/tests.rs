@@ -419,6 +419,7 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             if managed_agents::shared::context_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v1");}
                             #[cfg(feature="shared-context")]
                             if managed_agents::shared::context_v2_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v2");}
+                            if managed_agents::shared::context_v3_enabled(&state.lock().unwrap()){caps.push("shared-native-context-v3");}
                             json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,"capabilities":caps,"homeserver":origin,"issuer":issuer})
                         }
                         "/hagency/api/v1/sessions/pasion" => {

@@ -50,6 +50,14 @@ fn document_text() -> String {
     "PDF 正文🙂\n\u{0001}".repeat(4000)
 }
 impl HistoryIo for Document {
+    async fn request(&self, room: &str, event: &str) -> Result<Option<Value>, NativeError> {
+        assert_eq!(room, "!admitted:example.test");
+        assert_eq!(event, "$file");
+        Ok(Some(
+            json!({"eventId":"$file","body":"Already in the current request","attachment":{
+            "filename":"设计.pdf","status":"not_read"}}),
+        ))
+    }
     async fn start(&self, _: &str, _: &str) -> Result<Option<String>, NativeError> {
         Ok(None)
     }
@@ -68,6 +76,28 @@ impl HistoryIo for Document {
         text.complete = self.complete;
         Ok(text)
     }
+}
+
+#[tokio::test]
+async fn room_history_native_current_attachment_is_discovered_without_repeating_the_request() {
+    let source = Arc::new(Document {
+        reads: 0.into(),
+        complete: true,
+    });
+    let mut reader = Reader::from_source(source, "!admitted:example.test", "$file");
+    reader.use_native_compaction();
+    let raw = reader.read(None).await.unwrap();
+    assert!(!raw.contains("Already in the current request"));
+    let first: Value = serde_json::from_str(&raw).unwrap();
+    let cursor = first["requestAttachment"]["attachment"]["readCursor"]
+        .as_str()
+        .unwrap();
+    assert_eq!(first["messages"], json!([]));
+    let text: Value = serde_json::from_str(&reader.read(Some(cursor)).await.unwrap()).unwrap();
+    assert!(text["text"].as_str().unwrap().contains("PDF 正文"));
+    let replay: Value = serde_json::from_str(&reader.read(None).await.unwrap()).unwrap();
+    assert_eq!(replay["alreadyRead"], true);
+    assert!(replay.get("requestAttachment").is_none());
 }
 
 #[tokio::test]

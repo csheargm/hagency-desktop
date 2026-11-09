@@ -112,7 +112,8 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
             runtime_command_digest: digest(c).unwrap(), assignment_id: w.assignment_id.clone(),
             event_id: w.event_id.clone(), body_digest: w.body_digest.clone(), room_id: w.room_id.clone(),
             requester_mxid: w.requester_mxid.clone(), thread_root: w.thread_root.clone(),
-            room_binding: w.room_binding.clone(), encrypted: w.encrypted };
+            room_binding: w.room_binding.clone(), encrypted: w.encrypted,
+            native_context_version: (!w.encrypted && s.shared.contexts.v3).then_some(3) };
         s.shared.session_routes += 1;
         return Some(json!({"route": route, "observedAtMs": now()}));
     }
@@ -1201,6 +1202,7 @@ pub(crate) fn demand_retry_enabled(s:&super::State)->bool{!s.shared.demands.no_r
 pub(crate) fn context_enabled(s:&super::State)->bool{s.shared.contexts.active}
 #[cfg(feature="shared-context")]
 pub(crate) fn context_v2_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2}
+pub(crate) fn context_v3_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2 && s.shared.contexts.v3}
 
 #[cfg(feature = "shared-budget-execution")]
 #[path = "file_execution_tests.rs"]

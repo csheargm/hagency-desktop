@@ -1,5 +1,7 @@
 //! Two actual supervised processes share only native context, never call custody.
 use super::*;
+#[path = "shared_native_plaintext_tests.rs"]
+mod plaintext;
 
 async fn advance(a: Active) -> Active {
     advance_with_restart(a, false).await
@@ -82,7 +84,18 @@ async fn turn_open(
     expected_resume: bool,
     resumed: bool,
 ) -> SharedWorkReceipt {
-    let mut w = encrypted(a, id);
+    turn_mode(a, id, text, other, expected_resume, resumed, 0).await
+}
+async fn turn_mode(
+    a: &mut Active, id: &str, text: &str, other: bool,
+    expected_resume: bool, resumed: bool, version: u16,
+) -> SharedWorkReceipt {
+    let mut w = if version == 0 { encrypted(a, id) } else {
+        let mut work = a.work(id);
+        work.body = text.into();
+        work.body_digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+        work
+    };
     if other {
         w.requester_mxid = "@other:test".into();
     }
@@ -90,6 +103,10 @@ async fn turn_open(
         .receive_shared_work(a.authority(), w.clone())
         .await
         .unwrap();
+    let input = if version == 0 {
+        a.f.registry.prepare_shared_decrypted_input(a.authority(), w.clone(), text.into()).await.unwrap()
+    } else { plaintext::input(a, &w, version).await };
+    let frozen = input.context().cloned();
     let mut context =
         a.f.registry
             .prepare_shared_native_session(a.authority(), w.clone(), &mut a.process)
@@ -103,11 +120,7 @@ async fn turn_open(
             .await
             .is_err()
     );
-    let input =
-        a.f.registry
-            .prepare_shared_decrypted_input(a.authority(), w.clone(), text.into())
-            .await
-            .unwrap();
+
     let h =
         a.f.registry
             .prepare_shared_input_call(a.authority(), w.clone(), input.clone())
@@ -120,19 +133,12 @@ async fn turn_open(
             .begin_shared_input_start(a.authority(), w.clone(), h.call_id, input)
             .await
             .unwrap();
-    let custody =
-        a.f.registry
-            .issue_shared_call(
-                start,
-                SharedWorkStart {
-                    work: w.clone(),
-                    work_digest: digest(&w),
-                    activity_epoch: 1,
-                    newly_started: true,
-                },
-            )
-            .await
-            .unwrap();
+    let work_start = SharedWorkStart { work: w.clone(), work_digest: digest(&w), activity_epoch: 1, newly_started: true };
+    let custody = if let Some(c) = frozen {
+        a.f.registry.issue_shared_context_call(start, SharedContextStart {
+            start: work_start, context_digest: c.context_digest, input_digest: c.input_digest,
+        }).await.unwrap()
+    } else { a.f.registry.issue_shared_call(start, work_start).await.unwrap() };
     custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_started_turn(&a.process).await.unwrap();
     let receipt = loop {

@@ -7,6 +7,7 @@ pub(super) struct State {
     /// Advertise `shared-thread-context-v2`; records stay version 1 until a
     /// freeze request names a budget, exactly like the server.
     pub v2: bool,
+    pub v3: bool,
     /// Every `budget` object received on a freeze request, in order.
     budgets: Vec<Value>,
     works: BTreeMap<String, SharedWorkItem>,
@@ -94,7 +95,17 @@ pub(super) fn management(
                 budget: None,
                 history,
             };
-            if let Some(b) = budget {
+            if budget.as_ref().is_some_and(|b| b["version"] == 3) {
+                assert!(s.shared.contexts.v3);
+                let b = budget.unwrap();
+                assert!(b["modelContextWindow"].is_null());
+                c.version = 3;
+                c.input_profile = INPUT_PROFILE_V3.into();
+                c.coverage = COVERAGE_NATIVE_HISTORY.into();
+                c.history.clear();
+                c.omitted_earlier = true;
+                s.shared.contexts.budgets.push(b);
+            } else if let Some(b) = budget {
                 // Mirror the server: an observed window inside the accepted
                 // range sets the budget, anything else budgets as default.
                 assert_eq!(b["version"], 2);
@@ -138,11 +149,12 @@ pub(super) fn management(
         assert_eq!(body["inputDigest"], c.input_digest);
         s.shared.starts += 1;
         s.shared.contexts.starts += 1;
+        let newly_started = s.shared.work_starts.insert(w.id.clone());
         if std::mem::take(&mut s.shared.contexts.lose_start) {
             return Some(None);
         }
         return Some(Some(
-            json!({"start":{"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":s.shared.starts==1},"contextDigest":c.context_digest,"inputDigest":c.input_digest,"observedAtMs":at}),
+            json!({"start":{"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":newly_started},"contextDigest":c.context_digest,"inputDigest":c.input_digest,"observedAtMs":at}),
         ));
     }
     let receipt = s

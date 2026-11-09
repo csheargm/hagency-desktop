@@ -2,35 +2,7 @@
 use super::*;
 use super::context_io::ContextAction;
 use super::budget_work_io::WorkAction;
-/// The highest context record version the endpoint advertises, if any.
-/// Version 2 implies version 1 routes; a lone version 2 flag is not trusted.
-async fn paired(b: &Bound) -> Result<Option<u16>, NativeError> {
-    let d = b.demand_discovery().await?;
-    if d.capabilities.len() > 64 || d.capabilities.iter().any(|c| c.len() > 128) {
-        return Err(invalid());
-    }
-    let has = |name: &str| d.capabilities.iter().any(|c| c == name);
-    Ok(match (has(SHARED_CONTEXT_CAPABILITY), has(SHARED_CONTEXT_CAPABILITY_V2)) {
-        (true, true) => Some(2),
-        (true, false) => Some(1),
-        _ => None,
-    })
-}
-/// A version 2 freeze names the model window this Agent last reported so the
-/// server can budget history against it. Nothing here grants model custody.
-async fn budget(
-    r: &OwnerResourceRegistry,
-    a: &VerifiedSharedActivity,
-    version: u16,
-) -> Result<Option<SharedContextBudgetInput>, NativeError> {
-    if version < 2 {
-        return Ok(None);
-    }
-    Ok(Some(SharedContextBudgetInput {
-        version: 2,
-        model_context_window: r.shared_context_window(a).await.map_err(store)?,
-    }))
-}
+use super::context_io::{paired, budget};
 pub(super) async fn prepare(
     io: &Io,
     b: &Bound,

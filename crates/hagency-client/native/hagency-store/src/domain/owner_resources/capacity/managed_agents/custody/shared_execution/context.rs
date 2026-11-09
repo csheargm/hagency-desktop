@@ -22,6 +22,9 @@ impl SharedPreparedInput {
     pub fn input_digest(&self) -> String {
         context_hash(&self.text)
     }
+    pub fn uses_native_history(&self) -> bool {
+        self.context.as_ref().is_some_and(|c| c.context.version == 3)
+    }
 }
 
 /// Reserve queue capacity for the bounded rendered input plus its descriptor.
@@ -74,6 +77,10 @@ fn saved(db: &Connection, w: &SharedWorkItem) -> Result<Option<SharedContextReco
         Ok(record)
     })
     .transpose()
+}
+pub(super) fn native_input(db: &Connection, w: &SharedWorkItem) -> Result<bool, Error> {
+    Ok(mode(db, &w.id)?.as_deref() == Some("thread_context_v1")
+        && saved(db, w)?.is_some_and(|c| c.context.version == 3))
 }
 fn demand_binding(
     db: &Connection,

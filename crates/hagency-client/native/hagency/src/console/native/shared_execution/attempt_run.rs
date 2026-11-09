@@ -521,6 +521,13 @@ async fn work_loop(
         .await?;
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
+    let (b, p) = proof(io, r, sink, a).await?;
+    // Freeze the exact plaintext input before selecting native context. Legacy
+    // V1/V2 records remain fresh; only V3 supports appending to a retained session.
+    let plaintext_input = if cfg!(feature = "shared-context") && !work.encrypted {
+        Some(guarded(cancel, a.until, || super::context_io::prepare(
+            io, &b, r, p, &work, a.lease.authority.clone(), a.until)).await?)
+    } else { None };
     let (_, p) = proof(io, r, sink, a).await?;
     let mut native_session = prepare_while_active(io, r, sink, control, a, cancel, async {
         r.prepare_shared_native_session(p, work.clone(), process).await.map_err(store)
@@ -533,7 +540,7 @@ async fn work_loop(
         control,
         a,
         cancel,
-        super::history::Reader::new(io, &b, &work),
+        super::history::Reader::new(io, &b, &work, plaintext_input.as_ref()),
     )
     .await?;
     // Opening a provider thread does not run the model. Finish it before
@@ -566,7 +573,6 @@ async fn work_loop(
             .await
     })
     .await?;
-    let (_, p) = proof(io, r, sink, a).await?;
     let input = if cfg!(feature = "shared-context") && work.encrypted {
         let text = prepare_while_active(
             io,
@@ -600,15 +606,8 @@ async fn work_loop(
             }
             .map_err(store)?,
         )
-    } else if cfg!(feature = "shared-context") {
-        Some(
-            guarded(cancel, a.until, || {
-                super::context_io::prepare(io, &b, r, p, &work, a.lease.authority.clone(), a.until)
-            })
-            .await?,
-        )
     } else {
-        None
+        plaintext_input
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
     let mut files = prepare_while_active(
@@ -618,7 +617,7 @@ async fn work_loop(
         control,
         a,
         cancel,
-        super::files::Files::new(io, &b, &work, process),
+        super::files::Files::new(io, &b, &work, process, input.as_ref()),
     )
     .await?;
     let (_, p) = proof(io, r, sink, a).await?;

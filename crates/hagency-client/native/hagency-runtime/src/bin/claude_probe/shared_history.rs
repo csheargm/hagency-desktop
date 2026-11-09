@@ -26,8 +26,7 @@ fn mcp(input: &mut impl BufRead, id: &str, message: Value) -> io::Result<Value> 
     Ok(reply["response"]["response"]["mcp_response"].clone())
 }
 
-pub(super) fn bind_and_prompt(input: &mut impl BufRead) -> io::Result<Value> {
-    let status = read(input)?;
+pub(super) fn bind_and_prompt(input: &mut impl BufRead, status: Value) -> io::Result<Value> {
     if status["request"]["subtype"] != "mcp_status" {
         return Err(io::ErrorKind::InvalidInput.into());
     }

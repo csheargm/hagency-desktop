@@ -14,7 +14,7 @@ pub(super) struct Probe {
 }
 impl Probe {
     pub(super) fn begin(&mut self) -> io::Result<()> {
-        self.call("receive_file", json!({"event_id":"$foreign:test"}))
+        self.call("read_room_history", json!({"cursor":null}))
     }
     fn call(&mut self, tool: &str, arguments: Value) -> io::Result<()> {
         self.pending = Some(
@@ -42,11 +42,11 @@ impl Probe {
                 .as_str()
                 .ok_or_else(|| io::Error::other("file response missing"))?,
         )?;
-        let mut log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(root.join("file-responses.jsonl"))?;
-        writeln!(log, "{value}")?;
+        if self.step > 0 {
+            let mut log = fs::OpenOptions::new().create(true).append(true)
+                .open(root.join("file-responses.jsonl"))?;
+            writeln!(log, "{value}")?;
+        }
         let mut completed = self
             .pending
             .take()
@@ -60,18 +60,22 @@ impl Probe {
         self.step += 1;
         match previous {
             0 => {
+                if !value["messages"].is_array() { return Err(io::Error::other("history unavailable")); }
+                self.call("receive_file", json!({"event_id":"$foreign:test"}))
+            }
+            1 => {
                 if value["error"] != "attachment_not_observed_in_this_room" {
                     return Err(io::Error::other("foreign attachment must fail"));
                 }
                 self.call("list_received_files", json!({}))
             }
-            1 => {
+            2 => {
                 if value["files"][0]["event_id"] != "$attachment:test" {
                     return Err(io::Error::other("attachment inventory missing"));
                 }
                 self.call("receive_file", json!({"event_id":"$attachment:test"}))
             }
-            2 => {
+            3 => {
                 let request: Value =
                     serde_json::from_slice(&fs::read(root.join("thread-request.json"))?)?;
                 let workspace = Path::new(
@@ -94,7 +98,7 @@ impl Probe {
                     json!({"call_id":"file-result","path":"output/result.bin"}),
                 )
             }
-            3 => {
+            4 => {
                 if value["status"] != "delivered" {
                     return Err(io::Error::other("attachment was not delivered"));
                 }
@@ -106,7 +110,7 @@ impl Probe {
                 );
                 self.call("get_file_delivery", json!({"delivery_id":self.delivery}))
             }
-            4 => {
+            5 => {
                 if value["status"] != "delivered" {
                     return Err(io::Error::other("delivery receipt missing"));
                 }
@@ -115,7 +119,7 @@ impl Probe {
                     json!({"call_id":"file-result","path":"output/result.bin"}),
                 )
             }
-            5 => {
+            6 => {
                 if value["delivery_id"] != self.delivery.as_deref().unwrap()
                     || value["status"] != "delivered"
                 {

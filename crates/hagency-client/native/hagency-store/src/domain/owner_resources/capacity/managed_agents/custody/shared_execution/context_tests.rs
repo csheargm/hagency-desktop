@@ -1,4 +1,31 @@
 use super::*;
+#[test]
+fn shared_context_v3_matches_server_bytes_and_rejects_history_reinjection() {
+    let v: serde_json::Value = serde_json::from_str(include_str!("management-shared-native-context-v3.json")).unwrap();
+    let w: SharedWorkItem = serde_json::from_value(v["work"].clone()).unwrap();
+    let c = SharedContextRecord {
+        context: serde_json::from_value(v["context"].clone()).unwrap(),
+        context_digest: v["contextDigest"].as_str().unwrap().into(),
+        input_digest: v["inputDigest"].as_str().unwrap().into(),
+    };
+    assert_eq!(c.render_for(&w).unwrap(), v["renderedInput"]);
+    assert!(c.context.history.is_empty() && c.context.omitted_earlier && c.context.budget.is_none());
+    let (_, _, old) = fixture();
+    let mut repeated = c.context.clone();
+    repeated.history = old.context.history;
+    assert!(render_context(&repeated, &w).is_err());
+    for (key, value) in [("inputProfile", json!(INPUT_PROFILE_V2)),
+        ("coverage", json!(COVERAGE_PRIOR_DELIVERED_PAIRS)), ("omittedEarlier", json!(false)),
+        ("roomId", json!("!other:test")), ("version", json!(2))] {
+        let mut changed = v["context"].clone();
+        changed[key] = value;
+        assert!(render_context(&serde_json::from_value(changed).unwrap(), &w).is_err(), "{key}");
+    }
+    assert!(SharedContextBudgetInput { version: 3, model_context_window: Some(128_000) }.validate().is_err());
+    let mut tampered = c;
+    tampered.input_digest = "f".repeat(64);
+    assert!(tampered.render_for(&w).is_err());
+}
 fn fixture() -> (serde_json::Value, SharedWorkItem, SharedContextRecord) {
     let v: serde_json::Value =
         serde_json::from_str(include_str!("management-shared-thread-context-v1.json")).unwrap();

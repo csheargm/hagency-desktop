@@ -72,14 +72,15 @@ impl From<ContextAction> for Action {
 }
 
 /// The highest context record version the endpoint advertises, if any.
-/// Version 2 implies version 1 routes; a lone version 2 flag is not trusted.
-async fn paired(b: &Bound) -> Result<Option<u16>, NativeError> {
+/// Later versions require all earlier capabilities; lone flags are not trusted.
+pub(super) async fn paired(b: &Bound) -> Result<Option<u16>, NativeError> {
     let d = b.demand_discovery().await?;
     if d.capabilities.len() > 64 || d.capabilities.iter().any(|c| c.len() > 128) {
         return Err(invalid());
     }
     let has = |name: &str| d.capabilities.iter().any(|c| c == name);
     Ok(match (has(SHARED_CONTEXT_CAPABILITY), has(SHARED_CONTEXT_CAPABILITY_V2)) {
+        (true, true) if has(SHARED_CONTEXT_CAPABILITY_V3) => Some(3),
         (true, true) => Some(2),
         (true, false) => Some(1),
         _ => None,
@@ -87,13 +88,16 @@ async fn paired(b: &Bound) -> Result<Option<u16>, NativeError> {
 }
 /// A version 2 freeze names the model window this Agent last reported so the
 /// server can budget history against it. Nothing here grants model custody.
-async fn budget(
+pub(super) async fn budget(
     r: &OwnerResourceRegistry,
     a: &VerifiedSharedActivity,
     version: u16,
 ) -> Result<Option<SharedContextBudgetInput>, NativeError> {
     if version < 2 {
         return Ok(None);
+    }
+    if version == 3 {
+        return Ok(Some(SharedContextBudgetInput { version: 3, model_context_window: None }));
     }
     Ok(Some(SharedContextBudgetInput {
         version: 2,
