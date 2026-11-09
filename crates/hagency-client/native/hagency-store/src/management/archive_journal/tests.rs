@@ -583,28 +583,28 @@ async fn archive_validation_deadline_interrupts_existing_rows_without_mutation()
     let mut db = f.source();
     let (entered, observing) = std::sync::mpsc::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    let mut entered = Some(entered);
-    // Pause the actual validation SQL after the deadline handler is installed.
-    // This removes scheduler-dependent assumptions about how fast 10k rows scan.
-    db.authorizer(Some(move |action: AuthContext<'_>| {
-        if matches!(action.action, AuthAction::Select)
-            && let Some(entered) = entered.take()
-        {
-            let _ = entered.send(());
-            let _ = blocked.recv();
-        }
-        Authorization::Allow
-    }))
-    .unwrap();
-    let deadline = Instant::now() + Duration::from_millis(100);
     let task = std::thread::spawn(move || {
+        // Start this deadline on the worker, after it has actually been
+        // scheduled. A busy test host must not expire it before SQL starts.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let mut entered = Some(entered);
+        db.authorizer(Some(move |action: AuthContext<'_>| {
+            if matches!(action.action, AuthAction::Select)
+                && let Some(entered) = entered.take()
+            {
+                let _ = entered.send(deadline);
+                let _ = blocked.recv();
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
         let changes = db.total_changes();
         let result = validate_bounded(&mut db, &binding(), deadline);
         assert!(db.is_autocommit());
         assert_eq!(db.total_changes(), changes);
         result
     });
-    observing.recv_timeout(Duration::from_secs(1)).unwrap();
+    let deadline = observing.recv_timeout(Duration::from_secs(5)).unwrap();
     tokio::time::sleep_until((deadline + Duration::from_millis(2)).into()).await;
     release.send(()).unwrap();
     assert!(matches!(task.join().unwrap(), Err(Error::Busy)));

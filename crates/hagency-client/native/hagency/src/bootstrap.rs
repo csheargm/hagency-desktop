@@ -436,6 +436,7 @@ fn session_error_label(error: hagency_runtime::codex::session::Error) -> &'stati
         Capacity => "capacity",
         Policy => "policy",
         Rejected(_) => "rejected",
+        ContextUnavailable => "context_unavailable",
         UnsupportedRequest => "unsupported_request",
         UnsupportedEvent => "unsupported_event",
         TaskWriterStartup => "task_writer_startup",

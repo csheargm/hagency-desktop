@@ -509,7 +509,7 @@ async fn schema97_upgrade_retains_graph_messages_receipts_and_adds_no_binding() 
     let before = f.outbox().await;
     f.registry.shutdown().await.unwrap();
     let db = Connection::open(f.temp.path().join("registry/domain.sqlite3")).unwrap();
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings;DROP TABLE owner_operator_graph_recipients; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=97;")
+    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings;DROP TABLE owner_operator_graph_recipients; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=97;")
         .unwrap();
     drop(db);
     f.registry = OwnerResourceRegistry::open_root(&f.temp.path().join("registry")).unwrap();

@@ -418,7 +418,11 @@ async fn work_loop(
         .await?;
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (_, p) = proof(io, r, sink, a).await?;
+    let mut native_session = prepare_while_active(io, r, sink, control, a, cancel, async {
+        r.prepare_shared_native_session(p, work.clone(), process).await.map_err(store)
+    }).await?;
+    let (b, _) = proof(io, r, sink, a).await?;
     let mut history = prepare_while_active(
         io,
         r,
@@ -429,6 +433,35 @@ async fn work_loop(
         super::history::Reader::new(io, &b, &work),
     )
     .await?;
+    // Opening a provider thread does not run the model. Finish it before
+    // recording call admission, so startup failure cannot reserve the budget.
+    prepare_while_active(io, r, sink, control, a, cancel, async {
+        io.check_running(sink.command()).await?;
+        if history.is_some() {
+            process
+                .enable_shared_room_history()
+                .map_err(|_| failure(409, "shared_history_tool_unavailable"))?;
+        }
+        if history.is_some() && process.shared_tools_enabled() {
+            process
+                .enable_shared_room_files()
+                .map_err(|_| failure(409, "shared_file_tool_unavailable"))?;
+        }
+        super::questions::offer(process);
+        native_session
+            .open_codex(process)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Shared Agent thread setup failed before call admission"
+                );
+                failure(409, "shared_execution_thread_unknown")
+            })?;
+        io.check_running(sink.command()).await
+    })
+    .await?;
+    let (_, p) = proof(io, r, sink, a).await?;
     let input = if cfg!(feature = "shared-context") && work.encrypted {
         let text = prepare_while_active(
             io,
@@ -442,7 +475,11 @@ async fn work_loop(
         .await?;
         let text = if let Some(history) = history.as_mut() {
             prepare_while_active(io, r, sink, control, a, cancel, async {
-                Ok(history.prompt(text).await)
+                Ok(if native_session.is_resuming() {
+                    history.followup_prompt(text)
+                } else {
+                    history.prompt(text).await
+                })
             })
             .await?
         } else {
@@ -468,34 +505,6 @@ async fn work_loop(
     } else {
         None
     };
-    // Opening a provider thread does not run the model. Finish it before
-    // recording call admission, so startup failure cannot reserve the budget.
-    prepare_while_active(io, r, sink, control, a, cancel, async {
-        io.check_running(sink.command()).await?;
-        if history.is_some() {
-            process
-                .enable_shared_room_history()
-                .map_err(|_| failure(409, "shared_history_tool_unavailable"))?;
-        }
-        if history.is_some() && process.shared_tools_enabled() {
-            process
-                .enable_shared_room_files()
-                .map_err(|_| failure(409, "shared_file_tool_unavailable"))?;
-        }
-        super::questions::offer(process);
-        process
-            .start_shared_text_thread_for_room(&work.room_id)
-            .await
-            .map_err(|error| {
-                tracing::warn!(
-                    ?error,
-                    "Shared Agent thread setup failed before call admission"
-                );
-                failure(409, "shared_execution_thread_unknown")
-            })?;
-        io.check_running(sink.command()).await
-    })
-    .await?;
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
     let mut files = prepare_while_active(
         io,
@@ -727,6 +736,12 @@ async fn work_loop(
             return Err(error);
         }
     };
+    if terminal.state == "completed" && terminal.usage_complete
+        && let Err(error) = capture.retain_native_session(native_session, process).await
+    {
+        tracing::warn!(?error, "Completed native context could not be retained");
+    }
+
     if questions.busy() {
         // Cosmetic only: never hold the reply back for long.
         let _ = tokio::time::timeout(

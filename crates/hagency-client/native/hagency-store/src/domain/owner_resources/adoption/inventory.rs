@@ -241,7 +241,7 @@ fn collect_inner(
     let d = domain.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let p = personal.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let schema: i32 = d.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !matches!(schema, 77..=110)
+    if !matches!(schema, 77..=111)
         || d.pragma_query_value(None, "application_id", |r| r.get::<_, i32>(0))?
             != if archived.0 { 0x48415231 } else { 0x48414732 }
         || p.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0))?

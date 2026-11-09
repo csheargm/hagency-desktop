@@ -31,14 +31,25 @@ class Provider(http.server.BaseHTTPRequestHandler):
             counts[(thread, turn)] = n + 1
             sequence += 1
             response_id = 'offline-response-' + str(sequence)
-        if mode == "room" and n < 2:
-            assert any(t.get('name') == 'mcp__hagency_matrix' for t in body['tools'])
+        if mode in ("room", "shared_room") and n < 2:
+            tool_name = 'read_room_history' if n == 0 else 'send_file'
+            tool_scope = {'namespace':'mcp__hagency_matrix'}
+            if mode == "room":
+                assert any(t.get('name') == 'mcp__hagency_matrix' for t in body['tools'])
+            else:
+                tool_scope = None
+                for tool in body['tools']:
+                    if tool.get('name') == tool_name:
+                        tool_scope = {}
+                    elif tool.get('type') == 'namespace' and any(t.get('name') == tool_name for t in tool['tools']):
+                        tool_scope = {'namespace':tool['name']}
+                assert tool_scope is not None, 'native dynamic Matrix tool is missing'
             if n == 1:
                 assert 'ROOM_HISTORY_RECEIPT' in json.dumps(body['input'])
             item = {'type':'function_call','id':response_id+'-room','call_id':response_id+'-room',
-                    'namespace':'mcp__hagency_matrix', 'name':'read_room_history' if n == 0 else 'send_file',
+                    **tool_scope, 'name':tool_name,
                     'arguments':json.dumps({'cursor':None} if n == 0 else {'call_id':'fixture-file','path':'result.txt'})}
-        elif mode == "room":
+        elif mode in ("room", "shared_room"):
             assert 'ROOM_FILE_RECEIPT' in json.dumps(body['input'])
             item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
                     'content':[{'type':'output_text','text':'ROOM_REPLY','annotations':[]}]}

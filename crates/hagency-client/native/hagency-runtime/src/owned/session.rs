@@ -36,6 +36,22 @@ impl OwnedSession {
     pub fn shared_workspace(&self) -> &Path {
         Path::new(self.session.settings().cwd())
     }
+    /// Effective native profile, including model, sandbox, tools and workspace.
+    /// This is a cache partition, never an execution grant.
+    pub fn shared_session_profile_digest(&self) -> Result<String, session::Error> {
+        hagency_core::canonical::digest(&serde_json::json!({
+            "thread":self.session.settings().thread_request(None),
+            "effort":self.session.settings().effort(),
+        }))
+            .map_err(|_| session::Error::Policy)
+    }
+    pub fn retain_shared_context(&mut self) -> Result<(), session::Error> {
+        if !self.text_source.has_live_activity() { return Err(session::Error::State); }
+        self.session.retain_context()
+    }
+    pub fn shared_thread_id(&self) -> Option<&str> {
+        self.session.thread_id()
+    }
     pub(super) fn shared_settings_match(&self, mode: Option<&str>) -> bool {
         self.session.settings().shared_mode_matches(mode)
     }
@@ -172,6 +188,9 @@ impl OwnedSession {
     }
     pub fn matches_observation_source(&self, source: &session::ObservationSource) -> bool {
         self.session.matches_observation_source(source)
+    }
+    pub fn matches_completed_observation_source(&self, source: &session::ObservationSource) -> bool {
+        self.session.matches_completed_source(source)
     }
     pub fn protocol_outcome(&self) -> Option<&Outcome> {
         self.session.outcome()
@@ -376,6 +395,13 @@ impl OwnedSession {
         let result = operation.runner.session.start_thread().await;
         operation.finish(result)
     }
+    pub async fn resume_thread(&mut self, id: session::ResumeThreadId) -> Result<String, session::Error> {
+        self.managed_source.retire();
+        self.text_source.retire();
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.resume_thread(id).await;
+        operation.finish(result)
+    }
     pub async fn start_turn(&mut self, input: String) -> Result<String, session::Error> {
         self.managed_source.retire();
         self.text_source.retire();
@@ -397,6 +423,15 @@ impl OwnedSession {
         &mut self,
         room: &str,
     ) -> Result<String, session::Error> {
+        self.open_shared_text_thread_for_room(room, None).await.map(|(id, _)| id)
+    }
+    /// A recorded native thread may supply context for this new work item.
+    /// Source custody, input admission and usage receipts remain per process.
+    pub async fn open_shared_text_thread_for_room(
+        &mut self,
+        room: &str,
+        resume: Option<session::ResumeThreadId>,
+    ) -> Result<(String, bool), session::Error> {
         self.text_source.begin_thread()?;
         self.managed_source.retire();
         let operation = Operation::new(self)?;
@@ -406,7 +441,7 @@ impl OwnedSession {
                 room,
             )?;
             operation.runner.session.bind_shared_workspace(directory)?;
-            operation.runner.session.start_thread().await
+            operation.runner.session.resume_or_start_thread(resume).await
         }
         .await;
         operation.finish(result)

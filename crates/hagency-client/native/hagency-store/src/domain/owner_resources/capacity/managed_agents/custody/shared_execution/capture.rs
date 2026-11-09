@@ -4,6 +4,8 @@ use hagency_runtime::{
     owned::{OwnedSession, SharedTextEvent},
 };
 mod claude;
+mod native_session;
+pub use native_session::SharedNativeSession;
 
 enum Source {
     Codex(ObservationSource),

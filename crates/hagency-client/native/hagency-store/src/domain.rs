@@ -145,7 +145,7 @@ pub struct DomainRepository {
     _legacy_writer: Option<hagency_platform::legacy_writer::LegacyWriterAdmission>,
 }
 /// Current domain schema version (the last sequential migration).
-pub const DOMAIN_SCHEMA_VERSION: i32 = 110;
+pub const DOMAIN_SCHEMA_VERSION: i32 = 111;
 const DOMAIN_MIGRATIONS: &[(i32, &str)] = &[
     (2, include_str!("migrations/002-role-publication.sql")),
     (3, include_str!("migrations/003-task-dispatch.sql")),
@@ -404,6 +404,7 @@ const DOMAIN_MIGRATIONS: &[(i32, &str)] = &[
     (108, include_str!("migrations/110-owner-resource-calendars.sql")),
     (109, include_str!("migrations/111-owner-period-starts.sql")),
     (110, include_str!("migrations/112-owner-unstarted-runtimes.sql")),
+    (111, include_str!("migrations/113-owner-shared-native-sessions.sql")),
 ];
 
 impl DomainRepository {

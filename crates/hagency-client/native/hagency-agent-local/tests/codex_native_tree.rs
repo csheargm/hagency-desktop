@@ -15,6 +15,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[path = "codex_native_tree/room.rs"]
 mod room;
+#[path = "codex_native_tree/shared_room.rs"]
+mod shared_room;
 
 #[tokio::test]
 #[ignore = "requires explicit installed Codex; local Responses fixture only, no account or paid model"]
@@ -343,4 +345,49 @@ async fn native_codex_personal_question_roundtrip_uses_native_tool_and_settles_o
     assert!(approvals.try_recv().is_err());
     assert!(ledger.outstanding_calls("@owner:test").unwrap().is_empty());
     process.stop().await.unwrap(); model.kill().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires explicit installed Codex; localhost fixture, no account or paid model"]
+async fn native_codex_cold_session_recovers_original_response_receipts_with_children() {
+    use hagency_runtime::{codex::{native_arguments,session::{Settings,ResumeThreadId,Update},transport::Limits},owned::{OwnedSession,Cleanup}};
+    let (_tmp,profile,mut model)=native_fixture().await;
+    let launch=hagency_platform::Launch {
+        executable:profile.executable.clone(),
+        arguments:native_arguments(false,Some(false)).into_iter().map(Into::into).collect(),
+        directory:profile.cwd.clone(),
+        environment:std::collections::BTreeMap::from([
+            ("HOME".into(),profile.home.clone().into_os_string()),
+            ("CODEX_HOME".into(),profile.codex_home.clone().into_os_string()),
+            ("PATH".into(),"/usr/bin:/bin".into()),
+        ]),require_crash_containment:false,
+    };
+    let mut thread:Option<String>=None;
+    for round in 0..2 {
+        let settings=Settings::new(profile.cwd.clone(),profile.model.clone(),profile.effort.clone()).unwrap();
+        let mut process=OwnedSession::spawn(Path::new(env!("CARGO_BIN_EXE_hagency-local-probe")),&launch,settings,Limits{write_timeout_ms:5000,event_wait_ms:20000,lifetime_ms:60000},5000).unwrap();
+        let result=tokio::time::timeout(Duration::from_secs(30),async {
+            process.initialize().await.unwrap();
+            thread=Some(match thread.take() {
+                Some(id)=>process.resume_thread(ResumeThreadId::new(id).unwrap()).await.unwrap(),
+                None=>process.start_thread().await.unwrap(),
+            });
+            process.start_turn("Exercise the offline child fixture".into()).await.unwrap();
+            let source=process.observation_source().unwrap();
+            loop {
+                let (update,observation)=process.next_observed_update().await.unwrap();
+                assert!(observation.source()==&source);
+                if matches!(update,Update::TurnEnded) {
+                    let usage=observation.terminal_usage().expect("native response receipts");
+                    assert_eq!(usage.total().total_tokens(),Some(42),"round {round}: complete original native root and child receipts");
+                    assert_eq!(usage.total().input_tokens(),Some(30));
+                    assert_eq!(usage.total().cached_input_tokens(),Some(6));
+                    break;
+                }
+            }
+        }).await;
+        assert!(matches!(process.stop(),Cleanup::Observed(report) if report.scope.whole_tree_stopped));
+        result.unwrap();
+    }
+    model.kill().await.unwrap();
 }

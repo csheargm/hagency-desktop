@@ -52,11 +52,14 @@ async fn text_fixture() -> Fixture {
     }
 }
 async fn spawn(f: &Fixture, id: &str) -> (OwnedSession, PathBuf) {
+    spawn_mode(f, id, "text").await
+}
+async fn spawn_mode(f: &Fixture, id: &str, mode: &str) -> (OwnedSession, PathBuf) {
     let binary = PathBuf::from(
         std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised offline fixture"),
     );
     let root = f._temp.path().join(id);
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let instructions = root.join(SHARED_TEXT_INSTRUCTIONS_FILE);
     std::fs::write(&instructions, SHARED_TEXT_INSTRUCTIONS).unwrap();
@@ -72,7 +75,7 @@ async fn spawn(f: &Fixture, id: &str) -> (OwnedSession, PathBuf) {
     .unwrap();
     let launch = hagency_platform::Launch {
         executable: binary.clone(),
-        arguments: vec!["text".into(), root.as_os_str().into()],
+        arguments: vec![mode.into(), root.as_os_str().into()],
         directory: root.clone(),
         environment: std::collections::BTreeMap::new(),
         require_crash_containment: false,

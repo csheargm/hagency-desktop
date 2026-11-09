@@ -38,7 +38,7 @@ fn collect(db: &mut Connection, profile: &str) -> Result<ProfileLedgerAudit, Err
     let tx = db.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let schema: i32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
     let application: i32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-    if !matches!(schema, 71..=110) || application != 0x48414732 {
+    if !matches!(schema, 71..=111) || application != 0x48414732 {
         return Err(Error::Schema);
     }
     // Existing domain schema contains views. We never query them; every
@@ -444,7 +444,11 @@ fn collect(db: &mut Connection, profile: &str) -> Result<ProfileLedgerAudit, Err
     ]).into_iter().flatten()).chain((schema >= 108).then_some((
         "owner_resource_calendars", &["resource_id","profile","calendar","source_grant_id","created_at_ms"][..]
     ))).chain((schema >= 109).then_some(("owner_shared_start_intents", &["period_id"][..])))
-    .chain((schema >= 110).then_some(("owner_shared_unstarted_runtimes", &["command_id","child_id","profile","command_payload","command_digest","receipt","receipt_digest","ledger_revision"][..]))) {
+    .chain((schema >= 110).then_some(("owner_shared_unstarted_runtimes", &["command_id","child_id","profile","command_payload","command_digest","receipt","receipt_digest","ledger_revision"][..])))
+    .chain((schema >= 111).then_some([
+        ("owner_shared_native_turns", &["work_id","scope_digest","process_digest","opened_revision"][..]),
+        ("owner_shared_native_checkpoints", &["work_id","native_id","receipt_id"][..]),
+    ]).into_iter().flatten()) {
         let ordinary = tx
             .query_row(
                 "SELECT type='table' FROM pragma_table_list WHERE schema='main' AND name=?1",

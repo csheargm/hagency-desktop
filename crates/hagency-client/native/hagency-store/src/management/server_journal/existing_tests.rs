@@ -127,7 +127,7 @@ async fn original_server_journal_child() {
             "trigger",
             "CREATE TRIGGER hidden_write AFTER INSERT ON management_intents BEGIN DELETE FROM resources; END",
         ),
-        ("future_schema", "PRAGMA user_version=111"),
+        ("future_schema", "PRAGMA user_version=2147483647"),
         (
             "foreign_identity",
             "UPDATE management_identity SET profile_digest=printf('%064d',0)",

@@ -279,13 +279,6 @@ impl<R, W, E> SessionDriver<R, W, E> {
             frame,
         })
     }
-    pub(super) fn advance_observation(&mut self) -> Result<(), Error> {
-        self.observation_sequence = self
-            .observation_sequence
-            .checked_add(1)
-            .ok_or(Error::Capacity)?;
-        Ok(())
-    }
     fn observation(&self) -> Result<super::super::Observation, Error> {
         Ok(super::super::Observation {
             source: self.bound_source()?,
@@ -298,6 +291,15 @@ impl<R, W, E> SessionDriver<R, W, E> {
 }
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionDriver<R, W, E> {
+    pub(super) async fn advance_observation(&mut self) -> Result<(), Error> {
+        self.recover_native_usage().await;
+        self.observation_sequence = self
+            .observation_sequence
+            .checked_add(1)
+            .ok_or(Error::Capacity)?;
+        Ok(())
+    }
+
     /// Poll an independently retained, pinned host future alongside original IO.
     /// On Update, keep that SAME future pinned and handle the update in order;
     /// on Control, consume its output once and do not poll the completed future.
@@ -319,7 +321,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if let Err(error) = result.as_ref()
             && let Some(update) = operation.session.finish_root_after_eof(*error)
         {
-            result = operation.session.advance_observation().and_then(|()| {
+            result = operation.session.advance_observation().await.and_then(|()| {
                 Ok(ControlUpdate::Update(
                     update,
                     Box::new(operation.session.observation()?),
@@ -334,7 +336,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     ) -> Result<ControlUpdate<F::Output>, Error> {
         self.pump_run_stops().await?;
         if let Some(update) = self.ready_control_terminal().await? {
-            self.advance_observation()?;
+            self.advance_observation().await?;
             return Ok(ControlUpdate::Update(update, Box::new(self.observation()?)));
         }
         let deadline = self.control.deadline(&self.wire)?;
@@ -350,7 +352,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         match next {
             transport::Controlled::Event(event) => {
                 let update = self.accept_update(event).await?;
-                self.advance_observation()?;
+                self.advance_observation().await?;
                 // A real typed read completes this event operation. Control
                 // returns and prepared-send buffer drains never reset it.
                 self.control.read_deadline = None;
@@ -402,7 +404,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .map_err(Error::Transport)?;
         if let Some(event) = self.pop()? {
             let update = self.accept_update(event).await?;
-            self.advance_observation()?;
+            self.advance_observation().await?;
             return Ok(PreparedUpdate::Update(
                 update,
                 Box::new(self.observation()?),
@@ -416,7 +418,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         {
             transport::Controlled::Event(event) => {
                 let update = self.accept_update(event).await?;
-                self.advance_observation()?;
+                self.advance_observation().await?;
                 Ok(PreparedUpdate::Update(
                     update,
                     Box::new(self.observation()?),

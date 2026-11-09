@@ -83,7 +83,7 @@ impl EmptyPlan {
         hash(&self.inventory.custody_digest)?;
         if self.version != 4
             || self.inventory.version != 1
-            || !matches!(self.inventory.source_schema, 77..=110)
+            || !matches!(self.inventory.source_schema, 77..=111)
             || self.registry_id != authority.registry.id()
             || self.inventory.profile != authority.profile.digest
             || self.inventory.owner != authority.profile.account

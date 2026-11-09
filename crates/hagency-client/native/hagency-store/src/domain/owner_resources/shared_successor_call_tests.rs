@@ -58,6 +58,9 @@ async fn active() -> Active {
     Box::pin(active_with_sibling(false)).await
 }
 async fn active_with_sibling(sibling: bool) -> Active {
+    active_mode(sibling, "text").await
+}
+async fn active_mode(sibling: bool, mode: &str) -> Active {
     let (f, original, _, _) = Box::pin(original_stopped()).await;
     if sibling {
         let reserve_command = agent(&f, "sibling", 100);
@@ -95,7 +98,7 @@ async fn active_with_sibling(sibling: bool) -> Active {
     else {
         panic!("new custody")
     };
-    let (mut process, instructions) = spawn(&f, "call_successor").await;
+    let (mut process, instructions) = spawn_mode(&f, "call_successor", mode).await;
     let sink = Arc::new(
         (*custody)
             .bind_process(process.shared_text_process_source())
@@ -460,3 +463,6 @@ async fn postpaid_v2_late_overrun_refuses_new_work_but_running_call_renews_and_f
     assert_eq!(receipt.runtime_command_digest, digest(&a.command));
     a.stop().await;
 }
+
+#[path = "shared_native_session_tests.rs"]
+mod native_session;

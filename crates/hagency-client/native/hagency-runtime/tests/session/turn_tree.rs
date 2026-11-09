@@ -28,6 +28,63 @@ fn receipt(id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn native_codex_control_cold_resume_reconciles_events_during_receipt_reads() {
+    use std::io::Write;
+    for contradictory in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().join("root.jsonl");
+        let child_path = root.path().join("child.jsonl");
+        for (path, thread) in [(&root_path, "thread-one"), (&child_path, "child")] {
+            std::fs::write(path, format!("{}\n", json!({"type":"session_meta","payload":{"id":thread}}))).unwrap();
+        }
+        let (mut s, mut p) = fixture(false);
+        initialize(&mut s, &mut p).await;
+        let mut result = thread_result(false);
+        result["thread"]["path"] = root_path.to_str().unwrap().into();
+        let (opened, _) = tokio::join!(
+            s.resume_thread(ResumeThreadId::new("thread-one".into()).unwrap()),
+            exchange(&mut p, result, vec![])
+        );
+        opened.unwrap();
+        let (started, _) = tokio::join!(
+            s.start_turn("Current work".into()),
+            exchange(&mut p, json!({"turn":turn("inProgress")}), vec![])
+        );
+        started.unwrap();
+        observed(&mut s, &mut p, child_start()).await;
+        // Append only after resume has pinned the original root file's EOF.
+        for (path, thread, turn, response) in [
+            (&root_path, "thread-one", "turn-one", "root-response"),
+            (&child_path, "child", "child-turn", "child-response"),
+        ] {
+            let usage = json!({"total_tokens":14,"input_tokens":10,"output_tokens":4,"cached_input_tokens":2,"reasoning_output_tokens":1});
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{}", json!({"type":"token_usage_record","payload":{
+                "thread_id":thread,"turn_id":turn,"root_turn_id":"turn-one","response_id":response,
+                "usage":usage,"turn_token_usage":usage
+            }})).unwrap();
+            writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":turn}})).unwrap();
+        }
+        observed(&mut s, &mut p, end("completed")).await;
+        let mut late = receipt("root-response");
+        if contradictory {
+            late["params"]["usage"]["totalTokens"] = 15.into();
+            late["params"]["usage"]["inputTokens"] = 11.into();
+        }
+        let peer = async {
+            write(&mut p, child(end("completed"))).await;
+            let request = exchange(&mut p, json!({"thread":{"id":"child","path":child_path}}), vec![late]).await;
+            assert_eq!(request["method"], "thread/read");
+        };
+        let (ended, ()) = tokio::join!(s.next_observed_update(), peer);
+        let (update, observation) = ended.unwrap();
+        assert!(matches!(update, Update::TurnEnded));
+        assert!(matches!(s.outcome(), Some(Outcome::Completed { .. })));
+        assert_eq!(observation.terminal_usage().and_then(|u|u.total().total_tokens()), if contradictory { None } else { Some(28) });
+    }
+}
+
+#[tokio::test]
 async fn native_turn_context_requires_live_ancestry_and_original_connection() {
     let (mut s, mut p) = running().await;
     let source = s.observation_source().unwrap();

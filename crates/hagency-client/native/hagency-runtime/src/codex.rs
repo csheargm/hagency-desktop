@@ -2,6 +2,7 @@
 pub mod approval;
 mod connection;
 mod launch;
+mod rollout_usage;
 use crate::json;
 pub mod session;
 pub mod transport;

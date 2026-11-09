@@ -84,7 +84,7 @@ pub(super) fn collect(
 ) -> Result<Descriptor, Error> {
     let d = domain.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let version: i32 = d.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !matches!(version, 77..=110)
+    if !matches!(version, 77..=111)
         || d.pragma_query_value(None, "application_id", |r| r.get::<_, i32>(0))?
             != if archived.0 { 0x48415231 } else { 0x48414732 }
     {

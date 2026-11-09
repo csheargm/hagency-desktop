@@ -4,6 +4,8 @@ mod control;
 mod turn_tree;
 #[path = "run_controls.rs"]
 mod run_controls;
+#[path = "native_usage.rs"]
+mod native_usage;
 pub use control::{ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate};
 pub use run_controls::{RunAction, RunOutcome, RunReceipt};
 
@@ -35,6 +37,8 @@ pub struct SessionDriver<R, W, E> {
     state: State,
     tree: Option<turn_tree::Streams>,
     legacy_usage_allowed: bool,
+    native_rollout: Option<crate::codex::rollout_usage::Cursor>,
+    native_usage_checked: bool,
     response_timeout_ms: u64,
     /// The operation ceiling the session was granted (`transport::Limits`
     /// `lifetime_ms`). The acknowledgement budget is `min` of it and
@@ -105,6 +109,8 @@ impl<R, W, E> SessionDriver<R, W, E> {
             state: State::default(),
             tree: None,
             legacy_usage_allowed: true,
+            native_rollout: None,
+            native_usage_checked: false,
             response_timeout_ms,
             lifetime_ms,
             deferred: VecDeque::new(),
@@ -291,6 +297,14 @@ impl<R, W, E> SessionDriver<R, W, E> {
             && !source.is_retired()
             && self.bound_source().is_ok_and(|value| &value == source)
     }
+    /// Read-only context retention after original native completion. This
+    /// cannot make a completed source admissible for tools or another turn.
+    pub(crate) fn matches_completed_source(&self, source: &super::ObservationSource) -> bool {
+        self.phase() == Phase::Ended
+            && matches!(self.outcome(), Some(Outcome::Completed { .. }))
+            && !source.is_retired()
+            && self.bound_source().is_ok_and(|value| &value == source)
+    }
     pub fn native_turn_context(&self, thread: &str, turn: &str) -> Result<super::NativeTurnContext, Error> {
         if self.phase() != Phase::Running || !self.active_turn(thread, turn) {
             return Err(Error::Scope);
@@ -369,6 +383,11 @@ impl<R, W, E> SessionDriver<R, W, E> {
     }
     pub fn thread_id(&self) -> Option<&str> {
         self.state.thread.as_deref()
+    }
+    pub(crate) fn retain_context(&mut self) -> Result<(), Error> {
+        if self.phase() != Phase::Ready { return Err(Error::State); }
+        self.settings.retain_context = true;
+        Ok(())
     }
     pub fn turn_id(&self) -> Option<&str> {
         self.state.turn.as_deref()
@@ -715,6 +734,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.open_thread(Some(id)).await
     }
     async fn open_thread(&mut self, resume: Option<ResumeThreadId>) -> Result<String, Error> {
+        self.open_thread_with_fallback(resume, false).await.map(|(id, _)| id)
+    }
+    /// A positively missing native thread may be rebuilt before any model input.
+    /// Transport, policy and ambiguous errors must never replay work.
+    pub(crate) async fn resume_or_start_thread(&mut self, resume: Option<ResumeThreadId>) -> Result<(String, bool), Error> {
+        self.open_thread_with_fallback(resume, true).await
+    }
+    async fn open_thread_with_fallback(&mut self, resume: Option<ResumeThreadId>, fallback: bool) -> Result<(String, bool), Error> {
         if self.phase() != Phase::Ready || self.wire.is_warm_idle() {
             return Err(Error::State);
         }
@@ -726,6 +753,17 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .session
             .open_thread_inner(resume.as_ref().map(|id| id.0.as_str()))
             .await;
+        let result = match result {
+            Err(Error::ContextUnavailable) if fallback && operation.session.deferred.is_empty() => {
+                // The exact native rejection proves no thread opened and no
+                // turn was sent. Preserve settings and all process authority.
+                operation.session.state.phase = Phase::Ready;
+                operation.session.state.thread = None;
+                operation.session.native_rollout = None;
+                operation.session.open_thread_inner(None).await.map(|id| (id, false))
+            }
+            result => result.map(|id| (id, resume.is_some())),
+        };
         operation.finish(result)
     }
     async fn open_thread_inner(&mut self, resume: Option<&str>) -> Result<String, Error> {
@@ -746,6 +784,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .startup_call(method, self.settings.thread_request(resume))
             .await?;
         let id = self.state.observe_thread(&result, &self.settings, resume)?;
+        if resume.is_some() && let Some(path) = result["thread"]["path"].as_str() {
+            // Metadata comes from this original native response, before
+            // any model input. Missing receipts remain unknown, not zero.
+            self.native_rollout = crate::codex::rollout_usage::Cursor::open(path, &id, true).await.ok();
+        }
         self.validate_deferred()?;
         while let Some(event) = self.pop()? {
             if let Event::Notification {
@@ -902,7 +945,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 result = Ok(update);
             }
         if result.is_ok()
-            && let Err(error) = operation.session.advance_observation()
+            && let Err(error) = operation.session.advance_observation().await
         {
             result = Err(error);
         }
@@ -1142,6 +1185,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         }
         if self.phase() == Phase::Ended {
             self.drain_terminal().await?;
+            self.recover_native_usage().await;
             // Shared text remains one-shot (the codec stays Ended), but its
             // actual process must remain owned until the central reply settles.
             if !self.wire.has_live_shared_activity() {
@@ -1315,6 +1359,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         params: Value,
         response_timeout_ms: u64,
     ) -> Result<Value, Error> {
+        let resume = (method == "thread/resume")
+            .then(|| params["threadId"].as_str().map(str::to_owned))
+            .flatten();
         let written = self
             .wire
             .send(transport::Command::Request {
@@ -1332,7 +1379,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     method: observed,
                     result,
                 } if id == expected && observed == method => {
-                    return result.map_err(|error| Error::Rejected(error.code));
+                    return result.map_err(|error| {
+                        if resume.as_ref().is_some_and(|thread| {
+                            error.message == format!("no rollout found for thread id {thread}")
+                                || error.message == format!("thread not found: {thread}")
+                        }) {
+                            Error::ContextUnavailable
+                        } else {
+                            Error::Rejected(error.code)
+                        }
+                    });
                 }
                 event @ Event::Notification { .. } => self.buffer(event)?,
                 // A request that races this call has no owner yet (no turn is

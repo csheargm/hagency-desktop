@@ -58,7 +58,7 @@ impl ArchiveJournalBinding {
         }
         palpo_hagency_contract::MatrixUserId::try_from(owner_mxid.clone())
             .map_err(|_| Error::LocalAuthority)?;
-        if !matches!(source_schema, 71..=110) {
+        if !matches!(source_schema, 71..=111) {
             return Err(Error::Schema);
         }
         Ok(Self(Manifest {

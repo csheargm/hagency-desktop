@@ -17,7 +17,7 @@ pub struct ResponseTotals {
     pub reasoning_output: u64,
 }
 impl ResponseTotals {
-    fn decode(value: &Value) -> Option<Self> {
+    pub(super) fn decode(value: &Value) -> Option<Self> {
         let value = UsageBreakdown::from_native(value)?;
         let result = Self {
             input: value.input_tokens()?,
@@ -31,7 +31,7 @@ impl ResponseTotals {
             && result.reasoning_output <= result.output)
             .then_some(result)
     }
-    fn add(self, other: Self) -> Option<Self> {
+    pub(super) fn add(self, other: Self) -> Option<Self> {
         let add = |a: u64, b: u64| a.checked_add(b).filter(|n| *n <= 9_007_199_254_740_991);
         Some(Self {
             input: add(self.input, other.input)?,
@@ -70,6 +70,31 @@ pub struct TurnTree {
     last_response: Option<ResponseTotals>,
 }
 impl TurnTree {
+    pub(crate) fn completed_native_turns(&self) -> Option<(String, BTreeMap<String,BTreeSet<String>>)> {
+        if !self.is_complete() { return None; }
+        let mut threads:BTreeMap<String,BTreeSet<String>>=BTreeMap::new();
+        for (thread,turn) in self.turns.keys() { threads.entry(thread.clone()).or_default().insert(turn.clone()); }
+        Some((self.root_turn.clone(),threads))
+    }
+    pub(crate) fn invalidate_native_usage(&mut self) { self.invalid_usage=true; }
+    /// Alternate native transport: exact persisted response records, retaining
+    /// their original thread/turn/response IDs and the same deduplication rules.
+    pub(super) fn observe_rollout_receipt(&mut self, receipt: super::rollout_usage::Receipt) -> Result<(),Error> {
+        if receipt.root_turn!=self.root_turn { return Err(Error::Scope); }
+        let observed=self.turns.get_mut(&(receipt.thread.clone(),receipt.turn.clone())).ok_or(Error::Scope)?;
+        if !observed.completed { return Err(Error::State); }
+        let value=ResponseTotals::decode(&receipt.usage);
+        self.invalid_usage|=value.is_none();
+        let entry=(receipt.thread,receipt.turn,value);
+        if let Some(old)=self.responses.get(&receipt.response) { self.invalid_usage|=old!=&entry; }
+        else {
+            if self.responses.len()>=MAX_RESPONSES { return Err(Error::Capacity); }
+            self.responses.insert(receipt.response,entry);
+            self.last_response=value;
+        }
+        observed.receipt=true;
+        Ok(())
+    }
     pub fn new(thread: &str, turn: &str) -> Result<Self, Error> {
         valid(thread)?;
         valid(turn)?;
