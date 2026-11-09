@@ -24,6 +24,7 @@ pub mod daemon;
 mod documents;
 /// Questions an Agent asks its room during a run, and the room's answers.
 pub mod agent_questions;
+pub mod agent_run_controls;
 pub mod encrypted_approvals;
 pub(crate) mod file_service;
 pub(crate) mod fleet_views;

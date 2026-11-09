@@ -2,7 +2,10 @@
 mod control;
 #[path = "turn_tree.rs"]
 mod turn_tree;
+#[path = "run_controls.rs"]
+mod run_controls;
 pub use control::{ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate};
+pub use run_controls::{RunAction, RunOutcome, RunReceipt};
 
 use super::state::{State, scope};
 use super::{
@@ -41,6 +44,7 @@ pub struct SessionDriver<R, W, E> {
     deferred_bytes: usize,
     approvals_enabled: bool,
     control: control::ControlState,
+    run_controls: run_controls::RunControls,
     observation_live: Arc<AtomicBool>,
     observation_sequence: u64,
     observation_kind: super::ObservationKind,
@@ -107,6 +111,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             deferred_bytes: 0,
             approvals_enabled: false,
             control: control::ControlState::default(),
+            run_controls: run_controls::RunControls::default(),
             observation_live: Arc::new(AtomicBool::new(true)),
             observation_sequence: 0,
             observation_kind: super::ObservationKind::Ignored,
@@ -320,6 +325,22 @@ impl<R, W, E> SessionDriver<R, W, E> {
             .filter(|asked| **asked == Asked::Waiting)
             .count()
     }
+    pub fn user_input_waiting(&self, request: &super::UserInputRequest) -> bool {
+        matches!(self.user_input.get(request.id()), Some(Asked::Waiting))
+            && self.active_turn(request.thread_id(), request.turn_id())
+    }
+    pub fn room_history_admissible(&self, call: &super::RoomHistoryCall) -> bool {
+        self.phase() == Phase::Running
+            && self.history_pending.contains(&call.id)
+            && self.active_turn(&call.thread, &call.turn)
+            && self.wire.server_request_open(&call.id)
+    }
+    pub fn room_file_admissible(&self, call: &super::RoomFileCall) -> bool {
+        self.phase() == Phase::Running
+            && self.file_pending.contains(&call.id)
+            && self.active_turn(&call.thread, &call.turn)
+            && self.wire.server_request_open(&call.id)
+    }
     /// Whether an answer to this question is moot, so nothing is written and
     /// nothing is wrong: Codex already withdrew it, or the turn that asked it
     /// is over. Refused (`Scope`) when the host never received the question
@@ -338,7 +359,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
             || !self.wire.server_request_open(&response.id))
     }
     pub fn phase(&self) -> Phase {
-        if self.tree.as_ref().is_some_and(|tree| !tree.finished) {
+        if self.run_controls.holds_terminal()
+            || self.run_controls.waiting()
+            || self.tree.as_ref().is_some_and(|tree| !tree.finished) {
             Phase::Running
         } else {
             self.state.phase
@@ -412,6 +435,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.wire.close();
     }
     fn fail(&mut self, error: Error) {
+        self.run_controls.retire();
         if let Some(tree) = &mut self.tree { tree.finished = true; }
         self.observation_live.store(false, Ordering::Release);
         self.state.failed(error);
@@ -816,7 +840,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             || response
                 .request
                 .mcp_item()
-                .is_some_and(|id| !self.mcp.active(response.request.thread_id(), response.request.turn_id(), id))
+                .is_some_and(|id| {
+                !self.mcp.active(response.request.thread_id(), response.request.turn_id(), id)
+            })
         {
             return Err(Error::Scope);
         }
@@ -894,6 +920,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         Ok((update, observation))
     }
     async fn update_inner(&mut self) -> Result<Update, Error> {
+        self.pump_run_stops().await?;
+        if let Some(update) = self.ready_control_terminal().await? {
+            return Ok(update);
+        }
         self.wire.ensure_live().map_err(Error::Transport)?;
         let event = match self.pop()? {
             Some(event) => event,
@@ -902,6 +932,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.accept_update(event).await
     }
     async fn accept_update(&mut self, event: Event) -> Result<Update, Error> {
+        self.controlled_update(event).await
+    }
+    async fn accept_update_inner(&mut self, event: Event) -> Result<Update, Error> {
         self.context_usage = None;
         let event = match event {
             Event::ServerRequest { id, method, params } if method == super::USER_INPUT_METHOD => {
@@ -1063,8 +1096,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         else {
             return Err(Error::Scope);
         };
-        let (mut update, observation) = self.tree.as_mut().ok_or(Error::State)?
-            .notification(&mut self.state, &mut self.observation_evidence, self.legacy_usage_allowed, &method, &params)
+        let (mut update, mut observation) = self.tree.as_mut().ok_or(Error::State)?
+            .notification(&mut self.state, &mut self.observation_evidence, self.legacy_usage_allowed, &method, &params,
+            )
             .inspect_err(|_| { self.refused_notification = Some(notification_shape(&method, &params)); })?;
         if method == "thread/tokenUsage/updated"
             && self.active_turn(params["threadId"].as_str().unwrap_or_default(), params["turnId"].as_str().unwrap_or_default())
@@ -1074,6 +1108,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             self.context_usage = super::ContextUsage::project(&params, root);
         }
         self.observe_rate_limits(&method, &params);
+        if matches!(update, Update::TurnEnded)
+            && self.run_controls.accepted_stop()
+            && self
+                .tree
+                .as_ref()
+                .is_some_and(|t| t.graph.was_interrupted())
+            && matches!(self.state.outcome, Some(Outcome::Completed { .. }))
+        {
+            self.state.outcome = Some(Outcome::Interrupted);
+            observation =
+                super::observation::project(&update, &params, self.state.outcome.as_ref());
+        }
         self.mcp.observe(&method, &params)?;
         if method == "serverRequest/resolved"
             && (self.approvals_enabled || !self.user_input.is_empty())
@@ -1132,6 +1178,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 );
             }
             match event {
+                Some(event @ Event::Response { .. }) => {
+                    // A steering timeout keeps its original correlation for a
+                    // late reply; it never re-enters the model as a new input.
+                    let saved = self.observation_kind.clone();
+                    Box::pin(self.controlled_update(event)).await?;
+                    self.observation_kind = saved;
+                }
                 Some(Event::Notification {
                     method,
                     params: Some(params),

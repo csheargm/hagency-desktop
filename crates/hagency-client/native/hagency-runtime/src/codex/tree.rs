@@ -109,6 +109,24 @@ impl TurnTree {
             .get(&(thread.into(), turn.into()))
             .is_some_and(|turn| !turn.completed)
     }
+    /// Only positively observed, unfinished turns belong to a host control.
+    /// A future child is discovered by its original rootTurnId, never by a
+    /// room-provided thread or turn identity.
+    pub fn active_scopes(&self) -> impl Iterator<Item = Scope> + '_ {
+        self.turns
+            .iter()
+            .filter(|(_, turn)| !turn.completed)
+            .map(|((thread, turn), _)| Scope {
+                thread: thread.clone(),
+                turn: turn.clone(),
+                root: thread == &self.root_thread,
+            })
+    }
+    pub fn was_interrupted(&self) -> bool {
+        self.turns
+            .values()
+            .any(|turn| turn.outcome.as_deref() == Some("interrupted"))
+    }
     /// Context evidence is accepted only for an observed active native turn.
     pub fn context_usage(&self, params: &Value) -> Option<super::session::ContextUsage> {
         let thread = params["threadId"].as_str()?;

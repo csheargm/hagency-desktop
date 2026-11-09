@@ -100,6 +100,7 @@ def main():
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
         ("agent-question-cards", "hagency::pending_questions::tests"),
+        ("agent-run-cards", "hagency::run_controls::tests"),
         ("shared-worker", "hagency::backend::shared_worker::tests"),
         ("chat-mermaid", "shared::chat_mermaid::tests"),
         ("link-preview", "link_preview"),
@@ -131,6 +132,12 @@ def main():
     # owner-dashboard crate's own tests.
     run("owner-dashboard", ["cargo", "test", "--locked", "--manifest-path", "crates/owner-dashboard/Cargo.toml", "--lib"], rust_tests=True)
     run("native-question-protocol", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "agent_questions::tests"], cwd=CLIENT, rust_tests=True)
+    run("native-run-card-protocol-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "run_controls"], cwd=CLIENT, rust_tests=True)
+    run("native-run-controls", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "controls::"], cwd=CLIENT, rust_tests=True)
+    run("native-shared-run-controls", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "session", "run_controls::"], cwd=CLIENT, rust_tests=True)
+    run("native-claude-run-controls", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--test", "runtime", "controls::"], cwd=CLIENT, rust_tests=True)
+    run("native-run-preview", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "live_text::"], cwd=CLIENT, rust_tests=True)
+    run("native-cooperative-host-files", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "codex::host_files::tests"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-personal", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--all-targets", "postpaid"], cwd=CLIENT, rust_tests=True)
     run("native-personal-room-bridge", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "room_"], cwd=CLIENT, rust_tests=True)
     run("native-personal-claude-room", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--test", "runtime", "room::"], cwd=CLIENT, rust_tests=True)
@@ -176,6 +183,7 @@ def main():
     if len(probes) != 1:
         raise SystemExit("Expected one freshly built offline context probe")
     env["HAGENCY_TEST_RUNTIME_PROBE"] = probes[0]
+    run("native-run-card-startup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_run_card_device_delay_does_not_block_native_turn", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-shared", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "postpaid_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     for name, package, pattern in [
         ("native-known-usage-recovery", "hagency-store", "recurring_"),

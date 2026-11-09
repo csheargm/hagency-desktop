@@ -271,7 +271,8 @@ async fn consider(
         return false;
     };
     let relevant = value["type"] == "m.room.encrypted"
-        || (value["type"] == "m.room.message" && value["content"]["msgtype"] == protocol::MSGTYPE);
+        || (value["type"] == "m.room.message" && (value["content"]["msgtype"] == protocol::MSGTYPE
+                || value["content"]["msgtype"] == ::hagency::agent_run_controls::MSGTYPE));
     if !relevant {
         return false;
     }
@@ -328,7 +329,9 @@ fn accept_event(
         park(generation, room_id, event_id, None);
         return false;
     }
-    if value["type"] != "m.room.message" || value["content"]["msgtype"] != protocol::MSGTYPE {
+    if value["type"] != "m.room.message" || (value["content"]["msgtype"] != protocol::MSGTYPE
+            && value["content"]["msgtype"] != ::hagency::agent_run_controls::MSGTYPE)
+    {
         unpark(generation, room_id, event_id);
         return false;
     }
@@ -354,6 +357,11 @@ fn accept_event(
     }
     unpark(generation, room_id, event_id);
     let content = &value["content"];
+    if content["msgtype"] == ::hagency::agent_run_controls::MSGTYPE {
+        return super::run_controls::authenticated(
+            generation, room_id, event_id, sender, name, content,
+        );
+    }
     if content["m.relates_to"]["rel_type"] == "m.replace" {
         let Some(target) = content["m.relates_to"]["event_id"].as_str() else {
             return false;
@@ -542,6 +550,7 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
 fn reset(owner: String) -> u64 {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    super::run_controls::reset(generation, &owner);
     *state = State {
         owner,
         generation,
@@ -959,8 +968,11 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
             options: q
                 .options
                 .iter()
-                .map(|o| (o.label.clone(), c.choices.get(&q.id) == Some(&o.label)
-                    || c.multiple.get(&q.id).is_some_and(|labels| labels.contains(&o.label))))
+                .map(|o| {
+                    (o.label.clone(), c.choices.get(&q.id) == Some(&o.label)
+                    || c.multiple.get(&q.id).is_some_and(|labels| labels.contains(&o.label)),
+                    )
+                })
                 .collect(),
             details: q
                 .options
@@ -1669,6 +1681,37 @@ mod tests {
             accept(generation, &value, None, true),
             "known plaintext rooms still work"
         );
+    }
+
+    #[test]
+    fn run_cards_share_authenticated_late_key_recovery_and_account_generation() {
+        let _guard = serial();
+        let generation = reset("@me:example.test".into());
+        let mut card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({
+            "version":1,"id":"run_fixture","dispatchId":"dispatch","executionId":"execution",
+            "roomId":"!room:example.test","eventId":"$trigger","threadRoot":"!room:example.test",
+            "requester":"@me:example.test","owner":"@owner:example.test","runtime":"codex","state":"running","revision":0
+        })).unwrap();
+        let value = event("$run", card.content());
+        assert!(!accept(generation, &value, None, false));
+        let missing = encryption(VerificationState::Unverified(VerificationLevel::None(DeviceLinkProblem::MissingDevice)));
+        assert!(!accept(generation, &value, Some(&missing), false));
+        assert!(with_state(generation, |state| state.parked.iter().any(|parked| parked.event_id == "$run")).unwrap());
+        let trusted = encryption(VerificationState::Verified);
+        assert!(accept(generation, &value, Some(&trusted), false));
+        let room = matrix_sdk::ruma::room_id!("!room:example.test");
+        let shown = super::super::run_controls::for_event(room, "$trigger", true);
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].may_append && shown[0].may_stop);
+        assert!(super::super::run_controls::for_event(room, "$run", true).is_empty(), "the transport event must not render a duplicate interactive card");
+        card.revision = 2; card.state = ::hagency::agent_run_controls::State::Interrupted;
+        assert!(accept(generation, &event("$edit", card.edit_content("$run").unwrap()), Some(&trusted), false));
+        card.revision = 1; card.state = ::hagency::agent_run_controls::State::Running;
+        assert!(!accept(generation, &event("$stale", card.edit_content("$run").unwrap()), Some(&trusted), false));
+        assert_eq!(super::super::run_controls::for_event(room, "$trigger", true)[0].card.state, ::hagency::agent_run_controls::State::Interrupted);
+        reset("@different:example.test".into());
+        assert!(!accept(generation, &value, Some(&trusted), false));
+        assert!(super::super::run_controls::for_event(room, "$trigger", true).is_empty());
     }
 
     #[test]

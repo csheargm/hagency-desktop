@@ -350,6 +350,7 @@ impl OwnedSession {
 
 /// One event from the actual scoped session, including only its bounded text
 /// delta. Hosts cannot manufacture or rebind this event from JSON.
+#[derive(Clone)]
 pub struct SharedTextEvent {
     history_call: Option<crate::codex::session::RoomHistoryCall>,
     file_call: Option<crate::codex::session::RoomFileCall>,
@@ -391,12 +392,17 @@ impl OwnedSession {
     pub fn shared_tools_enabled(&self) -> bool {
         self.text_source.state.lock().is_ok_and(|state| state.tools)
     }
+    pub fn set_shared_live_text(&mut self, text: crate::live_text::LiveText) {
+        self.live_text = Some(text);
+    }
     /// Yield for host maintenance without cancelling the retained pipe read.
     /// Approval authority remains independently controlled by the session.
     pub async fn next_shared_event_or_tick(&mut self) -> Result<Option<SharedTextEvent>, Error> {
         let tick=tokio::time::sleep(Duration::from_millis(500));tokio::pin!(tick);
         match self.next_observed_or_control(tick.as_mut()).await? {
-            crate::codex::session::ControlUpdate::Update(update,observation)=>self.shared_event(update,*observation).map(Some),
+            crate::codex::session::ControlUpdate::Update(update,observation)=> {
+                self.shared_event(update,*observation).map(Some)
+            }
             crate::codex::session::ControlUpdate::Control(_)=>Ok(None),
         }
     }
@@ -422,6 +428,9 @@ impl OwnedSession {
             tracing::info!("shared hosted web search event observed");
         }
         let delta = if let crate::codex::session::Update::TextDelta { item_id, delta } = update {
+            if let Some(output) = &self.live_text {
+                output.append(&item_id, &delta);
+            }
             Some((item_id, delta))
         } else {
             None

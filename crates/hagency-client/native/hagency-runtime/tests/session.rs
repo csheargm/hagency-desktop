@@ -34,6 +34,8 @@ mod room_history;
 mod user_input;
 #[path = "session/turn_tree.rs"]
 mod turn_tree;
+#[path = "session/run_controls.rs"]
+mod run_controls;
 
 type Session = SessionDriver<DuplexStream, DuplexStream, DuplexStream>;
 struct Peer {

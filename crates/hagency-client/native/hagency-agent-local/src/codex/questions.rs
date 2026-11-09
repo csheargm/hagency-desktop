@@ -22,6 +22,9 @@ pub(super) struct Answer {
     pub submitted: Option<SubmittedAnswer>,
 }
 impl Questions {
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
     pub fn ask(
         &mut self,
         request: UserInputRequest,

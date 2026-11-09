@@ -471,10 +471,12 @@ fn check_answers(card: &Card, answers: &BTreeMap<String, AnswerValue>) -> Result
         };
         let valid = match value {
             AnswerValue::Option(label) => q.options.iter().any(|o| &o.label == label),
-            AnswerValue::Options(labels) => q.multi_select && !labels.is_empty()
+            AnswerValue::Options(labels) => {
+                q.multi_select && !labels.is_empty()
                 && labels.len() <= q.options.len()
                 && labels.iter().all(|label| q.options.iter().any(|o| &o.label == label))
-                && labels.iter().collect::<BTreeSet<_>>().len() == labels.len(),
+                && labels.iter().collect::<BTreeSet<_>>().len() == labels.len()
+            }
             AnswerValue::Text(text) => q.accepts_text() && prose(text, MAX_ANSWER_TEXT_BYTES),
         };
         if !valid {
@@ -518,12 +520,23 @@ struct Undecrypted {
     received: Instant,
     tried: Option<Instant>,
 }
-#[derive(Default)]
 struct Entries {
+    event_type: &'static str,
     order: u64,
     answers: Vec<Received>,
     undecrypted: Vec<Undecrypted>,
     taken: BTreeSet<String>,
+}
+impl Default for Entries {
+    fn default() -> Self {
+        Self {
+            event_type: ANSWER_EVENT,
+            order: 0,
+            answers: Vec::new(),
+            undecrypted: Vec::new(),
+            taken: BTreeSet::new(),
+        }
+    }
 }
 /// Entries older than any card that could still be waiting are dropped.
 const RETAIN: Duration = Duration::from_millis(ANSWER_WAIT_MS + 120_000);
@@ -592,7 +605,7 @@ impl Entries {
             self.order
         });
         match value["type"].as_str() {
-            Some(ANSWER_EVENT) => {
+            Some(kind) if kind == self.event_type => {
                 self.undecrypted.retain(|e| e.event_id != event_id);
                 if self.answers.iter().any(|e| e.event_id == event_id) {
                     return;
@@ -641,7 +654,16 @@ impl Drop for Inbox {
 }
 impl Inbox {
     pub fn attach(client: &Client) -> Self {
-        let entries = Arc::new(Mutex::new(Entries::default()));
+        Self::attach_event(client, ANSWER_EVENT)
+    }
+
+    /// Reuse the same authenticated, late-decrypting inbox for another
+    /// closed-schema host interaction. Each type has a separate queue.
+    pub(crate) fn attach_event(client: &Client, event_type: &'static str) -> Self {
+        let entries = Arc::new(Mutex::new(Entries {
+            event_type,
+            ..Default::default()
+        }));
         let shared = entries.clone();
         let handle = client.add_event_handler(
             move |event: Raw<AnySyncTimelineEvent>, room: Room, info: Option<EncryptionInfo>| {
@@ -653,10 +675,7 @@ impl Inbox {
                     let Ok(value) = event.deserialize_as::<Value>() else {
                         return;
                     };
-                    if !matches!(
-                        value["type"].as_str(),
-                        Some(ANSWER_EVENT | "m.room.encrypted")
-                    ) {
+                    if value["type"] != event_type && value["type"] != "m.room.encrypted" {
                         return;
                     }
                     if let Ok(mut entries) = shared.lock() {
@@ -709,7 +728,7 @@ impl Inbox {
         else {
             return;
         };
-        if value["type"] == ANSWER_EVENT {
+        if value["type"] == entries.event_type {
             entries.observe(room_id, value, info, Some(order));
         } else {
             // Decrypted to something else: never an answer.

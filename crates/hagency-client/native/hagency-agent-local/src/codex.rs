@@ -15,6 +15,8 @@ use tokio::{
 };
 mod questions;
 mod room_mcp;
+mod approvals;
+mod controls;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -92,6 +94,42 @@ fn scope_error(boundary: &'static str, method: &str) -> Error {
 }
 #[cfg(unix)]
 mod host_files;
+#[cfg(not(unix))]
+mod host_files {
+    use super::*;
+    pub(super) enum Answer {}
+    impl Answer {
+        pub fn active(&self, _: &hagency_runtime::codex::tree::TurnTree) -> bool {
+            match *self {}
+        }
+        pub fn withdrawn(&self, _: &Value) -> bool {
+            match *self {}
+        }
+        pub fn call(&self) -> &str {
+            match *self {}
+        }
+    }
+    #[derive(Default)]
+    pub(super) struct Calls;
+    impl Calls {
+        pub async fn next(&mut self) -> Answer {
+            std::future::pending().await
+        }
+        pub fn clear(&mut self) {}
+        pub fn withdraw(&mut self, _: &Value) {}
+        pub fn retain_active(&mut self, _: &hagency_runtime::codex::tree::TurnTree) {}
+    }
+    impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
+        pub(super) fn host_file_response(
+            &mut self,
+            _: &mut Ledger,
+            _: &str,
+            answer: Answer,
+        ) -> Result<Value> {
+            match answer {}
+        }
+    }
+}
 #[cfg(unix)]
 pub use host_files::{FILE_CAPABILITY_VERSION, HostToolGate};
 mod custody;
@@ -488,6 +526,8 @@ pub struct ApprovalQueue {
     sender: mpsc::Sender<PendingApproval>,
     pub(crate) questions: Option<crate::questions::QuestionQueue>,
     pub(crate) room: Option<crate::room_tools::RoomQueue>,
+    pub(crate) controls: Option<crate::run_controls::Inbox>,
+    pub(crate) live_text: Option<hagency_runtime::live_text::LiveText>,
 }
 pub struct PendingApproval {
     pub proposal: ToolProposal,
@@ -508,6 +548,14 @@ pub fn pending_approval(proposal: ToolProposal) -> (PendingApproval, oneshot::Re
     (PendingApproval { proposal, decision }, receiver)
 }
 impl ApprovalQueue {
+    pub fn with_live_text(mut self, text: hagency_runtime::live_text::LiveText) -> Self {
+        self.live_text = Some(text);
+        self
+    }
+    pub fn with_run_controls(mut self, controls: crate::run_controls::Inbox) -> Self {
+        self.controls = Some(controls);
+        self
+    }
     pub fn with_room_tools(mut self, room: crate::room_tools::RoomQueue) -> Self {
         self.room = Some(room);
         self
@@ -530,6 +578,8 @@ pub fn approval_queue(capacity: usize) -> Result<(ApprovalQueue, mpsc::Receiver<
             sender,
             questions: None,
             room: None,
+            controls: None,
+            live_text: None,
         },
         receiver,
     ))
@@ -1126,6 +1176,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .ok_or(Error::Protocol("context missing"))?;
         let cwd = self.cwd.clone().ok_or(Error::Protocol("cwd missing"))?;
         let context = self.accounting_context_key(scope, owner)?;
+        let controls = queue
+            .controls
+            .as_ref()
+            .map(|inbox| inbox.claim(scope, dispatch, call))
+            .transpose()?;
         if mode.admit(ledger, scope, call, dispatch)? != Reservation::New {
             return Err(Error::Protocol(
                 "call already started; refusing provider replay",
@@ -1168,6 +1223,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             baseline_missing,
             queue,
             started,
+            controls,
         );
         // The execution host retains custody and continuously checks the live
         // lease/dispatch. Per-RPC, frame and approval deadlines stay separate
@@ -1192,7 +1248,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     return Err(error.into());
                 }
                 charge.settled = true;
-                if completed.status == TurnStatus::Completed {
+                if completed.status != TurnStatus::Failed {
                     Ok(completed)
                 } else {
                     Err(Error::Failed)
@@ -1219,6 +1275,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         baseline_missing: bool,
         queue: &ApprovalQueue,
         started_notice: Option<tokio::sync::oneshot::Sender<()>>,
+        mut stream: Option<crate::run_controls::Stream>,
     ) -> Result<(Completed, Option<Counters>)> {
         // Host-file callbacks use the execution identity only on Unix.
         #[cfg(not(unix))]
@@ -1237,201 +1294,62 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .filter(|id| !id.is_empty() && id.len() <= 1024 && !id.chars().any(char::is_control))
             .ok_or(Error::Protocol("turn identity missing"))?
             .to_owned();
-        if let Some(notice) = started_notice {
-            let _ = notice.send(());
-        }
-        let mut total = None;
+        let mut total: Option<Counters> = None;
         let mut text = String::new();
         let mut tree = hagency_runtime::codex::tree::TurnTree::new(thread, &turn)
             .map_err(|_| Error::Protocol("invalid root turn"))?;
-        let room_turn = match (&self.room_mcp, &queue.room) {
-            (Some(bridge), Some(room)) if room.matches(scope, dispatch) => Some(bridge.begin(room, thread, &turn)?),
+        let mut room_turn = match (&self.room_mcp, &queue.room) {
+            (Some(bridge), Some(room)) if room.matches(scope, dispatch) => {
+                Some(bridge.begin(room, thread, &turn)?)
+            }
             (None, None) => None,
             _ => return Err(Error::Protocol("room tool dispatch differs")),
         };
+        if let Some(stream) = &mut stream {
+            stream.activate();
+        }
+        if let Some(notice) = started_notice {
+            let _ = notice.send(());
+        }
         let mut root_status = None;
         let mut questions = questions::Questions::default();
         let mut answer: Option<questions::Answer> = None;
+        let mut approvals = approvals::Approvals::default();
+        let mut approval_answer: Option<approvals::Answer> = None;
+        let mut file_calls = host_files::Calls::default();
+        let mut file_answer: Option<host_files::Answer> = None;
+        let mut controls = controls::Controls::default();
+        let mut callbacks_stopped = false;
         for _ in 0..hagency_runtime::codex::session::MAX_EVENTS {
-            if self.deferred.is_empty()
-                && self.read_frame.is_empty()
-                && let Some(answer) = answer.take()
+            controls.expire()?;
+            if controls.can_receive()
+                && let Some(pending) = stream
+                    .as_mut()
+                    .and_then(crate::run_controls::Stream::try_next)
             {
-                if tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
-                    let response = match &answer.submitted {
-                        Some(submitted) => answer
-                            .request
-                            .answer_host(&submitted.answers)
-                            .map_err(|_| Error::Protocol("invalid question answer"))?,
-                        None => answer.request.unanswered(),
-                    };
-                    self.write(value!({"id":response.request_id(),"result":response.result()}))
-                        .await?;
-                    if let Some(submitted) = answer.submitted {
-                        submitted.accepted();
-                    }
-                }
-                continue;
+                controls.offer(pending);
             }
-            let frame = if let Some(frame) = self.deferred.pop_front() {
-                frame
-            } else {
-                let read = tokio::select! { biased;
-                    frame = self.read_until(Deadline::UNBOUNDED) => frame,
-                    next = questions.next(), if answer.is_none() => {
-                        answer = Some(next);
-                        continue;
-                    }
-                };
-                match read {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        if let Some(status) = root_status.take() {
-                            // A completed root answer survives a lost child
-                            // stream; its incomplete usage remains reserved.
-                            return Ok((
-                                Completed {
-                                    text,
-                                    usage: crate::unreported_usage(),
-                                    status,
-                                    elapsed_seconds: started.elapsed().as_secs(),
-                                    tool_requests: tools.requested.len(),
-                                    tool_returns: tools.returned.len(),
-                                },
-                                None,
-                            ));
-                        }
-                        return Err(error);
-                    }
-                }
-            };
-            let method = frame["method"]
-                .as_str()
-                .ok_or(Error::Protocol("unexpected response"))?;
-            let params = &frame["params"];
-            if method == "serverRequest/resolved" && frame.get("id").is_none() {
-                questions.withdraw(params);
-                if answer.as_ref().is_some_and(|a| a.withdrawn(params)) {
-                    answer = None;
-                }
+            controls.reconcile(&tree)?;
+            if controls.accepted_stop() && !callbacks_stopped {
+                approvals.clear();
+                approval_answer = None;
+                file_calls.clear();
+                file_answer = None;
+                questions.clear();
+                answer = None;
+                room_turn.take();
+                callbacks_stopped = true;
             }
-            let Some(event_scope) = tree
-                .observe(method, params, frame.get("id").is_some())
-                .map_err(|_| {
-                    scope_error(
-                        if params["threadId"] == thread {
-                            "turn"
-                        } else {
-                            "thread"
-                        },
-                        method,
-                    )
-                })?
-            else {
-                continue;
-            };
-            let event_thread = event_scope.thread.as_str();
-            let event_turn = event_scope.turn.as_str();
-            if let Some(room) = &room_turn {
-                room.observe(&event_scope, &tree);
-                if method == "thread/tokenUsage/updated" && let Some(evidence) = tree.context_usage(params) {
-                    room.context(evidence);
+            if tree.is_complete() && controls.settled() {
+                let mut status = root_status
+                    .take()
+                    .ok_or(Error::Protocol("root completion missing"))?;
+                if status != TurnStatus::Failed
+                    && controls.accepted_stop()
+                    && tree.was_interrupted()
+                {
+                    status = TurnStatus::Interrupted;
                 }
-            }
-            questions.retain_active(&tree);
-            if frame.get("id").is_some() {
-                if method == hagency_runtime::codex::session::USER_INPUT_METHOD {
-                    let id_key = json(&frame["id"])?;
-                    if !self.server_ids.insert(id_key) {
-                        return Err(Error::Protocol("reused question ID"));
-                    }
-                    let request = hagency_runtime::codex::session::UserInputRequest::parse(
-                        serde_json::from_value(frame["id"].clone())?,
-                        params,
-                    )
-                    .map_err(|_| Error::Protocol("invalid native question"))?;
-                    questions.ask(request, scope, dispatch, queue, self.callbacks_enabled)?;
-                    continue;
-                }
-                #[cfg(unix)]
-                if method == "item/tool/call" {
-                    exact_scope(params, event_thread, event_turn)?;
-                    let call = params["callId"]
-                        .as_str()
-                        .ok_or(Error::Protocol("host call identity missing"))?;
-                    let key = format!("host:{call}");
-                    tools.requested.insert(key.clone());
-                    self.host_file_call(
-                        ledger,
-                        owner,
-                        scope,
-                        dispatch,
-                        execution,
-                        &frame,
-                        event_thread,
-                        event_turn,
-                        queue,
-                    )
-                    .await?;
-                    tools.returned.insert(key);
-                    continue;
-                }
-                self.approval(
-                    ledger,
-                    owner,
-                    scope,
-                    dispatch,
-                    &frame,
-                    event_thread,
-                    event_turn,
-                    cwd,
-                    queue,
-                )
-                .await?;
-                continue;
-            }
-            match method {
-                "thread/tokenUsage/updated" if event_scope.root => {
-                    exact_scope(params, event_thread, event_turn)?;
-                    total = Counters::parse(&params["tokenUsage"]["total"]).ok();
-                }
-                "item/started" | "item/completed" => {
-                    exact_scope(params, event_thread, event_turn)?;
-                    let item = &params["item"];
-                    let id = item["id"].as_str().ok_or(Error::Protocol("item missing"))?;
-                    let key = (event_thread.into(), event_turn.into(), id.into());
-                    if self.items.len() >= hagency_runtime::codex::session::MAX_ITEMS
-                        && !self.items.contains_key(&key)
-                    {
-                        return Err(Error::Protocol("item capacity"));
-                    }
-                    self.items.insert(key, item.clone());
-                    tools.item(item, method == "item/completed");
-                    if event_scope.root
-                        && method == "item/completed"
-                        && item["type"] == "agentMessage"
-                    {
-                        let message = item["text"]
-                            .as_str()
-                            .ok_or(Error::Protocol("message missing"))?;
-                        if text.len() + message.len() > 65536 {
-                            return Err(Error::Protocol("text capacity"));
-                        }
-                        text.push_str(message);
-                    }
-                }
-                "turn/completed" if event_scope.root => {
-                    root_status = Some(match params["turn"]["status"].as_str() {
-                        Some("completed") => TurnStatus::Completed,
-                        Some("failed") => TurnStatus::Failed,
-                        Some("interrupted") => TurnStatus::Interrupted,
-                        _ => return Err(Error::Protocol("unknown terminal status")),
-                    });
-                }
-                _ => {}
-            }
-            if tree.is_complete() {
-                let status = root_status.ok_or(Error::Protocol("root completion missing"))?;
                 let (usage, counters) = if tree.has_response_receipts() || tree.has_descendants() {
                     (
                         tree.usage()
@@ -1461,7 +1379,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         None => (crate::unreported_usage(), None),
                     }
                 };
-                if status == TurnStatus::Completed && usage.is_reported() {
+                if status != TurnStatus::Failed && usage.is_reported() && controls.can_retain() {
                     self.retained_turn = Some(tree);
                 }
                 return Ok((
@@ -1476,6 +1394,251 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     counters,
                 ));
             }
+            if let Some(frame) = controls.prepare(&tree, thread, &turn, &mut self.next_id)? {
+                self.write(frame).await?;
+            }
+            let control_deadline = controls.deadline();
+            let frame = if let Some(frame) = self.deferred.pop_front() {
+                frame
+            } else {
+                let read = tokio::select! { biased;
+                    _ = control_deadline.wait() => { controls.expire()?; continue; }
+                    frame = self.read_until(Deadline::UNBOUNDED) => frame,
+                    next = crate::run_controls::next(&mut stream), if controls.can_receive() => {
+                        controls.offer(next);
+                        continue;
+                    }
+                    _ = std::future::ready(()), if controls.has_outgoing(&tree) => { continue; }
+                    _ = std::future::ready(()), if !controls.holds_answers()
+                && self.read_frame.is_empty()
+                && (approval_answer.is_some() || answer.is_some() || file_answer.is_some()) => {
+                        // The read can have consumed a partial cancellation
+                        // before this ready branch won. Finish that frame first.
+                        if !self.read_frame.is_empty() { continue; }
+                        if let Some(file) = file_answer.take() {
+                            if file.active(&tree) {
+                                let key = format!("host:{}", file.call());
+                                let response = self.host_file_response(ledger, owner, file)?;
+                                self.write(response).await?;
+                                tools.returned.insert(key);
+                            }
+                        } else if let Some(approved) = approval_answer.take() {
+                            if approved.active(&tree) { self.write(approved.response(ledger, owner)).await?; }
+                        } else if let Some(answer) = answer.take()
+                            && tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
+                    let response = match &answer.submitted {
+                        Some(submitted) => answer
+                            .request
+                            .answer_host(&submitted.answers)
+                            .map_err(|_| Error::Protocol("invalid question answer"))?,
+                        None => answer.request.unanswered(),
+                    };
+                    self.write(value!({"id":response.request_id(),"result":response.result()}))
+                        .await?;
+                    if let Some(submitted) = answer.submitted {
+                        submitted.accepted();
+                    }
+                }
+                continue;
+            }
+                    next = approvals.next(), if approval_answer.is_none() => {
+                        approval_answer = Some(next);
+                        continue;
+                    }
+                    next = file_calls.next(), if file_answer.is_none() => {
+                        file_answer = Some(next);
+                        continue;
+                    }
+                    next = questions.next(), if answer.is_none() => {
+                        answer = Some(next);
+                        continue;
+                    }
+                };
+                match read {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        if let Some(status) = root_status.take() {
+                            // A completed root answer survives a lost child
+                            // stream; its incomplete usage remains reserved.
+                            return Ok((
+                                Completed {
+                                    text,
+                                    usage: crate::unreported_usage(),
+                                    status,
+                                    elapsed_seconds: started.elapsed().as_secs(),
+                                    tool_requests: tools.requested.len(),
+                                    tool_returns: tools.returned.len(),
+                                },
+                                None,
+                            ));
+                        }
+                        return Err(error);
+                    }
+                }
+            };
+            if controls.observe(&frame)? {
+                continue;
+            }
+            let method = frame["method"]
+                .as_str()
+                .ok_or(Error::Protocol("unexpected response"))?;
+            let params = &frame["params"];
+            if method == "serverRequest/resolved" && frame.get("id").is_none() {
+                questions.withdraw(params);
+                approvals.withdraw(params);
+                file_calls.withdraw(params);
+                if file_answer.as_ref().is_some_and(|a| a.withdrawn(params)) {
+                    file_answer = None;
+                }
+                if approval_answer
+                    .as_ref()
+                    .is_some_and(|a| a.withdrawn(params))
+                {
+                    approval_answer = None;
+                }
+                if answer.as_ref().is_some_and(|a| a.withdrawn(params)) {
+                    answer = None;
+                }
+            }
+            let Some(event_scope) = tree
+                .observe(method, params, frame.get("id").is_some())
+                .map_err(|_| {
+                    scope_error(
+                        if params["threadId"] == thread {
+                            "turn"
+                        } else {
+                            "thread"
+                        },
+                        method,
+                    )
+                })?
+            else {
+                continue;
+            };
+            let event_thread = event_scope.thread.as_str();
+            let event_turn = event_scope.turn.as_str();
+            if let Some(room) = &room_turn {
+                room.observe(&event_scope, &tree);
+                if method == "thread/tokenUsage/updated" && let Some(evidence) = tree.context_usage(params) {
+                    room.context(evidence);
+                }
+            }
+            questions.retain_active(&tree);
+            approvals.retain_active(&tree);
+            file_calls.retain_active(&tree);
+            if file_answer.as_ref().is_some_and(|a| !a.active(&tree)) {
+                file_answer = None;
+            }
+            if frame.get("id").is_some() {
+                if controls.accepted_stop() {
+                    self.write(value!({"id":frame["id"],"error":{"code":-32000,"message":"Execution is stopping"}})).await?;
+                    continue;
+                }
+                if method == hagency_runtime::codex::session::USER_INPUT_METHOD {
+                    let id_key = json(&frame["id"])?;
+                    if !self.server_ids.insert(id_key) {
+                        return Err(Error::Protocol("reused question ID"));
+                    }
+                    let request = hagency_runtime::codex::session::UserInputRequest::parse(
+                        serde_json::from_value(frame["id"].clone())?,
+                        params,
+                    )
+                    .map_err(|_| Error::Protocol("invalid native question"))?;
+                    questions.ask(request, scope, dispatch, queue, self.callbacks_enabled)?;
+                    continue;
+                }
+                #[cfg(unix)]
+                if method == "item/tool/call" {
+                    exact_scope(params, event_thread, event_turn)?;
+                    let call = params["callId"]
+                        .as_str()
+                        .ok_or(Error::Protocol("host call identity missing"))?;
+                    let key = format!("host:{call}");
+                    tools.requested.insert(key.clone());
+                    self.host_file_offer(
+                        ledger,
+                        owner,
+                        scope,
+                        dispatch,
+                        execution,
+                        &frame,
+                        event_thread,
+                        event_turn,
+                        queue,
+                        &mut file_calls,
+                    )
+                    .await?;
+                    if !file_calls.contains(call) {
+                        tools.returned.insert(key);
+                    }
+                    continue;
+                }
+                self.approval(
+                    ledger,
+                    scope,
+                    dispatch,
+                    &frame,
+                    event_thread,
+                    event_turn,
+                    cwd,
+                    queue,
+                    &mut approvals,
+                )
+                .await?;
+                continue;
+            }
+            match method {
+                "item/agentMessage/delta" if event_scope.root => {
+                    if let (Some(output), Some(id), Some(delta)) = (
+                        &queue.live_text,
+                        params["itemId"].as_str(),
+                        params["delta"].as_str(),
+                    ) {
+                        output.append(id, delta);
+                    }
+                }
+                "thread/tokenUsage/updated" if event_scope.root => {
+                    exact_scope(params, event_thread, event_turn)?;
+                    total = Counters::parse(&params["tokenUsage"]["total"]).ok();
+                }
+                "item/started" | "item/completed" => {
+                    exact_scope(params, event_thread, event_turn)?;
+                    let item = &params["item"];
+                    let id = item["id"].as_str().ok_or(Error::Protocol("item missing"))?;
+                    let key = (event_thread.into(), event_turn.into(), id.into());
+                    if self.items.len() >= hagency_runtime::codex::session::MAX_ITEMS
+                        && !self.items.contains_key(&key)
+                    {
+                        return Err(Error::Protocol("item capacity"));
+                    }
+                    self.items.insert(key, item.clone());
+                    tools.item(item, method == "item/completed");
+                    if event_scope.root
+                        && method == "item/completed"
+                        && item["type"] == "agentMessage"
+                    {
+                        let message = item["text"]
+                            .as_str()
+                            .ok_or(Error::Protocol("message missing"))?;
+                        if text.len() + message.len() > 65536 {
+                            return Err(Error::Protocol("text capacity"));
+                        }
+                        text.push_str(message);
+                        if let Some(output) = &queue.live_text {
+                            output.complete(id, message);
+                        }
+                    }
+                }
+                "turn/completed" if event_scope.root => {
+                    root_status = Some(match params["turn"]["status"].as_str() {
+                        Some("completed") => TurnStatus::Completed,
+                        Some("failed") => TurnStatus::Failed,
+                        Some("interrupted") => TurnStatus::Interrupted,
+                        _ => return Err(Error::Protocol("unknown terminal status")),
+                    });
+                }
+                _ => {}
+            }
         }
         Err(Error::Protocol("event capacity"))
     }
@@ -1483,7 +1646,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
     async fn approval(
         &mut self,
         ledger: &mut Ledger,
-        owner: &str,
         scope: &Scope,
         dispatch: &str,
         frame: &Value,
@@ -1491,6 +1653,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         turn: &str,
         cwd: &str,
         queue: &ApprovalQueue,
+        approvals: &mut approvals::Approvals,
     ) -> Result<()> {
         let id = frame["id"].clone();
         let id_key = json(&id)?;
@@ -1501,7 +1664,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         exact_scope(p, thread, turn)?;
         let method = frame["method"].as_str().unwrap_or("");
         // Test/host shutdown can disable callbacks without granting anything.
-        if !self.callbacks_enabled {
+        if !self.callbacks_enabled || approvals.full() {
             self.decline(id, method).await?;
             return Ok(());
         }
@@ -1621,45 +1784,20 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             policy_revision: versions.map(|v| v.revision),
             expires: now() + 300,
         };
-        let allow = match ledger.tool_disposition(&proposal, now()) {
-            Ok(ToolPolicy::AllowWithRules { .. }) => {
-                ledger.authorize_tool(&proposal, now()).is_ok()
-            }
-            Ok(ToolPolicy::AskOwner) => {
-                let (send, recv) = oneshot::channel();
-                if queue
-                    .sender
-                    .try_send(PendingApproval {
-                        proposal: proposal.clone(),
-                        decision: send,
-                    })
-                    .is_err()
-                {
-                    false
-                } else if matches!(
-                    tokio::time::timeout(Duration::from_secs(300), recv).await,
-                    Ok(Ok(true))
-                ) {
-                    ledger
-                        .approve_tool(owner, &proposal, now())
-                        .and_then(|_| ledger.authorize_tool(&proposal, now()))
-                        .is_ok()
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-        let result = if let Some(request) = native_request {
-            // Permission grants are confined to this turn; the next room
-            // requester never inherits the previous requester's approval.
-            request.response(allow).wire_result().clone()
-        } else if method == "mcpServer/elicitation/request" {
-            value!({"action":if allow{"accept"}else{"decline"},"content":null,"_meta":null})
-        } else {
-            value!({"decision":if allow{"accept"}else{"decline"}})
-        };
-        self.write(value!({"id":id,"result":result})).await
+        let disposition = ledger.tool_disposition(&proposal, now()).ok();
+        approvals.offer(
+            approvals::Request {
+                id,
+                method: method.into(),
+                thread: thread.into(),
+                turn: turn.into(),
+                native: native_request,
+                proposal,
+            },
+            disposition,
+            queue,
+        );
+        Ok(())
     }
     async fn decline(&mut self, id: Value, method: &str) -> Result<()> {
         if method == "item/permissions/requestApproval" {
@@ -1699,6 +1837,8 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    mod approvals;
+    mod controls;
     #[test]
     fn provider_diagnostics_exclude_dynamic_error_bodies() {
         for error in [
@@ -2202,6 +2342,10 @@ mod tests {
                         assert_eq!(frame["params"]["approvalPolicy"], "untrusted");
                         assert_eq!(frame["params"]["sandboxPolicy"]["networkAccess"], false);
                         emit(&mut w,value!({"id":frame["id"],"result":{"turn":{"id":if kind=="missing_turn" { "" } else { "turn-a" },"status":"inProgress"}}})).await;
+                        if kind.starts_with("control_") {
+                            controls::exchange(&mut r, &mut w, &cwd, kind, &tally).await;
+                            continue;
+                        }
                         if kind == "long_silent" {
                             tokio::time::sleep(Duration::from_secs(1801)).await;
                         }
@@ -2281,10 +2425,47 @@ mod tests {
                                 ),
                             };
                             emit(&mut w, value!({"id":900,"method":method,"params":params})).await;
-                            line.clear();
+                            match kind {
+                                "approval_cancel" => {
+                                    emit(&mut w, value!({"method":"serverRequest/resolved","params":{"threadId":"thread-a","requestId":900}})).await;
+                                }
+                                "approval_partial_cancel" => {
+                                    // Put the cancellation prefix on the wire before
+                                    // yielding to the owner. Approval becomes ready
+                                    // while the reader still holds this partial frame.
+                                    w.write_all(
+                                        b"{\"method\":\"serverRequest/resolved\",\"params\":{",
+                                    )
+                                    .await
+                                    .unwrap();
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    w.write_all(b"\"threadId\":\"thread-a\",\"requestId\":900}}\n")
+                                        .await
+                                        .unwrap();
+                                }
+                                "approval_terminal" => {}
+                                _ => {
+                                    let count = if kind == "approval_pair" {
+                                        let mut second = params.clone();
+                                        second["itemId"] = "command-b".into();
+                                        second["command"] = "echo second".into();
+                                        emit(
+                                            &mut w,
+                                            value!({"id":901,"method":method,"params":second}),
+                                        )
+                                        .await;
+                                        2
+                                    } else {
+                                        1
+                                    };
+                                    let mut seen = std::collections::BTreeSet::new();
+                                    for _ in 0..count {
+                                        line.clear();
                             assert_ne!(r.read_line(&mut line).await.unwrap(), 0);
                             let decision: Value = serde_json::from_str(&line).unwrap();
-                            assert_eq!(decision["id"], 900);
+                                        let id = decision["id"].as_u64().unwrap();
+                                        assert!((900..900 + count).contains(&id));
+                                        assert!(seen.insert(id), "approval replayed");
                             if kind == "permissions" {
                                 assert_eq!(decision["result"]["scope"], "turn");
                                 assert!(
@@ -2298,6 +2479,9 @@ mod tests {
                                 || decision["result"]["permissions"]["network"]["enabled"] == true
                             {
                                 tally.fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    }
+                                }
                             }
                         }
                         if with_usage {

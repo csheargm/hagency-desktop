@@ -4,6 +4,7 @@ pub(in crate::console) mod e2ee;
 mod provider_custody;
 mod questions;
 mod room_tools;
+pub(in crate::console) mod run_controls;
 mod service;
 #[cfg(unix)]
 mod working_directory;
@@ -2337,6 +2338,33 @@ async fn run_turn<T: Transport>(
     let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
     let mut queue = queue.with_questions(question_queue);
     let host = transport.approval_host();
+    let controls =
+        if host.is_some() && runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
+            let (sender, inbox) = hagency_agent_local::run_controls::channel(
+                &scope,
+                &prepared.dispatch.id,
+                &prepared.execution_id,
+            )
+            .map_err(|_| RuntimeError::Profile)?;
+            queue = queue.with_run_controls(inbox);
+            let kind = if runtime::kind(&config.credential_ref) == runtime::Kind::Claude {
+                "claude"
+            } else {
+                "codex"
+            };
+            let card = crate::agent_run_controls::Card::new(
+                &prepared.dispatch,
+                &prepared.execution_id,
+                owner,
+                kind,
+            )
+            .map_err(|_| RuntimeError::Profile)?;
+            let controls = run_controls::Controller::new(sender, card);
+            queue = queue.with_live_text(controls.live_text());
+            Some(controls)
+        } else {
+            None
+        };
     let has_approval_host = host.is_some();
     let bridge = host.clone().map(|console| {
         tokio::spawn(async move {
@@ -2430,7 +2458,9 @@ async fn run_turn<T: Transport>(
     let retained = cached.is_some();
     let mut provider = match cached {
         Some(provider) => provider,
-        None => tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?},
+        None => {
+            tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?}
+        }
     };
     if config.host_files {
         #[cfg(unix)]
@@ -2506,6 +2536,7 @@ async fn run_turn<T: Transport>(
     let mut pre_model_cancel = cancel.clone();
     let permission_cancel = cancel.clone();
     let question_cancel = cancel.clone();
+    let control_cancel = cancel.clone();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let result = tokio::select! {biased; _=canceled(cancel)=>Err(RuntimeError::Stopped), error=monitor_running(transport,lease,&prepared,permission_cancel)=>Err(error), r=async {
         let model = async {
@@ -2532,6 +2563,13 @@ async fn run_turn<T: Transport>(
                         None => std::future::pending::<()>().await,
                     }
                 } => Err(codex::Error::Protocol("room bridge closed")),
+                _ = async {
+                    if let Some(controls) = &controls {
+                        controls.serve(transport, lease, config, &prepared, control_cancel).await;
+                    }
+                    // An unavailable Matrix card cannot abort a paid turn.
+                    std::future::pending::<()>().await
+                } => unreachable!(),
             }
         };
         let notice = async {
@@ -2547,15 +2585,29 @@ async fn run_turn<T: Transport>(
                 }
             }
         };
-        let (result, ()) = tokio::join!(model, notice);
-        result
+        tokio::pin!(model, notice);
+        tokio::select! {
+            result = &mut model => result,
+            _ = &mut notice => model.await,
+        }
     }=>match r {
         Ok(completed)=>Ok(Ok(completed)),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。")),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。")),
-        Err(codex::Error::Failed)=>{provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
+        Err(codex::Error::Failed)=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
         Err(error)=>Err(provider_failure("agent_turn_result", &error)),
     }};
+    if let Some(controls) = &controls {
+        use crate::agent_run_controls::State;
+        controls.finish(match &result {
+            Ok(Ok(completed)) if completed.status == codex::TurnStatus::Interrupted => {
+                State::Interrupted
+            }
+            Ok(Ok(_)) => State::Completed,
+            Ok(Err(_)) => State::Failed,
+            Err(_) => State::Unknown,
+        });
+    }
     let retain = matches!(&result, Ok(Ok(completed)) if completed.usage.is_reported())
         && provider.session.can_continue();
     // Failed/cancelled/unknown work never enters the idle-session cache.
@@ -2572,7 +2624,12 @@ async fn run_turn<T: Transport>(
             return Ok(None);
         }
     };
-    if completed.text.is_empty() || completed.text.len() > 65_536 {
+    let reply = if completed.status == codex::TurnStatus::Interrupted && completed.text.is_empty() {
+        "⏹️ 本次运行已停止。"
+    } else {
+        &completed.text
+    };
+    if reply.is_empty() || reply.len() > 65_536 {
         return Err(RuntimeError::Profile);
     }
     // Like shared Agents, a chat reply is only the answer. Turn usage and the
@@ -2581,7 +2638,7 @@ async fn run_turn<T: Transport>(
         owner,
         &prepared.dispatch.id,
         &prepared.execution_id,
-        &completed.text,
+        reply,
     ))?;
     if retain { sessions.retain(session_key, provider); }
     Ok(None)

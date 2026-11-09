@@ -25,6 +25,7 @@ pub struct OwnedSession {
     cleanup: Cleanup,
     pub(super) managed_source: super::managed::ManagedProcessSource,
     pub(super) text_source: super::shared_text::SharedTextProcessSource,
+    pub(super) live_text: Option<crate::live_text::LiveText>,
     /// Diagnostics build only (ADR-182 pin): every stop verdict of this
     /// session reads `Unknown`, as a tree the guardian could not prove gone
     /// would, however many times the host asks. No production build has it.
@@ -92,6 +93,7 @@ impl OwnedSession {
                     cleanup: Cleanup::Pending,
                     managed_source: super::managed::ManagedProcessSource::new(),
                     text_source: super::shared_text::SharedTextProcessSource::new(),
+                    live_text: None,
                     #[cfg(feature = "test-diagnostics")]
                     unproven: false,
                 })
@@ -530,6 +532,37 @@ impl OwnedSession {
     pub async fn interrupt(&mut self) -> Result<InterruptDisposition, session::Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.interrupt().await;
+        operation.finish(result)
+    }
+    pub fn run_control_receipts(&mut self) -> Vec<session::RunReceipt> {
+        self.session.run_control_receipts()
+    }
+    pub fn run_controls_hold_answers(&self) -> bool {
+        self.session.run_controls_hold_answers()
+    }
+    pub fn run_stop_accepted(&self) -> bool {
+        self.session.run_stop_accepted()
+    }
+    pub fn user_input_waiting(&self, request: &session::UserInputRequest) -> bool {
+        self.session.user_input_waiting(request)
+    }
+    pub fn room_history_admissible(&self, call: &session::RoomHistoryCall) -> bool {
+        self.session.room_history_admissible(call)
+    }
+    pub fn room_file_admissible(&self, call: &session::RoomFileCall) -> bool {
+        self.session.room_file_admissible(call)
+    }
+    pub async fn submit_run_control(
+        &mut self,
+        id: String,
+        action: session::RunAction,
+    ) -> Result<session::RunOutcome, session::Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .submit_run_control(id, action)
+            .await;
         operation.finish(result)
     }
     pub async fn next_update(&mut self) -> Result<Update, session::Error> {

@@ -293,9 +293,11 @@ impl MatchEvent for App {
         // * the timeline warns about "No avatar changes to update" on every user's display name change.
         // Note that this can still be overridden by setting RUST_LOG, e.g. `RUST_LOG=matrix_sdk::latest_events=info`
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(
+            .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
                 "info,matrix_sdk::latest_events=warn,matrix_sdk_ui::timeline::tasks=error",
-            ));
+            )
+        });
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .try_init();
@@ -391,6 +393,16 @@ impl MatchEvent for App {
             }
             // Agent questions: a card's click produced an answer to send, an
             // answer was sent (or not), or cards arrived from the room.
+            if let Some(request) = action.downcast_ref::<crate::hagency::run_controls::Requested>()
+            {
+                crate::hagency::run_controls::send(request.clone());
+            }
+            if let Some(sent) = action.downcast_ref::<crate::hagency::run_controls::Sent>()
+                && crate::hagency::run_controls::sent(sent)
+            {
+                cx.action(crate::hagency::pending_questions::PendingQuestionsChanged);
+                self.ui.redraw(cx);
+            }
             if let Some(request) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerRequested>() {
                 crate::hagency::pending_questions::send(request.clone());
             }
@@ -521,8 +533,11 @@ impl MatchEvent for App {
                 self.ui.redraw(cx);
                 if let Some(account) = current_user_id() {
                     match crate::shared::web_browser_session::ReaderSession::load(&account) {
-                        Ok(session) if !session.tabs.is_empty() => cx.action(WebBrowserAction::Restore { session, account: Some(account) }),
-                        Ok(_) => {},
+                        Ok(session) if !session.tabs.is_empty() => {
+                            cx.action(WebBrowserAction::Restore { session, account: Some(account),
+                            })
+                        }
+                        Ok(_) => {}
                         Err(error) => error!("Could not restore reader tabs: {error}"),
                     }
                 }
@@ -708,7 +723,10 @@ impl MatchEvent for App {
                         self.leave_mini_apps(cx);
                         cx.action(NavigationBarAction::GoToHome);
                         let room = cx.get_global::<RoomsListRef>().get_room_name(&target.room_id)
-                            .unwrap_or_else(|| RoomNameId::new(matrix_sdk::RoomDisplayName::Named("My Actions".into()), target.room_id.clone()));
+                            .unwrap_or_else(|| {
+                                RoomNameId::new(matrix_sdk::RoomDisplayName::Named("My Actions".into()), target.room_id.clone(),
+                                )
+                            });
                         self.navigate_to_room(cx, None, &BasicRoomDetails::RoomId(room));
                     }
                     continue;
@@ -820,7 +838,10 @@ impl MatchEvent for App {
                     let destination = crate::sliding_sync::get_client()
                         .and_then(|client| client.get_room(&target.space_id))
                         .and_then(|room| room.name())
-                        .map(|name| RoomNameId::new(matrix_sdk::RoomDisplayName::Named(name), target.space_id.clone()))
+                        .map(|name| {
+                            RoomNameId::new(matrix_sdk::RoomDisplayName::Named(name), target.space_id.clone(),
+                            )
+                        })
                         .unwrap_or_else(|| RoomNameId::empty(target.space_id.clone()));
                     self.ui.invite_modal(cx, ids!(invite_modal.content)).show(cx, destination);
                     self.ui.modal(cx, ids!(invite_modal)).open(cx);
@@ -1222,13 +1243,15 @@ impl App {
     /// Moves every tab, still running, into the workspace window.
     fn pop_out_mini_app(&mut self, cx: &mut Cx) {
         let side = self.ui.mini_apps_side_region(cx, ids!(mini_apps_side));
-        let Some(workspace) = side.take_workspace(cx) else { return };
+        let Some(workspace) = side.take_workspace(cx) else { return;
+        };
         self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).adopt_workspace(cx, workspace);
     }
 
     fn dock_back_mini_app(&mut self, cx: &mut Cx, window: WindowId) {
         let host = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-        let Some(workspace) = host.take_for_dock(cx, window) else { return };
+        let Some(workspace) = host.take_for_dock(cx, window) else { return;
+        };
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).restore_workspace(cx, workspace);
         self.ui.redraw(cx);
         #[cfg(target_os = "macos")]
@@ -1304,7 +1327,7 @@ impl App {
 }
 
 /// Clears all thread-local UI caches (user profiles, invited rooms, and timeline states).
-/// The `cx` parameter ensures that these thread-local caches are cleared on the main UI thread, 
+/// The `cx` parameter ensures that these thread-local caches are cleared on the main UI thread,
 fn clear_all_app_state(cx: &mut Cx) {
     clear_user_profile_cache(cx);
     clear_all_invited_rooms(cx);
@@ -1633,16 +1656,23 @@ impl App {
     /// the host window closes too unless the person already closed it.
     #[allow(unused_variables)]
     fn close_hosted_window(&mut self, cx: &mut Cx, window: HostedWindow, close_host_window: bool) {
-        let Some(index) = self.hosted_windows.iter().position(|(w, _)| *w == window) else { return };
+        let Some(index) = self.hosted_windows.iter().position(|(w, _)| *w == window) else { return;
+        };
         let (_, panel) = self.hosted_windows.remove(index);
         match window {
             HostedWindow::Moments => {
                 use crate::moments::ui::MomentsPanelWidgetRefExt;
                 panel.as_moments_panel().action(cx, None, &MomentsAction::Close);
             }
-            HostedWindow::Article => panel.as_article_panel().action(cx, ModalRef::default(), &ArticleAction::Close),
-            HostedWindow::WebBrowser => panel.as_web_browser().action(cx, ModalRef::default(), &WebBrowserAction::Close),
-            HostedWindow::MiniApps => panel.as_mini_apps_panel().action(cx, ModalRef::default(), &MiniAppsAction::Close),
+            HostedWindow::Article => {
+                panel.as_article_panel().action(cx, ModalRef::default(), &ArticleAction::Close)
+            }
+            HostedWindow::WebBrowser => {
+                panel.as_web_browser().action(cx, ModalRef::default(), &WebBrowserAction::Close)
+            }
+            HostedWindow::MiniApps => {
+                panel.as_mini_apps_panel().action(cx, ModalRef::default(), &MiniAppsAction::Close)
+            }
         }
         #[cfg(feature = "octosense-module")]
         if close_host_window {
@@ -1931,7 +1961,8 @@ impl App {
         if !self.app_state.app_prefs.hosting_paused_on_quit || self.hosting_resume || self.lifecycle.shutdown_started {
             return;
         }
-        let Some(owner) = current_user_id() else { return };
+        let Some(owner) = current_user_id() else { return;
+        };
         let owner = owner.to_string();
         self.hosting_resume = std::thread::Builder::new().name("owner-hosting-resume".into()).spawn(move || {
             let settled = crate::hagency::hosting::resume_after_start(&owner);
@@ -1964,8 +1995,10 @@ impl App {
             Some(Duration::from_secs(15)),
             crate::hagency::backend::Service::suspend_current(),
         ) {
-            Ok(Ok(())) => {},
-            Ok(Err(_)) => error!("Hagency owner drain requires recovery; pending execution remains recorded."),
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                error!("Hagency owner drain requires recovery; pending execution remains recorded.")
+            }
             Err(_) => error!("Hagency owner shutdown timed out; pending execution remains recorded in its ledger."),
         }
 
@@ -1983,11 +2016,15 @@ impl App {
                 Some(Duration::from_secs(3)),
                 async move {
                     match tsp_state.close_and_serialize().await {
-                        Ok(saved_state) => match persistence::save_tsp_state_async(saved_state).await {
+                        Ok(saved_state) => {
+                            match persistence::save_tsp_state_async(saved_state).await {
                             Ok(_) => { }
                             Err(e) => error!("Failed to save TSP wallet state. Error: {e}"),
                         }
-                        Err(e) => error!("Failed to close and serialize TSP wallet state. Error: {e}"),
+                        }
+                        Err(e) => {
+                            error!("Failed to close and serialize TSP wallet state. Error: {e}")
+                        }
                     }
                 },
             );
@@ -2021,8 +2058,10 @@ impl App {
         }
     }
 
-    fn resume_signup_navigation(&mut self, cx: &mut Cx, room: &RoomNameId, account: Option<&ruma::UserId>) {
-        let Some((target, started)) = self.pending_signup_navigation.as_ref() else { return };
+    fn resume_signup_navigation(&mut self, cx: &mut Cx, room: &RoomNameId, account: Option<&ruma::UserId>,
+    ) {
+        let Some((target, started)) = self.pending_signup_navigation.as_ref() else { return;
+        };
         if &target.room_id != room.room_id() { return; }
         let destination = (account == Some(target.account.as_ref()) && started.elapsed() < Duration::from_secs(300))
             .then(|| target.event_id.clone());
@@ -2084,9 +2123,11 @@ impl App {
         let room_state = cx.get_global::<RoomsListRef>().get_room_state(destination_room_id)
             .or_else(|| sdk_room.as_ref().map(|room| room.state()));
         let new_selected_room = match room_state {
-            Some(RoomState::Joined) if sdk_room.as_ref().is_some_and(|room| room.is_space()) => SelectedRoom::Space {
+            Some(RoomState::Joined) if sdk_room.as_ref().is_some_and(|room| room.is_space()) => {
+                SelectedRoom::Space {
                 space_name_id: destination_room.room_name_id().clone(),
-            },
+            }
+            }
             Some(RoomState::Joined) => SelectedRoom::JoinedRoom {
                 room_name_id: destination_room.room_name_id().clone(),
             },
@@ -2343,8 +2384,10 @@ impl SelectedRoom {
     /// Returns `true` if the room was an `InvitedRoom` with the same `room_id`
     /// that was successfully upgraded; otherwise, returns `false`.
     pub fn upgrade_invite_to_joined(&mut self, room_id: &RoomId, is_space: bool) -> bool {
-        let SelectedRoom::InvitedRoom { room_name_id } = self else { return false };
-        if room_name_id.room_id() != room_id { return false }
+        let SelectedRoom::InvitedRoom { room_name_id } = self else { return false;
+        };
+        if room_name_id.room_id() != room_id { return false;
+        }
         *self = Self::to_joined(room_name_id.clone(), is_space);
         true
     }
@@ -2369,11 +2412,10 @@ impl SelectedRoom {
     /// Returns the `LiveId` of the room tab corresponding to this `SelectedRoom`.
     pub fn tab_id(&self) -> LiveId {
         match self {
-            SelectedRoom::Thread { room_name_id, thread_root_event_id } => {
-                LiveId::from_str(
+            SelectedRoom::Thread { room_name_id, thread_root_event_id,
+            } => LiveId::from_str(
                     &format!("{}##{}", room_name_id.room_id(), thread_root_event_id)
-                )
-            }
+                ),
             other => LiveId::from_str(other.room_id().as_str()),
         }
     }
@@ -2387,7 +2429,9 @@ impl SelectedRoom {
     /// has been hidden (e.g., its tab was closed, or the user navigated back on mobile view mode),
     /// but not when it's still reachable via the mobile nav stack or a saved desktop dock.
     pub fn close_thread_timeline(&self, cx: &mut Cx) {
-        let SelectedRoom::Thread { room_name_id, thread_root_event_id } = self else { return };
+        let SelectedRoom::Thread { room_name_id, thread_root_event_id,
+        } = self else { return;
+        };
         let room_id = room_name_id.room_id().clone();
         // Drop the stale UI cache so reopening rebuilds a fresh timeline instead of reusing
         // a cache whose backend is about to be freed.
@@ -2649,10 +2693,14 @@ mod back_navigation_tests {
             (Some(account), None), (Some(account), Some(RoomState::Invited)),
             (Some(account), Some(RoomState::Left)),
         ] {
-            let actions = cx.capture_actions(|cx| assert!(app.open_agent_chat(cx, &target, actor, state).is_err()));
+            let actions = cx.capture_actions(|cx| {
+                assert!(app.open_agent_chat(cx, &target, actor, state).is_err())
+            });
             assert!(actions.is_empty(), "refused navigation must not auto-join or select a room");
         }
-        let actions = cx.capture_actions(|cx| app.open_agent_chat(cx, &target, Some(account), Some(RoomState::Joined)).unwrap());
+        let actions = cx.capture_actions(|cx| {
+            app.open_agent_chat(cx, &target, Some(account), Some(RoomState::Joined)).unwrap()
+        });
         assert!(actions.iter().any(|a| matches!(a.as_widget_action().cast::<RoomsListAction>(),
             RoomsListAction::Selected(SelectedRoom::JoinedRoom { room_name_id }) if room_name_id.room_id() == &target.room_id)));
         assert!(app.waiting_to_navigate_to_room.is_none());

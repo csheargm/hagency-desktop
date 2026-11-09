@@ -608,6 +608,7 @@ async fn work_loop(
     }
     .map_err(store)?;
     let call_id = call.call_id.clone();
+    let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
     let (b, p) = proof(io, r, sink, a).await?;
     let attempt = if let Some(input) = &input {
         r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
@@ -654,6 +655,9 @@ async fn work_loop(
         }
     };
     turn.started();
+    if let Some(controls) = &mut run_controls {
+        controls.activate(process);
+    }
     let mut capture = issued.bind_started_turn(process).await.map_err(store)?;
     let mut usage = telemetry.shared_turn(
         &sink.command().original_runtime_command,
@@ -668,16 +672,42 @@ async fn work_loop(
         .is_some_and(|p| p.mode == "standard");
     let mut approvals = super::approvals::Approvals::default();
     let mut questions: super::questions::Questions = super::questions::Questions::default();
+    let mut deferred = std::collections::VecDeque::new();
+    let mut last_control_poll = Instant::now() - Duration::from_secs(1);
     let terminal_result: Result<SharedWorkReceipt, NativeError> = async {
       if approvals_enabled && start_stop.is_none() {super::approvals::enable(process)?;}
       if start_stop.is_none() {super::questions::enable(process)?;}
       let mut stop_reason = start_stop;
-      let terminal = loop {
+      let terminal = 'turn: loop {
+        macro_rules! room_wait {
+            ($future:expr) => { room_wait!(|_: &OwnedSession| true, $future) };
+            ($admissible:expr, $future:expr) => {{
+                match prepare_while_active(io, r, sink, control, a, cancel,
+                    super::cooperative::wait($future, io, &sink.command().original_runtime_command, process, &mut capture, &mut usage, &mut run_controls, &mut deferred, $admissible)).await? {
+                    super::cooperative::Waiting::Ready(value) => value,
+                    super::cooperative::Waiting::Stopped => continue 'turn,
+                    super::cooperative::Waiting::Terminal(receipt) => break 'turn receipt,
+                }
+            }};
+        }
+
+        if last_control_poll.elapsed() >= Duration::from_millis(500) {
+            last_control_poll = Instant::now();
+            if let Some(controls) = &mut run_controls {
+                prepare_while_active(io, r, sink, control, a, cancel, controls.poll(io, &sink.command().original_runtime_command, process)).await?;
+            }
+        }
+
         if let Some(error) = stop_reason.take() { return Err(error); }
         if super::stop_capture::requested(cancel) {
             return Err(failure(409, "shared_execution_closed"));
         }
-        let result = {
+        let already_observed;
+        let result = if let Some(event) = deferred.pop_front() {
+            already_observed = true;
+            Ok(Some(event))
+        } else {
+            already_observed = false;
             // Pin the actual read. Renewal branches keep polling this same
             // future. A requested stop yields cooperatively for final usage.
             let read = process.next_shared_event_or_tick();
@@ -709,16 +739,17 @@ async fn work_loop(
         };
         let Some(event)=event else {
             if stop_reason.is_some() || super::stop_capture::requested(cancel) { continue; }
+            if process.run_controls_hold_answers() { continue; }
             if questions.busy() {
                 // Answers and expiries; the lease keeps renewing meanwhile.
-                let ready=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.collect(io))).await?;
+                let ready=room_wait!(questions.collect(io))?;
                 for response in ready {
                     let id = response.request_id().clone();
                     let delivered = guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await;
                     questions.delivered(&id, delivered.as_ref().is_ok_and(|accepted| *accepted));
                     delivered?;
                 }
-                prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.publish())).await?;
+                room_wait!(questions.publish())?;
             }
             if !approvals_enabled { continue; }
             guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await?;
@@ -733,15 +764,17 @@ async fn work_loop(
                 guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
                 match call {
                     super::approvals::RoomCall::History(call) => {
+                        if !process.room_history_admissible(&call) { continue; }
                         let reader=history.as_mut().ok_or_else(invalid)?;
-                        let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read_call(&call)).await
+                        let content=room_wait!(|process: &OwnedSession| process.room_history_admissible(&call),reader.read_call(&call))
                             .unwrap_or_else(|e|serde_json::json!({"complete":false,"error":e.code}).to_string());
                         guarded(cancel,a.until,||async {process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed"))}).await?;
                     }
                     super::approvals::RoomCall::File(call) => {
+                        if !process.room_file_admissible(&call) { continue; }
                         let reader=history.as_ref().ok_or_else(invalid)?;
                         let files=files.as_mut().ok_or_else(invalid)?;
-                        let content=prepare_while_active(io,r,sink,control,a,cancel,async {Ok(files.handle(&call.operation,reader).await)}).await?;
+                        let content=room_wait!(|process: &OwnedSession| process.room_file_admissible(&call), files.handle(&call.operation,reader));
                         guarded(cancel,a.until,||async {process.respond_shared_room_file(&call,content).await.map_err(|_|failure(409,"shared_file_response_failed"))}).await?;
                     }
                 }
@@ -752,7 +785,8 @@ async fn work_loop(
                 match update {
                     super::questions::QuestionUpdate::Withdrawn(id) => questions.withdrawn(&id),
                     super::questions::QuestionUpdate::Asked(request) => {
-                        if let Some(response)=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.ask(io,&work,request))).await? {
+                        let question_scope = request.clone();
+            if let Some(response)=room_wait!(|process: &OwnedSession| process.user_input_waiting(&question_scope), questions.ask(io,&work,request))? {
                             guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await?;
                         }
                     }
@@ -770,7 +804,8 @@ async fn work_loop(
             event.observation().kind(),
             hagency_runtime::codex::session::ObservationKind::TurnEnded(_)
         );
-        let pending = usage.pending(&event);
+        let recorded = if already_observed { None } else {
+            let pending = usage.pending(&event);
         let recorded = match capture.observe(event).await {
             Ok(v) => v,
             Err(e) => {
@@ -779,25 +814,26 @@ async fn work_loop(
                 return Err(store(e));
             }
         };
-        // Only after the sink verified source and contiguous sequence.
-        usage.accept(pending);
-        usage.quota(process);
+            // Deferred callbacks have already crossed this exact sink once.
+            usage.accept(pending);
+        usage.quota(process); recorded
+        };
         if ended {
             break recorded.ok_or_else(invalid)?;
         }
         if stop_reason.is_some() { continue; }
-        if let Some(call)=file_call {
+        if let Some(call)=file_call && process.room_file_admissible(&call) {
             let reader=history.as_ref().ok_or_else(invalid)?;
             let files=files.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,async { Ok(files.handle(&call.operation,reader).await) }).await?;
+            let content=room_wait!(|process: &OwnedSession| process.room_file_admissible(&call), files.handle(&call.operation,reader));
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
             guarded(cancel,a.until,||async { process.respond_shared_room_file(&call,content).await.map_err(|_|failure(409,"shared_file_response_failed")) }).await?;
         }
-        if let Some(call)=history_call {
+        if let Some(call)=history_call && process.room_history_admissible(&call) {
             let reader=history.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read_call(&call)).await
+            let content=room_wait!(|process: &OwnedSession| process.room_history_admissible(&call),reader.read_call(&call))
                 .unwrap_or_else(|error| serde_json::json!({"complete":false,"error":error.code}).to_string());
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
             guarded(cancel,a.until,||async{ process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed")) }).await?;
@@ -809,13 +845,17 @@ async fn work_loop(
         if let Some(id)=withdrawn { questions.withdrawn(&id); }
         if let Some(request)=question {
             // The card goes to the room; the model waits for its answer.
-            if let Some(response)=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.ask(io,&work,request))).await? {
+            let question_scope = request.clone();
+            if let Some(response)=room_wait!(|process: &OwnedSession| process.user_input_waiting(&question_scope), questions.ask(io,&work,request))? {
                 guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await?;
             }
         }
       };
       Ok(terminal)
     }.await;
+    if let Some(controls) = &mut run_controls {
+        controls.finish(process, &terminal_result);
+    }
     // Cards still waiting when the turn ended close unanswered.
     questions.close();
     let terminal = match terminal_result {

@@ -35,6 +35,12 @@ if kind == 'claude':
     def room_metadata(ident, message):
         send({'type':'control_request','request_id':ident,'request':{'subtype':'mcp_message','server_name':'hagency_matrix','message':message}})
         return read()['response']['response']['mcp_response']
+    def stop_control(refused):
+        request = read()
+        assert request['type'] == 'control_request' and request['request']['subtype'] == 'interrupt'
+        response = {'subtype':'error','request_id':request['request_id'],'error':'refused'} if refused else {'subtype':'success','request_id':request['request_id'],'response':{'still_queued':[]}}
+        send({'type':'control_response','response':response})
+        return not refused
     while True:
         prompt = read()
         if prompt.get('type') == 'control_request':
@@ -56,6 +62,18 @@ if kind == 'claude':
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
+        aborted = False
+        if mode.startswith('control_'):
+            question = 'question' in mode
+            tool = 'AskUserQuestion' if question else 'Write'
+            arguments = {'questions':[{'question':'Continue?','header':'Continue','multiSelect':False,'options':[{'label':'Yes','description':'Continue'},{'label':'No','description':'Stop'}]}]} if question else {'file_path':str(root / 'outside' / 'result'),'content':'exact'}
+            send({'type':'control_request','request_id':'waiting','request':{'subtype':'can_use_tool','tool_name':tool,'tool_use_id':'waiting-tool','input':arguments}})
+            aborted = stop_control('refused' in mode)
+            if not aborted:
+                response = read()
+                assert response['response']['request_id'] == 'waiting'
+                assert response['response']['response']['behavior'] == 'allow'
+                (root / 'effect').write_text('one')
         if mode.startswith('room'):
             # An unrelated external MCP tool is never approved by Matrix IO.
             send({'type':'control_request','request_id':'external','request':{'subtype':'can_use_tool','tool_name':'mcp__external__send_file','input':{'path':'result.txt'}}})
@@ -66,6 +84,9 @@ if kind == 'claude':
                 assert read()['response']['response']['behavior'] == 'allow'
                 ident = f'room-call-{index}'
                 send({'type':'control_request','request_id':ident,'request':{'subtype':'mcp_message','server_name':'hagency_matrix','message':{'jsonrpc':'2.0','id':index,'method':'tools/call','params':{'name':name,'arguments':arguments,'_meta':{'claudecode/toolUseId':f'room-tool-{index}'}}}}})
+                if mode == 'room_stop':
+                    aborted = stop_control(False)
+                    break
                 if mode == 'room_cancel':
                     import time
                     time.sleep(0.1)
@@ -101,6 +122,8 @@ if kind == 'claude':
                 (root / 'question-answer').write_text(json.dumps(response))
         usage = {} if mode == 'unknown' else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
         result = {'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
+        if aborted:
+            result.update({'is_error':True,'terminal_reason':'aborted_streaming'})
         if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof'):
             count_file = root / 'count'
             count = int(count_file.read_text()) + 1 if count_file.exists() else 1

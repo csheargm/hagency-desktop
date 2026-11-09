@@ -324,12 +324,23 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         // init, retain the same deadline, and keep init as observation one.
         for _ in 0..64 {
             let received = self.wire.next(deadline).await?;
-            if self.awaiting_init
+            if self.observe_prelude(&received.message)? {
+                continue;
+            }
+            self.observe(&received.message, received.at)?;
+            return Ok(received.message);
+        }
+        Err(Error::Capacity)
+    }
+    // Ordinary reads and cooperative control reads must admit exactly the
+    // same pre-init metadata, including the native /usage query after child
+    // work finishes. Metadata never becomes usage or callback authority.
+    fn observe_prelude(&mut self, message: &Message) -> Result<bool, Error> {
+        if self.awaiting_init
                 && let Message::Event {
                     session_id,
                     kind,
-                    payload,
-                } = &received.message
+                    payload } = message
                 && (*kind == EventKind::CommandLifecycle
                     || (*kind == EventKind::System
                         && payload["subtype"] == "session_state_changed"))
@@ -338,18 +349,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     .prelude_session_id
                     .as_ref()
                     .is_some_and(|id| id != session_id)
-                {
-                    return Err(Error::Identity);
-                }
-                if self.session_id.as_ref().is_some_and(|id| id != session_id) {
+                || self.session_id.as_ref().is_some_and(|id| id != session_id) {
                     return Err(Error::Identity);
                 }
                 self.prelude_session_id = Some(session_id.clone());
-                continue;
-            }
-            self.observe(&received.message, received.at)?;
-            return Ok(received.message);
+            return Ok(true);
         }
-        Err(Error::Capacity)
+        Ok(false)
     }
 }

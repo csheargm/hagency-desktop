@@ -6,6 +6,7 @@ pub mod codex;
 pub mod inbox;
 pub mod questions;
 pub mod room_tools;
+pub mod run_controls;
 pub mod reconciliation;
 #[cfg(unix)]
 pub mod room_files;

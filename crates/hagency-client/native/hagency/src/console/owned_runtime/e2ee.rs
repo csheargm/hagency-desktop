@@ -55,6 +55,8 @@ pub(in crate::console) struct AgentDevice {
     /// Room members' answers to this Agent's question cards.
     pub(in crate::console) questions: crate::agent_questions::Inbox,
     pub(in crate::console) question_records: std::path::PathBuf,
+    run_controls: crate::agent_questions::Inbox,
+    pub(in crate::console) run_records: std::path::PathBuf,
     revoked: Arc<AtomicBool>,
     sync: tokio::task::AbortHandle,
 }
@@ -126,6 +128,7 @@ pub(super) async fn device<T: Transport>(
     if let Some(device) = devices.get(&key)
         && !device.revoked.load(Ordering::Acquire)
     {
+        super::run_controls::device_ready(device.clone());
         return Ok(device.clone());
     }
     let Response::E2eeDevice(grant) = operation(
@@ -141,6 +144,7 @@ pub(super) async fn device<T: Transport>(
     };
     let device = Arc::new(AgentDevice::open(grant, &directory, &config.agent_id).await?);
     super::questions::device_ready(device.clone());
+    super::run_controls::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
 }
@@ -406,6 +410,10 @@ impl AgentDevice {
         // the owner's client starts sharing room keys with it.
         let approvals = crate::encrypted_approvals::Inbox::attach(&client);
         let questions = crate::agent_questions::Inbox::attach(&client);
+        let run_controls = crate::agent_questions::Inbox::attach_event(
+            &client,
+            crate::agent_run_controls::ACTION_EVENT,
+        );
         client
             .sync_once(SyncSettings::default().timeout(Duration::ZERO))
             .await
@@ -417,6 +425,8 @@ impl AgentDevice {
             approvals,
             questions,
             question_records: root.join("question-cards.json"),
+            run_controls,
+            run_records: root.join("run-cards.json"),
             revoked,
             sync,
         })
@@ -519,6 +529,14 @@ impl AgentDevice {
             .client
             .get_room(&room_id)
             .ok_or(RuntimeError::Transport)?;
+        if room
+            .latest_encryption_state()
+            .await
+            .map_err(|_| RuntimeError::Transport)?
+            .is_unknown()
+        {
+            return Err(RuntimeError::Transport);
+        }
         let txn: OwnedTransactionId = txn.into();
         match room
             .send_raw("m.room.message", content)
@@ -545,6 +563,25 @@ impl AgentDevice {
         room: &str,
         card_event_id: &str,
     ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
+        self.room_actions(&self.questions, room, card_event_id)
+            .await
+    }
+
+    pub(in crate::console) async fn run_actions(
+        &self,
+        room: &str,
+        card_event_id: &str,
+    ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
+        self.room_actions(&self.run_controls, room, card_event_id)
+            .await
+    }
+
+    async fn room_actions(
+        &self,
+        inbox: &crate::agent_questions::Inbox,
+        room: &str,
+        card_event_id: &str,
+    ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let room = self
             .client
@@ -552,9 +589,7 @@ impl AgentDevice {
             .ok_or(RuntimeError::Transport)?;
         // Room keys can arrive after the answer: retry undecryptable references.
         // Each pass is bounded; anything left waits for the next pass.
-        for id in self
-            .questions
-            .due_undecrypted(room_id.as_str(), card_event_id, 4)
+        for id in inbox.due_undecrypted(room_id.as_str(), card_event_id, 4)
         {
             let Ok(event_id) = OwnedEventId::try_from(id.as_str()) else {
                 continue;
@@ -564,22 +599,25 @@ impl AgentDevice {
                 && let TimelineEventKind::Decrypted(decrypted) = &event.kind
                 && let Ok(value) = decrypted.event.deserialize_as::<serde_json::Value>()
             {
-                self.questions.decrypted(
+                inbox.decrypted(
                     room_id.as_str(),
                     &value,
                     Some(&decrypted.encryption_info),
                 );
             }
         }
-        let encrypted = room
+        let encryption = room
             .latest_encryption_state()
             .await
-            .map_err(|_| RuntimeError::Transport)?
-            .is_encrypted();
+            .map_err(|_| RuntimeError::Transport)?;
+        if encryption.is_unknown() {
+            return Err(RuntimeError::Transport);
+        }
+        let encrypted = encryption.is_encrypted();
         let own = self.client.user_id().map(|u| u.to_string());
         let mut answers = Vec::new();
         let mut unsure = Vec::new();
-        for received in self.questions.take(room_id.as_str(), card_event_id, 4) {
+        for received in inbox.take(room_id.as_str(), card_event_id, 4) {
             if !received.admissible(encrypted, own.as_deref()) {
                 continue;
             }
@@ -599,7 +637,7 @@ impl AgentDevice {
                 _ => unsure.push(received),
             }
         }
-        self.questions.requeue(unsure);
+        inbox.requeue(unsure);
         Ok(answers)
     }
 

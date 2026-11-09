@@ -55,6 +55,8 @@ pub(crate) struct State {
     refuse_renewal: bool,
     delay_renewal_reply: bool,
     delay_start_reply: bool,
+    delay_run_card_device: bool,
+    run_card_device_requested: std::sync::atomic::AtomicBool,
     process_writes: usize,
     work_writes: usize,
     lose_start: bool,
@@ -69,6 +71,10 @@ pub(crate) struct State {
     stopped_before_reply: bool,
 }
 pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
+    if s.delay_run_card_device && path.ends_with("/crypto/device") {
+        s.run_card_device_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Some(Duration::from_secs(30));
+    }
     if s.delay_renewal_reply && path.ends_with("/activity/renew") {
         return Some(Duration::from_secs(30));
     }
@@ -87,6 +93,13 @@ pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
         .then(|| Duration::from_millis(31_500 - elapsed))
 }
 pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Option<Value> {
+    if path.ends_with("/crypto/device") {
+        // Plaintext execution fixtures have no Agent device grant. Run cards
+        // are optional presentation: an unavailable grant must neither create
+        // another model call nor break the original work/recovery path.
+        assert_eq!(body["assignmentId"], s.shared.command.as_ref().unwrap().assignment_id);
+        return None;
+    }
     if path.ends_with("/crypto/send") {
         assert_eq!(body["workId"], s.shared.work.as_ref().unwrap().id);
         return Some(json!({"observedAtMs":now()}));
@@ -503,6 +516,28 @@ async fn native_shared_execution_one_turn_usage_and_reply_recovery_no_rerun() {
         "the same process must remain live through pending central reply"
     );
     assert_eq!(rows(&f, "owner_shared_work_inbox"), 1);
+    f.stop().await;
+}
+#[tokio::test]
+#[ignore = "requires explicitly built offline supervised probe"]
+async fn native_shared_run_card_device_delay_does_not_block_native_turn() {
+    let (f, t, _) = fixture().await;
+    f.state.lock().unwrap().shared.delay_run_card_device = true;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        t.poll_fixture(&f.registry, launch(&f, "text-renew")).await.unwrap();
+        method_seen(&f, "turn/start").await;
+        loop {
+            if f.state.lock().unwrap().shared.run_card_device_requested.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        std::fs::write(f._root.path().join("shared-probe/release-text"), b"release").unwrap();
+        stopped(&f).await;
+    }).await.expect("native work must start and finish while the optional card device is still unavailable");
+    assert_eq!(f.state.lock().unwrap().shared.starts, 1);
+    let state = f.state.lock().unwrap();
+    assert_eq!(state.shared.receipts.len(), 1);
+    assert!(state.shared.receipts.values().all(|receipt| receipt.usage_complete));
+    drop(state);
     f.stop().await;
 }
 #[tokio::test]

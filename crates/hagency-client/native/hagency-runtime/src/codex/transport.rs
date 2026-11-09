@@ -86,6 +86,10 @@ impl Limits {
 
 /// Host-side commands only; this type is not deserializable from runtime input.
 pub enum Command {
+    RunControl {
+        scope: TurnScope,
+        input: Option<(String, String)>,
+    },
     Initialize {
         client_version: String,
         response_timeout_ms: u64,
@@ -552,6 +556,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
             } => self
                 .connection
                 .request(&method, params, now, response_timeout_ms)
+                .map(|(id, bytes)| (Some(id), bytes)),
+            Command::RunControl { scope, input } => self
+                .connection
+                .run_control(
+                    &scope,
+                    input
+                        .as_ref()
+                        .map(|(id, text)| (id.as_str(), text.as_str())),
+                    now,
+                )
                 .map(|(id, bytes)| (Some(id), bytes)),
             Command::Interrupt {
                 scope,

@@ -338,19 +338,25 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     }
     async fn control_inner<F: Future + ?Sized>(
         &mut self,
-        control: Pin<&mut F>,
+        mut control: Pin<&mut F>,
     ) -> Result<ControlUpdate<F::Output>, Error> {
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
         let until = self.callback_deadline()?;
-        match self.wire.next_or_control(control, until).await? {
-            io::Controlled::Message(received) => {
-                self.observe(&received.message, received.at)?;
-                Ok(ControlUpdate::Message(received.message))
+        for _ in 0..64 {
+            match self.wire.next_or_control(control.as_mut(), until).await? {
+                io::Controlled::Message(received) => {
+                    if self.observe_prelude(&received.message)? {
+                        continue;
+                    }
+                    self.observe(&received.message, received.at)?;
+                    return Ok(ControlUpdate::Message(received.message));
+                }
+                io::Controlled::Control(output) => return Ok(ControlUpdate::Control(output)),
             }
-            io::Controlled::Control(output) => Ok(ControlUpdate::Control(output)),
         }
+        Err(Error::Capacity)
     }
     /// Send only following positive original durable grant/begin/recheck. Each
     /// Message return suspends this exact frame: process it, recheck authority,

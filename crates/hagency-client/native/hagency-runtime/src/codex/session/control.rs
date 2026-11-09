@@ -332,6 +332,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         &mut self,
         control: Pin<&mut F>,
     ) -> Result<ControlUpdate<F::Output>, Error> {
+        self.pump_run_stops().await?;
+        if let Some(update) = self.ready_control_terminal().await? {
+            self.advance_observation()?;
+            return Ok(ControlUpdate::Update(update, Box::new(self.observation()?)));
+        }
         let deadline = self.control.deadline(&self.wire)?;
         self.wire.ensure_live().map_err(Error::Transport)?;
         let next = match self.pop()? {

@@ -17,6 +17,8 @@ mod questions;
 mod postpaid;
 #[path = "runtime/room.rs"]
 mod room;
+#[path = "runtime/controls.rs"]
+mod controls;
 
 struct Fixture {
     root: tempfile::TempDir,

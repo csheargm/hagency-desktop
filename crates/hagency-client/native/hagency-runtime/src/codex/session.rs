@@ -21,6 +21,7 @@ mod task_mcp;
 mod usage;
 pub use driver::{
     ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate, SessionDriver,
+    RunAction, RunOutcome, RunReceipt,
 };
 pub use observation::{
     NativeTurnContext, Observation, ObservationKind, ObservationSource, ToolEvidence, ToolKind, ToolResult, TurnResult,

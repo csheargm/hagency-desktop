@@ -2,6 +2,120 @@
 use super::*;
 use crate::room_files::{FileError, Operation, PreparedCall, Workspace};
 use std::{future::Future, pin::Pin, sync::Arc};
+use hagency_runtime::codex::tree::TurnTree;
+
+type Decision = Pin<Box<dyn Future<Output = bool> + Send>>;
+struct Waiting {
+    answer: Answer,
+    decision: Decision,
+}
+#[derive(Default)]
+pub(super) struct Calls(BTreeMap<String, Waiting>, BTreeSet<String>);
+pub(super) struct Answer {
+    id: Value,
+    thread: String,
+    turn: String,
+    call: String,
+    digest: String,
+    prepared: PreparedCall,
+    allowed: bool,
+}
+impl Calls {
+    pub fn contains(&self, call: &str) -> bool {
+        self.0.values().any(|w| w.answer.call == call)
+    }
+    fn can_offer(&self, call: &str) -> bool {
+        self.0.len() < 16 && !self.1.contains(call)
+    }
+    fn offer(
+        &mut self,
+        answer: Answer,
+        gate: Arc<dyn HostToolGate>,
+        dispatch: &str,
+        execution: &str,
+        queue: &ApprovalQueue,
+    ) -> Result<()> {
+        if !self.can_offer(&answer.call) {
+            return Err(Error::Protocol("pending host call capacity or duplicate"));
+        }
+        self.1.insert(answer.call.clone());
+        let (decision, receiver) = oneshot::channel();
+        let offered = queue
+            .sender
+            .try_send(PendingApproval {
+                proposal: answer.prepared.proposal().clone(),
+                decision,
+            })
+            .is_ok();
+        let dispatch = dispatch.to_owned();
+        let execution = execution.to_owned();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let decision = Box::pin(async move {
+            offered
+                && matches!(
+                    tokio::time::timeout_at(deadline, receiver).await,
+                    Ok(Ok(true))
+                )
+                && matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        gate.authorize(&dispatch, &execution)
+                    )
+                    .await,
+                    Ok(true)
+                )
+        });
+        self.0
+            .insert(answer.id.to_string(), Waiting { answer, decision });
+        Ok(())
+    }
+    pub async fn next(&mut self) -> Answer {
+        let (key, allowed) = std::future::poll_fn(|cx| {
+            for (key, wait) in &mut self.0 {
+                if let std::task::Poll::Ready(value) = wait.decision.as_mut().poll(cx) {
+                    return std::task::Poll::Ready((key.clone(), value));
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+        let mut answer = self.0.remove(&key).expect("original host file wait").answer;
+        answer.allowed = allowed;
+        answer
+    }
+    pub fn withdraw(&mut self, params: &Value) {
+        self.0.retain(|_, wait| !wait.answer.withdrawn(params));
+    }
+    pub fn retain_active(&mut self, tree: &TurnTree) {
+        self.0.retain(|_, wait| wait.answer.active(tree));
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+impl Answer {
+    pub fn active(&self, tree: &TurnTree) -> bool {
+        tree.is_active(&self.thread, &self.turn)
+    }
+    pub fn withdrawn(&self, params: &Value) -> bool {
+        params["threadId"] == self.thread && params["requestId"] == self.id
+    }
+    pub fn call(&self) -> &str {
+        &self.call
+    }
+}
+fn file_result<T: Serialize>(outcome: std::result::Result<T, FileError>) -> Result<Value> {
+    match outcome {
+        Ok(output) => Ok(
+            value!({"success":true,"contentItems":[{"type":"inputText","text":serde_json::to_string(&output)?}]}),
+        ),
+        Err(FileError::Unknown) => Err(Error::Unknown),
+        Err(FileError::NeedsOwner | FileError::Denied) => Ok(failure("host_file_denied")),
+        Err(FileError::Conflict) => Ok(failure("file_exists_or_changed")),
+        Err(FileError::Capacity) => Ok(failure("file_capacity_exceeded")),
+        Err(_) => Ok(failure("host_file_unavailable")),
+    }
+}
 
 pub const FILE_CAPABILITY_VERSION: &str = "hagency-room-files-v1";
 /// Host must capture the exact owner/device/lease/scope and compare the fresh
@@ -134,7 +248,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn host_file_call(
+    pub(super) async fn host_file_offer(
         &mut self,
         ledger: &mut Ledger,
         owner: &str,
@@ -145,6 +259,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         thread: &str,
         turn: &str,
         queue: &ApprovalQueue,
+        waiting: &mut Calls,
     ) -> Result<()> {
         let id = frame["id"].clone();
         if !(id.is_string() || id.is_u64()) || !self.server_ids.insert(json(&id)?) {
@@ -167,7 +282,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 .write(value!({"id":id,"result":failure("host_files_inactive")}))
                 .await;
         };
-        if !gate.authorize(dispatch, execution).await {
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), gate.authorize(dispatch, execution)).await,
+            Ok(true)
+        ) {
             return self
                 .write(value!({"id":id,"result":failure("server_scope_unavailable")}))
                 .await;
@@ -216,43 +334,98 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     .await;
             }
         };
-        let mut outcome = workspace.execute(ledger, &prepared, now());
+        let outcome = workspace.execute(ledger, &prepared, now());
         if matches!(outcome, Err(FileError::NeedsOwner)) {
-            let (send, recv) = oneshot::channel();
-            if queue
-                .sender
-                .try_send(PendingApproval {
-                    proposal: prepared.proposal().clone(),
-                    decision: send,
-                })
-                .is_ok()
-                && matches!(
-                    tokio::time::timeout(Duration::from_secs(300), recv).await,
-                    Ok(Ok(true))
-                )
-                && gate.authorize(dispatch, execution).await
-                && ledger
-                    .approve_tool(owner, prepared.proposal(), now())
-                    .is_ok()
-            {
-                // execute consumes the exact permit; never consume it here.
-                outcome = workspace.execute(ledger, &prepared, now());
+            if !waiting.can_offer(call) {
+                return self
+                    .write(value!({"id":id,"result":failure("host_file_busy")})).await;
             }
+            return waiting.offer(
+                Answer {
+                    id,
+                    thread: thread.into(),
+                    turn: turn.into(),
+                    call: call.into(),
+                    digest,
+                    prepared,
+                    allowed: false,
+                },
+                gate,
+                dispatch, execution,
+                queue,
+            );
         }
-        let result = match outcome {
-            Ok(output) => {
-                value!({"success":true,"contentItems":[{"type":"inputText","text":serde_json::to_string(&output)?}]})
-            }
-            Err(FileError::Unknown) => return Err(Error::Unknown),
-            Err(FileError::NeedsOwner | FileError::Denied) => failure("host_file_denied"),
-            Err(FileError::Conflict) => failure("file_exists_or_changed"),
-            Err(FileError::Capacity) => failure("file_capacity_exceeded"),
-            Err(_) => failure("host_file_unavailable"),
-        };
+        let result = file_result(outcome)?;
         files
             .calls
             .insert(call.into(), (digest, prepared, result.clone()));
         self.write(value!({"id":id,"result":result})).await
+    }
+
+    pub(super) fn host_file_response(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        answer: Answer,
+    ) -> Result<Value> {
+        let files = self
+            .host_files
+            .as_mut()
+            .ok_or(Error::Protocol("host files withdrawn"))?;
+        let workspace = files
+            .workspace
+            .as_mut()
+            .ok_or(Error::Protocol("host workspace withdrawn"))?;
+        let result = if answer.allowed
+            && ledger
+                .approve_tool(owner, answer.prepared.proposal(), now())
+                .is_ok()
+        {
+            file_result(workspace.execute(ledger, &answer.prepared, now()))?
+        } else {
+            failure("host_file_denied")
+        };
+        files.calls.insert(
+            answer.call,
+            (answer.digest, answer.prepared, result.clone()),
+        );
+        Ok(value!({"id":answer.id,"result":result}))
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    async fn host_file_call(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        dispatch: &str,
+        execution: &str,
+        frame: &Value,
+        thread: &str,
+        turn: &str,
+        queue: &ApprovalQueue,
+    ) -> Result<()> {
+        let mut waiting = Calls::default();
+        self.host_file_offer(
+            ledger,
+            owner,
+            scope,
+            dispatch,
+            execution,
+            frame,
+            thread,
+            turn,
+            queue,
+            &mut waiting,
+        )
+        .await?;
+        if !waiting.0.is_empty() {
+            let answer = waiting.next().await;
+            let response = self.host_file_response(ledger, owner, answer)?;
+            self.write(response).await?;
+        }
+        Ok(())
     }
 }
 
@@ -349,6 +522,72 @@ mod tests {
         let mut line = String::new();
         peer.read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+    #[tokio::test]
+    async fn waiting_host_file_is_withdrawable_and_duplicate_ready_call_cannot_ask_twice() {
+        for withdraw in [false, true] {
+            let (_temp, mut ledger, scope, mut session, mut peer, root, _) =
+                fixture(ToolPolicy::AskOwner);
+            let (queue, mut incoming) = approval_queue(2).unwrap();
+            let mut waiting = Calls::default();
+            session
+                .host_file_offer(
+                    &mut ledger,
+                    "@alice:test",
+                    &scope,
+                    "dispatch",
+                    "execution",
+                    &request(1, "answer.txt"),
+                    "codex-thread",
+                    "turn",
+                    &queue,
+                    &mut waiting,
+                )
+                .await
+                .unwrap();
+            let pending = incoming.recv().await.unwrap();
+            assert!(!root.join("answer.txt").exists());
+            if withdraw {
+                waiting.clear();
+                assert!(pending.is_closed());
+                pending.decide(true);
+                assert!(!root.join("answer.txt").exists());
+            } else {
+                pending.decide(true);
+                let answer = waiting.next().await;
+                session
+                    .host_file_offer(
+                        &mut ledger,
+                        "@alice:test",
+                        &scope,
+                        "dispatch",
+                        "execution",
+                        &request(2, "answer.txt"),
+                        "codex-thread",
+                        "turn",
+                        &queue,
+                        &mut waiting,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response(&mut peer).await["result"]["contentItems"][0]["text"],
+                    "host_file_busy"
+                );
+                assert!(incoming.try_recv().is_err());
+                assert!(!root.join("answer.txt").exists());
+                assert_eq!(
+                    session
+                        .host_file_response(&mut ledger, "@alice:test", answer)
+                        .unwrap()["result"]["success"],
+                    true
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join("answer.txt")).unwrap(),
+                    "room scoped"
+                );
+            }
+        }
     }
     #[tokio::test]
     async fn exact_owner_confirmation_executes_host_file_and_repeated_call_does_not_execute_again()
