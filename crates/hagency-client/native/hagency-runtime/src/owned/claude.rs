@@ -2,6 +2,7 @@ use super::{Cleanup, StartError};
 use crate::claude::session::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
 };
+use crate::claude::session::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 use crate::claude::session::{Observation, ObservationSource, PreparedRoomReply, RoomToolRequest};
 use crate::claude::{
     Message,
@@ -250,6 +251,32 @@ impl OwnedClaudeSession {
         let result = operation.runner.session.next_message().await;
         operation.finish(result)
     }
+    pub fn prepare_interrupt(&mut self) -> Result<PreparedInterrupt, Error> {
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
+        // A stale host action must not kill an unrelated current turn. This
+        // synchronous preflight neither writes nor cancels a native operation.
+        self.session.prepare_interrupt()
+    }
+    pub fn interrupt_receipt(&self) -> Option<&InterruptReceipt> {
+        self.session.interrupt_receipt()
+    }
+    pub fn is_interrupting(&self) -> bool {
+        self.session.is_interrupting()
+    }
+    pub async fn send_prepared_interrupt(
+        &mut self,
+        prepared: &mut PreparedInterrupt,
+    ) -> Result<InterruptUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .send_prepared_interrupt(prepared)
+            .await;
+        operation.finish_interrupt(result)
+    }
     pub async fn next_or_control<F: std::future::Future + ?Sized>(
         &mut self,
         control: std::pin::Pin<&mut F>,
@@ -298,6 +325,15 @@ impl<'a> Operation<'a> {
     }
     fn finish<T>(mut self, result: Result<T, Error>) -> Result<T, Error> {
         if result.is_err() {
+            self.runner.stop();
+        }
+        self.finished = true;
+        result
+    }
+    fn finish_interrupt<T>(mut self, result: Result<T, Error>) -> Result<T, Error> {
+        // The driver closes on protocol/IO errors and uncertain writes, but
+        // harmless rejected preparations leave its active stream untouched.
+        if self.runner.session.phase() == Phase::Closed {
             self.runner.stop();
         }
         self.finished = true;

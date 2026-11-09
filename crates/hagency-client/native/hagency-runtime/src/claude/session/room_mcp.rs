@@ -224,6 +224,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
     }
     pub(super) fn callback_deadline(&mut self) -> Result<Deadline, Error> {
         let mut until = self.control.deadline(&self.wire)?;
+        if let Some(deadline) = self.interrupt.deadline() {
+            until = until.limit(deadline);
+        }
         if let Some(state) = &self.room_mcp {
             for pending in state.pending.values() {
                 if matches!(pending.stage, Stage::Waiting | Stage::Prepared(_)) {
@@ -355,6 +358,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
         request: &RoomToolRequest,
         result: Option<Value>,
     ) -> Result<PreparedRoomReply, Error> {
+        if self.interrupt.blocks_replies() {
+            return Err(Error::RoomToolUnavailable);
+        }
         if !Arc::ptr_eq(&self.source, &request.source) {
             return Err(Error::Identity);
         }
@@ -577,6 +583,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         &mut self,
         prepared: &mut PreparedRoomReply,
     ) -> Result<PreparedUpdate, Error> {
+        if self.interrupt.blocks_replies() {
+            return Err(Error::RoomToolUnavailable);
+        }
         if !Arc::ptr_eq(&self.source, &prepared.source) {
             return Err(Error::Identity);
         }

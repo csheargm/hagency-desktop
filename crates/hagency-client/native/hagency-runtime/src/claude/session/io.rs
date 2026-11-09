@@ -218,6 +218,11 @@ impl<R, W, E> Wire<R, W, E> {
             flushed: w.flushed,
         })
     }
+    pub fn prepared_bytes_sent(&self, sequence: u64) -> bool {
+        self.writing.as_ref().is_some_and(|writing| {
+            writing.prepared == Some(sequence) && writing.offset == writing.bytes.len()
+        })
+    }
     pub fn stderr_snapshot(&self) -> StderrSnapshot {
         StderrSnapshot {
             total_bytes: self.stderr_total,

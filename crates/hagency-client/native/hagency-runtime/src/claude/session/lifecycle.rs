@@ -18,6 +18,7 @@ pub(super) struct Completion {
 impl Completion {
     pub(super) fn observe(&mut self, kind: EventKind, payload: &Value) -> Result<(), Error> {
         if !self.enabled {
+            self.result |= kind == EventKind::Result;
             return Ok(());
         }
         match kind {
@@ -93,8 +94,15 @@ impl Completion {
     pub(super) fn complete(&self) -> bool {
         self.enabled && self.result && self.idle && self.background.is_empty()
     }
-    pub(super) fn enabled(&self) -> bool {
-        self.enabled
+    pub(super) fn finished(&self) -> bool {
+        if self.enabled {
+            self.complete()
+        } else {
+            self.result
+        }
+    }
+    pub(super) fn snapshot_requested(&self) -> bool {
+        self.snapshot.is_some()
     }
 }
 
@@ -129,6 +137,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             && self.completion.complete()
             && !self.needs_usage_snapshot()
             && self.control.quiescent()
+            && self.interrupt.quiescent()
             && self.room_mcp.as_ref().is_none_or(|state| state.quiescent())
             && self.task_mcp.is_none()
             && self.wire.termination().is_none()
@@ -150,6 +159,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.observations = Default::default();
         self.source = std::sync::Arc::new(());
         self.control = Default::default();
+        self.interrupt = Default::default();
         if let Some(state) = &mut self.room_mcp {
             state.begin_turn();
         }

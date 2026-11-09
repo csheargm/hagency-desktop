@@ -288,6 +288,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
         id: &str,
         response: impl FnOnce(&str, Value) -> Result<Value, Error>,
     ) -> Result<PreparedApproval, Error> {
+        if self.interrupt.blocks_replies() {
+            return Err(Error::PermissionUnavailable);
+        }
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
@@ -376,6 +379,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         &mut self,
         prepared: &mut PreparedApproval,
     ) -> Result<PreparedUpdate, Error> {
+        if self.interrupt.blocks_replies() {
+            return Err(Error::PermissionUnavailable);
+        }
         if !Arc::ptr_eq(&self.source, &prepared.source) {
             return Err(Error::Identity);
         }

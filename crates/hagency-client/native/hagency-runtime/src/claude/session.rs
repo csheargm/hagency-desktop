@@ -1,5 +1,6 @@
 //! One native conversation stream. Task, approval and cleanup authority belong to the host.
 mod control;
+mod interrupt;
 mod io;
 mod lifecycle;
 mod observation;
@@ -11,6 +12,7 @@ use super::{ControlOutcome, EventKind, Message};
 pub use control::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
 };
+pub use interrupt::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};
 pub use observation::{MAX_OBSERVATIONS, Observation, ObservationKind, ObservationSource};
 pub use room_mcp::{PreparedRoomReply, RoomToolRequest};
@@ -84,6 +86,7 @@ pub struct SessionDriver<R, W, E> {
     awaiting_init: bool,
     prompt_id: Option<String>,
     control: control::State,
+    interrupt: interrupt::State,
     source: Arc<()>,
     observations: observation::State,
     task_mcp: Option<super::TaskMcp>,
@@ -102,6 +105,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             awaiting_init: false,
             prompt_id: None,
             control: control::State::default(),
+            interrupt: Default::default(),
             source: Arc::new(()),
             observations: Default::default(),
             task_mcp: None,
@@ -174,11 +178,6 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     return Err(Error::Identity);
                 }
                 self.completion.observe(*kind, payload)?;
-                if (*kind == EventKind::Result && !self.completion.enabled())
-                    || self.completion.complete()
-                {
-                    self.phase = Phase::ResultObserved;
-                }
             }
             Message::Permission { request_id, .. } => {
                 if self.session_id.is_none()
@@ -203,7 +202,12 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     self.control.cancel(request_id)?;
                 }
             }
-            Message::ControlResponse { .. } => return Err(Error::Identity),
+            Message::ControlResponse { request_id, outcome } => {
+                self.interrupt.observe(request_id, outcome, &self.wire)?;
+            }
+        }
+        if self.completion.finished() && !self.interrupt.pending() {
+            self.phase = Phase::ResultObserved;
         }
         self.control.observed();
         self.observations

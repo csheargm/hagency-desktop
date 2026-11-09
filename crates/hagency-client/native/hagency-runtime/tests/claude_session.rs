@@ -9,6 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 mod continuous;
 #[path = "claude_session/room_mcp.rs"]
 mod room_mcp;
+#[path = "claude_session/interrupt.rs"]
+mod interrupt;
 
 struct FlushProbe {
     fail: bool,

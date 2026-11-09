@@ -69,6 +69,52 @@ fn stopped(marker: &Path) {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(pulse(marker), before);
 }
+
+#[tokio::test]
+async fn native_claude_interrupt_foreign_or_repeated_preparation_cannot_stop_current_process() {
+    let root = tempfile::tempdir().unwrap();
+    let first_marker = root.path().join("first");
+    let current_marker = root.path().join("current");
+    let mut first = spawn(root.path(), "permission-hold", &first_marker);
+    let mut current = spawn(root.path(), "permission-hold", &current_marker);
+    for runner in [&mut first, &mut current] {
+        runner.initialize().await.unwrap();
+        runner.prompt("wait for the owner").await.unwrap();
+        runner.next_message().await.unwrap();
+        assert!(matches!(runner.next_message().await.unwrap(), Message::Permission { .. }));
+    }
+    let mut foreign = first.prepare_interrupt().unwrap();
+    let _original = current.prepare_interrupt().unwrap();
+    assert!(matches!(current.prepare_interrupt(), Err(Error::State)));
+    assert!(matches!(current.send_prepared_interrupt(&mut foreign).await, Err(Error::Identity)));
+    assert_eq!(current.phase(), Phase::Running);
+    assert_eq!(current.cleanup(), Cleanup::Pending);
+    assert!(current.termination().is_none());
+    assert!(current.interrupt_receipt().is_none());
+    live(&current_marker);
+    cleanup(first.stop());
+    cleanup(current.stop());
+}
+
+#[tokio::test]
+async fn native_claude_interrupt_unacknowledged_cancellation_keeps_process_custody() {
+    use hagency_runtime::claude::session::InterruptUpdate;
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("unacknowledged");
+    let mut runner = spawn(root.path(), "permission-hold", &marker);
+    runner.initialize().await.unwrap();
+    runner.prompt("wait for the owner").await.unwrap();
+    runner.next_message().await.unwrap();
+    runner.next_message().await.unwrap();
+    let mut interrupt = runner.prepare_interrupt().unwrap();
+    assert!(matches!(runner.send_prepared_interrupt(&mut interrupt).await.unwrap(), InterruptUpdate::WriteAccepted(_)));
+    assert!(runner.interrupt_receipt().is_none());
+    assert!(tokio::time::timeout(Duration::from_millis(100), runner.next_message()).await.is_err());
+    assert_eq!(runner.phase(), Phase::Closed);
+    assert!(runner.interrupt_receipt().is_none());
+    cleanup(runner.cleanup());
+    stopped(&marker);
+}
 #[tokio::test]
 async fn native_claude_owned_usage() {
     let root = tempfile::tempdir().unwrap();

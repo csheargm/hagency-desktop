@@ -129,6 +129,29 @@ async fn active() -> (Driver, Peer) {
     driver.enable_room_tool_callbacks().unwrap();
     (driver, peer)
 }
+
+#[tokio::test]
+async fn claude_room_mcp_interrupt_withdraws_waiting_and_prepared_replies() {
+    use hagency_runtime::claude::session::InterruptUpdate;
+    for prepare_first in [false, true] {
+        let (mut driver, mut peer) = active().await;
+        event(&mut driver, &mut peer, call("history", "read_room_history", json!({"cursor":null}))).await.unwrap();
+        let request = driver.room_tool_request("history").unwrap();
+        let reply = if prepare_first {
+            Some(driver.prepare_room_tool_reply(&request, "old history", false).unwrap())
+        } else { None };
+        let mut interrupt = driver.prepare_interrupt().unwrap();
+        let (sent, frame) = tokio::join!(driver.send_prepared_interrupt(&mut interrupt), read(&mut peer));
+        assert!(matches!(sent.unwrap(), InterruptUpdate::WriteAccepted(_)));
+        assert_eq!(frame["request"]["subtype"], "interrupt");
+        match reply {
+            Some(mut reply) => assert!(matches!(driver.send_prepared_room_reply(&mut reply).await, Err(Error::RoomToolUnavailable))),
+            None => assert!(matches!(driver.prepare_room_tool_reply(&request, "late history", false), Err(Error::RoomToolUnavailable))),
+        }
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert_eq!(read_eof(&mut peer).await, 0);
+    }
+}
 async fn answer(driver: &mut Driver, peer: &mut Peer, id: &str) -> Value {
     let request = driver.room_tool_request(id).unwrap();
     assert_eq!(request.session_id(), "session-one");
