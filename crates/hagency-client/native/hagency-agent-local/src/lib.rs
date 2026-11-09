@@ -539,6 +539,30 @@ impl Ledger {
         maximum: u64,
         now: i64,
     ) -> Result<Reservation> {
+        if maximum == 0 { return Err(Error::Invalid("zero reservation")); }
+        self.begin_call(scope, call, dispatch, Some(maximum), now)
+    }
+    /// Admit a new task from its known consumption, without freezing an estimate.
+    /// Native reasoning/tool loops may exceed the budget; final receipts charge
+    /// their full usage. Unknown calls remain pending measurement with zero held.
+    pub fn begin_postpaid(
+        &mut self,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        now: i64,
+    ) -> Result<Reservation> {
+        self.begin_call(scope, call, dispatch, None, now)
+    }
+    fn begin_call(
+        &mut self,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        estimate: Option<u64>,
+        now: i64,
+    ) -> Result<Reservation> {
+        let maximum = estimate.unwrap_or(0);
         verify(&self.db, scope)?;
         key(call)?;
         if call.starts_with("bound-breach:") {
@@ -546,10 +570,9 @@ impl Ledger {
         }
         key(dispatch)?;
         bounded(maximum)?;
-        if maximum == 0 {
-            return Err(Error::Invalid("zero reservation"));
-        }
-        let digest = hash(&(scope, dispatch, maximum))?;
+        // Zero was never accepted by reserve(). It identifies a postpaid call
+        // without rewriting old reservation digests or saved commands.
+        let digest = call_digest(scope, dispatch, maximum)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -588,6 +611,10 @@ impl Ledger {
             }
             None => None,
         };
+        let continuing_postpaid: bool = estimate.is_none() && tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM calls WHERE digest=? AND reserved=0)",
+            [&digest], |row| row.get(0),
+        )?;
         let mut captured = vec![];
         let mut snapshots = vec![];
         for (index, k) in scope.layers()?.iter().enumerate() {
@@ -642,15 +669,19 @@ impl Ledger {
                 )
                 .optional()?
                 .unwrap_or((0, 0));
-            let sum = bounded(
-                spent
-                    .checked_add(held)
-                    .and_then(|n| n.checked_add(maximum))
-                    .ok_or(Error::Budget)?,
-            )?;
-            match policy.budget.limit {
-                Limit::Tokens(n) if sum > n => return Err(Error::Budget),
-                _ => {}
+            if let Some(maximum) = estimate {
+                let sum = bounded(spent.checked_add(held)
+                    .and_then(|n| n.checked_add(maximum)).ok_or(Error::Budget)?)?;
+                if matches!(policy.budget.limit, Limit::Tokens(n) if sum > n) {
+                    return Err(Error::Budget);
+                }
+            } else if !continuing_postpaid
+                && matches!(policy.budget.limit, Limit::Tokens(n) if spent >= n)
+            {
+                // Only a new task is checked. Other unfinished work and legacy
+                // unknown estimates are not fictitious consumption. Their
+                // original records remain available for later reconciliation.
+                return Err(Error::Budget);
             }
             tx.execute("INSERT INTO accounts VALUES (?,?,0,?) ON CONFLICT(scope,window) DO UPDATE SET held=held+excluded.held",(k,&window,maximum))?;
             snapshots.push(Snapshot {
@@ -1283,6 +1314,13 @@ fn json<T: Serialize>(v: &T) -> Result<String> {
 }
 fn hash<T: Serialize>(v: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(json(v)?)))
+}
+fn call_digest(scope: &Scope, dispatch: &str, reserved: u64) -> Result<String> {
+    if reserved == 0 {
+        hash(&("postpaid-v1", scope, dispatch))
+    } else {
+        hash(&(scope, dispatch, reserved))
+    }
 }
 fn verify(db: &Connection, scope: &Scope) -> Result<()> {
     scope.validate()?;

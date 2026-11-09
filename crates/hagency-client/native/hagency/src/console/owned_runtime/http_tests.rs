@@ -387,9 +387,8 @@ for raw in sys.stdin:
  elif m=='thread/read': reply({'thread':{'id':thread,'cwd':cwd,'status':{'type':'idle'}}})
  elif m=='turn/start':
   db=sqlite3.connect('file:'+ledger+'?mode=ro',uri=True)
-  assert db.execute("select count(*) from calls where state='pending' and reserved=10").fetchone()[0]==1
-  expected_hold = 10 + db.execute("select coalesce(sum(reserved),0) from calls where state='unknown'").fetchone()[0]
-  assert db.execute("select count(*) from accounts where held=?",(expected_hold,)).fetchone()[0]==3
+  assert db.execute("select count(*) from calls where state='pending' and reserved=0").fetchone()[0]==1
+  assert db.execute("select count(*) from accounts where held!=0").fetchone()[0]==0
   db.close()
   with open(marker,'a') as out:out.write(json.dumps({'pid':os.getpid(),'thread':thread})+'\n')
   turn='turn-'+str(len(open(marker).readlines()))
@@ -665,11 +664,11 @@ async fn fixture_modes(unknown: bool, budget: u64, processing_failure: u8, conti
         .account(&scope, Layer::Room, Period::Lifetime, now())
         .unwrap();
     if unknown {
-        assert_eq!(account, (5, 10));
+        assert_eq!(account, (5, 0));
         let outstanding = ledger.outstanding_calls(OWNER).unwrap();
         assert_eq!(outstanding.len(), 1);
         assert_eq!(outstanding[0].state, "unknown");
-        assert_eq!(outstanding[0].reserved, 10);
+        assert_eq!(outstanding[0].reserved, 0);
         assert_eq!(
             ledger.inbox_record(OWNER, "dispatch-b").unwrap().state,
             State::Replied
@@ -696,7 +695,7 @@ async fn fixture_modes(unknown: bool, budget: u64, processing_failure: u8, conti
             assert!(reply.starts_with("isolated fixture answer"));
             assert!(!reply.contains("本次用量"));
         } else {
-            assert!(reply.contains("可用额度不足"));
+            assert!(reply.contains("已结算用量达到本期额度"));
             assert!(reply.contains("本次未调用模型"));
             assert!(!reply.contains("本轮处理已结束"));
         }
@@ -774,6 +773,12 @@ async fn typed_http_runtime_replies_retries_and_restart_never_repeat_provider_tu
     fixture(false, 100).await;
 }
 #[tokio::test]
+async fn typed_http_postpaid_overrun_finishes_and_recovers_without_replay() {
+    // The fake native turn reports five tokens against a one-token budget.
+    // Completion, delivery retry and restart must retain that exact charge.
+    fixture(false, 1).await;
+}
+#[tokio::test]
 async fn typed_http_continuous_native_session_retains_process_but_isolates_requesters() {
     fixture_options(false, 100, 0, true).await;
 }
@@ -782,7 +787,7 @@ async fn typed_http_continuous_native_session_replaces_dead_process_before_reser
     fixture_modes(false, 100, 0, true, true).await;
 }
 #[tokio::test]
-async fn typed_http_runtime_unreported_failure_preserves_hold_and_next_provider_turn_succeeds() {
+async fn typed_http_runtime_unreported_failure_stays_unresolved_and_next_provider_turn_succeeds() {
     fixture(true, 100).await;
 }
 #[tokio::test]
@@ -1270,7 +1275,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         })
         .await
         .unwrap();
-    assert_eq!(status["service"]["reservation"], 15000);
+    assert_eq!(status["service"]["reservation"], 0);
     assert_eq!(status["service"]["effort"], "low");
     wait_binding(&stopped, &state, "binding-a", true).await;
     let preferences_path = intent_path.with_file_name("agent-service-options.json");

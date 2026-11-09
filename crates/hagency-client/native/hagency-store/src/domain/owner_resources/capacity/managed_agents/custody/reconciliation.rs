@@ -1,10 +1,10 @@
 //! Explicit owner reconciliation of a managed call whose original process is
 //! gone. The host never invents usage: the resource owner declares the final
-//! consumption, bounded by what was already observed and by the reservation,
+//! consumption, at least what was already observed, including any overrun,
 //! and the declaration is retained as audited evidence like any observation.
 use super::*;
 
-/// Calls of one Matrix agent identity that still hold their reservation.
+/// Calls of one Matrix agent identity whose final usage is still unknown.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InterruptedCallQuery {
@@ -52,8 +52,8 @@ pub struct ReconcileInterruptedCall {
     pub call_id: String,
     /// The reservation the owner saw; a changed call is refused.
     pub expected_reserved_tokens: u64,
-    /// Final consumption the owner stands behind: at least what was observed,
-    /// at most the reservation. The full reservation is the no-refund choice.
+    /// Final consumption verified by the owner, at least what was observed.
+    /// An old estimate or a zero postpaid reservation never caps actual usage.
     pub consumed_tokens: u64,
     /// Bounded, non-secret reference to the owner's evidence (for example the
     /// provider usage page figure), retained in the private audit.
@@ -73,7 +73,6 @@ impl ReconcileInterruptedCall {
         }
         if self.consumed_tokens > JSON_SAFE_MAX
             || self.expected_reserved_tokens > JSON_SAFE_MAX
-            || self.consumed_tokens > self.expected_reserved_tokens
         {
             return Err(Error::Capacity);
         }
@@ -277,7 +276,6 @@ impl OwnerResourceRegistry {
                     || unrepresentable
                     || h.reserved_tokens != input.expected_reserved_tokens
                     || input.consumed_tokens < h.known_consumed_tokens
-                    || input.consumed_tokens > h.reserved_tokens
                 {
                     return Err(Error::Conflict);
                 }
@@ -315,7 +313,7 @@ impl OwnerResourceRegistry {
                     reservation_id: child,
                     state: receipt.state,
                     consumed_tokens: input.consumed_tokens,
-                    released_tokens: h.reserved_tokens - input.consumed_tokens,
+                    released_tokens: h.reserved_tokens.saturating_sub(input.consumed_tokens),
                     observation_id: receipt.observation_id,
                     ledger_revision: receipt.ledger_revision,
                     replayed: false,

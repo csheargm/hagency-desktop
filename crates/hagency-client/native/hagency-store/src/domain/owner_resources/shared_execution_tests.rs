@@ -438,7 +438,7 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
         .await
         .unwrap();
     assert_eq!(first.call_id, again.call_id);
-    assert_eq!(first.reserved_tokens, 150);
+    assert_eq!(first.reserved_tokens, 0);
     let mut wrong = work.clone();
     wrong.body.push('!');
     assert!(

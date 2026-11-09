@@ -70,7 +70,7 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
         .await
         .unwrap();
     let h = prepare(&a, &w).await;
-    assert_eq!(h.reserved_tokens, 143);
+    assert_eq!(h.reserved_tokens, 0);
     let attempt =
         a.f.registry
             .begin_shared_start(a.authority(), w.clone(), h.call_id)
@@ -173,7 +173,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
             .await
             .unwrap();
     assert!(saved.issue_revision.is_none());
-    assert_eq!(saved.reserved_tokens, 143);
+    assert_eq!(saved.reserved_tokens, 0);
     a.stop().await;
 }
 

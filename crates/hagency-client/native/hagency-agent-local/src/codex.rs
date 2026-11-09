@@ -101,9 +101,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum BudgetMode {
     #[default]
     Strict,
+    /// Check known consumption before a new task, hold no estimate, and charge
+    /// the complete native turn after it finishes, including any overrun.
+    Postpaid,
     /// Only host code after explicit owner opt-in may select this. An estimate,
     /// not an output limit or a maximum charge guarantee.
     Estimated { reservation: u64 },
+}
+impl BudgetMode {
+    pub(crate) fn admit(
+        &self,
+        ledger: &mut Ledger,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+    ) -> Result<Reservation> {
+        match self {
+            Self::Strict => Err(Error::StrictQuotaUnsupported),
+            Self::Postpaid => Ok(ledger.begin_postpaid(scope, call, dispatch, now())?),
+            Self::Estimated { reservation } => {
+                Ok(ledger.reserve(scope, call, dispatch, *reservation, now())?)
+            }
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
@@ -1068,10 +1088,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         if self.bound_scope.as_ref() != Some(scope) {
             return Err(Error::Protocol("run scope differs from opened context"));
         }
-        let reservation = match mode {
-            BudgetMode::Strict => return Err(Error::StrictQuotaUnsupported),
-            BudgetMode::Estimated { reservation } => reservation,
-        };
         if input.is_empty() || input.len() > 65536 {
             return Err(Error::Profile("input size"));
         }
@@ -1081,7 +1097,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .ok_or(Error::Protocol("context missing"))?;
         let cwd = self.cwd.clone().ok_or(Error::Protocol("cwd missing"))?;
         let context = self.accounting_context_key(scope, owner)?;
-        if ledger.reserve(scope, call, dispatch, reservation, now())? != Reservation::New {
+        if mode.admit(ledger, scope, call, dispatch)? != Reservation::New {
             return Err(Error::Protocol(
                 "call already started; refusing provider replay",
             ));
@@ -2564,6 +2580,32 @@ mod tests {
         );
         drop(session);
         task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn postpaid_codex_finishes_over_budget_then_refuses_only_the_next_task() {
+        let (_temp, mut ledger, profile) = setup(false);
+        let (mut session, effects, peer) = fake(
+            profile.cwd.to_str().unwrap().into(), true, true, 1500, "command",
+        );
+        let (queue, mut approvals) = approval_queue(1).unwrap();
+        session.initialize().await.unwrap();
+        session.open_context(&mut ledger, &scope(), &profile).await.unwrap();
+        let bound = scope();
+        let run = session.run(&mut ledger, "@alice:test", &bound, "postpaid", "dispatch", "complete the task", BudgetMode::Postpaid, &queue);
+        let approve = async {
+            let prompt = approvals.recv().await.unwrap();
+            assert_eq!(prompt.proposal.scope, scope());
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+            prompt.decide(true);
+        };
+        let (result, ()) = tokio::join!(run, approve);
+        assert_eq!(result.unwrap().usage.input, 1500);
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(ledger.account(&scope(), Layer::Room, Period::Lifetime, now()).unwrap(), (1500, 0));
+        assert!(matches!(session.run(&mut ledger, "@alice:test", &scope(), "next", "next", "new task", BudgetMode::Postpaid, &queue).await, Err(Error::Ledger(crate::Error::Budget))));
+        assert!(ledger.outstanding_calls("@alice:test").unwrap().is_empty());
+        drop(session);
+        peer.await.unwrap();
     }
     #[tokio::test]
     async fn processing_notice_requires_reserved_accepted_provider_turn() {

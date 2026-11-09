@@ -1,4 +1,5 @@
 use super::*;
+mod postpaid;
 const OWNER: &str = "@alice:example.org";
 #[test]
 fn agent_policy_before_binding_shares_runtime_budget_and_preserves_charges() {

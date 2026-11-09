@@ -72,13 +72,13 @@ async fn budget_execution_v3_call_uses_delta_keeps_overrun_and_exact_process_aft
     assert_eq!((snapshot.original_ceiling_tokens, snapshot.effective_ceiling_tokens, snapshot.known_consumed_tokens, snapshot.remaining_tokens), (150, 250, 181, 69));
     let w = a.work("new_budget_work");
     let h = a.prepare(&w).await;
-    assert_eq!(h.reserved_tokens, 69);
+    assert_eq!(h.reserved_tokens, 0);
     assert_eq!(a.f.registry.prepare_shared_call(a.authority(), w.clone()).await.unwrap().call_id, h.call_id);
     let next = a.work("parallel_work");
     a.f.registry.receive_shared_work(a.authority(), next.clone()).await.unwrap();
     // A prepared call holds nothing, so a second one is admitted with the same
     // remainder; only known usage refuses work.
-    assert_eq!(a.f.registry.prepare_shared_call(a.authority(), next).await.unwrap().reserved_tokens, 69);
+    assert_eq!(a.f.registry.prepare_shared_call(a.authority(), next).await.unwrap().reserved_tokens, 0);
     let intent = a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id.clone()).await.unwrap();
     let custody = a.f.registry.issue_shared_call(intent, started(&w)).await.unwrap();
     assert!(a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id).await.is_err());
@@ -118,7 +118,7 @@ async fn budget_execution_v3_head_change_before_issue_never_starts_or_refunds_un
     assert!(a.f.registry.issue_shared_call(intent, started(&w)).await.is_err());
     let saved = a.f.registry.managed_call_history(cleanup(&a.f, &a.original, 1).await, h.call_id).await.unwrap();
     assert_eq!(saved.state, "prepared");
-    assert_eq!(saved.reserved_tokens, 69);
+    assert_eq!(saved.reserved_tokens, 0);
     assert!(saved.issue_revision.is_none());
     no_model_calls(&a.instructions);
     a.stop().await;
@@ -195,7 +195,7 @@ async fn budget_execution_v3_no_start_cannot_cancel_issued_or_changed_input() {
     let _custody = a.f.registry.issue_shared_call(intent,started(&w)).await.unwrap();
     assert!(a.f.registry.refuse_unissued_shared_budget_work(refusal_proof(&a,&w,refusal(&a,&w))).await.is_err());
     let saved = a.f.registry.managed_call_history(cleanup(&a.f,&a.original,1).await,h.call_id).await.unwrap();
-    assert_eq!((saved.state.as_str(),saved.reserved_tokens), ("issued",69));
+    assert_eq!((saved.state.as_str(),saved.reserved_tokens), ("issued",0));
     assert!(saved.issue_revision.is_some());
     no_model_calls(&a.instructions);
     a.stop().await;
@@ -282,5 +282,37 @@ async fn encrypted_shared_input_is_pinned_locally_and_cannot_fall_back_to_event_
     let room_replay=a.f.registry.prepare_shared_room_input(a.authority(),room.clone(),prepared).await.unwrap();
     assert_eq!(room_input.input_digest(),room_replay.input_digest());
     assert!(a.f.registry.prepare_shared_room_input(a.authority(),room,"changed snapshot".into()).await.is_err());
+    a.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE offline supervised child"]
+async fn postpaid_v3_late_overrun_refuses_new_work_but_running_call_renews_and_finishes() {
+    let mut a = Box::pin(active()).await;
+    let w = a.work("in_flight");
+    let h = a.prepare(&w).await;
+    assert_eq!(h.reserved_tokens, 0);
+    let intent = a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id).await.unwrap();
+    let custody = a.f.registry.issue_shared_call(intent, SharedWorkStart {
+        work: w.clone(), work_digest: digest(&w), activity_epoch: 1, newly_started: true,
+    }).await.unwrap();
+    a.process.start_shared_text_thread().await.unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
+    let mut capture = custody.bind_turn(&a.process).unwrap();
+    // A late genuine usage receipt overdraws both the Agent and its pool while
+    // an independent, already-admitted turn is running.
+    call(&a.f, &a.original, "late_overrun", "settled", 1, 10_000, true, false).await;
+    let next = a.work("after_overrun");
+    a.f.registry.receive_shared_work(a.authority(), next.clone()).await.unwrap();
+    assert!(matches!(a.f.registry.prepare_shared_call(a.authority(), next).await, Err(Error::Capacity)));
+    a.f.registry.prepare_shared_renewal(a.authority(), "finish_running_task".into()).await.unwrap();
+    let receipt = loop {
+        let event = a.process.next_shared_text_event().await.unwrap();
+        let done = matches!(event.observation().kind(), hagency_runtime::codex::session::ObservationKind::TurnEnded(_));
+        let receipt = capture.observe(event).await.unwrap();
+        if done { break receipt.unwrap(); }
+    };
+    assert_eq!(receipt.body.as_deref(), Some("Offline answer."));
+    assert_eq!(receipt.runtime_command_digest, digest(&a.command));
     a.stop().await;
 }

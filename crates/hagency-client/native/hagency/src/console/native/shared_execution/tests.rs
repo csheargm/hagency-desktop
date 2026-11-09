@@ -828,7 +828,7 @@ async fn native_shared_interrupted_call_collects_final_usage_before_stopping_ori
         f.owner.suspend().await.unwrap();
         let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
         let row:(String,u64,u64,bool)=db.query_row("SELECT state,reserved_tokens,known_consumed_tokens,usage_complete FROM owner_managed_calls",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-        assert_eq!(row,("settled".into(),100,27,true));
+        assert_eq!(row,("settled".into(),0,27,true));
         let raw:String=db.query_row("SELECT payload FROM owner_shared_work_observations ORDER BY ledger_revision DESC LIMIT 1",[],|r|r.get(0)).unwrap();
         let receipt:SharedWorkReceipt=serde_json::from_str(&raw).unwrap();
         assert_eq!(receipt.state,"failed");
@@ -874,8 +874,10 @@ async fn native_shared_interrupted_call_slow_admission_does_not_strand_unused_bu
     let methods=std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
     assert_eq!(methods.lines().filter(|m|*m=="turn/start").count(),1);
     let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
-    let complete:bool=db.query_row("SELECT usage_complete AND known_consumed_tokens < reserved_tokens FROM owner_managed_calls",[],|r|r.get(0)).unwrap();
-    assert!(complete,"unused allowance is released only after the real provider receipt");
+    // The fixture reports 30 input (10 cached) + 7 output. The existing
+    // shared-budget unit excludes cache reads, so the measured charge is 27.
+    let complete:bool=db.query_row("SELECT usage_complete AND reserved_tokens = 0 AND known_consumed_tokens = 27 FROM owner_managed_calls",[],|r|r.get(0)).unwrap();
+    assert!(complete,"the real provider receipt is charged without an upfront estimate");
     drop(db);
     f.stop().await;
 }

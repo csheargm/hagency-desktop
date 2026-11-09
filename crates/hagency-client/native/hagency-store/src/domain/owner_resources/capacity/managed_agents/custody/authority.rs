@@ -162,14 +162,14 @@ fn pin_assignment(db:&Connection,b:Binding,child:&str,assignment:&str,generation
     }
     Ok((b, digest))
 }
-pub(super) fn call_budget(db: &Connection, child: &str) -> Result<(u64, bool), Error> {
+pub(super) fn postpaid_call_budget(db: &Connection, child: &str) -> Result<(u64, bool), Error> {
     let period = periods::current_id(db, child)?;
-    call_budget_scoped(db,child,period.as_deref())
+    call_budget_scoped(db,child,period.as_deref(),false)
 }
 pub(super) fn call_budget_all(db: &Connection, child: &str) -> Result<(u64, bool), Error> {
-    call_budget_scoped(db,child,None)
+    call_budget_scoped(db,child,None,true)
 }
-fn call_budget_scoped(db:&Connection,child:&str,period:Option<&str>)->Result<(u64,bool),Error>{
+fn call_budget_scoped(db:&Connection,child:&str,period:Option<&str>,require_complete:bool)->Result<(u64,bool),Error>{
     // An open call holds only what it is known to have spent, never its reservation.
     let mut q=db.prepare("SELECT state,known_consumed_tokens,usage_complete,unrepresentable_usage FROM owner_managed_calls WHERE child_id=?1 AND (?2 IS NULL OR id IN(SELECT call_id FROM owner_managed_call_periods WHERE period_id=?2))")?;
     let mut rows = q.query(params![child,period])?;
@@ -189,9 +189,9 @@ fn call_budget_scoped(db:&Connection,child:&str,period:Option<&str>)->Result<(u6
             .checked_add(consumed)
             .filter(|n| *n <= JSON_SAFE_MAX)
             .ok_or(Error::Capacity)?;
-        unknown |= overflow
-            || matches!(state.as_str(), "issued" | "unknown")
-            || (state == "settled" && !complete);
+        unknown |= overflow || require_complete && (
+            matches!(state.as_str(), "issued" | "unknown")
+            || (state == "settled" && !complete));
     }
     Ok((held, unknown))
 }

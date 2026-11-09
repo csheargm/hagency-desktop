@@ -128,7 +128,21 @@ struct ToolDecision {
     approved: bool,
 }
 fn default_budget_mode() -> String {
-    "estimated".into()
+    "postpaid".into()
+}
+impl StartRuntime {
+    // The obsolete estimate is an identity-bearing recovery preference only.
+    // Keep old saved requests comparable; the execution host always bills after
+    // the native turn and does not reserve this value.
+    fn budget_mode(&self) -> hagency_agent_local::codex::BudgetMode {
+        if self.reservation == 0 {
+            hagency_agent_local::codex::BudgetMode::Postpaid
+        } else {
+            hagency_agent_local::codex::BudgetMode::Estimated {
+                reservation: self.reservation,
+            }
+        }
+    }
 }
 fn default_effort() -> String {
     "medium".into()
@@ -1022,11 +1036,11 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 && parts[3] == "start"
                 && method == Method::POST
             {
-                let mut input: StartRuntime = parse(req).await?;
+                let input: StartRuntime = parse(req).await?;
                 if input.mode == "strict" {
                     return Err(error(409, "codex_strict_quota_unavailable"));
                 }
-                if input.mode != "estimated" || !input.binding_id.is_empty() || input.host_files {
+                if !["postpaid", "estimated"].contains(&input.mode.as_str()) || !input.binding_id.is_empty() || input.host_files {
                     return Err(error(400, "invalid_runtime_start"));
                 }
                 let reply = api(
@@ -1082,21 +1096,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     .clone()
                     .or_else(|| saved_options.as_ref().map(|value| value.effort.clone()))
                     .unwrap_or_else(default_effort);
-                if input.reservation == 0 {
-                    input.reservation = if let Some(options) = saved_options {
-                        options.reservation
-                    } else {
-                        host.0
-                            .owned_runtime
-                            .recovery_intents(host)
-                            .await
-                            .map_err(runtime_error)?
-                            .into_iter()
-                            .find(|intent| intent.agent_id == agent)
-                            .map(|intent| intent.reservation)
-                            .unwrap_or(10000)
-                    };
-                }
+                let mode = input.budget_mode();
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: "*".into(),
@@ -1121,9 +1121,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
                     },
-                    mode: hagency_agent_local::codex::BudgetMode::Estimated {
-                        reservation: input.reservation,
-                    },
+                    mode,
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {
                         super::device_execution::Takeover::OwnerRequested
@@ -1204,8 +1202,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if input.mode == "strict" {
                     return Err(error(409, "codex_strict_quota_unavailable"));
                 }
-                if input.mode != "estimated"
-                    || input.reservation == 0
+                if !["postpaid", "estimated"].contains(&input.mode.as_str())
                     || ![
                         "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
                     ]
@@ -1238,6 +1235,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if profile.credential_ref != provider.credential_ref {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
+                let mode = input.budget_mode();
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: input.binding_id,
@@ -1262,9 +1260,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
                     },
-                    mode: hagency_agent_local::codex::BudgetMode::Estimated {
-                        reservation: input.reservation,
-                    },
+                    mode,
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {
                         super::device_execution::Takeover::OwnerRequested
@@ -1535,13 +1531,13 @@ mod profile_tests {
                 input["estimatedOptIn"] = json!(value);
             }
             let parsed: StartRuntime = serde_json::from_value(input).unwrap();
-            assert_eq!(parsed.mode, "estimated");
+            assert_eq!(parsed.mode, "postpaid");
             assert_eq!(parsed.reservation, 10000);
         }
         let strict: StartRuntime = serde_json::from_value(json!({"mode":"strict"})).unwrap();
         assert_eq!(
             strict.mode, "strict",
-            "an explicit unsupported mode must not silently become estimated"
+            "an explicit unsupported mode must not silently become postpaid"
         );
         assert!(serde_json::from_value::<StartRuntime>(json!({"reservation":-1})).is_err());
         assert!(
@@ -1550,6 +1546,15 @@ mod profile_tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn runtime_start_defaults_to_postpaid_and_preserves_legacy_intent_hint() {
+        use hagency_agent_local::codex::BudgetMode;
+        let start: StartRuntime = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(start.mode, "postpaid");
+        assert!(matches!(start.budget_mode(), BudgetMode::Postpaid));
+        let old: StartRuntime = serde_json::from_value(json!({"mode":"estimated","reservation":1234})).unwrap();
+        assert!(matches!(old.budget_mode(), BudgetMode::Estimated { reservation: 1234 }));
     }
     #[test]
     fn public_binding_keeps_reply_policy_without_leaking_unknown_fields() {

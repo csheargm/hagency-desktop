@@ -101,7 +101,6 @@ fn read_options(path: &std::path::Path, identity: &str) -> Result<SavedOptions, 
         || values.options.iter().any(|option| {
             option.agent_id.is_empty()
                 || option.device_id.is_empty()
-                || option.reservation == 0
                 || ![
                     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
                 ]
@@ -266,12 +265,7 @@ impl OwnedRuntime {
             return Err(RuntimeError::Profile);
         }
         let (path, profile_id) = intent_location(&console, &device)?;
-        let BudgetMode::Estimated { reservation } = config.mode else {
-            return Err(RuntimeError::StrictUnavailable);
-        };
-        if reservation == 0 {
-            return Err(RuntimeError::Profile);
-        }
+        let reservation = intent_reservation(&config.mode)?;
         let key = identity(&device, &config.agent_id);
         let mut services = self.services.lock().await;
         self.tasks.check_open().map_err(|_| RuntimeError::Stopped)?;

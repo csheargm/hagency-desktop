@@ -1,7 +1,7 @@
 //! Durable owner-local inbox. Matrix/server delivery ACK never means model completion.
 //! This module has no network or server/model credentials. Its host must verify
 //! the current server user/device lease before handing it a wire envelope.
-use crate::{Error, Ledger, Result, Scope, hash, json, key, verify};
+use crate::{Error, Ledger, Result, Scope, call_digest, hash, json, key, verify};
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
@@ -261,9 +261,8 @@ fn compact_known_terminals(db: &rusqlite::Connection) -> Result<()> {
             && total == 0
             && usage.accounting_version == "no-provider-call-v1"
             && digest == hash(&("no-provider-call", &id, &execution, &d.scope()))?;
-        let settled_proof = reserved > 0
-            && snapshots.len() == 3
-            && digest == hash(&(&d.scope(), &id, reserved))?
+        let settled_proof = snapshots.len() == 3
+            && digest == call_digest(&d.scope(), &id, reserved)?
             && snapshots
                 .iter()
                 .map(|s| s.scope.as_str())
@@ -787,8 +786,8 @@ impl Ledger {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM local_inbox i JOIN bindings b ON b.id=i.binding WHERE b.agent=? AND i.binding=? AND i.state='reply_ready' AND i.execution_id IS NOT NULL AND length(i.reply)>0)",(agent,binding),|r|r.get(0))?)
     }
     /// Retain execution identity and validate every available accounting receipt.
-    /// An absent receipt contributes zero under the missing-usage policy; it must
-    /// not block later requests. Missing/mismatched execution custody still fails.
+    /// An absent receipt remains unmeasured, without blocking later requests or
+    /// creating a zero-usage settlement. Mismatched execution custody still fails.
     pub fn covers_execution_history(
         &self,
         owner: &str,
@@ -816,7 +815,7 @@ impl Ledger {
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
             let Some((encoded, state, execution, immutable)) = row else {
                 // Server custody permanently fences started executions. A missing
-                // local historical receipt contributes zero, never a replay.
+                // local historical receipt remains unmeasured, never a replay.
                 continue;
             };
             let d: Dispatch = serde_json::from_str(&encoded)?;
@@ -851,8 +850,8 @@ impl Ledger {
                 )
                 .optional()?;
             let Some((scope, charge, reserved, snapshots, usage, digest)) = call else {
-                // Execution custody above prevents replay. Missing accounting is
-                // zero, independently of whether the historical attempt finished.
+                // Execution custody above prevents replay. Missing accounting
+                // does not become a fabricated zero-usage settlement.
                 continue;
             };
             if scope != json(&d.scope())? {
@@ -879,7 +878,7 @@ impl Ledger {
             {
                 continue;
             }
-            if digest != hash(&(&d.scope(), &h.dispatch_id, reserved))?
+            if digest != call_digest(&d.scope(), &h.dispatch_id, reserved)?
                 || snapshots
                     .iter()
                     .map(|s| s.scope.as_str())
@@ -893,7 +892,6 @@ impl Ledger {
                 return Ok(false);
             }
             if snapshots.len() != 3
-                || (charge != "settled" && reserved == 0)
                 || (matches!(state.as_str(), "reply_ready" | "replied" | "failed")
                     && charge != "settled")
             {

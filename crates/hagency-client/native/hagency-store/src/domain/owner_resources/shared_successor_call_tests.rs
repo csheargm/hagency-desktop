@@ -178,7 +178,7 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
     let mut a = Box::pin(active()).await;
     let w = a.work("new_work");
     let h = prepare(&a, &w).await;
-    assert_eq!(h.reserved_tokens, 143);
+    assert_eq!(h.reserved_tokens, 0);
     let replay =
         a.f.registry
             .prepare_shared_call(a.authority(), w.clone())
@@ -224,7 +224,7 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
             .await
             .unwrap()
             .reserved_tokens,
-        143
+        0
     );
     assert!(matches!(
         a.f.registry
@@ -300,7 +300,7 @@ async fn shared_successor_call_lost_or_replayed_start_cannot_issue_model() {
             .await
             .unwrap();
     assert_eq!(held.state, "prepared");
-    assert_eq!(held.reserved_tokens, 143);
+    assert_eq!(held.reserved_tokens, 0);
     assert!(held.issue_revision.is_none());
     a.stop().await;
 }
@@ -395,7 +395,7 @@ async fn shared_successor_call_bounded_sibling_liability_is_preserved_without_bl
     let a = Box::pin(active_with_sibling(true)).await;
     let w = a.work("with_sibling");
     let h = prepare(&a, &w).await;
-    assert_eq!(h.reserved_tokens, 143);
+    assert_eq!(h.reserved_tokens, 0);
     let prior=a.f.registry.0.store.call(1024,|db|Ok(db.db.query_row("SELECT reserved_tokens,known_consumed_tokens FROM owner_managed_calls WHERE id='sibling_unknown'",[],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,u64>(1)?)))?)).await.unwrap();
     assert_eq!(prior, (40, 7));
     let start =
@@ -428,3 +428,35 @@ mod demand_tests;
 #[cfg(feature="shared-context")]
 #[path="shared_context_call_tests.rs"]
 mod context;
+
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE offline supervised child"]
+async fn postpaid_v2_late_overrun_refuses_new_work_but_running_call_renews_and_finishes() {
+    let mut a = Box::pin(active()).await;
+    let w = a.work("in_flight");
+    let h = prepare(&a, &w).await;
+    assert_eq!(h.reserved_tokens, 0);
+    let intent = a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id).await.unwrap();
+    let custody = a.f.registry.issue_shared_call(intent, SharedWorkStart {
+        work: w.clone(), work_digest: digest(&w), activity_epoch: 1, newly_started: true,
+    }).await.unwrap();
+    a.process.start_shared_text_thread().await.unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
+    let mut capture = custody.bind_turn(&a.process).unwrap();
+    // A late genuine usage receipt overdraws both the Agent and its pool while
+    // an independent, already-admitted turn is running.
+    call(&a.f, &a.original, "late_overrun", "settled", 1, 10_000, true, false).await;
+    let next = a.work("after_overrun");
+    a.f.registry.receive_shared_work(a.authority(), next.clone()).await.unwrap();
+    assert!(matches!(a.f.registry.prepare_shared_call(a.authority(), next).await, Err(Error::Capacity)));
+    a.f.registry.prepare_shared_renewal(a.authority(), "finish_running_task".into()).await.unwrap();
+    let receipt = loop {
+        let event = a.process.next_shared_text_event().await.unwrap();
+        let done = matches!(event.observation().kind(), hagency_runtime::codex::session::ObservationKind::TurnEnded(_));
+        let receipt = capture.observe(event).await.unwrap();
+        if done { break receipt.unwrap(); }
+    };
+    assert_eq!(receipt.body.as_deref(), Some("Offline answer."));
+    assert_eq!(receipt.runtime_command_digest, digest(&a.command));
+    a.stop().await;
+}

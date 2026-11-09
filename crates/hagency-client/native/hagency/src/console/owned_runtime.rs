@@ -38,6 +38,8 @@ pub(super) struct StartConfig {
     pub agent_id: String,
     pub binding_id: String,
     pub profile: Profile,
+    // Legacy estimate retained only for exact startup-intent recovery. Every
+    // newly executed native turn uses postpaid accounting.
     pub mode: BudgetMode,
     pub credential_ref: String,
     pub takeover: Takeover,
@@ -56,6 +58,8 @@ pub(super) struct RuntimeIntent {
     pub binding_id: String,
     pub device_id: String,
     pub consent_id: String,
+    // Zero identifies a new postpaid intent. Positive legacy hints are retained
+    // byte-for-byte for recovery; neither causes a new model-call hold.
     pub reservation: u64,
     pub effort: String,
     pub host_files: bool,
@@ -65,6 +69,14 @@ impl RuntimeIntent {
         serde_json::json!({"bindingId":self.binding_id,
             "reservation":self.reservation,"effort":self.effort,"hostFiles":self.host_files,
             "takeover":false,"recoveryDeviceId":self.device_id,"recoveryConsentId":self.consent_id})
+    }
+}
+fn intent_reservation(mode: &BudgetMode) -> Result<u64, RuntimeError> {
+    match mode {
+        BudgetMode::Postpaid => Ok(0),
+        BudgetMode::Estimated { reservation: 0 } => Err(RuntimeError::Profile),
+        BudgetMode::Estimated { reservation } => Ok(*reservation),
+        BudgetMode::Strict => Err(RuntimeError::StrictUnavailable),
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -127,8 +139,7 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
         || values.profile_identity != identity
         || values.intents.len() > 1024
         || values.intents.iter().any(|v| {
-            v.reservation == 0
-                || v.agent_id.is_empty()
+            v.agent_id.is_empty()
                 || v.binding_id.is_empty()
                 || v.device_id.is_empty()
                 || (v.consent_id.len() != 64
@@ -212,9 +223,7 @@ fn verify_recovery_intent(
         (None, None) => Ok(()),
         (Some(expected_device), Some(consent)) if expected_device == device.device_id() => {
             let (path, identity) = intent_location(console, device)?;
-            let BudgetMode::Estimated { reservation } = config.mode else {
-                return Err(RuntimeError::StrictUnavailable);
-            };
+            let reservation = intent_reservation(&config.mode)?;
             let valid = read_intents(&path, &identity)?.intents.iter().any(|v| {
                 v.agent_id == config.agent_id
                     && v.binding_id == config.binding_id
@@ -243,9 +252,7 @@ fn save_intent(
     device: &AuthorizedDevice,
     config: &StartConfig,
 ) -> Result<(), RuntimeError> {
-    let BudgetMode::Estimated { reservation } = config.mode else {
-        return Err(RuntimeError::StrictUnavailable);
-    };
+    let reservation = intent_reservation(&config.mode)?;
     let (path, identity) = intent_location(console, device)?;
     change_intent_checked(
         &path,
@@ -2490,7 +2497,7 @@ async fn run_turn<T: Transport>(
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
         }
         if !fresh_running(transport,lease,&prepared.dispatch,&prepared.execution_id,&mut pre_model_cancel).await {return Err(codex::Error::Protocol("running dispatch authorization lost"));}
-        provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,config.mode.clone(),&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
+        provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,BudgetMode::Postpaid,&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
         };
         let model = async {
             tokio::select! {
@@ -2516,7 +2523,7 @@ async fn run_turn<T: Transport>(
     }=>match r {
         Ok(completed)=>Ok(Ok(completed)),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。")),
-        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 暂停处理：Token 可用额度不足，无法为本次请求预留额度。请联系 Agent 主人调整配额。本次未调用模型。")),
+        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。")),
         Err(codex::Error::Failed)=>{provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
         Err(error)=>Err(provider_failure("agent_turn_result", &error)),
     }};
@@ -2878,6 +2885,17 @@ mod tests {
         );
     }
     #[test]
+    fn postpaid_start_intent_survives_restart_without_an_estimate() {
+        let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = tmp.path().join("runtime-intents.json");
+        let mut intent = intended("agent", "binding", "device");
+        intent.reservation = intent_reservation(&BudgetMode::Postpaid).unwrap();
+        change_intent(&path, "owner", "agent", "binding", Some(intent.clone())).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().intents, vec![intent.clone()]);
+        assert_eq!(intent.start_input()["reservation"], 0);
+        assert_eq!(intent_reservation(&BudgetMode::Estimated { reservation: 42 }).unwrap(), 42);
+    }
+    #[test]
     fn runtime_concurrent_intent_writer_and_malformed_consent_fail_closed() {
         let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = tmp.path().join("runtime-intents.json");
@@ -2889,7 +2907,7 @@ mod tests {
         drop(held);
         change_intent(&path, "owner-a", "a", "b", Some(intended("a", "b", "d"))).unwrap();
         let mut values = read_intents(&path, "owner-a").unwrap();
-        values.intents[0].reservation = 0;
+        values.intents[0].consent_id = "malformed".into();
         hagency_store::private::replace(&path, &serde_json::to_vec(&values).unwrap()).unwrap();
         assert!(read_intents(&path, "owner-a").is_err());
     }
@@ -4103,12 +4121,12 @@ for raw in sys.stdin:
             ledger
                 .account(&event().scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 10)
+            (0, 0)
         );
         let outstanding = ledger.outstanding_calls(OWNER).unwrap();
         assert_eq!(outstanding.len(), 1);
         assert_eq!(outstanding[0].state, "unknown");
-        assert_eq!(outstanding[0].reserved, 10);
+        assert_eq!(outstanding[0].reserved, 0);
         let before = fb.calls.lock().unwrap().len();
         tokio::time::timeout(Duration::from_secs(3), async {
             while fb.calls.lock().unwrap().len() <= before {
@@ -4249,12 +4267,12 @@ for raw in sys.stdin:
             ledger
                 .account(&event().scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 10)
+            (0, 0)
         );
         let outstanding = ledger.outstanding_calls(OWNER).unwrap();
         assert_eq!(outstanding.len(), 1);
         assert_eq!(outstanding[0].state, "unknown");
-        assert_eq!(outstanding[0].reserved, 10);
+        assert_eq!(outstanding[0].reserved, 0);
     }
     #[tokio::test]
     async fn known_original_reply_reconciles_after_new_epoch_without_model_replay() {

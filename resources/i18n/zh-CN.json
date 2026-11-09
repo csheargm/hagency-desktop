@@ -2822,5 +2822,7 @@
   "Waiting for an authorized participant": "等待指定参与者回答",
   "Only the named participants can answer. With no answer by {0}, the Agent continues on its own.": "仅下列参与者可以回答。到 {0} 仍无人回答时，Agent 将自行继续。",
   "Select one or more options, then send your answer.": "可选择一个或多个选项，然后发送回答。",
-  "Select multiple": "可多选"
+  "Select multiple": "可多选",
+  "Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens.": "每个任务结束后按实际用量计费。运行中允许超额并正常完成。缺失用量保持待核算，不预占 Token。",
+  "Ready to start. Actual usage is charged after each task.": "已准备好启动。每个任务结束后按实际用量计费。"
 }

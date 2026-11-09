@@ -773,10 +773,8 @@ script_mod! {
                         runtime_chat_target := Text {draw_text.color: mod.widgets.RINX_MUTED}
                         runtime_status := Text {}
                         runtime_start_options := View {width: Fill height: Fit flow: Down spacing: 8
-                        Text {text: #(crate::i18n::tr("Estimated token accounting is used by default. Reserve tokens before each request; actual usage may exceed the estimate. Missing usage is recorded as zero and the reservation is released automatically.")) i18n_text: "Estimated token accounting is used by default. Reserve tokens before each request; actual usage may exceed the estimate. Missing usage is recorded as zero and the reservation is released automatically."}
+                        Text {text: #(crate::i18n::tr("Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens.")) i18n_text: "Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens."}
                         start_requirements := Text {draw_text.color: mod.widgets.RINX_MUTED}
-                        Text {text: #(crate::i18n::tr("Reservation per request (tokens)")) i18n_text: "Reservation per request (tokens)"}
-                        reservation := Input {empty_text: #(crate::i18n::tr("Positive token count")) i18n_empty_text: "Positive token count"}
                         service_advanced_toggle := Action {text: #(crate::i18n::tr("Advanced service options")) i18n_text: "Advanced service options" spacing: 6 icon_walk: Walk{width: 12 height: 12} draw_icon.svg: ICON_CHEVRON_RIGHT}
                         service_advanced := View {visible: false width: Fill height: Fit flow: Down spacing: 8
                         takeover := CheckBox {text: #(crate::i18n::tr("Explicitly take over this Agent's device lease")) i18n_text: "Explicitly take over this Agent's device lease"}
@@ -1346,7 +1344,6 @@ impl HagencyPanel {
         self.view.drop_down(cx, ids!(policy_binding)).set_selected_item(cx, index);
         self.policy = Value::Null;
         self.runtime_room_active=false;self.agent_service_state=Value::Null;self.service_row_targets.clear();self.runtime_pending_action=None;self.runtime_action_error.clear();
-        self.view.text_input(cx,ids!(reservation)).set_text(cx,"");
         self.clear_approval_state(cx);
         self.approvals.clear();
         self.labels(cx,ids!(approvals),"Select a pending approval",&self.approvals,"proposalId");
@@ -1391,7 +1388,6 @@ impl HagencyPanel {
             ids!(workspace),
             ids!(prepare_workspace),
             ids!(refresh_models),
-            ids!(reservation),
             ids!(effort),
             ids!(found_room),
             ids!(takeover),
@@ -1727,7 +1723,7 @@ impl HagencyPanel {
             && !self.credential_ref.is_empty() && string(profile,"credential_ref") == self.selected_credential(cx)
             && (string(profile,"reasoning_effort").is_empty() || self.runtime_efforts.iter().any(|e|e==string(profile,"reasoning_effort")))
             && !self.input(cx,ids!(workspace)).is_empty() && string(profile,"workspace_root") == self.input(cx,ids!(workspace));
-        let reason=if self.runtime_resources_loading {"Checking the saved model and connected local account…"} else if self.view.view(cx,ids!(runtime_section)).visible() && !self.runtime_resources_checked {"Model resources could not be verified. Refresh this Service page to retry."} else if !assigned_here {"Assign this Agent to this device in Agent and device."} else if !self.provider_authenticated {"Connect your account in Model & resources."} else if !model_ready || self.runtime_efforts.is_empty() {"Save a model in Model & resources. A private workspace is created automatically."} else {"Ready to start with a positive token reservation."};
+        let reason=if self.runtime_resources_loading {"Checking the saved model and connected local account…"} else if self.view.view(cx,ids!(runtime_section)).visible() && !self.runtime_resources_checked {"Model resources could not be verified. Refresh this Service page to retry."} else if !assigned_here {"Assign this Agent to this device in Agent and device."} else if !self.provider_authenticated {"Connect your account in Model & resources."} else if !model_ready || self.runtime_efforts.is_empty() {"Save a model in Model & resources. A private workspace is created automatically."} else {"Ready to start. Actual usage is charged after each task."};
         self.view.label(cx,ids!(start_requirements)).set_text(cx,crate::i18n::tr(reason));
         let start_ready=self.provider_authenticated && model_ready && !self.runtime_efforts.is_empty() && !self.runtime_resources_loading && self.runtime_resources_checked;
         self.view.button(cx,ids!(service_toggle)).set_enabled(cx, assigned_here && runtime_known && !self.busy && (self.runtime_room_active || start_ready));
@@ -2728,10 +2724,6 @@ impl HagencyPanel {
                 let label=runtime_list_label(Some(&Ok(value.clone())),self.agent(cx).as_deref().unwrap_or(""));
                 self.runtime_list_timer=cx.start_timeout(if label.starts_with("Starting") || label.starts_with("Checking") {2.0} else {10.0});
                 self.agent_service_state=value.clone();
-                if self.input(cx,ids!(reservation)).is_empty() {
-                    let reservation=value["service"]["reservation"].as_u64().filter(|n|*n>0).unwrap_or(10000);
-                    self.view.text_input(cx,ids!(reservation)).set_text(cx,&reservation.to_string());
-                }
                 let height=(array(&value["service"],"rooms").len() as f64 * 88.0).clamp(48.0,352.0);
                 let mut list=self.view.portal_list(cx,ids!(service_rooms));
                 script_apply_eval!(cx,list,{height: #(height)});
@@ -4024,14 +4016,6 @@ impl Widget for HagencyPanel {
             if !self.local_agent(cx) {
                 self.runtime_feedback(cx,"Assign this Agent to this device before starting it here."); return;
             }
-            let Ok(reservation) = self.input(cx, ids!(reservation)).parse::<u64>() else {
-                self.runtime_feedback(cx, "Enter a positive token reservation.");
-                return;
-            };
-            if reservation == 0 {
-                self.runtime_feedback(cx,"Enter a positive token reservation.");
-                return;
-            }
             let selected_model=self.selected(cx,ids!(model),&self.provider_models);
             if selected_model.as_ref().is_none_or(|m|string(m,"model") != string(&self.policy["modelProfile"],"model")) || string(&self.policy["modelProfile"],"model").is_empty() {
                 self.runtime_feedback(cx,"Save the selected model or profile before starting this Room.");return;
@@ -4040,7 +4024,7 @@ impl Widget for HagencyPanel {
             let Some(effort)=effort else {self.runtime_feedback(cx,"Load local resources and select a supported reasoning effort before starting.");return;};
             let saved_effort=string(&self.policy["modelProfile"],"reasoning_effort");
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
-            let input = json!({"reservation":reservation,"takeover":self.view.check_box(cx,ids!(takeover)).active(cx),"effort":effort});
+            let input = json!({"mode":"postpaid","reservation":0,"takeover":self.view.check_box(cx,ids!(takeover)).active(cx),"effort":effort});
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
             return;
         }

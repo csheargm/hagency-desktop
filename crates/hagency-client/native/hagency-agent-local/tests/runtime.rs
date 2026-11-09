@@ -13,6 +13,8 @@ use std::{fs, path::PathBuf};
 mod continuous;
 #[path = "runtime/questions.rs"]
 mod questions;
+#[path = "runtime/postpaid.rs"]
+mod postpaid;
 
 struct Fixture {
     root: tempfile::TempDir,

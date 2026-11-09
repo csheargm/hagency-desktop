@@ -66,8 +66,8 @@ async fn shared_context_call_plain_fallback_refused_and_exact_actual_input_is_ca
             .await
             .unwrap();
     assert_eq!(
-        h.reserved_tokens, 143,
-        "the old unknown call charges only its known usage"
+        h.reserved_tokens, 0,
+        "the admitted task holds no estimate, including when history is supplied"
     );
     assert!(
         a.f.registry

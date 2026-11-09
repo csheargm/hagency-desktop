@@ -31,19 +31,17 @@ H.pool_detail={..detail agentId:"agt_other"}
 reply(0,{agentId:"agt_1" fenced:false calls:[stuck] ledgerRevision:7})
 assert(H.pool_calls==nil)
 ''',
-'zero_and_full_declarations_are_fixed_and_submitted_with_the_reservation': '''
+'missing_usage_and_old_estimates_never_become_automatic_declarations': '''
 H.page="pool_agent" H.pool_detail=detail
-A.submit=fn(service,args){H.submitted={service:service args:args}}
-A.pool_call_open(stuck,"zero")
-assert(H.pool_confirm=="reconcile" && H.pool_call_mode=="zero" && A.alert_kind()=="pool_reconcile" && A.pool_call_error()=="")
-A.pool_call_submit()
-assert(H.submitted.service=="hagency.agents.calls.reconcile")
-assert(H.submitted.args.agentId=="agt_1" && H.submitted.args.callId=="mac_1" && H.submitted.args.expectedReservedTokens==50000000)
-assert(H.submitted.args.consumedTokens==0 && H.submitted.args.evidenceReference=="no_model_request_recorded" && H.pool_confirm=="")
-H.submitted=nil A.pool_call_open(partial,"full") A.pool_call_submit()
-assert(H.submitted.args.callId=="mac_2" && H.submitted.args.consumedTokens==100 && H.submitted.args.evidenceReference=="owner_charged_full_reservation")
+A.pool_call_open(stuck,"zero") assert(H.pool_confirm=="" && H.pool_call==nil)
+A.pool_call_open(partial,"full") assert(H.pool_confirm=="" && H.pool_call==nil)
+A.pool_call_open(stuck,"exact") assert(A.pool_call_error()!="")
+H.pool_call_note="provider verified zero requests" assert(A.pool_call_error()=="")
+A.submit=fn(service,args){H.submitted={service:service args:args}} A.pool_call_submit()
+assert(H.submitted.args.consumedTokens==0 && H.submitted.args.expectedReservedTokens==50000000)
+assert(H.submitted.args.evidenceReference=="provider verified zero requests")
 ''',
-'verified_amount_stays_inside_observed_and_reserved_bounds': '''
+'verified_amount_allows_overrun_but_never_undercounts_observed_usage': '''
 H.page="pool_agent" H.pool_detail=detail
 A.submit=fn(service,args){H.submitted={service:service args:args}}
 A.pool_call_open(partial,"exact")
@@ -51,11 +49,12 @@ assert(H.pool_call_amount=="40" && A.pool_call_error()!="")
 H.pool_call_note="provider usage page"
 assert(A.pool_call_error()=="")
 H.pool_call_amount="39" assert(A.pool_call_error()!="")
-H.pool_call_amount="101" assert(A.pool_call_error()!="")
+H.pool_call_amount="101" assert(A.pool_call_error()=="")
+H.pool_call_amount="9007199254740992" assert(A.pool_call_error()!="")
 H.pool_call_amount="" assert(A.pool_call_error()!="")
-H.pool_call_amount="60" assert(A.pool_call_error()=="")
+H.pool_call_amount="160" assert(A.pool_call_error()=="")
 A.pool_call_submit()
-assert(H.submitted.args.consumedTokens==60 && H.submitted.args.evidenceReference=="provider usage page" && H.submitted.args.expectedReservedTokens==100)
+assert(H.submitted.args.consumedTokens==160 && H.submitted.args.evidenceReference=="provider usage page" && H.submitted.args.expectedReservedTokens==100)
 ''',
 'running_calls_cannot_be_opened_and_results_refresh_the_page': '''
 H.page="pool_agent" H.pool_detail=detail

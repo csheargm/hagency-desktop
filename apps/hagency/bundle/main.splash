@@ -8674,14 +8674,12 @@ A.pool_call_state=fn(row){
     return A.t("Its process ended without a closing record.","进程已结束，没有结束记录。")+period
 }
 A.pool_call_open=fn(row,mode){
-    if H.busy || H.command!=nil || row.live {return}
+    if H.busy || H.command!=nil || row.live || mode!="exact" {return}
     H.pool_call=row H.pool_call_mode=mode H.pool_call_amount=""+row.knownConsumedTokens H.pool_call_note="" H.pool_confirm="reconcile" A.redraw()
 }
 A.pool_call_consumed=fn(){
     let c=H.pool_call
     if c==nil {return nil}
-    if H.pool_call_mode=="zero" {return 0}
-    if H.pool_call_mode=="full" {return c.reservedTokens}
     if H.pool_call_amount=="" {return nil}
     let n=H.pool_call_amount.to_f64()
     if n==nil || n<0 {return nil}
@@ -8693,7 +8691,7 @@ A.pool_call_error=fn(){
     let n=A.pool_call_consumed()
     if n==nil {return A.t("Enter the tokens actually used.","请输入实际用量。")}
     if n<c.knownConsumedTokens {return A.t("At least ","不能少于已记录的 ")+A.tokens(c.knownConsumedTokens)+A.t(" tokens were already recorded."," token。")}
-    if n>c.reservedTokens {return A.t("Cannot exceed the reservation of ","不能超过预留的 ")+A.tokens(c.reservedTokens)+A.t(" tokens."," token。")}
+    if n>9007199254740991 {return A.t("The token count is too large.","Token 数值过大。")}
     if H.pool_call_mode=="exact" && H.pool_call_note=="" {return A.t("Say where you verified the figure.","请写明核实依据。")}
     if H.pool_call_note.to_chars().len()>256 {return A.t("Keep the note under 256 characters.","依据请控制在 256 字以内。")}
     return ""
@@ -8701,7 +8699,7 @@ A.pool_call_error=fn(){
 A.pool_call_submit=fn(){
     let c=H.pool_call
     if c==nil || H.pool_detail==nil || A.pool_call_error()!="" {return}
-    let note=if H.pool_call_mode=="zero" {"no_model_request_recorded"} else if H.pool_call_mode=="full" {"owner_charged_full_reservation"} else {H.pool_call_note}
+    let note=H.pool_call_note
     A.submit("hagency.agents.calls.reconcile",{agentId:H.pool_detail.agentId callId:c.callId expectedReservedTokens:c.reservedTokens consumedTokens:A.pool_call_consumed() evidenceReference:note})
     H.pool_confirm=""
 }
@@ -9671,13 +9669,11 @@ A.render_page = fn(){
                 }
             }}}
             if A.pool_calls_owner(r) && H.pool_calls!=nil && H.pool_calls.calls.len()>0 {View{width:Fill height:Fit flow:Down
-                mod.widgets.HagencyListLabel{text:A.t("UNSETTLED CALLS","未结清的调用")}
+                mod.widgets.HagencyListLabel{text:A.t("USAGE PENDING MEASUREMENT","待核算用量")}
                 for row in H.pool_calls.calls {mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:8 padding:14
-                    mod.widgets.HagencyWrapTitle{text:A.t("Reserved ","预留 ")+A.tokens(row.reservedTokens)+A.t(" tokens · recorded "," token · 已记录 ")+A.tokens(row.knownConsumedTokens)+A.t(" tokens"," token")}
+                    mod.widgets.HagencyWrapTitle{text:A.t("Recorded ","已记录 ")+A.tokens(row.knownConsumedTokens)+A.t(" tokens · final usage pending"," token · 最终用量待核算")}
                     mod.widgets.HagencyWrapSubtitle{text:A.pool_call_state(row)}
                     if !row.live {View{width:Fill height:Fit flow:Right spacing:8
-                        if !row.usageObserved && row.knownConsumedTokens==0 {pool_call_zero := mod.widgets.HagencyPillPrimary{text:A.t("No request sent: settle at 0","未发出请求，按 0 结算") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"zero")}}
-                        pool_call_full := mod.widgets.HagencyButton{text:A.t("Charge the full reservation","按预留全额结算") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"full")}
                         pool_call_exact := mod.widgets.HagencyButton{text:A.t("Enter verified usage…","按核实用量结算…") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"exact")}
                     }}
                 }}}
@@ -17324,9 +17320,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         if kind=="pool_reconcile" && H.pool_call!=nil {View{width:Fill height:Fit flow:Down
             let c=H.pool_call let mode=H.pool_call_mode
             mod.widgets.HagencyAlertTitle{text:A.t("Settle this interrupted call?","结算这次中断的调用？")}
-            mod.widgets.HagencyAlertMessage{text:A.t("Reserved ","预留 ")+A.tokens(c.reservedTokens)+A.t(" tokens, recorded "," token，已记录 ")+A.tokens(c.knownConsumedTokens)+A.t(" tokens. The unused part returns to this Agent's allowance for the period."," token。未用部分回到该 Agent 本期额度。")}
-            if mode=="zero" {mod.widgets.HagencyAlertMessage{text:A.t("No model request was recorded for it. It is settled at 0 tokens.","没有记录到任何模型请求，按 0 token 结算。")}}
-            if mode=="full" {mod.widgets.HagencyAlertMessage{text:A.t("The whole reservation counts as used. Nothing is returned.","按预留全额计入消耗，不退还任何额度。")}}
+            mod.widgets.HagencyAlertMessage{text:A.t("Recorded ","已记录 ")+A.tokens(c.knownConsumedTokens)+A.t(" tokens. Enter verified final usage, including any overrun. Missing usage is not zero."," token。请填写核实后的最终用量，包括超额部分；用量缺失不代表零消耗。")}
             if mode=="exact" {
                 mod.widgets.HagencyAlertMessage{text:A.t("Tokens actually used:","实际用量：")}
                 pool_call_amount := mod.widgets.HagencyNumberInput{slider_mode:false width:Fill minimum:0 text:H.pool_call_amount is_read_only:false on_change:|s|{H.pool_call_amount=s A.redraw()}}

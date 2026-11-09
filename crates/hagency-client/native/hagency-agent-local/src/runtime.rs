@@ -616,10 +616,7 @@ impl Session {
         if input.is_empty() || input.len() > 65536 {
             return Err(Error::Profile("input size"));
         }
-        let BudgetMode::Estimated { reservation } = mode else {
-            return Err(Error::StrictQuotaUnsupported);
-        };
-        if ledger.reserve(scope, call, dispatch, reservation, now())? != Reservation::New {
+        if mode.admit(ledger, scope, call, dispatch)? != Reservation::New {
             return Err(Error::Protocol("refusing provider replay"));
         }
         if let Self::Claude { reusable, .. } = self {
