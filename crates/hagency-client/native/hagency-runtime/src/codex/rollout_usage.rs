@@ -19,12 +19,49 @@ pub(super) struct Receipt {
     pub(super) response: String,
     pub(super) usage: Value,
 }
-pub(super) struct Cursor {
+/// Bounded reader of original native per-response records. Like `TurnTree`,
+/// this produces protocol observations, never execution or payment authority.
+pub struct Cursor {
     reader: BufReader<tokio::fs::File>,
     thread: String,
     offset: u64,
 }
 impl Cursor {
+    /// Use only the original `thread/resume` or `thread/read` response from the
+    /// retained native transport. Pin EOF for a root before sending its input;
+    /// descendants are read from the start and matched to observed native turns.
+    pub async fn from_thread_reply(
+        reply: &Value,
+        thread: &str,
+        at_end: bool,
+    ) -> Result<Self, Error> {
+        if !super::text(thread, 256) || reply["thread"]["id"] != thread {
+            return Err(Error::Scope);
+        }
+        let path = reply["thread"]["path"].as_str().ok_or(Error::State)?;
+        Self::open(path, thread, at_end).await
+    }
+
+    /// Apply receipts only for completed turns already accepted on the original
+    /// native stream. No caller-supplied counters or reconstructed events enter
+    /// the tree. A failure must invalidate the whole call's usage.
+    pub async fn apply(&mut self, tree: &mut super::tree::TurnTree) -> Result<(), Error> {
+        let result = self.apply_inner(tree).await;
+        if result.is_err() {
+            tree.invalidate_native_usage();
+        }
+        result
+    }
+
+    async fn apply_inner(&mut self, tree: &mut super::tree::TurnTree) -> Result<(), Error> {
+        let (root, mut threads) = tree.completed_native_turns().ok_or(Error::State)?;
+        let turns = threads.remove(&self.thread).ok_or(Error::Scope)?;
+        for receipt in self.read(&root, &turns).await? {
+            tree.observe_rollout_receipt(receipt)?;
+        }
+        Ok(())
+    }
+
     /// The path and thread come from the original native metadata response.
     /// Before a root turn starts, pin EOF so earlier history is not read again.
     pub(super) async fn open(path: &str, thread: &str, at_end: bool) -> Result<Self, Error> {

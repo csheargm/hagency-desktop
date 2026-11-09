@@ -11,6 +11,7 @@ mod wire;
 
 pub use connection::{Connection, Event, Phase, TurnScope};
 pub use launch::{native_arguments, validate_native_configuration};
+pub use rollout_usage::Cursor as NativeUsageCursor;
 pub use wire::{Decoder, Message, RequestId, RpcError, encode};
 
 /// Includes every byte preceding LF (including CR for CRLF input).

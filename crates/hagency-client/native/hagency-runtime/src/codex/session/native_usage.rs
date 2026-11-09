@@ -27,18 +27,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         }
     }
     async fn read_native_usage(&mut self) -> Result<(), Error> {
-        let (root, threads) = self
+        let threads = self
             .tree
             .as_ref()
-            .and_then(|tree| tree.graph.completed_native_turns())
+            .and_then(|tree| tree.graph.completed_native_threads())
             .ok_or(Error::State)?;
-        for (thread, turns) in threads {
-            let receipts = if self.thread_id() == Some(thread.as_str()) {
+        for thread in threads {
+            if self.thread_id() == Some(thread.as_str()) {
                 self.native_rollout
                     .as_mut()
                     .ok_or(Error::State)?
-                    .read(&root, &turns)
-                    .await?
+                    .apply(&mut self.tree.as_mut().ok_or(Error::State)?.graph)
+                    .await?;
             } else {
                 // Only a descendant already accepted on this original native
                 // stream can select a metadata read or a persisted usage file.
@@ -48,20 +48,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         serde_json::json!({"threadId":thread,"includeTurns":false}),
                     )
                     .await?;
-                if reply["thread"]["id"] != thread {
-                    return Err(Error::Scope);
-                }
-                let path = reply["thread"]["path"].as_str().ok_or(Error::State)?;
                 let mut cursor =
-                    crate::codex::rollout_usage::Cursor::open(path, &thread, false).await?;
-                cursor.read(&root, &turns).await?
-            };
-            for receipt in receipts {
-                self.tree
-                    .as_mut()
-                    .ok_or(Error::State)?
-                    .graph
-                    .observe_rollout_receipt(receipt)?;
+                    crate::codex::NativeUsageCursor::from_thread_reply(&reply, &thread, false)
+                        .await?;
+                cursor
+                    .apply(&mut self.tree.as_mut().ok_or(Error::State)?.graph)
+                    .await?;
             }
         }
         // Metadata RPCs can pump original notifications while awaiting their

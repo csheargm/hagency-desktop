@@ -54,8 +54,8 @@ async fn matrix_tools_survive_warm_and_cold_native_resume_without_replacing_cont
         .unwrap();
     let original = ledger.context_session(&scope).unwrap();
     assert!(original.is_some());
-    for round in 0..3 {
-        if round == 1 {
+    for round in 0..4 {
+        if round == 1 || round == 3 {
             assert!(process.session.can_continue());
             process.session.park();
             process
@@ -123,9 +123,11 @@ async fn matrix_tools_survive_warm_and_cold_native_resume_without_replacing_cont
         assert_eq!(done.text, "ROOM_REPLY");
         assert!(approvals.try_recv().is_err());
         assert_eq!(ledger.context_session(&scope).unwrap(), original);
-        if round < 2 {
-            assert!(done.usage.is_reported());
-        }
+        assert!(done.usage.is_reported());
+        assert_eq!((done.usage.input, done.usage.output, done.usage.cached_input), (30, 12, 6));
+        assert!(process.session.can_continue());
+        assert_eq!(ledger.account(&scope, Layer::Agent, Period::Lifetime,
+            time::OffsetDateTime::now_utc().unix_timestamp()).unwrap(), (42 * (round + 1), 0));
     }
     process.stop().await.unwrap();
     model.kill().await.unwrap();

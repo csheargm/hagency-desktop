@@ -784,10 +784,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .startup_call(method, self.settings.thread_request(resume))
             .await?;
         let id = self.state.observe_thread(&result, &self.settings, resume)?;
-        if resume.is_some() && let Some(path) = result["thread"]["path"].as_str() {
+        if resume.is_some() {
             // Metadata comes from this original native response, before
             // any model input. Missing receipts remain unknown, not zero.
-            self.native_rollout = crate::codex::rollout_usage::Cursor::open(path, &id, true).await.ok();
+            self.native_rollout = tokio::time::timeout(Duration::from_secs(5),
+                crate::codex::NativeUsageCursor::from_thread_reply(&result, &id, true))
+                .await.ok().and_then(Result::ok);
         }
         self.validate_deferred()?;
         while let Some(event) = self.pop()? {

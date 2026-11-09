@@ -202,6 +202,7 @@ def main():
     run("native-shared-claude-host", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_claude_full_host", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-shared-session", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_native_session_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-cold-resume-usage", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "codex::rollout_usage::tests"], cwd=CLIENT, rust_tests=True)
+    run("native-personal-cold-usage", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "codex::native_usage::tests"], cwd=CLIENT, rust_tests=True)
     run("native-renewable-activity", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "renewable_activity_keeps_exact_epochs"], cwd=CLIENT, rust_tests=True)
     run("native-run-card-startup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_run_card_device_delay_does_not_block_native_turn", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-shared", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "postpaid_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)

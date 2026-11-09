@@ -17,6 +17,7 @@ mod questions;
 mod room_mcp;
 mod approvals;
 mod controls;
+mod native_usage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -714,6 +715,7 @@ pub struct Session<R, W> {
     bound_scope: Option<Scope>,
     bound_profile: Option<Profile>,
     retained_turn: Option<hagency_runtime::codex::tree::TurnTree>,
+    native_rollout: Option<hagency_runtime::codex::NativeUsageCursor>,
     // Old runtimes without response receipts are only comparable on a fresh
     // context on this connection. Resumed context counters include history.
     legacy_usage: bool,
@@ -743,6 +745,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             bound_scope: None,
             bound_profile: None,
             retained_turn: None,
+            native_rollout: None,
             legacy_usage: true,
             callbacks_enabled: true,
             shared_home: None,
@@ -816,6 +819,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         }
     }
     async fn rpc(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.rpc_with_idle(method, params, self.retained_turn.is_some()).await
+    }
+    async fn rpc_with_idle(&mut self, method: &str, params: Value, idle: bool) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.write(value!({"id":id,"method":method,"params":params}))
@@ -850,7 +856,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             }
             if frame.get("id").is_some() {
                 self.write(value!({"id":frame["id"],"error":{"code":-32601,"message":"No active scoped approval"}})).await?;
-                if self.retained_turn.is_some() {
+                if idle {
                     return Err(Error::Protocol("native request outside active turn"));
                 }
             } else {
@@ -956,8 +962,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             return Err(Error::Profile("host tools require binding workspace"));
         }
         let mut params = value!({"cwd":profile.cwd,"model":profile.model,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"web_search":"live"},"runtimeWorkspaceRoots":[profile.cwd],"environments":[]});
-        // Exact per-response usage is inherited by native child listeners.
-        params["experimentalRawEvents"] = true.into();
         params["config"]["features.default_mode_request_user_input"] = true.into();
         if let Some(bridge) = &self.room_mcp {
             params["config"][format!("mcp_servers.{}", room_mcp::SERVER)] = bridge.config();
@@ -970,6 +974,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             params["excludeTurns"] = true.into();
             "thread/resume"
         } else {
+            // Native cold resume has no raw-event subscription option.
+            params["experimentalRawEvents"] = true.into();
             params["ephemeral"] = false.into();
             params["allowProviderModelFallback"] = false.into();
             #[cfg(unix)]
@@ -989,6 +995,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     .ok_or(Error::Protocol("context parameters"))?;
                 object.remove("threadId");
                 object.remove("excludeTurns");
+                params["experimentalRawEvents"] = true.into();
                 params["ephemeral"] = false.into();
                 params["allowProviderModelFallback"] = false.into();
                 #[cfg(unix)]
@@ -1025,6 +1032,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             )
             .await?;
         }
+        self.native_rollout = if prior.is_some() {
+            tokio::time::timeout(Duration::from_secs(5),
+                hagency_runtime::codex::NativeUsageCursor::from_thread_reply(&response, thread, true))
+                .await.ok().and_then(std::result::Result::ok)
+        } else { None };
         let tx = ledger.db.transaction().map_err(crate::Error::from)?;
         tx.execute("INSERT INTO contexts(scope,model_session) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET model_session=excluded.model_session", [&context_key,thread]).map_err(crate::Error::from)?;
         if replaced_missing && prior.is_none() {
@@ -1341,6 +1353,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 callbacks_stopped = true;
             }
             if tree.is_complete() && controls.settled() {
+                self.recover_native_usage(&mut tree).await;
                 let mut status = root_status
                     .take()
                     .ok_or(Error::Protocol("root completion missing"))?;

@@ -20,7 +20,7 @@ mod shared_room;
 
 #[tokio::test]
 #[ignore = "requires explicit installed Codex; local Responses fixture only, no account or paid model"]
-async fn native_codex_continuous_turns_measure_children_and_cold_resume_keeps_unknown_held() {
+async fn native_codex_continuous_turns_and_cold_resume_settle_original_response_receipts() {
     let (_tmp, profile, mut model) = native_fixture().await;
     let root = _tmp.path().canonicalize().unwrap();
     let scope = Scope {
@@ -140,41 +140,40 @@ async fn native_codex_continuous_turns_measure_children_and_cold_resume_keeps_un
         .open_context(&mut ledger, &scope, &profile)
         .await
         .unwrap();
-    let (queue, _) = codex::approval_queue(1).unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(20),
-        resumed.session.run_with_started(
-            &mut ledger,
-            "@owner:test",
-            &scope,
-            "cold",
-            "cold",
-            "Exercise the offline child fixture",
-            BudgetMode::Estimated { reservation: 100 },
-            &queue,
-            None,
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    resumed.stop().await.unwrap();
-    assert_eq!(result.text, "ROOT_REPLY");
-    // 0.167 thread/resume has no experimentalRawEvents parameter. A cold
-    // resumed subtree cannot be settled from the parent's context tally.
-    assert!(!result.usage.is_reported());
-    assert!(!resumed.session.can_continue());
-    assert_eq!(
-        ledger
-            .account(
+    // Resume subscribes to no raw response events. Both the first cold turn and
+    // its warm successor use original native records, with independent charges.
+    for (index, call) in ["cold", "after-cold"].into_iter().enumerate() {
+        if index != 0 {
+            assert!(resumed.session.can_continue());
+            resumed.session.park();
+            resumed.session.continue_context(&mut ledger, &scope, &profile).await.unwrap();
+        }
+        let (queue, _) = codex::approval_queue(1).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            resumed.session.run_with_started(
+                &mut ledger,
+                "@owner:test",
                 &scope,
-                Layer::Agent,
-                Period::Lifetime,
-                time::OffsetDateTime::now_utc().unix_timestamp()
-            )
-            .unwrap(),
-        (84, 100)
-    );
+                call,
+                call,
+                "Exercise the offline child fixture",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            ),
+        ).await.unwrap().unwrap();
+        assert_eq!(result.text, "ROOT_REPLY");
+        assert_eq!((result.usage.input, result.usage.output, result.usage.cached_input), (30, 12, 6));
+        assert_eq!(result.usage.accounting_version, "codex-app-server-0.167/root-turn-responses-v1");
+        assert!(resumed.session.can_continue());
+        assert_eq!(
+            ledger.account(&scope, Layer::Agent, Period::Lifetime,
+                time::OffsetDateTime::now_utc().unix_timestamp()).unwrap(),
+            (42 * (index as u64 + 3), 0)
+        );
+    }
+    resumed.stop().await.unwrap();
     model.kill().await.unwrap();
 }
 

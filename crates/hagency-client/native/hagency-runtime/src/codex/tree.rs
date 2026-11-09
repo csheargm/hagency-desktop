@@ -76,7 +76,14 @@ impl TurnTree {
         for (thread,turn) in self.turns.keys() { threads.entry(thread.clone()).or_default().insert(turn.clone()); }
         Some((self.root_turn.clone(),threads))
     }
-    pub(crate) fn invalidate_native_usage(&mut self) { self.invalid_usage=true; }
+    /// Threads positively observed in this completed native call. These IDs
+    /// select metadata reads only; they are not host or Matrix permissions.
+    pub fn completed_native_threads(&self) -> Option<Vec<String>> {
+        self.completed_native_turns().map(|(_, threads)| threads.into_keys().collect())
+    }
+    /// Receipt IO failed or disagreed with the original stream. Never recover
+    /// this call's charge from a cumulative context tally instead.
+    pub fn invalidate_native_usage(&mut self) { self.invalid_usage=true; }
     /// Alternate native transport: exact persisted response records, retaining
     /// their original thread/turn/response IDs and the same deduplication rules.
     pub(super) fn observe_rollout_receipt(&mut self, receipt: super::rollout_usage::Receipt) -> Result<(),Error> {
