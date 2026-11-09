@@ -15,11 +15,16 @@ impl Drop for Setup {
     }
 }
 
+/// Mirrors the helper's `server_admission::normalize_origin`: HTTPS anywhere,
+/// plain HTTP only for explicit loopback hosts (local development servers).
 pub fn valid_server(server: &str) -> bool {
-    server.len() <= 2048 && url::Url::parse(server).is_ok_and(|url|
-        url.scheme() == "https" && url.host_str().is_some()
+    server.len() <= 2048 && url::Url::parse(server).is_ok_and(|url| {
+        let loopback = url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("localhost")
+            || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()));
+        (url.scheme() == "https" || url.scheme() == "http" && loopback) && url.host_str().is_some()
         && url.username().is_empty() && url.password().is_none()
-        && url.query().is_none() && url.fragment().is_none())
+        && url.query().is_none() && url.fragment().is_none()
+    })
 }
 pub fn valid_owner(owner: &str) -> bool {
     owner.is_empty() || (owner.len() <= 512 && !owner.chars().any(char::is_whitespace)
@@ -155,6 +160,15 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plain_http_servers_are_accepted_only_on_loopback() {
+        for server in ["http://127.0.0.1:8088/", "http://localhost:8088", "http://[::1]:8088/", "https://hagency.example"] {
+            assert!(valid_server(server), "{server}");
+        }
+        for server in ["http://hagency.example", "http://192.168.1.10:8088", "http://my-mac.local:8088", "https://user@hagency.example"] {
+            assert!(!valid_server(server), "{server}");
+        }
+    }
     #[test]
     fn helper_errors_are_classified_without_exposing_raw_output() {
         assert_eq!(helper_failure("Error: daemon_other_owner_enrolled account=private"), "daemon_other_owner_enrolled");

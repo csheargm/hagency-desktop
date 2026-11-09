@@ -278,7 +278,7 @@ impl App {
             (ids!(setup_privacy), "Your browser handles sign-in. This app never asks for your password.", "在浏览器中安全登录，无需在此输入密码。"),
             (ids!(setup_background), "Background hosting", "后台托管"),
             (ids!(setup_explanation), "Enabling hosting starts a service when you sign in to this Mac. Closing this dashboard leaves your Agents available. You can pause or stop hosting at any time.", "启用后，服务会在您登录 Mac 时启动。关闭控制面板后 Agent 仍可响应。您可以随时暂停或停止托管。"),
-            (ids!(setup_server_error), "Enter a valid HTTPS server address.", "请输入有效的 HTTPS 服务器地址。"),
+            (ids!(setup_server_error), "Enter a valid HTTPS server address (HTTP only for localhost).", "请输入有效的 HTTPS 服务器地址（仅 localhost 可用 HTTP）。"),
             (ids!(setup_owner_error), "Use @name:server, or leave this empty to choose in the browser.", "请使用 @name:server 格式，或留空以在浏览器中选择账号。"),
         ] { self.ui.label(cx, path).set_text(cx, if zh { cn } else { en }); }
         self.ui.button(cx, ids!(setup_enable)).set_text(cx, match (self.setup_install_only, zh) {
