@@ -57,8 +57,14 @@ pub(super) fn scope_digest(
             sink.command().tool_policy.as_ref().map(|p| p.mode.as_str()),
         )?,
     };
-    scope_key(root, &a.enrollment, a.sink.provider(), policy, settings,
-        Conversation::work(w))
+    scope_key(
+        root,
+        &a.enrollment,
+        a.sink.provider(),
+        policy,
+        settings,
+        Conversation::work(w),
+    )
 }
 
 pub(super) struct Conversation<'a> {
@@ -70,16 +76,32 @@ pub(super) struct Conversation<'a> {
 }
 impl<'a> Conversation<'a> {
     pub(super) fn work(w: &'a SharedWorkItem) -> Self {
-        Self { room: &w.room_id, binding: &w.room_binding, requester: &w.requester_mxid,
-            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()), encrypted: w.encrypted }
+        Self {
+            room: &w.room_id,
+            binding: &w.room_binding,
+            requester: &w.requester_mxid,
+            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()),
+            encrypted: w.encrypted,
+        }
     }
     pub(super) fn route(w: &'a SharedSessionRoute) -> Self {
-        Self { room: &w.room_id, binding: &w.room_binding, requester: &w.requester_mxid,
-            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()), encrypted: w.encrypted }
+        Self {
+            room: &w.room_id,
+            binding: &w.room_binding,
+            requester: &w.requester_mxid,
+            thread: (w.thread_root != w.event_id).then_some(w.thread_root.as_str()),
+            encrypted: w.encrypted,
+        }
     }
 }
-pub(super) fn scope_key(root: &SharedRuntimeCommand, e: &VerifiedManagementEnrollment,
-    provider: &str, policy: &str, settings: &str, room: Conversation<'_>) -> Result<String, Error> {
+pub(super) fn scope_key(
+    root: &SharedRuntimeCommand,
+    e: &VerifiedManagementEnrollment,
+    provider: &str,
+    policy: &str,
+    settings: &str,
+    room: Conversation<'_>,
+) -> Result<String, Error> {
     // Flat room messages share one context per requester; Matrix threads remain
     // separate. Effective provider, policy and executor identity all participate.
     Ok(canonical::digest(&json!({
@@ -96,7 +118,10 @@ pub(super) fn scope_key(root: &SharedRuntimeCommand, e: &VerifiedManagementEnrol
 fn previous(db: &Connection, scope: &str) -> Result<Option<String>, Error> {
     Ok(previous_checkpoint(db, scope)?.map(|(native, _)| native))
 }
-pub(super) fn previous_checkpoint(db: &Connection, scope: &str) -> Result<Option<(String, SharedWorkReceipt)>, Error> {
+pub(super) fn previous_checkpoint(
+    db: &Connection,
+    scope: &str,
+) -> Result<Option<(String, SharedWorkReceipt)>, Error> {
     type Row = (
         Option<String>,
         Option<String>,
@@ -196,7 +221,10 @@ impl OwnerResourceRegistry {
                 }
                 // V1/V2 retain their original full transcript. V3 pins only
                 // the current request and supplies a separately scoped history tool.
-                let prior = if w.encrypted || !cfg!(feature = "shared-context") || context::native_input(&tx, &w)? {
+                let prior = if w.encrypted
+                    || !cfg!(feature = "shared-context")
+                    || context::native_input(&tx, &w)?
+                {
                     previous(&tx, &scope)?
                 } else {
                     None
@@ -246,9 +274,14 @@ impl SharedCallSink {
             .ok_or(Error::LocalAuthority)?
             .to_owned();
         ResumeThreadId::new(native.clone()).map_err(|_| Error::LocalAuthority)?;
-        self.persist_native_checkpoint(session.process_digest, native).await
+        self.persist_native_checkpoint(session.process_digest, native)
+            .await
     }
-    pub(super) async fn persist_native_checkpoint(&self, process: String, native: String) -> Result<(), Error> {
+    pub(super) async fn persist_native_checkpoint(
+        &self,
+        process: String,
+        native: String,
+    ) -> Result<(), Error> {
         let work = self.custody.work.clone();
         self.custody.call.scope.registry.store.call(64*1024,move |db| {
             let tx=db.db.transaction_with_behavior(TransactionBehavior::Immediate)?;

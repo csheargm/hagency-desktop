@@ -17,22 +17,34 @@ fn snapshots(path:&std::path::Path)->Vec<(String,Vec<Vec<String>>)> {
 #[tokio::test]
 async fn native_populated_old_account_history_pagination_owner_guard_and_restart() {
     let (mut f,original)=fixture().await;
-    let login=&f.owner.0.host.console.0.server_login;let device=login.authorized_device().await.unwrap();
-    let profile=crate::console::owned_agents::profile_identity(device.origin(),device.issuer(),device.subject(),device.owner_mxid()).unwrap();
-    let directory=login.state_directory().unwrap().join("owned-agent-owners").join(format!("management_{profile}"));
-    let database=directory.join("domain.sqlite3");
-    f.owner.suspend().await.unwrap();
-    {
-        let mut db=hagency_store::DomainRepository::open_managed(&directory,&profile).unwrap();
-        for i in 0..35 {
-            let seat=if i<18{"fixture_seat".into()}else{format!("history-seat-{i}")};
-            db.put_seat(&hagency_core::project::Seat{id:seat.clone(),declaration:None}).unwrap();
-            let resource:hagency_core::project::Resource=serde_json::from_value(json!({"presetId":format!("history-{i:02}"),"seatId":seat,"framework":"codex","model":"gpt-5.6-sol","reasoning":"medium","published":false,"ceiling":{"tokens":1000,"period":"monthly"}})).unwrap();
-            db.put_resource(&resource).unwrap();
+    let database=f._root.path().join("registry/domain.sqlite3");
+    let scope=f.transport.scope(Permission::PublishGrants).await.unwrap();
+    let id=original.clone();
+    let source=f.registry.with_repository_for_tests(move |db|db.resource_configuration(&id)).await.unwrap();
+    let mut setup=history_package();setup.instance+=100;setup.permissions.push(Permission::ConfigureResources);
+    let manager=f.owner.management(setup).await.unwrap();
+    let (context,session)=manager.authorized().await.unwrap();
+    for i in 0..35 {
+        if i<18 {
+            session.create_resource_configuration(&context,hagency_store::management::CreateResourceConfiguration{
+                command_id:format!("history-config-{i}"),source_resource_id:original.clone(),
+                expected_revision:hagency_store::resource_publication_revision(&source).unwrap(),
+                profile:hagency_store::ProfileChange::Preserve{},ceiling:hagency_store::CeilingChange::Preserve{},execution_policy:None,
+            },Instant::now()+Duration::from_secs(30)).await.unwrap();
+        } else {
+            f.registry.prepare_enrollment(scope.profile.clone(),format!("history-account-{i}"),
+                VerifiedProviderAccount::new("codex","https://provider.test",&format!("history-subject-{i}"),Instant::now()+Duration::from_secs(30)).unwrap(),
+                source.model.clone(),source.reasoning.clone(),1000,Instant::now()+Duration::from_secs(30),
+            ).unwrap().approve().await.unwrap();
         }
-        for i in 0..19 {db.add_alert_note("fixture:original","older-owner",&format!("Retained note / 历史记录 {i}"),100+i).unwrap();}
-        db.set_offer("documentation",Some(2),Some(500),Some(100),true,"private-old-writer",110).unwrap();
-        drop(db);
+    }
+    drop(session);drop(manager);drop(scope);
+    f.registry.with_repository_for_tests(|db|{
+        for i in 0..19 {db.add_alert_note("fixture:original","older-owner",&format!("Retained note / 历史记录 {i}"),100+i)?;}
+        db.set_offer("documentation",Some(2),Some(500),Some(100),true,"private-old-writer",110)?;
+        Ok(())
+    }).await.unwrap();
+    {
         let db=rusqlite::Connection::open(&database).unwrap();
         for i in 0..20 {db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES(?1,?2,'Retained observation',?3,'Review','No permission change','Recheck',1,1,1)",rusqlite::params![format!("history:{i:02}"),original,r#"{"ceilingTokens":1000,"drawnTokens":1100,"credential":"history-private-sentinel"}"#]).unwrap();}
     }

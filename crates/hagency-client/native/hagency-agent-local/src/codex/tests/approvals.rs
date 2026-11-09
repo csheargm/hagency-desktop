@@ -38,7 +38,7 @@ async fn canceled_and_terminal_approvals_withdraw_the_owner_wait_without_late_ef
             "call",
             "dispatch",
             "hello",
-            BudgetMode::Estimated { reservation: 20 },
+            BudgetMode::Postpaid,
             &queue,
         );
         let (done, ()) =
@@ -98,7 +98,7 @@ async fn owner_wait_does_not_hide_a_second_native_approval() {
         "call",
         "dispatch",
         "hello",
-        BudgetMode::Estimated { reservation: 20 },
+        BudgetMode::Postpaid,
         &queue,
     );
     let (done, ()) =

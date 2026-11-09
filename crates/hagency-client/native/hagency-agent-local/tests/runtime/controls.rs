@@ -10,11 +10,17 @@ use std::time::Duration;
 #[tokio::test]
 async fn claude_stop_during_owner_or_question_wait_is_cooperative_and_bills_actual_usage() {
     for question in [false, true] {
-        for refused in [false, true] {
+        for (refused, generic) in [(false, false), (false, true), (true, false)] {
             let mode = format!(
                 "control_{}_{}",
                 if question { "question" } else { "permission" },
-                if refused { "refused" } else { "accepted" }
+                if refused {
+                    "refused"
+                } else if generic {
+                    "generic"
+                } else {
+                    "accepted"
+                }
             );
             let mut f = Fixture::new(Kind::Claude, &mode, ToolPolicy::AskOwner);
             let mut process = f.process().await;

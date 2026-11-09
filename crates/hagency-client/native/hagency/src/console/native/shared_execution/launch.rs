@@ -4,7 +4,7 @@ use super::*;
 use crate::console::{AuthorizedDevice, owner_provider};
 use hagency_agent_local::{codex::Profile, runtime::Kind};
 use hagency_runtime::{
-    claude::account::AccountBinding,
+    claude::account::{AccountBinding, SharedCredential},
     owned::{OwnedClaudeSession, SharedClaudePolicy},
 };
 use std::{
@@ -63,6 +63,9 @@ pub(super) struct ClaudeLaunch {
     pub profile: Profile,
     pub policy: SharedClaudePolicy,
     binding: Option<AccountBinding>,
+    credential: Option<SharedCredential>,
+    workspaces: Option<super::claude_workspace::Workspaces>,
+    workspace: Option<super::claude_workspace::Lease>,
 }
 impl Launch {
     pub async fn for_resource(
@@ -126,6 +129,9 @@ impl Launch {
             resource: resource.id.clone(),
             revision: resource.revision.clone(),
             binding: None,
+            credential: None,
+            workspaces: None,
+            workspace: None,
             profile: Profile {
                 executable: owner_provider::external::executable(Kind::Claude)
                     .map_err(|e| failure(e.status, e.code))?,
@@ -163,8 +169,6 @@ impl Launch {
                 super::super::key(agent)?;
                 v.policy = SharedClaudePolicy::from_options(v.profile.web_search, mode)
                     .map_err(|_| invalid())?;
-                v.profile.cwd = v.profile.cwd.join(agent);
-                hagency_store::private::directory(&v.profile.cwd).map_err(store)?;
                 hagency_agent_local::runtime::validate(
                     &v.profile,
                     &v.selection.paths.credential_ref,
@@ -199,6 +203,7 @@ impl Launch {
                 .map(Self::Codex),
             Self::Claude(mut v) => {
                 check().await?;
+                v.workspaces = Some(manager.owner.0.shared_execution.claude_workspaces.clone());
                 #[cfg(test)]
                 if v.selection.fixture_mode.is_some() {
                     let proof = VerifiedProviderAccount::from_claude_binding(v.binding()?.clone())
@@ -220,19 +225,15 @@ impl Launch {
                 if !v.selection.check() {
                     return Err(failure(409, "provider_account_changed"));
                 }
-                let proof = tokio::time::timeout_at(
+                let credential = tokio::time::timeout_at(
                     until.into(),
-                    manager.verified_resource_provider_account(
-                        &v.registry,
-                        v.profile_authority.clone(),
-                        super::super::ManagementRuntime::Claude,
-                        v.resource.clone(),
-                        v.revision.clone(),
-                    ),
+                    manager.shared_claude_credential(&v.selection.paths, until),
                 )
                 .await
                 .map_err(|_| failure(409, "shared_execution_expired"))??;
-                let binding = proof.claude_binding().map_err(store)?.clone();
+                let binding = credential.binding().clone();
+                let proof =
+                    VerifiedProviderAccount::from_claude_binding(binding.clone()).map_err(store)?;
                 let verified = v
                     .registry
                     .verify_provider_resource(
@@ -247,12 +248,28 @@ impl Launch {
                 }
                 check().await?;
                 v.binding = Some(binding);
+                v.credential = Some(credential);
                 Ok(Self::Claude(v))
             }
         }
     }
 }
 impl ClaudeLaunch {
+    pub(super) fn turn_policy_path(&self) -> Result<PathBuf, NativeError> {
+        #[cfg(test)]
+        if self.selection.fixture_mode.is_some() {
+            return Ok(self.selection.root.join("shared-claude-turn-policy.json"));
+        }
+        crate::console::owned_agents::journal_profile_directory(
+            &self.selection.root,
+            &self.selection.origin,
+            &self.selection.issuer,
+            &self.selection.subject,
+            &self.selection.owner,
+        )
+        .map(|root| root.join("shared-claude-turn-policy.json"))
+        .map_err(|_| failure(409, "shared_execution_launch_unavailable"))
+    }
     #[cfg(test)]
     pub(in crate::console::native) fn fixture(
         registry: OwnerResourceRegistry,
@@ -304,6 +321,9 @@ impl ClaudeLaunch {
             },
             policy: SharedClaudePolicy::Text,
             binding: Some(binding),
+            credential: None,
+            workspaces: None,
+            workspace: None,
         }
     }
     pub fn check(&self) -> Result<(), NativeError> {
@@ -318,12 +338,52 @@ impl ClaudeLaunch {
             .ok_or_else(|| failure(409, "provider_identity_unavailable"))
     }
     pub fn session_settings_digest(&self) -> Result<String, NativeError> {
-        digest(&serde_json::json!({"version":1,"executable":self.profile.executable,
-            "home":self.profile.home,"config":self.profile.codex_home,"cwd":self.profile.cwd,
+        digest(
+            &serde_json::json!({"version":2,"executable":self.profile.executable,
+            "isolation":"host-owned-room-v1","resource":self.resource,"revision":self.revision,
             "model":self.profile.model,"effort":self.profile.effort,"policy":self.policy.name(),
-            "roomTools":cfg!(feature = "shared-context")}))
+            "roomTools":cfg!(feature = "shared-execution")}),
+        )
     }
-    pub fn spawn(&self, until: Instant, resume: Option<&str>) -> Result<OwnedClaudeSession, NativeError> {
+    pub fn bind_session_scope(
+        &mut self,
+        session: &SharedClaudeSession,
+        command: &SharedRuntimeCommand,
+    ) -> Result<(), NativeError> {
+        if self.workspace.is_some() {
+            return Err(invalid());
+        }
+        let lease = self.workspaces.as_ref().ok_or_else(invalid)?.open(
+            &self.profile.cwd,
+            session.storage_scope(),
+            &command.assignment_id,
+            command.assignment_generation,
+        )?;
+        self.profile.home = lease.path().join("home");
+        self.profile.codex_home = lease.path().join("config");
+        self.profile.cwd = lease.path().join("work");
+        self.workspace = Some(lease);
+        Ok(())
+    }
+    pub fn retire_plaintext(&self) {
+        if let Some(scope) = &self.workspace {
+            scope.retire();
+        }
+    }
+    pub fn bind_admitted_scope(&self, session: &SharedClaudeSession) -> Result<(), NativeError> {
+        self.workspace
+            .as_ref()
+            .ok_or_else(invalid)?
+            .bind_admitted_scope(session.storage_scope())
+    }
+    pub fn seal_stopped(&self) -> Result<(), NativeError> {
+        self.workspace.as_ref().ok_or_else(invalid)?.seal_stopped()
+    }
+    pub fn spawn(
+        &self,
+        until: Instant,
+        resume: Option<&str>,
+    ) -> Result<OwnedClaudeSession, NativeError> {
         self.check()?;
         self.binding()?
             .check()
@@ -337,11 +397,15 @@ impl ClaudeLaunch {
             "CLAUDE_CONFIG_DIR".into(),
             self.profile.codex_home.as_os_str().into(),
         );
-        for name in ["PATH", "USER", "TMPDIR"] {
-            if let Some(value) = std::env::var_os(name) {
-                environment.insert(name.into(), value);
-            }
+        let workspace = self.workspace.as_ref().ok_or_else(invalid)?;
+        environment.insert("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into());
+        for name in ["TMPDIR", "CLAUDE_CODE_TMPDIR"] {
+            environment.insert(name.into(), workspace.path().join("tmp").into_os_string());
         }
+        environment.insert(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
+            "1".into(),
+        );
         for name in [
             "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
             "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
@@ -373,7 +437,26 @@ impl ClaudeLaunch {
         } else {
             guardian
         };
-        OwnedClaudeSession::spawn_shared_resuming(&guardian, &launch, Default::default(), self.policy, resume)
-            .map_err(|_| failure(409, "shared_execution_launch_unavailable"))
+        #[cfg(test)]
+        if self.selection.fixture_mode.is_some() {
+            return OwnedClaudeSession::spawn_shared_resuming(
+                &guardian,
+                &launch,
+                Default::default(),
+                self.policy,
+                resume,
+            )
+            .map_err(|_| failure(409, "shared_execution_launch_unavailable"));
+        }
+        OwnedClaudeSession::spawn_shared_isolated_resuming(
+            &guardian,
+            launch,
+            workspace.path(),
+            self.credential.as_ref().ok_or_else(invalid)?,
+            Default::default(),
+            self.policy,
+            resume,
+        )
+        .map_err(|_| failure(409, "shared_execution_launch_unavailable"))
     }
 }

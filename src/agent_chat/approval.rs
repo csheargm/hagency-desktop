@@ -25,44 +25,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use matrix_sdk::ruma::{EventId, OwnedEventId};
 
-/// The wire namespace an approval event uses.
-///
-/// The protocol was designed under `com.agentchat.*`, but deployed forks rename
-/// it: the HAFleet deployment ships `com.hafleet.*`, and older builds used
-/// `com.hagency.*`. The event key and the three msgtypes are all derived from a
-/// single base, so this client accepts every known base and, crucially, sends a
-/// verdict back under the *same* namespace the request arrived in — the wire
-/// name is the bridge's to choose, not ours. A real soak against a live HAFleet
-/// bridge is what surfaced this: a `com.agentchat.*`-only client renders nothing.
+/// The current native owner-approval message namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Namespace(&'static str);
+pub struct Namespace;
 
 impl Namespace {
-    /// Every namespace base this client recognises, in preference order.
-    pub const ALL: [Namespace; 3] = [
-        Namespace("com.agentchat"),
-        Namespace("com.hafleet"),
-        Namespace("com.hagency"),
-    ];
+    pub const ALL: [Namespace; 1] = [Namespace];
+    pub const DEFAULT: Namespace = Namespace;
 
-    /// The default namespace for events this client originates unprompted
-    /// (there are none today; verdicts always echo the request's namespace).
-    pub const DEFAULT: Namespace = Namespace("com.agentchat");
-
-    /// The base string, e.g. `com.agentchat`.
     pub fn base(self) -> &'static str {
-        self.0
+        "com.agentchat"
     }
 
     /// The structured-content key, e.g. `com.agentchat.approval`.
     pub fn event_key(self) -> String {
-        format!("{}.approval", self.0)
+        format!("{}.approval", self.base())
     }
 
     /// The request / status / verdict msgtype for this namespace.
-    pub fn request_msgtype(self) -> String { format!("{}.approval.request.v1", self.0) }
-    pub fn status_msgtype(self) -> String { format!("{}.approval.status.v1", self.0) }
-    pub fn verdict_msgtype(self) -> String { format!("{}.approval.verdict.v1", self.0) }
+    pub fn request_msgtype(self) -> String { format!("{}.approval.request.v1", self.base()) }
+    pub fn status_msgtype(self) -> String { format!("{}.approval.status.v1", self.base()) }
+    pub fn verdict_msgtype(self) -> String { format!("{}.approval.verdict.v1", self.base()) }
 
     /// The namespace a request/status/verdict msgtype belongs to, if any.
     pub fn of_msgtype(msgtype: &str) -> Option<Namespace> {
@@ -140,6 +123,8 @@ pub struct ReusableScope {
 /// A fully-validated owner approval request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
+    pub owner_mxid: String,
+    pub publisher_mxid: String,
     pub agent: String,
     pub project: String,
     pub project_room_id: String,
@@ -306,6 +291,11 @@ fn parse_reusable_scope(approval: &serde_json::Value) -> Option<ReusableScope> {
 /// `m.room.message` event. Returns `None` for anything that isn't a
 /// well-formed `com.agentchat.approval.request.v1`.
 pub fn parse_approval_request(content: &serde_json::Value) -> Option<ApprovalRequest> {
+    if content.get("m.new_content").is_some()
+        || content.get("m.relates_to").and_then(|r| r.get("rel_type")).is_some()
+    {
+        return None;
+    }
     let msgtype = content.get("msgtype")?.as_str()?;
     let namespace = Namespace::of_msgtype(msgtype)?;
     if msgtype != namespace.request_msgtype() {
@@ -314,10 +304,20 @@ pub fn parse_approval_request(content: &serde_json::Value) -> Option<ApprovalReq
     let approval = content.get(namespace.event_key())?;
     if approval.get("version").and_then(|value| value.as_u64()) != Some(1)
         || approval.get("kind").and_then(|value| value.as_str()) != Some("request")
+        || approval.get("revision").and_then(|value| value.as_u64()) != Some(1)
+        || approval.get("migration_kind").is_some()
     {
         return None;
     }
     let actions = parse_actions(approval)?;
+
+    let owner_mxid = approval.get("owner_mxid")?.as_str()?;
+    let publisher_mxid = approval.get("publisher_mxid")?.as_str()?;
+    for identity in [owner_mxid, publisher_mxid] {
+        if identity.trim() != identity || matrix_sdk::ruma::UserId::parse(identity).is_err() {
+            return None;
+        }
+    }
 
     let agent = trimmed_str(approval, "agent")?;
     let project = trimmed_str(approval, "project")?;
@@ -331,17 +331,18 @@ pub fn parse_approval_request(content: &serde_json::Value) -> Option<ApprovalReq
     let input_preview = trimmed_str(approval, "input_preview")?;
     let expires_at_millis = approval.get("expires_at")?.as_u64()?;
 
+    for (field, parsed) in [("agent", agent), ("project", project), ("project_room_id", project_room_id), ("request_id", request_id), ("input_digest", input_digest)] {
+        if approval.get(field)?.as_str()? != parsed { return None; }
+    }
     let request_suffix = request_id.strip_prefix("approval_")?;
     if agent.is_empty()
         || project.is_empty()
         || !project_room_id.starts_with('!')
         || !project_room_id.contains(':')
-        // TS hagency mints 32 hex; the Rust port mints 40 (its persisted
-        // custody uses that length), so both are well-formed ids.
-        || !(is_lowercase_hex(request_suffix, 32) || is_lowercase_hex(request_suffix, 40))
+        || !is_lowercase_hex(request_suffix, 40)
         || upstream_request_id.is_empty()
         || !is_lowercase_hex(input_digest, 64)
-        || !matches!(runtime, "claude" | "codex")
+        || !matches!(runtime, "claude" | "codex" | "octos")
         || tool_name.is_empty()
         || expires_at_millis == 0
     {
@@ -353,7 +354,7 @@ pub fn parse_approval_request(content: &serde_json::Value) -> Option<ApprovalReq
     let has_scoped_action = actions
         .iter()
         .any(|action| matches!(action.id.as_str(), "approve_task" | "approve_always"));
-    if has_scoped_action && reusable_scope.is_none() {
+    if has_scoped_action && reusable_scope.as_ref().is_none_or(|s| s.description.is_empty() || s.workspace.is_empty()) {
         return None;
     }
     if actions.iter().any(|action| action.id == "approve_task")
@@ -363,6 +364,8 @@ pub fn parse_approval_request(content: &serde_json::Value) -> Option<ApprovalReq
     }
 
     Some(ApprovalRequest {
+        owner_mxid: owner_mxid.to_owned(),
+        publisher_mxid: publisher_mxid.to_owned(),
         agent: agent.to_owned(),
         project: project.to_owned(),
         project_room_id: project_room_id.to_owned(),
@@ -569,7 +572,7 @@ mod tests {
     const APPROVAL_STATUS_MSGTYPE: &str = "com.agentchat.approval.status.v1";
     const APPROVAL_VERDICT_MSGTYPE: &str = "com.agentchat.approval.verdict.v1";
 
-    const REQUEST_ID: &str = "approval_0123456789abcdef0123456789abcdef";
+    const REQUEST_ID: &str = "approval_0123456789abcdef0123456789abcdef01234567";
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn two_action_request(expires_at: u64) -> serde_json::Value {
@@ -579,6 +582,9 @@ mod tests {
             APPROVAL_EVENT_KEY: {
                 "version": 1,
                 "kind": "request",
+                "owner_mxid": "@owner:example.org",
+                "publisher_mxid": "@bridge:example.org",
+                "revision": 1,
                 "agent": "wf_codex",
                 "project": "robrix2",
                 "project_room_id": "!board:example.org",
@@ -631,14 +637,16 @@ mod tests {
 
     #[test]
     fn parses_a_rust_port_request_id() {
-        // The Rust hagency port mints `approval_` + 40 hex; TS mints 32.
+        // Current native custody mints exactly40 hex and retains that ID.
         let mut content = two_action_request(1_000);
         content[APPROVAL_EVENT_KEY]["request_id"] =
             serde_json::json!(format!("approval_{}", "ab".repeat(20)));
         assert!(parse_approval_request(&content).is_some());
-        content[APPROVAL_EVENT_KEY]["request_id"] =
-            serde_json::json!(format!("approval_{}", "a".repeat(39)));
-        assert!(parse_approval_request(&content).is_none(), "other lengths stay refused");
+        for length in [32, 39, 41] {
+            content[APPROVAL_EVENT_KEY]["request_id"] =
+                serde_json::json!(format!("approval_{}", "a".repeat(length)));
+            assert!(parse_approval_request(&content).is_none(), "obsolete or invalid length {length}");
+        }
     }
 
     #[test]
@@ -772,71 +780,31 @@ mod tests {
     }
 
 
-    /// Bytes captured from a live Palpo homeserver round-trip (soak test): the
-    /// hagency-shaped request the bridge sent, and the verdict this client's
-    /// wire format produced, both exactly as the server stored and returned them.
     #[test]
-    fn real_palpo_event_bytes_parse_and_round_trip() {
+    fn historical_unbound_palpo_request_is_display_only() {
         let content: serde_json::Value =
             serde_json::from_str(include_str!("testdata/palpo-request.json")).unwrap();
-        let ApprovalMessage::Request(request) = ApprovalMessage::from_original_content(&content)
-            .expect("real server bytes classify as an approval message")
-        else {
-            panic!("real server bytes must classify as a request");
-        };
-        assert_eq!(request.agent, "wf_codex");
-        assert_eq!(request.runtime, "codex");
-        assert_eq!(request.tool_name, "Bash");
-        assert_eq!(
-            request.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
-            ["approve_once", "approve_task", "approve_always", "deny"],
-        );
-        assert_eq!(
-            request.reusable_scope.as_ref().and_then(|s| s.task_id.as_deref()),
-            Some("task_soak_7"),
-        );
-
-        // The verdict we would build must match, field for field, the verdict the
-        // real server accepted, stored, and handed back.
-        let stored: serde_json::Value =
-            serde_json::from_str(include_str!("testdata/palpo-verdict.json")).unwrap();
-        let source = EventId::parse("$beHFiq3AIRAqZd60zYi7EKb5clojKKZybfHXLR3GKI0").unwrap();
-        let built = request.verdict_content(request.action("approve_once").unwrap(), &source);
-        assert_eq!(built, stored);
+        assert!(matches!(ApprovalMessage::from_original_content(&content),
+            Some(ApprovalMessage::MalformedRequest { .. })));
     }
 
     #[test]
-    fn accepts_the_hafleet_namespace_and_echoes_it_in_the_verdict() {
-        // The exact shape a live HAFleet bridge emits (com.hafleet.*), captured
-        // from the deployment's own `buildOwnerApprovalRequest`.
-        let content = serde_json::json!({
-            "msgtype": "com.hafleet.approval.request.v1",
-            "body": "Approval required for octos-01",
-            "com.hafleet.approval": {
-                "version": 1, "kind": "request",
-                "agent": "octos-01", "project": "robrix2-soak",
-                "project_room_id": "!soakproj:palpo.test",
-                "request_id": REQUEST_ID, "upstream_request_id": "soak-1ad2fd",
-                "input_digest": DIGEST, "runtime": "claude",
-                "tool_name": "Bash", "description": "Run the library tests",
-                "input_preview": "cargo test --lib", "expires_at": 1_000u64,
-                "actions": [
-                    { "id": "approve_once", "label": "Approve once", "style": "primary" },
-                    { "id": "deny", "label": "Deny", "style": "danger" }
-                ]
+    fn obsolete_namespace_aliases_are_not_approval_messages() {
+        for namespace in ["com.hafleet", "com.hagency"] {
+            for kind in ["request", "status", "verdict"] {
+                let mut content = two_action_request(1000);
+                let mut detail = content.as_object_mut().unwrap().remove(APPROVAL_EVENT_KEY).unwrap();
+                detail["kind"] = serde_json::json!(kind);
+                content[format!("{namespace}.approval")] = detail;
+                let msgtype = format!("{namespace}.approval.{kind}.v1");
+                content["msgtype"] = serde_json::json!(msgtype);
+                assert!(!is_approval_msgtype(&msgtype));
+                assert!(parse_approval_request(&content).is_none());
+                assert!(ApprovalMessage::from_original_content(&content).is_none());
             }
-        });
-        assert!(is_approval_msgtype("com.hafleet.approval.request.v1"));
-        assert!(is_approval_msgtype("com.hagency.approval.status.v1"));
-        let request = parse_approval_request(&content).expect("hafleet request parses");
-        assert_eq!(request.namespace.base(), "com.hafleet");
-        // The verdict MUST go back under the same namespace the request used, or
-        // the HAFleet bridge (which reads only com.hafleet.*) ignores it.
-        let source = EventId::parse("$req:palpo.test").unwrap();
-        let verdict = request.verdict_content(request.action("approve_once").unwrap(), &source);
-        assert_eq!(verdict["msgtype"], "com.hafleet.approval.verdict.v1");
-        assert_eq!(verdict["com.hafleet.approval"]["request_id"], REQUEST_ID);
-        assert!(verdict.get("com.agentchat.approval").is_none());
+        }
+        // Shared execution has its own authenticated management route.
+        assert!(!is_approval_msgtype("im.hagency.shared_approval.request.v1"));
     }
 
     #[test]

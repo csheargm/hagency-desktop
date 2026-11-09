@@ -165,7 +165,7 @@ async fn native_steer_preserves_callbacks_terminal_order_and_unknown_receipts() 
             "call",
             "dispatch",
             "hello",
-            BudgetMode::Estimated { reservation: 20 },
+            BudgetMode::Postpaid,
             &queue,
             Some(notice),
         );
@@ -241,7 +241,7 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
             "call",
             "dispatch",
             "hello",
-            BudgetMode::Estimated { reservation: 20 },
+            BudgetMode::Postpaid,
             &queue,
         );
         let (done, ()) =
@@ -255,7 +255,7 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
                 ledger
                     .account(&scope(), Layer::Room, Period::Lifetime, now())
                     .unwrap(),
-                (0, 20)
+                (0, 0)
             );
         } else {
             let done = done.unwrap();

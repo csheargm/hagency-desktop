@@ -1,4 +1,4 @@
-//! Offline cumulative native sessions, persisted independently of the host.
+//! Offline persisted conversation with process-local native usage totals.
 use super::*;
 
 pub(super) fn run(marker: &Path, prompt: &Value) -> io::Result<()> {
@@ -42,10 +42,13 @@ pub(super) fn run(marker: &Path, prompt: &Value) -> io::Result<()> {
         )?;
         return super::super::pulse(marker);
     }
-    let calls = if marker.with_extension("regress").exists() {
-        0
+    // Installed CLI 2.1.321 restores messages, but a resumed process starts
+    // modelUsage at zero. This fixture runs exactly one turn per process.
+    let calls = 1;
+    let input = if marker.with_extension("invalid_usage").exists() {
+        json!(-1)
     } else {
-        inputs.len() as u64
+        json!(10 * calls)
     };
     emit(
         json!({"type":"system","subtype":"init","session_id":native,"user_message_uuid":prompt["uuid"]}),
@@ -53,8 +56,11 @@ pub(super) fn run(marker: &Path, prompt: &Value) -> io::Result<()> {
     emit(
         json!({"type":"result","subtype":"success","session_id":native,"is_error":false,"result":text,
         "user_message_uuid":prompt["uuid"],"user_message_uuids":[prompt["uuid"]],
-        "modelUsage":{"offline-model":{"inputTokens":10*calls,"outputTokens":2*calls,
-            "cacheReadInputTokens":3*calls,"cacheCreationInputTokens":4*calls}}}),
+        "modelUsage":{"offline-model":{"inputTokens":input,"outputTokens":2*calls,
+            "cacheReadInputTokens":3*calls,"cacheCreationInputTokens":4*calls,
+            "thinkingTokens":1,"cacheCreationEphemeral5mInputTokens":4,"cacheCreationEphemeral1hInputTokens":0,
+            "webSearchRequests":0,"costUSD":0.001,"contextWindow":200000,"maxOutputTokens":64000,
+            "canonicalModel":"offline-model","provider":"fixture","costBasis":"synthetic"}}}),
     )?;
     emit(
         json!({"type":"system","subtype":"session_state_changed","session_id":native,"state":"idle"}),

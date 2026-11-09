@@ -245,7 +245,8 @@ impl ApprovalCollector {
         scope: OwnedProvisionScope,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        self.observe_engagements(Some(scope), cancel).await
+        self.observe_engagements(Some(scope), cancel).await?;
+        self.prepare_private_approval_rooms(cancel).await
     }
     async fn observe_engagements(
         &self,

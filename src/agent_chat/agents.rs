@@ -3,7 +3,7 @@
 //! hagency registers one Matrix "puppet" account per agent, named
 //! `@ac_<team>_<role>:server` (the `ac_` prefix is the bridge's default
 //! `MATRIX_AGENT_PREFIX`), and one bridge bot per instance, named
-//! `@agent-bridge-<team>:server` (or the legacy shared `@agent-bridge:server`).
+//! `@agent-bridge-<team>:server`.
 //! Nothing here is an identity check: the bridge decides who is an agent, and
 //! the agent-chat server decides who owns one. These helpers only drive UI
 //! conveniences such as role badges, coordinator detection for the workflow
@@ -15,7 +15,7 @@ use matrix_sdk::{room::RoomMember, ruma::{OwnedUserId, UserId}};
 
 /// The localpart prefix the bridge gives every agent puppet account.
 pub const AGENT_LOCALPART_PREFIX: &str = "ac_";
-/// The localpart of the bridge bot (`agent-bridge-<team>`, or bare `agent-bridge`).
+/// The prefix of the team bridge bot (`agent-bridge-<team>`).
 pub const BRIDGE_BOT_LOCALPART: &str = "agent-bridge";
 
 /// The role an agent plays in an agent-chat workflow, derived from its Matrix
@@ -67,8 +67,7 @@ pub fn is_agent_localpart(localpart: &str) -> bool {
 /// Whether `user_id` is an agent-chat bridge bot.
 pub fn is_bridge_bot(user_id: &UserId) -> bool {
     let localpart = user_id.localpart();
-    localpart == BRIDGE_BOT_LOCALPART
-        || localpart.strip_prefix(BRIDGE_BOT_LOCALPART).is_some_and(|rest| rest.starts_with('-'))
+    localpart.strip_prefix(BRIDGE_BOT_LOCALPART).is_some_and(|rest| rest.starts_with('-') && rest.len() > 1)
 }
 
 /// Whether `name` names a workflow coordinator agent: bare `coordinator` or
@@ -88,10 +87,8 @@ pub fn room_has_coordinator(members: &[RoomMember]) -> bool {
 
 /// The companion bridge bots to invite alongside an agent puppet.
 ///
-/// Multi-instance topology: each team's bridge bot is `agent-bridge-<team>`,
-/// derived from the invitee's `ac_<team>_<role>` localpart. The legacy shared
-/// `agent-bridge` name is kept as a best-effort fallback so single-instance
-/// deployments keep working; inviting a nonexistent account fails harmlessly.
+/// Each team's bridge bot is `agent-bridge-<team>`, derived from the invitee's
+/// `ac_<team>_<role>` localpart. Unknown teams never add another account.
 pub fn companion_bridge_bots(user_id: &UserId) -> Vec<OwnedUserId> {
     let Some(rest) = user_id.localpart().strip_prefix(AGENT_LOCALPART_PREFIX) else {
         return Vec::new();
@@ -106,10 +103,6 @@ pub fn companion_bridge_bots(user_id: &UserId) -> Vec<OwnedUserId> {
         if let Ok(user) = OwnedUserId::try_from(derived) {
             plan.push(user);
         }
-    }
-    let legacy = format!("@{BRIDGE_BOT_LOCALPART}:{}", user_id.server_name());
-    if let Ok(user) = OwnedUserId::try_from(legacy) {
-        plan.push(user);
     }
     plan
 }
@@ -164,25 +157,24 @@ mod tests {
         assert!(is_agent_localpart("ac_anything"));
         assert!(is_agent_localpart("wf_reviewer"));
         assert!(!is_agent_localpart("alice"));
-        assert!(is_bridge_bot(&user("@agent-bridge:example.org")));
+        assert!(!is_bridge_bot(&user("@agent-bridge:example.org")));
         assert!(is_bridge_bot(&user("@agent-bridge-wf:example.org")));
         assert!(!is_bridge_bot(&user("@agent-bridged:example.org")));
     }
 
     #[test]
-    fn invite_plan_adds_team_and_legacy_bridge_bots() {
+    fn invite_plan_adds_only_the_identified_team_bridge() {
         let plan = invite_plan([user("@ac_wf_coordinator:example.org")]);
         assert_eq!(
             plan,
             vec![
                 user("@ac_wf_coordinator:example.org"),
                 user("@agent-bridge-wf:example.org"),
-                user("@agent-bridge:example.org"),
             ]
         );
-        // A puppet with no recognisable role still gets the legacy bot.
+        // A puppet with no recognised team does not invite a shared bot.
         let plan = invite_plan([user("@ac_helper:example.org")]);
-        assert_eq!(plan, vec![user("@ac_helper:example.org"), user("@agent-bridge:example.org")]);
+        assert_eq!(plan, vec![user("@ac_helper:example.org")]);
         // Humans get nothing extra, and duplicates collapse.
         let plan = invite_plan([
             user("@alice:example.org"),
@@ -196,7 +188,6 @@ mod tests {
                 user("@alice:example.org"),
                 user("@ac_wf_reviewer:example.org"),
                 user("@agent-bridge-wf:example.org"),
-                user("@agent-bridge:example.org"),
                 user("@ac_wf_implementer:example.org"),
             ]
         );

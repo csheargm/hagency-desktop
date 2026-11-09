@@ -448,9 +448,8 @@ async fn work_loop(
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
     let (b, p) = proof(io, r, sink, a).await?;
-    // Freeze the exact plaintext input before selecting native context. Legacy
-    // V1/V2 records remain fresh; only V3 supports appending to a retained session.
-    let plaintext_input = if cfg!(feature = "shared-context") && !work.encrypted {
+    // Pin the exact V3 plaintext input before selecting the retained native session.
+    let plaintext_input = if !work.encrypted {
         Some(guarded(cancel, a.until, || super::budget_context_io::prepare(
             io, &b, r, p, &work, a.lease.authority.clone(), a.until)).await?)
     } else { None };
@@ -499,7 +498,7 @@ async fn work_loop(
             .await
     })
     .await?;
-    let input = if cfg!(feature = "shared-context") && work.encrypted {
+    let input = if work.encrypted {
         let text = prepare_while_active(
             io,
             r,
@@ -523,17 +522,9 @@ async fn work_loop(
             text
         };
         let (_, fresh) = proof(io, r, sink, a).await?;
-        Some(
-            if history.is_some() {
-                r.prepare_shared_room_input(fresh, work.clone(), text).await
-            } else {
-                r.prepare_shared_decrypted_input(fresh, work.clone(), text)
-                    .await
-            }
-            .map_err(store)?,
-        )
+        r.prepare_shared_decrypted_input(fresh, work.clone(), text).await.map_err(store)?
     } else {
-        plaintext_input
+        plaintext_input.ok_or_else(|| failure(409, "native_context_protocol_required"))?
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
     let mut files = prepare_while_active(
@@ -543,34 +534,24 @@ async fn work_loop(
         control,
         a,
         cancel,
-        super::files::Files::new(io, &b, &work, process, input.as_ref()),
+        super::files::Files::new(io, &b, &work, process, Some(&input)),
     )
     .await?;
     let (_, p) = proof(io, r, sink, a).await?;
-    let call = if let Some(input) = &input {
-        r.prepare_shared_input_call(p, work.clone(), input.clone())
-            .await
-    } else {
-        r.prepare_shared_call(p, work.clone()).await
-    }
-    .map_err(store)?;
+    let call = r.prepare_shared_input_call(p, work.clone(), input.clone())
+        .await.map_err(store)?;
     let call_id = call.call_id.clone();
     let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
     let (b, p) = proof(io, r, sink, a).await?;
-    let attempt = if let Some(input) = &input {
-        r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
-            .await
-    } else {
-        r.begin_shared_start(p, work.clone(), call.call_id).await
-    }
-    .map_err(store)?;
+    let attempt = r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
+        .await.map_err(store)?;
     let issued = match guarded(cancel, a.until, || {
         super::budget_context_io::start(
             &b,
             r,
             attempt,
             &work,
-            input.as_ref(),
+            &input,
             a.lease.authority.clone(),
             a.until,
         )
@@ -580,7 +561,7 @@ async fn work_loop(
         Ok(custody) => custody,
         Err(error) => {
             if let Ok(Some(receipt)) =
-                budget_work_io::refuse_unissued(io, r, sink.command(), &work, input.as_ref()).await
+                budget_work_io::refuse_unissued(io, r, sink.command(), &work, Some(&input)).await
             {
                 let _ = report_work(io, r, sink.command(), &work, &receipt).await;
             }
@@ -815,7 +796,7 @@ async fn work_loop(
       Ok(terminal)
     }.await;
     if let Some(controls) = &mut run_controls {
-        controls.finish(process, &terminal_result);
+        controls.finish(process, &terminal_result).await;
     }
     // Cards still waiting when the turn ended close unanswered.
     questions.close();

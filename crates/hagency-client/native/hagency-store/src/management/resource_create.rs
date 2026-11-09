@@ -39,7 +39,6 @@ impl CreateResourceConfiguration {
         Ok(())
     }
 
-    #[cfg(feature = "resource-adoption")]
     fn receipt(&self, context: &HostContext, profile: &str) -> Result<CommandReceipt, Error> {
         CommandReceipt::new(
             context,
@@ -50,7 +49,6 @@ impl CreateResourceConfiguration {
     }
 }
 
-#[cfg(feature = "resource-adoption")]
 impl Session {
     /// Original-result lookup precedes current source revision, model and login
     /// checks. It cannot create another resource or renew retired authority.
@@ -61,13 +59,11 @@ impl Session {
     ) -> Result<Option<ResourceConfigurationResult>, Error> {
         self.check(context, Permission::ConfigureResources)?;
         input.validate()?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
+        let SessionStore::Current(store) = self.local_store()?;
         let receipt = input.receipt(context, store.identity().0)?;
         let result = store
             .recover_resource_configuration(
-                &self.adopted_profile(store)?,
+                &self.current_profile(store)?,
                 input.source_resource_id.clone(),
                 receipt,
             )
@@ -93,13 +89,11 @@ impl Session {
         {
             return Err(Error::LocalAuthority);
         }
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
+        let SessionStore::Current(store) = self.local_store()?;
         let receipt = input.receipt(context, store.identity().0)?;
         let result = store
             .create_resource_configuration(
-                &self.adopted_profile(store)?,
+                &self.current_profile(store)?,
                 input,
                 receipt,
                 confirmed_until,

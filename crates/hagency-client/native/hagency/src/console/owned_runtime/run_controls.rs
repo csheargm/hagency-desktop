@@ -14,6 +14,11 @@ use std::{
 static ACTIVE: LazyLock<StdMutex<BTreeSet<PathBuf>>> = LazyLock::new(Default::default);
 static FLUSHING: LazyLock<StdMutex<BTreeSet<PathBuf>>> = LazyLock::new(Default::default);
 const IO_WAIT: Duration = Duration::from_secs(10);
+const RECORD_BYTES: u64 = 64 * 1024;
+// The UI's send is bounded at 30 seconds. Continue receiving after closing so
+// an operation sent during the last native poll gets an exact outcome too.
+// This background grace never retains the native process or its work slot.
+const CLOSED_RECEIPT_GRACE_MS: i64 = 60_000;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +27,7 @@ struct Record {
     card: Card,
     event: Option<String>,
     published: Option<u64>,
+    closed_at_ms: Option<i64>,
 }
 fn directory(device: &e2ee::AgentDevice) -> PathBuf {
     device.run_records.with_extension("d")
@@ -38,10 +44,10 @@ fn read(path: &Path) -> Result<Record, ()> {
     let mut bytes = Vec::new();
     hagency_store::private::open(path, false)
         .map_err(|_| ())?
-        .take(48 * 1024 + 1)
+        .take(RECORD_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
-    if bytes.len() > 48 * 1024 {
+    if bytes.len() as u64 > RECORD_BYTES {
         return Err(());
     }
     let record: Record = serde_json::from_slice(&bytes).map_err(|_| ())?;
@@ -126,12 +132,19 @@ async fn publish(device: &e2ee::AgentDevice, record: &mut Record) -> Result<(), 
 }
 
 /// Shared by personal and pooled hosts. Holds presentation state only;
-/// the caller proves its own current dispatch/lease before claiming an action.
+/// the caller proves its own current dispatch/lease before native submission.
 pub(in crate::console) struct CardHost {
     initial: Card,
     text: hagency_runtime::live_text::LiveText,
     text_seen: StdMutex<(u64, Instant)>,
     state: StdMutex<Option<(Arc<e2ee::AgentDevice>, PathBuf, Record)>>,
+    receipts: StdMutex<Vec<PendingReceipt>>,
+}
+struct PendingReceipt {
+    event: String,
+    sender: String,
+    stop: bool,
+    poll: Box<dyn FnMut() -> Option<&'static str> + Send>,
 }
 impl CardHost {
     pub(in crate::console) fn new(card: Card) -> Self {
@@ -140,6 +153,7 @@ impl CardHost {
             text: Default::default(),
             text_seen: StdMutex::new((0, Instant::now())),
             state: StdMutex::new(None),
+            receipts: StdMutex::new(Vec::new()),
         }
     }
     pub(in crate::console) fn live_text(&self) -> hagency_runtime::live_text::LiveText {
@@ -159,6 +173,7 @@ impl CardHost {
             && record.card.preview != text
         {
             record.card.preview = text;
+            record.card.fit_display();
             record.card.revision += 1;
         }
         *seen = (revision, Instant::now());
@@ -170,6 +185,7 @@ impl CardHost {
             card: self.initial.clone(),
             event: None,
             published: None,
+            closed_at_ms: None,
         };
         let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
         if path.exists() || !active.insert(path.clone()) {
@@ -183,8 +199,14 @@ impl CardHost {
         Ok(())
     }
     pub(in crate::console) fn finish(&self, state: CardState) {
+        // The runtime future/stream must be dropped before this call. Its
+        // unsent actions yield Unavailable; uncertain writes yield Unknown.
+        // Keep their receivers outside serve(), which select may have dropped
+        // in the very same poll that the provider completed.
+        self.drain_receipts(true);
         let mut held = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((device, path, record)) = held.as_mut() {
+            record.closed_at_ms.get_or_insert_with(wall_ms);
             if record.card.state.active() {
                 record.card.state = state;
                 record.card.revision += 1;
@@ -247,10 +269,21 @@ impl CardHost {
         Ok(actions
             .into_iter()
             .filter_map(|received| {
-                record
+                let action = record
                     .card
-                    .receive(&event, &received.sender, &received.content)
-                    .map(|action| (received, action))
+                    .receive(&event, &received.sender, &received.content)?;
+                if !self.claim(&received.event_id) {
+                    return None;
+                }
+                // Retain each authenticated, unseen event before another
+                // authority await. Cancellation in that await made no native
+                // write, and finish must be able to say so for the whole batch.
+                self.stage(
+                    &received.event_id,
+                    &received.sender,
+                    matches!(&action, Action::Interrupt {}),
+                );
+                Some((received, action))
             })
             .collect())
     }
@@ -270,21 +303,91 @@ impl CardHost {
         outcome: &str,
         stop: bool,
     ) -> Result<(), ()> {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|r| r.event != event);
         let mut held = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let (_, path, record) = held.as_mut().ok_or(())?;
-        if !record.card.state.active() {
-            return Ok(());
-        }
-        if stop && outcome == "accepted" {
+        if stop && outcome == "accepted" && record.card.state.active() {
             record.card.state = CardState::Stopping;
         }
-        record.card.last_action = Some(Receipt {
+        record.card.record_receipt(Receipt {
             event_id: event.into(),
             sender: sender.into(),
             outcome: outcome.into(),
         });
         record.card.revision += 1;
         save(path, record)
+    }
+    pub(in crate::console) fn track<T: Send + 'static>(
+        &self,
+        event: String,
+        sender: String,
+        stop: bool,
+        mut receiver: tokio::sync::oneshot::Receiver<T>,
+        name: fn(T) -> &'static str,
+    ) {
+        let mut pending = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|r| r.event != event);
+        pending.push(PendingReceipt {
+            event,
+            sender,
+            stop,
+            poll: Box::new(move || match receiver.try_recv() {
+                Ok(value) => Some(name(value)),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                Err(_) => Some("unknown"),
+            }),
+        });
+    }
+    fn stage(&self, event: &str, sender: &str, stop: bool) {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(PendingReceipt {
+                event: event.into(),
+                sender: sender.into(),
+                stop,
+                poll: Box::new(|| Some("unavailable")),
+            });
+    }
+    pub(in crate::console) fn pending_receipts(&self) -> usize {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+    pub(in crate::console) fn drain_receipts(&self, closing: bool) {
+        for (receipt, stop) in self.ready_receipts(closing) {
+            if self
+                .receipt(&receipt.event_id, &receipt.sender, &receipt.outcome, stop)
+                .is_err()
+            {
+                tracing::warn!("Run control receipt could not be persisted");
+            }
+        }
+    }
+    fn ready_receipts(&self, closing: bool) -> Vec<(Receipt, bool)> {
+        let mut ready = Vec::new();
+        let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
+        for index in (0..receipts.len()).rev() {
+            let outcome = (receipts[index].poll)().or(closing.then_some("unknown"));
+            let Some(outcome) = outcome else {
+                continue;
+            };
+            let pending = receipts.remove(index);
+            ready.push((
+                Receipt {
+                    event_id: pending.event,
+                    sender: pending.sender,
+                    outcome: outcome.into(),
+                },
+                pending.stop,
+            ));
+        }
+        ready.reverse();
+        ready
     }
 }
 impl Drop for CardHost {
@@ -296,6 +399,20 @@ impl Drop for CardHost {
 pub(super) struct Controller {
     sender: native::Sender,
     card: CardHost,
+}
+pub(super) fn optional_card(
+    dispatch: &inbox::Dispatch,
+    execution: &str,
+    owner: &str,
+    runtime: &str,
+) -> Option<Card> {
+    match Card::new(dispatch, execution, owner, runtime) {
+        Ok(card) => Some(card),
+        Err(code) => {
+            tracing::warn!(code, "Run continues without its optional control card");
+            None
+        }
+    }
 }
 impl Controller {
     pub(super) fn new(sender: native::Sender, card: Card) -> Self {
@@ -335,31 +452,11 @@ impl Controller {
         if self.card.open(device).is_err() {
             return;
         }
-        let mut receipts = Vec::<(
-            String,
-            String,
-            bool,
-            tokio::sync::oneshot::Receiver<NativeOutcome>,
-        )>::new();
         loop {
             tokio::select! { _ = canceled(&mut cancel) => return, _ = tick.tick() => {} }
-            for index in (0..receipts.len()).rev() {
-                let outcome = match receipts[index].3.try_recv() {
-                    Ok(value) => value,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
-                    Err(_) => NativeOutcome::Unknown,
-                };
-                let (event, sender, stop, _) = receipts.remove(index);
-                if self
-                    .card
-                    .receipt(&event, &sender, outcome_name(outcome), stop)
-                    .is_err()
-                {
-                    return;
-                }
-            }
+            self.card.drain_receipts(false);
             let _ = self.card.publish().await;
-            if receipts.len() >= 16 {
+            if self.card.pending_receipts() >= 16 {
                 continue;
             }
             for (received, action) in self.card.actions().await.unwrap_or_default() {
@@ -373,9 +470,6 @@ impl Controller {
                 .await
                 {
                     return;
-                }
-                if !self.card.claim(&received.event_id) {
-                    continue;
                 }
                 let (action, stop) = match action {
                     Action::Steer { text } => (native::Action::Steer { text }, false),
@@ -391,12 +485,13 @@ impl Controller {
                     }
                 };
                 match self.sender.submit(action) {
-                    Ok(submission) => receipts.push((
+                    Ok(submission) => self.card.track(
                         received.event_id,
                         received.sender,
                         stop,
                         submission.receipt,
-                    )),
+                        outcome_name,
+                    ),
                     Err(error) => {
                         let _ = self.card.receipt(
                             &received.event_id,
@@ -424,6 +519,93 @@ fn outcome_name(outcome: NativeOutcome) -> &'static str {
         NativeOutcome::Unavailable => "unavailable",
         NativeOutcome::Unknown => "unknown",
     }
+}
+
+/// The caller supplies only device-authenticated, current-member events. Use
+/// the original running card only to validate the old action's exact binding;
+/// no closed card can acquire native authority again.
+fn settle_closed_action(
+    path: &Path,
+    record: &mut Record,
+    event: &str,
+    sender: &str,
+    content: &serde_json::Value,
+) -> bool {
+    let Some(card_event) = record.event.as_deref() else {
+        return false;
+    };
+    if record.card.state.active()
+        || record
+            .original
+            .receive(card_event, sender, content)
+            .is_none()
+        || record
+            .card
+            .action_receipts
+            .iter()
+            .chain(record.card.last_action.iter())
+            .any(|receipt| receipt.event_id == event && receipt.sender == sender)
+    {
+        return false;
+    }
+    // A successful first durable claim proves that no host claimed this event
+    // for a native write. An existing claim (or IO uncertainty) proves no such
+    // thing, even after a restart, so it must remain unknown.
+    let outcome = if claim(path, event) {
+        "unavailable"
+    } else {
+        "unknown"
+    };
+    record.card.record_receipt(Receipt {
+        event_id: event.into(),
+        sender: sender.into(),
+        outcome: outcome.into(),
+    });
+    record.card.revision += 1;
+    true
+}
+
+async fn close_actions(
+    device: &e2ee::AgentDevice,
+    path: &Path,
+    record: &mut Record,
+) -> Result<bool, ()> {
+    let Some(event) = record.event.clone() else {
+        return Ok(true);
+    };
+    // Drain the bounded inbox, including an action requeued by a cancelled
+    // membership lookup. New arrivals wait for the next grace-period pass.
+    for _ in 0..16 {
+        let actions =
+            tokio::time::timeout(IO_WAIT, device.run_actions(&record.card.room_id, &event))
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ())?;
+        let full = actions.len() == 4;
+        let mut changed = false;
+        for received in actions {
+            changed |= settle_closed_action(
+                path,
+                record,
+                &received.event_id,
+                &received.sender,
+                &received.content,
+            );
+        }
+        if changed {
+            save(path, record)?;
+        }
+        if !full {
+            break;
+        }
+    }
+    Ok(!device.run_actions_pending(&record.card.room_id, &event))
+}
+
+fn may_forget_closed_record(record: &Record, drained: bool, at: i64) -> bool {
+    drained
+        && !record.card.state.active()
+        && at.saturating_sub(record.closed_at_ms.unwrap_or(i64::MAX)) >= CLOSED_RECEIPT_GRACE_MS
 }
 
 /// Recover interrupted hosts without replaying any action. Retry original
@@ -455,7 +637,10 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
             }
         }
         let _guard = Guard(directory.clone());
-        for attempt in 0..6 {
+        // Keep already received but unchecked events recoverable beyond the
+        // arrival grace. Network/membership failures are retried with capped
+        // backoff; no native process or admission slot remains attached here.
+        for attempt in 0_u64.. {
             if device.is_revoked() {
                 return;
             }
@@ -481,12 +666,20 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
                 if record.card.state.active() {
                     record.card.state = CardState::Unknown;
                     record.card.revision += 1;
-                    if save(&path, &record).is_err() {
-                        continue;
-                    }
                 }
+                record.closed_at_ms.get_or_insert_with(wall_ms);
+                if save(&path, &record).is_err() {
+                    pending = true;
+                    continue;
+                }
+                let actions = close_actions(&device, &path, &mut record).await;
                 if publish(&device, &mut record).await.is_ok() {
-                    forget(&path);
+                    if may_forget_closed_record(&record, actions == Ok(true), wall_ms()) {
+                        forget(&path);
+                    } else {
+                        let _ = save(&path, &record);
+                        pending = true;
+                    }
                 } else {
                     let _ = save(&path, &record);
                     pending = true;
@@ -504,8 +697,235 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
 mod tests {
     use super::*;
     #[test]
+    fn closed_card_receipts_distinguish_unseen_actions_from_uncertain_native_claims() {
+        let directory =
+            hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = directory.path().join("cards/late.json");
+        let original = crate::agent_run_controls::tests::card();
+        let sender = original.requester.clone();
+        let content = original
+            .action_content(
+                "$card",
+                &sender,
+                Action::Steer {
+                    text: "late draft".into(),
+                },
+            )
+            .unwrap();
+        let mut record = Record {
+            card: original.clone(),
+            original,
+            event: Some("$card".into()),
+            published: Some(1),
+            closed_at_ms: Some(wall_ms()),
+        };
+        record.card.state = CardState::Completed;
+        record.card.revision = 1;
+        save(&path, &record).unwrap();
+        assert!(claim(&path, "$uncertain"));
+        assert!(settle_closed_action(
+            &path,
+            &mut record,
+            "$late",
+            &sender,
+            &content
+        ));
+        assert_eq!(
+            record.card.last_action.as_ref().unwrap().outcome,
+            "unavailable"
+        );
+        assert!(settle_closed_action(
+            &path,
+            &mut record,
+            "$uncertain",
+            &sender,
+            &content
+        ));
+        assert_eq!(record.card.last_action.as_ref().unwrap().outcome, "unknown");
+        let revision = record.card.revision;
+        assert!(!settle_closed_action(
+            &path,
+            &mut record,
+            "$late",
+            &sender,
+            &content
+        ));
+        let mut forged = content.clone();
+        forged["executionId"] = serde_json::json!("other-execution");
+        assert!(!settle_closed_action(
+            &path,
+            &mut record,
+            "$other",
+            &sender,
+            &forged
+        ));
+        assert!(!settle_closed_action(
+            &path,
+            &mut record,
+            "$other",
+            "@stranger:test",
+            &content
+        ));
+        assert_eq!(record.card.revision, revision);
+        assert_eq!(record.card.state, CardState::Completed);
+        assert!(record.original.same_identity(&record.card));
+        save(&path, &record).unwrap();
+        let recovered = read(&path).unwrap();
+        assert_eq!(recovered.card.action_receipts.len(), 2);
+        assert_eq!(recovered.closed_at_ms, record.closed_at_ms);
+    }
+
+    #[test]
+    fn expired_arrival_grace_keeps_unchecked_actions_until_membership_recovers() {
+        let directory =
+            hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = directory.path().join("cards/pending-membership.json");
+        let original = crate::agent_run_controls::tests::card();
+        let sender = original.requester.clone();
+        let content = original
+            .action_content(
+                "$card",
+                &sender,
+                Action::Steer {
+                    text: "still waiting for membership".into(),
+                },
+            )
+            .unwrap();
+        let mut record = Record {
+            card: original.clone(),
+            original,
+            event: Some("$card".into()),
+            published: Some(1),
+            closed_at_ms: Some(1),
+        };
+        record.card.state = CardState::Completed;
+        record.card.revision = 1;
+        save(&path, &record).unwrap();
+        let later = CLOSED_RECEIPT_GRACE_MS + 100_000;
+        // run_actions can return no checked actions while its cancelled or
+        // failed membership checks are requeued. That is not a drained inbox.
+        assert!(!may_forget_closed_record(&record, false, later));
+        record = read(&path).unwrap();
+        assert!(settle_closed_action(
+            &path,
+            &mut record,
+            "$delayed",
+            &sender,
+            &content
+        ));
+        assert_eq!(
+            record.card.last_action.as_ref().unwrap().outcome,
+            "unavailable"
+        );
+        assert!(may_forget_closed_record(&record, true, later));
+    }
+    #[test]
+    fn ending_during_authority_recheck_settles_every_staged_unwritten_action() {
+        let card = crate::agent_run_controls::tests::card();
+        let host = CardHost::new(card.clone());
+        host.stage("$first", &card.requester, false);
+        host.stage("$second", &card.requester, true);
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.track(
+            "$first".into(),
+            card.requester,
+            false,
+            receive,
+            outcome_name,
+        );
+        send.send(NativeOutcome::Accepted).unwrap();
+        let results = host.ready_receipts(true);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .any(|(r, _)| r.event_id == "$first" && r.outcome == "accepted")
+        );
+        assert!(
+            results
+                .iter()
+                .any(|(r, stop)| r.event_id == "$second" && r.outcome == "unavailable" && *stop)
+        );
+    }
+    #[tokio::test]
+    async fn completion_drains_every_unsent_control_without_claiming_uncertain_writes_failed() {
+        let mut card = crate::agent_run_controls::tests::card();
+        let scope = hagency_agent_local::Scope {
+            agent: "agent".into(),
+            binding: "binding".into(),
+            room: card.room_id.clone(),
+            requester: card.requester.clone(),
+            thread: card.thread_root.clone(),
+        };
+        let (sender, inbox) = native::channel(&scope, "dispatch", "execution").unwrap();
+        let mut stream = inbox.claim(&scope, "dispatch", "execution").unwrap();
+        stream.activate();
+        let host = CardHost::new(card.clone());
+        for n in 0..3 {
+            let receipt = sender
+                .submit(native::Action::Steer {
+                    text: format!("append {n}"),
+                })
+                .unwrap();
+            host.track(
+                format!("$append-{n}"),
+                card.requester.clone(),
+                false,
+                receipt.receipt,
+                outcome_name,
+            );
+        }
+        let (uncertain, receiver) = tokio::sync::oneshot::channel::<NativeOutcome>();
+        host.track(
+            "$already-writing".into(),
+            card.requester.clone(),
+            false,
+            receiver,
+            outcome_name,
+        );
+        assert!(host.ready_receipts(false).is_empty());
+        // The model completed without claiming these three pending writes.
+        drop(stream);
+        let outcomes = host.ready_receipts(true);
+        assert_eq!(outcomes.len(), 4);
+        for (receipt, _) in outcomes {
+            card.record_receipt(receipt);
+        }
+        assert_eq!(
+            card.action_receipts
+                .iter()
+                .filter(|r| r.outcome == "unavailable")
+                .count(),
+            3
+        );
+        assert_eq!(card.action_receipts.last().unwrap().outcome, "unknown");
+        assert!(uncertain.is_closed());
+        card.state = CardState::Completed;
+        card.validate().unwrap();
+        let restored = Card::from_content(&card.content()).unwrap();
+        assert_eq!(
+            restored.action_receipts.len(),
+            4,
+            "one card edit retains every raced acknowledgement"
+        );
+        assert_eq!(host.pending_receipts(), 0);
+    }
+    #[test]
+    fn invalid_optional_card_does_not_require_a_runtime_control_channel() {
+        let mut dispatch: inbox::Dispatch = serde_json::from_value(serde_json::json!({
+            "id":"dispatch","bindingId":"binding","agentId":"agent", "eventId":"$trigger", "roomId":"!room:test",
+            "requesterMxid":"@owner:test","threadRoot":"!room:test","body":"original answer wanted", "state":"running",
+            "bindingGeneration":1,"dispatchEpoch":1,"dispatchDeviceId":"device","executionId":"execution","outcome":null
+        })).unwrap();
+        assert!(optional_card(&dispatch, "execution", "@owner:test", "claude").is_some());
+        dispatch.thread_root = "unsupported presentation root".into();
+        assert!(optional_card(&dispatch, "execution", "@owner:test", "claude").is_none());
+        assert_eq!(dispatch.body, "original answer wanted");
+    }
+    #[test]
     fn durable_action_claim_is_unique_across_reopening_and_concurrent_delivery() {
-        let directory = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory =
+            hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = directory.path().join("run.json");
         let accepted = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..8)
@@ -523,7 +943,8 @@ mod tests {
     }
     #[test]
     fn recovery_keeps_original_identity_revision_and_partial_output() {
-        let directory = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory =
+            hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = directory.path().join("cards/run.json");
         let original = crate::agent_run_controls::tests::card();
         let mut record = Record {
@@ -531,6 +952,7 @@ mod tests {
             original,
             event: Some("$card".into()),
             published: Some(0),
+            closed_at_ms: None,
         };
         record.card.state = CardState::Unknown;
         record.card.revision = 1;

@@ -460,12 +460,21 @@ fn shared_launch(root: &Path, mode: &str) -> Launch {
 async fn shared_session(root: &Path, mode: &str, until: Instant) -> OwnedClaudeSession {
     shared_session_resuming(root, mode, until, None).await
 }
-async fn shared_session_resuming(root: &Path, mode: &str, until: Instant, resume: Option<&str>) -> OwnedClaudeSession {
+async fn shared_session_resuming(
+    root: &Path,
+    mode: &str,
+    until: Instant,
+    resume: Option<&str>,
+) -> OwnedClaudeSession {
     use hagency_runtime::{claude::account::AccountBinding, owned::SharedClaudePolicy};
     let policy = SharedClaudePolicy::Standard { web: false };
     let mut launch = shared_launch(root, mode);
-    launch.arguments = policy.arguments_resuming("sonnet", "medium", resume).unwrap()
-        .into_iter().map(Into::into).collect();
+    launch.arguments = policy
+        .arguments_resuming("sonnet", "medium", resume)
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
     let mut session =
         OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy, resume)
             .unwrap();
@@ -500,23 +509,62 @@ async fn shared_claude_resume_rejects_mismatched_launch_and_native_identity() {
     let root = tempfile::tempdir().unwrap();
     let policy = SharedClaudePolicy::Standard { web: false };
     let mut launch = shared_launch(root.path(), "shared-session");
-    assert!(OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy,
-        Some("original-native")).is_err());
-    launch.arguments = policy.arguments_resuming("sonnet", "medium", Some("original-native"))
-        .unwrap().into_iter().map(Into::into).collect();
+    assert!(
+        OwnedClaudeSession::spawn_shared_resuming(
+            &binary(),
+            &launch,
+            limits(),
+            policy,
+            Some("original-native")
+        )
+        .is_err()
+    );
+    launch.arguments = policy
+        .arguments_resuming("sonnet", "medium", Some("original-native"))
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
     assert!(OwnedClaudeSession::spawn_shared(&binary(), &launch, limits(), policy).is_err());
-    assert!(OwnedClaudeSession::spawn_shared_resuming(&binary(), &launch, limits(), policy,
-        Some("different-native")).is_err());
-    for bad in ["", "../other", "--dangerously-skip-permissions", "with space", "a\nb"] {
+    assert!(
+        OwnedClaudeSession::spawn_shared_resuming(
+            &binary(),
+            &launch,
+            limits(),
+            policy,
+            Some("different-native")
+        )
+        .is_err()
+    );
+    for bad in [
+        "",
+        "../other",
+        "--dangerously-skip-permissions",
+        "with space",
+        "a\nb",
+    ] {
         // Leading '-' is a valid identifier character but may never be a CLI option.
-        assert!(policy.arguments_resuming("sonnet", "medium", Some(bad)).is_err(), "{bad}");
+        assert!(
+            policy
+                .arguments_resuming("sonnet", "medium", Some(bad))
+                .is_err(),
+            "{bad}"
+        );
     }
     assert!(!root.path().join("shared-claude.entered").exists());
     fs::write(root.path().join("original-native.json"), b"[]").unwrap();
-    for marker in ["shared-claude.wrong_identity", "shared-claude.early_permission"] {
+    for marker in [
+        "shared-claude.wrong_identity",
+        "shared-claude.early_permission",
+    ] {
         fs::write(root.path().join(marker), b"offline").unwrap();
-        let mut session = shared_session_resuming(root.path(), "shared-session",
-            Instant::now() + Duration::from_secs(5), Some("original-native")).await;
+        let mut session = shared_session_resuming(
+            root.path(),
+            "shared-session",
+            Instant::now() + Duration::from_secs(5),
+            Some("original-native"),
+        )
+        .await;
         session.prompt("new work").await.unwrap();
         assert!(matches!(session.next_message().await, Err(Error::Identity)));
         assert!(session.observation_source().is_err());
@@ -591,20 +639,21 @@ async fn shared_claude_renewal_keeps_original_pending_read_until_actual_expiry()
 }
 
 #[tokio::test]
-async fn missing_resume_requires_original_refusal_and_whole_process_stop() {
+async fn pre_prompt_resume_failure_requires_whole_process_stop() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("missing");
     let mut l = launch(root.path(), "shared-session", &marker);
-    l.arguments.extend(["--resume".into(), "missing-native".into()]);
+    l.arguments
+        .extend(["--resume".into(), "missing-native".into()]);
     let mut process = OwnedClaudeSession::spawn(&binary(), &l, limits()).unwrap();
     process.enable_native_completion().unwrap();
     process.enable_continuous_session().unwrap();
     process.expect_resume("missing-native").unwrap();
-    assert_eq!(process.missing_resume_id(), None);
+    assert_eq!(process.pre_prompt_resume_id(), None);
     assert_eq!(process.initialize().await, Err(Error::MissingResume));
     cleanup(process.cleanup());
-    assert_eq!(process.missing_resume_id(), Some("missing-native"));
+    assert_eq!(process.pre_prompt_resume_id(), Some("missing-native"));
     assert!(!marker.with_extension("prompt").exists());
     process.stop();
-    assert_eq!(process.missing_resume_id(), Some("missing-native"));
+    assert_eq!(process.pre_prompt_resume_id(), Some("missing-native"));
 }

@@ -29,6 +29,7 @@ struct State {
 }
 #[derive(Clone, Default)]
 pub(in crate::console::native) struct Manager {
+    pub(super) claude_workspaces: super::claude_workspace::Workspaces,
     state: Arc<Mutex<State>>,
     custody: TaskCustody,
     /// Owner telemetry fed by verified turn observations (never budget).
@@ -77,12 +78,16 @@ fn unknown() -> NativeError {
     failure(409, "shared_execution_outcome_unknown")
 }
 impl Manager {
+    pub(in crate::console::native) fn sweep_claude(&self, root: &std::path::Path) -> Result<(), NativeError> {
+        self.claude_workspaces.sweep_existing(root)
+    }
     pub(in crate::console::native) fn telemetry(
         &self,
     ) -> crate::console::native::telemetry::OwnerTelemetry {
         self.telemetry.clone()
     }
     pub fn close(&self) {
+        self.claude_workspaces.close();
         self.custody.close();
         match self.state.lock() {
             Ok(mut s) => {
@@ -126,6 +131,7 @@ impl Manager {
         assignment: &str,
         revision: u64,
     ) -> Result<(), NativeError> {
+        self.claude_workspaces.retire_assignment(assignment)?;
         let mut s = self
             .state
             .lock()

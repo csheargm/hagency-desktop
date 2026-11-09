@@ -77,7 +77,7 @@ fn native_owned_execution_policy_changed_before_start_requires_fresh_scope() {
 }
 
 #[test]
-fn native_owned_execution_policy_survives_setting_change_and_offline_reopen() {
+fn native_owned_execution_policy_survives_setting_change_and_runtime_restart() {
     let (root, mut db, engagement, cap) = setup();
     db.set_execution_policy(&engagement, Some(&json!({"yolo": true})), 1002)
         .unwrap();
@@ -87,10 +87,8 @@ fn native_owned_execution_policy_survives_setting_change_and_offline_reopen() {
         .unwrap();
     assert!(started.execution_policy().yolo);
     db.check_owned_dispatch(&cap, started.fingerprint(), 1005).unwrap();
-    // Offline reopen preserves an in-flight attempt; runtime restart separately
-    // retains its normal crash recovery and must not revive this process.
-    drop(db);
-    let mut db = DomainRepository::open_for_migration(&root.path().join("state")).unwrap();
+    // The live attempt keeps its captured policy while current owner settings
+    // change. The ordinary runtime restart below must retire that old attempt.
     db.check_owned_dispatch(&cap, started.fingerprint(), 1006).unwrap();
     let retained: (String, bool, u64) = sql(&root).query_row(
         "SELECT engagement_id,yolo,captured_at FROM owned_dispatch_execution_policies WHERE dispatch_id='dispatch'",

@@ -201,7 +201,7 @@ pub async fn discover(origin: &str) -> Result<ServerMetadata, AdmissionError> {
 }
 /// Stable storage namespace for the same embedded identity provider. This is
 /// never used as an OAuth endpoint or accepted as an advertised issuer.
-pub(crate) fn profile_namespace_issuer(origin: &str) -> String {
+pub(crate) fn profile_storage_namespace(origin: &str) -> String {
     format!("{origin}_pasion/")
 }
 

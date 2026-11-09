@@ -7,15 +7,18 @@ use hagency_runtime::owned::{ManagedProcessState, OwnedClaudeSession};
 use tokio::sync::{oneshot, watch};
 mod authority;
 mod bridge;
+mod policy;
 mod session_route;
 pub(super) use authority::Claimed;
-use authority::{Active, Authority, Live};
+use authority::{Active, Live};
+#[cfg(feature = "shared-budget-execution")]
+use authority::Authority;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     r: OwnerResourceRegistry,
     claimed: Claimed,
-    launch: launch::ClaudeLaunch,
+    mut launch: launch::ClaudeLaunch,
     io: Io,
     _observed: u64,
     _started: Instant,
@@ -32,6 +35,10 @@ pub(super) async fn run(
             return Err(DrainFailure::Unknown);
         }
     };
+    if let Err(error) = launch.bind_session_scope(&session, claimed.root()) {
+        let _ = sender.take().unwrap().send(Err(error));
+        return Err(DrainFailure::Unknown);
+    }
     let mut process = match launch.spawn(until, session.resume_id()) {
         Ok(p) => p,
         Err(error) => {
@@ -45,14 +52,19 @@ pub(super) async fn run(
     let initialized = guarded(&mut cancel, until, || async {
         io.check_running(claimed.root()).await?;
         launch.check()?;
-        if process.initialize().await.is_err() {
+        if let Err(error) = process.initialize().await {
+            if matches!(&error, hagency_runtime::claude::session::Error::UnsupportedVersion) {
+                // This is a host installation problem, not a missing rollout.
+                // Do not retire a valid session or spawn the same binary again.
+                return Err(initialize_error(error));
+            }
             session.rebuild_missing(&process)
                 .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
             io.check_running(claimed.root()).await?;
             launch.check()?;
             process = launch.spawn(until, None)?;
             process.initialize().await
-                .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
+                .map_err(initialize_error)?;
         }
         Ok(())
     }).await;
@@ -111,6 +123,9 @@ pub(super) async fn run(
                 .map_err(|e| failure(e.status, &e.code)),
         );
     }
+    if result.as_ref().err().is_some_and(super::claude_workspace::scope_revoked) {
+        launch.retire_plaintext();
+    }
     if let Err(error) = result {
         tracing::warn!(code=%error.code,"Shared Claude process ending after operation failure");
     }
@@ -118,14 +133,27 @@ pub(super) async fn run(
         .stop_shared_observation()
         .map_err(|_| DrainFailure::Unknown)?;
     let stopped = observation.state() == ManagedProcessState::Stopped;
+    // Commit physical stop locally before archival; only publish restart
+    // readiness after the private archive has committed successfully.
     authority
-        .stopped(&io, &r, observation)
+        .stopped(&io, &r, observation, || {
+            if stopped { launch.seal_stopped() } else { Ok(()) }
+        })
         .await
         .map_err(|_| DrainFailure::Unknown)?;
     if stopped {
         Ok(())
     } else {
         Err(DrainFailure::Unknown)
+    }
+}
+
+fn initialize_error(error: hagency_runtime::claude::session::Error) -> NativeError {
+    if matches!(error, hagency_runtime::claude::session::Error::UnsupportedVersion) {
+        tracing::warn!("Shared Claude requires Claude Code 2.x, version 2.1.321 or newer");
+        failure(409, "shared_claude_version_unsupported")
+    } else {
+        failure(409, "shared_execution_initialize_failed")
     }
 }
 async fn work(
@@ -136,6 +164,7 @@ async fn work(
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<(), NativeError> {
     let live = active.live.clone();
+    let turn_policy = policy::load(&launch.turn_policy_path()?)?;
     if live.authority.is_root() {
         let (b, p, _) = live.proof().await?;
         if live
@@ -172,9 +201,6 @@ async fn work(
                     return Ok(None);
                 };
                 w.validate().map_err(store)?;
-                if w.encrypted && !cfg!(feature = "shared-context") {
-                    return Err(failure(409, "shared_encrypted_context_required"));
-                }
                 if cfg!(feature = "shared-intake") {
                     #[cfg(feature = "shared-budget-execution")]
                     if live.authority.is_budget() {
@@ -246,7 +272,7 @@ async fn work(
             })
             .await?;
     };
-    let plaintext_input = if cfg!(feature = "shared-context") && !work.encrypted {
+    let plaintext_input = if !work.encrypted {
         active.wait(cancel, async {
             let (b, p, state) = live.proof().await?;
             #[cfg(feature = "shared-budget-execution")]
@@ -280,6 +306,7 @@ async fn work(
         let (_, proof, _) = live.proof().await?;
         session.attach(proof, work.clone(), process).await.map_err(store)
     }).await?;
+    launch.bind_admitted_scope(&session)?;
     let mut history = active
         .wait(cancel, async {
             let (b, _, _) = live.proof().await?;
@@ -292,24 +319,17 @@ async fn work(
     let input = active
         .wait(cancel, async {
             let (b, _, _) = live.proof().await?;
-            if cfg!(feature = "shared-context") && work.encrypted {
+            if work.encrypted {
                 let mut text = super::e2ee::input(&live.io, &b, &work).await?;
                 if let Some(reader) = &mut history {
                     text = if session.is_resuming() { reader.followup_prompt(text) } else { reader.prompt(text).await };
                 }
                 let (_, fresh, _) = live.proof().await?;
-                let prepared = if history.is_some() {
-                    live.registry
-                        .prepare_shared_room_input(fresh, work.clone(), text)
-                        .await
-                } else {
-                    live.registry
-                        .prepare_shared_decrypted_input(fresh, work.clone(), text)
-                        .await
-                };
-                Ok(Some(prepared.map_err(store)?))
+                let prepared = live.registry
+                    .prepare_shared_decrypted_input(fresh, work.clone(), text).await;
+                prepared.map_err(store)
             } else {
-                Ok(plaintext_input)
+                plaintext_input.ok_or_else(|| failure(409, "native_context_protocol_required"))
             }
         })
         .await?;
@@ -322,7 +342,7 @@ async fn work(
                 &work,
                 &launch.profile.cwd,
                 launch.policy.tools(),
-                input.as_ref(),
+                Some(&input),
             )
             .await
         })
@@ -343,14 +363,9 @@ async fn work(
             .await?;
     }
     let (_, p, _) = live.proof().await?;
-    let call = if let Some(input) = &input {
-        live.registry
-            .prepare_shared_input_call(p, work.clone(), input.clone())
-            .await
-    } else {
-        live.registry.prepare_shared_call(p, work.clone()).await
-    }
-    .map_err(store)?;
+    let call = live.registry
+        .prepare_shared_input_call(p, work.clone(), input.clone())
+        .await.map_err(store)?;
     let call_id = call.call_id.clone();
     // Build all fallible host channels before central admission. Once custody
     // is issued, every exit must retain an original accounting receipt.
@@ -380,16 +395,9 @@ async fn work(
         .map_err(|_| invalid())?;
     let queue = matrix.queue.clone();
     let (b, p, state) = live.proof().await?;
-    let start = if let Some(input) = &input {
-        live.registry
-            .begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
-            .await
-    } else {
-        live.registry
-            .begin_shared_start(p, work.clone(), call.call_id)
-            .await
-    }
-    .map_err(store)?;
+    let start = live.registry
+        .begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
+        .await.map_err(store)?;
     let issued = match active
         .wait(cancel, async {
             #[cfg(feature = "shared-budget-execution")]
@@ -399,7 +407,7 @@ async fn work(
                     &live.registry,
                     start,
                     &work,
-                    input.as_ref(),
+                    &input,
                     state.lease.authority,
                     state.until,
                 )
@@ -410,7 +418,7 @@ async fn work(
                 &live.registry,
                 start,
                 &work,
-                input.as_ref(),
+                &input,
                 state.lease.authority,
                 state.until,
             )
@@ -427,7 +435,7 @@ async fn work(
                     &live.registry,
                     &delivery.command,
                     &work,
-                    input.as_ref(),
+                    Some(&input),
                 )
                 .await
             {
@@ -441,18 +449,53 @@ async fn work(
     };
     let text = issued.model_input().to_owned();
     let (mut host, mut capture) = bridge::capture(live.clone(), launch.policy, issued, session);
+    let progress = capture.progress();
     let (started, mut began) = oneshot::channel();
-    let result=active.wait(cancel,async{
-        let native=claude_turn::run(process,&launch.profile,&scope,&work.id,&text,&queue,Some(started),Some(stream),&mut host,&mut capture);
+    let stop = matrix.stop_sender();
+    let result = {
+        let serve = matrix.serve();
+        tokio::pin!(serve);
+        let native_polled = std::sync::atomic::AtomicBool::new(false);
+        let native = async {
+            native_polled.store(true, std::sync::atomic::Ordering::Relaxed);
+            let native=claude_turn::run(process,&launch.profile,&scope,&work.id,&text,&queue,Some(started),Some(stream),&mut host,&mut capture);
+            tokio::pin!(native);
+            let mut start_seen=false;
+            loop{tokio::select!{biased;
+                value=&mut began,if !start_seen=>{start_seen=true;if value.is_ok(){turn.started();}},
+                result=&mut native=>return result.map_err(|_|failure(409,"shared_execution_event_unknown")),
+            }}
+        };
         tokio::pin!(native);
-        let serve=matrix.serve();tokio::pin!(serve);
-        let mut start_seen=false;
-        loop{tokio::select!{biased;
-            value=&mut began,if !start_seen=>{start_seen=true;if value.is_ok(){turn.started();}},
-            result=&mut native=>return result.map_err(|_|failure(409,"shared_execution_event_unknown")),
-            _=&mut serve=>return Err(failure(409,"shared_execution_matrix_unavailable")),
-        }}
-    }).await;
+        let watched = async {
+            tokio::select! { biased;
+                result = &mut native => Ok(result),
+                _ = &mut serve => Err(failure(409, "shared_execution_matrix_unavailable")),
+                error = turn_policy.expired(progress) => Err(error),
+            }
+        };
+        match active.wait(cancel, watched).await {
+            Ok(result) => result,
+            // Cancellation can arrive after central admission but before the
+            // native future's first poll. Cleanup must not start that model call.
+            Err(error) if !native_polled.load(std::sync::atomic::Ordering::Relaxed) => Err(error),
+            Err(error) => {
+                // Dropping an OwnedClaudeSession operation kills its child. Keep
+                // this exact reader/capture alive while the cooperative interrupt
+                // collects the provider's final result and output-token evidence.
+                let deadline = active.live.state().until.min(Instant::now() + Duration::from_secs(3));
+                let mut interrupt_receipt = None;
+                finish_after_stop(&mut native, deadline, || {
+                    use hagency_agent_local::run_controls::{Action, SubmitError};
+                    match stop.submit(Action::Interrupt) {
+                        Ok(submission) => { interrupt_receipt = Some(submission); true }
+                        Err(SubmitError::Busy) => true,
+                        Err(_) => false, // The original start may still be acknowledging.
+                    }
+                }).await.unwrap_or(Err(error))
+            }
+        }
+    };
     // Always retain original failure/unknown accounting before physical stop.
     let receipt = capture.finish(&mut host).await;
     matrix.finish(&result);
@@ -470,4 +513,57 @@ async fn work(
         Err(error) => return Err(error),
     }
     result.map(|_| ())
+}
+
+async fn finish_after_stop<F: std::future::Future>(
+    future: F,
+    deadline: Instant,
+    mut interrupt: impl FnMut() -> bool,
+) -> Option<F::Output> {
+    tokio::pin!(future);
+    let mut requested = false;
+    let mut retry = tokio::time::interval(Duration::from_millis(10));
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! { biased;
+            result = &mut future => return Some(result),
+            _ = tokio::time::sleep_until(deadline.into()) => return None,
+            _ = retry.tick(), if !requested => { requested = interrupt(); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    #[test]
+    fn unsupported_cli_version_has_a_named_host_refusal() {
+        assert_eq!(initialize_error(hagency_runtime::claude::session::Error::UnsupportedVersion).code,
+            "shared_claude_version_unsupported");
+        assert_eq!(initialize_error(hagency_runtime::claude::session::Error::PeerEof).code,
+            "shared_execution_initialize_failed");
+    }
+    #[tokio::test]
+    async fn stop_keeps_original_future_until_interrupt_result_is_captured() {
+        let (send, receive) = oneshot::channel();
+        let mut send = Some(send);
+        let mut attempts = 0;
+        let answer = finish_after_stop(async { receive.await.unwrap() }, Instant::now() + Duration::from_secs(1), || {
+            attempts += 1;
+            if attempts < 3 { return false; }
+            send.take().unwrap().send(("final answer", 27)).unwrap();
+            true
+        }).await;
+        assert_eq!(answer, Some(("final answer", 27)));
+        assert_eq!(attempts, 3, "start acknowledgement was retained until control became active");
+    }
+    #[tokio::test]
+    async fn silent_child_stop_capture_is_bounded_without_inventing_usage() {
+        let mut requested = 0;
+        let result = finish_after_stop(std::future::pending::<()>(), Instant::now() + Duration::from_millis(20), || {
+            requested += 1; true
+        }).await;
+        assert!(result.is_none());
+        assert_eq!(requested, 1);
+    }
 }

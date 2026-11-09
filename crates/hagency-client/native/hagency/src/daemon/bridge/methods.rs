@@ -70,8 +70,6 @@ macro_rules! management_methods {
         prepare_account(input: PrepareAccount) -> AccountPreparation; true;
         personal_agents(query: PersonalAgentQuery) -> Value; false;
         personal_agent_settings(id: String) -> Value; false;
-        providers() -> Value; false;
-        enroll_resource(input: EnrollResource) -> hagency_store::ResourceConfigurationResult; true;
         tool_approvals(query: ToolApprovalQuery) -> ToolApprovalPage; false;
         tool_approval(query: ToolApprovalLookup) -> ToolApprovalSnapshot; false;
         tool_grants(query: ToolGrantQuery) -> ToolGrantPage; false;
@@ -79,16 +77,7 @@ macro_rules! management_methods {
         resources(query: service::ResourceQuery) -> service::ResourcePage; false;
         account_inventory(query: service::AccountInventoryQuery) -> service::AccountInventory; false;
         resource_detail(query: service::ResourceDetailQuery) -> service::ResourceDetail; false;
-        configure_resource(input: service::ConfigureResource) -> hagency_store::ResourceConfigurationResult; true;
         publish_resource(input: service::PublishResource) -> hagency_store::ResourcePublicationResult; true;
-        #[cfg(feature="resource-adoption")]
-        graph_history_archives() -> GraphHistoryArchives; false;
-        #[cfg(feature="resource-adoption")]
-        graph_history_page(q: reader::GraphHistoryQuery) -> reader::GraphHistoryPage; false;
-        #[cfg(feature="resource-adoption")]
-        graph_history_detail(q: reader::GraphHistoryDetailQuery) -> reader::GraphHistoryDetail; false;
-        #[cfg(feature="resource-adoption")]
-        graph_history_node(q: reader::GraphHistoryNodeQuery) -> reader::GraphHistoryNode; false;
         central(command: ManagementCommand) -> Value; true;
         observe_personal_settings(input: ObservePersonalSettings) -> Value; true;
         personal_model_choices(agent_id: String) -> PersonalModelChoices; false;

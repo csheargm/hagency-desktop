@@ -21,6 +21,35 @@ impl ObservationSource {
     }
 }
 
+/// Original answer completion, independent of the subsequent accounting
+/// query. Private construction requires native result, idle and no live
+/// descendants. Retirement does not erase this already observed evidence.
+pub struct CompletionReceipt {
+    source: ObservationSource,
+    sequence: u64,
+    text_digest: [u8; 32],
+    is_error: bool,
+    interrupted: bool,
+}
+impl CompletionReceipt {
+    pub fn source(&self) -> &ObservationSource {
+        &self.source
+    }
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+    pub fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+    pub fn matches_text(&self, text: &str) -> bool {
+        use sha2::{Digest, Sha256};
+        self.text_digest == <[u8; 32]>::from(Sha256::digest(text.as_bytes()))
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum ObservationKind {
     Ignored,
@@ -36,6 +65,8 @@ pub struct Observation {
     source: ObservationSource,
     sequence: u64,
     kind: ObservationKind,
+    result_error: Option<bool>,
+    accounting_snapshot: bool,
 }
 impl Observation {
     pub fn source(&self) -> &ObservationSource {
@@ -46,6 +77,13 @@ impl Observation {
     }
     pub fn kind(&self) -> &ObservationKind {
         &self.kind
+    }
+    /// Native result identity survives a rejected numeric projection.
+    pub fn result_error(&self) -> Option<bool> {
+        self.result_error
+    }
+    pub fn is_usage_snapshot(&self) -> bool {
+        self.accounting_snapshot
     }
 }
 pub(super) struct State {
@@ -65,14 +103,31 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn completed(
+        &self,
+        session: &str,
+        text_digest: [u8; 32],
+        is_error: bool,
+        interrupted: bool,
+    ) -> CompletionReceipt {
+        CompletionReceipt {
+            source: self.source(session),
+            sequence: self.sequence,
+            text_digest,
+            is_error,
+            interrupted,
+        }
+    }
     pub(super) fn retire(&self) {
         self.live.store(false, Ordering::Release);
     }
-    pub(super) fn accept(&mut self, message: &Message, session: &str) -> Result<(), Error> {
-        self.sequence = self
-            .sequence
-            .checked_add(1)
-            .ok_or(Error::Capacity)?;
+    pub(super) fn accept(
+        &mut self,
+        message: &Message,
+        session: &str,
+        accounting_snapshot: bool,
+    ) -> Result<(), Error> {
+        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
         let kind = match message {
             Message::Event { kind, payload, .. } => self.usage.project(*kind, payload),
             _ => ObservationKind::Ignored,
@@ -81,6 +136,15 @@ impl State {
             source: self.source(session),
             sequence: self.sequence,
             kind,
+            accounting_snapshot,
+            result_error: match message {
+                Message::Event {
+                    kind: super::EventKind::Result,
+                    payload,
+                    ..
+                } => Some(payload["is_error"] == true),
+                _ => None,
+            },
         });
         Ok(())
     }

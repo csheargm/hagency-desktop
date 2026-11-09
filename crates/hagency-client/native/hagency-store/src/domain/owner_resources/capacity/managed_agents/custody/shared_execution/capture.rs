@@ -36,7 +36,7 @@ pub struct SharedCallSink {
     terminal: Option<TurnResult>,
     usage: Option<Usage>,
     claude_result: Option<bool>,
-    claude_baseline: Option<[u64; 4]>,
+    claude_unaccounted: bool,
     output: String,
     output_overflow: bool,
     last_text_item: Option<String>,
@@ -91,7 +91,7 @@ impl SharedCallCustody {
             terminal: None,
             usage: None,
             claude_result: None,
-            claude_baseline: None,
+            claude_unaccounted: false,
             output: String::new(),
             output_overflow: false,
             last_text_item: None,
@@ -181,7 +181,10 @@ impl SharedCallSink {
         let issued = c.call.scope.issued_revision;
         let registry = c.call.scope.registry.clone();
         let terminal = self.terminal.is_some() || forced_unknown;
-        let complete = self.clean && !self.source.is_retired() && self.terminal.is_some();
+        let complete = self.clean
+            && !self.source.is_retired()
+            && self.terminal.is_some()
+            && !self.claude_unaccounted;
         let state = if forced_unknown || !self.clean {
             "unknown"
         } else {
@@ -201,7 +204,6 @@ impl SharedCallSink {
             Some(Usage::Claude(evidence)) => ManagedUsageObservation::shared_claude_capture(
                 format!("{id}_usage"),
                 evidence,
-                self.claude_baseline,
                 terminal,
                 complete,
             ),

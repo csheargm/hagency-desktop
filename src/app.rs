@@ -570,14 +570,6 @@ impl MatchEvent for App {
                 self.ui.approval_inbox(cx, ids!(approval_inbox_modal.content)).action(cx, modal, action, &self.app_state);
                 if matches!(action, ApprovalInboxAction::Saved) {self.persist_runtime_state(cx, "approval discovery");}
             }
-            if let Some(found) = action.downcast_ref::<crate::agent_access::discovery::DiscoveredBots>() {
-                let bots = &mut self.app_state.agent_access.bot_settings;
-                if current_user_id().as_ref() == Some(&found.owner) && bots.enabled && bots.is_room_bound(&found.room) && bots.resolved_bot_user_id(Some(&found.owner)).ok().as_ref() == Some(&found.sender) && bots.record_known_bot_user_ids(found.users.clone()) {
-                    crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
-                    self.persist_runtime_state(cx, "BotFather discovery");
-                    cx.redraw_all();
-                }
-            }
             if let Some(action) = action.downcast_ref::<AgentAccessAction>() {
                 let modal = self.ui.modal(cx, ids!(agent_access_modal));
                 self.ui.agent_access_panel(cx, ids!(agent_access_modal.content)).action(cx, modal, action, &self.app_state.agent_access);
@@ -2232,9 +2224,6 @@ pub struct AppState {
     #[cfg(feature = "agent_chat")]
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub(crate) approval_markers: crate::agent_chat::approval_state::ApprovalMarkerIndex,
-    #[cfg(feature = "agent_chat")]
-    #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
-    pub(crate) approval_markers_by_namespace: HashMap<String, crate::agent_chat::approval_state::ApprovalMarkerIndex>,
 }
 
 impl AppState {

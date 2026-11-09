@@ -5,6 +5,22 @@ use hagency_runtime::claude::{
 use serde_json::{Value, json};
 
 #[test]
+fn shared_profiles_isolate_customizations_and_keep_host_permission_routing() {
+    use hagency_runtime::owned::SharedClaudePolicy;
+    for policy in [SharedClaudePolicy::Text, SharedClaudePolicy::LiveWeb,
+        SharedClaudePolicy::Standard { web: false }, SharedClaudePolicy::Yolo { web: true }] {
+        let args = policy.arguments("sonnet", "medium").unwrap();
+        for required in ["--safe-mode", "--setting-sources=", "--strict-mcp-config", "--no-chrome"] {
+            assert!(args.iter().any(|arg| arg == required), "{required}");
+        }
+        assert!(args.windows(2).any(|p| p == ["--mcp-config", "{\"mcpServers\":{}}"]));
+        assert!(args.windows(2).any(|p| p == ["--permission-prompt-tool", "stdio"]));
+        assert!(!args.iter().any(|p| p == "--dangerously-skip-permissions"));
+        if policy.tools() { assert!(!args.iter().any(|p| p == "--tools")); }
+    }
+}
+
+#[test]
 fn interactive_profile_loads_native_capabilities_and_routes_all_tools_to_host() {
     let args = claude::interactive_arguments("sonnet", "xhigh").unwrap();
     assert!(args.iter().any(|arg| arg == "--include-partial-messages"));
@@ -256,10 +272,18 @@ fn native_claude_stream_envelopes() {
         &line(json!({"type":"control_request","request_id":"i","request":{"subtype":"unknown"}})),
         Error::Unsupported,
     );
-    malformed(
-        &line(json!({"type":"future_unhandled","session_id":"s"})),
-        Error::Unsupported,
+    let mut decoder = Decoder::default();
+    assert!(
+        decoder
+            .feed(
+                &line(json!({"type":"future_unhandled","session_id":"s"})),
+                1
+            )
+            .unwrap()
+            .1
+            .is_none()
     );
+    assert_eq!(decoder.ignored_frames(), 1);
     // Real installed CLI initialize metadata, values sanitized to empty arrays.
     assert!(matches!(
         parse(
@@ -334,4 +358,47 @@ fn native_claude_stream_host_input() {
     assert!(claude::prompt("next", Some("")).is_err());
     assert!(claude::initialize("bad id").is_err());
     assert!(claude::interrupt(&"x".repeat(257)).is_err());
+}
+
+#[test]
+fn unknown_metadata_is_counted_and_bounded_but_authority_frames_remain_strict() {
+    let mut decoder = Decoder::default();
+    let mut unknown = b"{\"type\":\"future_diagnostic\",\"payload\":\"".to_vec();
+    unknown.extend(vec![b'x'; MAX_FRAME_BYTES * 3]);
+    unknown.extend(b"\"}\n");
+    for chunk in unknown.chunks(4093) {
+        let (used, message) = decoder.feed(chunk, 1).unwrap();
+        assert_eq!(used, chunk.len());
+        assert!(message.is_none());
+        assert!(decoder.buffered_bytes() <= MAX_FRAME_BYTES);
+    }
+    assert_eq!(decoder.buffered_bytes(), 0);
+    assert_eq!(decoder.ignored_frames(), 1);
+    let result = line(
+        json!({"type":"result","subtype":"success","session_id":"s","is_error":false,"result":"kept"}),
+    );
+    assert!(matches!(
+        decoder.feed(&result, 2).unwrap().1,
+        Some(Message::Event {
+            kind: EventKind::Result,
+            ..
+        })
+    ));
+    for kind in [
+        "control_request",
+        "control_response",
+        "result",
+        "control_future",
+    ] {
+        let mut oversized = format!("{{\"type\":\"{kind}\",\"payload\":\"").into_bytes();
+        oversized.extend(vec![b'x'; MAX_FRAME_BYTES + 1]);
+        malformed(&oversized, Error::Capacity);
+    }
+    let mut decoder = Decoder::default();
+    let partial = &unknown[..unknown.len() - 1];
+    assert!(decoder.feed(partial, 1).unwrap().1.is_none());
+    assert_eq!(
+        decoder.check_deadline(1 + PARTIAL_FRAME_MS),
+        Err(Error::Timeout)
+    );
 }

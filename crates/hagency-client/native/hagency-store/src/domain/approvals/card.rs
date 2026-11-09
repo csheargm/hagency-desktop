@@ -22,6 +22,60 @@ impl PrivateApprovalCard {
 }
 
 impl DomainRepository {
+    /// Current discovery metadata from authenticated bindings, never card input.
+    /// The Matrix publisher supplies the monotonic state-event generation;
+    /// all identity and association fields come from one database snapshot.
+    pub fn private_approval_room_marker(
+        &self,
+        authority: &ApprovalRoomAuthority,
+        device: &str,
+        generation: u64,
+    ) -> Result<Value, Error> {
+        hagency_core::replies::generation(generation)?;
+        text(device, 255)?;
+        let tx = self.db.unchecked_transaction()?;
+        if room_authority(&tx, &authority.engagement_id)? != *authority {
+            return Err(Error::RunnerAuthority);
+        }
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM current_approval_bindings c JOIN approval_bindings b ON b.engagement_id=c.engagement_id JOIN approval_rooms r ON r.server_name=b.server_name AND r.room_id=b.room_id WHERE c.engagement_id=?1 AND r.device_id=?2 AND r.owner_mxid=?3 AND r.bot_mxid=?4)",
+            params![authority.engagement_id, device, authority.owner_mxid, authority.bot_mxid],
+            |row| row.get(0),
+        )?;
+        if !current {
+            return Err(Error::RunnerAuthority);
+        }
+        let mut statement = tx.prepare(
+            "SELECT DISTINCT json_extract(e.projection,'$.agentName'),p.room_id FROM current_approval_bindings c JOIN approval_bindings b ON b.engagement_id=c.engagement_id JOIN engagements e ON e.id=b.engagement_id JOIN projects p ON p.fleet_id=e.fleet_id AND p.id=e.project_id AND p.generation=e.generation WHERE b.server_name=?1 AND b.room_id=?2 ORDER BY 1,2 LIMIT 257",
+        )?;
+        let rows = statement
+            .query_map(params![authority.server_name, authority.room_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+        let mut associations = std::collections::BTreeSet::new();
+        for row in rows {
+            let (agent, room) = row?;
+            hagency_core::project::AgentName::try_from(agent.clone())
+                .map_err(|_| Error::RunnerAuthority)?;
+            matrix_room(&room, &authority.server_name)?;
+            associations.insert((agent, room));
+            if associations.len() > 256 {
+                return Err(Error::Capacity);
+            }
+        }
+        let associations: Vec<_> = associations
+            .into_iter()
+            .map(|(agent, room)| json!({"agent":agent,"project_room_id":room,"active":true}))
+            .collect();
+        let marker = json!({"version":2,"binding_generation":generation,
+            "publisher_mxid":authority.bot_mxid,"owner_mxid":authority.owner_mxid,
+            "project_room_associations":associations});
+        if serde_json::to_vec(&marker)?.len() > 48 * 1024 {
+            return Err(Error::Capacity);
+        }
+        Ok(marker)
+    }
+
     pub fn private_approval_card(
         &mut self,
         id: &str,
@@ -133,14 +187,17 @@ impl DomainRepository {
         } else {
             serde_json::to_string(&request.params)?
         };
-        // The retained v1 client expects a nonempty display string. Preserve
-        // the actual JSON-RPC type separately; neither field is authority.
+        // The display string and actual JSON-RPC type describe the same request;
+        // neither substitutes for the owner/publisher binding below.
         let upstream_display = match &request.upstream {
             ApprovalRpcId::Number(value) => value.to_string(),
             ApprovalRpcId::String(value) => value.clone(),
         };
         let mut detail = json!({
             "version":1,"kind":"request",
+            "owner_mxid":target.authority.owner_mxid,
+            "publisher_mxid":target.authority.bot_mxid,
+            "revision":1,
             "agent":target.authority.agent_name,
             "project":target.authority.project_id,
             "project_room_id":target.authority.project_room_id,

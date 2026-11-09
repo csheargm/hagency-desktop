@@ -56,7 +56,7 @@ class Review:
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
-        env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(self.profile), RINX_DATA_DIR=str(self.profile),
+        env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(self.profile),
                    MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1',
                    WIZARD_REVIEW_WIDTH=str(self.width), WIZARD_REVIEW_HEIGHT=str(self.height))
         env.pop('MAKEPAD_FOCUS', None)

@@ -2824,5 +2824,11 @@
   "Select one or more options, then send your answer.": "可选择一个或多个选项，然后发送回答。",
   "Select multiple": "可多选",
   "Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens.": "每个任务结束后按实际用量计费。运行中允许超额并正常完成。缺失用量保持待核算，不预占 Token。",
-  "Ready to start. Actual usage is charged after each task.": "已准备好启动。每个任务结束后按实际用量计费。"
+  "Ready to start. Actual usage is charged after each task.": "已准备好启动。每个任务结束后按实际用量计费。",
+  "This device setup review expired. Reopen the review to continue.": "设备设置核对已过期，请重新打开后继续。",
+  "Device setup is unavailable in this build.": "此版本不支持设备设置。",
+  "Device setup changed. Reopen the review to continue.": "设备设置已改变，请重新核对后继续。",
+  "Device setup is not confirmed. Check its current status before continuing.": "设备设置结果尚未确认，请先检查当前状态。",
+  "The resource owner's Hagency service needs an update. Update Hagency and start its service; the original message can then continue.": "资源主人的 Hagency 服务需要更新。更新并启动服务后，会继续处理原消息。",
+  "The resource owner's Hagency service is unavailable. The original message is waiting for that service to reconnect.": "资源主人的 Hagency 服务暂不可用。原消息正在等待该服务重新上线。"
 }

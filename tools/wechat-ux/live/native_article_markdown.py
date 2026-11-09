@@ -120,7 +120,7 @@ print(windows.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }.coun
         native.output.mkdir(parents=True)
         native.log=(native.output/"native.log").open("w")
         os.chmod(native.output/"native.log",0o600)
-        env=dict(os.environ,RINX_DATA_DIR=str(profile.resolve()),ROBRIX_DATA_DIR=str(profile.resolve()),
+        env=dict(os.environ,HAGENCY_DESKTOP_DATA_DIR=str(profile.resolve()),
                  MAKEPAD_REMOTE=str(port),MAKEPAD_HIDE_WINDOWS="1",MAKEPAD_NO_FOCUS="1")
         env.pop("MAKEPAD_FOCUS",None)
         native.process=subprocess.Popen([str(args.binary.resolve())],env=env,stdin=subprocess.DEVNULL,stdout=native.log,stderr=subprocess.STDOUT)

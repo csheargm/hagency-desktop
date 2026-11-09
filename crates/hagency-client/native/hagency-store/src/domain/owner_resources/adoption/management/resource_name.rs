@@ -8,7 +8,7 @@ fn local_name(db: &Connection, profile: &str, id: &str) -> Result<ResourceLocalN
         params![profile,id], |row| Ok(ResourceLocalName{name:row.get(0)?,revision:row.get(1)?})
     ).optional()?.unwrap_or(ResourceLocalName{name:String::new(),revision:0}))
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(super) fn name_for(&self, db: &Connection, id: &str) -> Result<ResourceLocalName, Error> {
         local_name(db, &self.profile, id)
     }

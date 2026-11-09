@@ -1,6 +1,6 @@
 use super::*;
 use crate::management::{
-    HostContext, Permission, PrivateManagementJournal, RenameResource, Session,
+    HostContext, Permission,  RenameResource, Session,
 };
 
 fn context(f: &Fixture) -> HostContext {
@@ -14,8 +14,8 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(store: AdoptedManagementStore, context: HostContext) -> Session {
-    Session::new_adopted(
+fn session(store: CurrentManagementStore, context: HostContext) -> Session {
+    Session::new_current(
         store,
         context,
         [Permission::ReadResources, Permission::RenameResources],
@@ -23,42 +23,8 @@ fn session(store: AdoptedManagementStore, context: HostContext) -> Session {
     )
     .unwrap()
 }
-pub(super) async fn active(f: &Fixture) -> AdoptedManagementStore {
-    prepare(f, "name_transfer").await.unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(f), "name_transfer".into())
-        .await
-        .unwrap();
-    fenced_connections(f, &transfer);
-    f.registry
-        .record_adoption_sources(authority(f), archive_proof(f, &transfer).unwrap())
-        .await
-        .unwrap();
-    f.registry
-        .import_resource_adoption(authority(f), archive_proof(f, &transfer).unwrap())
-        .await
-        .unwrap();
-    let journal =
-        PrivateManagementJournal::open_existing(&f.source, transfer.archive_binding().unwrap())
-            .unwrap();
-    f.registry
-        .record_adoption_custody(
-            authority(f),
-            transfer.verify_private_journal(&journal).await.unwrap(),
-        )
-        .await
-        .unwrap();
-    f.registry
-        .activate_resource_adoption(
-            authority(f),
-            transfer.verify_private_journal(&journal).await.unwrap(),
-            provider(),
-        )
-        .await
-        .unwrap();
-    transfer.adopted_management(journal).await.unwrap()
-}
+pub(super) async fn active(f:&Fixture)->CurrentManagementStore { current_backing(f).await }
+
 fn input(f: &Fixture, command: &str, revision: u64, name: &str) -> RenameResource {
     RenameResource {
         command_id: command.into(),
@@ -210,15 +176,7 @@ async fn local_resource_name_original_receipt_and_effective_identity_are_separat
     drop(backing);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal =
-        PrivateManagementJournal::open_existing(&f.source, transfer.archive_binding().unwrap())
-            .unwrap();
-    let reopened = transfer.adopted_management(journal).await.unwrap();
+    let reopened = current_backing(&f).await;
     let s = session(reopened.clone(), ctx.clone());
     assert_eq!(
         s.rename_resource(&ctx, input(&f, "name_first", 0, "写作资源"))
@@ -268,7 +226,7 @@ async fn local_resource_name_cas_concurrency_rollback_and_scope_checks() {
             .await,
         Err(Error::LocalAuthority)
     ));
-    let readonly = Session::new_adopted(
+    let readonly = Session::new_current(
         backing.clone(),
         ctx.clone(),
         [Permission::ReadResources],
@@ -373,99 +331,8 @@ fn local_resource_name_input_is_closed_and_bounded() {
     v["profile"] = json!("forged");
     assert!(serde_json::from_value::<RenameResource>(v).is_err());
 }
-#[tokio::test]
-async fn local_resource_name_source_metadata_blocks_adoption() {
-    let f = fixture().await;
-    let d = Connection::open(f.source.join("domain.sqlite3")).unwrap();
-    d.execute(
-        "INSERT INTO owner_resource_display_names VALUES(?1,?2,'Original local label',1)",
-        params![f.profile.digest, f.resource.id()],
-    )
-    .unwrap();
-    assert!(matches!(inventory(&f), Err(Error::Quarantined)));
-    drop(d);
-    f.registry.shutdown().await.unwrap();
-}
 
-#[tokio::test]
-async fn local_resource_name_schema83_migration_rolls_back_without_changing_resources() {
-    let mut f = fixture().await;
-    let backing = active(&f).await;
-    let before = serde_json::to_value(
-        f.registry
-            .resource(&f.profile, f.resource.id())
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let registry_id = f.registry.id().to_owned();
-    backing.shutdown().await.unwrap();
-    drop(backing);
-    f.registry.shutdown().await.unwrap();
-    let path = f._root.path().join("owner/domain.sqlite3");
-    let db = Connection::open(&path).unwrap();
-    rewind_pool_schema(&db);
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE IF EXISTS owner_operator_task_comments;DROP TABLE IF EXISTS owner_operator_tasks;DROP TABLE IF EXISTS owner_operator_task_histories;DROP TABLE owner_resource_display_names;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=82;CREATE TABLE owner_resource_display_names(collision INTEGER);").unwrap();
-    drop(db);
-    assert!(OwnerResourceRegistry::open_root(&f._root.path().join("owner")).is_err());
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        db.pragma_query_value::<u64, _>(None, "user_version", |r| r.get(0))
-            .unwrap(),
-        82
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM resources", [], |r| r.get::<_, u64>(0))
-            .unwrap(),
-        1
-    );
-    db.execute_batch("DROP TABLE owner_resource_display_names;")
-        .unwrap();
-    drop(db);
-    f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    assert_eq!(f.registry.id(), registry_id);
-    assert_eq!(
-        serde_json::to_value(
-            f.registry
-                .resource(&f.profile, f.resource.id())
-                .await
-                .unwrap()
-        )
-        .unwrap(),
-        before
-    );
-    f.registry
-        .0
-        .store
-        .call(1, |db| {
-            assert_eq!(
-                db.db
-                    .pragma_query_value::<u64, _>(None, "user_version", |r| r.get(0))?,
-                crate::domain::DOMAIN_SCHEMA_VERSION as u64
-            );
-            assert_eq!(
-                db.db.query_row(
-                    "SELECT count(*) FROM owner_resource_display_names",
-                    [],
-                    |r| r.get::<_, u64>(0)
-                )?,
-                0
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
-    f.registry.shutdown().await.unwrap();
-}
 
-#[path = "operator_task_tests.rs"]
-mod operator_task_tests;
 
-#[path = "operator_tasks_canonical_tests.rs"]
-mod operator_tasks_canonical_tests;
-
-#[path = "operator_task_command_tests.rs"]
+#[path="operator_task_command_tests.rs"]
 mod operator_task_command_tests;
-
-#[path = "task_transfer_tests.rs"]
-mod task_transfer_tests;

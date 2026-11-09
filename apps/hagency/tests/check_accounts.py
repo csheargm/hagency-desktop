@@ -7,7 +7,8 @@ from check_agent_admission import APP,PREFIX
 def main():
     p=argparse.ArgumentParser();p.add_argument('vm',type=Path);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     source=(APP/'bundle/main.splash').read_text()
-    helpers=source[source.index('A.begin_setup = fn('):source.index('A.load_providers = fn(')]
+    recovery=source[source.index('A.recover_native = fn('):source.index('A.saved_label = fn(')]
+    helpers=source[source.index('A.begin_setup = fn('):source.index('A.fields_changed = fn(')]
     start=source.index('        if H.page == "provider_accounts" ||')
     pages=source[start:source.index('        if A.sub_page() &&',start)]
     fixture='''
@@ -30,7 +31,6 @@ H.account_models=nil H.account_models_attempted=false H.account_models_epoch=0 H
 H.page="provider_accounts" H.account_inventory=nil H.account_detail=nil H.account_id="account_original" H.account_after=nil H.account_resource_after=nil
 H.wizard={step:0 resource:nil admission:nil}
 H.entry_role=""
-A.load_providers=fn(){H.providers_loaded=true}
 A.navigate=fn(page){H.page=page}
 A.reasoning_label=fn(effort){return effort}
 A.refresh=fn(){if H.page=="provider_accounts"{A.open_accounts(H.account_after)}else{A.open_account(H.account_id,H.account_resource_after)}}
@@ -42,8 +42,9 @@ let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] accou
     cases={
       'fresh_setup_entry':('', 'A.begin_setup()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")'),
       'new_resource_entry':('', 'A.new_resource()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")'),
+      'removed_provider_wizard_entry':('H.wizard.step=2', 'A.begin_setup()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")'),
       'retained_setup_entry':('H.wizard.step=3 H.wizard.resource={resourceId:"original"}', 'A.begin_setup()\nassert(H.page=="wizard" && H.wizard.resource.resourceId=="original" && H.calls.len()==0)'),
-      'pending_setup_entry':('H.command={commandId:"original"}', 'A.begin_setup()\nassert(H.page=="wizard" && H.command.commandId=="original" && H.calls.len()==0)'),
+      'pending_setup_entry':('H.command={commandId:"original"}', 'A.begin_setup()\nassert(H.page=="provider_accounts" && H.command.commandId=="original" && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")'),
       'retirement_entry':('H.page="provider_account" H.account_detail=detail row.resourceCount=0','button("account_retire").on_click()\nassert(H.calls.len()==1 && H.calls[0].service=="hagency.accounts.retire" && H.calls[0].args.accountId==row.id)'),
       'retirement_bound':('H.page="provider_account" H.account_detail=detail row.resourceCount=1','assert(button("account_retire")==nil)'),
       'retirement_retired':('H.page="provider_account" H.account_detail=detail row.state="retired"','assert(button("account_retire")==nil)\nassert(has(A.t("Hagency no longer uses this account space. Provider sign-out has not been verified; credentials are retained.","Hagency 已停用此账号空间。模型服务商的退出登录尚未验证；凭据仍保留。")))'),
@@ -56,7 +57,7 @@ let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] accou
       'prepare_busy':('H.page="account_prepare" H.busy=true','assert(!button("account_prepare_confirm").enabled)\nbutton("account_prepare_confirm").on_click()\nassert(H.calls.len()==0)'),
       'prepare_pending':('H.page="account_prepare" H.command={service:"hagency.accounts.prepare"}','assert(!button("account_prepare_confirm").enabled)\nbutton("account_prepare_confirm").on_click()\nassert(H.calls.len()==0)'),
       'prepare_entry':('H.account_inventory=inventory','button("account_prepare_review").on_click()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.onboarding.status")\nH.callback({state:"active"})\nassert(H.page=="account_prepare")'),
-      'prepare_needs_setup':('H.account_inventory=inventory A.dev_open=fn(page,from){H.page=page}','button("account_prepare_review").on_click()\nH.callback({state:"legacy"})\nassert(H.page=="pool_device_setup" && H.calls.len()==1)'),
+      'prepare_needs_setup':('H.account_inventory=inventory A.dev_open=fn(page,from){H.page=page}','button("account_prepare_review").on_click()\nH.callback({state:"uninitialized"})\nassert(H.page=="pool_device_setup" && H.calls.len()==1)'),
       'prepare_late_setup':('H.account_inventory=inventory','button("account_prepare_review").on_click()\nH.page="overview"\nH.callback({state:"active"})\nassert(H.page=="overview")'),
       'loading':('H.busy=true','assert(has(A.t("Reading accounts…","正在读取账号…")))\nassert(!button("accounts_refresh").enabled)'),
       'failed':('','assert(has(A.t("Account list unavailable","账号列表暂不可用")))\nassert(!has(A.t("No recorded accounts in this profile","当前身份暂无账号记录")))'),
@@ -93,6 +94,20 @@ let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] accou
           'busy_guard':'H.busy=true\nA.open_accounts(nil)\nA.open_account("account_original",nil)\nassert(H.calls.len()==0)',
           'same_result':'A.open_account("account_original",nil)\nH.callback(detail)\nassert(H.account_detail.account.id=="account_original")',
         }.items():run(name+'-'+lang,base+checks)
+        run('saved_enrollment_recovery-'+lang,base+recovery+'''
+A.personal_config_operation=fn(operation){return false}
+A.is_template_operation=fn(operation){return false}
+A.is_graph_operation=fn(operation){return false}
+A.is_task_operation=fn(operation){return false}
+H.command={commandId:"original-command"}
+H.enrollment_draft={model:"draft"}
+A.recover_native({commandId:"original-command" operation:"enroll_account_resource" input:{}})
+assert(H.calls.len()==1 && H.calls[0].service=="hagency.intent.retry" && H.calls[0].args.commandId=="original-command")
+H.callback({operation:"enroll_account_resource" data:{resourceId:"confirmed-resource"}})
+assert(H.command==nil && H.enrollment_draft==nil)
+assert(H.page=="resource_detail" && H.resource_id=="confirmed-resource")
+assert(H.ack=="original-command")
+''')
     (a.output/'report.json').write_text(json.dumps(results,indent=2)+'\n');print(json.dumps({'passed':sum(r['passed'] for r in results),'total':len(results)}));raise SystemExit(not all(r['passed'] for r in results))
 
 if __name__=='__main__':main()

@@ -38,7 +38,7 @@ impl App {
 }
 impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
-        assert!(std::env::var_os("RINX_DATA_DIR").is_some(), "isolated profile required");
+        assert!(std::env::var_os("HAGENCY_DESKTOP_DATA_DIR").is_some(), "isolated profile required");
         self.runtime = Some(tokio::runtime::Runtime::new().unwrap());
         self.account(&std::env::var("PALPO_ACCEPTANCE_ROLE").unwrap_or("manager".into()));
         self.open(cx);

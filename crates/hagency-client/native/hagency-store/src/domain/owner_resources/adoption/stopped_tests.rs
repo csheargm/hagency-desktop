@@ -2,8 +2,8 @@ use super::*;
 use crate::management::{
     ResolveStopped, ReviewStopped, StoppedDecision, StoppedListQuery, StoppedQuery,
 };
-fn session(backing: &AdoptedManagementStore, ctx: &HostContext) -> Session {
-    Session::new_adopted(
+fn session(backing: &CurrentManagementStore, ctx: &HostContext) -> Session {
+    Session::new_current(
         backing.clone(),
         ctx.clone(),
         [

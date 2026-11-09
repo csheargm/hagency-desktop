@@ -1,7 +1,7 @@
 //! Built-in Hagency services. The SDK owns identity; Splash gets no credentials,
 //! paths, provider URLs or generic engine/HTTP entry point.
 use ::hagency::native_owner::{
-    ManagementCommand, ManagementPackage, ManagementPermission, ManagementRuntime, };
+    ManagementCommand, ManagementPackage, ManagementPermission, };
 use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
 use crate::miniapps::{InstanceId, Lease};
 use serde::Deserialize;
@@ -32,7 +32,6 @@ mod web_catalog;
 mod web_overview;
 mod templates;
 mod graphs;
-mod graph_history;
 pub(crate) mod reauthentication;
 pub(crate) mod errors;
 mod local;
@@ -48,70 +47,6 @@ pub(crate) mod grant_people;
 pub(crate) mod execution;
 pub(crate) mod local_zone;
 pub(crate) mod people;
-
-pub(crate) const CONNECT_PROVIDER: &str = "hagency.providers.connect";
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConnectProvider {
-    runtime: ManagementRuntime,
-}
-
-/// Kept only by the native screen. Cannot be cloned, serialized or supplied by
-/// Splash. Consuming it prevents a second click from replaying an approval.
-pub(crate) struct ProviderConsent {
-    host: Host,
-    lease: Lease,
-    runtime: ManagementRuntime,
-    expires: Instant,
-}
-impl ProviderConsent {
-    pub fn runtime_name(&self) -> &'static str {
-        match self.runtime {
-            ManagementRuntime::Codex => "Codex",
-            ManagementRuntime::Claude => "Claude Code",
-            ManagementRuntime::Octos => "Octos",
-        }
-    }
-    pub fn account(&self) -> &str {
-        &self.lease.identity().account
-    }
-    pub fn expired(&self) -> bool {
-        Instant::now() >= self.expires
-    }
-    fn authorize(&self, account: &str) -> Result<(), String> {
-        if self.host.0.retired.load(Ordering::Acquire)
-            || self.host.0.identity != *self.lease.identity()
-        {
-            return Err("management_scope_changed".into());
-        }
-        if self.expired() {
-            return Err("provider_confirmation_expired".into());
-        }
-        self.lease.authorize(account, CONNECT_PROVIDER, None)
-    }
-    pub async fn accept(self) -> Result<Value, String> {
-        let account = self.host.check(&self.lease)?;
-        self.authorize(&account)?;
-        let manager = self.host.manager(&self.lease).await?;
-        self.host.check(&self.lease)?;
-        self.authorize(&account)?;
-        let result = manager
-            .connect_provider(self.runtime, self.expires)
-            .await
-            .map_err(|e| e.code);
-        if self.host.check(&self.lease).is_err() {
-            return Err(if result.is_ok() {
-                "management_outcome_unknown"
-            } else {
-                "management_scope_changed"
-            }
-            .into());
-        }
-        self.lease.authorize(&account, CONNECT_PROVIDER, None)?;
-        rinx_miniapp_core::bounded_reply(result?)
-    }
-}
 
 #[cfg(feature = "resource-adoption")]
 pub(crate) mod adoption;
@@ -270,7 +205,6 @@ fn permissions(lease: &Lease) -> Vec<ManagementPermission> {
             cap if !web_overview::permissions(cap).is_empty() => web_overview::permissions(cap).to_vec(),
             cap if !templates::permissions(cap).is_empty() => templates::permissions(cap).to_vec(),
             cap if !graphs::permissions(cap).is_empty() => graphs::permissions(cap).to_vec(),
-            cap if graph_history::SERVICES.contains(&cap) => vec![ReadOperatorGraphHistory],
             tasks::LIST | tasks::GET => vec![ReadTasks],
             tasks::BOARD => vec![ReadTaskBoard],
             tasks::CREATE => vec![ReadTasks, CreateTasks],
@@ -308,10 +242,7 @@ fn permissions(lease: &Lease) -> Vec<ManagementPermission> {
             retirement::RETIRE => vec![RetireAccounts],
             accounts::LOGIN => vec![LoginAccounts],
             accounts::MODELS => vec![ReadAccountModels],
-            "hagency.providers.list" => vec![ReadProviders],
-            "hagency.providers.connect" => vec![ConnectProviders],
-            "hagency.resources.enroll" | enrollment::ENROLL => vec![EnrollResources],
-            "hagency.resources.configure" => vec![ConfigureResources],
+            enrollment::ENROLL => vec![EnrollResources],
             "hagency.resources.publish" => vec![PublishResources],
             "hagency.connections.create" | "hagency.connections.reoffer" => vec![ReadResources, ContributeResources],
             "hagency.session" | "hagency.connections.list" | "hagency.connections.get" | "hagency.connections.history" => {
@@ -337,17 +268,6 @@ fn permissions(lease: &Lease) -> Vec<ManagementPermission> {
     grants
 }
 impl Host {
-    pub fn provider_consent(&self, lease: Lease, args: Value) -> Result<ProviderConsent, String> {
-        let account = self.check(&lease)?;
-        lease.authorize(&account, CONNECT_PROVIDER, None)?;
-        let args: ConnectProvider = parse(args)?;
-        Ok(ProviderConsent {
-            host: self.clone(),
-            lease,
-            runtime: args.runtime,
-            expires: Instant::now() + Duration::from_secs(120),
-        })
-    }
     pub fn new(digest: String, lease: &Lease) -> Result<Self, String> {
         if lease.identity().app != octosense_app_contract::hagency::APP_ID
             || digest.len() != 64
@@ -431,7 +351,7 @@ impl Host {
         #[cfg(feature = "resource-adoption")]
         let grant_access = if lease.authorize(&self.0.identity.account, grants::REVIEW_GRANT, None).is_ok() {
             // Read the actual adopted inventory before enabling native consent.
-            match service.adopted_grant_access_until(ManagementPackage {
+            match service.current_grant_access_until(ManagementPackage {
                 digest: self.0.digest.clone(), instance: self.0.identity.generation,
                 account_epoch: self.0.epoch + 1, permissions: Vec::new(),
             }, lease.expires()).await {
@@ -441,7 +361,7 @@ impl Host {
                     }
                     Some(access)
                 }
-                Err(error) if matches!(error.as_str(), "owner_source_adoption_required" | "adopted_grant_device_reauthorization_required") => None,
+                Err(error) if matches!(error.as_str(), "current_profile_required" | "adopted_grant_device_reauthorization_required") => None,
                 Err(error) => { manager.retire(); return Err(error); }
             }
         } else { None };
@@ -504,9 +424,6 @@ impl Host {
             let input: ::hagency::native_owner::RetireAccount=parse(args)?;
             input.validate().map_err(|_|"invalid_management_arguments".to_owned())?;
             return Err("native_account_retirement_confirmation_required".into());
-        }
-        if service == CONNECT_PROVIDER {
-            return Err("native_provider_confirmation_required".into());
         }
         if [personal_configuration::MODEL, personal_configuration::WORKSPACE, personal_configuration::RULES].contains(&service) {
             let _ = personal_configuration::parse_input(service, args)?;
@@ -629,13 +546,6 @@ impl Host {
             self.check(&lease)?;
             lease.authorize(&account, service, None)?;
             return rinx_miniapp_core::bounded_reply(value(result?)?);
-        }
-        if graph_history::SERVICES.contains(&service) {
-            let manager = self.manager(&lease).await?;
-            let result = graph_history::execute(service,args,&manager).await;
-            self.check(&lease)?;
-            lease.authorize(&account,service,None)?;
-            return rinx_miniapp_core::bounded_reply(result?);
         }
         if let Some(call) = stopped::call(service, args.clone())? {
             let manager = self.manager(&lease).await?;
@@ -784,13 +694,7 @@ impl Host {
             "hagency.intent.acknowledge" => Some(ResourceCall::Acknowledge(
                 parse::<CommandId>(args)?.command_id,
             )),
-            "hagency.providers.list" => {
-                let _: Empty = parse(args)?;
-                Some(ResourceCall::Providers)
-            }
-            "hagency.resources.enroll" => Some(ResourceCall::Enroll(parse(args)?)),
             "hagency.resources.list" => Some(ResourceCall::List(parse(args)?)),
-            "hagency.resources.configure" => Some(ResourceCall::Configure(parse(args)?)),
             "hagency.resources.publish" => Some(ResourceCall::Publish(parse(args)?)),
             _ => None,
         };
@@ -806,19 +710,8 @@ impl Host {
             (None, Some(ResourceCall::Acknowledge(id))) => manager.acknowledge_command(id).await.map(|()|json!({"acknowledged":true})).map_err(|e|e.code),
             (Some(command @ (ManagementCommand::SharedApprovals{..}|ManagementCommand::SharedApprovalDecide{..})),None) => Box::pin(crate::hagency::backend::Service::for_current()?.shared_permissions_with(manager.clone(),command)).await,
             (Some(command), None) => manager.central(command).await.map_err(|e| e.code),
-            (None, Some(ResourceCall::Providers)) => manager.providers().await.map_err(|e| e.code),
-            (None, Some(ResourceCall::Enroll(input))) => manager
-                .enroll_resource(input)
-                .await
-                .map_err(|e| e.code)
-                .and_then(value),
             (None, Some(ResourceCall::List(input))) => manager
                 .resources(input)
-                .await
-                .map_err(|e| e.code)
-                .and_then(value),
-            (None, Some(ResourceCall::Configure(input))) => manager
-                .configure_resource(input)
                 .await
                 .map_err(|e| e.code)
                 .and_then(value),
@@ -841,10 +734,7 @@ enum ResourceCall {
     Pending,
     Retry(String),
     Acknowledge(String),
-    Providers,
-    Enroll(::hagency::native_owner::EnrollResource),
     List(::hagency::native_owner::ResourceQuery),
-    Configure(::hagency::native_owner::ConfigureResource),
     Publish(::hagency::native_owner::PublishResource),
 }
 fn central_command(service: &str, args: Value) -> Result<Option<ManagementCommand>, String> {
@@ -996,10 +886,7 @@ fn central_command(service: &str, args: Value) -> Result<Option<ManagementComman
         "hagency.intent.pending"
         | "hagency.intent.retry"
         | "hagency.intent.acknowledge"
-        | "hagency.providers.list"
-        | "hagency.resources.enroll"
         | "hagency.resources.list"
-        | "hagency.resources.configure"
         | "hagency.resources.publish" => return Ok(None),
         _ => return Err("unknown_management_service".into()),
     }))
@@ -1131,67 +1018,12 @@ mod tests {
         }
     }
     #[test]
-    fn provider_confirmation_is_closed_and_requires_current_exact_grant() {
-        for input in [
-            json!({"runtime":"../codex"}),
-            json!({"runtime":"codex","approved":true}),
-            json!({"runtime":"codex","path":"/tmp/provider"}),
-            json!({"runtime":"codex","account":"@other:test"}),
-            json!({"runtime":"codex","token":"injected"}),
-            json!({"runtime":"codex","url":"https://other.test"}),
-        ] {
-            assert!(parse::<ConnectProvider>(input).is_err());
+    fn removed_resource_services_are_not_dispatchable_or_capabilities() {
+        for service in ["hagency.providers.list", "hagency.providers.connect", "hagency.resources.enroll", "hagency.resources.configure"] {
+            assert!(central_command(service, json!({})).is_err());
+            assert!(!octosense_app_contract::hagency::SERVICES.contains(&service));
+            assert!(!octosense_app_contract::KNOWN_CAPABILITIES.contains(&service));
         }
-        for runtime in ["codex", "claude", "octos"] {
-            assert!(parse::<ConnectProvider>(json!({"runtime":runtime})).is_ok());
-        }
-        let authority = rinx_miniapp_core::SessionAuthority::default();
-        let identity = InstanceId {
-            app: octosense_app_contract::hagency::APP_ID.into(),
-            account: "@owner:test".into(),
-            room: None,
-            generation: 1,
-        };
-        let host = Host(Arc::new(Inner {
-            digest: "a".repeat(64),
-            identity: identity.clone(),
-            epoch: 0,
-            retired: AtomicBool::new(false),
-            reauthentication_required: AtomicBool::new(false),
-            initialising: Default::default(),
-            manager: Default::default(),
-            grant_access: Default::default(),
-        }));
-        let make = |service: &str| ProviderConsent {
-            host: host.clone(),
-            lease: authority.issue(
-                identity.clone(),
-                [service.to_owned()].into(),
-                Default::default(),
-                Instant::now() + Duration::from_secs(60),
-            ),
-            runtime: ManagementRuntime::Codex,
-            expires: Instant::now() + Duration::from_secs(60),
-        };
-        assert!(
-            make("hagency.providers.list")
-                .authorize("@owner:test")
-                .is_err()
-        );
-        assert!(make(CONNECT_PROVIDER).authorize("@foreign:test").is_err());
-        let mut expired = make(CONNECT_PROVIDER);
-        expired.expires = Instant::now();
-        assert_eq!(
-            expired.authorize("@owner:test").unwrap_err(),
-            "provider_confirmation_expired"
-        );
-        let prompt = make(CONNECT_PROVIDER);
-        assert!(prompt.authorize("@owner:test").is_ok());
-        authority.invalidate();
-        assert!(prompt.authorize("@owner:test").is_err());
-        let prompt = make(CONNECT_PROVIDER);
-        host.retire();
-        assert!(prompt.authorize("@owner:test").is_err());
     }
     #[test]
     fn recovery_accepts_only_an_opaque_command_id() {

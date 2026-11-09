@@ -134,7 +134,7 @@ async fn native_owner_command_source_loss_suspends_without_withdrawing_saved_acc
     f.current.store(false, Ordering::Release);
     assert_eq!(
         f.owner
-            .execute(crate::native_owner::Command::LoginStatus)
+            .execute(crate::native_owner::Command::Projects)
             .await
             .unwrap_err()
             .code,

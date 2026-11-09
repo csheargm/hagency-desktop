@@ -12,17 +12,21 @@ let reply=fn(index,data){H.callbacks[index]({is_ok:true data:data})}
 let connection={id:"pool_original" label:"Pool A" ownerMxid:"@owner:test" executorDeviceId:"device" state:"admitted"}
 '''
 CASES={
-'fresh_device_does_not_claim_legacy_data': '''
-let empty=A.pool_device_state({state:"legacy" setupKind:"empty_device" canReview:true grantReviewAvailable:false grantIntents:[]},"ready")
-assert(empty.fix && empty.detail==A.t("Set up resource management for this account before connecting a coding tool and creating a pool.","先为当前账号完成资源管理初始化，再接入编码工具、创建资源池。"))
-let existing=A.pool_device_state({state:"legacy" setupKind:"existing_resources" canReview:true grantReviewAvailable:false grantIntents:[]},"ready")
-assert(existing.fix && existing.detail!=empty.detail)
+'current_device_setup_requires_uninitialized_state': '''
+let fresh=A.pool_device_state({state:"uninitialized" canReview:true grantReviewAvailable:false grantIntents:[]},"ready")
+assert(fresh.fix && fresh.detail==A.t("Set up resource management for this account before connecting a coding tool and creating a pool.","先为当前账号完成资源管理初始化，再接入编码工具、创建资源池。"))
+let ready=A.pool_device_state({state:"active" canReview:false grantReviewAvailable:true grantIntents:[]},"ready")
+assert(ready.key=="ready" && !ready.fix)
+for state in ["active","unavailable","untrusted"] {
+ let blocked=A.pool_device_state({state:state canReview:true grantReviewAvailable:false grantIntents:[]},"ready")
+ assert(!blocked.fix)
+}
 ''',
 'device_setup_preserves_specific_blocker_without_resubmitting': '''
 A.pool_device_load=fn(){}
 A.pool_call=fn(service,args,done){H.calls.push({service:service args:args}) H.callbacks.push(done)}
 A.dev_setup("hub")
-reply(0,{state:"legacy" setupKind:"empty_device" canReview:true grantReviewAvailable:false grantIntents:[]})
+reply(0,{state:"uninitialized" canReview:true grantReviewAvailable:false grantIntents:[]})
 assert(H.calls.len()==2 && H.calls[1].service=="hagency.onboarding.review")
 reply(1,{state:"outcome_unknown" reason:"source_installation_busy"})
 assert(H.calls.len()==2 && H.dev.result.tone=="attention" && H.dev.result.text==A.dev_setup_error("source_installation_busy"))
@@ -31,7 +35,7 @@ assert(H.calls.len()==2 && H.dev.result.tone=="attention" && H.dev.result.text==
 A.pool_device_load=fn(){}
 A.pool_call=fn(service,args,done){H.calls.push({service:service args:args}) H.callbacks.push(done)}
 A.dev_setup("hub")
-reply(0,{state:"legacy" setupKind:"empty_device" canReview:true grantReviewAvailable:false grantIntents:[]})
+reply(0,{state:"uninitialized" canReview:true grantReviewAvailable:false grantIntents:[]})
 reply(1,{state:"outcome_unknown"})
 assert(H.calls.len()==2 && H.dev.result.tone=="waiting")
 assert(H.dev.result.text==A.t("It isn’t known yet whether setup finished. Tap Continue Setting Up again in a moment; it won’t run twice.","暂时不知道设置是否完成。稍后再点「继续设置这台电脑」查看，不会重复设置。"))

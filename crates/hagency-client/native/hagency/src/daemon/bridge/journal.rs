@@ -24,11 +24,16 @@ pub enum Admission {
 }
 impl Journal {
     pub fn open(path: &Path) -> Result<Self, NativeError> {
-        drop(
-            hagency_store::private::open(path, true)
-                .or_else(|_| hagency_store::private::open(path, false))
-                .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?,
-        );
+        let (file, created) = match hagency_store::private::open(path, true) {
+            Ok(file) => (file, true),
+            Err(hagency_store::Error::Io(io_error)) if io_error.kind() == std::io::ErrorKind::AlreadyExists => (
+                hagency_store::private::open(path, false)
+                    .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?,
+                false,
+            ),
+            Err(_) => return Err(error(503, "daemon_bridge_journal_unavailable")),
+        };
+        drop(file);
         let path = path
             .canonicalize()
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
@@ -39,24 +44,36 @@ impl Journal {
         .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT); CREATE TABLE IF NOT EXISTS pending(fingerprint TEXT PRIMARY KEY, id TEXT NOT NULL);")
-            .map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
-        // Schema evolution is one transaction; an interrupted upgrade cannot
-        // leave half of the recovery contract installed.
-        let tx=db.unchecked_transaction().map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
-        for (table, columns) in [
-            ("pending", vec![("created_at_ms","INTEGER NOT NULL DEFAULT 0"),("owner","TEXT NOT NULL DEFAULT ''"),("retry_until_ms","INTEGER NOT NULL DEFAULT 0")]),
-            ("calls", vec![("recovery_version","INTEGER NOT NULL DEFAULT 0"),("native_id","TEXT")]),
-        ] {
-            let known=tx.prepare(&format!("PRAGMA table_info({table})"))
-                .and_then(|mut s|s.query_map([],|r|r.get::<_,String>(1))?.collect::<Result<Vec<_>,_>>())
-                .map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
-            for (column,kind) in columns { if !known.iter().any(|name|name==column) {
-                tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
-                    .map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
-            }}
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+        if !created {
+            let current = version == 0 && super::super::sqlite::has_tables(&db, &[
+                ("calls", &["id", "fingerprint", "response", "recovery_version", "native_id"]),
+                ("pending", &["fingerprint", "id", "created_at_ms", "owner", "retry_until_ms"]),
+            ]).map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+            if !current {
+                return Err(error(503, "daemon_bridge_journal_unavailable"));
+            }
+            let unsupported: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM calls WHERE recovery_version IS NOT 1)
+                    OR EXISTS(SELECT 1 FROM pending WHERE owner IS NULL OR owner='' OR created_at_ms<=0 OR retry_until_ms<created_at_ms)",
+                [], |row| row.get(0),
+            ).map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+            if unsupported {
+                return Err(error(503, "daemon_bridge_journal_unavailable"));
+            }
         }
-        tx.commit().map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
+        // Only a file created by this call gets initialized. Existing files
+        // must already carry the complete current recovery contract.
+        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
+            .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+        if created {
+            let tx = db.unchecked_transaction().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+            tx.execute_batch("CREATE TABLE calls(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT, recovery_version INTEGER NOT NULL DEFAULT 0, native_id TEXT);
+                CREATE TABLE pending(fingerprint TEXT PRIMARY KEY, id TEXT NOT NULL, created_at_ms INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '', retry_until_ms INTEGER NOT NULL DEFAULT 0);")
+                .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+            tx.commit().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
+        }
         Ok(Self(Mutex::new(db), Mutex::new(HashSet::new()), Mutex::new(HashMap::new())))
     }
     pub fn admit(&self, id: &str, fingerprint: &str) -> Result<Admission, NativeError> {
@@ -71,21 +88,22 @@ impl Journal {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
-        let existing: Option<(String, Option<String>)> = tx
+        let existing: Option<(String, Option<String>, i64)> = tx
             .query_row(
-                "SELECT fingerprint,response FROM calls WHERE id=?1",
+                "SELECT fingerprint,response,recovery_version FROM calls WHERE id=?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
         let result = match existing {
-            Some((old, _)) if old != fingerprint => return Err(error(409, "request_id_reused")),
-            Some((_, Some(response))) => {
+            Some((_, _, version)) if version != 1 => return Err(error(503, "daemon_bridge_journal_unavailable")),
+            Some((old, _, _)) if old != fingerprint => return Err(error(409, "request_id_reused")),
+            Some((_, Some(response), _)) => {
                 let result=serde_json::from_str(&response).map_err(|_|error(503,"daemon_bridge_journal_unavailable"))?;
                 if super::terminal_receipt(&result) {Admission::Result(result)} else {Admission::RecoveryRequired}
             },
-            Some((_, None)) => {
+            Some((_, None, _)) => {
                 if self.1.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?.contains(id) { Admission::Pending }
                 else { Admission::RecoveryRequired }
             },
@@ -103,11 +121,10 @@ impl Journal {
         if matches!(result, Admission::New) { self.1.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?.insert(id.into()); }
         Ok(result)
     }
-    /// Legacy rows have no before-effect pin contract. New rows with no pin
-    /// prove this resume did not enter native execution yet.
-    pub fn native_pin(&self, id: &str) -> Result<Option<Option<String>>, NativeError> {
+    /// An admitted current command with no pin has not entered native execution.
+    pub fn native_pin(&self, id: &str) -> Result<Option<String>, NativeError> {
         self.0.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?
-            .query_row("SELECT recovery_version,native_id FROM calls WHERE id=?1", [id], |r| Ok((r.get::<_,u32>(0)? != 0).then(||r.get::<_,Option<String>>(1)).transpose()?))
+            .query_row("SELECT native_id FROM calls WHERE id=?1 AND recovery_version=1", [id], |row| row.get(0))
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))
     }
     pub fn pin_native(&self, id: &str, native: &str) -> Result<(), NativeError> {
@@ -134,16 +151,13 @@ impl Journal {
         Ok(())
     }
     #[cfg(test)]
-    pub fn pending(&self, fingerprint: &str) -> Result<String, NativeError> { self.pending_for("", fingerprint) }
+    pub fn pending(&self, fingerprint: &str) -> Result<String, NativeError> { self.pending_for("@owner:test", fingerprint) }
     pub fn pending_for(&self, owner: &str, fingerprint: &str) -> Result<String, NativeError> {
+        if owner.is_empty() { return Err(error(503, "daemon_bridge_journal_unavailable")); }
         let db = self.0.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
         let id = super::super::new_request_id();
         let now = super::super::control::now_ms();
         db.execute("INSERT OR IGNORE INTO pending(fingerprint,id,created_at_ms,owner,retry_until_ms) VALUES(?1,?2,?3,?4,?5)", params![fingerprint,id,now,owner,now.saturating_add(RETRY_WINDOW_MS)])
-            .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
-        // Legacy rows are tied to the caller only after its full fingerprint
-        // matches; age 0 requires explicit recovery and never fresh execution.
-        db.execute("UPDATE pending SET owner=?1 WHERE fingerprint=?2 AND owner=''", params![owner,fingerprint])
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
         let (id, until): (String,u64) = db.query_row("SELECT id,retry_until_ms FROM pending WHERE fingerprint=?1 AND owner=?2", params![fingerprint,owner], |r| Ok((r.get(0)?,r.get(1)?)))
             .map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?;
@@ -244,18 +258,69 @@ mod tests {
         assert_eq!(journal.pending_for("@owner:test","fingerprint").unwrap(),id);
     }
     #[test]
-    fn native_pin_is_immutable_and_legacy_rows_cannot_claim_before_effect_contract() {
+    fn native_pin_is_immutable_and_preserved_across_restart() {
         let temp=tempfile::tempdir().unwrap();let path=temp.path().join("journal");
         let journal=Journal::open(&path).unwrap();
-        journal.admit("modern","print").unwrap();
-        assert_eq!(journal.native_pin("modern").unwrap(),Some(None));
-        journal.pin_native("modern","begin-original").unwrap();
-        assert!(journal.pin_native("modern","replacement").is_err());
-        journal.0.lock().unwrap().execute("INSERT INTO calls(id,fingerprint) VALUES('legacy','print')",[]).unwrap();
-        assert_eq!(journal.native_pin("legacy").unwrap(),None);
+        journal.admit("current","print").unwrap();
+        assert_eq!(journal.native_pin("current").unwrap(),None);
+        journal.pin_native("current","begin-original").unwrap();
+        assert!(journal.pin_native("current","replacement").is_err());
         drop(journal);let journal=Journal::open(&path).unwrap();
-        assert_eq!(journal.native_pin("modern").unwrap(),Some(Some("begin-original".into())));
-        assert!(matches!(journal.admit("modern","print").unwrap(),Admission::RecoveryRequired));
+        assert_eq!(journal.native_pin("current").unwrap(),Some("begin-original".into()));
+        assert!(matches!(journal.admit("current","print").unwrap(),Admission::RecoveryRequired));
+    }
+    #[test]
+    fn obsolete_schema_is_refused_without_upgrading_or_dropping_receipts() {
+        for sql in [
+            "CREATE TABLE calls(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT);
+             CREATE TABLE pending(fingerprint TEXT PRIMARY KEY, id TEXT NOT NULL);
+             INSERT INTO calls VALUES('original','scope',NULL);
+             INSERT INTO pending VALUES('scope','original');",
+            "CREATE TABLE calls(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT, recovery_version INTEGER NOT NULL DEFAULT 0, native_id TEXT);
+             CREATE TABLE pending(fingerprint TEXT PRIMARY KEY, id TEXT NOT NULL, created_at_ms INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '');",
+            "",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("journal");
+            drop(hagency_store::private::open(&path, true).unwrap());
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(sql).unwrap();
+            drop(db);
+            let before = std::fs::read(&path).unwrap();
+            assert_eq!(Journal::open(&path).err().unwrap().code, "daemon_bridge_journal_unavailable");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+    #[test]
+    fn unsupported_recovery_rows_and_unowned_pending_are_never_adopted() {
+        for sql in [
+            "INSERT INTO calls(id,fingerprint,recovery_version) VALUES('original','scope',0)",
+            "INSERT INTO calls(id,fingerprint,recovery_version) VALUES('original','scope',2)",
+            "INSERT INTO pending(fingerprint,id,created_at_ms,owner,retry_until_ms) VALUES('scope','original',1,'',9999999999999)",
+            "INSERT INTO pending(fingerprint,id,created_at_ms,owner,retry_until_ms) VALUES('scope','original',0,'@owner:test',9999999999999)",
+            "PRAGMA user_version=9",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("journal");
+            let journal = Journal::open(&path).unwrap();
+            journal.0.lock().unwrap().execute_batch(sql).unwrap();
+            if sql.contains("INSERT INTO calls") {
+                assert!(journal.admit("original", "scope").is_err());
+                assert!(journal.native_pin("original").is_err());
+                assert!(journal.pin_native("original", "replacement").is_err());
+            }
+            if sql.contains("VALUES('scope','original',1,'',") {
+                assert!(journal.pending_for("@owner:test", "scope").is_err());
+                let owner: String = journal.0.lock().unwrap().query_row(
+                    "SELECT owner FROM pending WHERE id='original'", [], |row| row.get(0)
+                ).unwrap();
+                assert!(owner.is_empty());
+            }
+            drop(journal);
+            let before = std::fs::read(&path).unwrap();
+            assert_eq!(Journal::open(&path).err().unwrap().code, "daemon_bridge_journal_unavailable");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
     #[test]
     fn recorded_native_unknown_is_reconciled_to_terminal_receipt_under_same_id() {
@@ -263,7 +328,7 @@ mod tests {
         let id=journal.pending_for("owner","resume").unwrap();journal.admit(&id,"scope").unwrap();journal.pin_native(&id,"original-begin").unwrap();
         journal.finish(&id,&Err(Failure::from(error(503,"management_outcome_unknown")))).unwrap();
         assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::RecoveryRequired));
-        assert_eq!(journal.native_pin(&id).unwrap(),Some(Some("original-begin".into())));
+        assert_eq!(journal.native_pin(&id).unwrap(),Some("original-begin".into()));
         journal.finish(&id,&Ok(serde_json::json!({"commandId":"original-begin"}))).unwrap();
         assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::Result(Ok(_))));
         // A late unknown reply cannot replace the proven original result.

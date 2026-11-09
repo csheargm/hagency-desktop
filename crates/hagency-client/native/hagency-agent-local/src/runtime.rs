@@ -240,21 +240,34 @@ pub async fn spawn_for_scope_with_guardian(
         .optional()
         .map_err(crate::Error::from)?;
     let mut process = spawn_inner(profile, reference, session.as_deref(), guardian).await?;
-    if let (Some(saved), Session::Claude { wire, .. }) = (session.as_deref(), &mut process.session) {
-        wire.enable_native_completion().map_err(|_| Error::Protocol("Claude lifecycle"))?;
-        wire.enable_continuous_session().map_err(|_| Error::Protocol("Claude continuous session"))?;
-        wire.expect_resume(saved).map_err(|_| Error::Protocol("Claude resume identity"))?;
-        if wire.initialize().await.is_err() {
-            if wire.missing_resume_id() != Some(saved) {
+    if let (Some(saved), Session::Claude { wire, .. }) = (session.as_deref(), &mut process.session)
+    {
+        wire.enable_native_completion()
+            .map_err(|_| Error::Protocol("Claude lifecycle"))?;
+        wire.enable_continuous_session()
+            .map_err(|_| Error::Protocol("Claude continuous session"))?;
+        wire.expect_resume(saved)
+            .map_err(|_| Error::Protocol("Claude resume identity"))?;
+        if let Err(error) = wire.initialize().await {
+            if error == claude::session::Error::UnsupportedVersion {
+                return Err(claude_initialize_error(error));
+            }
+            if wire.pre_prompt_resume_id() != Some(saved) {
                 return Err(Error::Protocol("Claude initialize"));
             }
             // This is only a context pointer. Preserve every original usage,
             // reservation and uncertain call; verify authority again after IO.
             crate::verify(&ledger.db, scope)?;
-            let removed = ledger.db.execute(
-                "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
-                (&context, &profile_key, saved)).map_err(crate::Error::from)?;
-            if removed != 1 { return Err(Error::Protocol("Claude context changed")); }
+            let removed = ledger
+                .db
+                .execute(
+                    "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
+                    (&context, &profile_key, saved),
+                )
+                .map_err(crate::Error::from)?;
+            if removed != 1 {
+                return Err(Error::Protocol("Claude context changed"));
+            }
             process = spawn_inner(profile, reference, None, guardian).await?;
         }
     }
@@ -300,7 +313,9 @@ async fn spawn_inner(
                 crate::key(session)?;
                 command.args(["--resume", session]);
             }
-            command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
+            if !claude_uses_default_config(&profile.home, &profile.codex_home) {
+                command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
+            }
             command.args(
                 claude::interactive_arguments(&profile.model, &profile.effort)
                     .map_err(|_| Error::Profile("Claude model or effort"))?,
@@ -449,14 +464,14 @@ impl Session {
                 session.initialize().await?;
             }
             Self::Claude { wire, .. } => {
-                if wire.phase() == claude::session::Phase::Ready { return Ok(()); }
+                if wire.phase() == claude::session::Phase::Ready {
+                    return Ok(());
+                }
                 wire.enable_native_completion()
                     .map_err(|_| Error::Protocol("Claude lifecycle"))?;
                 wire.enable_continuous_session()
                     .map_err(|_| Error::Protocol("Claude continuous session"))?;
-                wire.initialize()
-                    .await
-                    .map_err(|_| Error::Protocol("Claude initialize"))?;
+                wire.initialize().await.map_err(claude_initialize_error)?;
             }
             Self::Octos { wire, .. } => wire
                 .hello()
@@ -551,6 +566,7 @@ impl Session {
                 scope: bound,
                 context,
                 reusable,
+                ..
             } => {
                 crate::verify(&ledger.db, scope)?;
                 if bound.as_ref() != Some(scope) || prior != profile {
@@ -731,9 +747,8 @@ impl Session {
             }
             _ => unreachable!(),
         };
-        // Claude modelUsage includes restored previous turns and subagents;
-        // Octos session usage is also cumulative. A durable baseline belongs to
-        // this exact native session, not merely to the same Matrix room.
+        // Claude projects UUID-deduplicated native result deltas for this
+        // admitted turn. Octos retains its distinct session counter contract.
         let counters = if usage.is_reported() {
             use rusqlite::OptionalExtension;
             let baseline: Option<(String, String)> = charge
@@ -749,7 +764,11 @@ impl Session {
             if baseline.as_ref().is_some_and(|(prior, _)| prior != session) {
                 return Err(Error::Protocol("resumed native session identity differs"));
             }
-            let baseline = baseline.map(|(_, counters)| counters);
+            let baseline = if is_claude {
+                None
+            } else {
+                baseline.map(|(_, counters)| counters)
+            };
             let baseline_missing = baseline
                 .as_deref()
                 .is_some_and(|s| s.is_empty() || s == "null");
@@ -762,22 +781,9 @@ impl Session {
                 if baseline_missing {
                     usage = crate::unreported_usage();
                 } else if let Some(prior) = prior {
-                    usage.input = usage.input.checked_sub(prior.input).ok_or(Error::Unknown)?;
-                    usage.output = usage
-                        .output
-                        .checked_sub(prior.output)
-                        .ok_or(Error::Unknown)?;
-                    usage.cached_input = usage
-                        .cached_input
-                        .checked_sub(prior.cached_input)
-                        .ok_or(Error::Unknown)?;
-                    usage.cache_write_input =
-                        match (usage.cache_write_input, prior.cache_write_input) {
-                            (Some(current), Some(prior)) => {
-                                Some(current.checked_sub(prior).ok_or(Error::Unknown)?)
-                            }
-                            _ => None,
-                        };
+                    // A backwards native counter makes the charge unknown,
+                    // not the already completed answer unavailable.
+                    usage = usage_delta(&usage, &prior).unwrap_or_else(crate::unreported_usage);
                 }
                 absolute
             } else {
@@ -835,6 +841,27 @@ impl Session {
             tool_requests: requests,
             tool_returns: returns,
         })
+    }
+}
+
+fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
+    let mut delta = current.clone();
+    delta.input = current.input.checked_sub(prior.input)?;
+    delta.output = current.output.checked_sub(prior.output)?;
+    delta.cached_input = current.cached_input.checked_sub(prior.cached_input)?;
+    delta.cache_write_input = match (current.cache_write_input, prior.cache_write_input) {
+        (Some(current), Some(prior)) => Some(current.checked_sub(prior)?),
+        _ => None,
+    };
+    Some(delta)
+}
+
+fn claude_initialize_error(error: claude::session::Error) -> Error {
+    match error {
+        claude::session::Error::UnsupportedVersion => {
+            Error::Protocol("Claude Code 2.x version 2.1.321 or newer is required")
+        }
+        _ => Error::Protocol("Claude initialize"),
     }
 }
 
@@ -947,6 +974,13 @@ impl claude_turn::Capture for PersonalClaudeCapture {
         Ok(())
     }
     async fn complete(&mut self, _process: &Claude, _text: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn complete_unaccounted(
+        &mut self,
+        _receipt: &claude::session::CompletionReceipt,
+        _text: &str,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -1188,9 +1222,19 @@ async fn run_octos(
 
 /// Read only the CLI's public authentication verdict. Never reads credentials.
 pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result<bool> {
-    claude_account_status(binary, home, config)
-        .await
-        .map(|account| account.authenticated)
+    let status = if claude_uses_default_config(home, config) {
+        claude_default_account_status(binary, home).await
+    } else {
+        claude_account_status(binary, home, config).await
+    };
+    status.map(|account| account.authenticated)
+}
+
+/// The implicit native account and an explicitly selected config directory
+/// are distinct macOS Keychain namespaces, even at the same filesystem path.
+pub fn claude_uses_default_config(home: &Path, config: &Path) -> bool {
+    std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
+        && home.join(".claude").canonicalize().ok().as_deref() == Some(config)
 }
 
 /// Public native CLI metadata, not a verified provider identity or quota key.
@@ -1220,16 +1264,33 @@ pub async fn claude_account_status(
     home: &Path,
     config: &Path,
 ) -> Result<ClaudeAccountStatus> {
+    claude_account_status_in(binary, home, Some(config)).await
+}
+/// The native default login uses a distinct Keychain service from an explicit
+/// CLAUDE_CONFIG_DIR, even when both configuration paths name ~/.claude.
+pub async fn claude_default_account_status(
+    binary: &Path,
+    home: &Path,
+) -> Result<ClaudeAccountStatus> {
+    claude_account_status_in(binary, home, None).await
+}
+async fn claude_account_status_in(
+    binary: &Path,
+    home: &Path,
+    config: Option<&Path>,
+) -> Result<ClaudeAccountStatus> {
     use tokio::io::AsyncReadExt;
     let mut command = tokio::process::Command::new(binary);
     command
         .args(["auth", "status", "--json"])
         .env_clear()
         .env("HOME", home)
-        .env("CLAUDE_CONFIG_DIR", config)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    if let Some(config) = config {
+        command.env("CLAUDE_CONFIG_DIR", config);
+    }
     for name in ["USER", "PATH", "TMPDIR"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);

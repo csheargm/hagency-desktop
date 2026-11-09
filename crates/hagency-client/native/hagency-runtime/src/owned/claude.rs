@@ -25,6 +25,9 @@ pub struct OwnedClaudeSession {
     pub(super) shared: Option<super::claude_shared::State>,
 }
 impl OwnedClaudeSession {
+    pub(super) fn bind_shared_credential(&mut self, binding: &crate::claude::account::AccountBinding) -> Result<(), Error> {
+        self.session.bind_injected_account(binding)
+    }
     /// Use on an IO-enabled execution worker: guardian startup/stop is bounded
     /// synchronous work. Never detach this owner into an HTTP request task.
     pub fn spawn(guardian: &Path, launch: &Launch, limits: Limits) -> Result<Self, StartError> {
@@ -77,18 +80,25 @@ impl OwnedClaudeSession {
     pub fn phase(&self) -> Phase {
         self.session.phase()
     }
+    pub fn ignored_frames(&self) -> u64 {
+        self.session.ignored_frames()
+    }
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
     }
     pub fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
         self.session.expect_resume(id)
     }
-    /// Original pre-input refusal plus observed physical cleanup, never an EOF guess.
-    pub fn missing_resume_id(&self) -> Option<&str> {
-        if self.termination().is_some_and(|t| t.cause == Error::MissingResume)
-            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped) {
+    /// Any failed startup before model input plus observed physical cleanup.
+    /// Native wording is diagnostic; no failure after input permits replay.
+    pub fn pre_prompt_resume_id(&self) -> Option<&str> {
+        if self.session.failed_before_prompt()
+            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped)
+        {
             self.session_id()
-        } else { None }
+        } else {
+            None
+        }
     }
     pub(super) fn expect_shared_resume(&mut self, id: &str) -> Result<(), Error> {
         self.session.expect_resume(id)
@@ -173,6 +183,9 @@ impl OwnedClaudeSession {
     pub fn usage_snapshot_requested(&self) -> bool {
         self.session.usage_snapshot_requested()
     }
+    pub fn completion_receipt(&self) -> Result<crate::claude::session::CompletionReceipt, Error> {
+        self.session.completion_receipt()
+    }
     pub async fn request_usage_snapshot(&mut self) -> Result<(), Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.request_usage_snapshot().await;
@@ -183,7 +196,7 @@ impl OwnedClaudeSession {
         let result = operation.runner.session.enable_approval_control(policy);
         operation.finish(result)
     }
-    pub fn approval_deadline(&self, id: &str) -> Result<tokio::time::Instant, Error> {
+    pub fn approval_deadline(&mut self, id: &str) -> Result<tokio::time::Instant, Error> {
         self.session.approval_deadline(id)
     }
     pub fn set_question_wait(&mut self, wait_ms: u64) -> Result<(), Error> {

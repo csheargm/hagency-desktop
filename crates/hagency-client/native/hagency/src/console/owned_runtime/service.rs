@@ -63,7 +63,6 @@ impl ServiceEntry {
 pub(in crate::console) struct ServiceOptions {
     pub agent_id: String,
     pub device_id: String,
-    pub reservation: u64,
     pub effort: String,
 }
 #[derive(Serialize, Deserialize)]
@@ -79,7 +78,7 @@ fn read_options(path: &std::path::Path, identity: &str) -> Result<SavedOptions, 
         Ok(file) => file,
         Err(_) if !path.exists() => {
             return Ok(SavedOptions {
-                version: 1,
+                version: RUNTIME_STATE_VERSION,
                 profile_identity: identity.into(),
                 options: Vec::new(),
             });
@@ -93,9 +92,12 @@ fn read_options(path: &std::path::Path, identity: &str) -> Result<SavedOptions, 
     if bytes.len() > 262144 {
         return Err(RuntimeError::Profile);
     }
-    let values: SavedOptions = serde_json::from_slice(&bytes).map_err(|_| RuntimeError::Profile)?;
+    let Some(value) = current_runtime_state(&bytes, identity)? else {
+        return Ok(SavedOptions { version: RUNTIME_STATE_VERSION, profile_identity: identity.into(), options: Vec::new() });
+    };
+    let values: SavedOptions = serde_json::from_value(value).map_err(|_| RuntimeError::Profile)?;
     let mut unique = BTreeSet::new();
-    if values.version != 1
+    if values.version != RUNTIME_STATE_VERSION
         || values.profile_identity != identity
         || values.options.len() > 1024
         || values.options.iter().any(|option| {
@@ -265,7 +267,7 @@ impl OwnedRuntime {
             return Err(RuntimeError::Profile);
         }
         let (path, profile_id) = intent_location(&console, &device)?;
-        let reservation = intent_reservation(&config.mode)?;
+
         let key = identity(&device, &config.agent_id);
         let mut services = self.services.lock().await;
         self.tasks.check_open().map_err(|_| RuntimeError::Stopped)?;
@@ -285,7 +287,7 @@ impl OwnedRuntime {
                 .recovery_consent_id
                 .clone()
                 .unwrap_or(new_consent_id()?),
-            reservation,
+
             effort: config.profile.effort.clone(),
             host_files: false,
         };
@@ -295,7 +297,7 @@ impl OwnedRuntime {
             ServiceOptions {
                 agent_id: config.agent_id.clone(),
                 device_id: device.device_id().into(),
-                reservation,
+
                 effort: config.profile.effort.clone(),
             },
         )?;
@@ -485,7 +487,7 @@ impl OwnedRuntime {
         let native_tools = runtime.as_ref().is_some_and(|status| status.native_tools);
         Ok(serde_json::json!({"runtime":runtime,"service":{
             "enabled":intent.is_some(),"running":running,"watcherRunning":watcher_running,"warning":options_warning,"phase":health.phase,"lastError":health.last_error,"problems":health.problems,"deviceId":device.device_id(),
-            "reservation":options.as_ref().map(|value|value.reservation).or_else(||intent.as_ref().map(|value|value.reservation)),"effort":options.as_ref().map(|value| &value.effort).or_else(||intent.as_ref().map(|value| &value.effort)),
+            "effort":options.as_ref().map(|value| &value.effort).or_else(||intent.as_ref().map(|value| &value.effort)),
             "rooms":reply.value["bindings"]},"nativeTools":native_tools,"strictTokenCap":false}))
     }
     pub(in crate::console) async fn stop_agent_service(
@@ -563,7 +565,7 @@ impl OwnedRuntime {
                         ServiceOptions {
                             agent_id: agent.into(),
                             device_id: device.device_id().into(),
-                            reservation: intent.reservation,
+
                             effort: intent.effort.clone(),
                         },
                     )?;
@@ -653,6 +655,25 @@ impl OwnedRuntime {
 mod tests {
     use super::*;
     #[test]
+    fn obsolete_service_preferences_reset_before_current_options_are_saved() {
+        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = root.path().join("agent-service-options.json");
+        let old = serde_json::json!({"version":2,"profileIdentity":"owner","options":[{
+            "agentId":"old","deviceId":"old-device","effort":"low","reservation":10
+        }]});
+        hagency_store::private::replace(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(read_options(&path, "wrong-owner").is_err());
+        assert!(read_options(&path, "owner").unwrap().options.is_empty());
+        save_options(&path, "owner", ServiceOptions {
+            agent_id: "current".into(), device_id: "device".into(), effort: "high".into(),
+        }).unwrap();
+        let current = read_options(&path, "owner").unwrap();
+        assert_eq!(current.version, RUNTIME_STATE_VERSION);
+        assert_eq!(current.options.len(), 1);
+        assert_eq!(current.options[0].agent_id, "current");
+        assert!(!std::fs::read_to_string(path).unwrap().contains("reservation"));
+    }
+    #[test]
     fn preferences_are_owner_and_device_scoped_without_execution_consent() {
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = root.path().join("agent-service-options.json");
@@ -662,7 +683,7 @@ mod tests {
             ServiceOptions {
                 agent_id: "a".into(),
                 device_id: "here".into(),
-                reservation: 15000,
+
                 effort: "high".into(),
             },
         )
@@ -674,8 +695,8 @@ mod tests {
         assert_eq!(
             options_for_device(read_options(&path, "owner-a").unwrap(), "a", "here")
                 .unwrap()
-                .reservation,
-            15000
+                .effort,
+            "high"
         );
         assert!(
             read_intents(&path.with_file_name("runtime-intents.json"), "owner-a")
@@ -729,7 +750,7 @@ mod tests {
             binding_id: binding.into(),
             device_id: "device".into(),
             consent_id: "a".repeat(64),
-            reservation: 10000,
+
             effort: "low".into(),
             host_files: false,
         };
@@ -771,12 +792,12 @@ mod tests {
             binding_id: binding.into(),
             device_id: device.into(),
             consent_id: "a".repeat(64),
-            reservation: 10000,
+
             effort: "low".into(),
             host_files: false,
         };
         let values = RuntimeIntents {
-            version: 1,
+            version: RUNTIME_STATE_VERSION,
             profile_identity: "owner".into(),
             intents: vec![
                 intended(ALL_ROOMS, "here"),

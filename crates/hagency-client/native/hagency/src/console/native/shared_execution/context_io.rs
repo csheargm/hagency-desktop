@@ -25,8 +25,8 @@ pub(super) enum ContextAction {
 }
 impl ContextAction {
     pub fn validate(&self) -> Result<(), NativeError> {
-        if !cfg!(feature = "shared-context") {
-            return Err(failure(409, "shared_context_disabled"));
+        if !cfg!(feature = "shared-execution") {
+            return Err(failure(409, "shared_execution_disabled"));
         }
         let (work, work_digest) = match self {
             Self::Mode { work, input } | Self::Delivery { work, input } => {
@@ -35,9 +35,7 @@ impl ContextAction {
             }
             Self::Freeze { work, input } => {
                 input.authority.validate().map_err(store)?;
-                if let Some(b) = &input.budget {
-                    b.validate().map_err(store)?;
-                }
+                if input.version != 3 { return Err(invalid()); }
                 (work, &input.work_digest)
             }
             Self::Recover { work, input } => {
@@ -71,38 +69,16 @@ impl From<ContextAction> for Action {
     }
 }
 
-/// The highest context record version the endpoint advertises, if any.
-/// Later versions require all earlier capabilities; lone flags are not trusted.
-pub(super) async fn paired(b: &Bound) -> Result<Option<u16>, NativeError> {
+/// Require the active native context contract; no protocol downgrade.
+pub(super) async fn paired(b: &Bound) -> Result<(), NativeError> {
     let d = b.demand_discovery().await?;
     if d.capabilities.len() > 64 || d.capabilities.iter().any(|c| c.len() > 128) {
         return Err(invalid());
     }
-    let has = |name: &str| d.capabilities.iter().any(|c| c == name);
-    Ok(match (has(SHARED_CONTEXT_CAPABILITY), has(SHARED_CONTEXT_CAPABILITY_V2)) {
-        (true, true) if has(SHARED_CONTEXT_CAPABILITY_V3) => Some(3),
-        (true, true) => Some(2),
-        (true, false) => Some(1),
-        _ => None,
-    })
-}
-/// A version 2 freeze names the model window this Agent last reported so the
-/// server can budget history against it. Nothing here grants model custody.
-pub(super) async fn budget(
-    r: &OwnerResourceRegistry,
-    a: &VerifiedSharedActivity,
-    version: u16,
-) -> Result<Option<SharedContextBudgetInput>, NativeError> {
-    if version < 2 {
-        return Ok(None);
+    if !d.capabilities.iter().any(|c| c == SHARED_CONTEXT_CAPABILITY_V3) {
+        return Err(failure(409, "native_context_protocol_required"));
     }
-    if version == 3 {
-        return Ok(Some(SharedContextBudgetInput { version: 3, model_context_window: None }));
-    }
-    Ok(Some(SharedContextBudgetInput {
-        version: 2,
-        model_context_window: r.shared_context_window(a).await.map_err(store)?,
-    }))
+    Ok(())
 }
 pub(super) async fn prepare(
     io: &Io,
@@ -117,13 +93,7 @@ pub(super) async fn prepare(
         let text = super::e2ee::input(io, b, w).await?;
         return r.prepare_shared_decrypted_input(a, w.clone(), text).await.map_err(store);
     }
-    let Some(version) = paired(b).await? else {
-        return r
-            .prepare_shared_legacy_input(a, w.clone())
-            .await
-            .map_err(store);
-    };
-    let budget = budget(r, &a, version).await?;
+    paired(b).await?;
     let mode: Timed<SharedWorkInputMode> = b
         .upload(
             ContextAction::Mode {
@@ -139,7 +109,10 @@ pub(super) async fn prepare(
         .await?;
     mode.value.validate().map_err(store)?;
     let mode = mode.value;
-    let context = if mode.mode == "thread_context_v1" {
+    if mode.mode != "thread_context_v1" {
+        return Err(failure(409, "native_context_protocol_required"));
+    }
+    let context = {
         let action = if let Some(hash) = &mode.context_digest {
             ContextAction::Recover {
                 work: w.id.clone(),
@@ -155,17 +128,15 @@ pub(super) async fn prepare(
                 input: SharedContextInput {
                     authority,
                     work_digest: digest(w)?,
-                    budget,
+                    version: 3,
                 },
             }
         };
         let c: Timed<SharedContextRecord> = b.upload(action.into(), until).await?;
         c.value.render_for(w).map_err(store)?;
-        Some(c.value)
-    } else {
-        None
+        c.value
     };
-    r.prepare_shared_input(a, w.clone(), mode, context)
+    r.prepare_shared_input(a, w.clone(), mode, Some(context))
         .await
         .map_err(store)
 }
@@ -174,11 +145,11 @@ pub(super) async fn start(
     r: &OwnerResourceRegistry,
     attempt: SharedStartAttempt,
     w: &SharedWorkItem,
-    input: Option<&SharedPreparedInput>,
+    input: &SharedPreparedInput,
     authority: SharedActivityRef,
     until: Instant,
 ) -> Result<SharedCallCustody, NativeError> {
-    if let Some(c) = input.and_then(SharedPreparedInput::context) {
+    if let Some(c) = input.context() {
         let start: Timed<SharedContextStart> = b
             .upload(
                 ContextAction::Start {
@@ -198,6 +169,9 @@ pub(super) async fn start(
             .await
             .map_err(store)
     } else {
+        if !w.encrypted {
+            return Err(failure(409, "native_context_protocol_required"));
+        }
         let start: Timed<SharedWorkStart> = b
             .upload(
                 Action::WorkStart(SharedWorkInput {
@@ -219,9 +193,7 @@ pub(super) async fn observe_delivery(
     c: &SharedRuntimeCommand,
     w: &SharedWorkItem,
 ) -> Result<(), NativeError> {
-    if !cfg!(feature = "shared-context") || paired(b).await?.is_none() {
-        return Ok(());
-    }
+    paired(b).await?;
     let observed: Timed<SharedReplyObservation> = b
         .request(
             ContextAction::Delivery {
@@ -243,4 +215,64 @@ pub(super) async fn observe_delivery(
             .map_err(store)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_execution_feature_enables_the_current_native_context_contract() {
+        let manifest: toml::Value = toml::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/Cargo.toml"
+        )))
+        .unwrap();
+        let features = manifest["features"].as_table().unwrap();
+        for entry in [
+            "shared-execution",
+            "shared-successors",
+            "shared-intake",
+            "shared-context",
+            "shared-budget-execution",
+        ] {
+            let mut pending = vec![entry];
+            let mut reached = std::collections::BTreeSet::new();
+            while let Some(feature) = pending.pop() {
+                if !reached.insert(feature) {
+                    continue;
+                }
+                if let Some(dependencies) = features.get(feature) {
+                    pending.extend(
+                        dependencies
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|value| value.as_str().unwrap()),
+                    );
+                }
+            }
+            for required in [
+                "shared-execution",
+                "hagency-store/shared-context",
+                "hagency-runtime/shared-context",
+            ] {
+                assert!(
+                    reached.contains(required),
+                    "{entry} must require {required}"
+                );
+            }
+        }
+        if cfg!(feature = "shared-execution") && !cfg!(feature = "shared-intake") {
+            use super::super::demand_io::DemandAction;
+            assert!(DemandAction::Discovery.validate().is_ok());
+            let stop = DemandAction::Stop {
+                assignment: "assignment".into(),
+                input: super::SharedDemandStopInput {
+                    command_id: "stop".into(),
+                    expected_revision: 1,
+                    mode: "paused".into(),
+                },
+            };
+            assert_eq!(stop.validate().unwrap_err().code, "shared_intake_disabled");
+        }
+    }
 }

@@ -43,6 +43,11 @@ pub trait Capture: Send {
     ) -> impl Future<Output = Result<()>> + Send;
     fn complete(&mut self, process: &Claude, text: &str)
     -> impl Future<Output = Result<()>> + Send;
+    fn complete_unaccounted(
+        &mut self,
+        receipt: &claude::session::CompletionReceipt,
+        text: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 pub struct Outcome {
@@ -54,6 +59,30 @@ pub struct Outcome {
     pub cumulative: bool,
 }
 type TurnResult = Outcome;
+
+async fn unresolved<C: Capture>(
+    controls: &mut claude_controls::Controls<'_, C>,
+    receipt: Option<&claude::session::CompletionReceipt>,
+    completed: Option<(String, Usage, TurnStatus, bool)>,
+    requests: usize,
+    returns: usize,
+) -> Result<TurnResult> {
+    let (text, _, status, _) = completed.ok_or(Error::Unknown)?;
+    let receipt = receipt.ok_or(Error::Unknown)?;
+    controls.complete_unaccounted(receipt, &text).await?;
+    Ok(TurnResult {
+        text,
+        usage: crate::unreported_usage(),
+        status: if receipt.interrupted() {
+            TurnStatus::Interrupted
+        } else {
+            status
+        },
+        requests,
+        returns,
+        cumulative: false,
+    })
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run<H: Host, C: Capture>(
@@ -113,28 +142,23 @@ pub async fn run<H: Host, C: Capture>(
     let mut returns = std::collections::BTreeSet::new();
     let mut buffered = std::collections::VecDeque::new();
     let mut completed: Option<(String, Usage, TurnStatus, bool)> = None;
-    let unresolved = |completed: Option<(String, Usage, TurnStatus, bool)>,
-                      requested,
-                      returned|
-     -> Result<TurnResult> {
-        let (text, _, status, _) = completed.ok_or(Error::Unknown)?;
-        Ok(TurnResult {
-            text,
-            usage: crate::unreported_usage(),
-            status,
-            requests: requested,
-            returns: returned,
-            cumulative: false,
-        })
-    };
+    let mut completion_receipt = None;
     loop {
         if buffered.is_empty()
             && controls.settled()
             && wire.phase() == claude::session::Phase::ResultObserved
         {
             if wire.needs_usage_snapshot() && !wire.usage_snapshot_requested() {
+                completion_receipt = Some(wire.completion_receipt().map_err(|_| Error::Unknown)?);
                 if wire.request_usage_snapshot().await.is_err() {
-                    return unresolved(completed.take(), requests.len(), returns.len());
+                    return unresolved(
+                        &mut controls,
+                        completion_receipt.as_ref(),
+                        completed.take(),
+                        requests.len(),
+                        returns.len(),
+                    )
+                    .await;
                 }
                 continue;
             }
@@ -146,7 +170,11 @@ pub async fn run<H: Host, C: Capture>(
             return Ok(TurnResult {
                 text,
                 usage,
-                status,
+                status: if controls.accepted() {
+                    TurnStatus::Interrupted
+                } else {
+                    status
+                },
                 requests: requests.len(),
                 returns: returns.len(),
                 cumulative,
@@ -161,8 +189,15 @@ pub async fn run<H: Host, C: Capture>(
                 Err(_) if wire.usage_snapshot_requested() => {
                     // The original answer and idle state were already proven.
                     // A failed accounting query must not discard that answer;
-                    // its unknown charge remains held for reconciliation.
-                    return unresolved(completed.take(), requests.len(), returns.len());
+                    // its unknown usage remains recorded for reconciliation.
+                    return unresolved(
+                        &mut controls,
+                        completion_receipt.as_ref(),
+                        completed.take(),
+                        requests.len(),
+                        returns.len(),
+                    )
+                    .await;
                 }
                 Err(_) => return Err(Error::Protocol("Claude event")),
             }
@@ -361,33 +396,44 @@ pub async fn run<H: Host, C: Capture>(
                     let Some(observation) = observation else {
                         return Err(Error::Unknown);
                     };
-                    let claude::session::ObservationKind::Result { usage, is_error } =
-                        observation.kind()
-                    else {
-                        return Err(Error::Unknown);
-                    };
-                    let counts = usage.counts();
-                    let cumulative =
-                        usage.coverage() == claude::session::UsageCoverage::ReportedModelsResult;
-                    let usage = match (
-                        counts.input(),
-                        counts.cache_read(),
-                        counts.cache_write(),
-                        counts.output(),
-                    ) {
-                        (Some(fresh), Some(cache), Some(write), Some(output)) => Usage {
-                            input: fresh
-                                .checked_add(cache)
-                                .and_then(|v| v.checked_add(write))
-                                .ok_or(Error::Unknown)?,
-                            output,
-                            cached_input: cache,
-                            cache_write_input: Some(write),
-                            reasoning_output: 0,
-                            accounting_version: "claude-reported-v1".into(),
-                        },
-                        _ => crate::unreported_usage(),
-                    };
+                    let is_error = observation.result_error().ok_or(Error::Unknown)?;
+                    let (usage, cumulative) =
+                        if let claude::session::ObservationKind::Result { usage, .. } =
+                            observation.kind()
+                        {
+                            let counts = usage.counts();
+                            let cumulative = usage.coverage()
+                                == claude::session::UsageCoverage::ReportedModelsResult;
+                            let projected = match (
+                                counts.input(),
+                                counts.cache_read(),
+                                counts.cache_write(),
+                                counts.output(),
+                            ) {
+                                (Some(fresh), Some(cache), Some(write), Some(output)) => Usage {
+                                    input: fresh
+                                        .checked_add(cache)
+                                        .and_then(|v| v.checked_add(write))
+                                        .ok_or(Error::Unknown)?,
+                                    output,
+                                    cached_input: cache,
+                                    cache_write_input: Some(write),
+                                    reasoning_output: 0,
+                                    accounting_version: "claude-reported-v1".into(),
+                                },
+                                _ => crate::unreported_usage(),
+                            };
+                            (
+                                if cumulative {
+                                    projected
+                                } else {
+                                    crate::unreported_usage()
+                                },
+                                cumulative,
+                            )
+                        } else {
+                            (crate::unreported_usage(), false)
+                        };
                     if wire.usage_snapshot_requested() {
                         let original = completed.as_mut().ok_or(Error::Unknown)?;
                         if usage.is_reported()
@@ -397,9 +443,16 @@ pub async fn run<H: Host, C: Capture>(
                                 || usage.cached_input < original.1.cached_input
                                 || matches!((usage.cache_write_input, original.1.cache_write_input), (Some(next), Some(prior)) if next < prior))
                         {
-                            return unresolved(completed.take(), requests.len(), returns.len());
+                            return unresolved(
+                                &mut controls,
+                                completion_receipt.as_ref(),
+                                completed.take(),
+                                requests.len(),
+                                returns.len(),
+                            )
+                            .await;
                         }
-                        original.1 = if *is_error || !cumulative {
+                        original.1 = if is_error || !cumulative {
                             crate::unreported_usage()
                         } else {
                             usage
@@ -409,9 +462,11 @@ pub async fn run<H: Host, C: Capture>(
                         completed = Some((
                             payload["result"].as_str().unwrap_or("").into(),
                             usage,
-                            if payload["terminal_reason"] == "aborted_streaming" {
+                            if controls.accepted()
+                                || payload["terminal_reason"] == "aborted_streaming"
+                            {
                                 TurnStatus::Interrupted
-                            } else if *is_error {
+                            } else if is_error {
                                 TurnStatus::Failed
                             } else {
                                 TurnStatus::Completed

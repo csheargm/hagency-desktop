@@ -13,16 +13,11 @@ use matrix_sdk::{
     ruma::{OwnedRoomId, OwnedUserId},
 };
 use futures_util::{stream, StreamExt};
-use super::{
-    approval::{Namespace, current_unix_time_millis},
-    approval_state::ApprovalMarkerIndex,
-};
+use super::{approval::current_unix_time_millis, approval_state::ApprovalMarkerIndex};
 use crate::{
     sliding_sync::{get_client, current_user_id, spawn_async_task},
     utils::RoomNameId,
 };
-
-type MarkerIndexes = HashMap<&'static str, ApprovalMarkerIndex>;
 
 #[derive(Clone, Debug)]
 pub enum ApprovalInboxAction {
@@ -42,7 +37,7 @@ struct Discovered {
     candidates: Vec<Candidate>,
     failed: usize,
     scanned: usize,
-    indexes: MarkerIndexes,
+    index: ApprovalMarkerIndex,
 }
 
 script_mod! {
@@ -86,7 +81,7 @@ pub struct ApprovalInbox {
     #[rust]
     marker_client: Option<matrix_sdk::Client>,
     #[rust]
-    indexes: MarkerIndexes,
+    index: ApprovalMarkerIndex,
     #[rust]
     validated_at: u64,
 }
@@ -115,13 +110,11 @@ impl ApprovalInbox {
             .as_ref()
             .is_some_and(crate::matrix_context::is_current)
         {
-            self.indexes.clear();
+            self.index = ApprovalMarkerIndex::default();
         }
         self.marker_client = Some(client.clone());
-        let mut indexes = self.indexes.clone();
-        for index in indexes.values_mut() {
-            index.begin_revalidation();
-        }
+        let mut index = self.index.clone();
+        index.begin_revalidation();
         let cancelled = Arc::new(AtomicBool::new(false));
         self.cancelled = Some(cancelled.clone());
         let project = self.project.clone();
@@ -137,9 +130,7 @@ impl ApprovalInbox {
                 .filter(|r| r.state() == RoomState::Joined && !r.is_space())
                 .collect();
             let joined: HashSet<_> = rooms.iter().map(|r| r.room_id().to_string()).collect();
-            for index in indexes.values_mut() {
-                index.retain_joined(owner.as_str(), &joined);
-            }
+            index.retain_joined(owner.as_str(), &joined);
             let overflow = rooms.len() > 4096;
             let mut failed = usize::from(overflow);
             let mut scanned = 0;
@@ -176,62 +167,56 @@ impl ApprovalInbox {
                 if room.state() != RoomState::Joined {
                     continue;
                 }
-                for namespace in Namespace::ALL {
-                    let selection = super::marker_selection::select_approval_marker_raw_state(
-                        response.room_state.iter(),
-                        namespace,
-                    );
-                    let index = indexes.entry(namespace.base()).or_default();
-                    if selection.observed_v2 {
-                        let _ = index.observe_v2(owner.as_str(), room.room_id().as_str());
-                    }
-                    match selection.marker {
-                        Ok(Some(event)) => {
-                            let text = |key| {
-                                event
-                                    .get(key)
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or_default()
-                            };
-                            if index
-                                .ingest_marker(
-                                    owner.as_str(),
-                                    room.room_id().as_str(),
-                                    text("event_id"),
-                                    text("type"),
-                                    text("sender"),
-                                    text("state_key"),
-                                    &event["content"],
-                                    current_unix_time_millis(),
-                                )
-                                .is_err()
-                            {
-                                failed += 1;
-                            }
-                        }
-                        Err(()) => {
+                let selection = super::marker_selection::select_approval_marker_raw_state(
+                    response.room_state.iter(),
+                );
+                // Revalidation never restores a cached destination when the
+                // current state is missing, malformed, or unauthenticated.
+                index.mark_room_unavailable(owner.as_str(), room.room_id().as_str());
+                match selection {
+                    Ok(Some(event)) => {
+                        let text = |key| {
+                            event
+                                .get(key)
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                        };
+                        if index
+                            .ingest_marker(
+                                owner.as_str(),
+                                room.room_id().as_str(),
+                                text("event_id"),
+                                text("type"),
+                                text("sender"),
+                                text("state_key"),
+                                &event["content"],
+                                current_unix_time_millis(),
+                            )
+                            .is_err()
+                        {
                             failed += 1;
                         }
-                        Ok(None) => {}
                     }
+                    Err(()) => {
+                        failed += 1;
+                    }
+                    Ok(None) => {}
                 }
             }
             if cancelled.load(Ordering::Relaxed) || !crate::matrix_context::is_current(&client) {
                 return;
             }
             let mut by_room: HashMap<String, Vec<String>> = HashMap::new();
-            for index in indexes.values() {
-                for (room, agent, project_id) in index.candidates(
-                    owner.as_str(),
-                    project.as_deref().map(|p| p.as_str()),
-                    &joined,
-                    current_unix_time_millis(),
-                ) {
-                    by_room
-                        .entry(room)
-                        .or_default()
-                        .push(format!("{agent} · {project_id}"));
-                }
+            for (room, agent, project_id) in index.candidates(
+                owner.as_str(),
+                project.as_deref().map(|p| p.as_str()),
+                &joined,
+                current_unix_time_millis(),
+            ) {
+                by_room
+                    .entry(room)
+                    .or_default()
+                    .push(format!("{agent} · {project_id}"));
             }
             let mut candidates = Vec::new();
             for (id, mut agents) in by_room {
@@ -259,7 +244,7 @@ impl ApprovalInbox {
                 candidates,
                 failed,
                 scanned,
-                indexes,
+                index,
             });
         });
     }
@@ -290,20 +275,10 @@ impl Widget for ApprovalInbox {
                 && self.request == result.request
             {
                 self.candidates = result.candidates.clone();
-                self.indexes = result.indexes.clone();
+                self.index = result.index.clone();
                 self.validated_at = current_unix_time_millis();
                 if let Some(app) = scope.data.get_mut::<crate::app::AppState>() {
-                    app.approval_markers = self
-                        .indexes
-                        .get(Namespace::DEFAULT.base())
-                        .cloned()
-                        .unwrap_or_default();
-                    app.approval_markers_by_namespace = self
-                        .indexes
-                        .iter()
-                        .filter(|(ns, _)| **ns != Namespace::DEFAULT.base())
-                        .map(|(ns, index)| (ns.to_string(), index.clone()))
-                        .collect();
+                    app.approval_markers = self.index.clone();
                     cx.action(ApprovalInboxAction::Saved);
                 }
                 let text = crate::i18n::format(
@@ -386,22 +361,7 @@ impl ApprovalInboxRef {
         };
         match action {
             ApprovalInboxAction::Open { project } => {
-                inner.indexes = Namespace::ALL
-                    .into_iter()
-                    .map(|ns| {
-                        (
-                            ns.base(),
-                            if ns == Namespace::DEFAULT {
-                                app.approval_markers.clone()
-                            } else {
-                                app.approval_markers_by_namespace
-                                    .get(ns.base())
-                                    .cloned()
-                                    .unwrap_or_default()
-                            },
-                        )
-                    })
-                    .collect();
+                inner.index = app.approval_markers.clone();
                 inner.marker_client = get_client();
                 inner.active = true;
                 inner.project = project.clone();
@@ -412,7 +372,7 @@ impl ApprovalInboxRef {
                 inner.active = false;
                 inner.cancel();
                 inner.marker_client = None;
-                inner.indexes.clear();
+                inner.index = ApprovalMarkerIndex::default();
                 inner.candidates.clear();
                 inner.request = nonce();
                 modal.close(cx);

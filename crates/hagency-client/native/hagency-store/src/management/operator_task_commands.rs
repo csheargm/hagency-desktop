@@ -215,7 +215,6 @@ fn vocabulary(s: &str, allowed: &[&str]) -> Result<(), Error> {
         Err(hagency_core::InvalidInput("invalid task vocabulary").into())
     }
 }
-#[cfg(feature = "resource-adoption")]
 pub(crate) fn task_labels(labels: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for s in labels {
@@ -265,11 +264,9 @@ impl Session {
     pub async fn operator_task_write_access(&self, context: &HostContext) -> Result<bool, Error> {
         self.check(context, Permission::ReadTasks)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(_) => false,
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
-                    .operator_task_write_access(&self.adopted_profile(store)?)
+                    .operator_task_write_access(&self.current_profile(store)?)
                     .await?
             }
         };
@@ -287,19 +284,13 @@ impl Session {
         let permission = input.change.permission();
         self.check(context, permission)?;
         input.validate()?;
-        #[cfg(not(feature = "resource-adoption"))]
+
         {
-            Err(hagency_core::InvalidInput("canonical task history required").into())
-        }
-        #[cfg(feature = "resource-adoption")]
-        {
-            let SessionStore::Adopted(store) = self.local_store()? else {
-                return Err(hagency_core::InvalidInput("canonical task history required").into());
-            };
+            let SessionStore::Current(store) = self.local_store()?;
             let receipt = command_receipt(context, store.identity().0, &input)?;
             let result = store
                 .apply_operator_task(
-                    &self.adopted_profile(store)?,
+                    &self.current_profile(store)?,
                     input,
                     context.account.clone(),
                     receipt,
@@ -311,7 +302,6 @@ impl Session {
         }
     }
 }
-#[cfg(feature = "resource-adoption")]
 fn task_operation(op: IntentOperation) -> &'static str {
     match op {
         IntentOperation::TaskCreate => "task.create",
@@ -324,7 +314,6 @@ fn task_operation(op: IntentOperation) -> &'static str {
     }
 }
 
-#[cfg(feature = "resource-adoption")]
 pub(crate) fn command_receipt(
     context: &HostContext,
     profile: &str,

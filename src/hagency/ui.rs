@@ -6,6 +6,12 @@ use super::{backend::Service, model::*, approvals::Notices};
 use std::{collections::HashSet, time::Instant};
 use crate::sliding_sync::spawn_async_task;
 
+fn runtime_start_input(takeover: bool, effort: String) -> Value {
+    serde_json::to_value(::hagency::native_owner::RuntimeStartRequest {
+        takeover, effort: Some(effort), ..Default::default()
+    }).expect("runtime start request contains only JSON values")
+}
+
 #[derive(Clone, Debug)]
 pub enum HagencyAction {
     OpenProjects,
@@ -265,7 +271,10 @@ pub(crate) fn runtime_summary(runtime:&Value,agent:&str,binding:Option<&str>)->S
 // Never render a provider's raw JSON, stderr, filesystem paths, or credentials.
 fn provider_error_message(error: &str) -> Option<&'static str> {
     Some(match error {
+        "owner_daemon_update_required" => "The resource owner's Hagency service needs an update. Update Hagency and start its service; the original message can then continue.",
+        "owner_daemon_unavailable" => "The resource owner's Hagency service is unavailable. The original message is waiting for that service to reconnect.",
         "claude_binary_unavailable" => "Claude Code is not installed or could not be started. Check the local installation.",
+        "shared_claude_version_unsupported" | "claude_version_unsupported" => "Update Claude Code to version 2.1.321 or a newer 2.x release, then retry.",
         "octos_binary_unavailable" => "Octos is not installed or could not be started. Check the local installation.",
         "claude_account_unavailable" | "local_provider_not_signed_in" => "Check your local Claude sign-in, then connect the account again.",
         "local_provider_home_unavailable" => "The local runtime's account directory is unavailable. Check its local setup.",
@@ -289,9 +298,10 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
     })
 }
 fn visible_error(error: &str) -> String {
-        if let Some(message)=crate::host::hagency::errors::message(error){return message.to_owned();}
     if let Some(message) = provider_error_message(error) {
         format!("{} ({error})", crate::i18n::tr(message))
+    } else if let Some(message) = crate::host::hagency::errors::message(error) {
+        message.to_owned()
     } else {
         crate::i18n::tr(user_error(error)).to_owned()
     }
@@ -4024,7 +4034,7 @@ impl Widget for HagencyPanel {
             let Some(effort)=effort else {self.runtime_feedback(cx,"Load local resources and select a supported reasoning effort before starting.");return;};
             let saved_effort=string(&self.policy["modelProfile"],"reasoning_effort");
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
-            let input = json!({"mode":"postpaid","reservation":0,"takeover":self.view.check_box(cx,ids!(takeover)).active(cx),"effort":effort});
+            let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort);
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
             return;
         }
@@ -4380,6 +4390,17 @@ impl HagencyPanelRef {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn runtime_start_button_body_matches_the_native_request_parser() {
+        for takeover in [false, true] {
+            let body = runtime_start_input(takeover, "high".into());
+            let parsed: ::hagency::native_owner::RuntimeStartRequest = serde_json::from_value(body.clone()).unwrap();
+            assert_eq!(parsed.takeover, takeover);
+            assert_eq!(parsed.effort.as_deref(), Some("high"));
+            assert!(parsed.recovery_device_id.is_none() && parsed.recovery_consent_id.is_none());
+            assert!(body.get("mode").is_none() && body.get("reservation").is_none());
+        }
+    }
+    #[test]
     fn web_search_default_toggle_save_and_reload_use_the_agent_profile() {
         let mut cx=Cx::new(Box::new(|_,_|{}));
         let mut panel=cx.with_vm(|vm| {makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);let value=script_eval!(vm,{mod.widgets.HagencyPanel {}});HagencyPanel::script_from_value(vm,value)});
@@ -4429,7 +4450,7 @@ mod tests {
             assert!(!remote_configuration_command(&local(action.clone(),Some("room".into()),None)));
             assert!(!remote_configuration_command(&local(action,None,Some("member".into()))));
         }
-        for action in [LocalAction::Policy,LocalAction::Model,LocalAction::SavePolicy,LocalAction::ResetAgentPolicy,LocalAction::ResetPolicy,LocalAction::RuntimeStart,LocalAction::RuntimeStop,LocalAction::Approvals,LocalAction::StartAgentService,LocalAction::StopAgentService] {
+        for action in [LocalAction::Policy,LocalAction::SavePolicy,LocalAction::ResetAgentPolicy,LocalAction::ResetPolicy,LocalAction::RuntimeStart,LocalAction::RuntimeStop,LocalAction::Approvals,LocalAction::StartAgentService,LocalAction::StopAgentService] {
             assert!(!remote_configuration_command(&local(action,None,None)));
         }
         for action in [ProviderAction::Status,ProviderAction::Models,ProviderAction::UseLocal] {
@@ -5345,7 +5366,7 @@ mod tests {
     }
     #[test]
     fn provider_diagnostics_are_explicit_but_never_render_untrusted_details() {
-        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch"] {
+        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch", "owner_daemon_update_required", "owner_daemon_unavailable"] {
             let message = visible_error(code);
             assert!(message.contains(code), "approved static diagnostic is visible");
             assert!(!message.starts_with(code), "explain the problem before the code");
@@ -5356,6 +5377,21 @@ mod tests {
             assert!(!message.contains(unsafe_detail));
             assert!(!message.contains("secret"));
             assert!(!message.contains("/Users"));
+        }
+    }
+    #[test]
+    fn shared_protocol_errors_explain_update_or_reconnection_without_resending() {
+        for (code, expected) in [
+            ("owner_daemon_update_required", "Update Hagency and start its service"),
+            ("owner_daemon_unavailable", "waiting for that service to reconnect"),
+        ] {
+            assert!(user_error(code).contains(expected));
+            assert!(user_error(code).contains("original message"));
+            assert!(visible_error(code).contains(code));
+            assert!(!user_error(code).contains("retry"));
+            let untrusted = format!("{code} /Users/owner/private/token");
+            assert_eq!(provider_error_message(&untrusted), None);
+            assert!(!visible_error(&untrusted).contains("/Users"));
         }
     }
     #[test]

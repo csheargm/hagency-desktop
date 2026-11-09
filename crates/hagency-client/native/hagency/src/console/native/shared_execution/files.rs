@@ -11,6 +11,8 @@ mod storage;
 #[cfg(test)]
 pub(super) mod tests;
 use storage::{ReceiveRecord, SendRecord, Store, Workspace};
+mod send_allowance;
+use send_allowance::SendAllowance;
 const MAX_BYTES: usize = crate::documents::MAX_FILE_BYTES;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
 type Result<T> = std::result::Result<T, &'static str>;
@@ -116,6 +118,7 @@ pub(in crate::console) struct Files<S> {
     workspace: Workspace,
     store: Store,
     transfer_timeout: Duration,
+    send_allowance: Option<SendAllowance>,
 }
 impl Files<Source> {
     pub(super) async fn new(
@@ -187,7 +190,7 @@ impl<S: FileIo> Files<S> {
         workspace: &Path,
         records: &Path,
     ) -> Result<Self> {
-        Self::for_room(
+        let mut files = Self::for_room(
             source,
             Conversation {
                 namespace: &work.assignment_id,
@@ -198,7 +201,9 @@ impl<S: FileIo> Files<S> {
             },
             workspace,
             records,
-        )
+        )?;
+        files.send_allowance = Some(SendAllowance::shared());
+        Ok(files)
     }
     pub(in crate::console) fn for_room(
         source: Arc<S>,
@@ -223,6 +228,7 @@ impl<S: FileIo> Files<S> {
             workspace: Workspace::open(workspace)?,
             store: Store::open(records)?,
             transfer_timeout: TRANSFER_TIMEOUT,
+            send_allowance: None,
         })
     }
     pub(in crate::console) async fn handle<H: super::history::HistoryIo>(
@@ -359,6 +365,9 @@ impl<S: FileIo> Files<S> {
                 let snapshot = self.workspace.snapshot(&selection)?;
                 let size = snapshot.len();
                 let hash = sha(snapshot.bytes());
+                if let Some(allowance) = &self.send_allowance {
+                    allowance.admit(&self.store, &self.scope, &id, &selection_digest, size)?;
+                }
                 let codec = hagency_media::Codec::new(
                     hagency_media::Limits::new(MAX_BYTES, 1).map_err(|_| "file_size_limit")?,
                 );

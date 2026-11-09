@@ -49,6 +49,18 @@ const PLAIN_BYTES: usize = 42 * 1024;
 static DEVICES: LazyLock<Mutex<HashMap<String, Arc<AgentDevice>>>> =
     LazyLock::new(Default::default);
 
+/// Membership lookups can be cancelled when the native turn completes. Until
+/// the whole batch returns to its caller, keep every taken event recoverable.
+struct ActionCheckBatch<T, F: FnMut(Vec<T>)> {
+    events: Vec<T>,
+    requeue: F,
+}
+impl<T, F: FnMut(Vec<T>)> Drop for ActionCheckBatch<T, F> {
+    fn drop(&mut self) {
+        (self.requeue)(std::mem::take(&mut self.events));
+    }
+}
+
 pub(in crate::console) struct AgentDevice {
     client: Client,
     pub(in crate::console) approvals: crate::encrypted_approvals::Inbox,
@@ -576,6 +588,10 @@ impl AgentDevice {
             .await
     }
 
+    pub(in crate::console) fn run_actions_pending(&self, room: &str, card_event_id: &str) -> bool {
+        self.run_controls.pending_for(room, card_event_id)
+    }
+
     async fn room_actions(
         &self,
         inbox: &crate::agent_questions::Inbox,
@@ -617,7 +633,11 @@ impl AgentDevice {
         let own = self.client.user_id().map(|u| u.to_string());
         let mut answers = Vec::new();
         let mut unsure = Vec::new();
-        for received in inbox.take(room_id.as_str(), card_event_id, 4) {
+        let mut batch = ActionCheckBatch {
+            events: inbox.take(room_id.as_str(), card_event_id, 4),
+            requeue: |events| inbox.requeue(events),
+        };
+        for received in &batch.events {
             if !received.admissible(encrypted, own.as_deref()) {
                 continue;
             }
@@ -629,15 +649,15 @@ impl AgentDevice {
                     if *member.membership()
                         == matrix_sdk::ruma::events::room::member::MembershipState::Join =>
                 {
-                    answers.push(received)
+                    answers.push(received.clone())
                 }
                 // Not a current member: never an answer.
                 Ok(Ok(_)) => {}
                 // Membership unknown for now: keep the answer for the next pass.
-                _ => unsure.push(received),
+                _ => unsure.push(received.clone()),
             }
         }
-        inbox.requeue(unsure);
+        batch.events = unsure;
         Ok(answers)
     }
 
@@ -851,6 +871,27 @@ fn sync_has_work(response: &matrix_sdk::sync::SyncResponse) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn canceled_action_membership_lookup_requeues_the_entire_taken_batch() {
+        let returned = std::sync::Mutex::new(Vec::new());
+        let lookup = async {
+            let _batch = ActionCheckBatch {
+                events: vec!["first-verified", "second-awaiting-membership", "third-unchecked"],
+                requeue: |events| returned.lock().unwrap().extend(events),
+            };
+            std::future::pending::<()>().await;
+        };
+        assert!(tokio::time::timeout(Duration::from_millis(1), lookup).await.is_err());
+        assert_eq!(*returned.lock().unwrap(),
+            ["first-verified", "second-awaiting-membership", "third-unchecked"]);
+        let batch = ActionCheckBatch {
+            events: vec!["membership-still-unknown"],
+            requeue: |events| returned.lock().unwrap().extend(events),
+        };
+        drop(batch);
+        assert_eq!(returned.lock().unwrap().last(), Some(&"membership-still-unknown"));
+    }
 
     #[test]
     fn shared_work_sync_wakes_for_late_keys_but_not_empty_polls() {

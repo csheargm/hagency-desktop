@@ -12,7 +12,33 @@ if mode.startswith('approval:'):
     _, approval_tool = mode.split(':', 1)
     mode = 'approval'
 
+native_result_index = 0
+native_last_totals = {}
 def send(value):
+    global native_result_index, native_last_totals
+    # Each native frame is a fresh snapshot; later fixture mutations must not
+    # reuse the delta attached to an already emitted result.
+    value = json.loads(json.dumps(value))
+    # Captured CLI 2.1.321 result metadata: breakdowns do not add billed tokens.
+    if value.get('type') == 'result':
+        value['uuid'] = f'fixture-result-{os.getpid()}-{native_result_index}'
+        native_result_index += 1
+        if 'modelUsage' not in value and value.get('usage') and mode != 'mixed_usage':
+            usage = value['usage']
+            value['modelUsage'] = {'main': {k:usage[v] for k,v in [('inputTokens','input_tokens'),('outputTokens','output_tokens'),('cacheReadInputTokens','cache_read_input_tokens'),('cacheCreationInputTokens','cache_creation_input_tokens')]}}
+        if 'modelUsage' in value and 'model_usage_since_last_result' not in value:
+            delta = {}
+            for name, usage in value['modelUsage'].items():
+                delta[name] = {key:usage.get(key,0)-native_last_totals.get(name,{}).get(key,0) for key in ['inputTokens','outputTokens','cacheReadInputTokens','cacheCreationInputTokens']}
+            value['model_usage_since_last_result'] = delta
+            native_last_totals = json.loads(json.dumps(value['modelUsage']))
+        for name, usage in value.get('modelUsage', {}).items():
+            usage.update({'webSearchRequests':0,'costUSD':0.001,'contextWindow':200000,
+                'maxOutputTokens':64000,'thinkingTokens':min(2, usage.get('outputTokens',0)),
+                'cacheCreationEphemeral5mInputTokens':usage.get('cacheCreationInputTokens',0),
+                'cacheCreationEphemeral1hInputTokens':0,'canonicalModel':name,'provider':'fixture','costBasis':'synthetic'})
+        for name, usage in value.get('model_usage_since_last_result', {}).items():
+            usage.update({key:item for key,item in value.get('modelUsage', {}).get(name,{}).items() if key not in ['inputTokens','outputTokens','cacheReadInputTokens','cacheCreationInputTokens']})
     print(json.dumps(value), flush=True)
 
 def read():
@@ -22,21 +48,28 @@ def read():
     return value
 
 if sys.argv[1:3] == ['auth', 'status']:
+    (root / 'auth-config').write_text(os.environ.get('CLAUDE_CONFIG_DIR', '<native-default>'))
     send({'loggedIn': True})
     sys.exit(0)
 with (root / 'argv').open('a') as out:
     out.write(json.dumps(sys.argv[1:]) + '\n')
 
 if kind == 'claude':
+    (root / 'launch-config').write_text(os.environ.get('CLAUDE_CONFIG_DIR', '<native-default>'))
     init = read()
     if '--resume' in sys.argv and (root / 'missing-context').exists():
         saved = sys.argv[sys.argv.index('--resume') + 1]
+        failure = (root / 'missing-context').read_text()
+        if failure == 'eof': sys.exit(1)
+        if failure == 'refused':
+            send({'type':'control_response','response':{'subtype':'error','request_id':init['request_id'],'error':'Resume failed'}})
+            sys.exit(1)
         send({'type':'result','session_id':saved,'subtype':'error_during_execution',
             'is_error':True,'num_turns':0,'duration_api_ms':0,'total_cost_usd':0,
-            'modelUsage':{},'permission_denials':[],'errors':['No conversation found with session ID: ' + saved],
+            'modelUsage':{},'permission_denials':[],'errors':[('Native session file cannot be opened: ' if failure == 'reworded' else 'No conversation found with session ID: ') + saved],
             'usage':{'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}})
         sys.exit(1)
-    send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {}}})
+    send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {'claude_code_version':(root / 'cli-version').read_text() if (root / 'cli-version').exists() else '2.1.321'}}})
     room_bound = False
     room_tools = []
     def room_metadata(ident, message):
@@ -53,6 +86,7 @@ if kind == 'claude':
         for n in range(20_000):
             send({'type':'stream_event','session_id':session,'event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'streamed text '}}})
         (root / marker).write_text('flushed')
+    process_count = 0
     while True:
         prompt = read()
         if prompt.get('type') == 'control_request':
@@ -69,6 +103,7 @@ if kind == 'claude':
                 response = {'mcpServers':[{'name':'hagency_matrix','status':'connected','transport':'sdk','scope':'dynamic','source':'sdk','tools':[{'name':t['name']} for t in room_tools]}] if room_bound else []}
             send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':response}})
             continue
+        process_count += 1
         session = 'offline-session'
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
@@ -145,18 +180,26 @@ if kind == 'claude':
         usage = {} if mode in ('unknown', 'long_stream_unknown') else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
         result = {'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
         if aborted:
-            result.update({'is_error':True,'terminal_reason':'aborted_streaming'})
+            result.update({'is_error':True,'terminal_reason':'error_during_execution' if 'generic' in mode else 'aborted_streaming'})
+        if mode == 'overflow_usage':
+            result['modelUsage'] = {'main': {'inputTokens':9007199254740991,'outputTokens':1,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
         if mode == 'long_usage':
             result['modelUsage'] = {'main':{'inputTokens':12000,'outputTokens':1200,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
-        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof'):
+        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof', 'background_native_followup'):
             count_file = root / 'count'
             count = int(count_file.read_text()) + 1 if count_file.exists() else 1
             count_file.write_text(str(count))
             if mode != 'mixed_usage' or count > 1:
-                n = 0 if mode == 'regressing_usage' and count > 1 else count
+                n = 0 if mode == 'regressing_usage' and process_count > 1 else process_count
                 result['modelUsage'] = {'main': {'inputTokens': 10*n, 'outputTokens': 7*n, 'cacheReadInputTokens': 3*n, 'cacheCreationInputTokens': 4*n}, 'subagent': {'inputTokens': 20*n, 'outputTokens': 10*n, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0}}
+                if mode.startswith('background_'):
+                    # Earlier turns' completed background output remains in
+                    # the native cumulative report before this child finishes.
+                    result['modelUsage']['subagent']['outputTokens'] = 20*(n-1)+10
         if mode.startswith('background_'):
-            send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[{'task_id':'child-one','task_type':'local_agent'}]})
+            child_task = {'task_id':'child-one','task_type':'local_agent'}
+            if mode == 'background_native_followup': child_task['run_id'] = 'native-child-run'
+            send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[child_task]})
         send(result)
         if mode.startswith('background_'):
             if mode == 'background_approval':
@@ -164,12 +207,22 @@ if kind == 'claude':
                 response = read()['response']['response']
                 if response['behavior'] == 'allow':
                     (root / 'child-effect').write_text('one')
-            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+            if mode != 'background_native_followup':
+                send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
             import time
             time.sleep(0.05)
             (root / 'background-completed').write_text(str(count))
-            send({'type':'system','subtype':'task_notification','session_id':session,'task_id':'child-one','status':'completed'})
+            send({'type':'system','subtype':'task_notification','session_id':session,**child_task,'status':'completed'})
             send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[]})
+            if mode == 'background_native_followup':
+                send({'type':'system','subtype':'init','session_id':session})
+                result['modelUsage']['subagent']['outputTokens'] = 20 * process_count
+                result['result'] = 'native background final answer'
+                result.pop('user_message_uuid', None)
+                result['origin'] = {'kind':'task-notification','producer':'session-task','runId':'native-child-run'}
+                send(result)
+                send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+                break
             snapshot = read()
             assert snapshot['message']['content'] == '/usage'
             assert snapshot['session_id'] == session
@@ -177,7 +230,7 @@ if kind == 'claude':
                 sys.exit(0)
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
             send({'type':'system','subtype':'init','session_id':session,'user_message_uuids':[snapshot['uuid']]})
-            result['modelUsage']['subagent']['outputTokens'] = 20 * count
+            result['modelUsage']['subagent']['outputTokens'] = 20 * process_count
             if mode == 'background_regressing':
                 result['modelUsage'] = {'main': {'inputTokens': 0, 'outputTokens': 0, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0}}
             result['result'] = 'local accounting report'

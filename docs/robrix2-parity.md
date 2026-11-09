@@ -39,8 +39,8 @@ assertions expect English labels. Do not change a personal profile for tests.
 ```sh
 mkdir -p /tmp/rinx-parity-tests
 printf '"en"\n' > /tmp/rinx-parity-tests/ui-language.json
-RINX_DATA_DIR=/tmp/rinx-parity-tests cargo test --locked --lib
-RINX_DATA_DIR=/tmp/rinx-parity-tests cargo test --locked --features agent_ops_dev --lib
+HAGENCY_DESKTOP_DATA_DIR=/tmp/rinx-parity-tests cargo test --locked --lib
+HAGENCY_DESKTOP_DATA_DIR=/tmp/rinx-parity-tests cargo test --locked --features agent_ops_dev --lib
 cargo check --locked --no-default-features
 cargo check --locked --no-default-features --features agent_chat
 cargo build --locked

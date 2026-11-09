@@ -7,7 +7,6 @@ use native_session::{Conversation, previous_checkpoint, scope_digest, scope_key}
 struct Previous {
     native: String,
     receipt: String,
-    counts: [u64; 4],
 }
 pub struct SharedClaudeSession {
     registry: Arc<Inner>,
@@ -47,11 +46,7 @@ fn previous(db: &Connection, scope: &str, child: &str) -> Result<Option<Previous
     {
         return Ok(None);
     }
-    // Fresh calls already save their original absolute counters as usage. A
-    // resumed call separately retains its raw cumulative evidence and delta.
-    let original = observation
-        .get("native_cumulative")
-        .unwrap_or(&observation["usage"]);
+    let original = &observation["usage"];
     let usage = &original["claude_runtime_evidence"]["usage"];
     if original["framework"] != "claude"
         || !original["failure"].is_null()
@@ -90,7 +85,6 @@ fn previous(db: &Connection, scope: &str, child: &str) -> Result<Option<Previous
     Ok(Some(Previous {
         native,
         receipt: receipt.observation_id,
-        counts,
     }))
 }
 
@@ -120,7 +114,10 @@ async fn prepare(
             return Err(Error::LocalAuthority);
         }
         // Plaintext V1/V2 still has an immutable complete-history input contract.
-        if route.encrypted || route.native_context_version == Some(3) || !cfg!(feature = "shared-context") {
+        if route.encrypted
+            || route.native_context_version == Some(3)
+            || !cfg!(feature = "shared-context")
+        {
             scope = Some(scope_key(
                 root,
                 enrollment,
@@ -230,6 +227,11 @@ impl SharedBudgetAttemptCustody {
 }
 
 impl SharedClaudeSession {
+    /// Host-only namespace for native plaintext. A missing route gets the
+    /// original command's unique directory and cannot reuse another room.
+    pub fn storage_scope(&self) -> &str {
+        self.scope.as_deref().unwrap_or(&self.digest)
+    }
     pub fn resume_id(&self) -> Option<&str> {
         self.previous.as_ref().map(|p| p.native.as_str())
     }
@@ -237,11 +239,16 @@ impl SharedClaudeSession {
         self.previous.is_some()
     }
     /// Rebuild only before binding a call, from this exact stopped native
-    /// process's explicit missing-resume result. No old usage is rewritten.
+    /// process's failed startup before prompt bytes. No usage is rewritten.
     pub fn rebuild_missing(&mut self, process: &OwnedClaudeSession) -> Result<(), Error> {
-        if self.bound.is_some() || self.previous.is_none()
-            || process.missing_resume_id() != self.resume_id()
-            || process.shared_resume_id().map_err(|_| Error::LocalAuthority)? != self.resume_id() {
+        if self.bound.is_some()
+            || self.previous.is_none()
+            || process.pre_prompt_resume_id() != self.resume_id()
+            || process
+                .shared_resume_id()
+                .map_err(|_| Error::LocalAuthority)?
+                != self.resume_id()
+        {
             return Err(Error::LocalAuthority);
         }
         self.previous = None;
@@ -278,6 +285,7 @@ impl SharedClaudeSession {
         if self.scope.as_ref().is_some_and(|old| old != &scope) {
             return Err(Error::LocalAuthority);
         }
+        let admitted_scope = scope.clone();
         let expected = self.previous.clone();
         let child = a.sink.child().to_owned();
         let process_digest = a.sink.process_digest()?;
@@ -296,7 +304,10 @@ impl SharedClaudeSession {
                 work::live(&tx, &a)?;
                 if !work::exact_work(&tx, a.sink.child(), &w)?
                     || expected.is_some() && previous(&tx, &scope, &child)? != expected
-                    || expected.is_some() && !w.encrypted && cfg!(feature = "shared-context") && !context::native_input(&tx, &w)?
+                    || expected.is_some()
+                        && !w.encrypted
+                        && cfg!(feature = "shared-context")
+                        && !context::native_input(&tx, &w)?
                 {
                     return Err(Error::LocalAuthority);
                 }
@@ -318,6 +329,7 @@ impl SharedClaudeSession {
             })
             .await?;
         self.bound = Some(bound);
+        self.scope = Some(admitted_scope);
         Ok(())
     }
     pub fn bind_capture(
@@ -338,7 +350,8 @@ impl SharedClaudeSession {
         {
             return Err(Error::LocalAuthority);
         }
-        sink.claude_baseline = self.previous.as_ref().map(|p| p.counts);
+        // Resume restores conversation only. Usage comes from this turn's
+        // native result deltas, independently of restored modelUsage totals.
         Ok(())
     }
     pub async fn retain(

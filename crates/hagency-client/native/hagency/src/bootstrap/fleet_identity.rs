@@ -41,12 +41,6 @@ pub(crate) struct Device {
 }
 #[derive(Debug)]
 pub(crate) struct Identities {
-    /// A rig-built instance's one approval device, adopted for migration; an
-    /// imported fleet otherwise has one approval device per owner
-    /// (`owner_approval_device`), created when that owner first needs one.
-    /// Startup only needs `ensure` to have run; the devices are read by tests.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by tests"))]
-    pub(crate) approval: Option<Device>,
     #[cfg_attr(not(test), expect(dead_code, reason = "read by tests"))]
     pub(crate) representative: Device,
 }
@@ -119,6 +113,51 @@ fn text(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceWrite {
+    version: u8,
+    name: String,
+    token_file: String,
+    user_id: String,
+    device_id: String,
+    token: String,
+}
+
+// The pending record is the atomic commit point for a new credential pair.
+// Completing its two projections never logs in again or replaces an existing
+// different identity. The record contains a secret and uses the private writer.
+fn finish_device_write(state: &Path, name: &str, token_file: &str, user: &str) -> Result<(), Error> {
+    let pending = state.join(format!("{name}.identity-write.json"));
+    let file = match private::open(&pending, false) {
+        Ok(file) => file,
+        Err(_) if !pending.exists() => return Ok(()),
+        Err(_) => return Err(Error::Store),
+    };
+    use std::io::Read;
+    let mut raw = Vec::new();
+    file.take(40 * 1024 + 1).read_to_end(&mut raw).map_err(|_| Error::Store)?;
+    if raw.len() > 40 * 1024 { return Err(Error::Store); }
+    let saved: DeviceWrite = serde_json::from_slice(&raw).map_err(|_| Error::Store)?;
+    if saved.version != 1 || saved.name != name || saved.token_file != token_file
+        || saved.user_id != user || saved.device_id.is_empty() || saved.device_id.len() > 255
+        || saved.token.is_empty() || saved.token.len() > 32 * 1024
+    { return Err(Error::Store); }
+    let identity = state.join(format!("{name}.identity.json"));
+    let token = state.join(token_file);
+    let value = json!({"user_id":saved.user_id,"device_id":saved.device_id});
+    if identity.exists() {
+        let current: Value = serde_json::from_slice(&private::read_secret(&identity).map_err(|_| Error::Store)?).map_err(|_| Error::Store)?;
+        if current != value { return Err(Error::Store); }
+    }
+    if token.exists() && private::read_secret(&token).map_err(|_| Error::Store)? != saved.token.as_bytes() {
+        return Err(Error::Store);
+    }
+    private::replace(&token, saved.token.as_bytes()).map_err(|_| Error::Store)?;
+    private::replace(&identity, value.to_string().as_bytes()).map_err(|_| Error::Store)?;
+    std::fs::remove_file(pending).map_err(|_| Error::Store)
+}
+
 /// One namespace user's device: reuse the stored one, or create it once.
 async fn device(
     client: &Client,
@@ -130,6 +169,7 @@ async fn device(
     let user = format!("@{localpart}:{}", client.server_name);
     let identity = state.join(format!("{name}.identity.json"));
     let token_path = state.join(token_file);
+    finish_device_write(state, name, token_file, &user)?;
     if let (Ok(raw), Ok(token)) = (
         private::read_secret(&identity),
         private::read_secret(&token_path),
@@ -154,44 +194,10 @@ async fn device(
         }
         return Ok(device);
     }
-    // A token without its identity record (an instance the rig script built,
-    // which kept the identities elsewhere): adopt the device the token
-    // already is, never log in a second one. The token's own whoami names
-    // the device; room custody is bound to this exact token.
-    if let Ok(token) = private::read_secret(&token_path) {
-        let token = String::from_utf8(token).map_err(|_| Error::Store)?;
-        let (status, who) = client.whoami(token.trim(), None).await?;
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(Error::Revoked(name.to_owned()));
-        }
-        if !status.is_success() || text(&who, "user_id").as_deref() != Some(user.as_str()) {
-            return Err(Error::Revoked(name.to_owned()));
-        }
-        let device_id = match text(&who, "device_id") {
-            Some(device) => device,
-            None => {
-                let legacy = state
-                    .parent()
-                    .map(|root| {
-                        root.join("coordinator")
-                            .join(format!("{name}.identity.json"))
-                    })
-                    .and_then(|path| private::read_secret(&path).ok())
-                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-                    .ok_or_else(|| Error::Revoked(name.to_owned()))?;
-                if text(&legacy, "user_id").as_deref() != Some(user.as_str()) {
-                    return Err(Error::Revoked(name.to_owned()));
-                }
-                text(&legacy, "device_id").ok_or_else(|| Error::Revoked(name.to_owned()))?
-            }
-        };
-        let identity_value = json!({"user_id": user, "device_id": device_id});
-        private::replace(&identity, identity_value.to_string().as_bytes())
-            .map_err(|_| Error::Store)?;
-        return Ok(Device {
-            user_id: user,
-            device_id,
-        });
+    // Partial identity state cannot authorize creating or adopting a device.
+    // Preserve it for explicit recovery rather than overwriting crypto identity.
+    if token_path.exists() || identity.exists() {
+        return Err(Error::Store);
     }
     // Acting as the user creates it on Palpo (TS `mintAgentIdentity`), then
     // App Service login gives it a device of its own.
@@ -222,11 +228,13 @@ async fn device(
     if !status.is_success() || user_id != user {
         return Err(Error::Refused(user));
     }
-    // Token before identity: a crash between them leaves no identity file,
-    // so the next run logs in again instead of trusting a half-written pair.
-    private::replace(&token_path, token.as_bytes()).map_err(|_| Error::Store)?;
-    let identity_value = json!({"user_id": user_id, "device_id": device_id});
-    private::replace(&identity, identity_value.to_string().as_bytes()).map_err(|_| Error::Store)?;
+    let pending = DeviceWrite {
+        version: 1, name: name.into(), token_file: token_file.into(),
+        user_id: user_id.clone(), device_id: device_id.clone(), token,
+    };
+    private::write_new(&state.join(format!("{name}.identity-write.json")),
+        &serde_json::to_vec(&pending).map_err(|_| Error::Store)?).map_err(|_| Error::Store)?;
+    finish_device_write(state, name, token_file, &user)?;
     Ok(Device { user_id, device_id })
 }
 
@@ -274,28 +282,10 @@ pub(crate) async fn ensure(
         &format!("{fleet_id}_representative"),
     )
     .await?;
-    // A rig-built instance's approval device is adopted, never re-created.
-    let approval = if state.join("approval.access_token").exists() {
-        Some(
-            device(
-                &client,
-                state,
-                "approval",
-                "approval.access_token",
-                &format!("{fleet_id}_approval"),
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
     private::replace(&state.join("matrix.appservice_token"), as_token.as_bytes())
         .map_err(|_| Error::Store)?;
     key(state, "matrix.provisioning_key")?;
-    Ok(Identities {
-        approval,
-        representative,
-    })
+    Ok(Identities { representative })
 }
 
 /// The file-name slug of an owner: stable, private, filesystem-safe.
@@ -303,11 +293,8 @@ fn owner_slug(owner: &str) -> String {
     hagency_core::project::hash(owner.as_bytes())[..16].to_owned()
 }
 
-/// ADR-187 amendment: the approval-bot device serving `owner`, created the
-/// first time that owner needs approvals and reused from then on. A
-/// rig-built instance's one approval device is adopted as the device of the
-/// owner its configuration named, with its original label and room, so its
-/// SDK store still opens.
+/// One explicitly recorded approval device per owner. Missing current records
+/// never import old driver configuration or reuse another owner's SDK store.
 pub(crate) async fn owner_approval_device(
     state: &Path,
     fleet_id: &str,
@@ -335,11 +322,11 @@ pub(crate) async fn owner_approval_device(
             sdk_root: field("sdk_root")?,
         });
     }
-    let bot = format!("@{fleet_id}_approval:{server_name}");
-    let legacy = legacy_approval(state, owner, &bot);
-    let record = match legacy {
-        Some(record) => record,
-        None => {
+    if record_path.exists() || state.join("approval.identity.json").exists()
+        || state.join("approval.access_token").exists() {
+        return Err(Error::Store);
+    }
+    let record = {
             let raw = private::read_secret(&state.join("palpo-appservice.json"))
                 .map_err(|_| Error::Appservice)?;
             let appservice: Value = serde_json::from_slice(&raw).map_err(|_| Error::Appservice)?;
@@ -376,7 +363,6 @@ pub(crate) async fn owner_approval_device(
                 key_file,
                 sdk_root: format!("approval-sdk-{slug}"),
             }
-        }
     };
     let value = json!({
         "owner": owner, "user_id": record.device.user_id, "device_id": record.device.device_id,
@@ -385,40 +371,6 @@ pub(crate) async fn owner_approval_device(
     });
     private::replace(&record_path, value.to_string().as_bytes()).map_err(|_| Error::Store)?;
     Ok(record)
-}
-
-/// A rig-built instance's approval device, when its configuration named
-/// `owner`: adopted with the original label, room, token, key and store.
-fn legacy_approval(state: &Path, owner: &str, bot: &str) -> Option<OwnerApprovalDevice> {
-    // The driver configuration holds no secret and is larger than a token
-    // file: an ordinary bounded read, not `read_secret` (512 bytes).
-    let path = state.join("agent-driver.json");
-    if std::fs::metadata(&path).ok()?.len() > 64 * 1024 {
-        return None;
-    }
-    let driver: Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-    let approval = driver.get("approval")?;
-    if text(approval, "sender_mxid")? != bot {
-        return None;
-    }
-    let room = approval.get("rooms")?.as_array()?.first()?;
-    if room.pointer("/privacy/human_mxid")?.as_str()? != owner {
-        return None;
-    }
-    let identity: Value =
-        serde_json::from_slice(&private::read_secret(&state.join("approval.identity.json")).ok()?)
-            .ok()?;
-    Some(OwnerApprovalDevice {
-        device: Device {
-            user_id: text(&identity, "user_id")?,
-            device_id: text(&identity, "device_id")?,
-        },
-        label: text(approval, "engagement_id")?,
-        first_room: text(room, "id")?,
-        token_file: "approval.access_token".into(),
-        key_file: "approval.sdk_key".into(),
-        sdk_root: "approval-sdk".into(),
-    })
 }
 
 /// `device` for a per-owner name (its identity record is `<name>.identity.json`).
@@ -561,7 +513,7 @@ mod tests {
                         };
                         (
                             200,
-                            json!({"access_token": format!("tok-{local}-{n}"),
+                            json!({"access_token": format!("tok-{local}-{n}-{}", "t".repeat(400)),
                             "user_id": format!("@{FLEET}_{local}:example.test"), "device_id": format!("DEV{local}{n}")}),
                         )
                     } else if line.contains("/whoami?user_id=") {
@@ -633,10 +585,6 @@ mod tests {
         let dir = state(&origin);
         let first = ensure(dir.path(), FLEET, "example.test").await.unwrap();
         assert_eq!(
-            first.approval, None,
-            "approval devices are per owner, created on need"
-        );
-        assert_eq!(
             first.representative.user_id,
             format!("@{FLEET}_representative:example.test")
         );
@@ -668,6 +616,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_fleet_identity_finishes_a_committed_pair_after_each_partial_write() {
+        let (origin, logins) = homeserver(Arc::new(Mutex::new(false))).await;
+        let dir = state(&origin);
+        let first = ensure(dir.path(), FLEET, "example.test").await.unwrap();
+        let token_path = dir.path().join("matrix.representative_token");
+        let identity_path = dir.path().join("representative.identity.json");
+        let pending_path = dir.path().join("representative.identity-write.json");
+        let pending = DeviceWrite {
+            version: 1, name: "representative".into(), token_file: "matrix.representative_token".into(),
+            user_id: first.representative.user_id.clone(), device_id: first.representative.device_id.clone(),
+            token: String::from_utf8(private::read_secret(&token_path).unwrap()).unwrap(),
+        };
+        assert!(serde_json::to_vec(&pending).unwrap().len() > 512, "a credential pair is larger than one secret");
+        for remaining in [0, 1, 2] {
+            private::write_new(&pending_path, &serde_json::to_vec(&pending).unwrap()).unwrap();
+            if remaining < 2 { std::fs::remove_file(&identity_path).unwrap(); }
+            if remaining == 0 { std::fs::remove_file(&token_path).unwrap(); }
+            let again = ensure(dir.path(), FLEET, "example.test").await.unwrap();
+            assert_eq!(again.representative, first.representative);
+            assert_eq!(*logins.lock().unwrap(), 1, "resume the original credential pair");
+            assert!(!pending_path.exists());
+        }
+        private::write_new(&pending_path, &serde_json::to_vec(&pending).unwrap()).unwrap();
+        private::replace(&identity_path, br#"{"user_id":"@other:example.test","device_id":"OTHER"}"#).unwrap();
+        assert_eq!(ensure(dir.path(), FLEET, "example.test").await.unwrap_err(), Error::Store);
+        assert_eq!(*logins.lock().unwrap(), 1, "never replace a conflicting identity");
+    }
+
+    #[tokio::test]
     async fn native_fleet_identity_reads_the_owner_master_key() {
         let (origin, _) = homeserver(Arc::new(Mutex::new(false))).await;
         let dir = state(&origin);
@@ -687,7 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_fleet_identity_adopts_a_rig_token_without_a_second_device() {
+    async fn native_fleet_identity_refuses_unregistered_rig_identity_without_a_second_device() {
         let (origin, logins) = homeserver(Arc::new(Mutex::new(false))).await;
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let state = root.path().join("native-state");
@@ -717,15 +694,13 @@ mod tests {
             )
             .unwrap();
         }
-        let adopted = ensure(&state, FLEET, "example.test").await.unwrap();
+        assert!(ensure(&state, FLEET, "example.test").await.is_err());
         assert_eq!(*logins.lock().unwrap(), 0, "no second device");
-        assert_eq!(adopted.representative.device_id, "RIGREP");
-        assert_eq!(adopted.approval.unwrap().device_id, "RIGAPP");
         assert_eq!(
             std::fs::read(state.join("matrix.representative_token")).unwrap(),
             b"tok-representative-rig"
         );
-        assert!(state.join("representative.identity.json").exists());
+        assert!(!state.join("representative.identity.json").exists());
     }
 
     #[tokio::test]
@@ -777,7 +752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_fleet_identity_adopts_the_rig_approval_device_for_its_owner() {
+    async fn native_fleet_identity_refuses_obsolete_approval_import_without_replacing_identity() {
         let (origin, logins) = homeserver(Arc::new(Mutex::new(false))).await;
         let dir = state(&origin);
         private::replace(
@@ -792,35 +767,11 @@ mod tests {
             "sender_mxid": format!("@{FLEET}_approval:example.test"), "engagement_id": "en_coordinator",
             "rooms": [{"id": "!approval:example.test", "generation": 1, "privacy": {"kind": "direct", "human_mxid": "@owner:example.test"}}]
         }, "padding": "x".repeat(3000)}).to_string().as_bytes()).unwrap();
-        let owner = owner_approval_device(
-            dir.path(),
-            FLEET,
-            "example.test",
-            "@owner:example.test",
-            "!approval:example.test",
-        )
-        .await
-        .unwrap();
-        assert_eq!(*logins.lock().unwrap(), 0, "adopted, not created");
-        assert_eq!(
-            (owner.label.as_str(), owner.first_room.as_str()),
-            ("en_coordinator", "!approval:example.test")
-        );
-        assert_eq!(
-            (owner.token_file.as_str(), owner.sdk_root.as_str()),
-            ("approval.access_token", "approval-sdk")
-        );
-        // Another owner still gets a device of its own.
-        let other = owner_approval_device(
-            dir.path(),
-            FLEET,
-            "example.test",
-            "@other:example.test",
-            "!o:example.test",
-        )
-        .await
-        .unwrap();
-        assert_eq!(*logins.lock().unwrap(), 1);
-        assert_ne!(other.sdk_root, owner.sdk_root);
+        let before = std::fs::read(dir.path().join("approval.identity.json")).unwrap();
+        assert!(owner_approval_device(dir.path(), FLEET, "example.test",
+            "@owner:example.test", "!approval:example.test").await.is_err());
+        assert_eq!(*logins.lock().unwrap(), 0);
+        assert_eq!(std::fs::read(dir.path().join("approval.identity.json")).unwrap(), before);
+        assert!(!dir.path().join(format!("approval-{}.json", owner_slug("@owner:example.test"))).exists());
     }
 }

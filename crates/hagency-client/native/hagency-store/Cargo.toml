@@ -12,7 +12,7 @@ agent-budget = []
 shared-context = ["hagency-runtime/shared-context"]
 shared-intake = []
 test-support = ["hagency-platform/test-support"]
-resource-adoption = ["hagency-platform/resource-adoption"]
+resource-adoption = []
 
 [dependencies]
 hagency-platform.workspace = true

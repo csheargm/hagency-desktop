@@ -27,7 +27,7 @@ def main():
     app.output.mkdir(parents=True)
     app.log = (app.output / "native.log").open("w")
     env = dict(os.environ, MAKEPAD_REMOTE=str(port), MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1",
-               RINX_DATA_DIR=str((root / "profile").resolve()), RAYON_NUM_THREADS="1")
+               HAGENCY_DESKTOP_DATA_DIR=str((root / "profile").resolve()), RAYON_NUM_THREADS="1")
     app.process = subprocess.Popen([str(args.binary.resolve())], env=env, stdin=subprocess.DEVNULL,
                                    stdout=app.log, stderr=subprocess.STDOUT)
     report = {"passed": False, "checks": []}

@@ -79,11 +79,39 @@ impl AccountBinding {
     }
 }
 
+/// A transient access token observed by the trusted host at the same time as
+/// its authenticated provider identity. Never serialize, log or persist this
+/// value, and never put a refresh token in a shared native process.
+pub struct SharedCredential {
+    binding: AccountBinding,
+    token: String,
+}
+impl SharedCredential {
+    pub fn from_authenticated_login(binding: AccountBinding, token: String) -> Result<Self, Error> {
+        binding.check()?;
+        if token.is_empty() || token.len() > 8192 || !token.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(Error::Identity);
+        }
+        Ok(Self { binding, token })
+    }
+    pub fn binding(&self) -> &AccountBinding {
+        &self.binding
+    }
+    pub(crate) fn inject(&self, launch: &mut hagency_platform::Launch) -> Result<(), Error> {
+        self.binding.check()?;
+        launch
+            .environment
+            .insert("CLAUDE_CODE_OAUTH_TOKEN".into(), self.token.clone().into());
+        Ok(())
+    }
+}
+
 /// An immutable native initialization observation, never a capacity proof.
 pub(crate) struct Metadata {
-    email: String,
+    email: Option<String>,
     provider: String,
     api_key_source: Option<String>,
+    token_source: Option<String>,
 }
 impl Metadata {
     pub(crate) fn read(value: &Value) -> Option<Self> {
@@ -94,21 +122,37 @@ impl Metadata {
                 .map(str::to_owned)
         }
         Some(Self {
-            email: field(&value["email"])?,
+            email: match value.get("email") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(field(value)?),
+            },
             provider: field(&value["apiProvider"])?,
             api_key_source: match value.get("apiKeySource") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(field(value)?),
+            },
+            token_source: match value.get("tokenSource") {
                 None | Some(Value::Null) => None,
                 Some(value) => Some(field(value)?),
             },
         })
     }
     pub(crate) fn matches(&self, binding: &AccountBinding) -> bool {
-        self.email == binding.email
+        self.email.as_deref() == Some(binding.email.as_str())
             && self.provider == "firstParty"
             && self
                 .api_key_source
                 .as_deref()
                 .is_none_or(|source| source == "none")
+    }
+    pub(crate) fn matches_injected(&self, binding: &AccountBinding) -> bool {
+        self.provider == "firstParty"
+            && self.token_source.as_deref() == Some("CLAUDE_CODE_OAUTH_TOKEN")
+            && self.api_key_source.as_deref().is_none_or(|s| s == "none")
+            && self
+                .email
+                .as_deref()
+                .is_none_or(|email| email == binding.email)
     }
 }
 
@@ -121,5 +165,25 @@ pub struct AccountObservation {
 impl AccountObservation {
     pub fn provider_digest(&self) -> &str {
         self.binding.provider_digest()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn injected_auth_requires_the_native_token_source_and_host_binding() {
+        let binding = AccountBinding::from_authenticated_profile(
+            "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
+            "owner@example.test", Instant::now() + Duration::from_secs(30)).unwrap();
+        let metadata = Metadata::read(&json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty"})).unwrap();
+        assert!(!metadata.matches(&binding), "ordinary native login still needs its email observation");
+        assert!(metadata.matches_injected(&binding));
+        for value in [
+            json!({"tokenSource":"apiKey","apiProvider":"firstParty"}),
+            json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"bedrock"}),
+            json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}),
+            json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty","email":"different@example.test"}),
+        ] { assert!(!Metadata::read(&value).unwrap().matches_injected(&binding)); }
     }
 }

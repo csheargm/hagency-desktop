@@ -40,9 +40,6 @@ pub(super) struct StartConfig {
     pub agent_id: String,
     pub binding_id: String,
     pub profile: Profile,
-    // Legacy estimate retained only for exact startup-intent recovery. Every
-    // newly executed native turn uses postpaid accounting.
-    pub mode: BudgetMode,
     pub credential_ref: String,
     pub takeover: Takeover,
     pub host_files: bool,
@@ -60,25 +57,14 @@ pub(super) struct RuntimeIntent {
     pub binding_id: String,
     pub device_id: String,
     pub consent_id: String,
-    // Zero identifies a new postpaid intent. Positive legacy hints are retained
-    // byte-for-byte for recovery; neither causes a new model-call hold.
-    pub reservation: u64,
     pub effort: String,
     pub host_files: bool,
 }
 impl RuntimeIntent {
     pub(super) fn start_input(&self) -> serde_json::Value {
         serde_json::json!({"bindingId":self.binding_id,
-            "reservation":self.reservation,"effort":self.effort,"hostFiles":self.host_files,
+            "effort":self.effort,"hostFiles":self.host_files,
             "takeover":false,"recoveryDeviceId":self.device_id,"recoveryConsentId":self.consent_id})
-    }
-}
-fn intent_reservation(mode: &BudgetMode) -> Result<u64, RuntimeError> {
-    match mode {
-        BudgetMode::Postpaid => Ok(0),
-        BudgetMode::Estimated { reservation: 0 } => Err(RuntimeError::Profile),
-        BudgetMode::Estimated { reservation } => Ok(*reservation),
-        BudgetMode::Strict => Err(RuntimeError::StrictUnavailable),
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -87,6 +73,20 @@ struct RuntimeIntents {
     version: u8,
     profile_identity: String,
     intents: Vec<RuntimeIntent>,
+}
+const RUNTIME_STATE_VERSION: u8 = 3;
+
+/// A clean cutover never revives startup consent or preferences from an old
+/// format. The next explicit start/stop writes a fresh current document.
+fn current_runtime_state(bytes: &[u8], identity: &str) -> Result<Option<serde_json::Value>, RuntimeError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| RuntimeError::Profile)?;
+    if value.get("profileIdentity").and_then(|v| v.as_str()) != Some(identity) {
+        return Err(RuntimeError::Profile);
+    }
+    let version = value.get("version").and_then(|v| v.as_u64()).ok_or(RuntimeError::Profile)?;
+    if version < u64::from(RUNTIME_STATE_VERSION) { return Ok(None); }
+    if version != u64::from(RUNTIME_STATE_VERSION) { return Err(RuntimeError::Profile); }
+    Ok(Some(value))
 }
 fn intent_location(
     console: &Console,
@@ -120,7 +120,7 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
         Ok(file) => file,
         Err(_) if !path.exists() => {
             return Ok(RuntimeIntents {
-                version: 1,
+                version: RUNTIME_STATE_VERSION,
                 profile_identity: identity.into(),
                 intents: Vec::new(),
             });
@@ -134,10 +134,12 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
     if bytes.len() > 262144 {
         return Err(RuntimeError::Profile);
     }
-    let values: RuntimeIntents =
-        serde_json::from_slice(&bytes).map_err(|_| RuntimeError::Profile)?;
+    let Some(value) = current_runtime_state(&bytes, identity)? else {
+        return Ok(RuntimeIntents { version: RUNTIME_STATE_VERSION, profile_identity: identity.into(), intents: Vec::new() });
+    };
+    let values: RuntimeIntents = serde_json::from_value(value).map_err(|_| RuntimeError::Profile)?;
     let mut scopes = BTreeSet::new();
-    if values.version != 1
+    if values.version != RUNTIME_STATE_VERSION
         || values.profile_identity != identity
         || values.intents.len() > 1024
         || values.intents.iter().any(|v| {
@@ -225,13 +227,12 @@ fn verify_recovery_intent(
         (None, None) => Ok(()),
         (Some(expected_device), Some(consent)) if expected_device == device.device_id() => {
             let (path, identity) = intent_location(console, device)?;
-            let reservation = intent_reservation(&config.mode)?;
+
             let valid = read_intents(&path, &identity)?.intents.iter().any(|v| {
                 v.agent_id == config.agent_id
                     && v.binding_id == config.binding_id
                     && v.device_id == *expected_device
                     && v.consent_id == *consent
-                    && v.reservation == reservation
                     && v.effort == config.profile.effort
                     && v.host_files == config.host_files
             });
@@ -254,7 +255,7 @@ fn save_intent(
     device: &AuthorizedDevice,
     config: &StartConfig,
 ) -> Result<(), RuntimeError> {
-    let reservation = intent_reservation(&config.mode)?;
+
     let (path, identity) = intent_location(console, device)?;
     change_intent_checked(
         &path,
@@ -269,7 +270,6 @@ fn save_intent(
                 Some(id) => id.clone(),
                 None => new_consent_id()?,
             },
-            reservation,
             effort: config.profile.effort.clone(),
             host_files: config.host_files,
         }),
@@ -278,8 +278,6 @@ fn save_intent(
 }
 #[derive(Debug, thiserror::Error)]
 pub(super) enum RuntimeError {
-    #[error("strict token limits unavailable for Codex")]
-    StrictUnavailable,
     #[error("owner authorization required")]
     Authorization,
     #[error("Agent runtime already active")]
@@ -573,13 +571,6 @@ impl OwnedRuntime {
         mut config: StartConfig,
     ) -> Result<RuntimeStatus, RuntimeError> {
         let _activity = self.tasks.enter().map_err(|_| RuntimeError::Stopped)?;
-        match config.mode {
-            BudgetMode::Strict => return Err(RuntimeError::StrictUnavailable),
-            BudgetMode::Estimated { reservation: 0 } => {
-                return Err(RuntimeError::Profile);
-            }
-            _ => {}
-        }
         runtime::validate(&config.profile, &config.credential_ref)
             .map_err(|_| RuntimeError::Profile)?;
         if config.profile.executable
@@ -2340,28 +2331,26 @@ async fn run_turn<T: Transport>(
     let host = transport.approval_host();
     let controls =
         if host.is_some() && runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
-            let (sender, inbox) = hagency_agent_local::run_controls::channel(
-                &scope,
-                &prepared.dispatch.id,
-                &prepared.execution_id,
-            )
-            .map_err(|_| RuntimeError::Profile)?;
-            queue = queue.with_run_controls(inbox);
             let kind = if runtime::kind(&config.credential_ref) == runtime::Kind::Claude {
                 "claude"
             } else {
                 "codex"
             };
-            let card = crate::agent_run_controls::Card::new(
+            let card = run_controls::optional_card(
                 &prepared.dispatch,
                 &prepared.execution_id,
                 owner,
                 kind,
-            )
-            .map_err(|_| RuntimeError::Profile)?;
-            let controls = run_controls::Controller::new(sender, card);
-            queue = queue.with_live_text(controls.live_text());
-            Some(controls)
+            );
+            if let Some(card) = card {
+                let (sender, inbox) = hagency_agent_local::run_controls::channel(
+                    &scope, &prepared.dispatch.id, &prepared.execution_id,
+                ).map_err(|_| RuntimeError::Profile)?;
+                queue = queue.with_run_controls(inbox);
+                let controls = run_controls::Controller::new(sender, card);
+                queue = queue.with_live_text(controls.live_text());
+                Some(controls)
+            } else { None }
         } else {
             None
         };
@@ -2877,7 +2866,6 @@ mod tests {
             binding_id: binding.into(),
             device_id: device.into(),
             consent_id: new_consent_id().unwrap(),
-            reservation: 42,
             effort: "low".into(),
             host_files: false,
         }
@@ -2901,7 +2889,7 @@ mod tests {
         );
         let input = recovered[0].start_input();
         assert_eq!(input["takeover"], false);
-        assert_eq!(input["reservation"], 42);
+        assert!(input.get("reservation").is_none());
         assert_eq!(input["recoveryDeviceId"], "device-a");
         assert!(input.get("profile").is_none());
         assert!(input.get("token").is_none());
@@ -2974,12 +2962,31 @@ mod tests {
     fn postpaid_start_intent_survives_restart_without_an_estimate() {
         let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = tmp.path().join("runtime-intents.json");
-        let mut intent = intended("agent", "binding", "device");
-        intent.reservation = intent_reservation(&BudgetMode::Postpaid).unwrap();
+        let intent = intended("agent", "binding", "device");
         change_intent(&path, "owner", "agent", "binding", Some(intent.clone())).unwrap();
         assert_eq!(read_intents(&path, "owner").unwrap().intents, vec![intent.clone()]);
-        assert_eq!(intent.start_input()["reservation"], 0);
-        assert_eq!(intent_reservation(&BudgetMode::Estimated { reservation: 42 }).unwrap(), 42);
+        assert!(intent.start_input().get("reservation").is_none());
+        let mut old = serde_json::to_value(&intent).unwrap();
+        old["reservation"] = 42.into();
+        assert!(serde_json::from_value::<RuntimeIntent>(old).is_err());
+    }
+    #[test]
+    fn obsolete_runtime_intents_do_not_restore_or_block_a_fresh_start_or_stop() {
+        let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = tmp.path().join("runtime-intents.json");
+        let old = serde_json::json!({"version":2,"profileIdentity":"owner","intents":[{
+            "agentId":"old","bindingId":"old-room","deviceId":"old-device",
+            "consentId":"a".repeat(64),"effort":"low","hostFiles":false,"reservation":42
+        }]});
+        hagency_store::private::replace(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(read_intents(&path, "other-owner").is_err());
+        assert!(read_intents(&path, "owner").unwrap().intents.is_empty());
+        change_intent(&path, "owner", "old", "old-room", None).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().version, RUNTIME_STATE_VERSION);
+        let next = intended("current", "current-room", "current-device");
+        change_intent(&path, "owner", "current", "current-room", Some(next.clone())).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().intents, vec![next]);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("reservation"));
     }
     #[test]
     fn runtime_concurrent_intent_writer_and_malformed_consent_fail_closed() {
@@ -3189,7 +3196,7 @@ mod tests {
                 shared_auth: false,
                 web_search: true,
             },
-            mode: BudgetMode::Estimated { reservation: 10 },
+
             credential_ref: "keychain:test".into(),
             takeover: Takeover::Never,
             host_files: false,
@@ -3775,7 +3782,6 @@ mod tests {
         let a = config(&root);
         let mut b = a.clone();
         b.binding_id = "binding-b".into();
-        b.mode = BudgetMode::Estimated { reservation: 91 };
         b.host_files = true;
         b.profile.effort = "high".into();
         let (initial, first, _) = binding_work(a);
@@ -3792,10 +3798,6 @@ mod tests {
                     work.config.binding_id.clone(),
                     work.config.host_files,
                     work.config.profile.effort.clone(),
-                    match work.config.mode {
-                        BudgetMode::Estimated { reservation } => reservation,
-                        _ => 0,
-                    },
                 ));
                 let wire = wire.clone();
                 let path = path.clone();
@@ -3827,8 +3829,8 @@ mod tests {
         assert_eq!(
             *seen.lock().unwrap(),
             vec![
-                ("binding-a".into(), false, "low".into(), 10),
-                ("binding-b".into(), true, "high".into(), 91)
+                ("binding-a".into(), false, "low".into()),
+                ("binding-b".into(), true, "high".into())
             ]
         );
         let before_b = transport

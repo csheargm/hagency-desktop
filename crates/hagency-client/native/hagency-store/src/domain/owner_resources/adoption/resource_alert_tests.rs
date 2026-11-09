@@ -1,13 +1,48 @@
 use super::*;
-use crate::management::{HostContext, Permission, Session, ResourceAlert, ResourceAlertQuery, ResourceAlertDetailQuery, TriageResourceAlert, PrivateManagementJournal};
+use crate::management::{HostContext, Permission, Session, ResourceAlert, ResourceAlertQuery, ResourceAlertDetailQuery, TriageResourceAlert};
 fn context(f:&Fixture)->HostContext {HostContext::new(f.profile.account.clone(),1,"a".repeat(64),1,"alert_device".into(),1).unwrap()}
-fn session(store:AdoptedManagementStore,ctx:&HostContext)->Session {Session::new_adopted(store,ctx.clone(),[Permission::ReadAlerts,Permission::TriageAlerts],Instant::now()+Duration::from_secs(60)).unwrap()}
+fn session(store:CurrentManagementStore,ctx:&HostContext)->Session {Session::new_current(store,ctx.clone(),[Permission::ReadAlerts,Permission::TriageAlerts],Instant::now()+Duration::from_secs(60)).unwrap()}
 fn list(f:&Fixture)->ResourceAlertQuery {ResourceAlertQuery{resource_id:f.resource.id(),after:String::new(),status:None}}
 fn detail(f:&Fixture,id:&str)->ResourceAlertDetailQuery {ResourceAlertDetailQuery{resource_id:f.resource.id(),id:id.into(),after_note:0}}
 fn change(row:&ResourceAlert,command:&str,to:&str)->TriageResourceAlert {TriageResourceAlert{command_id:command.into(),resource_id:row.resource_id.clone(),id:row.id.clone(),expected_revision:row.revision.clone(),to:to.into(),note:Some("Checked resource usage / 已核对资源用量".into())}}
 async fn seed(f:&Fixture,n:usize){let resource=f.resource.id();f.registry.0.store.call(8192,move|db|{
     for i in 0..n {db.db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES(?1,?2,'Synthetic quota observation',?3,'Review resource commitments','Existing work remains authorized','Drawn usage falls below the declared ceiling',1,100,100)",params![format!("test:{i:02}"),resource,r#"{"ceilingTokens":1000,"drawnTokens":1100,"overByTokens":100,"credential":"private-sentinel","home":"/private/provider"}"#])?;}
     Ok(())}).await.unwrap();}
+
+#[tokio::test]
+async fn current_web_alerts_share_profile_scope_for_rows_counts_and_revocation() {
+    let f=fixture().await;
+    let backing=resource_name_tests::active(&f).await;
+    let ctx=context(&f);
+    let s=session(backing.clone(),&ctx);
+    seed(&f,2).await;
+    let mut foreign=f.resource.clone();
+    foreign.preset_id="foreign_alert".into();
+    f.registry.0.store.call(4096,move|db|{
+        db.put_resource(&foreign)?;
+        db.db.execute("INSERT INTO owner_resource_grants(profile,resource_id,revision,active) VALUES(?1,?2,1,1)",params!["b".repeat(64),foreign.id()])?;
+        db.db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES('foreign_alert',?1,'Private profile','{}','r','i','c',1,100,100)",[foreign.id()])?;
+        Ok(())
+    }).await.unwrap();
+    let visible=s.web_alerts(&ctx,crate::management::WebAlertsQuery::default()).await.unwrap();
+    assert_eq!(visible.counts.total,2);
+    assert_eq!(visible.filtered_count,2);
+    assert_eq!(visible.alerts.len(),2);
+    assert!(visible.alerts.iter().all(|alert|alert.resource_id==f.resource.id()));
+    let profile=f.profile.digest.clone();
+    f.registry.0.store.call(1,move|db|{
+        assert_eq!(db.db.execute("UPDATE owner_resource_grants SET active=0 WHERE profile=?1",[profile])?,1);
+        Ok(())
+    }).await.unwrap();
+    let revoked=s.web_alerts(&ctx,crate::management::WebAlertsQuery::default()).await.unwrap();
+    assert_eq!(revoked.counts.total,0);
+    assert_eq!(revoked.filtered_count,0);
+    assert!(revoked.alerts.is_empty());
+    s.retire();
+    assert!(s.web_alerts(&ctx,crate::management::WebAlertsQuery::default()).await.is_err());
+    backing.shutdown().await.unwrap();
+    f.registry.shutdown().await.unwrap();
+}
 #[tokio::test]
 async fn resource_alert_pagination_projection_notes_and_resource_authority(){
     let f=fixture().await;let backing=resource_name_tests::active(&f).await;let ctx=context(&f);let s=session(backing.clone(),&ctx);seed(&f,18).await;
@@ -15,7 +50,7 @@ async fn resource_alert_pagination_projection_notes_and_resource_authority(){
     let serialized=serde_json::to_string(&first).unwrap();assert!(!serialized.contains("private-sentinel"));assert!(!serialized.contains("/private/provider"));assert_eq!(first.alerts[0].budget["overByTokens"],100);
     let mut query=list(&f);query.after=first.next_after.unwrap();let second=s.resource_alerts(&ctx,query).await.unwrap();assert_eq!(second.alerts.len(),2);assert!(second.next_after.is_none());
     let mut hidden=detail(&f,"test:00");hidden.resource_id="hidden_resource".into();assert!(s.resource_alert(&ctx,hidden).await.is_err());
-    let reader=Session::new_adopted(backing.clone(),ctx.clone(),[Permission::ReadAlerts],Instant::now()+Duration::from_secs(60)).unwrap();assert!(matches!(reader.triage_resource_alert(&ctx,change(&first.alerts[0],"denied","acknowledged")).await,Err(Error::LocalAuthority)));
+    let reader=Session::new_current(backing.clone(),ctx.clone(),[Permission::ReadAlerts],Instant::now()+Duration::from_secs(60)).unwrap();assert!(matches!(reader.triage_resource_alert(&ctx,change(&first.alerts[0],"denied","acknowledged")).await,Err(Error::LocalAuthority)));
     f.registry.0.store.call(1,|db|{for i in 0..18{db.add_alert_note("test:00","operator",&format!("note-{i}"),200+i)?;}Ok(())}).await.unwrap();
     let d=s.resource_alert(&ctx,detail(&f,"test:00")).await.unwrap();assert_eq!(d.notes.len(),16);assert_eq!(d.next_note,Some(16));assert_ne!(d.alert.revision,first.alerts[0].revision);
     let mut next=detail(&f,"test:00");next.after_note=16;assert_eq!(s.resource_alert(&ctx,next).await.unwrap().notes.len(),2);
@@ -89,7 +124,7 @@ async fn resource_alert_atomic_triage_cas_suppression_original_receipt_and_resta
     assert_eq!(s.resource_alert(&ctx,detail(&f,"test:00")).await.unwrap().notes.len(),3);
     assert_eq!(serde_json::to_value(f.registry.resource(&f.profile,f.resource.id()).await.unwrap()).unwrap(),resource_before);
     s.retire();drop(s);backing.shutdown().await.unwrap();drop(backing);f.registry.shutdown().await.unwrap();
-    f.registry=OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();let transfer=f.registry.resource_adoption_transfer(authority(&f),"name_transfer".into()).await.unwrap();let journal=PrivateManagementJournal::open_existing(&f.source,transfer.archive_binding().unwrap()).unwrap();let reopened=transfer.adopted_management(journal).await.unwrap();let s=session(reopened.clone(),&ctx);
+    f.registry=OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();let reopened = current_backing(&f).await;let s=session(reopened.clone(),&ctx);
     assert_eq!(s.triage_resource_alert(&ctx,suppress).await.unwrap(),first);let d=s.resource_alert(&ctx,detail(&f,"test:00")).await.unwrap();assert_eq!(d.alert,resolved);assert_eq!(d.notes.len(),3);
     reopened.shutdown().await.unwrap();f.registry.shutdown().await.unwrap();
 }
@@ -119,16 +154,11 @@ async fn resource_alert_queued_write_rechecks_retired_authority(){
     let fresh=session(backing.clone(),&ctx);assert_eq!(fresh.resource_alert(&ctx,detail(&f,"test:00")).await.unwrap().alert,open);
     backing.shutdown().await.unwrap();f.registry.shutdown().await.unwrap();
 }
-#[tokio::test]
-async fn resource_alert_populated_legacy_history_remains_quarantined(){
-    let f=fixture().await;let db=Connection::open(f.source.join("domain.sqlite3")).unwrap();db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES('legacy',?1,'original','{}','runbook','impact','recovery',1,1,1)",[f.resource.id()]).unwrap();drop(db);
-    assert!(inventory(&f).is_err());assert!(prepare(&f,"must_not_drop_history").await.is_err());f.registry.shutdown().await.unwrap();
-}
 
 #[tokio::test]
 async fn resource_alert_observer_is_native_only_and_prunes_only_authorized_resource() {
     let f=fixture().await;let backing=resource_name_tests::active(&f).await;let ctx=context(&f);
-    let observer=Session::new_adopted(backing.clone(),ctx.clone(),[Permission::ObserveResourceAlerts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let observer=Session::new_current(backing.clone(),ctx.clone(),[Permission::ObserveResourceAlerts],Instant::now()+Duration::from_secs(60)).unwrap();
     let reader=session(backing.clone(),&ctx);
     assert!(matches!(reader.observe_resource_alert(&ctx,f.resource.id(),1_000_000_000).await,Err(Error::LocalAuthority)));
     let mut other=f.resource.clone();other.preset_id="other_owner".into();let other_id=other.id();let own=f.resource.id();

@@ -5,7 +5,7 @@ mod trust_config;
 pub(in crate::console) mod managed;
 pub(crate) mod external;
 pub(super) mod identity;
-mod claude_identity;
+pub(in crate::console) mod claude_identity;
 use super::{
     Console, body, console, cookie, current, owned_agents::journal_profile_directory, recheck,
     server_login::OwnerOperation,

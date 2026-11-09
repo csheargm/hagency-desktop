@@ -69,7 +69,7 @@ source, and `tests/visual-read-fixtures.json`. The host has no Matrix client,
 management backend or executor; undeclared requests fail closed. Its root-layout
 retention and next-frame reply redraw match the production mini-app host. Build
 the example with the repository's normal release features, then launch with a
-fresh `RINX_DATA_DIR`, an absolute `HAGENCY_UX_FIXTURES` path and
+fresh `HAGENCY_DESKTOP_DATA_DIR`, an absolute `HAGENCY_UX_FIXTURES` path and
 `MAKEPAD_HIDE_WINDOWS=1`; `--narrow` selects a 430-point window. The instrument's
 `/event?data=ux:light`, `ux:dark` and `ux:violet` apply real Rinx themes. End owned
 instances with `/quit`.

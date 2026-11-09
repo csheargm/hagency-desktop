@@ -125,7 +125,7 @@ def launch(root, binary, endpoint, role, board=False, visible=False, action=None
     app = PalpoApp(root, port=port(), auto_login=False)
     app.output.mkdir(parents=True)
     app.log = (app.output / "native.log").open("w")
-    env = dict(os.environ, RINX_DATA_DIR=str(profile.resolve()), MAKEPAD_HIDE_WINDOWS="1",
+    env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile.resolve()), MAKEPAD_HIDE_WINDOWS="1",
                MAKEPAD_NO_FOCUS="1", MAKEPAD_REMOTE=str(app.port), PALPO_FIXTURE_URL=endpoint)
     env.pop("PALPO_LIVE_SESSION_FILE", None)
     env.pop("MAKEPAD_FOCUS", None)

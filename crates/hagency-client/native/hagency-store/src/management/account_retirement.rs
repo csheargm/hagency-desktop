@@ -26,9 +26,7 @@ impl Session {
     fn account_retirement_store(&self, context: &HostContext) -> Result<(DomainStore, String), Error> {
         self.check(context, Permission::RetireAccounts)?;
         match self.local_store()? {
-            SessionStore::Legacy(store) => Ok((store.clone(), String::new())),
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => Ok((store.account_login_store(&self.adopted_profile(store)?)?, store.identity().0.into())),
+            SessionStore::Current(store) => Ok((store.account_login_store(&self.current_profile(store)?)?, store.identity().0.into())),
         }
     }
     pub async fn retire_account(&self, context: &HostContext, input: RetireAccount, confirmed_until: Instant) -> Result<AccountRetirement, Error> {

@@ -99,8 +99,8 @@ impl State {
     pub fn admit<R, W, E>(
         &mut self,
         message: &Message,
-        received: Instant,
-        wire: &io::Wire<R, W, E>,
+        _received: Instant,
+        _wire: &io::Wire<R, W, E>,
     ) -> Result<(), Error> {
         let Message::Permission {
             request_id,
@@ -118,12 +118,10 @@ impl State {
         // turn. Retain only IDs for replay detection once a callback is done.
         self.entries
             .retain(|_, callback| matches!(callback.stage, Stage::Waiting | Stage::Prepared(_)));
-        if self.entries.len() >= MAX_CALLBACKS
-            || self.seen.len() >= super::MAX_CALLBACK_IDS
-        {
+        if self.entries.len() >= MAX_CALLBACKS || self.seen.len() >= super::MAX_CALLBACK_IDS {
             return Err(Error::Capacity);
         }
-        let (input, owner, response) = if let Some(policy) = self.policy {
+        let input = if self.policy.is_some() {
             // Input is already a one-MiB/depth-bounded decoded JSON object.
             // This tighter limit bounds all16 retained originals and responses.
             if serde_json::to_vec(input)
@@ -133,18 +131,9 @@ impl State {
             {
                 return Err(Error::Capacity);
             }
-            let (owner, response) = wire.permission_deadlines(
-                received,
-                if tool_name == super::questions::TOOL {
-                    self.question_wait_ms.unwrap_or(policy.owner_wait_ms)
-                } else {
-                    policy.owner_wait_ms
-                },
-                policy.response_reserve_ms,
-            )?;
-            (Some(input.clone()), Some(owner), Some(response))
+            Some(input.clone())
         } else {
-            (None, None, None)
+            None
         };
         self.seen.insert(request_id.clone());
         self.entries.insert(
@@ -153,8 +142,8 @@ impl State {
                 stage: Stage::Waiting,
                 tool: tool_name.clone(),
                 input,
-                owner,
-                response,
+                owner: None,
+                response: None,
             },
         );
         Ok(())
@@ -225,12 +214,32 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.control.policy = Some(policy);
         Ok(())
     }
-    pub fn approval_deadline(&self, id: &str) -> Result<Instant, Error> {
-        self.control
-            .entries
-            .get(id)
-            .and_then(|callback| callback.owner)
-            .ok_or(Error::Identity)
+    /// Start the owner wait when this callback is presented. Concurrent native
+    /// callbacks can queue behind it without spending an invisible deadline.
+    /// Repeated reads never extend an already presented request.
+    pub fn approval_deadline(&mut self, id: &str) -> Result<Instant, Error> {
+        let policy = self.control.policy.ok_or(Error::State)?;
+        let callback = self.control.entries.get_mut(id).ok_or(Error::Identity)?;
+        if !matches!(callback.stage, Stage::Waiting | Stage::Prepared(_)) {
+            return Err(Error::PermissionUnavailable);
+        }
+        if let Some(owner) = callback.owner {
+            return Ok(owner);
+        }
+        let (owner, response) = self.wire.permission_deadlines(
+            Instant::now(),
+            if callback.tool == super::questions::TOOL {
+                self.control
+                    .question_wait_ms
+                    .unwrap_or(policy.owner_wait_ms)
+            } else {
+                policy.owner_wait_ms
+            },
+            policy.response_reserve_ms,
+        )?;
+        callback.owner = Some(owner);
+        callback.response = Some(response);
+        Ok(owner)
     }
     /// Freeze once from the privately retained original input. The Host must
     /// hold this value before awaiting durable response-begin and must compare
@@ -294,6 +303,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         if self.control.policy.is_none() {
             return Err(Error::State);
         }
+        self.approval_deadline(id)?;
         let until = self.callback_deadline()?;
         self.wire.check(until)?;
         let callback = self.control.entries.get_mut(id).ok_or(Error::Identity)?;

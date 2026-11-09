@@ -1591,7 +1591,7 @@ impl Widget for RoomScreen {
                     }
                 }
 
-                if matches!(action.downcast_ref::<crate::agent_access::AgentAccessAction>(), Some(crate::agent_access::AgentAccessAction::Changed)) || action.downcast_ref::<crate::agent_access::discovery::DiscoveredBots>().is_some() {
+                if matches!(action.downcast_ref::<crate::agent_access::AgentAccessAction>(), Some(crate::agent_access::AgentAccessAction::Changed)) {
                     if let Some(tl)=self.tl_state.as_mut() {tl.profile_drawn_since_last_update.clear();tl.content_drawn_since_last_update.clear();}
                     self.view.redraw(cx);
                 }
@@ -4410,7 +4410,7 @@ impl RoomScreen {
         let now = current_unix_time_millis();
         let item_range = details.item_id .. details.item_id + 1;
         let pending = matches!(
-            crate::agent_chat::approval_runtime::decision(timeline_kind.room_id(), &request, now),
+            crate::agent_chat::approval_runtime::decision(timeline_kind.room_id(), &event_id, &request, now),
             ApprovalDecisionState::Pending,
         );
         if !pending {
@@ -6248,7 +6248,7 @@ fn populate_agent_chat_approval_card(
         }
         return;
     };
-    let decision = crate::agent_chat::approval_runtime::decision(room_id, request, current_unix_time_millis());
+    let decision = crate::agent_chat::approval_runtime::decision(room_id, event_id, request, current_unix_time_millis());
     if matches!(decision, ApprovalDecisionState::Pending) {
         approvals.track_live(event_id, request.expires_at_millis);
     } else {

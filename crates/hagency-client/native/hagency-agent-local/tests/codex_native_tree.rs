@@ -86,7 +86,7 @@ async fn native_codex_continuous_turns_and_cold_resume_settle_original_response_
                 call,
                 call,
                 "Exercise the offline child fixture",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             ),
@@ -158,7 +158,7 @@ async fn native_codex_continuous_turns_and_cold_resume_settle_original_response_
                 call,
                 call,
                 "Exercise the offline child fixture",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             ),
@@ -330,7 +330,7 @@ async fn native_codex_personal_question_roundtrip_uses_native_tool_and_settles_o
     let (queue,mut approvals)=codex::approval_queue(1).unwrap();
     let (questions,mut incoming)=hagency_agent_local::questions::question_queue();
     let queue=queue.with_questions(questions);
-    let run=process.session.run_with_started(&mut ledger,"@owner:test",&scope,"call","dispatch","Ask which database",BudgetMode::Estimated{reservation:100},&queue,None);
+    let run=process.session.run_with_started(&mut ledger,"@owner:test",&scope,"call","dispatch","Ask which database",BudgetMode::Postpaid,&queue,None);
     let host=async {
         let pending=incoming.recv().await.unwrap();
         assert_eq!(pending.scope,scope);

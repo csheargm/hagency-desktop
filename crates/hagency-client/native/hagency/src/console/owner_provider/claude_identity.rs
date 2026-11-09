@@ -1,11 +1,11 @@
 //! Bind an explicitly connected native Claude OAuth login to the provider's
 //! authenticated account UUID. Public CLI email/org metadata only detects a
 //! switch; it is never hashed into an account identity. The native credential
-//! is read transiently, sent only to the fixed provider endpoint, never logged,
-//! returned, refreshed or persisted by Hagency.
+//! is read transiently for the fixed provider endpoint and an isolated native
+//! child. It is never serialized, logged or persisted by Hagency.
 use super::{ProviderError, ProviderPaths, failure};
 use hagency_agent_local::runtime::{ClaudeAccountStatus, Kind, claude_account_status};
-use hagency_runtime::claude::account::AccountBinding;
+use hagency_runtime::claude::account::{AccountBinding, SharedCredential};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -108,15 +108,14 @@ fn file_token(config: &Path) -> Result<Token, ProviderError> {
 fn keychain_service(config: &Path) -> Result<String, ProviderError> {
     use sha2::{Digest, Sha256};
     use unicode_normalization::UnicodeNormalization;
-    // All native launches explicitly set CLAUDE_CONFIG_DIR, so the CLI uses
-    // its NFC-normalized configuration path suffix, even for ~/.claude.
+    // Explicit config selection uses the CLI's NFC-normalized path suffix.
     let path: String = config.to_str().ok_or_else(unavailable)?.nfc().collect();
     let hash = format!("{:x}", Sha256::digest(path.as_bytes()));
     Ok(format!("Claude Code-credentials-{}", &hash[..8]))
 }
 
 #[cfg(target_os = "macos")]
-async fn token(config: &Path) -> Result<Token, ProviderError> {
+async fn token(home: &Path, config: &Path) -> Result<Token, ProviderError> {
     use tokio::io::AsyncReadExt;
     let native_user = match std::env::var("USER") {
         Ok(user) if !user.is_empty() => user,
@@ -158,7 +157,11 @@ async fn token(config: &Path) -> Result<Token, ProviderError> {
             &user,
             "-w",
             "-s",
-            &keychain_service(config)?,
+            &if hagency_agent_local::runtime::claude_uses_default_config(home, config) {
+                "Claude Code-credentials".into()
+            } else {
+                keychain_service(config)?
+            },
         ])
         .env_clear()
         .stdin(std::process::Stdio::null())
@@ -194,7 +197,7 @@ async fn token(config: &Path) -> Result<Token, ProviderError> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn token(config: &Path) -> Result<Token, ProviderError> {
+async fn token(_home: &Path, config: &Path) -> Result<Token, ProviderError> {
     file_token(config)
 }
 
@@ -240,20 +243,39 @@ pub(super) async fn observe(
     paths: &ProviderPaths,
     deadline: Instant,
 ) -> Result<AccountBinding, ProviderError> {
+    Ok(observe_for_launch(paths, deadline).await?.binding().clone())
+}
+
+async fn selected_status(
+    executable: &Path,
+    paths: &ProviderPaths,
+) -> Result<ClaudeAccountStatus, ProviderError> {
+    if hagency_agent_local::runtime::claude_uses_default_config(&paths.home, &paths.codex_home) {
+        hagency_agent_local::runtime::claude_default_account_status(executable, &paths.home).await
+    } else {
+        claude_account_status(executable, &paths.home, &paths.codex_home).await
+    }
+    .map_err(|_| unavailable())
+}
+pub(in crate::console) async fn observe_for_launch(
+    paths: &ProviderPaths,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
     let executable = super::external::executable(Kind::Claude)?;
     super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
-    let proof = observe_selected(
+    let proof = observe_credential(
         paths,
         &executable,
         deadline,
         PROFILE,
-        token(&paths.codex_home),
+        token(&paths.home, &paths.codex_home),
     )
     .await?;
     super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
     Ok(proof)
 }
 
+#[cfg(test)]
 async fn observe_selected(
     paths: &ProviderPaths,
     executable: &Path,
@@ -261,12 +283,24 @@ async fn observe_selected(
     endpoint: &str,
     credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
 ) -> Result<AccountBinding, ProviderError> {
+    Ok(
+        observe_credential(paths, executable, deadline, endpoint, credential)
+            .await?
+            .binding()
+            .clone(),
+    )
+}
+async fn observe_credential(
+    paths: &ProviderPaths,
+    executable: &Path,
+    deadline: Instant,
+    endpoint: &str,
+    credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
+) -> Result<SharedCredential, ProviderError> {
     if Instant::now() >= deadline {
         return Err(unavailable());
     }
-    let before = claude_account_status(executable, &paths.home, &paths.codex_home)
-        .await
-        .map_err(|_| unavailable())?;
+    let before = selected_status(executable, paths).await?;
     if before.oauth_metadata().is_none() {
         return Err(unavailable());
     }
@@ -275,9 +309,7 @@ async fn observe_selected(
     // environment override, model output or a public command argument.
     let observed = profile(&client()?, endpoint, &credential).await?;
     let subject = subject(&before, &observed)?;
-    let after = claude_account_status(executable, &paths.home, &paths.codex_home)
-        .await
-        .map_err(|_| unavailable())?;
+    let after = selected_status(executable, paths).await?;
     if before != after {
         return Err(failure(409, "provider_account_changed"));
     }
@@ -295,7 +327,7 @@ async fn observe_selected(
     if binding.subject() != subject {
         return Err(unavailable());
     }
-    Ok(binding)
+    SharedCredential::from_authenticated_login(binding, credential.0).map_err(|_| unavailable())
 }
 
 #[cfg(test)]

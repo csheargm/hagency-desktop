@@ -21,8 +21,6 @@ mod native_usage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Codex does not expose an enforceable hard token bound")]
-    StrictQuotaUnsupported,
     #[error("invalid Codex profile: {0}")]
     Profile(&'static str),
     #[error("Codex protocol mismatch: {0}")]
@@ -51,7 +49,6 @@ impl Error {
     /// Fixed host diagnostics only: never include provider frames, paths or IO bodies.
     pub fn diagnostic(&self) -> (&'static str, &'static str) {
         match self {
-            Self::StrictQuotaUnsupported => ("strict_quota", "hard token bound unavailable"),
             Self::Profile(detail) => ("profile", detail),
             Self::Protocol(detail) => ("protocol", detail),
             Self::EventScope {
@@ -139,30 +136,13 @@ pub use custody::Owned;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Default)]
 pub enum BudgetMode {
+    /// Check consumption before a new task and charge its complete native turn.
     #[default]
-    Strict,
-    /// Check known consumption before a new task, hold no estimate, and charge
-    /// the complete native turn after it finishes, including any overrun.
     Postpaid,
-    /// Only host code after explicit owner opt-in may select this. An estimate,
-    /// not an output limit or a maximum charge guarantee.
-    Estimated { reservation: u64 },
 }
 impl BudgetMode {
-    pub(crate) fn admit(
-        &self,
-        ledger: &mut Ledger,
-        scope: &Scope,
-        call: &str,
-        dispatch: &str,
-    ) -> Result<Reservation> {
-        match self {
-            Self::Strict => Err(Error::StrictQuotaUnsupported),
-            Self::Postpaid => Ok(ledger.begin_postpaid(scope, call, dispatch, now())?),
-            Self::Estimated { reservation } => {
-                Ok(ledger.reserve(scope, call, dispatch, *reservation, now())?)
-            }
-        }
+    pub(crate) fn admit(&self, ledger: &mut Ledger, scope: &Scope, call: &str, dispatch: &str) -> Result<Reservation> {
+        Ok(ledger.begin_postpaid(scope, call, dispatch, now())?)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1936,7 +1916,7 @@ mod tests {
                     call,
                     &std::env::var("HAGENCY_CODEX_PROBE_INPUT")
                         .unwrap_or_else(|_| "Reply with OK only.".into()),
-                    BudgetMode::Estimated { reservation: 1000 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await;
@@ -2523,7 +2503,7 @@ mod tests {
         (session, effects, task)
     }
     #[tokio::test(start_paused = true)]
-    async fn long_native_turn_survives_silence_and_host_cancellation_preserves_the_hold() {
+    async fn long_native_turn_survives_silence_and_host_cancellation_preserves_unresolved_usage() {
         for cancel in [false, true] {
             let (_temp, mut ledger, profile) = setup(false);
             let (mut session, _, peer) = fake(
@@ -2549,7 +2529,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "long task",
-                    BudgetMode::Estimated { reservation: 50 },
+                    BudgetMode::Postpaid,
                     &queue,
                 ),
             )
@@ -2570,7 +2550,7 @@ mod tests {
                 ledger
                     .account(&scope(), Layer::Agent, Period::Lifetime, now())
                     .unwrap(),
-                if cancel { (0, 50) } else { (10, 0) }
+                if cancel { (0, 0) } else { (10, 0) }
             );
             peer.abort();
         }
@@ -2627,7 +2607,7 @@ mod tests {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 50 },
+                BudgetMode::Postpaid,
                 &queue,
             )
             .await
@@ -2638,7 +2618,7 @@ mod tests {
             ledger
                 .account(&scope(), Layer::Agent, Period::Lifetime, now())
                 .unwrap(),
-            (0, 50)
+            (0, 0)
         );
         peer.await.unwrap();
     }
@@ -2687,7 +2667,7 @@ mod tests {
                 "new-call",
                 "new-dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 50 },
+                BudgetMode::Postpaid,
                 &queue,
             )
             .await
@@ -2702,7 +2682,7 @@ mod tests {
                 ledger
                     .account(&scope(), layer, Period::Lifetime, now())
                     .unwrap(),
-                (0, 50)
+                (0, 0)
             );
         }
         assert_eq!(
@@ -2750,7 +2730,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 50 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await;
@@ -2766,7 +2746,7 @@ mod tests {
                 ledger
                     .account(&scope(), Layer::Room, Period::Lifetime, now())
                     .unwrap(),
-                (0, 50)
+                (0, 0)
             );
             drop(session);
             peer.await.unwrap();
@@ -2805,7 +2785,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await
@@ -2849,9 +2829,13 @@ mod tests {
         peer.await.unwrap();
     }
     #[tokio::test]
-    async fn processing_notice_requires_reserved_accepted_provider_turn() {
-        for (reservation, accepted) in [(20, true), (2000, false)] {
+    async fn processing_notice_requires_admitted_accepted_provider_turn() {
+        for accepted in [true, false] {
             let (_temp, mut ledger, profile) = setup(false);
+            if !accepted {
+                ledger.begin_postpaid(&scope(), "previous", "previous", now()).unwrap();
+                ledger.settle(&scope(), "previous", &crate::Usage { input: 2000, output: 0, cached_input: 0, cache_write_input: None, reasoning_output: 0, accounting_version: "test".into() }).unwrap();
+            }
             let (mut session, _, task) = fake(
                 profile.cwd.to_str().unwrap().into(),
                 false,
@@ -2874,7 +2858,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation },
+                    BudgetMode::Postpaid,
                     &queue,
                     Some(send),
                 )
@@ -2893,7 +2877,7 @@ mod tests {
                             "call",
                             "dispatch",
                             "hello",
-                            BudgetMode::Estimated { reservation },
+                            BudgetMode::Postpaid,
                             &queue,
                             Some(send)
                         )
@@ -2934,7 +2918,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue,
                     Some(send)
                 )
@@ -2946,7 +2930,7 @@ mod tests {
             ledger
                 .account(&scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 20)
+            (0, 0)
         );
         drop(session);
         task.await.unwrap();
@@ -2978,7 +2962,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue,
                     Some(send)
                 )
@@ -3021,7 +3005,7 @@ mod tests {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 20 },
+                BudgetMode::Postpaid,
                 &queue,
             )
             .await
@@ -3055,7 +3039,7 @@ mod tests {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 20 },
+                BudgetMode::Postpaid,
                 &queue,
             )
             .await
@@ -3066,7 +3050,7 @@ mod tests {
             ledger
                 .account(&scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 20)
+            (0, 0)
         );
         assert_eq!(
             ledger.reserve(&scope(), "new", "new", 1, now()).unwrap(),
@@ -3081,7 +3065,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue
                 )
                 .await,
@@ -3092,7 +3076,7 @@ mod tests {
         task.await.unwrap();
     }
     #[tokio::test]
-    async fn strict_mode_and_cross_room_scope_do_not_start_a_turn() {
+    async fn cross_room_scope_does_not_start_a_turn() {
         let (_temp, mut ledger, profile) = setup(false);
         let (mut session, effects, task) = fake(
             profile.cwd.to_str().unwrap().into(),
@@ -3107,21 +3091,6 @@ mod tests {
             .open_context(&mut ledger, &scope(), &profile)
             .await
             .unwrap();
-        assert!(matches!(
-            session
-                .run(
-                    &mut ledger,
-                    "@alice:test",
-                    &scope(),
-                    "call",
-                    "dispatch",
-                    "hello",
-                    BudgetMode::default(),
-                    &queue
-                )
-                .await,
-            Err(Error::StrictQuotaUnsupported)
-        ));
         let mut other = scope();
         other.binding = "other".into();
         other.room = "!other:test".into();
@@ -3135,7 +3104,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue
                 )
                 .await,
@@ -3171,7 +3140,7 @@ mod tests {
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 30 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await
@@ -3241,7 +3210,7 @@ mod tests {
         task.await.unwrap();
     }
     #[tokio::test]
-    async fn resumed_context_without_response_receipts_retains_its_reservation() {
+    async fn resumed_context_without_response_receipts_retains_unresolved_usage() {
         let (_temp, mut ledger, profile) = setup(false);
         let (queue, _) = approval_queue(1).unwrap();
         for (call, total) in [("first", 10), ("second", 25)] {
@@ -3265,7 +3234,7 @@ mod tests {
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 30 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await
@@ -3279,7 +3248,7 @@ mod tests {
             ledger
                 .account(&scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (10, 30)
+            (10, 0)
         );
     }
     #[tokio::test]
@@ -3311,7 +3280,7 @@ mod tests {
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 30 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await
@@ -3337,7 +3306,7 @@ mod tests {
             ledger
                 .account(&scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 90)
+            (0, 0)
         );
     }
     #[tokio::test]
@@ -3402,7 +3371,7 @@ mod tests {
                             "call",
                             "dispatch",
                             "hello",
-                            BudgetMode::Estimated { reservation: 20 },
+                            BudgetMode::Postpaid,
                             &queue,
                         )
                         .await
@@ -3440,7 +3409,7 @@ mod tests {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 20 },
+                    BudgetMode::Postpaid,
                     &queue
                 )
                 .await,
@@ -3481,7 +3450,7 @@ mod tests {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 20 },
+                BudgetMode::Postpaid,
                 &queue,
             );
             tokio::pin!(running);
@@ -3500,7 +3469,7 @@ mod tests {
             ledger
                 .account(&scope, Layer::Room, Period::Lifetime, now())
                 .unwrap(),
-            (0, 20)
+            (0, 0)
         );
         task.abort();
         drop(session);
@@ -3533,7 +3502,7 @@ mod tests {
                 "call",
                 "dispatch",
                 "ask",
-                BudgetMode::Estimated { reservation: 50 },
+                BudgetMode::Postpaid,
                 &queue,
             );
             let host = async {

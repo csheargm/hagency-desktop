@@ -4,7 +4,7 @@ use crate::management::{
     CommandReceipt, ToolApprovalQuery, ToolApprovalLookup, ToolApprovalSnapshot, ToolApprovalPage,
     ToolGrantQuery, ToolGrantPage, RevokeToolGrant, RevokedToolGrant,
 };
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn tool_approvals(
         &self,
         profile: &ProfileAuthority,

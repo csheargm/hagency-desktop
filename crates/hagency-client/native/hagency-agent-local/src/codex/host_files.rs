@@ -824,7 +824,7 @@ mod tests {
                 "model-execution",
                 "model-dispatch",
                 "create answer",
-                BudgetMode::Estimated { reservation: 10 },
+                BudgetMode::Postpaid,
                 &queue,
             )
             .await
@@ -919,7 +919,7 @@ mod tests {
                     &format!("call-{round}"),
                     &dispatch,
                     "create answer",
-                    BudgetMode::Estimated { reservation: 10 },
+                    BudgetMode::Postpaid,
                     &queue,
                 )
                 .await

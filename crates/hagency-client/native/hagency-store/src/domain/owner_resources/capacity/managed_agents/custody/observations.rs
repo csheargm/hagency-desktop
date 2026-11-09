@@ -16,8 +16,6 @@ pub struct ManagedUsageObservation {
     terminal: bool,
     complete_capture: bool,
     unrepresentable: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    native_cumulative: Option<UsageObservation>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -98,14 +96,12 @@ impl ManagedUsageObservation {
             terminal,
             complete_capture,
             unrepresentable: unrepresentable || failed,
-            native_cumulative: None,
         }
     }
 
     pub(super) fn shared_claude_capture(
         id: String,
         evidence: &hagency_runtime::claude::session::UsageEvidence,
-        baseline: Option<[u64; 4]>,
         terminal: bool,
         complete_capture: bool,
     ) -> Self {
@@ -122,7 +118,7 @@ impl ManagedUsageObservation {
             UsageCoverage::MainLoopResult => Coverage::MainLoopResult,
             UsageCoverage::ReportedModelsResult => Coverage::ReportedModelsResult,
         };
-        let mut numeric = ClaudeUsage {
+        let numeric = ClaudeUsage {
             counts: TokenCounts {
                 input: counts.input(),
                 output: counts.output(),
@@ -138,20 +134,8 @@ impl ManagedUsageObservation {
                 unsupported: diagnostics.has_unsupported_fields(),
             },
         };
-        // Only modelUsage is cumulative. Stream step counters already belong
-        // to this call and must never have a previous session subtracted.
-        let native_cumulative = if numeric.coverage == Coverage::ReportedModelsResult
-            && let Some(before) = baseline {
-            let original = UsageObservation::claude_runtime(numeric).ok();
-            for (field, previous) in [&mut numeric.counts.input, &mut numeric.counts.output,
-                &mut numeric.counts.cache_read, &mut numeric.counts.cache_write].into_iter().zip(before) {
-                let delta = field.and_then(|n| n.checked_sub(previous));
-                numeric.diagnostics.invalid |= field.is_some() && delta.is_none();
-                numeric.diagnostics.missing |= delta.is_none();
-                *field = delta;
-            }
-            original
-        } else { None };
+        // Runtime evidence already sums each native result UUID's delta
+        // exactly once for this call. Restored session totals are not billable.
         let usage = UsageObservation::claude_runtime(numeric);
         Self {
             id,
@@ -159,7 +143,6 @@ impl ManagedUsageObservation {
             complete_capture,
             unrepresentable: usage.is_err(),
             usage: usage.ok(),
-            native_cumulative,
         }
     }
 
@@ -177,7 +160,6 @@ impl ManagedUsageObservation {
             terminal,
             complete_capture,
             unrepresentable,
-            native_cumulative: None,
         }
     }
 }

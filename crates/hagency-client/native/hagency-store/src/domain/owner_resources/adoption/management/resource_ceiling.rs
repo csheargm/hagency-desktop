@@ -110,7 +110,7 @@ fn refused(reason: CeilingAmendmentRefusal) -> Error {
     Error::CeilingAmendmentRefused(reason)
 }
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     /// `input` is a ceiling amendment request (`EditLocalResource::is_ceiling_amendment`).
     /// It shares the edit command's receipt, so recovery by command id is the
     /// same for both and the original result is returned on replay.

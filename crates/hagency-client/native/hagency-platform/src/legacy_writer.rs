@@ -1,30 +1,23 @@
-//! Cooperative OS-owner writer custody. No resource ledger, import, authority
-//! grant. Refusal publication exists only in the disabled adoption feature.
+//! Cooperative OS-owner writer custody. Only the retained private OS file lock
+//! controls exclusion; obsolete migration records have no runtime authority.
 use crate::private_state as private;
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::fs::{Dir, OpenOptions};
-use serde::Deserialize;
 use std::{
     fs::File,
-    io::Read,
     path::{Path, PathBuf},
 };
 
 const LOCK: &str = "resource-authority.lock";
-const REFUSAL: &str = "legacy-resource-refusal.json";
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("filesystem error")]
     Io(#[from] std::io::Error),
     #[error("owner-private state required")]
     Private,
-    #[error("legacy resource authority is retired")]
-    Refused,
-    #[error("installation refusal state requires inspected recovery")]
-    Quarantined,
     #[error("installation resource writer is busy")]
     Locked,
-    #[error("migration writer coverage is unavailable on this platform")]
+    #[error("installation writer locking is unavailable on this platform")]
     Unavailable,
     #[error("test installation root is missing or cannot be changed")]
     TestRoot,
@@ -38,31 +31,13 @@ impl From<private::Error> for Error {
         }
     }
 }
-fn digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-fn identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
 /// Supported desktop Unix implementation. This is not runtime test evidence.
 /// Mobile passwd namespaces and Windows lifetime startup are not enabled.
-pub const fn supported_legacy_guard_platform() -> bool {
+pub const fn supported_writer_guard_platform() -> bool {
     cfg!(any(
         target_os = "macos",
         all(target_os = "linux", not(target_env = "ohos"))
     ))
-}
-/// Current runtime qualification for actual adoption exclusion. Linux shares
-/// the implementation but has not run this checkpoint's runtime acceptance.
-pub const fn adoption_runtime_qualified_platform() -> bool {
-    cfg!(target_os = "macos")
 }
 fn root() -> Result<PathBuf, Error> {
     #[cfg(feature = "test-support")]
@@ -71,23 +46,12 @@ fn root() -> Result<PathBuf, Error> {
     }
     #[cfg(not(feature = "test-support"))]
     {
-        if !supported_legacy_guard_platform() {
+        if !supported_writer_guard_platform() {
             return Err(Error::Unavailable);
         }
         Ok(crate::owner_home()?.join(".hagency-owner-resources"))
     }
 }
-/// A disk refusal is only evidence that legacy capacity writers must stop.
-/// It cannot prove source fencing, successful import, capacity, or profile ACLs.
-#[derive(Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Refusal {
-    version: u16,
-    registry_id: String,
-    migration_id: String,
-    inventory_digest: String,
-}
-
 struct Files {
     root: PathBuf,
     directory: Dir,
@@ -163,36 +127,9 @@ impl Files {
         }
         Ok(())
     }
-    fn refusal(&self) -> Result<Option<Refusal>, Error> {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let file = match self.directory.open_with(REFUSAL, &options) {
-            Ok(file) => file.into_std(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        private::check_handle(&file)?;
-        if !file.metadata()?.is_file() || file.metadata()?.len() > 4096 {
-            return Err(Error::Quarantined);
-        }
-        let mut bytes = Vec::new();
-        file.take(4097).read_to_end(&mut bytes)?;
-        if bytes.len() > 4096 {
-            return Err(Error::Quarantined);
-        }
-        let refusal: Refusal = serde_json::from_slice(&bytes).map_err(|_| Error::Quarantined)?;
-        if refusal.version != 1
-            || !digest(&refusal.registry_id)
-            || !digest(&refusal.inventory_digest)
-            || !identifier(&refusal.migration_id)
-        {
-            return Err(Error::Quarantined);
-        }
-        Ok(Some(refusal))
-    }
 }
 
-/// A shared lock retained until the actual legacy connection/effect is gone.
+/// A shared lock retained until the actual writer connection/effect is gone.
 /// There is no expiry: native authorization remains an independent constraint.
 pub struct LegacyWriterGuard {
     _files: Files,
@@ -205,9 +142,6 @@ impl LegacyWriterGuard {
         let files = Files::open(root)?;
         files.lock.try_lock_shared().map_err(|_| Error::Locked)?;
         files.check()?;
-        if files.refusal()?.is_some() {
-            return Err(Error::Refused);
-        }
         Ok(Self { _files: files })
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -216,15 +150,15 @@ impl LegacyWriterGuard {
         Self::at(root)
     }
 }
-/// Explicit startup compatibility, never an assertion of installation coverage.
+/// Current startup custody; unsupported platforms do not claim OS lock coverage.
 pub enum LegacyWriterAdmission {
     Covered(LegacyWriterGuard),
-    MigrationUnavailable,
+    UncoveredPlatform,
 }
 impl LegacyWriterAdmission {
-    pub fn acquire_for_legacy_startup() -> Result<Self, Error> {
-        if !supported_legacy_guard_platform() && !cfg!(feature = "test-support") {
-            return Ok(Self::MigrationUnavailable);
+    pub fn acquire() -> Result<Self, Error> {
+        if !supported_writer_guard_platform() && !cfg!(feature = "test-support") {
+            return Ok(Self::UncoveredPlatform);
         }
         LegacyWriterGuard::acquire().map(Self::Covered)
     }
@@ -236,135 +170,19 @@ impl LegacyWriterAdmission {
 /// permission, finite expiry and registry identity.
 pub struct ExclusiveWriterGuard {
     files: Files,
-    refusal_registry: Option<String>,
 }
 impl ExclusiveWriterGuard {
-    /// Irreversible refusal only; never import or access authority. The native
-    /// finite lease owns the separate approval/expiry checks around this call.
-    #[cfg(feature = "resource-adoption")]
-    pub fn publish_refusal(
-        &self,
-        registry_id: &str,
-        migration_id: &str,
-        inventory_digest: &str,
-    ) -> Result<(), Error> {
-        use std::io::Write;
-        self.check()?;
-        if !digest(registry_id) || !identifier(migration_id) || !digest(inventory_digest) {
-            return Err(Error::Quarantined);
-        }
-        let expected = Refusal {
-            version: 1,
-            registry_id: registry_id.into(),
-            migration_id: migration_id.into(),
-            inventory_digest: inventory_digest.into(),
-        };
-        if let Some(old) = self.files.refusal()? {
-            return if old == expected {
-                Ok(())
-            } else {
-                Err(Error::Quarantined)
-            };
-        }
-        let bytes = serde_json::to_vec(&expected).map_err(|_| Error::Quarantined)?;
-        let temporary = "legacy-resource-refusal.pending";
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No)
-            .nonblock(true);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match self.files.directory.open_with(temporary, &options) {
-            Ok(file) => {
-                let mut file = file.into_std();
-                private::seal_created_file_handle(&file)?;
-                file.write_all(&bytes)?;
-                file.sync_all()?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut options = OpenOptions::new();
-                options.read(true).follow(FollowSymlinks::No).nonblock(true);
-                let mut file = self
-                    .files
-                    .directory
-                    .open_with(temporary, &options)?
-                    .into_std();
-                private::check_handle(&file)?;
-                if !file.metadata()?.is_file() || file.metadata()?.len() > 4096 {
-                    return Err(Error::Quarantined);
-                }
-                let mut old = Vec::new();
-                file.read_to_end(&mut old)?;
-                if !bytes.starts_with(&old) {
-                    return Err(Error::Quarantined);
-                }
-                if old.len() != bytes.len() {
-                    use std::io::{Seek, SeekFrom};
-                    let mut writable = OpenOptions::new();
-                    writable
-                        .read(true)
-                        .write(true)
-                        .follow(FollowSymlinks::No)
-                        .nonblock(true);
-                    let mut next = self
-                        .files
-                        .directory
-                        .open_with(temporary, &writable)?
-                        .into_std();
-                    private::check_handle(&next)?;
-                    if !crate::same_file(&file, &next)? {
-                        return Err(Error::Private);
-                    }
-                    next.seek(SeekFrom::Start(old.len() as u64))?;
-                    next.write_all(&bytes[old.len()..])?;
-                    next.sync_all()?;
-                }
-            }
-            Err(e) => return Err(e.into()),
-        }
-        self.files.check()?;
-        match private::publish_new(&self.files.directory, temporary, REFUSAL) {
-            Ok(()) => {}
-            Err(private::Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
-        private::sync_directory(&self.files.directory)?;
-        if self.files.refusal()?.as_ref() != Some(&expected) {
-            return Err(Error::Quarantined);
-        }
-        self.files.check()?;
-        // Atomic no-replace publication retains one private file. This API
-        // has no final marker overwrite, removal or rollback operation.
-        Ok(())
-    }
     pub fn acquire() -> Result<Self, Error> {
-        #[cfg(not(feature = "test-support"))]
-        if !adoption_runtime_qualified_platform() {
-            return Err(Error::Unavailable);
-        }
         Self::at(&root()?)
     }
     fn at(root: &Path) -> Result<Self, Error> {
         let files = Files::open(root)?;
         files.lock.try_lock().map_err(|_| Error::Locked)?;
         files.check()?;
-        let refusal_registry = files.refusal()?.map(|r| r.registry_id);
-        Ok(Self {
-            files,
-            refusal_registry,
-        })
+        Ok(Self { files })
     }
     pub fn check(&self) -> Result<(), Error> {
         self.files.check()
-    }
-    pub fn refusal_registry(&self) -> Option<&str> {
-        self.refusal_registry.as_deref()
     }
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
@@ -403,7 +221,9 @@ pub mod test_support {
         Ok(())
     }
     /// Return only the explicit process-fixed test root; never create/fallback.
-    pub fn configured_root() -> Result<PathBuf, Error> { selected_root() }
+    pub fn configured_root() -> Result<PathBuf, Error> {
+        selected_root()
+    }
     pub(super) fn selected_root() -> Result<PathBuf, Error> {
         let mut selected = SELECTED.lock().map_err(|_| Error::TestRoot)?;
         selected.attempted = true;

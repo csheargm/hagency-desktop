@@ -4,7 +4,7 @@ use crate::management::{
     WorkspaceRelease, WorkspaceStatus,
 };
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn resource_workspaces(
         &self,
         profile: &ProfileAuthority,

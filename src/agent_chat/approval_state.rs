@@ -8,14 +8,12 @@ use serde_json::Value;
 const KEY: &str = "com.agentchat.approval";
 const REQUEST_TYPE: &str = "com.agentchat.approval.request.v1";
 const STATUS_TYPE: &str = "com.agentchat.approval.status.v1";
-const MARKER_TYPE: &str = "com.agentchat.approval.room.v1";
-const MARKER_TYPE_V2: &str = "com.agentchat.approval.room.v2";
+const MARKER_TYPE: &str = "com.agentchat.approval.room.v2";
 pub(crate) const MARKER_FRESHNESS_MS: u64 = 300_000;
 const MAX_ACCOUNTS: usize = 16;
 const MAX_APPROVALS: usize = 1024;
 const MAX_MARKERS: usize = 256;
-const MAX_V1_ASSOCIATIONS: usize = 128;
-const MAX_V2_ASSOCIATIONS: usize = 64;
+const MAX_ASSOCIATIONS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,13 +41,17 @@ pub(crate) enum ApprovalDecision {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ApprovalAction {
     ApproveOnce,
+    ApproveTask,
+    ApproveAlways,
     Deny,
 }
 
 impl ApprovalAction {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::ApproveOnce => "approve_once",
+            Self::ApproveTask => "approve_task",
+            Self::ApproveAlways => "approve_always",
             Self::Deny => "deny",
         }
     }
@@ -90,8 +92,6 @@ pub(crate) struct ApprovalView {
     pub(crate) latest_revision: u64,
     pub(crate) expires_at: Option<u64>,
     pub(crate) source_event_ids: Vec<String>,
-    pub(crate) legacy_read_only: bool,
-    pub(crate) legacy_original_event_id: Option<String>,
     pub(crate) conflicted: bool,
 }
 
@@ -121,6 +121,7 @@ pub(crate) enum IngestResult {
 pub(crate) struct ClaimGrant {
     pub(crate) transaction_id: String,
     pub(crate) action: ApprovalAction,
+    pub(crate) token: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SendResult {
@@ -151,6 +152,8 @@ pub(crate) enum ClaimState {
 #[derive(Clone, Debug)]
 struct Claim {
     state: ClaimState,
+    action: ApprovalAction,
+    token: u64,
 }
 #[derive(Clone, Debug)]
 struct Record {
@@ -161,8 +164,8 @@ struct Record {
     expires_at: Option<u64>,
     sources: BTreeSet<String>,
     has_request: bool,
-    legacy: bool,
-    legacy_original_event_id: Option<String>,
+    actions: Vec<ApprovalAction>,
+    scope: Option<super::approval::ReusableScope>,
     conflicted: bool,
 }
 impl Record {
@@ -174,8 +177,6 @@ impl Record {
             latest_revision: self.revision,
             expires_at: self.expires_at,
             source_event_ids: self.sources.iter().cloned().collect(),
-            legacy_read_only: self.legacy,
-            legacy_original_event_id: self.legacy_original_event_id.clone(),
             conflicted: self.conflicted,
         }
     }
@@ -186,6 +187,7 @@ pub(crate) struct ApprovalSession {
     records: HashMap<ApprovalRequestKey, Record>,
     claims: HashMap<ApprovalClaimKey, Claim>,
     epochs: HashMap<(String, String), u64>,
+    next_claim: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -196,8 +198,8 @@ struct Parsed {
     revision: u64,
     expires_at: Option<u64>,
     request: bool,
-    legacy: bool,
-    legacy_original_event_id: Option<String>,
+    actions: Vec<ApprovalAction>,
+    scope: Option<super::approval::ReusableScope>,
 }
 
 impl ApprovalSession {
@@ -247,8 +249,8 @@ impl ApprovalSession {
                     expires_at: parsed.expires_at,
                     sources,
                     has_request: parsed.request,
-                    legacy: parsed.legacy,
-                    legacy_original_event_id: parsed.legacy_original_event_id,
+                    actions: parsed.actions,
+                    scope: parsed.scope,
                     conflicted: false,
                 },
             );
@@ -269,12 +271,11 @@ impl ApprovalSession {
             let Some(record) = self.records.get_mut(&key) else {
                 return IngestResult::Rejected(ApprovalModelError::InvalidTransition);
             };
-            // A status-only legacy baseline never becomes a native request.
-            if record.legacy {
-                return IngestResult::Rejected(ApprovalModelError::InvalidTransition);
-            }
             if record.has_request {
-                if record.expires_at == parsed.expires_at {
+                if record.expires_at == parsed.expires_at
+                    && record.actions == parsed.actions
+                    && record.scope == parsed.scope
+                {
                     return IngestResult::Duplicate;
                 }
                 record.conflicted = true;
@@ -282,38 +283,21 @@ impl ApprovalSession {
                 return IngestResult::Rejected(ApprovalModelError::RevisionConflict);
             }
             record.has_request = true;
+            record.actions = parsed.actions;
+            record.scope = parsed.scope;
             record.expires_at = parsed.expires_at;
             record.sources.insert(event.into());
-            record.legacy |= parsed.legacy;
             return IngestResult::Changed(self.changed(&key));
         }
         let Some(record) = self.records.get(&key) else {
             return IngestResult::Rejected(ApprovalModelError::InvalidTransition);
         };
-        if (record.legacy || parsed.legacy)
-            && (record.legacy != parsed.legacy
-                || record.legacy_original_event_id != parsed.legacy_original_event_id)
-        {
-            if let Some(record) = self.records.get_mut(&key) {
-                record.conflicted = true;
-            }
-            let _ = self.changed(&key);
-            return IngestResult::Rejected(ApprovalModelError::RevisionConflict);
-        }
-        let (old_rev, old_state, old_decision, old_legacy) = (
-            record.revision,
-            record.state,
-            record.decision,
-            record.legacy,
-        );
+        let (old_rev, old_state, old_decision) = (record.revision, record.state, record.decision);
         if parsed.revision < old_rev {
             return IngestResult::Duplicate;
         }
         if parsed.revision == old_rev {
-            if old_state == parsed.state
-                && old_decision == parsed.decision
-                && old_legacy == parsed.legacy
-            {
+            if old_state == parsed.state && old_decision == parsed.decision {
                 return IngestResult::Duplicate;
             }
             if let Some(record) = self.records.get_mut(&key) {
@@ -333,7 +317,6 @@ impl ApprovalSession {
             record.revision = parsed.revision;
             record.state = parsed.state;
             record.decision = parsed.decision;
-            record.legacy |= parsed.legacy;
         }
         if parsed.state.terminal() {
             self.claims.retain(|c, _| {
@@ -375,7 +358,6 @@ impl ApprovalSession {
             return false;
         };
         r.has_request
-            && !r.legacy
             && !r.conflicted
             && r.state == CanonicalApprovalState::Pending
             && r.binding.owner_mxid == account
@@ -401,7 +383,7 @@ impl ApprovalSession {
         let Some(r) = self.records.get(&rk) else {
             return Err(ClaimError::NotActionable);
         };
-        if r.binding.input_digest != key.input_digest {
+        if r.binding.input_digest != key.input_digest || !r.actions.contains(&action) {
             return Err(ClaimError::BindingMismatch);
         }
         if !self.is_actionable(
@@ -421,27 +403,71 @@ impl ApprovalSession {
         }
         let transaction_id = stable_txn(&key.request_id, action, &key.input_digest)
             .ok_or(ClaimError::BindingMismatch)?;
+        self.next_claim = self
+            .next_claim
+            .checked_add(1)
+            .ok_or(ClaimError::CapacityExceeded)?;
+        let token = self.next_claim;
         self.claims.insert(
             key.clone(),
             Claim {
                 state: ClaimState::Claimed,
+                action,
+                token,
             },
         );
         let _ = self.bump_room_epoch(&key.account_mxid, &key.approval_room_id);
         Ok(ClaimGrant {
             transaction_id,
             action,
+            token,
         })
     }
+    pub(crate) fn claim_is_current(
+        &self,
+        key: &ApprovalClaimKey,
+        token: u64,
+        action: ApprovalAction,
+        source_event_id: &str,
+        now: u64,
+    ) -> bool {
+        let Some(claim) = self.claims.get(key) else {
+            return false;
+        };
+        if claim.token != token || claim.action != action || claim.state != ClaimState::Claimed {
+            return false;
+        }
+        self.records
+            .get(&ApprovalRequestKey {
+                account_mxid: key.account_mxid.clone(),
+                approval_room_id: key.approval_room_id.clone(),
+                request_id: key.request_id.clone(),
+            })
+            .is_some_and(|record| {
+                record.has_request
+                    && !record.conflicted
+                    && record.state == CanonicalApprovalState::Pending
+                    && record.binding.owner_mxid == key.account_mxid
+                    && record.binding.input_digest == key.input_digest
+                    && record.sources.contains(source_event_id)
+                    && record.actions.contains(&action)
+                    && record.expires_at.is_some_and(|deadline| now < deadline)
+            })
+    }
+
     pub(crate) fn record_send_result(
         &mut self,
         key: &ApprovalClaimKey,
+        token: u64,
         result: SendResult,
         now: u64,
     ) -> ClaimDisposition {
         let Some(claim) = self.claims.get(key) else {
             return ClaimDisposition::Missing;
         };
+        if claim.token != token {
+            return ClaimDisposition::Missing;
+        }
         match result {
             SendResult::ConfirmedPreSendFailure => {
                 let rk = ApprovalRequestKey {
@@ -537,7 +563,6 @@ impl ApprovalSession {
 pub(crate) struct ApprovalMarkerIndex {
     version: u8,
     markers: Vec<Marker>,
-    protocol_floors: Vec<ProtocolFloor>,
     #[serde(skip)]
     validated: HashSet<(String, String, u64)>,
 }
@@ -545,9 +570,8 @@ pub(crate) struct ApprovalMarkerIndex {
 impl Default for ApprovalMarkerIndex {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             markers: Vec::new(),
-            protocol_floors: Vec::new(),
             validated: HashSet::new(),
         }
     }
@@ -569,21 +593,10 @@ struct Marker {
     event: String,
     publisher: String,
     owner: String,
-    /// Present only in persisted cache format v1. New records keep this empty.
-    agent: String,
-    protocol: u8,
     generation: u64,
     associations: Vec<Association>,
     validated_at: u64,
     conflicted: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-struct ProtocolFloor {
-    account: String,
-    room: String,
-    minimum: u8,
 }
 
 #[derive(Deserialize, Default)]
@@ -591,7 +604,6 @@ struct ProtocolFloor {
 struct ApprovalMarkerIndexWire {
     version: u8,
     markers: Vec<Marker>,
-    protocol_floors: Vec<ProtocolFloor>,
 }
 
 impl<'de> Deserialize<'de> for ApprovalMarkerIndex {
@@ -599,46 +611,16 @@ impl<'de> Deserialize<'de> for ApprovalMarkerIndex {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut wire = ApprovalMarkerIndexWire::deserialize(deserializer)?;
-        match wire.version {
-            1 => {
-                for marker in &mut wire.markers {
-                    if marker.agent.is_empty()
-                        || marker.associations.len() > MAX_V1_ASSOCIATIONS
-                        || marker.associations.iter().any(|association| {
-                            !association.agent.is_empty() || !room_id(&association.project_room_id)
-                        })
-                    {
-                        return Ok(Self::default());
-                    }
-                    for association in &mut marker.associations {
-                        association.agent = marker.agent.clone();
-                    }
-                    marker.agent.clear();
-                    marker.protocol = 1;
-                }
-                wire.protocol_floors = wire
-                    .markers
-                    .iter()
-                    .map(|marker| ProtocolFloor {
-                        account: marker.account.clone(),
-                        room: marker.room.clone(),
-                        minimum: 1,
-                    })
-                    .collect();
-            }
-            2 => {}
-            _ => return Ok(Self::default()),
+        let wire = ApprovalMarkerIndexWire::deserialize(deserializer)?;
+        if wire.version != 3 {
+            return Ok(Self::default());
         }
-        if wire.markers.len() > MAX_ACCOUNTS.saturating_mul(MAX_MARKERS)
-            || wire.protocol_floors.len() > MAX_ACCOUNTS.saturating_mul(MAX_MARKERS)
-        {
+        if wire.markers.len() > MAX_ACCOUNTS.saturating_mul(MAX_MARKERS) {
             return Ok(Self::default());
         }
         Ok(Self {
-            version: 2,
+            version: 3,
             markers: wire.markers,
-            protocol_floors: wire.protocol_floors,
             validated: HashSet::new(),
         })
     }
@@ -655,73 +637,21 @@ pub(crate) enum MarkerResolution {
 
 impl ApprovalMarkerIndex {
     /// A refresh must authenticate every candidate again while retaining
-    /// protocol and generation floors from earlier observations.
+    /// binding-generation evidence from earlier observations.
     pub(crate) fn begin_revalidation(&mut self) {
         self.validated.clear();
     }
 
     pub(crate) fn retain_joined(&mut self, account: &str, joined: &HashSet<String>) {
         let removed: Vec<_> = self
-            .protocol_floors
+            .markers
             .iter()
-            .filter(|floor| floor.account == account && !joined.contains(&floor.room))
-            .map(|floor| floor.room.clone())
+            .filter(|marker| marker.account == account && !joined.contains(&marker.room))
+            .map(|marker| marker.room.clone())
             .collect();
         for room in removed {
             self.remove_room(account, &room);
         }
-    }
-
-    pub(crate) fn observe_v2(
-        &mut self,
-        account: &str,
-        room: &str,
-    ) -> Result<(), ApprovalModelError> {
-        if !mxid(account) || !room_id(room) {
-            return Err(ApprovalModelError::InvalidContext);
-        }
-        self.mark_room_unavailable(account, room);
-        if let Some(floor) = self
-            .protocol_floors
-            .iter_mut()
-            .find(|floor| floor.account == account && floor.room == room)
-        {
-            floor.minimum = 2;
-            return Ok(());
-        }
-        let account_rooms = self
-            .protocol_floors
-            .iter()
-            .filter(|floor| floor.account == account)
-            .count();
-        let accounts = self
-            .protocol_floors
-            .iter()
-            .map(|floor| &floor.account)
-            .collect::<HashSet<_>>()
-            .len();
-        if account_rooms >= MAX_MARKERS
-            || (accounts >= MAX_ACCOUNTS
-                && !self
-                    .protocol_floors
-                    .iter()
-                    .any(|floor| floor.account == account))
-        {
-            return Err(ApprovalModelError::CapacityExceeded);
-        }
-        self.protocol_floors.push(ProtocolFloor {
-            account: account.into(),
-            room: room.into(),
-            minimum: 2,
-        });
-        Ok(())
-    }
-
-    fn protocol_floor(&self, account: &str, room: &str) -> u8 {
-        self.protocol_floors
-            .iter()
-            .find(|floor| floor.account == account && floor.room == room)
-            .map_or(1, |floor| floor.minimum)
     }
 
     pub(crate) fn ingest_marker(
@@ -743,31 +673,19 @@ impl ApprovalMarkerIndex {
         {
             return Err(ApprovalModelError::InvalidContext);
         }
-        let detail = content.get(KEY).unwrap_or(content);
+        if content.as_object().is_none_or(|fields| fields.len() != 5) {
+            return Err(ApprovalModelError::InvalidContent);
+        }
+        let detail = content;
         let protocol = detail
             .get("version")
             .and_then(Value::as_u64)
             .and_then(|version| u8::try_from(version).ok())
             .ok_or(ApprovalModelError::InvalidContent)?;
-        if !matches!(
-            (event_type, protocol),
-            (MARKER_TYPE, 1) | (MARKER_TYPE_V2, 2)
-        ) {
+        if event_type != MARKER_TYPE || protocol != 2 {
             return Err(ApprovalModelError::InvalidContent);
         }
-        if protocol == 2 {
-            self.observe_v2(account, room)?;
-        } else if self.protocol_floor(account, room) >= 2 {
-            self.mark_room_unavailable(account, room);
-            return Err(ApprovalModelError::RevisionConflict);
-        }
-        if content
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|found| found != event_type)
-        {
-            return Err(ApprovalModelError::InvalidContent);
-        }
+        self.mark_room_unavailable(account, room);
         let publisher = req(detail, "publisher_mxid")?;
         let owner = req(detail, "owner_mxid")?;
         let generation = detail
@@ -782,29 +700,19 @@ impl ApprovalMarkerIndex {
             .get("project_room_associations")
             .and_then(Value::as_array)
             .ok_or(ApprovalModelError::InvalidContent)?;
-        let association_limit = if protocol == 1 {
-            MAX_V1_ASSOCIATIONS
-        } else {
-            MAX_V2_ASSOCIATIONS
-        };
-        if items.len() > association_limit || (protocol == 1 && items.is_empty()) {
+        if items.len() > MAX_ASSOCIATIONS {
             return Err(ApprovalModelError::CapacityExceeded);
         }
-        let legacy_agent = if protocol == 1 {
-            Some(req(detail, "agent")?)
-        } else {
-            if detail.get("agent").is_some() {
-                return Err(ApprovalModelError::InvalidContent);
-            }
-            None
-        };
+        if detail.get("agent").is_some() {
+            return Err(ApprovalModelError::InvalidContent);
+        }
         let mut seen = HashSet::new();
         let mut associations = Vec::with_capacity(items.len());
         for item in items {
-            let agent = match &legacy_agent {
-                Some(agent) => agent.clone(),
-                None => req(item, "agent")?,
-            };
+            if item.as_object().is_none_or(|fields| fields.len() != 3) {
+                return Err(ApprovalModelError::InvalidContent);
+            }
+            let agent = req(item, "agent")?;
             let project_room_id = req(item, "project_room_id")?;
             let active = item
                 .get("active")
@@ -831,8 +739,6 @@ impl ApprovalMarkerIndex {
             event: event.into(),
             publisher,
             owner,
-            agent: String::new(),
-            protocol,
             generation,
             associations,
             validated_at: now,
@@ -844,14 +750,13 @@ impl ApprovalMarkerIndex {
             .iter_mut()
             .find(|marker| marker.account == account && marker.room == room)
         {
-            if protocol < old.protocol || generation < old.generation {
+            if generation < old.generation {
                 self.validated
                     .remove(&(account.into(), room.into(), old.generation));
                 return Err(ApprovalModelError::RevisionConflict);
             }
             if generation == old.generation {
-                let same = old.protocol == candidate.protocol
-                    && old.publisher == candidate.publisher
+                let same = old.publisher == candidate.publisher
                     && old.owner == candidate.owner
                     && old.associations == candidate.associations;
                 if same {
@@ -888,17 +793,6 @@ impl ApprovalMarkerIndex {
                 && !self.markers.iter().any(|marker| marker.account == account))
         {
             return Err(ApprovalModelError::CapacityExceeded);
-        }
-        if !self
-            .protocol_floors
-            .iter()
-            .any(|floor| floor.account == account && floor.room == room)
-        {
-            self.protocol_floors.push(ProtocolFloor {
-                account: account.into(),
-                room: room.into(),
-                minimum: protocol,
-            });
         }
         self.markers.push(candidate);
         self.validated.insert(validation);
@@ -991,22 +885,21 @@ impl ApprovalMarkerIndex {
     pub(crate) fn remove_room(&mut self, account: &str, room: &str) {
         self.markers
             .retain(|marker| marker.account != account || marker.room != room);
-        self.protocol_floors
-            .retain(|floor| floor.account != account || floor.room != room);
         self.mark_room_unavailable(account, room);
     }
 
     #[cfg(test)]
     pub(crate) fn clear_account(&mut self, account: &str) {
         self.markers.retain(|marker| marker.account != account);
-        self.protocol_floors
-            .retain(|floor| floor.account != account);
         self.validated
             .retain(|(found_account, _, _)| found_account != account);
     }
 }
 
 fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, ApprovalModelError> {
+    if c.get(KEY).and_then(|v| v.get("migration_kind")).is_some() {
+        return Err(ApprovalModelError::InvalidContent);
+    }
     let typ = c
         .get("msgtype")
         .and_then(Value::as_str)
@@ -1039,7 +932,7 @@ fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, Appro
         .ok_or(ApprovalModelError::InvalidContent)?;
     if !request_id
         .strip_prefix("approval_")
-        .is_some_and(|s| hex(s, 32))
+        .is_some_and(|s| hex(s, 40))
         || !room_id(&project_room_id)
         || !hex(&input_digest, 64)
         || !mxid(&owner_mxid)
@@ -1064,9 +957,19 @@ fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, Appro
             .and_then(Value::as_u64)
             .filter(|v| *v > 0)
             .ok_or(ApprovalModelError::InvalidContent)?;
-        if revision != 1 || !actions(d.get("actions")) {
-            return Err(ApprovalModelError::InvalidContent);
-        }
+        let request =
+            super::approval::parse_approval_request(c).ok_or(ApprovalModelError::InvalidContent)?;
+        let actions = request
+            .actions
+            .iter()
+            .map(|action| match action.id.as_str() {
+                "approve_once" => Ok(ApprovalAction::ApproveOnce),
+                "approve_task" => Ok(ApprovalAction::ApproveTask),
+                "approve_always" => Ok(ApprovalAction::ApproveAlways),
+                "deny" => Ok(ApprovalAction::Deny),
+                _ => Err(ApprovalModelError::InvalidContent),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         return Ok(Parsed {
             binding,
             state: CanonicalApprovalState::Pending,
@@ -1074,8 +977,8 @@ fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, Appro
             revision,
             expires_at: Some(expires_at),
             request: true,
-            legacy: false,
-            legacy_original_event_id: None,
+            actions,
+            scope: request.reusable_scope,
         });
     }
     if d.get("actions").is_some() {
@@ -1098,29 +1001,6 @@ fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, Appro
     if !state_decision(state, decision) {
         return Err(ApprovalModelError::InvalidContent);
     }
-    let legacy = d.get("migration_kind").and_then(Value::as_str) == Some("legacy_v1");
-    let legacy_original_event_id = if legacy {
-        if c.get("m.new_content").is_some() {
-            return Err(ApprovalModelError::InvalidContent);
-        }
-        match c.get("m.relates_to") {
-            None => None,
-            Some(relation) => {
-                if relation.get("rel_type").is_some() {
-                    return Err(ApprovalModelError::InvalidContent);
-                }
-                let original = relation
-                    .get("m.in_reply_to")
-                    .and_then(|reply| reply.get("event_id"))
-                    .and_then(Value::as_str)
-                    .filter(|id| event_id(id))
-                    .ok_or(ApprovalModelError::InvalidContent)?;
-                Some(original.into())
-            }
-        }
-    } else {
-        None
-    };
     Ok(Parsed {
         binding,
         state,
@@ -1128,8 +1008,8 @@ fn parse_projection(room: &str, sender: &str, c: &Value) -> Result<Parsed, Appro
         revision,
         expires_at: None,
         request: false,
-        legacy,
-        legacy_original_event_id,
+        actions: Vec::new(),
+        scope: None,
     })
 }
 fn transition(
@@ -1169,7 +1049,7 @@ fn state_decision(s: CanonicalApprovalState, d: Option<ApprovalDecision>) -> boo
 }
 fn stable_txn(request: &str, action: ApprovalAction, digest: &str) -> Option<String> {
     let suffix = request.strip_prefix("approval_")?;
-    if !hex(suffix, 32) || !hex(digest, 64) {
+    if !hex(suffix, 40) || !hex(digest, 64) {
         return None;
     }
     let s = format!(
@@ -1179,25 +1059,10 @@ fn stable_txn(request: &str, action: ApprovalAction, digest: &str) -> Option<Str
     );
     (s.len() <= 128).then_some(s)
 }
-fn actions(v: Option<&Value>) -> bool {
-    let Some(a) = v.and_then(Value::as_array) else {
-        return false;
-    };
-    let e = [("approve_once", "primary"), ("deny", "danger")];
-    a.len() == 2
-        && a.iter().zip(e).all(|(v, (id, style))| {
-            v.get("id").and_then(Value::as_str) == Some(id)
-                && v.get("style").and_then(Value::as_str) == Some(style)
-                && v.get("label")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.trim().is_empty())
-        })
-}
 fn req(v: &Value, k: &str) -> Result<String, ApprovalModelError> {
     v.get(k)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .filter(|s| !s.is_empty() && s.trim() == *s && s.len() <= 4096)
         .map(str::to_owned)
         .ok_or(ApprovalModelError::InvalidContent)
 }
@@ -1232,7 +1097,7 @@ mod tests {
     const A: &str = "@owner:test";
     const R: &str = "!approval:test";
     const P: &str = "@bridge:test";
-    const Q: &str = "approval_0123456789abcdef0123456789abcdef";
+    const Q: &str = "approval_0123456789abcdef0123456789abcdef01234567";
     const D: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     fn detail() -> Value {
         json!({"version":1,"request_id":Q,"agent":"worker","project":"p","project_room_id":"!project:test","input_digest":D,"owner_mxid":A,"publisher_mxid":P})
@@ -1241,6 +1106,11 @@ mod tests {
         let mut d = detail();
         d["kind"] = json!("request");
         d["revision"] = json!(1);
+        d["upstream_request_id"] = json!("1");
+        d["runtime"] = json!("codex");
+        d["tool_name"] = json!("test");
+        d["description"] = json!("Test request");
+        d["input_preview"] = json!("test");
         d["expires_at"] = json!(5000);
         d["actions"] = json!([{"id":"approve_once","label":"Approve once","style":"primary"},{"id":"deny","label":"Deny","style":"danger"}]);
         json!({"msgtype":REQUEST_TYPE,KEY:d})
@@ -1265,7 +1135,7 @@ mod tests {
         }
     }
     fn marker() -> Value {
-        json!({"type":MARKER_TYPE,KEY:{"version":1,"binding_generation":1,"publisher_mxid":P,"owner_mxid":A,"agent":"worker","project_room_associations":[{"project_room_id":"!project:test","active":true}]}})
+        json!({"version":2,"binding_generation":1,"publisher_mxid":P,"owner_mxid":A,"project_room_associations":[{"agent":"worker","project_room_id":"!project:test","active":true}]})
     }
 
     fn marker_v2() -> Value {
@@ -1327,89 +1197,6 @@ mod tests {
         assert!(s.approval(A, R, Q).unwrap().conflicted);
     }
     #[test]
-    fn legacy_status_is_retained_read_only() {
-        let mut v = status(1, "pending", None);
-        v[KEY]["migration_kind"] = json!("legacy_v1");
-        let mut s = ApprovalSession::default();
-        put(&mut s, "$l", &v);
-        assert!(s.approval(A, R, Q).unwrap().legacy_read_only);
-        assert!(!s.is_actionable(A, R, Q, 1000));
-    }
-    #[test]
-    fn legacy_approval_relation_conflict_is_not_a_duplicate() {
-        let mut first = status(1, "consumed", Some("allow"));
-        first[KEY]["migration_kind"] = json!("legacy_v1");
-        first["m.relates_to"] = json!({"m.in_reply_to":{"event_id":"$original"}});
-        let mut other = first.clone();
-        other["m.relates_to"]["m.in_reply_to"]["event_id"] = json!("$different");
-        let mut session = ApprovalSession::default();
-        assert!(matches!(
-            put(&mut session, "$first-status", &first),
-            IngestResult::Changed(_)
-        ));
-        assert!(matches!(
-            put(&mut session, "$other-status", &other),
-            IngestResult::Rejected(ApprovalModelError::RevisionConflict)
-        ));
-        assert!(session.approval(A, R, Q).unwrap().conflicted);
-    }
-    #[test]
-    fn legacy_approval_states_never_create_actionable_requests() {
-        for (state, decision) in [
-            ("pending", None),
-            ("approved", Some("allow")),
-            ("denied", Some("deny")),
-            ("expired", Some("deny")),
-            ("consumed", Some("allow")),
-            ("consumed", Some("deny")),
-        ] {
-            let mut content = status(1, state, decision);
-            content[KEY]["migration_kind"] = json!("legacy_v1");
-            content["m.relates_to"] = json!({"m.in_reply_to":{"event_id":"$original"}});
-            let mut session = ApprovalSession::default();
-            assert!(matches!(
-                put(&mut session, "$status", &content),
-                IngestResult::Changed(_)
-            ));
-            let view = session.approval(A, R, Q).unwrap();
-            assert!(view.legacy_read_only);
-            assert_eq!(view.legacy_original_event_id.as_deref(), Some("$original"));
-            assert!(!session.is_actionable(A, R, Q, 1000));
-            assert!(
-                session
-                    .try_claim(ck(), ApprovalAction::ApproveOnce, 1000)
-                    .is_err()
-            );
-            assert!(session.try_claim(ck(), ApprovalAction::Deny, 1000).is_err());
-            assert!(matches!(
-                put(&mut session, "$late-native", &request()),
-                IngestResult::Rejected(_)
-            ));
-            assert!(session.records.values().all(|record| !record.has_request));
-        }
-    }
-    #[test]
-    fn legacy_approval_epoch_is_shared_by_two_pane_observers() {
-        let mut session = ApprovalSession::default();
-        let pane_one_epoch = session.room_epoch(A, R);
-        let pane_two_epoch = session.room_epoch(A, R);
-        let mut content = status(1, "consumed", Some("allow"));
-        content[KEY]["migration_kind"] = json!("legacy_v1");
-        content["m.relates_to"] = json!({"m.in_reply_to":{"event_id":"$original"}});
-        put(&mut session, "$status", &content);
-        let pane_one_view = session.approval(A, R, Q).unwrap();
-        assert!(session.room_epoch(A, R) > pane_one_epoch);
-        let pane_two_view = session.approval(A, R, Q).unwrap();
-        assert!(session.room_epoch(A, R) > pane_two_epoch);
-        assert_eq!(pane_one_view, pane_two_view);
-        let after = session.room_epoch(A, R);
-        assert_eq!(
-            put(&mut session, "$duplicate", &content),
-            IngestResult::Duplicate
-        );
-        assert_eq!(session.room_epoch(A, R), after);
-    }
-    #[test]
     fn approval_navigation_requires_unique_joined_loaded_room() {
         let mut i = ApprovalMarkerIndex::default();
         i.ingest_marker(A, R, "$m", MARKER_TYPE, P, "", &marker(), 1000)
@@ -1440,7 +1227,11 @@ mod tests {
         i.ingest_marker(A, R, "$m", MARKER_TYPE, P, "", &marker(), 1000)
             .unwrap();
         let bytes = serde_json::to_vec(&i).unwrap();
-        let restored: ApprovalMarkerIndex = serde_json::from_slice(&bytes).unwrap();
+        let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["version"], 3);
+        assert!(wire.get("protocol_floors").is_none());
+        assert!(wire["markers"][0].get("protocol").is_none());
+        let mut restored: ApprovalMarkerIndex = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             restored.resolve(
                 A,
@@ -1450,6 +1241,21 @@ mod tests {
                 1000
             ),
             MarkerResolution::Stale
+        );
+        assert_eq!(restored.markers[0].event, "$m");
+        assert_eq!(restored.markers[0].publisher, P);
+        restored
+            .ingest_marker(A, R, "$m", MARKER_TYPE, P, "", &marker(), 1001)
+            .unwrap();
+        assert_eq!(
+            restored.resolve(
+                A,
+                "worker",
+                "!project:test",
+                &HashSet::from([R.into()]),
+                1001
+            ),
+            MarkerResolution::Unique(R.into())
         );
     }
 
@@ -1461,7 +1267,7 @@ mod tests {
         assert_eq!(agent_joined_observation, None);
         let mut index = ApprovalMarkerIndex::default();
         index
-            .ingest_marker(A, R, "$v2", MARKER_TYPE_V2, P, "", &marker_v2(), 1000)
+            .ingest_marker(A, R, "$v2", MARKER_TYPE, P, "", &marker_v2(), 1000)
             .unwrap();
         let joined = HashSet::from([R.into()]);
 
@@ -1480,12 +1286,20 @@ mod tests {
     }
 
     #[test]
-    fn approval_marker_v2_floor_blocks_v1_rollback_and_malformed_fallback() {
+    fn approval_marker_v2_rejects_v1_and_preserves_generation_after_revalidation() {
         let mut index = ApprovalMarkerIndex::default();
-        index.observe_v2(A, R).unwrap();
         assert!(
             index
-                .ingest_marker(A, R, "$v1", MARKER_TYPE, P, "", &marker(), 1000)
+                .ingest_marker(
+                    A,
+                    R,
+                    "$v1",
+                    "com.agentchat.approval.room.v1",
+                    P,
+                    "",
+                    &marker(),
+                    1000
+                )
                 .is_err()
         );
         assert_eq!(
@@ -1500,7 +1314,7 @@ mod tests {
         );
 
         index
-            .ingest_marker(A, R, "$v2", MARKER_TYPE_V2, P, "", &marker_v2(), 2000)
+            .ingest_marker(A, R, "$v2", MARKER_TYPE, P, "", &marker_v2(), 2000)
             .unwrap();
         index.begin_revalidation();
         assert_eq!(
@@ -1519,7 +1333,7 @@ mod tests {
         malformed["binding_generation"] = json!(6);
         assert!(
             index
-                .ingest_marker(A, R, "$old", MARKER_TYPE_V2, P, "", &malformed, 3000)
+                .ingest_marker(A, R, "$old", MARKER_TYPE, P, "", &malformed, 3000)
                 .is_err()
         );
         assert_eq!(
@@ -1535,42 +1349,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_v1_marker_cache_migrates_to_agent_project_tuple_unvalidated() {
-        let legacy = json!({
-            "version": 1,
-            "markers": [{
-                "account": A,
-                "room": R,
-                "event": "$legacy",
-                "publisher": P,
-                "owner": A,
-                "agent": "worker",
-                "generation": 3,
-                "associations": [{"project_room_id":"!project:test","active":true}],
-                "validated_at": 1000,
-                "conflicted": false
-            }]
-        });
-        let index: ApprovalMarkerIndex = serde_json::from_value(legacy).unwrap();
-        assert_eq!(
-            index.resolve(
-                A,
-                "worker",
-                "!project:test",
-                &HashSet::from([R.into()]),
-                1000,
-            ),
-            MarkerResolution::Stale,
-        );
-        let persisted = serde_json::to_value(index).unwrap();
-        assert_eq!(persisted["version"], json!(2));
-        assert_eq!(
-            persisted["markers"][0]["associations"][0]["agent"],
-            json!("worker")
-        );
-    }
-
-    #[test]
     fn approval_marker_v2_rejects_duplicate_and_overflow_without_partial_routes() {
         let mut index = ApprovalMarkerIndex::default();
         let mut duplicate = marker_v2();
@@ -1580,7 +1358,7 @@ mod tests {
         ]);
         assert!(
             index
-                .ingest_marker(A, R, "$duplicate", MARKER_TYPE_V2, P, "", &duplicate, 1000)
+                .ingest_marker(A, R, "$duplicate", MARKER_TYPE, P, "", &duplicate, 1000)
                 .is_err()
         );
         assert_eq!(
@@ -1596,7 +1374,7 @@ mod tests {
 
         let mut overflow = marker_v2();
         overflow["project_room_associations"] = Value::Array(
-            (0..=MAX_V2_ASSOCIATIONS)
+            (0..=MAX_ASSOCIATIONS)
                 .map(|item| {
                     json!({
                         "agent": format!("agent{item}"),
@@ -1607,7 +1385,7 @@ mod tests {
                 .collect(),
         );
         assert_eq!(
-            index.ingest_marker(A, R, "$overflow", MARKER_TYPE_V2, P, "", &overflow, 2000),
+            index.ingest_marker(A, R, "$overflow", MARKER_TYPE, P, "", &overflow, 2000),
             Err(ApprovalModelError::CapacityExceeded),
         );
         assert_eq!(
@@ -1656,13 +1434,13 @@ mod tests {
     fn lower_marker_generation_invalidates_cached_high_water_mapping() {
         let mut index = ApprovalMarkerIndex::default();
         let mut generation_two = marker();
-        generation_two[KEY]["binding_generation"] = json!(2);
+        generation_two["binding_generation"] = json!(2);
         index
             .ingest_marker(A, R, "$m2", MARKER_TYPE, P, "", &generation_two, 1000)
             .unwrap();
 
         let mut stale_generation = marker();
-        stale_generation[KEY]["project_room_associations"][0]["active"] = json!(false);
+        stale_generation["project_room_associations"][0]["active"] = json!(false);
         assert_eq!(
             index.ingest_marker(A, R, "$m1", MARKER_TYPE, P, "", &stale_generation, 2000),
             Err(ApprovalModelError::RevisionConflict),
@@ -1713,18 +1491,19 @@ mod tests {
         assert!(g.transaction_id.len() <= 128);
         assert!(s.room_epoch(A, R) > before);
         assert_eq!(
-            s.record_send_result(&k, SendResult::ConfirmedPreSendFailure, 1000),
+            s.record_send_result(&k, g.token, SendResult::ConfirmedPreSendFailure, 1000),
             ClaimDisposition::Released
         );
-        s.try_claim(k.clone(), ApprovalAction::ApproveOnce, 1000)
+        let second = s
+            .try_claim(k.clone(), ApprovalAction::ApproveOnce, 1000)
             .unwrap();
         assert_eq!(
-            s.record_send_result(&k, SendResult::OutcomeUnknown, 1000),
+            s.record_send_result(&k, second.token, SendResult::OutcomeUnknown, 1000),
             ClaimDisposition::Retained
         );
         assert_eq!(s.claim_state(&k), Some(ClaimState::OutcomeUnknown));
         assert_eq!(
-            s.record_send_result(&k, SendResult::ConfirmedPreSendFailure, 1000),
+            s.record_send_result(&k, second.token, SendResult::ConfirmedPreSendFailure, 1000),
             ClaimDisposition::Retained
         );
         assert_eq!(
@@ -1761,10 +1540,11 @@ mod tests {
         put(&mut s, "$r", &request());
         assert!(s.approval(A, R, Q).is_some());
         let key = ck();
-        s.try_claim(key.clone(), ApprovalAction::Deny, 1000)
+        let grant = s
+            .try_claim(key.clone(), ApprovalAction::Deny, 1000)
             .unwrap();
         assert_eq!(
-            s.record_send_result(&key, SendResult::Sent, 1000),
+            s.record_send_result(&key, grant.token, SendResult::Sent, 1000),
             ClaimDisposition::Retained
         );
         s.remove_room(A, R);
@@ -1806,13 +1586,18 @@ mod tests {
     fn repeated_claims_and_unknown_delivery_remain_single_use() {
         let mut session = ApprovalSession::default();
         put(&mut session, "$r", &request());
-        session
+        let grant = session
             .try_claim(ck(), ApprovalAction::ApproveOnce, 1000)
             .unwrap();
-        session.record_send_result(&ck(), SendResult::OutcomeUnknown, 1000);
+        session.record_send_result(&ck(), grant.token, SendResult::OutcomeUnknown, 1000);
         for _ in 0..40 {
             assert_eq!(
-                session.record_send_result(&ck(), SendResult::ConfirmedPreSendFailure, 1000),
+                session.record_send_result(
+                    &ck(),
+                    grant.token,
+                    SendResult::ConfirmedPreSendFailure,
+                    1000
+                ),
                 ClaimDisposition::Retained
             );
             assert_eq!(
@@ -1820,5 +1605,149 @@ mod tests {
                 Err(ClaimError::AlreadyClaimed)
             );
         }
+    }
+    #[test]
+    fn migration_projections_cannot_create_requests_or_claims() {
+        for content in [
+            request(),
+            status(1, "pending", None),
+            status(2, "denied", Some("deny")),
+        ] {
+            for marker in [
+                json!("legacy_v1"),
+                Value::Null,
+                json!(true),
+                json!("unknown"),
+            ] {
+                let mut content = content.clone();
+                content[KEY]["migration_kind"] = marker;
+                let mut session = ApprovalSession::default();
+                assert_eq!(
+                    put(&mut session, "$obsolete", &content),
+                    IngestResult::Rejected(ApprovalModelError::InvalidContent)
+                );
+                assert!(session.approval(A, R, Q).is_none());
+                assert!(
+                    session
+                        .try_claim(ck(), ApprovalAction::ApproveOnce, 1000)
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_produced_marker_reaches_current_desktop_discovery() {
+        // The native store test compares this same fixture with its real
+        // writer output; no hand-maintained Desktop-only marker contract.
+        let content: Value = serde_json::from_str(include_str!("../../crates/hagency-client/native/hagency-store/tests/fixtures/native-approval-marker.json")).unwrap();
+        let owner = "@owner:example.test";
+        let publisher = "@approval:example.test";
+        let room = "!private:example.test";
+        let joined = HashSet::from([room.to_owned()]);
+        let mut index = ApprovalMarkerIndex::default();
+        assert!(
+            index
+                .ingest_marker(
+                    owner,
+                    room,
+                    "$wrapper",
+                    MARKER_TYPE,
+                    publisher,
+                    "",
+                    &json!({KEY:content.clone()}),
+                    1000
+                )
+                .is_err()
+        );
+        assert!(
+            index
+                .ingest_marker(
+                    owner,
+                    room,
+                    "$wrong",
+                    MARKER_TYPE,
+                    "@other:example.test",
+                    "",
+                    &content,
+                    1000
+                )
+                .is_err()
+        );
+        index
+            .ingest_marker(
+                owner,
+                room,
+                "$native",
+                MARKER_TYPE,
+                publisher,
+                "",
+                &content,
+                1000,
+            )
+            .unwrap();
+        for agent in ["a", "b"] {
+            assert_eq!(
+                index.resolve(owner, agent, "!project:example.test", &joined, 1000),
+                MarkerResolution::Unique(room.into())
+            );
+        }
+        assert_eq!(
+            index.resolve(owner, "other", "!project:example.test", &joined, 1000),
+            MarkerResolution::Missing
+        );
+    }
+
+    #[test]
+    fn obsolete_marker_cache_and_live_marker_never_resolve() {
+        for version in [0, 1, 2, 99] {
+            let restored: ApprovalMarkerIndex = serde_json::from_value(json!({
+                "version": version,
+                "markers":[{"account":A,"room":R,"event":"$old-cache","owner":A,"publisher":P,"protocol":2,"generation":1,"validated_at":1000,"associations":[{"agent":"worker","project_room_id":"!project:test","active":true}]}]
+            })).unwrap();
+            assert!(restored.markers.is_empty());
+            assert!(restored.validated.is_empty());
+            assert_eq!(
+                restored.resolve(
+                    A,
+                    "worker",
+                    "!project:test",
+                    &HashSet::from([R.into()]),
+                    1000
+                ),
+                MarkerResolution::Missing
+            );
+        }
+        let mut old = marker();
+        old["version"] = json!(1);
+        let mut index = ApprovalMarkerIndex::default();
+        assert!(
+            index
+                .ingest_marker(
+                    A,
+                    R,
+                    "$old",
+                    "com.agentchat.approval.room.v1",
+                    P,
+                    "",
+                    &old,
+                    1000
+                )
+                .is_err()
+        );
+        assert!(index.markers.is_empty());
+        index
+            .ingest_marker(A, R, "$new", MARKER_TYPE, P, "", &marker(), 1000)
+            .unwrap();
+        assert_eq!(
+            index.resolve(
+                A,
+                "worker",
+                "!project:test",
+                &HashSet::from([R.into()]),
+                1000
+            ),
+            MarkerResolution::Unique(R.into())
+        );
     }
 }

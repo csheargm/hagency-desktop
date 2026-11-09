@@ -1,4 +1,7 @@
 //! Original supervised Claude processes resume context with separate call custody.
+#[cfg(target_os = "macos")]
+#[path = "shared_claude_installed_tests.rs"]
+mod installed;
 use super::*;
 use hagency_runtime::{
     claude::{account::AccountBinding, session::Limits as ClaudeLimits, Message},
@@ -394,22 +397,34 @@ async fn shared_claude_session_unfinished_opening_fences_older_checkpoint() {
 
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
-async fn shared_claude_session_counter_regression_stays_unknown_and_is_not_reused() {
+async fn shared_claude_session_invalid_counters_keep_answer_unknown_and_are_not_reused() {
     let mut a = Box::pin(active()).await;
     a.turn("Previous context", "").await;
     a = a.advance("regression", "@owner:test", false).await;
     assert!(a.session.as_ref().unwrap().is_resuming());
     std::fs::write(
-        a.f._temp.path().join("claude_native/shared-claude.regress"),
+        a.f._temp
+            .path()
+            .join("claude_native/shared-claude.invalid_usage"),
         b"offline",
     )
     .unwrap();
     let result = a.turn("Broken counters", "Previous context").await;
     assert!(
         !result.usage_complete,
-        "regressed cumulative counts cannot prove a free completed call"
+        "invalid counters cannot prove a free completed call"
     );
-    std::fs::remove_file(a.f._temp.path().join("claude_native/shared-claude.regress")).unwrap();
+    assert_eq!(result.state, "completed");
+    assert_eq!(
+        result.body.as_deref(),
+        Some("Previous native inputs: Previous context")
+    );
+    std::fs::remove_file(
+        a.f._temp
+            .path()
+            .join("claude_native/shared-claude.invalid_usage"),
+    )
+    .unwrap();
     a = a.advance("after_regression", "@owner:test", false).await;
     assert!(!a.session.as_ref().unwrap().is_resuming());
     a.stop().await;

@@ -41,7 +41,7 @@ class Family(Workspaces):
         self.fixture_path=out/"fixtures.json";self.fixture_path.write_text('{}')
         with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
         self.base=f"http://127.0.0.1:{port}";self.log=(out/"native.log").open('w')
-        self.process=subprocess.Popen([str(binary),f"--remote={port}"]+(["--narrow"] if narrow else []),cwd=ROOT,stdout=self.log,stderr=subprocess.STDOUT,env=dict(os.environ,RINX_DATA_DIR=str(self.profile),HAGENCY_UX_FIXTURES=str(self.fixture_path),HAGENCY_UX_SOURCE=str(self.source_path),MAKEPAD_HIDE_WINDOWS="1",MAKEPAD_NO_FOCUS="1"))
+        self.process=subprocess.Popen([str(binary),f"--remote={port}"]+(["--narrow"] if narrow else []),cwd=ROOT,stdout=self.log,stderr=subprocess.STDOUT,env=dict(os.environ,HAGENCY_DESKTOP_DATA_DIR=str(self.profile),HAGENCY_UX_FIXTURES=str(self.fixture_path),HAGENCY_UX_SOURCE=str(self.source_path),MAKEPAD_HIDE_WINDOWS="1",MAKEPAD_NO_FOCUS="1"))
         self.wait(lambda:self.req('/s')['pid']==self.process.pid)
         self.wait(lambda:self.row('entry_switch')['r'][2]>0)
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::management::{
-    HostContext, Intent, IntentOperation, IntentReply, Permission, PrivateManagementJournal,
+    HostContext, Intent, IntentOperation, IntentReply, Permission,
     Session, OPERATOR_GRAPH_SCOPE,
 };
 use crate::owner_resources::graph_journal::GraphJournalCommand;
@@ -17,11 +17,11 @@ fn context(f: &Fixture, epoch: u64) -> HostContext {
     .unwrap()
 }
 fn session(
-    backing: &AdoptedManagementStore,
+    backing: &CurrentManagementStore,
     context: &HostContext,
     permissions: &[Permission],
 ) -> Session {
-    Session::new_adopted(
+    Session::new_current(
         backing.clone(),
         context.clone(),
         permissions.iter().copied(),
@@ -50,8 +50,6 @@ async fn graph_access_retains_exact_grant_account_epoch_and_backing_gate() {
         vec![
             Permission::ReadTasks,
             Permission::CreateTasks,
-            Permission::ReadOperatorGraphHistory,
-            Permission::ArchiveOperatorGraphHistory,
         ],
     ] {
         let denied = session(&backing, &ctx, &rights);
@@ -255,15 +253,7 @@ async fn graph_intent_large_fractional_custody_restarts_with_eight_records_and_e
     backing.shutdown().await.unwrap();
     drop(manager);
     drop(backing);
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal =
-        PrivateManagementJournal::open_existing(&f.source, transfer.archive_binding().unwrap())
-            .unwrap();
-    let reopened = transfer.adopted_management(journal).await.unwrap();
+    let reopened = current_backing(&f).await;
     let renewed = context(&f, 2);
     let manager = session(&reopened, &renewed, GRANTS);
     let recovered = manager.pending_intents(&renewed).await.unwrap();

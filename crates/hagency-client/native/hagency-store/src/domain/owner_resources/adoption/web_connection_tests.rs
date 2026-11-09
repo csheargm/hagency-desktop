@@ -13,12 +13,12 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(store: &AdoptedManagementStore, context: &HostContext, write: bool) -> Session {
+fn session(store: &CurrentManagementStore, context: &HostContext, write: bool) -> Session {
     let mut permissions = vec![Permission::ReadConnections];
     if write {
         permissions.push(Permission::ContributeResources)
     }
-    Session::new_adopted(
+    Session::new_current(
         store.clone(),
         context.clone(),
         permissions,
@@ -230,16 +230,7 @@ async fn web_connection_commands_preserve_private_credentials_original_receipts_
             .unwrap(),
         updated
     );
-    // The source archive and global legacy side tables remain untouched.
-    let source = Connection::open_with_flags(
-        f.source.join("domain.sqlite3"),
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let count: u64 = source
-        .query_row("SELECT COUNT(*) FROM side_records", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
+
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use crate::management::{
     RetireResourceApprovalBinding, RetiredResourceApprovalBinding,
 };
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn resource_approval_bindings(
         &self,
         profile: &ProfileAuthority,

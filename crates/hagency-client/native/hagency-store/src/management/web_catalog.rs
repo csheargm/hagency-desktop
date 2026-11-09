@@ -77,52 +77,36 @@ impl WebCatalogPrepare {pub fn validate(&self)->Result<(),Error>{identifier(&sel
 impl WebCatalogCommand {pub fn validate(&self)->Result<(),Error>{identifier(&self.command_id,128)?;WebCatalogPrepare{resource_id:self.resource_id.clone(),expected_revision:self.expected_revision.clone(),change:self.change.clone()}.validate()}}
 impl Session {
     pub fn web_catalog_access(&self,context:&HostContext,write:bool)->Result<(),Error>{self.check(context,if write{Permission::ManageWebCatalog}else{Permission::ReadWebCatalog})}
-    #[cfg(feature="resource-adoption")]
-    fn web_profile(&self,context:&HostContext,write:bool,store:&crate::owner_resources::adoption::AdoptedManagementStore)->Result<crate::owner_resources::ProfileAuthority,Error>{
+    fn web_profile(&self,context:&HostContext,write:bool,store:&crate::owner_resources::adoption::CurrentManagementStore)->Result<crate::owner_resources::ProfileAuthority,Error>{
         self.web_catalog_access(context,write)?;let authority=self.authority();let context=context.clone();let permission=if write{Permission::ManageWebCatalog}else{Permission::ReadWebCatalog};
-        self.adopted_profile(store)?.with_native_gate(move||authority.authorize(&context,permission).is_ok())
+        self.current_profile(store)?.with_native_gate(move||authority.authorize(&context,permission).is_ok())
     }
     pub async fn web_catalog(&self,context:&HostContext,query:WebCatalogQuery)->Result<WebCatalogView,Error>{
         self.web_catalog_access(context,false)?;query.validate()?;
-        #[cfg(feature="resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {let result=store.web_catalog(&self.web_profile(context,false,store)?,query).await?;self.web_catalog_access(context,false)?;return Ok(result)}
-        Err(Error::LocalAuthority)
+        let SessionStore::Current(store) = self.local_store()?;
+        {let result=store.web_catalog(&self.web_profile(context,false,store)?,query).await?;self.web_catalog_access(context,false)?;return Ok(result)}
     }
     pub async fn web_offers(&self,context:&HostContext,resource_id:String)->Result<WebOfferPage,Error>{
         self.web_catalog_access(context,false)?;identifier(&resource_id,128)?;
-        if let SessionStore::Legacy(store) = self.local_store()? {
-            let authority=self.authority();let original=context.clone();
-            let result=store.call(64*1024,move|db|{
-                authority.authorize(&original,Permission::ReadWebCatalog)?;
-                let result=db.management_legacy_offers(&resource_id)?;
-                authority.authorize(&original,Permission::ReadWebCatalog)?;
-                Ok(result)
-            }).await?;
-            self.web_catalog_access(context,false)?;return Ok(result)
-        }
-        #[cfg(feature="resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {let result=store.web_offers(&self.web_profile(context,false,store)?,resource_id).await?;self.web_catalog_access(context,false)?;return Ok(result)}
-        Err(Error::LocalAuthority)
+        let SessionStore::Current(store) = self.local_store()?;
+        {let result=store.web_offers(&self.web_profile(context,false,store)?,resource_id).await?;self.web_catalog_access(context,false)?;return Ok(result)}
     }
     pub async fn web_trust(&self,context:&HostContext,query:WebCatalogQuery)->Result<WebTrustPage,Error>{
         self.web_catalog_access(context,false)?;query.validate()?;
-        #[cfg(feature="resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {let result=store.web_trust(&self.web_profile(context,false,store)?,query).await?;self.web_catalog_access(context,false)?;return Ok(result)}
-        Err(Error::LocalAuthority)
+        let SessionStore::Current(store) = self.local_store()?;
+        {let result=store.web_trust(&self.web_profile(context,false,store)?,query).await?;self.web_catalog_access(context,false)?;return Ok(result)}
     }
     /// Native original-ID cancellation. The canonical receipt arbitrates races
     /// and recovers applied effects without writing a contradictory cancellation.
     pub async fn cancel_web_catalog(&self,context:&HostContext,input:WebCatalogCommand)->Result<Option<WebCatalogResult>,Error>{
         self.web_catalog_access(context,true)?;input.validate()?;let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;let _command=self.scope.commands.lock().await;
-        #[cfg(feature="resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {let receipt=CommandReceipt::new(context,"web.catalog",&input.command_id,&serde_json::json!({"profile":store.identity().0,"input":input}))?;let result=store.cancel_web_catalog(&self.web_profile(context,true,store)?,input,receipt).await?;self.web_catalog_access(context,true).map_err(|_|Error::OutcomeUnknown)?;return Ok(result)}
-        Err(Error::LocalAuthority)
+        let SessionStore::Current(store) = self.local_store()?;
+        {let receipt=CommandReceipt::new(context,"web.catalog",&input.command_id,&serde_json::json!({"profile":store.identity().0,"input":input}))?;let result=store.cancel_web_catalog(&self.web_profile(context,true,store)?,input,receipt).await?;self.web_catalog_access(context,true).map_err(|_|Error::OutcomeUnknown)?;return Ok(result)}
     }
     pub async fn apply_web_catalog(&self,context:&HostContext,input:WebCatalogCommand)->Result<WebCatalogResult,Error>{
         self.web_catalog_access(context,true)?;input.validate()?;let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;let _command=self.scope.commands.lock().await;
-        #[cfg(feature="resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {let receipt=CommandReceipt::new(context,"web.catalog",&input.command_id,&serde_json::json!({"profile":store.identity().0,"input":input}))?;let result=store.apply_web_catalog(&self.web_profile(context,true,store)?,input,receipt).await?;self.web_catalog_access(context,true).map_err(|_|Error::OutcomeUnknown)?;return Ok(result)}
-        Err(Error::LocalAuthority)
+        let SessionStore::Current(store) = self.local_store()?;
+        {let receipt=CommandReceipt::new(context,"web.catalog",&input.command_id,&serde_json::json!({"profile":store.identity().0,"input":input}))?;let result=store.apply_web_catalog(&self.web_profile(context,true,store)?,input,receipt).await?;self.web_catalog_access(context,true).map_err(|_|Error::OutcomeUnknown)?;return Ok(result)}
     }
 }
 

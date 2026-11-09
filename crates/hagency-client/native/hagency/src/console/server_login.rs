@@ -1853,7 +1853,10 @@ impl ServerLogin {
                 | OwnerOperation::Allocation(..)
                 | OwnerOperation::ProjectSetup(..)
         );
+        let native_allocation = matches!(&operation, OwnerOperation::Allocation(_));
         let (method, path, body) = operation.request()?;
+        let shared_protocol = native_allocation
+            && path.starts_with("/hagency/api/v1/management/shared-execution/");
         if self.stopped.load(Ordering::Acquire) {
             return Err(OwnerError::new(401, "sign_in_required"));
         }
@@ -1928,6 +1931,9 @@ impl ServerLogin {
         let mut request = client
             .request(method, server.join(&path).unwrap())
             .bearer_auth(bearer);
+        if shared_protocol {
+            request = request.header("x-hagency-shared-protocol", "native-context-v3;claude-v4");
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -2145,6 +2151,9 @@ mod scope_policy_request_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod shared_protocol_tests;
 
 #[cfg(test)]
 mod oauth_refresh_tests {

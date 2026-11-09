@@ -86,7 +86,6 @@ pub struct ResourceNamespace {
     launch: crate::ManagedLaunch,
 }
 impl ResourceNamespace {
-    #[cfg(feature = "resource-adoption")]
     pub(super) fn matches_edit_binding(&self, binding: &VerifiedOwnerResourceBinding) -> Result<(), Error> {
         self.profile.check()?;
         self.launch.check()?;
@@ -97,7 +96,6 @@ impl ResourceNamespace {
         }
         Ok(())
     }
-    #[cfg(feature = "resource-adoption")]
     pub(super) fn check_edit_on(&self, db: &Connection, binding: &VerifiedOwnerResourceBinding) -> Result<(), Error> {
         self.matches_edit_binding(binding)?;
         let current: bool=db.query_row(

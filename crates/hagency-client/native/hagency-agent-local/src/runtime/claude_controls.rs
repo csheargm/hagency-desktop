@@ -104,6 +104,13 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
     pub async fn complete(&mut self, wire: &Claude, text: &str) -> Result<()> {
         self.capture.complete(wire, text).await
     }
+    pub async fn complete_unaccounted(
+        &mut self,
+        receipt: &hagency_runtime::claude::session::CompletionReceipt,
+        text: &str,
+    ) -> Result<()> {
+        self.capture.complete_unaccounted(receipt, text).await
+    }
     fn observe_output(&mut self, message: &Message) {
         let Some(output) = &self.output else {
             return;

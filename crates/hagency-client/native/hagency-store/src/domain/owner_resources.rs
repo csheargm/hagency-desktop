@@ -1,19 +1,13 @@
 //! One OS-owner resource ledger; Matrix profiles are explicitly granted access.
 //! No caller-selected production path, credential storage or provider execution.
-#[cfg(any(test, feature = "resource-adoption"))]
 pub mod adoption;
 mod capacity;
 pub use capacity::{budget, shared_execution};
 mod namespace;
 pub use namespace::{NamespaceEnrollment, ResourceAccountSelection, ResourceNamespace};
 mod provenance;
-#[cfg(feature = "resource-adoption")]
-pub mod graph_archives;
-#[cfg(feature = "resource-adoption")]
 pub mod graph_journal;
-#[cfg(feature = "resource-adoption")]
 mod edit_binding;
-#[cfg(feature = "resource-adoption")]
 pub use edit_binding::ResourceEditBinding;
 mod provider_binding;
 pub use provider_binding::VerifiedOwnerResourceBinding;
@@ -24,7 +18,6 @@ use crate::{DomainStore, management::ResourceSummary};
 pub(super) use capacity::additional_commitments;
 pub(super) use capacity::unsettled_resource;
 pub(super) use capacity::unsettled_resource_except;
-#[cfg(feature = "resource-adoption")]
 pub(super) use capacity::unsettled_exact_resource;
 pub use capacity::{
     InterruptedCall, InterruptedCallPage, InterruptedCallQuery, InterruptedCallReconciliation,
@@ -310,6 +303,16 @@ impl OwnerResourceRegistry {
     pub fn isolated_for_tests(root: &Path) -> Result<Self, Error> {
         Self::open_root(root)
     }
+    /// Runs fixture setup through the actual isolated canonical writer.
+    /// This helper is absent from production/default builds.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn with_repository_for_tests<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut DomainRepository) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        self.0.store.call(128 * 1024, operation).await
+    }
     /// Call from a blocking native initialization task. Application profile
     /// paths and HOME environment overrides cannot select an alternate ledger.
     pub fn open() -> Result<Self, Error> {
@@ -494,7 +497,6 @@ fn authorize_resource(db: &Connection, profile: &ProfileAuthority, id: &str) -> 
         [id],
         |r| r.get(0),
     ).optional()?.ok_or(Error::LocalAuthority)?;
-    require_adopted_seat_ready(db, &seat)?;
     let allowed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_grants WHERE profile=?1 AND resource_id=?2 AND active=1)",params![profile.digest,id],|r|r.get(0))?;
     if allowed {
         Ok(())
@@ -502,14 +504,7 @@ fn authorize_resource(db: &Connection, profile: &ProfileAuthority, id: &str) -> 
         Err(Error::LocalAuthority)
     }
 }
-fn require_adopted_seat_ready(db: &Connection, seat: &str) -> Result<(), Error> {
-    let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_adoptions WHERE phase<4 AND json_extract(plan,'$.targetSeat.id')=?1)",[seat],|r|r.get(0))?;
-    if pending {
-        Err(Error::LocalAuthority)
-    } else {
-        Ok(())
-    }
-}
+
 impl DomainRepository {
     fn bind_owner_registry(&mut self, root: &Path) -> Result<String, Error> {
         let directory = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
@@ -611,7 +606,6 @@ impl DomainRepository {
                 let seat_id = mapping
                     .clone()
                     .unwrap_or_else(|| format!("seat_owner_{}", proof.digest));
-                require_adopted_seat_ready(&tx, &seat_id)?;
                 // The owner chose this pool's maximum, not a provider-wide cap.
                 let seat = Seat { id: seat_id.clone(), declaration: None };
                 let stored: Option<String> = tx
@@ -666,7 +660,6 @@ impl DomainRepository {
             }
             Action::Link { resource } => {
                 let target = read_resource(&tx, resource)?;
-                require_adopted_seat_ready(&tx, &target.seat_id)?;
                 (resource.clone(), true)
             }
             Action::Revoke { resource } => {

@@ -85,62 +85,12 @@ async fn account_inventory_retains_namespace_states_and_latest_readiness_without
             .readiness,
         "unknown"
     );
-    let store = crate::DomainStore::start(db, 8).unwrap();
-    let denied = Session::new(
-        store.clone(),
-        context(),
-        [Permission::ReadProviders],
-        Instant::now() + Duration::from_secs(30),
-    )
-    .unwrap();
-    assert!(
-        denied
-            .account_inventory(&context(), AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    let reader = Session::new(
-        store.clone(),
-        context(),
-        [Permission::ReadAccounts],
-        Instant::now() + Duration::from_secs(30),
-    )
-    .unwrap();
-    let detail = reader
-        .account_inventory(
-            &context(),
-            AccountInventoryQuery {
-                id: Some(active.id),
-                after: None,
-            },
-        )
-        .await
-        .unwrap();
+    let detail = db.management_account_inventory(None, AccountInventoryQuery {
+        id: Some(active.id), after: None,
+    }).unwrap();
     assert_eq!(detail.account.unwrap().state, "active");
     assert!(detail.accounts.is_empty());
-    let wrong = HostContext::new(
-        "@other:test".into(),
-        1,
-        "a".repeat(64),
-        1,
-        "device".into(),
-        1,
-    )
-    .unwrap();
-    assert!(
-        reader
-            .account_inventory(&wrong, AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    reader.retire();
-    assert!(
-        reader
-            .account_inventory(&context(), AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    store.shutdown().await.unwrap();
+
 }
 
 #[test]
@@ -185,24 +135,23 @@ async fn account_preparation_original_identity_permissions_and_reopen() {
     use crate::management::PrepareAccount;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state");
-    let make_store = || crate::DomainStore::start(DomainRepository::open_managed(&path, &"a".repeat(64)).unwrap(),8).unwrap();
-    let store = make_store();
-    let reader = Session::new(store.clone(),context(),[Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let store = crate::owner_resources::adoption::TestCurrentManagement::open(&path,"@owner:test").await;
+    let reader = Session::new_current(store.backing.clone(),context(),[Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let input = || PrepareAccount{command_id:"original_prepare".into()};
     assert!(reader.prepare_account(&context(),input()).await.is_err());
     assert!(reader.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap().accounts.is_empty());
-    let writer = Session::new(store.clone(),context(),[Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let writer = Session::new_current(store.backing.clone(),context(),[Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let prepared = writer.prepare_account(&context(),input()).await.unwrap();
     assert_eq!(prepared.state,"active");
-    assert!(path.join(&prepared.account_id).is_dir());
+    assert!(path.join("canonical").join(&prepared.account_id).is_dir());
     assert_eq!(writer.prepare_account(&context(),input()).await.unwrap().account_id,prepared.account_id);
     assert!(writer.account_inventory(&context(),AccountInventoryQuery::default()).await.is_err(),"prepare does not grant inventory reads");
     let page=reader.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap();
     assert_eq!(page.accounts.len(),1); assert_eq!(page.accounts[0].readiness,"unknown");
     writer.retire(); assert!(writer.prepare_account(&context(),input()).await.is_err());
     store.shutdown().await.unwrap(); drop(writer); drop(reader); drop(store);
-    let store=make_store();
-    let restored = Session::new(store.clone(),context(),[Permission::PrepareAccounts,Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let store=crate::owner_resources::adoption::TestCurrentManagement::open(&path,"@owner:test").await;
+    let restored = Session::new_current(store.backing.clone(),context(),[Permission::PrepareAccounts,Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let result=restored.prepare_account(&context(),input()).await.unwrap();
     assert_eq!(result.account_id,prepared.account_id);assert_eq!(result.state,"active");
     assert_eq!(restored.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap().accounts.len(),1);

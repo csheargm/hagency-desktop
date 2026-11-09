@@ -619,7 +619,7 @@ pub(crate) mod tests {
         dir: &std::path::Path,
         probe: Arc<Probe>,
     ) -> Arc<Controller<Probe>> {
-        Controller::new(ControlStore::open(&dir.join("control.json")).unwrap(), probe)
+        Controller::new(ControlStore::open(&dir.join(super::super::CONTROL)).unwrap(), probe)
     }
 
     fn private_dir() -> tempfile::TempDir {

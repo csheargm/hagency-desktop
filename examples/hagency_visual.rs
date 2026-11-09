@@ -58,7 +58,7 @@ impl ScriptHook for App {
 }
 impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
-        let profile = std::path::PathBuf::from(std::env::var_os("RINX_DATA_DIR").expect("isolated profile required"));
+        let profile = std::path::PathBuf::from(std::env::var_os("HAGENCY_DESKTOP_DATA_DIR").expect("isolated profile required"));
         let fixtures = std::env::var_os("HAGENCY_UX_FIXTURES").expect("explicit offline fixtures required");
         self.fixtures = serde_json::from_slice(&std::fs::read(fixtures).unwrap()).unwrap();
         let manifest = octosense_app_contract::parse(include_str!("../apps/hagency/bundle/manifest.json")).unwrap();

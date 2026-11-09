@@ -177,6 +177,9 @@ async fn controller_without_local_tools() {
         .find(|m| m["model"] == "sonnet")
         .unwrap();
     let profile = json!({"model":"sonnet","credential_ref":model["credentialRef"],"workspace_root":value["workspaceA"],"reasoning_effort":"medium"});
+    let initial = b.execute(remote(agent, generation, "model-before-save", local(agent, LocalAction::AgentModel, None))).await.unwrap();
+    let initial: Option<hagency_agent_local::ModelProfile> = serde_json::from_value(initial["modelProfile"].clone()).unwrap();
+    let expected = hagency_agent_local::model_profile_digest(initial.as_ref()).unwrap();
     let mut invalid = profile.clone();
     invalid["model"] = "not-in-target-catalog".into();
     assert_eq!(
@@ -187,7 +190,7 @@ async fn controller_without_local_tools() {
             local(
                 agent,
                 LocalAction::SaveAgentModel,
-                Some(json!({"profile":invalid}))
+                Some(json!({"profile":invalid,"expectedProfileDigest":expected}))
             )
         ))
         .await
@@ -205,7 +208,7 @@ async fn controller_without_local_tools() {
             local(
                 agent,
                 LocalAction::SaveAgentModel,
-                Some(json!({"profile":invalid}))
+                Some(json!({"profile":invalid,"expectedProfileDigest":expected}))
             )
         ))
         .await
@@ -221,7 +224,7 @@ async fn controller_without_local_tools() {
             local(
                 agent,
                 LocalAction::SaveAgentModel,
-                Some(json!({"profile":profile})),
+                Some(json!({"profile":profile,"expectedProfileDigest":expected})),
             ),
         ))
         .await
@@ -235,7 +238,7 @@ async fn controller_without_local_tools() {
             local(
                 agent,
                 LocalAction::SaveAgentModel,
-                Some(json!({"profile":profile})),
+                Some(json!({"profile":profile,"expectedProfileDigest":expected})),
             ),
         ))
         .await

@@ -1,4 +1,5 @@
 use super::*;
+use crate::owner_resources::adoption::TestCurrentManagement;
 use crate::management::{
     Session, HostContext, Permission, PrepareAccount, AccountInventoryQuery, AccountLoginRequest,
 };
@@ -16,18 +17,14 @@ fn context() -> HostContext {
 }
 async fn fixture() -> (
     tempfile::TempDir,
-    crate::DomainStore,
+    TestCurrentManagement,
     Session,
     AccountModelQuery,
 ) {
     let root = tempfile::tempdir().unwrap();
-    let store = crate::DomainStore::start(
-        DomainRepository::open_managed(&root.path().join("state"), &"a".repeat(64)).unwrap(),
-        8,
-    )
-    .unwrap();
-    let session = Session::new(
-        store.clone(),
+    let store = TestCurrentManagement::open(&root.path().join("state"), "@owner:test").await;
+    let session = Session::new_current(
+        store.backing.clone(),
         context(),
         [
             Permission::PrepareAccounts,
@@ -85,8 +82,8 @@ async fn account_inspection_is_original_namespace_and_has_no_login_or_resource_e
 #[tokio::test]
 async fn account_inspection_rechecks_grant_revision_profile_and_pending_login() {
     let (_root, store, session, query) = fixture().await;
-    let reader = Session::new(
-        store.clone(),
+    let reader = Session::new_current(
+        store.backing.clone(),
         context(),
         [Permission::ReadAccounts],
         Instant::now() + Duration::from_secs(60),

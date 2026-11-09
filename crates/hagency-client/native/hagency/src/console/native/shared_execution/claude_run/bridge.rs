@@ -28,6 +28,7 @@ pub(super) struct Capture {
     sink: Option<SharedCallSink>,
     receipt: Option<SharedWorkReceipt>,
     native_session: Option<SharedClaudeSession>,
+    progress: watch::Sender<tokio::time::Instant>,
 }
 pub(super) fn capture(
     live: Live,
@@ -51,6 +52,7 @@ pub(super) fn capture(
             sink: None,
             receipt: None,
             native_session: Some(native_session),
+            progress: watch::channel(tokio::time::Instant::now()).0,
         },
     )
 }
@@ -122,6 +124,7 @@ impl claude_turn::Host for Host {
 }
 impl claude_turn::Capture for Capture {
     async fn bind(&mut self, process: &OwnedClaudeSession) -> codex::Result<()> {
+        self.progress.send_replace(tokio::time::Instant::now());
         let custody = self
             .receive
             .take()
@@ -134,7 +137,9 @@ impl claude_turn::Capture for Capture {
                 .await
                 .map_err(|_| codex::Error::Unknown)?,
         );
-        self.native_session.as_ref().ok_or(codex::Error::Unknown)?
+        self.native_session
+            .as_ref()
+            .ok_or(codex::Error::Unknown)?
             .bind_capture(self.sink.as_mut().ok_or(codex::Error::Unknown)?, process)
             .map_err(|_| codex::Error::Unknown)?;
         Ok(())
@@ -143,6 +148,7 @@ impl claude_turn::Capture for Capture {
         &mut self,
         observation: &hagency_runtime::claude::session::Observation,
     ) -> codex::Result<()> {
+        self.progress.send_replace(tokio::time::Instant::now());
         if let Some(receipt) = self
             .sink
             .as_mut()
@@ -165,13 +171,38 @@ impl claude_turn::Capture for Capture {
                 .map_err(|_| codex::Error::Unknown)?,
         );
         if let Some(session) = self.native_session.take()
-            && session.retain(self.sink.as_ref().ok_or(codex::Error::Unknown)?, process).await.is_err() {
+            && session
+                .retain(self.sink.as_ref().ok_or(codex::Error::Unknown)?, process)
+                .await
+                .is_err()
+        {
             tracing::warn!("Shared Claude completed without a reusable native checkpoint");
         }
         Ok(())
     }
+    async fn complete_unaccounted(
+        &mut self,
+        receipt: &hagency_runtime::claude::session::CompletionReceipt,
+        text: &str,
+    ) -> codex::Result<()> {
+        self.receipt = Some(
+            self.sink
+                .as_mut()
+                .ok_or(codex::Error::Unknown)?
+                .finish_claude_unaccounted(receipt, text)
+                .await
+                .map_err(|_| codex::Error::Unknown)?,
+        );
+        // Answer completion is proven, but unknown usage cannot seed a future
+        // turn's accounting baseline or reusable native checkpoint.
+        self.native_session.take();
+        Ok(())
+    }
 }
 impl Capture {
+    pub fn progress(&self) -> watch::Receiver<tokio::time::Instant> {
+        self.progress.subscribe()
+    }
     pub async fn finish(
         &mut self,
         host: &mut Host,
@@ -301,8 +332,8 @@ async fn permission(
                         decision,
                     )
                     .unwrap_or(false)
-                {
-                    return Ok(false);
+            {
+                return Ok(false);
             }
             return Ok(decision == "approve_once" && reply.value["ownerApproved"] == true);
         }
@@ -324,6 +355,9 @@ pub(super) struct Matrix {
     files: Option<super::super::files::Files<super::super::files::Source>>,
 }
 impl Matrix {
+    pub fn stop_sender(&self) -> controls::Sender {
+        self.sender.clone()
+    }
     pub fn new(
         live: Live,
         work: SharedWorkItem,
@@ -465,25 +499,13 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
         std::future::pending::<()>().await;
         return;
     }
-    let mut receipts = Vec::<(String, String, bool, oneshot::Receiver<controls::Outcome>)>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
-        for i in (0..receipts.len()).rev() {
-            let outcome = match receipts[i].3.try_recv() {
-                Ok(v) => v,
-                Err(oneshot::error::TryRecvError::Empty) => continue,
-                Err(_) => controls::Outcome::Unknown,
-            };
-            let (event, who, stop, _) = receipts.remove(i);
-            let _ = card.receipt(&event, &who, outcome_name(outcome), stop);
-        }
+        card.drain_receipts(false);
         let _ = card.publish().await;
         for (event, action) in card.actions().await.unwrap_or_default() {
-            if !card.claim(&event.event_id) {
-                continue;
-            }
             if live.io.check_running(live.authority.root()).await.is_err() {
                 let _ = card.receipt(&event.event_id, &event.sender, "unavailable", false);
                 continue;
@@ -496,9 +518,13 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
                 }
             };
             match sender.submit(action) {
-                Ok(submission) => {
-                    receipts.push((event.event_id, event.sender, true, submission.receipt))
-                }
+                Ok(submission) => card.track(
+                    event.event_id,
+                    event.sender,
+                    true,
+                    submission.receipt,
+                    outcome_name,
+                ),
                 Err(error) => {
                     let _ = card.receipt(
                         &event.event_id,

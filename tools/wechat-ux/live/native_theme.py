@@ -25,7 +25,7 @@ def launch(root, hosted=False, narrow=False):
     app = NativeApp(root, port=port, auto_login=False)
     app.output.mkdir(parents=True, mode=0o700)
     app.log = (app.output / 'native.log').open('w')
-    env = dict(os.environ, RINX_DATA_DIR=str(profile.resolve()), MAKEPAD_HIDE_WINDOWS='1',
+    env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile.resolve()), MAKEPAD_HIDE_WINDOWS='1',
                MAKEPAD_NO_FOCUS='1', MAKEPAD_REMOTE=str(port))
     env.pop('MAKEPAD_FOCUS', None)
     args = [str(Path('target/fast/examples/theme_mvp').resolve())]

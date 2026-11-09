@@ -90,7 +90,7 @@ class Host:
         self.log = (output / "native.log").open("w")
         self.process = subprocess.Popen([str(binary), f"--remote={port}"] + (["--narrow"] if narrow else []),
             cwd=ROOT, stdout=self.log, stderr=subprocess.STDOUT,
-            env=dict(os.environ, RINX_DATA_DIR=str(profile), HAGENCY_UX_FIXTURES=str(self.fixture_path),
+            env=dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile), HAGENCY_UX_FIXTURES=str(self.fixture_path),
                      HAGENCY_UX_SOURCE=str(source or ROOT / "apps/hagency/bundle/main.splash"),
                      MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1"))
         def ready():

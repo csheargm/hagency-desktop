@@ -132,7 +132,15 @@ impl Fixture {
         )
         .await
         .unwrap();
-        process.session.initialize().await.unwrap();
+        if let Err(error) = process.session.initialize().await {
+            let stderr = match &process.session {
+                hagency_agent_local::runtime::Session::Claude { wire, .. } => {
+                    String::from_utf8_lossy(&wire.stderr_snapshot().tail).into_owned()
+                }
+                _ => String::new(),
+            };
+            panic!("offline initialize failed: {error:?}; native stderr={stderr}");
+        }
         process.session.verify_host_environment().await.unwrap();
         process.session.require_local_account().await.unwrap();
         process
@@ -167,7 +175,7 @@ async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 100 },
+                    BudgetMode::Postpaid,
                     &queue,
                     None,
                 )
@@ -216,25 +224,20 @@ async fn claude_resumed_model_totals_charge_each_turn_and_subagent_once() {
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 100 },
+                    BudgetMode::Postpaid,
                     &queue,
                     None,
                 )
                 .await
                 .unwrap();
-            if mode == "mixed_usage" && call == "second" {
-                // Earlier main-loop usage is not a whole-session baseline.
-                assert!(!reply.usage.is_reported());
+            if mode == "mixed_usage" && call == "first" {
+                assert!(
+                    !reply.usage.is_reported(),
+                    "main-loop-only result is incomplete"
+                );
             } else {
                 assert!(reply.usage.is_reported());
-                assert_eq!(
-                    reply.usage.input + reply.usage.output,
-                    if mode == "mixed_usage" && call == "first" {
-                        24
-                    } else {
-                        54
-                    }
-                );
+                assert_eq!(reply.usage.input + reply.usage.output, 54);
             }
             process.stop().await.unwrap();
             f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
@@ -244,7 +247,7 @@ async fn claude_resumed_model_totals_charge_each_turn_and_subagent_once() {
             if mode == "cumulative" {
                 (162, 0)
             } else {
-                (78, 100)
+                (108, 0)
             }
         );
     }
@@ -269,7 +272,7 @@ async fn claude_background_usage_is_settled_on_its_original_call_before_resume()
                 call,
                 call,
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             ),
@@ -295,8 +298,12 @@ async fn claude_background_usage_is_settled_on_its_original_call_before_resume()
 }
 
 #[tokio::test]
-async fn claude_background_invalid_snapshot_keeps_the_answer_and_unknown_hold() {
-    for mode in ["background_wrong_snapshot", "background_regressing", "background_snapshot_eof"] {
+async fn claude_background_invalid_snapshot_keeps_the_answer_without_inventing_usage() {
+    for mode in [
+        "background_wrong_snapshot",
+        "background_regressing",
+        "background_snapshot_eof",
+    ] {
         let mut f = Fixture::new(Kind::Claude, mode, ToolPolicy::Deny);
         let mut process = f.process().await;
         process
@@ -314,7 +321,7 @@ async fn claude_background_invalid_snapshot_keeps_the_answer_and_unknown_hold() 
                 "first",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             ),
@@ -324,7 +331,7 @@ async fn claude_background_invalid_snapshot_keeps_the_answer_and_unknown_hold() 
         let reply = reply.unwrap();
         assert_eq!(reply.text, "offline reply");
         assert!(!reply.usage.is_reported());
-        assert_eq!(f.spent(), (0, 100));
+        assert_eq!(f.spent(), (0, 0));
         assert_eq!(
             f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
             "unknown"
@@ -363,7 +370,7 @@ async fn claude_background_tools_after_main_reply_still_wait_for_the_owner() {
             "first",
             "dispatch",
             "hello",
-            BudgetMode::Estimated { reservation: 100 },
+            BudgetMode::Postpaid,
             &queue,
             None,
         );
@@ -376,15 +383,27 @@ async fn claude_background_tools_after_main_reply_still_wait_for_the_owner() {
 }
 
 #[tokio::test]
-async fn claude_resumed_counters_cannot_go_backwards_or_release_a_hold() {
-    let mut f = Fixture::new(Kind::Claude, "regressing_usage", ToolPolicy::Deny);
+async fn claude_same_process_counter_regression_keeps_answer_with_unknown_usage() {
+    let mut f = Fixture::new(
+        Kind::Claude,
+        "continuous:regressing_usage",
+        ToolPolicy::Deny,
+    );
+    let mut process = f.process().await;
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
     for call in ["first", "second"] {
-        let mut process = f.process().await;
-        process
-            .session
-            .open_context(&mut f.ledger, &f.scope, &f.profile)
-            .await
-            .unwrap();
+        if call == "second" {
+            process.session.park();
+            process
+                .session
+                .continue_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+        }
         let (queue, _) = codex::approval_queue(1).unwrap();
         let result = process
             .session
@@ -395,19 +414,18 @@ async fn claude_resumed_counters_cannot_go_backwards_or_release_a_hold() {
                 call,
                 call,
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             )
-            .await;
-        if call == "first" {
-            result.unwrap();
-        } else {
-            assert!(matches!(result, Err(Error::Unknown)));
-        }
-        process.stop().await.unwrap();
+            .await
+            .unwrap();
+        assert_eq!(result.text, "offline reply");
+        assert_eq!(result.usage.is_reported(), call == "first");
     }
-    assert_eq!(f.spent(), (54, 100));
+    assert!(!process.session.can_continue());
+    process.stop().await.unwrap();
+    assert_eq!(f.spent(), (54, 0));
     assert_eq!(
         f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
         "unknown"
@@ -434,7 +452,7 @@ async fn octos_turn_usage_followed_by_session_usage_never_charges_previous_turn_
                     call,
                     call,
                     "hello",
-                    BudgetMode::Estimated { reservation: 100 },
+                    BudgetMode::Postpaid,
                     &queue,
                     None,
                 )
@@ -495,7 +513,7 @@ async fn tool_denial_and_exact_owner_verdict_control_real_fixture_effects() {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             );
@@ -524,7 +542,7 @@ async fn tool_denial_and_exact_owner_verdict_control_real_fixture_effects() {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             )
@@ -555,7 +573,7 @@ async fn cancelled_callbacks_do_not_send_late_verdicts_or_lose_terminal_usage() 
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             )
@@ -592,7 +610,7 @@ async fn missing_usage_stays_unknown_and_failed_known_usage_is_charged() {
                     "call",
                     "dispatch",
                     "hello",
-                    BudgetMode::Estimated { reservation: 100 },
+                    BudgetMode::Postpaid,
                     &queue,
                     None,
                 )
@@ -602,7 +620,7 @@ async fn missing_usage_stays_unknown_and_failed_known_usage_is_charged() {
                 assert_eq!(completed.usage.input, 0);
                 assert_eq!(completed.usage.output, 0);
                 assert!(!completed.usage.is_reported());
-                assert_eq!(f.spent(), (0, 100));
+                assert_eq!(f.spent(), (0, 0));
                 assert_eq!(
                     f.ledger
                         .reserve(&f.scope, "new-call", "new-dispatch", 100, now())
@@ -642,7 +660,7 @@ async fn cancelling_running_model_keeps_unknown_usage_after_process_stop() {
                 "call",
                 "dispatch",
                 "hello",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             );
@@ -653,7 +671,7 @@ async fn cancelling_running_model_keeps_unknown_usage_after_process_stop() {
             f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
             "unknown"
         );
-        assert_eq!(f.spent(), (0, 100));
+        assert_eq!(f.spent(), (0, 0));
         process.stop().await.unwrap();
         assert!(!f.path("effect").exists());
         if kind == Kind::Claude {
@@ -668,7 +686,7 @@ async fn cancelling_running_model_keeps_unknown_usage_after_process_stop() {
                     .any(|pair| pair == ["--resume", "offline-session"])
             );
             next.stop().await.unwrap();
-            assert_eq!(f.spent(), (0, 100));
+            assert_eq!(f.spent(), (0, 0));
         }
     }
 }
@@ -691,7 +709,7 @@ async fn different_room_or_requester_never_resumes_another_context() {
             "call",
             "dispatch",
             "hello",
-            BudgetMode::Estimated { reservation: 100 },
+            BudgetMode::Postpaid,
             &queue,
             None,
         )
@@ -741,7 +759,7 @@ async fn native_claude_extension_tools_require_the_same_exact_owner_decision() {
                 "call",
                 "dispatch",
                 "use the configured native tool",
-                BudgetMode::Estimated { reservation: 100 },
+                BudgetMode::Postpaid,
                 &queue,
                 None,
             );
@@ -767,27 +785,226 @@ fn now() -> i64 {
 
 #[tokio::test]
 async fn claude_missing_native_context_rebuilds_once_without_replaying_or_rewriting_usage() {
+    for failure in ["deleted", "reworded", "eof", "refused"] {
+        let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
+        for call in ["before_missing", "after_missing"] {
+            if call == "after_missing" {
+                fs::write(f.path("missing-context"), failure).unwrap();
+            }
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, _) = codex::approval_queue(1).unwrap();
+            let reply = process
+                .session
+                .run_with_started(
+                    &mut f.ledger,
+                    "@owner:test",
+                    &f.scope,
+                    call,
+                    call,
+                    call,
+                    BudgetMode::Postpaid,
+                    &queue,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(reply.usage.is_reported());
+            process.stop().await.unwrap();
+        }
+        let argv = fs::read_to_string(f.path("argv")).unwrap();
+        let launches: Vec<serde_json::Value> = argv
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(launches.len(), 3);
+        assert!(
+            launches[1]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "--resume")
+        );
+        assert!(
+            !launches[2]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "--resume")
+        );
+        let frames = fs::read_to_string(f.path("frames")).unwrap();
+        let prompts: Vec<serde_json::Value> = frames
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .filter(|v: &serde_json::Value| v["type"] == "user")
+            .collect();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0]["message"]["content"], "before_missing");
+        assert_eq!(prompts[1]["message"]["content"], "after_missing");
+        assert_eq!(f.spent(), (48, 0));
+    }
+}
+
+#[tokio::test]
+async fn claude_invalid_numeric_total_keeps_completed_answer_and_unknown_accounting() {
+    let mut f = Fixture::new(Kind::Claude, "overflow_usage", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let result = process
+        .session
+        .run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            "overflow",
+            "overflow",
+            "hello",
+            BudgetMode::Postpaid,
+            &queue,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.text, "offline reply");
+    assert_eq!(result.status, codex::TurnStatus::Completed);
+    assert!(!result.usage.is_reported());
+    assert!(!process.session.can_continue());
+    assert_eq!(f.spent(), (0, 0));
+    assert_eq!(
+        f.ledger.outstanding_calls("@owner:test").unwrap()[0].state,
+        "unknown"
+    );
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn claude_unsupported_version_is_actionable_without_prompt_or_fresh_retry() {
     let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
-    for call in ["before_missing", "after_missing"] {
-        if call == "after_missing" { fs::write(f.path("missing-context"), "deleted").unwrap(); }
+    let mut process = f.process().await;
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    process
+        .session
+        .run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            "first",
+            "first",
+            "original",
+            BudgetMode::Postpaid,
+            &queue,
+            None,
+        )
+        .await
+        .unwrap();
+    process.stop().await.unwrap();
+    fs::write(f.path("cli-version"), "3.0.0").unwrap();
+    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let error = spawn_for_scope_with_guardian(
+        &f.profile,
+        &f.reference,
+        &mut f.ledger,
+        &f.scope,
+        Some(guardian),
+    )
+    .await
+    .err()
+    .expect("unsupported CLI");
+    assert!(matches!(error, Error::Protocol(message) if message.contains("2.1.321")));
+    assert_eq!(
+        fs::read_to_string(f.path("argv")).unwrap().lines().count(),
+        2
+    );
+    let prompts = fs::read_to_string(f.path("frames"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|frame| frame["type"] == "user")
+        .count();
+    assert_eq!(
+        prompts, 1,
+        "unsupported resumed CLI receives no model prompt"
+    );
+    assert_eq!(f.spent(), (24, 0));
+}
+
+#[tokio::test]
+async fn claude_personal_auth_and_launch_select_the_same_native_config_namespace() {
+    for native_default in [false, true] {
+        let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
+        if native_default {
+            let path = f.profile.home.join(".claude");
+            fs::create_dir(&path).unwrap();
+            f.profile.codex_home = path.canonicalize().unwrap();
+            f.reference = local_reference(Kind::Claude, &f.profile.codex_home, None);
+        }
+        let expected = if native_default && std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+            "<native-default>".to_owned()
+        } else {
+            f.profile.codex_home.to_string_lossy().into_owned()
+        };
         let mut process = f.process().await;
-        process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
-        let (queue, _) = codex::approval_queue(1).unwrap();
-        let reply = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope,
-            call, call, call, BudgetMode::Estimated { reservation: 100 }, &queue, None).await.unwrap();
-        assert!(reply.usage.is_reported());
+        assert_eq!(fs::read_to_string(f.path("auth-config")).unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(f.path("launch-config")).unwrap(),
+            expected
+        );
         process.stop().await.unwrap();
     }
-    let argv = fs::read_to_string(f.path("argv")).unwrap();
-    let launches: Vec<serde_json::Value> = argv.lines().map(|l|serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(launches.len(), 3);
-    assert!(launches[1].as_array().unwrap().iter().any(|v|v == "--resume"));
-    assert!(!launches[2].as_array().unwrap().iter().any(|v|v == "--resume"));
-    let frames = fs::read_to_string(f.path("frames")).unwrap();
-    let prompts: Vec<serde_json::Value> = frames.lines().map(|l|serde_json::from_str(l).unwrap())
-        .filter(|v:&serde_json::Value|v["type"] == "user").collect();
-    assert_eq!(prompts.len(), 2);
-    assert_eq!(prompts[0]["message"]["content"], "before_missing");
-    assert_eq!(prompts[1]["message"]["content"], "after_missing");
-    assert_eq!(f.spent(), (48, 0));
+}
+
+#[tokio::test]
+async fn claude_native_background_followup_keeps_final_reply_and_complete_usage() {
+    let mut f = Fixture::new(Kind::Claude, "background_native_followup", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let done = process
+        .session
+        .run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            "call",
+            "call",
+            "start native background work",
+            BudgetMode::Postpaid,
+            &queue,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.text, "native background final answer");
+    assert!(done.usage.is_reported());
+    assert_eq!(done.usage.input + done.usage.output, 64);
+    assert_eq!(f.spent(), (64, 0));
+    let frames: Vec<serde_json::Value> = fs::read_to_string(f.path("frames"))
+        .unwrap()
+        .lines()
+        .map(|v| serde_json::from_str(v).unwrap())
+        .collect();
+    assert_eq!(
+        frames.iter().filter(|f| f["type"] == "user").count(),
+        1,
+        "the admitted native child supplies its own followup; host never replays a model prompt"
+    );
+    process.stop().await.unwrap();
 }

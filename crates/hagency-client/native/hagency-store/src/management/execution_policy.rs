@@ -112,21 +112,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadExecutionPolicy)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_execution_policies(&query, |_| {
-                            session.check(&context, Permission::ReadExecutionPolicy)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .agent_execution_policies(&self.adopted_profile(store)?, query)
+                    .agent_execution_policies(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -142,21 +130,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadExecutionPolicy)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(16 * 1024, move |db| {
-                        db.management_execution_policy(&query, |_| {
-                            session.check(&context, Permission::ReadExecutionPolicy)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .agent_execution_policy(&self.adopted_profile(store)?, query)
+                    .agent_execution_policy(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -174,9 +150,7 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::EditExecutionPolicy)?;
         let profile = match self.local_store()? {
-            SessionStore::Legacy(_) => "",
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store.identity().0,
+            SessionStore::Current(store) => store.identity().0,
         };
         let receipt = CommandReceipt::new(
             context,
@@ -185,21 +159,9 @@ impl Session {
             &serde_json::json!({"profile":profile,"input":input}),
         )?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(24 * 1024, move |db| {
-                        db.management_edit_execution_policy(&input, receipt, |_| {
-                            session.check(&context, Permission::EditExecutionPolicy)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .edit_execution_policy(&self.adopted_profile(store)?, input, receipt)
+                    .edit_execution_policy(&self.current_profile(store)?, input, receipt)
                     .await?
             }
         };

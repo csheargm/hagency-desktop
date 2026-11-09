@@ -355,17 +355,17 @@ async fn open_for_registration(
     let root = &enrollment.owner_root;
     #[cfg(feature = "resource-adoption")]
     {
-        use crate::native_owner::AdoptedManagementSelection;
+        use crate::native_owner::CurrentProfileSelection;
         let selection = if root.exists() {
-            AdoptedManagementSelection::load_for_host(root, &enrollment.origin, &enrollment.owner)
+            CurrentProfileSelection::load_for_host(root, &enrollment.origin, &enrollment.owner)
                 .await
-                .map_err(|_| "adopted_management_initializer_unavailable")?
+                .map_err(|_| "current_profile_initializer_unavailable")?
         } else {
             None
         };
         if let Some(selection) = selection {
             return selection
-                .open_for_onboarding_with_matrix_guarded(
+                .open_with_matrix_guarded(
                     root,
                     &enrollment.origin,
                     &enrollment.owner,
@@ -400,7 +400,7 @@ fn registration_code(code: &str) -> &'static str {
         "native_resume_missing" => "native_resume_missing",
         "native_resume_revoked" => "native_resume_revoked",
         "native_device_registration_unknown" => "native_device_registration_unknown",
-        "adopted_management_scope_changed" => "adopted_management_scope_changed",
+        "current_profile_scope_changed" => "current_profile_scope_changed",
         "server_unavailable" | "matrix_authorization_unavailable" => "server_unavailable",
         _ => "native_registration_failed",
     }

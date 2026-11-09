@@ -4,7 +4,7 @@ use crate::management::{
     StoppedPage, StoppedQuery, StoppedResolution, StoppedReview,
 };
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn stopped_tasks(
         &self,
         profile: &ProfileAuthority,

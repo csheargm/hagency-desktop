@@ -4,8 +4,8 @@ use crate::management::{HostContext, Permission, PublishResource, Session};
 fn context(f: &Fixture) -> HostContext {
     HostContext::new(f.profile.account.clone(),1,"b".repeat(64),1,"publication_device".into(),1).unwrap()
 }
-fn session(b: AdoptedManagementStore, c: &HostContext) -> Session {
-    Session::new_adopted(b,c.clone(),[Permission::ReadResources,Permission::PublishResources,Permission::ConfigureResources,Permission::ReadWebCatalog,Permission::ManageWebCatalog],Instant::now()+Duration::from_secs(60)).unwrap()
+fn session(b: CurrentManagementStore, c: &HostContext) -> Session {
+    Session::new_current(b,c.clone(),[Permission::ReadResources,Permission::PublishResources,Permission::ConfigureResources,Permission::ReadWebCatalog,Permission::ManageWebCatalog],Instant::now()+Duration::from_secs(60)).unwrap()
 }
 async fn input(s: &Session,c: &HostContext,f: &Fixture,id: &str,published: bool) -> PublishResource {
     PublishResource{command_id:id.into(),resource_id:f.resource.id(),expected_revision:s.resource(c,f.resource.id()).await.unwrap().revision,published}
@@ -26,7 +26,7 @@ async fn web_publication_adopted_roundtrip_replays_original_receipt_and_rolls_ba
     assert!(s.resource(&c,f.resource.id()).await.unwrap().published,"old receipt never flips newer state");
     let mut altered=copy(&original);altered.published=true;
     assert!(matches!(s.publish_resource(&c,altered).await,Err(Error::Conflict)));
-    let denied=Session::new_adopted(b.clone(),c.clone(),[Permission::ReadResources],Instant::now()+Duration::from_secs(60)).unwrap();
+    let denied=Session::new_current(b.clone(),c.clone(),[Permission::ReadResources],Instant::now()+Duration::from_secs(60)).unwrap();
     assert!(matches!(denied.publish_resource(&c,original).await,Err(Error::LocalAuthority)));
     let failed=input(&s,&c,&f,"rollback",false).await;
     f.registry.0.store.call(1,|db|{db.db.execute_batch("CREATE TRIGGER reject_publication_receipt BEFORE INSERT ON management_commands WHEN NEW.command_id='rollback' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;Ok(())}).await.unwrap();

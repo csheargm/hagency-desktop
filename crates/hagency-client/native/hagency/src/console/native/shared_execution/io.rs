@@ -56,6 +56,11 @@ pub(super) enum Action {
     },
 }
 impl ServerOperation {
+    #[cfg(test)]
+    pub(in crate::console::native) fn protocol_test_poll() -> Self {
+        Self::new(Action::Poll { after: None }).expect("valid sealed worker poll")
+    }
+
     fn new(action: Action) -> Result<Self, NativeError> {
         match &action {
             Action::SessionRoute { id, input } => {

@@ -2,6 +2,7 @@
 //! credentials never leave the host, and local policy writes never ask an admin.
 use super::server_login::{OwnerError, OwnerOperation, OwnerReply};
 use super::{Error, body, console, cookie, current, recheck};
+use crate::native_owner::RuntimeStartRequest as StartRuntime;
 use hagency_agent_local::{
     Budget, Layer, Ledger, Limit, ModelProfile, Period, Policy, RequestPolicy, Scope, ToolPolicy,
 };
@@ -100,49 +101,9 @@ struct Selection {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StartRuntime {
-    #[serde(default)]
-    recovery_device_id: Option<String>,
-    #[serde(default)]
-    recovery_consent_id: Option<String>,
-    #[serde(default)]
-    binding_id: String,
-    #[serde(default = "default_budget_mode")]
-    mode: String,
-    #[serde(default)]
-    reservation: u64,
-    // Accept the obsolete checkbox from older clients without requiring or persisting it.
-    #[serde(default, rename = "estimatedOptIn")]
-    _legacy_estimated_opt_in: serde::de::IgnoredAny,
-    #[serde(default)]
-    takeover: bool,
-    #[serde(default)]
-    host_files: bool,
-    #[serde(default)]
-    effort: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ToolDecision {
     args_digest: String,
     approved: bool,
-}
-fn default_budget_mode() -> String {
-    "postpaid".into()
-}
-impl StartRuntime {
-    // The obsolete estimate is an identity-bearing recovery preference only.
-    // Keep old saved requests comparable; the execution host always bills after
-    // the native turn and does not reserve this value.
-    fn budget_mode(&self) -> hagency_agent_local::codex::BudgetMode {
-        if self.reservation == 0 {
-            hagency_agent_local::codex::BudgetMode::Postpaid
-        } else {
-            hagency_agent_local::codex::BudgetMode::Estimated {
-                reservation: self.reservation,
-            }
-        }
-    }
 }
 fn default_effort() -> String {
     "medium".into()
@@ -150,7 +111,6 @@ fn default_effort() -> String {
 fn runtime_error(e: super::owned_runtime::RuntimeError) -> OwnerError {
     use super::owned_runtime::RuntimeError::*;
     match e {
-        StrictUnavailable => error(409, "codex_strict_quota_unavailable"),
         Approval => error(409, "invalid_tool_approval"),
         Authorization => error(401, "owner_authorization_required"),
         AlreadyActive => error(409, "agent_runtime_already_active"),
@@ -197,15 +157,8 @@ struct ResetAgentPolicy {
 #[serde(deny_unknown_fields)]
 struct EditAgentModel {
     profile: ModelProfile,
-    #[serde(default,rename="expectedProfileDigest")]
-    expected_profile_digest:Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EditModel {
-    binding_id: String,
-    requester: String,
-    profile: ModelProfile,
+    #[serde(rename="expectedProfileDigest")]
+    expected_profile_digest:String,
 }
 fn layer(value: &str) -> Result<Layer, OwnerError> {
     match value {
@@ -489,7 +442,7 @@ pub(crate) fn profile_identity(
     let digest = Sha256::digest(
         serde_json::to_vec(&(
             origin,
-            crate::server_admission::profile_namespace_issuer(origin),
+            crate::server_admission::profile_storage_namespace(origin),
             subject,
             owner,
         ))
@@ -500,8 +453,6 @@ pub(crate) fn profile_identity(
 struct CheckedProfileDirectory {
     path: PathBuf,
     digest: String,
-    expected: LocalProfileIdentity,
-    legacy_marker: bool,
 }
 
 /// Validate the authenticated profile's private journal namespace without
@@ -555,21 +506,10 @@ fn checked_profile_directory(
     }
     let stored: LocalProfileIdentity =
         serde_json::from_slice(&read_identity_marker(&marker)?).map_err(|_| Error::Unavailable)?;
-    let legacy = LocalProfileIdentity {
-        version: expected.version,
-        origin: expected.origin.clone(),
-        issuer: crate::server_admission::profile_namespace_issuer(origin),
-        subject: expected.subject.clone(),
-        owner: expected.owner.clone(),
-    };
-    if stored != expected && stored != legacy {
-        return Err(Error::Unauthorized);
-    }
+    if stored != expected { return Err(Error::Unauthorized); }
     Ok(CheckedProfileDirectory {
         path: directory,
         digest,
-        expected,
-        legacy_marker: stored == legacy,
     })
 }
 
@@ -589,13 +529,6 @@ pub(crate) fn ledger_path(
         .map_err(|_| Error::Unavailable)?;
     // Pin the database too: directory markers alone cannot make copied data valid.
     Ledger::open_scoped(&path, owner, &profile.digest).map_err(|_| Error::Unauthorized)?;
-    if profile.legacy_marker {
-        hagency_store::private::replace(
-            &profile.path.join("profile-identity.json"),
-            &serde_json::to_vec(&profile.expected).map_err(|_| Error::Unavailable)?,
-        )
-        .map_err(|_| Error::Unavailable)?;
-    }
     Ok(path)
 }
 
@@ -921,7 +854,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         .ok_or_else(|| error(400, "invalid_local_policy"))?
                         .into();
                 }
-                expected_model_digest=input.expected_profile_digest;
+                expected_model_digest=Some(input.expected_profile_digest);
                 model_change = Some(input.profile);
                 None
             } else if method == Method::GET {
@@ -988,9 +921,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     ledger.set_agent_policy(&reply.owner, &agent, revision, &policy).map_err(local_error)?;
                 }
                 if let Some(profile)=model_change {
-                    if let Some(expected)=expected_model_digest {
-                        ledger.set_agent_model_profile_checked(&reply.owner,&agent,&expected,&profile).map_err(local_error)?;
-                    } else {ledger.set_agent_model_profile(&reply.owner,&agent,&profile).map_err(local_error)?;}
+                    let expected = expected_model_digest.ok_or_else(|| error(400, "invalid_arguments"))?;
+                    ledger.set_agent_model_profile_checked(&reply.owner,&agent,&expected,&profile).map_err(local_error)?;
                 }
                 let policy = ledger.agent_policy(&reply.owner, &agent).map_err(local_error)?;
                 let (spent, held) = ledger.agent_account(&reply.owner, &agent, policy.policy.budget.period, now()).map_err(local_error)?;
@@ -1037,10 +969,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 && method == Method::POST
             {
                 let input: StartRuntime = parse(req).await?;
-                if input.mode == "strict" {
-                    return Err(error(409, "codex_strict_quota_unavailable"));
-                }
-                if !["postpaid", "estimated"].contains(&input.mode.as_str()) || !input.binding_id.is_empty() || input.host_files {
+                if !input.binding_id.is_empty() || input.host_files {
                     return Err(error(400, "invalid_runtime_start"));
                 }
                 let reply = api(
@@ -1096,7 +1025,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     .clone()
                     .or_else(|| saved_options.as_ref().map(|value| value.effort.clone()))
                     .unwrap_or_else(default_effort);
-                let mode = input.budget_mode();
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: "*".into(),
@@ -1121,7 +1049,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
                     },
-                    mode,
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {
                         super::device_execution::Takeover::OwnerRequested
@@ -1199,11 +1126,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             if parts.len() == 3 && parts[2] == "start" && method == Method::POST {
                 let input: StartRuntime = parse(req).await?;
                 let effort = input.effort.clone().unwrap_or_else(default_effort);
-                if input.mode == "strict" {
-                    return Err(error(409, "codex_strict_quota_unavailable"));
-                }
-                if !["postpaid", "estimated"].contains(&input.mode.as_str())
-                    || ![
+                if ![
                         "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
                     ]
                     .contains(&effort.as_str())
@@ -1235,7 +1158,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if profile.credential_ref != provider.credential_ref {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
-                let mode = input.budget_mode();
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: input.binding_id,
@@ -1260,7 +1182,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
                     },
-                    mode,
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {
                         super::device_execution::Takeover::OwnerRequested
@@ -1403,7 +1324,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             };
             return public(&api(req, depot, op).await?.value, "agent");
         }
-        if parts.len() == 2 && ["local-policy", "model-profile"].contains(&parts[1]) {
+        if parts.len() == 2 && parts[1] == "local-policy" {
             if method != Method::GET {
                 require_execution_device(req, depot, &agent).await?;
             }
@@ -1412,7 +1333,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 Read,
                 Policy(EditPolicy),
                 Reset(ResetPolicy),
-                Model(EditModel),
             }
             let (selected, change) = if method == Method::GET {
                 (selection(req)?, Change::Read)
@@ -1435,15 +1355,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         requester: input.requester.clone(),
                     },
                     Change::Reset(input),
-                )
-            } else if method == Method::PUT && route == "model-profile" {
-                let input: EditModel = parse(req).await?;
-                (
-                    Selection {
-                        binding_id: input.binding_id.clone(),
-                        requester: input.requester.clone(),
-                    },
-                    Change::Model(input),
                 )
             } else {
                 return Err(error(405, "unsupported_operation"));
@@ -1480,23 +1391,6 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                             .set_policy(&reply.owner, &scope, l, input.expected_revision, &policy)
                             .map_err(local_error)?;
                     }
-                    Change::Model(mut input) => {
-                        if !Path::new(&input.profile.workspace_root).is_absolute() {
-                            return Err(error(400, "invalid_local_policy"));
-                        }
-                        let workspace = std::fs::canonicalize(&input.profile.workspace_root)
-                            .map_err(|_| error(400, "invalid_local_policy"))?;
-                        if !workspace.is_dir() {
-                            return Err(error(400, "invalid_local_policy"));
-                        }
-                        input.profile.workspace_root = workspace
-                            .to_str()
-                            .ok_or_else(|| error(400, "invalid_local_policy"))?
-                            .into();
-                        ledger
-                            .set_model_profile(&reply.owner, &scope, &input.profile)
-                            .map_err(local_error)?;
-                    }
                 }
                 view(&ledger, &scope)
             })
@@ -1524,37 +1418,13 @@ async fn dispatch(req: &mut Request, depot: &Depot, res: &mut Response) {
 mod profile_tests {
     use super::*;
     #[test]
-    fn runtime_start_defaults_to_estimated_and_accepts_legacy_checkbox() {
-        for legacy in [None, Some(false), Some(true)] {
-            let mut input = json!({"reservation":10000,"effort":"low"});
-            if let Some(value) = legacy {
-                input["estimatedOptIn"] = json!(value);
-            }
-            let parsed: StartRuntime = serde_json::from_value(input).unwrap();
-            assert_eq!(parsed.mode, "postpaid");
-            assert_eq!(parsed.reservation, 10000);
+    fn runtime_start_rejects_obsolete_budget_configuration() {
+        assert!(serde_json::from_value::<StartRuntime>(json!({"effort":"low"})).is_ok());
+        for value in [json!({"estimatedOptIn":true}), json!({"reservation":0}),
+            json!({"reservation":1234}), json!({"mode":"strict"}), json!({"mode":"estimated"}),
+            json!({"executable":"untrusted"})] {
+            assert!(serde_json::from_value::<StartRuntime>(value).is_err());
         }
-        let strict: StartRuntime = serde_json::from_value(json!({"mode":"strict"})).unwrap();
-        assert_eq!(
-            strict.mode, "strict",
-            "an explicit unsupported mode must not silently become postpaid"
-        );
-        assert!(serde_json::from_value::<StartRuntime>(json!({"reservation":-1})).is_err());
-        assert!(
-            serde_json::from_value::<StartRuntime>(
-                json!({"reservation":10,"executable":"untrusted"})
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn runtime_start_defaults_to_postpaid_and_preserves_legacy_intent_hint() {
-        use hagency_agent_local::codex::BudgetMode;
-        let start: StartRuntime = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(start.mode, "postpaid");
-        assert!(matches!(start.budget_mode(), BudgetMode::Postpaid));
-        let old: StartRuntime = serde_json::from_value(json!({"mode":"estimated","reservation":1234})).unwrap();
-        assert!(matches!(old.budget_mode(), BudgetMode::Estimated { reservation: 1234 }));
     }
     #[test]
     fn public_binding_keeps_reply_policy_without_leaking_unknown_fields() {
@@ -1582,13 +1452,13 @@ mod profile_tests {
     }
 
     #[test]
-    fn auth_path_upgrade_preserves_scoped_ledger_and_rewrites_only_matching_marker() {
+    fn obsolete_auth_marker_is_rejected_without_rewriting_identity() {
         let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let root = temp.path().join("state");
         let origin = "https://server.example/";
         let issuer = "https://server.example/auth/";
         let owner = "@alice:example";
-        let legacy_issuer = crate::server_admission::profile_namespace_issuer(origin);
+        let legacy_issuer = crate::server_admission::profile_storage_namespace(origin);
         let legacy_digest = format!(
             "{:x}",
             Sha256::digest(
@@ -1610,14 +1480,9 @@ mod profile_tests {
             owner: owner.into(),
         };
         hagency_store::private::replace(&marker, &serde_json::to_vec(&legacy).unwrap()).unwrap();
-        assert_eq!(
-            ledger_path(&root, origin, issuer, "subject", owner).unwrap(),
-            path
-        );
-        let migrated: LocalProfileIdentity =
-            serde_json::from_slice(&read_identity_marker(&marker).unwrap()).unwrap();
-        assert_eq!(migrated.issuer, issuer);
-        assert_eq!(migrated.subject, "subject");
+        assert!(ledger_path(&root, origin, issuer, "subject", owner).is_err());
+        let retained: LocalProfileIdentity = serde_json::from_slice(&read_identity_marker(&marker).unwrap()).unwrap();
+        assert!(retained == legacy);
         let wrong = LocalProfileIdentity {
             subject: "different".into(),
             ..legacy

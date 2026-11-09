@@ -6,7 +6,7 @@ your server's browser sign-in provider.
 
 The app stores session information, room caches, settings, article drafts, and
 selected article assets in its local profile. Rinx uses its own default profile;
-`RINX_DATA_DIR` can select a different absolute directory.
+`HAGENCY_DESKTOP_DATA_DIR` can select a different absolute directory.
 
 Mini-app authorization is tied to the signed-in Matrix user and the requested
 capabilities. The article mini app receives scoped host operations, not the

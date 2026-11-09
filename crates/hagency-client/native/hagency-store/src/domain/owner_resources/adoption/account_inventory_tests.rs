@@ -14,7 +14,7 @@ async fn account_inventory_canonical_scope_pagination_and_revoked_visibility() {
         1,
     )
     .unwrap();
-    let session = Session::new_adopted(
+    let session = Session::new_current(
         backing.clone(),
         ctx.clone(),
         [Permission::ReadAccounts],
@@ -112,7 +112,7 @@ async fn account_inventory_canonical_scope_pagination_and_revoked_visibility() {
             .await
             .is_err()
     );
-    let denied = Session::new_adopted(
+    let denied = Session::new_current(
         backing,
         ctx.clone(),
         [Permission::ReadProviders],
@@ -166,7 +166,7 @@ async fn account_preparation_canonical_owner_is_retained_without_resource_or_log
     use crate::management::PrepareAccount;
     let f=fixture().await;let backing=resource_name_tests::active(&f).await;
     let ctx=HostContext::new(f.profile.account.clone(),1,"a".repeat(64),1,"account_device".into(),1).unwrap();
-    let session=Session::new_adopted(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let session=Session::new_current(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let input=||PrepareAccount{command_id:"prepare_canonical_original".into()};
     let prepared=session.prepare_account(&ctx,input()).await.unwrap();
     assert_eq!(prepared.state,"active");
@@ -190,7 +190,7 @@ async fn managed_login_canonical_store_keeps_private_profile_and_resource_author
     use crate::management::{PrepareAccount,AccountLoginRequest};
     let f=fixture().await;let backing=resource_name_tests::active(&f).await;
     let ctx=HostContext::new(f.profile.account.clone(),1,"a".repeat(64),1,"account_device".into(),1).unwrap();
-    let session=Session::new_adopted(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts,Permission::LoginAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let session=Session::new_current(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts,Permission::LoginAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let account=session.prepare_account(&ctx,PrepareAccount{command_id:"prepare_login_original".into()}).await.unwrap();
     let page=session.account_inventory(&ctx,AccountInventoryQuery::default()).await.unwrap();
     let selected=page.accounts.iter().find(|a|a.id==account.account_id).unwrap();
@@ -216,7 +216,7 @@ async fn account_retirement_canonical_hidden_resource_binding_and_owner_authorit
     let f=fixture().await;let backing=resource_name_tests::active(&f).await;
     let ctx=HostContext::new(f.profile.account.clone(),1,"a".repeat(64),1,"account_device".into(),1).unwrap();
     let until=Instant::now()+Duration::from_secs(60);
-    let session=Session::new_adopted(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts,Permission::RetireAccounts],until).unwrap();
+    let session=Session::new_current(backing,ctx.clone(),[Permission::ReadAccounts,Permission::PrepareAccounts,Permission::RetireAccounts],until).unwrap();
     let empty=session.prepare_account(&ctx,PrepareAccount{command_id:"retire-empty-prepare".into()}).await.unwrap();
     let row=session.account_inventory(&ctx,AccountInventoryQuery{id:Some(empty.account_id.clone()),after:None}).await.unwrap().account.unwrap();
     let input=RetireAccount{command_id:"retire-canonical-original".into(),account_id:empty.account_id,expected_revision:row.revision.unwrap()};

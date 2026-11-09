@@ -145,7 +145,11 @@ pub(super) enum DemandAction {
 }
 impl DemandAction {
     pub(super) fn validate(&self) -> Result<(), NativeError> {
-        if !cfg!(feature = "shared-intake") {
+        // Native context and engine negotiation share this read-only endpoint.
+        // Enabling execution must not also enable intake mutations.
+        if !cfg!(feature = "shared-intake")
+            && !(cfg!(feature = "shared-execution") && matches!(self, Self::Discovery))
+        {
             return Err(failure(409, "shared_intake_disabled"));
         }
         match self {

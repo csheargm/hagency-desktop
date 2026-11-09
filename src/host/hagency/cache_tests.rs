@@ -170,7 +170,7 @@ async fn failed_adoption_cache_eviction_releases_original_profile_before_recover
     let manager = NativeManagement::local(owner.management(package()).await.unwrap());
     let (host, _) = host_and_lease();
     *host.0.manager.lock().unwrap() = Some(manager.clone());
-    host.evict_retired_adoption_caches().unwrap();
+    host.evict_retired_setup_caches().unwrap();
     assert!(host.0.manager.lock().unwrap().is_some());
     owner.shutdown().await;
     drop(manager);
@@ -179,7 +179,7 @@ async fn failed_adoption_cache_eviction_releases_original_profile_before_recover
         fixture.open_detached().await.err().unwrap().code,
         "native_owner_state_unavailable"
     );
-    host.evict_retired_adoption_caches().unwrap();
+    host.evict_retired_setup_caches().unwrap();
     assert!(host.0.manager.lock().unwrap().is_none());
     assert_eq!(
         fixture.open_detached().await.err().unwrap().code,

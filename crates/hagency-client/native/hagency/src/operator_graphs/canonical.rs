@@ -12,7 +12,7 @@ use hagency_store::{
         graph_journal::{GraphJournalCommand, GraphJournalReceipt},
     },
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -98,8 +98,76 @@ pub(crate) fn exact_id(value: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+const MAX_DRAFT_JSON_BYTES: usize = 128 * 1024;
+const MAX_DRAFT_JSON_ITEMS: usize = 10_000;
+
 pub(crate) fn parse_draft_json(raw: &str) -> Result<Value, Error> {
-    super::history::parse(Some(raw.as_bytes()), Value::Null).map_err(domain_error)
+    if raw.len() > MAX_DRAFT_JSON_BYTES {
+        return Err(Error::Capacity);
+    }
+    serde_json::from_slice::<UniqueDraftValue>(raw.as_bytes())
+        .map(|value| value.0)
+        .map_err(|_| InvalidInput("invalid graph JSON").into())
+}
+
+/// A reviewed draft must have a single interpretation. Ordinary `Value`
+/// deserialization silently replaces duplicate object keys, including nested
+/// keys in arbitrary result/condition data. Keep this validation at the current
+/// command boundary, with byte, collection and serde recursion limits.
+struct UniqueDraftValue(Value);
+impl<'de> Deserialize<'de> for UniqueDraftValue {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = UniqueDraftValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("unambiguous graph JSON")
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueDraftValue(Value::Null))
+            }
+            fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueDraftValue(Value::Bool(value)))
+            }
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueDraftValue(Value::Number(value.into())))
+            }
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueDraftValue(Value::Number(value.into())))
+            }
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| UniqueDraftValue(Value::Number(number)))
+                    .ok_or_else(|| E::custom("invalid number"))
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueDraftValue(Value::String(value.into())))
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(UniqueDraftValue(value)) = seq.next_element()? {
+                    if values.len() >= MAX_DRAFT_JSON_ITEMS {
+                        return Err(de::Error::custom("graph JSON item limit"));
+                    }
+                    values.push(value);
+                }
+                Ok(UniqueDraftValue(Value::Array(values)))
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, UniqueDraftValue(value))) = map.next_entry::<String, UniqueDraftValue>()? {
+                    if values.len() >= MAX_DRAFT_JSON_ITEMS {
+                        return Err(de::Error::custom("graph JSON item limit"));
+                    }
+                    if values.insert(key, value).is_some() {
+                        return Err(de::Error::custom("duplicate graph JSON key"));
+                    }
+                }
+                Ok(UniqueDraftValue(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 fn domain_error(error: GraphError) -> Error {
     InvalidInput(error.code).into()
@@ -314,3 +382,6 @@ impl OperatorGraphJournal {
 
 #[cfg(all(test, feature = "test-support"))]
 mod tests;
+
+#[cfg(test)]
+mod parser_tests;

@@ -406,9 +406,8 @@ mod tests {
 }
 
 /// Publish a synced owner-private temporary file without replacing any existing
-/// name. Available only to the default-disabled adoption checkpoint. This is
-/// filesystem custody, not resource/import authority.
-#[cfg(feature = "resource-adoption")]
+/// name. Current profile initialization uses this filesystem primitive; it
+/// does not supply resource or account authority.
 pub fn publish_new(dir: &cap_std::fs::Dir, temporary: &str, name: &str) -> Result<(), Error> {
     use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
     for value in [temporary, name] {

@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 
 pub const TASK_READ_PAGE: usize = 16;
 pub const TASK_COMMENT_PAGE: usize = 2;
-#[cfg(feature = "resource-adoption")]
-const ARCHIVED: &str = "task_history_not_migrated";
+const ARCHIVED: &str = "current_task_proof_required";
 fn text(value: &Option<String>, max: usize) -> Result<(), Error> {
     if value
         .as_ref()
@@ -204,51 +203,6 @@ pub(crate) fn bounded<T: Serialize>(value: T) -> Result<T, Error> {
     }
 }
 impl Session {
-    /// Native migration review, distinct from script Tasks reads. Uses only the
-    /// already-authorized legacy store; never opens an archive or adopted store.
-    #[cfg(any(test, feature = "resource-adoption"))]
-    pub async fn resource_adoption_task_preview(
-        &self,
-        context: &HostContext,
-    ) -> Result<crate::owner_resources::adoption::OperatorTaskTransferPreview, Error> {
-        self.resource_adoption_preview(context, false).await
-    }
-    /// Fresh native review explicitly includes resource alerts and notes.
-    #[cfg(any(test, feature = "resource-adoption"))]
-    pub async fn resource_adoption_history_preview(
-        &self,
-        context: &HostContext,
-    ) -> Result<crate::owner_resources::adoption::OperatorTaskTransferPreview, Error> {
-        self.resource_adoption_preview(context, true).await
-    }
-    #[cfg(any(test, feature = "resource-adoption"))]
-    async fn resource_adoption_preview(
-        &self,
-        context: &HostContext,
-        alerts: bool,
-    ) -> Result<crate::owner_resources::adoption::OperatorTaskTransferPreview, Error> {
-        self.check(context, Permission::PrepareSourceQuiescence)?;
-        let authority = self.authority();
-        let pinned = context.clone();
-        let deadline = self
-            .valid_until()
-            .min(Instant::now() + Duration::from_secs(2));
-        let value = self.local_store()?.legacy()?
-            .call(4 * 1024 * 1024, move |db| {
-                authority.authorize(&pinned, Permission::PrepareSourceQuiescence)?;
-                let value = if alerts {
-                    db.adoption_history_preview(deadline)?
-                } else {
-                    db.adoption_task_preview(deadline)?
-                };
-                authority.authorize(&pinned, Permission::PrepareSourceQuiescence)?;
-                Ok(value)
-            })
-            .await?;
-        self.check(context, Permission::PrepareSourceQuiescence)?;
-        Ok(value)
-    }
-
     pub async fn operator_task_page(
         &self,
         context: &HostContext,
@@ -257,16 +211,8 @@ impl Session {
         self.check(context, Permission::ReadTasks)?;
         query.validate()?;
         let mut out = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                store
-                    .call(1024, move |db| {
-                        db.management_operator_task_page(query, now())
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store
-                .operator_task_page(&self.adopted_profile(store)?, query, now())
+            SessionStore::Current(store) => store
+                .operator_task_page(&self.current_profile(store)?, query, now())
                 .await?
                 .unwrap_or_else(|| OperatorTaskPage {
                     write_supported: false,
@@ -296,40 +242,8 @@ impl Session {
         self.check(context, Permission::ReadTasks)?;
         query.validate()?;
         let mut out = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                store
-                    .call(256, move |db| {
-                        let mut task = db.operator_task(&query.id)?;
-                        let comment_count = task.comments.len();
-                        task.comments = task
-                            .comments
-                            .into_iter()
-                            .skip(query.comment_offset)
-                            .take(TASK_COMMENT_PAGE)
-                            .collect();
-                        let end = query.comment_offset + task.comments.len();
-                        Ok(OperatorTaskDetail {
-                            write_supported: false,
-                            write_operations: vec![],
-                            revision: None,
-                            supported: true,
-                            reason: None,
-                            next: crate::operator_transitions(&task.status)
-                                .iter()
-                                .map(|s| (*s).into())
-                                .collect(),
-                            task: Some(task),
-                            comment_count,
-                            next_comment_offset: (end < comment_count).then_some(end),
-                            observed_at_ms: now(),
-                            unavailable: vec!["health"],
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store
-                .operator_task_detail(&self.adopted_profile(store)?, query, now())
+            SessionStore::Current(store) => store
+                .operator_task_detail(&self.current_profile(store)?, query, now())
                 .await?
                 .unwrap_or_else(|| OperatorTaskDetail {
                     write_supported: false,
@@ -362,14 +276,8 @@ impl Session {
         self.check(context, Permission::ReadTaskBoard)?;
         query.validate()?;
         let out = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                store
-                    .call(1024, move |db| db.management_operator_board(query, now()))
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store
-                .operator_board(&self.adopted_profile(store)?, query, now())
+            SessionStore::Current(store) => store
+                .operator_board(&self.current_profile(store)?, query, now())
                 .await?
                 .unwrap_or_else(|| OperatorBoardPage {
                     supported: false,

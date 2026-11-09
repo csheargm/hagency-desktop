@@ -57,6 +57,9 @@ pub(super) struct Request {
 #[derive(Default)]
 pub(super) struct State(Option<Request>);
 impl State {
+    pub(super) fn started_request_id(&self) -> Option<&str> {
+        self.0.as_ref().filter(|r| r.started).map(|r| r.id.as_str())
+    }
     pub(super) fn pending(&self) -> bool {
         self.0
             .as_ref()
@@ -65,7 +68,7 @@ impl State {
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.0
             .as_ref()
-            .filter(|r| r.started && r.receipt.is_none())
+            .filter(|r| r.started && r.receipt.as_ref().is_none_or(|r| r.accepted))
             .map(|r| r.deadline)
     }
     pub(super) fn blocks_replies(&self) -> bool {
@@ -126,6 +129,11 @@ impl State {
             accepted: matches!(outcome, ControlOutcome::Success(_)),
             still_queued,
         });
+        // An acknowledgement is not completion. Bound the final drain even
+        // when the native peer accepts stop but never emits result and idle.
+        if matches!(outcome, ControlOutcome::Success(_)) {
+            request.deadline = Instant::now() + Duration::from_secs(10);
+        }
         Ok(())
     }
 }

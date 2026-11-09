@@ -2,8 +2,8 @@
 //!
 //! Lifecycle ported from Hagency Desktop's `backend::Service`: register the
 //! native owner in a synchronous retirement slot before authorization starts,
-//! open the adopted selection (or legacy owner) through SDK authorization,
-//! restore legacy runtime intents, then start the allocation and shared
+//! open the current profile through SDK authorization,
+//! restore current personal runtime intents, then start the allocation and shared
 //! workers. Stop retires and drains workers before suspending the native
 //! owner, which releases the owner-root lock. Ordinary stop never revokes the
 //! native resumption; only explicit sign-out does.
@@ -256,7 +256,7 @@ struct Hosted {
     allocation: Arc<Worker>,
     shared: Arc<Worker>,
     #[cfg(feature="resource-adoption")]
-    executor_slot:Arc<tokio::sync::Mutex<Option<Arc<crate::native_owner::AdoptedSharedExecutor>>>>,
+    executor_slot:Arc<tokio::sync::Mutex<Option<Arc<crate::native_owner::CurrentSharedExecutor>>>>,
     monitor: tokio::task::JoinHandle<()>,
 }
 
@@ -681,11 +681,11 @@ impl Inner {
         &self,
         enrollment: &Enrollment,
         custody: &Arc<SdkCustody>,
-    ) -> Result<(NativeOwner, Option<crate::native_owner::AdoptedManagementSelection>), NativeError> {
-        use crate::native_owner::AdoptedManagementSelection;
+    ) -> Result<(NativeOwner, Option<crate::native_owner::CurrentProfileSelection>), NativeError> {
+        use crate::native_owner::CurrentProfileSelection;
         let root = &enrollment.owner_root;
         let selection = if root.exists() {
-            AdoptedManagementSelection::load_for_host(root, &enrollment.origin, &enrollment.owner).await?
+            CurrentProfileSelection::load_for_host(root, &enrollment.origin, &enrollment.owner).await?
         } else {
             None
         };
@@ -693,7 +693,7 @@ impl Inner {
         let owner = match &selection {
             Some(selection) => {
                 selection
-                    .open_for_onboarding_with_matrix_guarded(root, &enrollment.origin, &enrollment.owner, custody.tokens(), guard)
+                    .open_with_matrix_guarded(root, &enrollment.origin, &enrollment.owner, custody.tokens(), guard)
                     .await?
             }
             None => {
@@ -1423,7 +1423,7 @@ mod tests {
         assert!(retryable("native_owner_state_unavailable"));
         assert!(retryable("matrix_authorization_unavailable"));
         assert!(retryable("server_unavailable"));
-        for code in ["matrix_authorization_required", "matrix_account_mismatch", "adopted_management_scope_changed", "native_resume_revoked"] {
+        for code in ["matrix_authorization_required", "matrix_account_mismatch", "current_profile_scope_changed", "native_resume_revoked"] {
             assert!(!retryable(code), "{code}");
         }
         assert_eq!(static_code("/Users/x/.codex/auth.json secret"), "native_owner_drain_required");

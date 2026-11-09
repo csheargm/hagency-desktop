@@ -1,7 +1,7 @@
 //! Native completion evidence. A main-loop result does not stop background work.
 use super::{Error, EventKind, Operation, Phase, SessionDriver};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(Default)]
@@ -14,8 +14,70 @@ pub(super) struct Completion {
     result_had_background: bool,
     saw_child_work: bool,
     snapshot: Option<String>,
+    answer: Option<([u8; 32], bool)>,
+    task_runs: BTreeMap<String, String>,
+    notified_runs: BTreeSet<String>,
+    consumed_runs: BTreeSet<String>,
+    background_response: bool,
+    stop_result: Option<String>,
 }
 impl Completion {
+    fn remember_run(&mut self, task: &Value) -> Result<(), Error> {
+        let Some(run) = task.get("run_id") else {
+            return Ok(());
+        };
+        let run = run
+            .as_str()
+            .filter(|id| super::super::identifier(id))
+            .ok_or(Error::Identity)?;
+        let task = task["task_id"]
+            .as_str()
+            .filter(|id| super::super::identifier(id))
+            .ok_or(Error::Identity)?;
+        if let Some(original) = self.task_runs.get(run) {
+            if original != task {
+                return Err(Error::Identity);
+            }
+        } else {
+            if self.task_runs.len() >= 1024 {
+                return Err(Error::Capacity);
+            }
+            self.task_runs.insert(run.into(), task.into());
+        }
+        Ok(())
+    }
+    pub(super) fn begin_background_response(&mut self, payload: &Value) -> Result<(), Error> {
+        if !self.enabled
+            || !self.result
+            || self.snapshot.is_some()
+            || self.background_response
+            || self.notified_runs.is_empty()
+            || payload
+                .get("user_message_uuid")
+                .is_some_and(|v| !v.is_null())
+            || payload
+                .get("user_message_uuids")
+                .is_some_and(|v| !v.is_null())
+        {
+            return Err(Error::Identity);
+        }
+        self.background_response = true;
+        self.idle = false;
+        Ok(())
+    }
+    pub(super) fn background_result(&self, payload: &Value) -> bool {
+        self.background_response
+            && self.snapshot.is_none()
+            && payload["origin"]["kind"] == "task-notification"
+            && payload["origin"]["producer"] == "session-task"
+            && payload["origin"]["runId"]
+                .as_str()
+                .is_some_and(|id| self.notified_runs.contains(id))
+            && payload.get("user_message_uuid").is_none_or(|v| v.is_null())
+            && payload
+                .get("user_message_uuids")
+                .is_none_or(|v| v.is_null())
+    }
     pub(super) fn observe(&mut self, kind: EventKind, payload: &Value) -> Result<(), Error> {
         if !self.enabled {
             self.result |= kind == EventKind::Result;
@@ -47,6 +109,9 @@ impl Completion {
                         if task["ambient"] != true && !background.insert(id.to_owned()) {
                             return Err(Error::Identity);
                         }
+                        if task["ambient"] != true {
+                            self.remember_run(task)?;
+                        }
                     }
                     if background != self.background && self.result {
                         self.changed_after_result = true;
@@ -58,6 +123,26 @@ impl Completion {
                 Some("task_started" | "task_progress" | "task_notification" | "task_updated")
                     if payload["ambient"] != true =>
                 {
+                    if payload["subtype"] == "task_started" {
+                        self.remember_run(payload)?;
+                    } else if payload["subtype"] == "task_notification"
+                        && let Some(run) = payload.get("run_id")
+                    {
+                        let run = run.as_str().ok_or(Error::Identity)?;
+                        if self.task_runs.get(run).map(String::as_str)
+                            != payload["task_id"].as_str()
+                            || !matches!(
+                                payload["status"].as_str(),
+                                Some("completed" | "failed" | "stopped")
+                            )
+                        {
+                            return Err(Error::Identity);
+                        }
+                        if self.consumed_runs.contains(run) {
+                            return Ok(());
+                        }
+                        self.notified_runs.insert(run.into());
+                    }
                     self.saw_child_work = true;
                     if self.result {
                         self.changed_after_result = true;
@@ -66,10 +151,30 @@ impl Completion {
                 _ => {}
             },
             EventKind::Result => {
+                if self.background_response {
+                    if !self.background_result(payload) {
+                        return Err(Error::Identity);
+                    }
+                    let run = payload["origin"]["runId"].as_str().ok_or(Error::Identity)?;
+                    self.notified_runs.remove(run);
+                    self.consumed_runs.insert(run.into());
+                    self.background_response = false;
+                } else if !payload["origin"].is_null() {
+                    // An autonomous result must be tied to the original task's
+                    // observed start, completion notification and native init.
+                    return Err(Error::Identity);
+                }
                 if let Some(id) = &self.snapshot
                     && !correlated(payload, id)
                 {
                     return Err(Error::Identity);
+                }
+                if self.snapshot.is_none() {
+                    use sha2::{Digest, Sha256};
+                    self.answer = Some((
+                        Sha256::digest(payload["result"].as_str().unwrap_or("").as_bytes()).into(),
+                        payload["is_error"] == true,
+                    ));
                 }
                 self.result = true;
                 self.changed_after_result = false;
@@ -92,7 +197,22 @@ impl Completion {
         Ok(())
     }
     pub(super) fn complete(&self) -> bool {
-        self.enabled && self.result && self.idle && self.background.is_empty()
+        self.enabled
+            && self.result
+            && self.idle
+            && self.background.is_empty()
+            && !self.background_response
+            && self.notified_runs.is_empty()
+    }
+    pub(super) fn observe_stop_result(&mut self, request: &str) {
+        self.stop_result = Some(request.into());
+    }
+    pub(super) fn accepted_stop(&mut self, request: &str) {
+        // An acknowledged interrupt's terminal result ends pending native
+        // notification turns as well; the live child set must still drain.
+        if self.stop_result.as_deref() == Some(request) {
+            self.notified_runs.clear();
+        }
     }
     pub(super) fn finished(&self) -> bool {
         if self.enabled {
@@ -107,6 +227,19 @@ impl Completion {
 }
 
 impl<R, W, E> SessionDriver<R, W, E> {
+    pub fn completion_receipt(&self) -> Result<super::CompletionReceipt, Error> {
+        if self.phase != Phase::ResultObserved || !self.completion.complete() {
+            return Err(Error::State);
+        }
+        let (digest, is_error) = self.completion.answer.ok_or(Error::State)?;
+        Ok(self.observations.completed(
+            self.session_id.as_deref().ok_or(Error::State)?,
+            digest,
+            is_error,
+            self.interrupt_receipt()
+                .is_some_and(|receipt| receipt.accepted()),
+        ))
+    }
     /// Use only while the host continuously supervises the admitted turn and
     /// owns process cleanup. Native reasoning/tool silence has no wall-clock
     /// ceiling; protocol frames, writes and individual callbacks remain bounded.
@@ -116,7 +249,10 @@ impl<R, W, E> SessionDriver<R, W, E> {
             || self.session_id.is_none()
             || self.awaiting_init
             || !self.control.untouched()
-            || self.room_mcp.as_ref().is_some_and(|state| !state.untouched())
+            || self
+                .room_mcp
+                .as_ref()
+                .is_some_and(|state| !state.untouched())
         {
             return Err(Error::State);
         }

@@ -285,7 +285,7 @@ impl Ledger {
         #[cfg(test)]
         hagency_platform::legacy_writer::test_support::initialize_process_root()?;
         let legacy_writer =
-            hagency_platform::legacy_writer::LegacyWriterAdmission::acquire_for_legacy_startup()?;
+            hagency_platform::legacy_writer::LegacyWriterAdmission::acquire()?;
         let db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         // Serialize the decision as well as DDL: a waiter must see the schema

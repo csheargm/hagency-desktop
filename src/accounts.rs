@@ -55,17 +55,10 @@ pub(crate) fn scan(root: &Path) -> anyhow::Result<Vec<SavedAccount>> {
             continue;
         };
         let user = session.user_session.meta().user_id.clone();
-        let legacy = root.join(user.as_str().replace(':', "_").replace('@', ""));
         let canonical = account_dir(root, &user);
         // A manually misplaced session must never grant authority to its path.
-        if path != canonical && path != legacy {
+        if path != canonical {
             continue;
-        }
-        if path == legacy {
-            if canonical.exists() {
-                continue;
-            }
-            std::fs::rename(&path, &canonical)?;
         }
         #[cfg(unix)]
         {
@@ -184,23 +177,12 @@ mod tests {
         assert_ne!(account_dir(root, &a), account_dir(root, &elsewhere));
     }
     #[test]
-    fn migration_preserves_sessions_and_app_state_and_is_idempotent() {
-        let f = Fixture::new();
-        let old = f.session("@alice:fixture.test", true);
-        let before = std::fs::read(old.join("persistent_state/session")).unwrap();
-        let first = scan(&f.0).unwrap();
-        assert_eq!(first.len(), 1);
-        let new = account_dir(&f.0, &first[0].user_id);
-        assert!(!old.exists());
-        assert_eq!(
-            std::fs::read(new.join("persistent_state/session")).unwrap(),
-            before
-        );
-        assert_eq!(
-            std::fs::read_to_string(new.join("persistent_state/latest_app_state.json")).unwrap(),
-            "private fixture state"
-        );
-        assert_eq!(scan(&f.0).unwrap(), first);
+    fn old_account_paths_are_not_imported_or_modified() {
+        let f=Fixture::new(); let old=f.session("@alice:fixture.test",true);
+        let before=std::fs::read(old.join("persistent_state/session")).unwrap();
+        assert!(scan(&f.0).unwrap().is_empty());
+        assert_eq!(std::fs::read(old.join("persistent_state/session")).unwrap(),before);
+        assert!(old.join("persistent_state/latest_app_state.json").exists());
     }
     #[test]
     fn misplaced_session_is_not_an_account() {
@@ -211,7 +193,7 @@ mod tests {
         assert!(scan(&f.0).unwrap().is_empty());
     }
     #[test]
-    fn migration_does_not_overwrite_an_existing_canonical_profile() {
+    fn obsolete_account_paths_do_not_shadow_canonical_profiles() {
         let f = Fixture::new();
         let canonical = f.session("@alice:fixture.test", false);
         let legacy = f.session("@alice:fixture.test", true);

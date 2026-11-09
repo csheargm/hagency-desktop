@@ -3378,17 +3378,6 @@ impl DomainStore {
         self.call(command.weight(), move |db| db.management_intent(command))
             .await
     }
-    pub(crate) async fn verify_management_resource(
-        &self,
-        id: String,
-        revision: String,
-        proof: crate::management::ProviderWitness,
-    ) -> Result<crate::management::ResourceSummary, Error> {
-        self.call(weight(&(&id, &revision))? + 4096, move |db| {
-            db.verify_management_resource(&id, &revision, proof, writer_time()?)
-        })
-        .await
-    }
     pub(crate) async fn management_resources(
         &self,
         query: crate::management::ResourceQuery,
@@ -5094,6 +5083,16 @@ impl DomainStore {
             db.approval_room_capture(&authority)
         })
         .await
+    }
+    pub async fn private_approval_room_marker(
+        &self,
+        authority: ApprovalRoomAuthority,
+        device: String,
+        generation: u64,
+    ) -> Result<serde_json::Value, Error> {
+        self.call(weight(&(&authority, &device, generation))?, move |db| {
+            db.private_approval_room_marker(&authority, &device, generation)
+        }).await
     }
     pub async fn fence_approval_room(
         &self,

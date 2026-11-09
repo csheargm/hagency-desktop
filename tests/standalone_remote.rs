@@ -87,7 +87,7 @@ fn standalone_rinx_uses_an_explicit_authenticated_remote_server() {
     let server_dir = dir.join("server");
     let rinx_dir = dir.join("rinx");
     std::fs::create_dir_all(server_dir.join("profiles")).unwrap();
-    unsafe { std::env::set_var("RINX_DATA_DIR", &rinx_dir) };
+    unsafe { std::env::set_var("HAGENCY_DESKTOP_DATA_DIR", &rinx_dir) };
     let (_model, model_port) = model();
     std::fs::write(
         server_dir.join("profiles/_main.json"),

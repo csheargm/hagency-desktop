@@ -123,7 +123,7 @@ file reaching another device of the same account.
 
 ```sh
 ROBRIX_MOMENTS_FIXTURE=/absolute/path/to/fixture.json \
-ROBRIX_DATA_DIR=/absolute/path/to/isolated-moments-profile \
+HAGENCY_DESKTOP_DATA_DIR=/absolute/path/to/isolated-moments-profile \
 cargo test --locked --features agent_chat --lib \
   moments::live_tests::palpo_moments_recipient_encryption_and_native_seed \
   -- --ignored --nocapture

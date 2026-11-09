@@ -101,15 +101,7 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ObserveResourceAlerts)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone(); let context = context.clone();
-                store.call(4096, move |db| db.observe_resource_alert(&resource_id, now, |db| {
-                    session.check(&context, Permission::ObserveResourceAlerts)?;
-                    require_alert_resource(db, &resource_id)
-                })).await?
-            }
-            #[cfg(feature="resource-adoption")]
-            SessionStore::Adopted(store) => store.observe_resource_alert(&self.adopted_profile(store)?, resource_id, now).await?,
+            SessionStore::Current(store) => store.observe_resource_alert(&self.current_profile(store)?, resource_id, now).await?,
         };
         self.check(context, Permission::ObserveResourceAlerts).map_err(|_| Error::OutcomeUnknown)?;
         Ok(result)
@@ -120,14 +112,7 @@ impl Session {
         let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;
         self.check(context,Permission::ReadAlerts)?;
         let result=match self.local_store()? {
-            SessionStore::Legacy(store)=>{
-                let session=self.clone();let context=context.clone();
-                store.call(128*1024,move|db| db.management_resource_alerts(&query,|db|{
-                    session.check(&context,Permission::ReadAlerts)?; require_alert_resource(db,&query.resource_id)
-                })).await?
-            }
-            #[cfg(feature="resource-adoption")]
-            SessionStore::Adopted(store)=>store.resource_alerts(&self.adopted_profile(store)?,query).await?,
+            SessionStore::Current(store)=>store.resource_alerts(&self.current_profile(store)?,query).await?,
         };
         self.check(context,Permission::ReadAlerts)?;Ok(result)
     }
@@ -136,14 +121,7 @@ impl Session {
         let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;
         self.check(context,Permission::ReadAlerts)?;
         let result=match self.local_store()? {
-            SessionStore::Legacy(store)=>{
-                let session=self.clone();let context=context.clone();
-                store.call(64*1024,move|db| db.management_resource_alert(&query,|db|{
-                    session.check(&context,Permission::ReadAlerts)?; require_alert_resource(db,&query.resource_id)
-                })).await?
-            }
-            #[cfg(feature="resource-adoption")]
-            SessionStore::Adopted(store)=>store.resource_alert(&self.adopted_profile(store)?,query).await?,
+            SessionStore::Current(store)=>store.resource_alert(&self.current_profile(store)?,query).await?,
         };
         self.check(context,Permission::ReadAlerts)?;Ok(result)
     }
@@ -152,18 +130,11 @@ impl Session {
         let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;
         let _command=self.scope.commands.lock().await;
         self.check(context,Permission::TriageAlerts)?;
-        let profile=match self.local_store()? {SessionStore::Legacy(_)=>"", #[cfg(feature="resource-adoption")] SessionStore::Adopted(store)=>store.identity().0};
+        let profile=match self.local_store()? { SessionStore::Current(store)=>store.identity().0};
         let receipt=CommandReceipt::new(context,"alert.triage",&input.command_id,&serde_json::json!({"profile":profile,"input":input}))?;
         let actor=context.account.clone();
         let result=match self.local_store()? {
-            SessionStore::Legacy(store)=>{
-                let session=self.clone();let context=context.clone();
-                store.call(64*1024,move|db| db.management_triage_alert(&input,&actor,receipt,|db|{
-                    session.check(&context,Permission::TriageAlerts)?;require_alert_resource(db,&input.resource_id)
-                })).await?
-            }
-            #[cfg(feature="resource-adoption")]
-            SessionStore::Adopted(store)=>store.triage_resource_alert(&self.adopted_profile(store)?,input,actor,receipt).await?,
+            SessionStore::Current(store)=>store.triage_resource_alert(&self.current_profile(store)?,input,actor,receipt).await?,
         };
         self.check(context,Permission::TriageAlerts).map_err(|_|Error::OutcomeUnknown)?;Ok(result)
     }

@@ -4,7 +4,7 @@ use crate::management::{
     ExecutionPolicyListQuery, ExecutionPolicyQuery,
 };
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn agent_execution_policies(
         &self,
         profile: &ProfileAuthority,

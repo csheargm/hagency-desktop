@@ -4,26 +4,13 @@ mod populated_history_tests;
 use super::*;
 use hagency_store::management::{ResourceAlertDetailQuery,ResourceAlertQuery,TriageResourceAlert,Intent,IntentOperation};
 fn package()->ManagementPackage {ManagementPackage{digest:"f".repeat(64),instance:1040,account_epoch:1,permissions:vec![Permission::ReadAlerts,Permission::TriageAlerts,Permission::ReadIntents,Permission::AcknowledgeIntents]}}
-async fn reopen(f:Fixture)->Fixture {
-    let Fixture{_root,owner,transport,registry,state,task,current}=f;
-    let origin=owner.0.expected_origin.clone();owner.suspend().await.unwrap();drop(transport);drop(owner);
-    let owner=NativeOwner::open_with_matrix(&_root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone()))).await.unwrap();
-    let transport=AllocationTransport::new(owner.management(super::package(1)).await.unwrap());
-    Fixture{_root,owner,transport,registry,state,task,current}
-}
+async fn reopen(f:Fixture)->Fixture { f.reopen().await }
 async fn fixture()->(Fixture,String){
     let f=Fixture::new().await;
-    let login=&f.owner.0.host.console.0.server_login;
-    let device=login.authorized_device().await.unwrap();
-    let profile=crate::console::owned_agents::profile_identity(device.origin(),device.issuer(),device.subject(),device.owner_mxid()).unwrap();
-    let directory=login.state_directory().unwrap().join("owned-agent-owners").join(format!("management_{profile}"));
-    f.owner.suspend().await.unwrap();
-    let mut repository=hagency_store::DomainRepository::open_managed(&directory,&profile).unwrap();
-    let resource:hagency_core::project::Resource=serde_json::from_value(json!({"presetId":"alert_fixture","seatId":"fixture_seat","framework":"codex","model":"fixture-model","published":false,"ceiling":{"tokens":1000,"period":"monthly"}})).unwrap();
-    repository.put_seat(&hagency_core::project::Seat{id:resource.seat_id.clone(),declaration:None}).unwrap();repository.put_resource(&resource).unwrap();drop(repository);
-    let db=rusqlite::Connection::open(directory.join("domain.sqlite3")).unwrap();
-    db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES('fixture:original',?1,'Synthetic observation','{}','Review commitments','No permission change','Recheck observed usage',1,1,1)",[resource.id()]).unwrap();drop(db);
-    (reopen(f).await,resource.id())
+    let resource=f.state.lock().unwrap().grant.as_ref().unwrap().resource_id.clone();
+    let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+    db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES('fixture:original',?1,'Synthetic observation','{}','Review commitments','No permission change','Recheck observed usage',1,1,1)",[&resource]).unwrap();drop(db);
+    (reopen(f).await,resource)
 }
 fn query(id:&str)->ResourceAlertDetailQuery {ResourceAlertDetailQuery{resource_id:id.into(),id:"fixture:original".into(),after_note:0}}
 #[tokio::test]
@@ -56,17 +43,17 @@ async fn native_resource_alert_observer_reopens_without_miniapp_and_drains_on_su
     let (f,resource)=fixture().await;
     let Fixture{_root,owner,transport,registry,state,task,current}=f;
     let origin=owner.0.expected_origin.clone();
-    let login=&owner.0.host.console.0.server_login;
-    let device=login.authorized_device().await.unwrap();
-    let profile=crate::console::owned_agents::profile_identity(device.origin(),device.issuer(),device.subject(),device.owner_mxid()).unwrap();
-    let database=login.state_directory().unwrap().join("owned-agent-owners").join(format!("management_{profile}")).join("domain.sqlite3");
+    let database=_root.path().join("registry/domain.sqlite3");
     owner.suspend().await.unwrap();drop(transport);drop(owner);
     {
         let db=rusqlite::Connection::open(&database).unwrap();
         db.execute("UPDATE ceiling_alerts SET status='resolved',resolved_at_ms=1,resolved_by='system' WHERE resource_id=?1",[&resource]).unwrap();
     }
-    let owner=NativeOwner::open_with_matrix(&_root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone()))).await.unwrap();
-    assert!(!owner.0.management.has_store().await,"No UI management package was opened after restart");
+    let path=_root.path().join("host");
+    let selection=crate::native_owner::CurrentProfileSelection::load_for_isolated_tests(&path,&origin,"@owner:test",registry.clone()).unwrap().unwrap();
+    let owner=selection.open_with_matrix_guarded(&path,&origin,"@owner:test",Arc::new(Source(current.clone())),|_|Ok(())).await.unwrap();
+    assert!(owner.0.management.has_store().await,"Current profile reopens its canonical backing before any UI management package");
+    assert_eq!(owner.0.management.live_scope_count(),0,"No UI management package was opened after restart");
     crate::console::native::alert_observer::start_with_timing(&owner,Duration::from_millis(10),Duration::from_secs(60));
     tokio::time::timeout(Duration::from_secs(5),async {
         loop {

@@ -2,13 +2,27 @@
 use serde_json::{Value, json};
 mod shared_session;
 mod shared_history;
+mod shared_interrupt;
 use std::{
     fs,
     io::{self, BufRead, Write},
     path::Path,
 };
 
-fn emit(value: Value) -> io::Result<()> {
+fn emit(mut value: Value) -> io::Result<()> {
+    if value["type"] == "result" {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        value["uuid"] = json!(format!(
+            "fixture-result-{}",
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        // Each offline probe process emits one model turn. Current native
+        // result deltas are explicit even when restored totals are present.
+        if value.get("model_usage_since_last_result").is_none() && value["modelUsage"].is_object() {
+            value["model_usage_since_last_result"] = value["modelUsage"].clone();
+        }
+    }
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &value)?;
     stdout.write_all(b"\n")?;
@@ -36,6 +50,9 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "shared-wait"
             | "shared-session"
             | "shared-history"
+            | "shared-interrupt"
+            | "shared-followup-success"
+            | "shared-followup-error"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -52,7 +69,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         return super::pulse(marker);
     }
     if mode == "malformed" {
-        io::stdout().write_all(b"{\"type\":\"unknown\"}\n")?;
+        io::stdout().write_all(b"{\"type\":\"control_response\"}\n")?;
         io::stdout().flush()?;
         drop(stdin);
         return super::pulse(marker);
@@ -60,32 +77,42 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
     if mode == "shared-session" {
         let args: Vec<_> = std::env::args().collect();
         if let Some(id) = args.windows(2).find(|p| p[0] == "--resume").map(|p| &p[1])
-            && !marker.with_file_name(format!("{id}.json")).exists() {
-                emit(json!({"type":"result","session_id":id,"subtype":"error_during_execution",
+            && !marker.with_file_name(format!("{id}.json")).exists()
+        {
+            emit(
+                json!({"type":"result","session_id":id,"subtype":"error_during_execution",
                     "is_error":true,"num_turns":0,"duration_api_ms":0,"total_cost_usd":0,
                     "modelUsage":{},"permission_denials":[],"errors":[format!("No conversation found with session ID: {id}")],
-                    "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}))?;
-                return Ok(());
+                    "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}),
+            )?;
+            return Ok(());
         }
     }
-    let mut initialization = json!({});
+    let mut initialization = json!({"claude_code_version":"2.1.321"});
     if (mode.starts_with("account-") && mode != "account-missing") || mode.starts_with("shared-") {
-        initialization["account"] = json!({"email":"owner@example.test","apiProvider":"firstParty"});
+        initialization["account"] =
+            json!({"email":"owner@example.test","apiProvider":"firstParty"});
         match mode {
-            "account-wrong-email" => initialization["account"]["email"] = json!("another@example.test"),
+            "account-wrong-email" => {
+                initialization["account"]["email"] = json!("another@example.test")
+            }
             "account-api-key" => initialization["account"]["apiKeySource"] = json!("user"),
             "account-provider" => initialization["account"]["apiProvider"] = json!("bedrock"),
             _ => {}
         }
     }
-    emit(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":initialization}}))?;
+    emit(
+        json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":initialization}}),
+    )?;
     line.clear();
     stdin.read_line(&mut line)?;
     let first: Value = serde_json::from_str(&line)?;
-    let prompt: Value = if matches!(mode, "shared-history" | "shared-session")
-        && first["request"]["subtype"] == "mcp_status" {
-        shared_history::bind_and_prompt(&mut stdin, first)?
-    } else { first };
+    let prompt: Value =
+        if mode.starts_with("shared-") && first["request"]["subtype"] == "mcp_status" {
+            shared_history::bind_and_prompt(&mut stdin, first)?
+        } else {
+            first
+        };
     if mode == "shared-session" {
         drop(stdin);
         return shared_session::run(marker, &prompt);
@@ -98,15 +125,56 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         marker.with_extension("prompt"),
         serde_json::to_vec(&prompt)?,
     )?;
-    emit(json!({"type":"system","subtype":"init","session_id":"owned-claude","user_message_uuid":prompt["uuid"]}))?;
+    emit(
+        json!({"type":"system","subtype":"init","session_id":"owned-claude","user_message_uuid":prompt["uuid"]}),
+    )?;
     if mode.starts_with("shared-") {
+        if matches!(mode, "shared-followup-success" | "shared-followup-error") {
+            let final_error = mode == "shared-followup-error";
+            let delta = json!({"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}});
+            emit(
+                json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":!final_error,"result":"earlier native answer","user_message_uuid":prompt["uuid"],"modelUsage":delta}),
+            )?;
+            emit(
+                json!({"type":"system","subtype":"background_tasks_changed","session_id":"owned-claude","tasks":[{"task_id":"child","run_id":"original-child-run"}]}),
+            )?;
+            emit(
+                json!({"type":"system","subtype":"task_notification","session_id":"owned-claude","task_id":"child","run_id":"original-child-run","status":"completed"}),
+            )?;
+            emit(
+                json!({"type":"system","subtype":"background_tasks_changed","session_id":"owned-claude","tasks":[]}),
+            )?;
+            emit(json!({"type":"system","subtype":"init","session_id":"owned-claude"}))?;
+            emit(
+                json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":final_error,"result":"shared background answer","origin":{"kind":"task-notification","producer":"session-task","runId":"original-child-run"},"modelUsage":{"offline-model":{"inputTokens":20,"outputTokens":4,"cacheReadInputTokens":6,"cacheCreationInputTokens":8}},"model_usage_since_last_result":delta}),
+            )?;
+            emit(
+                json!({"type":"system","subtype":"session_state_changed","session_id":"owned-claude","state":"idle"}),
+            )?;
+            drop(stdin);
+            return super::pulse(marker);
+        }
+        if mode == "shared-interrupt" {
+            shared_interrupt::run(&mut stdin, marker, &prompt)?;
+            drop(stdin);
+            return super::pulse(marker);
+        }
         if mode == "shared-history" {
             shared_history::read_all(&mut stdin, marker)?;
         }
-        if matches!(mode, "shared-usage" | "shared-result-exit" | "shared-history") {
-            emit(json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":false,"result":"shared offline answer","user_message_uuid":prompt["uuid"],"user_message_uuids":[prompt["uuid"]],"modelUsage":{"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}}}))?;
-            if mode == "shared-result-exit" { return Ok(()); }
-            emit(json!({"type":"system","subtype":"session_state_changed","session_id":"owned-claude","state":"idle"}))?;
+        if matches!(
+            mode,
+            "shared-usage" | "shared-result-exit" | "shared-history"
+        ) {
+            emit(
+                json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":false,"result":"shared offline answer","user_message_uuid":prompt["uuid"],"user_message_uuids":[prompt["uuid"]],"modelUsage":{"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}}}),
+            )?;
+            if mode == "shared-result-exit" {
+                return Ok(());
+            }
+            emit(
+                json!({"type":"system","subtype":"session_state_changed","session_id":"owned-claude","state":"idle"}),
+            )?;
         }
         drop(stdin);
         return super::pulse(marker);

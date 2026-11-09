@@ -65,10 +65,8 @@ impl Session {
     fn account_login_backing(&self, context: &HostContext) -> Result<(DomainStore, String), Error> {
         self.check(context, Permission::LoginAccounts)?;
         match self.local_store()? {
-            SessionStore::Legacy(store) => Ok((store.clone(), String::new())),
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => Ok((
-                store.account_login_store(&self.adopted_profile(store)?)?,
+            SessionStore::Current(store) => Ok((
+                store.account_login_store(&self.current_profile(store)?)?,
                 store.identity().0.into(),
             )),
         }

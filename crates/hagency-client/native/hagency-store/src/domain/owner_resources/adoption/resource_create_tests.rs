@@ -1,6 +1,6 @@
 use super::*;
 use crate::management::{
-    CreateResourceConfiguration, HostContext, Permission, PrivateManagementJournal, Session,
+    CreateResourceConfiguration, HostContext, Permission,  Session,
 };
 use crate::{CeilingChange, ProfileChange};
 
@@ -48,8 +48,8 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(backing: AdoptedManagementStore, context: HostContext) -> Session {
-    Session::new_adopted(
+fn session(backing: CurrentManagementStore, context: HostContext) -> Session {
+    Session::new_current(
         backing,
         context,
         [Permission::ReadResources, Permission::ConfigureResources],
@@ -317,15 +317,7 @@ async fn additional_configuration_original_receipt_survives_concurrency_source_c
     drop(backing);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal =
-        PrivateManagementJournal::open_existing(&f.source, transfer.archive_binding().unwrap())
-            .unwrap();
-    let reopened = transfer.adopted_management(journal).await.unwrap();
+    let reopened = current_backing(&f).await;
     let fresh = session(reopened.clone(), ctx.clone());
     assert_eq!(
         serde_json::to_value(
@@ -515,7 +507,7 @@ async fn additional_configuration_requires_live_permission_source_access_and_nat
     let backing = resource_name_tests::active(&f).await;
     let ctx = context(&f);
     let s = session(backing.clone(), ctx.clone());
-    let read = Session::new_adopted(
+    let read = Session::new_current(
         backing.clone(),
         ctx.clone(),
         [Permission::ReadResources],

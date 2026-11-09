@@ -1489,8 +1489,10 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
         Some(StatusCode::BAD_REQUEST)
     );
     let workspace = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-    let model = json!({"profile":{"model":"gpt-5.4","credential_ref":"keychain:codex:owner","workspace_root":workspace.path().to_str().unwrap()}});
     let model_path = "/console/api/owned-agents/agt_fixture/agent-model-profile";
+    let initial = get(model_path, &cookie).send(&service).await.take_json::<Value>().await.unwrap();
+    let initial: Option<hagency_agent_local::ModelProfile> = serde_json::from_value(initial["modelProfile"].clone()).unwrap();
+    let model = json!({"expectedProfileDigest":hagency_agent_local::model_profile_digest(initial.as_ref()).unwrap(),"profile":{"model":"gpt-5.4","credential_ref":"keychain:codex:owner","workspace_root":workspace.path().to_str().unwrap()}});
     assert_eq!(
         put(model_path, &cookie)
             .json(&model)
@@ -1599,8 +1601,9 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
         .send(&service)
         .await
         .status_code,
-        Some(StatusCode::OK)
+        Some(StatusCode::METHOD_NOT_ALLOWED)
     );
+    assert_eq!(get("/console/api/owned-agents/agt_fixture/model-profile?bindingId=bnd_fixture&requester=%40requester%3Aexample.test", &cookie).send(&service).await.status_code, Some(StatusCode::METHOD_NOT_ALLOWED));
     let mut secret = profile.clone();
     secret["profile"]["modelKey"] = json!("a-secret-that-must-not-be-saved");
     assert_eq!(
@@ -1612,8 +1615,10 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
         .send(&service)
         .await
         .status_code,
-        Some(StatusCode::BAD_REQUEST)
+        Some(StatusCode::METHOD_NOT_ALLOWED)
     );
+    let unchanged = get(model_path, &cookie).send(&service).await.take_json::<Value>().await.unwrap();
+    assert_eq!(unchanged["modelProfile"]["model"], "gpt-5.4", "retired scope-based writes must not replace the current profile");
     let mut unsafe_request = TestClient::put(format!(
         "{BASE}/console/api/owned-agents/agt_fixture/local-policy"
     ))

@@ -240,7 +240,7 @@ def main():
     app = PalpoApp(root, port=port(), auto_login=False)
     app.output.mkdir(parents=True, mode=0o700)
     app.log = (app.output / 'native.log').open('w')
-    env = dict(os.environ, RINX_DATA_DIR=str(root / 'profile'), MAKEPAD_HIDE_WINDOWS='1',
+    env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(root / 'profile'), MAKEPAD_HIDE_WINDOWS='1',
                MAKEPAD_NO_FOCUS='1', MAKEPAD_REMOTE=str(app.port), PALPO_FIXTURE_URL=args.origin,
                PALPO_ACCEPTANCE_ACCOUNTS=str(args.accounts.resolve()), PALPO_ACCEPTANCE_ROLE=args.role,
                PALPO_ACCEPTANCE_ACTION=args.action_id or '')

@@ -1,4 +1,4 @@
-use hagency_store::{DomainRepository, DomainStore, Error, management::*};
+use hagency_store::{Error, management::*};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -13,8 +13,8 @@ fn context(account: &str, epoch: u64, generation: u64) -> HostContext {
     )
     .unwrap()
 }
-fn session(store: &DomainStore, ctx: &HostContext, permissions: &[Permission]) -> Session {
-    Session::new(
+fn session(store: &ServerManagementJournal, ctx: &HostContext, permissions: &[Permission]) -> Session {
+    Session::new_server(
         store.clone(),
         ctx.clone(),
         permissions.iter().copied(),
@@ -40,7 +40,7 @@ fn intent(id: &str, tokens: u64) -> Intent {
 async fn custody_survives_restart_and_requires_known_reply_before_acknowledgement() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, GRANTS);
     let first = host
@@ -72,7 +72,7 @@ async fn custody_survives_restart_and_requires_known_reply_before_acknowledgemen
     drop(host);
     drop(store);
 
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 2, 2);
     let host = session(&store, &ctx, GRANTS);
     let recovered = host.pending_intents(&ctx).await.unwrap();
@@ -117,7 +117,7 @@ async fn custody_survives_restart_and_requires_known_reply_before_acknowledgemen
             .is_err(),
         "acknowledged IDs remain tombstones"
     );
-    let db = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(state.join("server-management.sqlite3")).unwrap();
     let row: (Option<String>, Option<String>, String) = db
         .query_row(
             "SELECT input,reply,state FROM management_intents",
@@ -132,10 +132,7 @@ async fn custody_survives_restart_and_requires_known_reply_before_acknowledgemen
 #[tokio::test]
 async fn custody_recovery_requires_current_account_device_generation_and_operation_grant() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-    let store = DomainStore::start(
-        DomainRepository::open(&root.path().join("ledger")).unwrap(),
-        8,
-    )
+    let store = ServerManagementJournal::open(&root.path().join("ledger"), &"a".repeat(64), "@owner:test")
     .unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, GRANTS);
@@ -151,16 +148,9 @@ async fn custody_recovery_requires_current_account_device_generation_and_operati
         1,
     )
     .unwrap();
-    for other in [context("@other:test", 1, 1), other_device] {
-        assert!(
-            session(&store, &other, GRANTS)
-                .pending_intents(&other)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(host.pending_intents(&other).await.is_err());
-    }
+    assert!(matches!(Session::new_server(store.clone(),context("@other:test",1,1),GRANTS.iter().copied(),Instant::now()+Duration::from_secs(60)),Err(Error::LocalAuthority)));
+    assert!(session(&store, &other_device, GRANTS).pending_intents(&other_device).await.unwrap().is_empty());
+    assert!(host.pending_intents(&other_device).await.is_err());
     let renewed = context("@owner:test", 2, 2);
     assert!(
         host.pending_intents(&renewed).await.is_err(),
@@ -200,10 +190,10 @@ async fn custody_recovery_requires_current_account_device_generation_and_operati
 async fn custody_is_bounded_and_failed_native_persistence_leaves_no_prepared_command() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, GRANTS);
-    let db = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(state.join("server-management.sqlite3")).unwrap();
     db.execute_batch("CREATE TRIGGER deny_intent BEFORE INSERT ON management_intents BEGIN SELECT RAISE(ABORT,'test storage failure'); END;").unwrap();
     assert!(
         host.prepare_intent(&ctx, intent("blocked", 1))
@@ -245,7 +235,7 @@ async fn custody_is_bounded_and_failed_native_persistence_leaves_no_prepared_com
 async fn project_journal_restarts_without_promoting_resource_or_read_grants() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@manager:test").unwrap();
     let ctx = context("@manager:test", 1, 1);
     let operations = [
         (
@@ -272,7 +262,7 @@ async fn project_journal_restarts_without_promoting_resource_or_read_grants() {
         )
         .unwrap()
     };
-    let legacy = session(
+    let reader = session(
         &store,
         &ctx,
         &[
@@ -284,7 +274,7 @@ async fn project_journal_restarts_without_promoting_resource_or_read_grants() {
         ],
     );
     for (op, permission, id) in operations {
-        assert!(legacy.prepare_intent(&ctx, make(op, id)).await.is_err());
+        assert!(reader.prepare_intent(&ctx, make(op, id)).await.is_err());
         let writer = session(&store, &ctx, &[permission, Permission::ReadIntents]);
         assert!(
             writer
@@ -295,13 +285,13 @@ async fn project_journal_restarts_without_promoting_resource_or_read_grants() {
         );
         writer.retire();
     }
-    assert!(legacy.pending_intents(&ctx).await.unwrap().is_empty());
-    legacy.retire();
+    assert!(reader.pending_intents(&ctx).await.unwrap().is_empty());
+    reader.retire();
     store.shutdown().await.unwrap();
-    drop(legacy);
+    drop(reader);
     drop(store);
 
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@manager:test").unwrap();
     let renewed = context("@manager:test", 2, 2);
     for (op, permission, id) in operations {
         let writer = session(
@@ -396,7 +386,7 @@ async fn publish(host: &Session, ctx: &HostContext, id: &str, grant: &str, succe
 async fn replied_publications_are_history_and_never_block_other_commands() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, PUBLISH);
     // Twenty monthly root publications and twenty successors on one device.
@@ -456,7 +446,7 @@ async fn replied_publications_are_history_and_never_block_other_commands() {
 async fn an_unanswered_publication_is_outstanding_and_recovered_by_its_id() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, PUBLISH);
     for successor in [false, true] {
@@ -527,12 +517,12 @@ async fn an_unanswered_publication_is_outstanding_and_recovered_by_its_id() {
 async fn publication_history_stays_complete_and_bounded_by_the_grant_ledger() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let ctx = context("@owner:test", 1, 1);
     let host = session(&store, &ctx, PUBLISH);
     publish(&host, &ctx, "root_0", "grant_root_0", false).await;
     // History rows as the journal writes them, up to the 2048-grant ledger.
-    let db = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(state.join("server-management.sqlite3")).unwrap();
     let actor: String = db
         .query_row("SELECT actor_scope FROM management_intents WHERE command_id='root_0'", [], |r| r.get(0))
         .unwrap();
@@ -569,7 +559,7 @@ async fn publication_history_stays_complete_and_bounded_by_the_grant_ledger() {
     // every later publication fail closed, root or successor.
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("ledger");
-    let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 8).unwrap();
+    let store = ServerManagementJournal::open(&state, &"a".repeat(64), "@owner:test").unwrap();
     let host = session(&store, &ctx, PUBLISH);
     publish(&host, &ctx, "root_0", "grant_root_0", false).await;
     publish(&host, &ctx, "next_0", "grant_next_0", true).await;

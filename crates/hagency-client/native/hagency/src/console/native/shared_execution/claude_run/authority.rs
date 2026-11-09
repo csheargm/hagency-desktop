@@ -122,20 +122,24 @@ impl Authority {
         io: &Io,
         r: &OwnerResourceRegistry,
         observation: SharedTextProcessObservation,
+        after_local: impl FnOnce() -> Result<(), NativeError>,
     ) -> Result<(), NativeError> {
         // Local commit precedes network recovery. Failed upload never discards evidence.
         let upload = match self {
             Self::Root(s, d) => {
                 let receipt = s.record(observation).await.map_err(store)?;
+                after_local()?;
                 run::report_process(io, r, &d.command, &receipt).await
             }
             Self::Attempt(s, d) => {
                 let receipt = s.record(observation).await.map_err(store)?;
+                after_local()?;
                 attempt_run::report_process(io, r, &d.command, &receipt).await
             }
             #[cfg(feature = "shared-budget-execution")]
             Self::Budget(s, d) => {
                 let receipt = s.record(observation).await.map_err(store)?;
+                after_local()?;
                 budget_run::report_process(io, r, &d.command, &receipt).await
             }
         };
@@ -203,6 +207,7 @@ impl Authority {
 pub(super) struct Lease {
     pub lease: SharedActivityLease,
     pub until: Instant,
+    renew_at: Instant,
 }
 impl Lease {
     fn new(
@@ -229,13 +234,18 @@ impl Lease {
         if until <= Instant::now() {
             return Err(failure(409, "shared_execution_expired"));
         }
-        Ok(Self { lease, until })
+        Ok(Self {
+            lease,
+            until,
+            renew_at: renewal_time(until),
+        })
     }
 }
 pub(super) struct Active {
     pub live: Live,
     control: SharedTextActivityControl,
     send: watch::Sender<Lease>,
+    renewal: Option<SharedActivityRenewInput>,
 }
 #[derive(Clone)]
 pub(super) struct Live {
@@ -282,28 +292,34 @@ impl Active {
             },
             control,
             send,
+            renewal: None,
         })
     }
     async fn renew(&mut self) -> Result<(), NativeError> {
         let (b, p, state) = self.live.proof().await?;
-        let mut random = [0_u8; 16];
-        getrandom::fill(&mut random).map_err(|_| failure(503, "native_random_unavailable"))?;
-        let id = format!(
-            "sar_{}",
-            random
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.live
-            .registry
-            .prepare_shared_renewal(p, id.clone())
-            .await
-            .map_err(store)?;
-        let input = SharedActivityRenewInput {
-            authority: state.lease.authority.clone(),
-            renewal_id: id,
-        };
+        if self.renewal.is_none() {
+            let mut random = [0_u8; 16];
+            getrandom::fill(&mut random).map_err(|_| failure(503, "native_random_unavailable"))?;
+            let id = format!(
+                "sar_{}",
+                random
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            self.live
+                .registry
+                .prepare_shared_renewal(p, id.clone())
+                .await
+                .map_err(store)?;
+            self.renewal = Some(SharedActivityRenewInput {
+                authority: state.lease.authority.clone(),
+                renewal_id: id,
+            });
+        }
+        // A lost response may already have advanced the server. Retry the same
+        // original renewal, never create another id for an uncertain request.
+        let input = self.renewal.as_ref().ok_or_else(invalid)?.clone();
         let sent = Instant::now();
         let (b, reply): (Bound, Timed<io::ActivityReply>) = self
             .live
@@ -328,6 +344,7 @@ impl Active {
             .renew_lease(next.lease.authority.epoch, next.until)
             .map_err(|_| invalid())?;
         self.send.send_replace(next);
+        self.renewal = None;
         Ok(())
     }
     pub async fn wait<T>(
@@ -335,28 +352,168 @@ impl Active {
         cancel: &mut watch::Receiver<bool>,
         future: impl std::future::Future<Output = Result<T, NativeError>>,
     ) -> Result<T, NativeError> {
-        tokio::pin!(future);
-        loop {
-            if *cancel.borrow() {
-                return Err(failure(409, "shared_execution_closed"));
+        wait(self, cancel, future).await
+    }
+}
+
+fn renewal_time(until: Instant) -> Instant {
+    let left = until.saturating_duration_since(Instant::now());
+    until - Duration::from_secs(20).min(left / 2)
+}
+trait LeaseDriver: Send {
+    fn times(&self) -> (Instant, Instant);
+    fn transient(&self, error: &NativeError) -> bool;
+    fn renew(&mut self) -> impl std::future::Future<Output = Result<(), NativeError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Driver {
+        until: Instant,
+        renew_at: Instant,
+        calls: usize,
+        fail_once: bool,
+        blocked: Option<Arc<tokio::sync::Notify>>,
+    }
+    impl Driver {
+        fn new() -> Self {
+            Self {
+                until: Instant::now() + Duration::from_secs(2),
+                renew_at: Instant::now(),
+                calls: 0,
+                fail_once: false,
+                blocked: None,
             }
-            let state = self.live.state();
-            let wake = state
-                .until
-                .checked_sub(Duration::from_secs(20))
-                .unwrap_or_else(Instant::now);
-            tokio::select! {biased;
-                _=cancel.changed()=>return Err(failure(409,"shared_execution_closed")),
-                _=tokio::time::sleep_until(state.until.into())=>return Err(failure(409,"shared_execution_expired")),
-                _=tokio::time::sleep_until(wake.into())=>{
-                    tokio::select! {biased;
-                        _=cancel.changed()=>return Err(failure(409,"shared_execution_closed")),
-                        _=tokio::time::sleep_until(state.until.into())=>return Err(failure(409,"shared_execution_expired")),
-                        renewed=self.renew()=>renewed?,
-                    }
-                },
-                result=&mut future=>return result,
+        }
+    }
+    impl LeaseDriver for Driver {
+        fn times(&self) -> (Instant, Instant) {
+            (self.until, self.renew_at)
+        }
+        fn transient(&self, error: &NativeError) -> bool {
+            error.code == "management_scope_changed"
+        }
+        async fn renew(&mut self) -> Result<(), NativeError> {
+            self.calls += 1;
+            if let Some(notify) = &self.blocked {
+                notify.notify_one();
+                return std::future::pending().await;
             }
+            if std::mem::take(&mut self.fail_once) {
+                return Err(failure(409, "management_scope_changed"));
+            }
+            self.until = Instant::now() + Duration::from_millis(80);
+            self.renew_at = renewal_time(self.until);
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn canceled_admission_does_not_poll_or_start_native_work() {
+        let mut driver = Driver::new();
+        let (_send, mut cancel) = watch::channel(true);
+        let result: Result<(), _> = wait(&mut driver, &mut cancel, async {
+            panic!("canceled work must never receive its first native poll")
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code, "shared_execution_closed");
+        assert_eq!(driver.calls, 0);
+    }
+    #[tokio::test]
+    async fn native_stream_continues_while_renewal_io_is_pending() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let mut driver = Driver::new();
+        driver.blocked = Some(notify.clone());
+        let (_send, mut cancel) = watch::channel(false);
+        let value = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait(&mut driver, &mut cancel, async {
+                notify.notified().await;
+                Ok("original final answer")
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(value, "original final answer");
+        assert_eq!(driver.calls, 1);
+    }
+    #[tokio::test]
+    async fn transient_renewal_error_keeps_the_original_work_alive() {
+        let mut driver = Driver::new();
+        driver.fail_once = true;
+        let (_send, mut cancel) = watch::channel(false);
+        assert_eq!(
+            wait(&mut driver, &mut cancel, async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok(17)
+            })
+            .await
+            .unwrap(),
+            17
+        );
+        assert_eq!(
+            driver.calls, 1,
+            "transient failure backs off instead of spinning"
+        );
+    }
+    #[tokio::test]
+    async fn short_leases_neither_starve_native_work_nor_spin_renewals() {
+        let mut driver = Driver::new();
+        let (_send, mut cancel) = watch::channel(false);
+        wait(&mut driver, &mut cancel, async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!((1..=4).contains(&driver.calls), "renewals={}", driver.calls);
+    }
+}
+impl LeaseDriver for Active {
+    fn times(&self) -> (Instant, Instant) {
+        let state = self.live.state();
+        (state.until, state.renew_at)
+    }
+    fn transient(&self, error: &NativeError) -> bool {
+        self.live.io.transient(error)
+    }
+    async fn renew(&mut self) -> Result<(), NativeError> {
+        Active::renew(self).await
+    }
+}
+async fn wait<T>(
+    driver: &mut impl LeaseDriver,
+    cancel: &mut watch::Receiver<bool>,
+    future: impl std::future::Future<Output = Result<T, NativeError>>,
+) -> Result<T, NativeError> {
+    tokio::pin!(future);
+    let mut retry_at = Instant::now();
+    loop {
+        if super::super::stop_capture::requested(cancel) {
+            return Err(failure(409, "shared_execution_closed"));
+        }
+        let (until, wake) = driver.times();
+        tokio::select! {biased;
+            result = &mut future => return result,
+            _ = cancel.changed() => return Err(failure(409, "shared_execution_closed")),
+            _ = tokio::time::sleep_until(until.into()) => return Err(failure(409, "shared_execution_expired")),
+            _ = tokio::time::sleep_until(wake.max(retry_at).into()) => {}
+        }
+        // Renewal IO can take most of a lease. Continue polling the SAME
+        // provider future while credentials refresh or a reply is retried.
+        let renewed = tokio::select! {biased;
+            result = &mut future => return result,
+            _ = cancel.changed() => return Err(failure(409, "shared_execution_closed")),
+            _ = tokio::time::sleep_until(until.into()) => return Err(failure(409, "shared_execution_expired")),
+            result = driver.renew() => result,
+        };
+        if let Err(error) = renewed {
+            if !driver.transient(&error) {
+                return Err(error);
+            }
+            tracing::debug!(code = %error.code, "Claude continues reading during transient renewal failure");
+            retry_at = Instant::now() + Duration::from_millis(500);
         }
     }
 }

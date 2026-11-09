@@ -3,7 +3,6 @@
 //! exposed to scripts. Existing server admission and project approval stay separate.
 use super::*;
 use serde_json::Value;
-#[cfg(feature = "resource-adoption")]
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,7 +203,6 @@ impl WebConnectionCommand {
         }
         Ok(())
     }
-    #[cfg(feature = "resource-adoption")]
     pub(crate) fn digest(&self) -> Result<String, Error> {
         let change = match &self.change {
             WebConnectionChange::Create {
@@ -259,19 +257,17 @@ impl Session {
             Permission::ReadConnections
         };
         self.check(context, permission)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
-            store.enrollment_registry(&self.adopted_profile(store)?)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        {
+            store.enrollment_registry(&self.current_profile(store)?)?;
             return self.check(context, permission);
         }
-        Err(Error::LocalAuthority)
     }
-    #[cfg(feature = "resource-adoption")]
     fn web_connection_profile(
         &self,
         context: &HostContext,
         write: bool,
-        store: &crate::owner_resources::adoption::AdoptedManagementStore,
+        store: &crate::owner_resources::adoption::CurrentManagementStore,
     ) -> Result<crate::owner_resources::ProfileAuthority, Error> {
         self.web_connection_access(context, write)?;
         let authority = self.authority();
@@ -281,7 +277,7 @@ impl Session {
         } else {
             Permission::ReadConnections
         };
-        self.adopted_profile(store)?
+        self.current_profile(store)?
             .with_native_gate(move || authority.authorize(&original, permission).is_ok())
     }
     pub async fn web_connections(
@@ -293,15 +289,14 @@ impl Session {
         if let Some(id) = &after {
             web_server(id)?
         }
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
+        let SessionStore::Current(store) = self.local_store()?;
+        {
             let result = store
                 .web_connections(&self.web_connection_profile(context, false, store)?, after)
                 .await?;
             self.check(context, Permission::ReadConnections)?;
             return Ok(result);
         }
-        Err(Error::LocalAuthority)
     }
     pub async fn web_connection(
         &self,
@@ -310,8 +305,8 @@ impl Session {
     ) -> Result<WebConnection, Error> {
         self.web_connection_access(context, false)?;
         web_server(&id)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
+        let SessionStore::Current(store) = self.local_store()?;
+        {
             let result = store
                 .web_connection_private(&self.web_connection_profile(context, false, store)?, id)
                 .await?
@@ -319,7 +314,6 @@ impl Session {
             self.check(context, Permission::ReadConnections)?;
             return Ok(result);
         }
-        Err(Error::LocalAuthority)
     }
     pub async fn web_connection_private(
         &self,
@@ -328,15 +322,14 @@ impl Session {
     ) -> Result<WebConnectionPrivate, Error> {
         self.web_connection_access(context, true)?;
         web_server(&id)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
+        let SessionStore::Current(store) = self.local_store()?;
+        {
             let result = store
                 .web_connection_private(&self.web_connection_profile(context, true, store)?, id)
                 .await?;
             self.check(context, Permission::ContributeResources)?;
             return Ok(result);
         }
-        Err(Error::LocalAuthority)
     }
     pub async fn apply_web_connection(
         &self,
@@ -347,8 +340,8 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.web_connection_access(context, true)?;
         input.validate()?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
+        let SessionStore::Current(store) = self.local_store()?;
+        {
             let receipt = CommandReceipt::new(
                 context,
                 "web.connection",
@@ -366,7 +359,6 @@ impl Session {
                 .map_err(|_| Error::OutcomeUnknown)?;
             return Ok(result);
         }
-        Err(Error::LocalAuthority)
     }
     pub async fn web_connection_result(
         &self,
@@ -375,8 +367,8 @@ impl Session {
     ) -> Result<Option<WebConnectionResult>, Error> {
         self.web_connection_access(context, true)?;
         identifier(&command_id, 128)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
+        let SessionStore::Current(store) = self.local_store()?;
+        {
             let scope = CommandReceipt::new(context, "web.connection", &command_id, &())?;
             let result = store
                 .web_connection_result(
@@ -388,6 +380,5 @@ impl Session {
             self.check(context, Permission::ContributeResources)?;
             return Ok(result);
         }
-        Err(Error::LocalAuthority)
     }
 }

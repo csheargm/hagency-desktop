@@ -32,7 +32,7 @@ class Workspaces(App):
         self.base=f"http://127.0.0.1:{port}";self.log_path=output/("restart.log" if restart else "native.log");self.log=self.log_path.open("w")
         self.trace_name="restart-input-trace.json" if restart else "input-trace.json"
         self.process=subprocess.Popen([str(binary),f"--remote={port}"]+(["--narrow"] if narrow else []),cwd=ROOT,stdout=self.log,stderr=subprocess.STDOUT,
-            env=dict(os.environ,RINX_DATA_DIR=str(self.profile),HAGENCY_UX_FIXTURES=str(self.fixture_path),MAKEPAD_HIDE_WINDOWS="1",MAKEPAD_NO_FOCUS="1"))
+            env=dict(os.environ,HAGENCY_DESKTOP_DATA_DIR=str(self.profile),HAGENCY_UX_FIXTURES=str(self.fixture_path),MAKEPAD_HIDE_WINDOWS="1",MAKEPAD_NO_FOCUS="1"))
         self.wait(lambda:self.req("/s")["pid"]==self.process.pid)
         self.wait(lambda: self.row("entry_switch" if restart else "entry_manager")["r"][2]>0)
 

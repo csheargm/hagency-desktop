@@ -1,6 +1,5 @@
 //! Allocation and canonical task/dispatch state share this one database owner.
 pub mod owner_resources;
-mod reconciliation;
 pub(crate) mod resource_ceiling;
 pub(crate) mod account_ceiling;
 mod resource_detail;
@@ -1312,7 +1311,7 @@ impl DomainRepository {
     }
     /// Bind a fresh embedded ledger to the authenticated server/subject/owner
     /// profile. Validate copied data before recovery can alter execution state.
-    /// Populated unscoped data requires the explicit migration workflow.
+    /// Populated unscoped data is refused; current profile setup never imports it.
     pub fn open_managed(directory: &Path, profile: &str) -> Result<Self, Error> {
         if profile.len() != 64
             || !profile
@@ -1322,12 +1321,6 @@ impl DomainRepository {
             return Err(Error::LocalAuthority);
         }
         Self::open_mode(directory, true, Some(profile), None)
-    }
-    /// Offline owner operations retain the same exclusive writer lock but do
-    /// not run crash recovery or advance runtime clocks during an inventory.
-    /// Runtime startup must always use `open` and perform its normal recovery.
-    pub fn open_for_migration(directory: &Path) -> Result<Self, Error> {
-        Self::open_mode(directory, false, None, None)
     }
     fn open_canonical(
         directory: &Path,
@@ -1348,8 +1341,7 @@ impl DomainRepository {
             None
         } else {
             Some(
-                hagency_platform::legacy_writer::LegacyWriterAdmission::acquire_for_legacy_startup(
-                )?,
+                hagency_platform::legacy_writer::LegacyWriterAdmission::acquire()?,
             )
         };
         let mut database = database::open(

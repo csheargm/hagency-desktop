@@ -626,7 +626,6 @@ async fn fixture_modes(unknown: bool, budget: u64, processing_failure: u8, conti
             shared_auth: false,
             web_search: true,
         },
-        mode: BudgetMode::Estimated { reservation: 10 },
         credential_ref: "keychain:fixture".into(),
         takeover: Takeover::Never,
         host_files: continuous,
@@ -822,7 +821,7 @@ async fn typed_http_runtime_intent_recovery_rechecks_scope_and_explicit_stop_sur
         binding_id: "binding-a".into(),
         device_id: "different-device".into(),
         consent_id: new_consent_id().unwrap(),
-        reservation: 50,
+
         effort: "low".into(),
         host_files: false,
     };
@@ -870,9 +869,6 @@ async fn typed_http_runtime_intent_recovery_rechecks_scope_and_explicit_stop_sur
             effort: saved.effort.clone(),
             shared_auth: false,
             web_search: true,
-        },
-        mode: BudgetMode::Estimated {
-            reservation: saved.reservation,
         },
         credential_ref: "none".into(),
         takeover: Takeover::Never,
@@ -997,7 +993,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         )
         .unwrap();
     drop(ledger);
-    let input = json!({"bindingId":"binding-a","reservation":50,"effort":"low","hostFiles":false,"takeover":false});
+    let input = json!({"bindingId":"binding-a","effort":"low","hostFiles":false,"takeover":false});
     native
         .execute(super::super::native::Command::Local {
             agent_id: "agent-a".into(),
@@ -1049,10 +1045,10 @@ async fn typed_http_runtime_intent_positive_restore_child() {
     let (intent_path, profile_id) = intent_location(restarted.test_console(), &device).unwrap();
     let mut intents = read_intents(&intent_path, &profile_id).unwrap().intents;
     let mut direct = intents.remove(0);
-    direct.reservation = 15000;
+
     let mut project = direct.clone();
     project.binding_id = "binding-other".into();
-    project.reservation = 7000;
+
     change_intent(
         &intent_path,
         &profile_id,
@@ -1095,7 +1091,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.reservation, 15000);
+
     // Agent-wide intent starts all active Rooms under one lease, discovers a
     // newly joined Room, preserves pause, and Stop defeats restart recovery.
     use super::super::native::{Command, LocalAction};
@@ -1112,7 +1108,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         .execute(Command::Local {
             agent_id: "agent-a".into(),
             action: LocalAction::StartAgentService,
-            input: Some(json!({"reservation":15000,"effort":"low"})),
+            input: Some(json!({"effort":"low"})),
             binding_id: None,
             requester: None,
         })
@@ -1251,7 +1247,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(status["service"]["reservation"], 15000);
+    assert!(status["service"].get("reservation").is_none());
     assert_eq!(status["service"]["effort"], "low");
     // Preferences survive a fresh host, but never represent execution consent.
     stopped.suspend().await.unwrap();
@@ -1275,7 +1271,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         })
         .await
         .unwrap();
-    assert_eq!(status["service"]["reservation"], 0);
+    assert!(status["service"].get("reservation").is_none());
     assert_eq!(status["service"]["effort"], "low");
     wait_binding(&stopped, &state, "binding-a", true).await;
     let preferences_path = intent_path.with_file_name("agent-service-options.json");

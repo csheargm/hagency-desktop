@@ -1,11 +1,9 @@
 use super::*;
-use crate::console::native::reconciliation_sources::tests::{
-    Fixture, historical_schema::rewind_schema83,
-};
-use crate::console::native::{ManagementPackage, SourceQuiescenceRequest};
+use crate::console::native::reconciliation_sources::tests::Fixture;
+use crate::console::native::{ManagementPackage};
 use hagency_store::{
     management::{CommentOperatorTask, CreateOperatorTask, OperatorTaskDetailQuery, Permission},
-    owner_resources::{OwnerResourceRegistry, VerifiedProviderAccount},
+    owner_resources::{OwnerResourceRegistry},
 };
 use std::{
     sync::atomic::Ordering,
@@ -55,63 +53,8 @@ async fn native_task_writer_process_child() {
         return;
     }
     let f = Fixture::new().await;
-    let (mut domain, path, resource) = f.domain();
-    domain
-        .put_seat(&hagency_core::project::Seat {
-            id: resource.seat_id.clone(),
-            declaration: None,
-        })
-        .unwrap();
-    drop(domain);
-    // Reconstruct an original schema83 source, preserving WAL custody exactly
-    // like DomainRepository. The archive worker deliberately requires the
-    // existing WAL sidecars and never manufactures missing recovery evidence.
-    let source = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
-    source
-        .set_db_config(
-            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
-            true,
-        )
-        .unwrap();
-    rewind_schema83(&source);
-    drop(source);
-    let (personal, _) = f.personal();
-    drop(personal);
-    let registry =
-        OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
-    let mut request = SourceQuiescenceRequest::new(
-        &f.owner,
-        package(1),
-        registry.clone(),
-        Instant::now() + Duration::from_secs(50),
-        || true,
-    )
-    .unwrap();
-    request.lease_root =
-        Some(hagency_platform::legacy_writer::test_support::initialize_process_root().unwrap());
-    let work = f.owner.prepare_source_quiescence(request).await.unwrap();
-    let sources = work.close_and_drain().await.unwrap();
-    let provider = || {
-        VerifiedProviderAccount::new(
-            "codex",
-            "https://provider.test",
-            "synthetic-task-owner",
-            Instant::now() + Duration::from_secs(30),
-        )
-        .unwrap()
-    };
-    let transfer = sources
-        .prepare_resource_adoption("tasks_original".into(), provider(), 700)
-        .await
-        .unwrap();
-    assert_eq!(transfer.advance(provider()).await.unwrap().phase, "active");
-    transfer.drain_journal().await.unwrap();
-    drop(transfer);
-    drop(sources);
-    drop(work);
-    let f = f
-        .restart_adopted(registry.clone(), "tasks_original".into())
-        .await;
+    let registry=OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
+    let f=f.initialize_current(registry.clone()).await;
     let manager = f.owner.management(package(2)).await.unwrap();
     let prepared = manager
         .prepare_operator_task(OperatorTaskChange::Create(CreateOperatorTask {
@@ -157,7 +100,7 @@ async fn native_task_writer_process_child() {
     drop(session);
     drop(manager);
     let f = f
-        .restart_adopted(registry.clone(), "tasks_original".into())
+        .restart_current(registry.clone(), "current_fixture".into())
         .await;
     let manager = f.owner.management(package(3)).await.unwrap();
     assert_eq!(

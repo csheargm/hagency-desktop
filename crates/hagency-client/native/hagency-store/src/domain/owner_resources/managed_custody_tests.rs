@@ -1141,7 +1141,7 @@ async fn observed_window(f: &Fixture, child: &str) -> Option<u64> {
         .0
         .store
         .call(4096, move |db| {
-            shared_execution::observed_context_window(&db.db, &child)
+            db.db.query_row("SELECT json_extract(evidence,'$.observation.usage.runtime_evidence.usage.context_window') FROM owner_managed_observations WHERE child_id=?1 AND kind='usage' AND json_type(evidence,'$.observation.usage.runtime_evidence.usage.context_window')='integer' ORDER BY ledger_revision DESC LIMIT 1", [&child], |r| r.get::<_,u64>(0)).optional().map_err(Into::into)
         })
         .await
         .unwrap()

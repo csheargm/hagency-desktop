@@ -3,7 +3,6 @@ use super::*;
 #[cfg(feature="shared-budget-execution")]
 #[path="budget_attempt_tests.rs"]
 mod budget_attempts;
-#[cfg(feature="shared-context")]
 #[path="context_tests.rs"]
 mod contexts;
 #[cfg(feature="shared-context")]
@@ -39,7 +38,6 @@ use sha2::{Digest, Sha256};
 pub(crate) struct State {
     #[cfg(feature="shared-budget-execution")]
     budget_attempts: budget_attempts::State,
-    #[cfg(feature="shared-context")]
     contexts: contexts::State,
     #[cfg(feature = "shared-intake")]
     demands: demands::State,
@@ -84,7 +82,9 @@ pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
     }
     // Central admission can consume the renewal margin while the provider
     // has not received turn/start yet.
-    if s.delay_start_reply && path.ends_with("/work/start") {
+    if s.delay_start_reply
+        && (path.ends_with("/work/start") || path.ends_with("/context/start"))
+    {
         return Some(Duration::from_secs(6));
     }
     if !s.hold_idle_boundary || !path.ends_with("/shared-execution/work/poll") {
@@ -134,7 +134,6 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     let normalized=path.replace("/budget-work/","/work/").replace("/budget-activity/","/activity/");
     #[cfg(feature="shared-budget-execution")]
     let path=normalized.as_str();
-    #[cfg(feature="shared-context")]
     if let Some(reply)=contexts::management(path,body,s){return reply;}
     #[cfg(feature = "shared-intake")]
     if let Some(reply) = demands::management(path, body, s) {
@@ -412,12 +411,19 @@ async fn runtime_fixture(
         execution_id: "execution_fixture".into(),
         created_at_ms: now(),
     };
+    let history_room = work.room_id.clone();
+    let history_anchor = work.event_id.clone();
     {
         let mut s = f.state.lock().unwrap();
         s.shared.command = Some(command.clone());
         s.shared.work = Some(work);
     }
-    let t = SharedExecutionTransport::new(f.owner.management(package(1)).await.unwrap());
+    // A V3 input promises the real bounded history reader. Supply an empty
+    // local Matrix fixture for these provider/ledger tests; run-card device
+    // requests still take their actual HTTP path below.
+    let (t, _) = SharedExecutionTransport::new(f.owner.management(package(1)).await.unwrap())
+        .with_crypto_fixture(None);
+    let (t, _) = t.with_history_fixture(history_room, history_anchor, vec![]);
     (f, t, command)
 }
 fn launch(f: &Fixture, mode: &str) -> PreparedLaunch {
@@ -893,12 +899,24 @@ async fn refuse_renewal_and_wait_for_usage(f: &Fixture) {
 #[tokio::test]
 #[ignore = "requires explicit offline supervised runtime probe"]
 async fn native_shared_interrupted_call_collects_final_usage_before_stopping_original_and_successor() {
-    for (successor, refused_renewal) in [(false,false),(true,false),(false,true),(true,true)] {
-        let (f, t, c) = if successor { attempts::predecessor().await } else { fixture().await };
+    for (successor, refused_renewal) in [
+        (false,false), (false,true),
+        #[cfg(feature = "shared-successors")]
+        (true,false),
+        #[cfg(feature = "shared-successors")]
+        (true,true),
+    ] {
+        let (f, t, _c) = match successor {
+            #[cfg(feature = "shared-successors")]
+            true => attempts::predecessor().await,
+            _ => fixture().await,
+        };
+        #[cfg(feature = "shared-successors")]
         if successor {
-            attempts::prepare_lost_start(&f, &t, &c).await;
+            attempts::prepare_lost_start(&f, &t, &_c).await;
             t.poll_successor_fixture(&f.registry, launch(&f, "text-interrupt-usage")).await.unwrap();
-        } else {
+        }
+        if !successor {
             t.poll_fixture(&f.registry, launch(&f, "text-interrupt-usage")).await.unwrap();
         }
         method_seen(&f, "turn/start").await;
@@ -1197,12 +1215,13 @@ async fn native_shared_execution_retirement_stops_completed_process_with_reply_p
 }
 
 /// An older server has no demand retry route (ADR-193 amendment).
-pub(crate) fn demand_retry_enabled(s:&super::State)->bool{!s.shared.demands.no_retry}
-#[cfg(feature="shared-context")]
-pub(crate) fn context_enabled(s:&super::State)->bool{s.shared.contexts.active}
-#[cfg(feature="shared-context")]
-pub(crate) fn context_v2_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2}
-pub(crate) fn context_v3_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2 && s.shared.contexts.v3}
+pub(crate) fn demand_retry_enabled(_s:&super::State)->bool{
+    #[cfg(feature = "shared-intake")]
+    return !_s.shared.demands.no_retry;
+    #[cfg(not(feature = "shared-intake"))]
+    false
+}
+pub(crate) fn context_v3_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v3}
 
 #[cfg(feature = "shared-budget-execution")]
 #[path = "file_execution_tests.rs"]

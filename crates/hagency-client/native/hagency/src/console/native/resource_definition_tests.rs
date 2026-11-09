@@ -1,9 +1,7 @@
 use super::*;
-use crate::console::native::reconciliation_sources::tests::{
-    Fixture, historical_schema::rewind_schema83,
-};
-use crate::console::native::{ManagementPackage, SourceQuiescenceRequest};
-use hagency_store::owner_resources::{OwnerResourceRegistry, VerifiedProviderAccount};
+use crate::console::native::reconciliation_sources::tests::Fixture;
+use crate::console::native::{ManagementPackage};
+use hagency_store::owner_resources::{OwnerResourceRegistry};
 use std::time::{Duration, Instant};
 fn package(instance: u64) -> ManagementPackage {
     ManagementPackage {
@@ -62,63 +60,9 @@ async fn native_template_process_child() {
         return;
     }
     let f = Fixture::new().await;
-    let (mut domain, path, resource) = f.domain();
-    domain
-        .put_seat(&hagency_core::project::Seat {
-            id: resource.seat_id.clone(),
-            declaration: None,
-        })
-        .unwrap();
-    drop(domain);
-    // Reconstruct an original schema83 source, preserving WAL custody exactly
-    // like DomainRepository. The archive worker deliberately requires the
-    // existing WAL sidecars and never manufactures missing recovery evidence.
-    let source = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
-    source
-        .set_db_config(
-            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
-            true,
-        )
-        .unwrap();
-    rewind_schema83(&source);
-    drop(source);
-    let (personal, _) = f.personal();
-    drop(personal);
-    let registry =
-        OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
-    let mut request = SourceQuiescenceRequest::new(
-        &f.owner,
-        package(1),
-        registry.clone(),
-        Instant::now() + Duration::from_secs(50),
-        || true,
-    )
-    .unwrap();
-    request.lease_root =
-        Some(hagency_platform::legacy_writer::test_support::initialize_process_root().unwrap());
-    let work = f.owner.prepare_source_quiescence(request).await.unwrap();
-    let sources = work.close_and_drain().await.unwrap();
-    let provider = || {
-        VerifiedProviderAccount::new(
-            "codex",
-            "https://provider.test",
-            "synthetic-template-owner",
-            Instant::now() + Duration::from_secs(30),
-        )
-        .unwrap()
-    };
-    let transfer = sources
-        .prepare_resource_adoption("templates_original".into(), provider(), 700)
-        .await
-        .unwrap();
-    assert_eq!(transfer.advance(provider()).await.unwrap().phase, "active");
-    transfer.drain_journal().await.unwrap();
-    drop(transfer);
-    drop(sources);
-    drop(work);
-    let f = f
-        .restart_adopted(registry.clone(), "templates_original".into())
-        .await;
+    let registry=OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
+    let f=f.initialize_current(registry.clone()).await;
+    let resource=f.current_resource(&registry).await;
     let manager = f.owner.management(package(2)).await.unwrap();
 
     let page = manager
@@ -170,7 +114,7 @@ async fn native_template_process_child() {
     drop(session);
     drop(manager);
     let f = f
-        .restart_adopted(registry.clone(), "templates_original".into())
+        .restart_current(registry.clone(), "current_fixture".into())
         .await;
     let manager = f.owner.management(package(3)).await.unwrap();
     assert_eq!(
@@ -300,51 +244,9 @@ async fn native_template_cancellation_process_child() {
         return;
     }
     let f = Fixture::new().await;
-    let (mut domain, _, resource) = f.domain();
-    domain
-        .put_seat(&hagency_core::project::Seat {
-            id: resource.seat_id.clone(),
-            declaration: None,
-        })
-        .unwrap();
-    drop(domain);
-    let (personal, _) = f.personal();
-    drop(personal);
-    let registry =
-        OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
-    let mut request = SourceQuiescenceRequest::new(
-        &f.owner,
-        package(1),
-        registry.clone(),
-        Instant::now() + Duration::from_secs(50),
-        || true,
-    )
-    .unwrap();
-    request.lease_root =
-        Some(hagency_platform::legacy_writer::test_support::initialize_process_root().unwrap());
-    let work = f.owner.prepare_source_quiescence(request).await.unwrap();
-    let sources = work.close_and_drain().await.unwrap();
-    let provider = || {
-        VerifiedProviderAccount::new(
-            "codex",
-            "https://provider.test",
-            "synthetic-template-cancel",
-            Instant::now() + Duration::from_secs(30),
-        )
-        .unwrap()
-    };
-    let transfer = sources
-        .prepare_resource_adoption("template_cancel_original".into(), provider(), 700)
-        .await
-        .unwrap();
-    assert_eq!(transfer.advance(provider()).await.unwrap().phase, "active");
-    transfer.drain_journal().await.unwrap();
-    drop(transfer);
-    drop(sources);
-    drop(work);
-    let f = f
-        .restart_adopted(registry.clone(), "template_cancel_original".into())
-        .await;
+    let registry=OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
+    let f=f.initialize_current(registry.clone()).await;
+    let resource=f.current_resource(&registry).await;
     let manager = f.owner.management(package(2)).await.unwrap();
     template_cancellation(&manager, &resource.id()).await;
     manager.retire();

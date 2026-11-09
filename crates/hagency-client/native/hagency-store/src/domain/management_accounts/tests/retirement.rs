@@ -73,11 +73,16 @@ fn account_retirement_receipt_failure_rolls_back_database_and_preserves_original
 
 #[tokio::test]
 async fn account_retirement_requires_current_exact_permission_and_native_confirmation_deadline() {
-    let root=tempfile::tempdir().unwrap();let mut db=DomainRepository::open_managed(&root.path().join("state"),&"a".repeat(64)).unwrap();let input=prepared(&mut db);
-    let store=crate::DomainStore::start(db,8).unwrap();let until=Instant::now()+Duration::from_secs(60);
-    let reader=Session::new(store.clone(),context(),[Permission::ReadAccounts],until).unwrap();
+    let root=tempfile::tempdir().unwrap();
+    let store=crate::owner_resources::adoption::TestCurrentManagement::open(&root.path().join("state"),"@owner:test").await;
+    let until=Instant::now()+Duration::from_secs(60);
+    let prepare=Session::new_current(store.backing.clone(),context(),[Permission::PrepareAccounts,Permission::ReadAccounts],until).unwrap();
+    let prepared=prepare.prepare_account(&context(),crate::management::PrepareAccount{command_id:"prepare".into()}).await.unwrap();
+    let page=prepare.account_inventory(&context(),crate::management::AccountInventoryQuery::default()).await.unwrap();
+    let input=RetireAccount{command_id:"retire".into(),account_id:prepared.account_id,expected_revision:page.accounts[0].revision.clone().unwrap()};
+    let reader=Session::new_current(store.backing.clone(),context(),[Permission::ReadAccounts],until).unwrap();
     assert!(reader.retire_account(&context(),input.clone(),until).await.is_err());
-    let writer=Session::new(store.clone(),context(),[Permission::RetireAccounts],until).unwrap();
+    let writer=Session::new_current(store.backing.clone(),context(),[Permission::RetireAccounts],until).unwrap();
     assert!(writer.retire_account(&context(),input.clone(),Instant::now()).await.is_err());
     let result=writer.retire_account(&context(),input.clone(),until).await.unwrap();
     assert_eq!(result.state,"retired");writer.retire();

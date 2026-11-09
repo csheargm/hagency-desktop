@@ -4770,6 +4770,7 @@ dependencies = [
  "hyper-util",
  "lopdf",
  "matrix-sdk",
+ "matrix-sdk-store-encryption",
  "percent-encoding",
  "reqwest 0.12.28",
  "rusqlite",

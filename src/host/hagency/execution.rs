@@ -213,8 +213,8 @@ impl Host {
                     if matches!(
                         code.as_str(),
                         "shared_successors_disabled"
-                            | "owner_source_adoption_required"
-                            | "shared_executor_adoption_required"
+                            | "current_profile_required"
+                            | "current_profile_required"
                             | "adopted_executor_device_reauthorization_required"
                     ) =>
                 {

@@ -16,7 +16,7 @@ Hagency Desktop 是原生 Rust/Makepad 客户端，将 Matrix 聊天、Project �
   接入 Room 是独立操作，不要求先选 Project。
 - 服务器校验身份、Room 接入权和执行设备。Project/Room 管理员设置 Agent
   接入权限与服务暂停。
-- 主人在自己的设备上选择 Codex、模型、工作目录、token 配额和工具策略，
+- 主人在自己的设备上选择 Codex 或 Claude Code、模型、工作目录、token 配额和工具策略，
   无需服务器管理员审批资源消耗。
 - 一台设备可以执行多个 Agent。切换账号会停止当前主人的本地运行，不转让
   Agent，也不合并账号数据。
@@ -29,18 +29,17 @@ Hagency Desktop 是原生 Rust/Makepad 客户端，将 Matrix 聊天、Project �
    Space，也可以选择已经加入的 Space；从详情添加讨论 Room。
 3. 打开 **Agents → New Agent**，填写名称，等待身份及主人私聊就绪。创建不带
    Project/Room，执行设备默认为当前已授权设备。
-4. 在 **Codex** 选择 **Use my signed-in local Codex account**。
-   本机已登录的 Codex 可以直接复用，无需再次登录；也可使用独立 Codex 登录。
-   选择模型和工作目录并保存。
-5. 在 **Budgets** 设置 Agent、Room、Room 内请求者三层策略。
-   在 **Run** 选择主人私聊或已绑定 Room，明确选择估算记账、
-   单次预留量，再启动该 Room。
+4. 在 **Model & resources** 连接本机已登录的 Codex 或 Claude Code，保存模型和
+   推理强度。Hagency 会创建私有工作目录。
+5. 在 **Usage & limits** 设置 Agent、Room 和请求者策略，再到 **Service**
+   选择私聊或已绑定 Room 并启动。任务结束后按实际用量计费，已开始的任务
+   可以超额，额度不足不会打断正在进行的工作。
 
 详见[原生快速开始指南](docs/hagency-quickstart.zh-CN.md)。界面语言可切换；
 上面的英文名称对应当前源码控件，部分管理页文字尚未完成中文翻译。
 
 Project 详情 tab 为 **Overview / Rooms / Members / Access**；Agent 详情为
-**Agent / Codex / Budgets / Run**，分别管理身份与设备、本机资源、额度与请求
+**Agent and device / Model & resources / Usage & limits / Service**，分别管理身份与设备、本机资源、额度与请求
 策略，以及选中 Room 的运行与审批。
 
 ## 导航与保留功能
@@ -53,7 +52,16 @@ Transfer、Article editor、Browser、Settings。Project 条目的 **⋯** 可�
 聊天、联系人、搜索、附件、普通用户加密聊天、朋友圈、原生文章编辑器以及
 小程序导入／权限审阅／运行均保留。默认小程序目录不再提供 Palpo 应用。
 Hagency 管理由原生 Projects/Agents 页面承担，旧资源与协调者审批流程已移除。
-Agent 加密 Room 执行暂缓，这不等于删除 Matrix 聊天的加密能力。
+Agent 可以读取加密 Room 历史，并通过当前授权的 Matrix 会话收发文件。
+共享 Agent 每个请求最多自动发送 64 个文件、合计 64 MiB；超出时文件工具返回
+错误，任务本身继续运行。
+
+Codex 和 Claude 原生 session 会在轮次间保留上下文。macOS 的共享 Claude 使用
+独立工作目录和 Seatbelt 隔离，不加载主人的 hooks、设置或无关 MCP 服务。
+停止进程后原生会话文件加密保存，重新打开前须通过当前范围授权。
+已实测 Claude Code 2.1.321，运行时接受 2.1.321 及更高的 2.x 版本。
+对话控制允许发送者身份已认证但未交叉签名的 Matrix 设备，仍校验卡片允许的
+答复者和当前 Room 成员资格；这不授予工具审批权限。
 
 ## 账号、设置与本地数据
 
@@ -65,10 +73,10 @@ Agent 加密 Room 执行暂缓，这不等于删除 Matrix 聊天的加密能力
 通用外部 **Agent Access** 工具与原生 Hagency Agents 管理不同，配置 Hagency
 不需要填写 BotFather 或 loopback 服务地址。
 
-`HAGENCY_DESKTOP_DATA_DIR` 可指定绝对路径以隔离数据。启动器仍识别
-`RINX_DATA_DIR`、`ROBRIX_DATA_DIR` 环境别名，但这不代表兼容已退休 Fleet 数据。
-账本、工作目录及 Codex 关联按完整授权身份隔离。换执行设备不会转让所有权、
-清零成本或重跑未知执行；恢复检查要求时，必须恢复同一主人的完整账本。
+`HAGENCY_DESKTOP_DATA_DIR` 可指定绝对路径以隔离数据，是唯一支持的数据目录环境变量。
+账本、工作目录及提供方关联按完整授权身份隔离。换执行设备不会转让所有权。
+本次原生 CLI 切换要求配套的当前 Desktop、daemon 和服务器，不恢复旧版本运行
+选项或审批协议。旧的运行意图会被丢弃，需要重新明确启动各个 Room。
 
 ## 构建与开发
 

@@ -21,8 +21,25 @@ pub struct Entry {
     pub sending: bool,
     pub may_append: bool,
     pub may_stop: bool,
+    pub recovered_drafts: Vec<String>,
     sent_event: Option<String>,
+    sent_owner: Option<String>,
+    sent_queued: bool,
+    pending_drafts: Vec<PendingDraft>,
     retry: Option<Requested>,
+}
+#[derive(Clone, Debug)]
+struct PendingDraft {
+    event: String,
+    owner: String,
+    text: String,
+}
+impl Entry {
+    pub fn unconfirmed_text(&self) -> Option<String> {
+        (!self.card.state.active() && !self.pending_drafts.is_empty()).then(||
+            self.pending_drafts.iter().map(|draft| draft.text.as_str()).collect::<Vec<_>>().join("\n\n")
+        )
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Requested {
@@ -35,6 +52,7 @@ pub struct Requested {
     kind: &'static str,
     content: Value,
     queued: bool,
+    text: Option<String>,
 }
 #[derive(Debug)]
 pub struct Sent {
@@ -59,18 +77,28 @@ pub(super) fn reset(generation: u64, owner: &str) {
 fn apply(entry: &mut Entry, card: Card) -> bool {
     if !entry.card.same_identity(&card)
         || card.revision <= entry.card.revision
-        || !entry.card.state.active()
+        || (!entry.card.state.active() && card.state != entry.card.state)
     {
         return false;
     }
     if entry.card.state == RunState::Stopping && card.state == RunState::Running {
         return false;
     }
-    if let Some(receipt) = &card.last_action
-        && entry.sent_event.as_deref() == Some(&receipt.event_id)
-    {
-        entry.hint = match receipt.outcome.as_str() {
+    apply_receipts(entry, &card);
+    entry.card = card;
+    true
+}
+fn apply_receipts(entry: &mut Entry, card: &Card) {
+    let mut recovered = false;
+    let mut last_acknowledged = false;
+    for receipt in card.action_receipts.iter().chain(card.last_action.iter()) {
+        if entry.sent_event.as_deref() == Some(&receipt.event_id)
+            && entry.sent_owner.as_deref() == Some(&receipt.sender)
+        {
+            last_acknowledged = true;
+            entry.hint = match receipt.outcome.as_str() {
             "accepted" => "Agent 已接收此操作。",
+            "queued" => "Agent 已将指令加入下一轮。",
             "rejected" => "运行时拒绝了此操作。",
             "unsupported" => "当前运行时不支持此操作。",
             "in_progress" => "停止请求已在处理中。",
@@ -78,10 +106,36 @@ fn apply(entry: &mut Entry, card: Card) -> bool {
             "unavailable" => "本次运行已结束，操作未执行。",
             _ => "未能确认操作结果；为避免重复执行，不会自动重发。",
         }
-        .into();
+            .into();
+        }
+        let Some(index) = entry.pending_drafts.iter().position(|draft|
+            draft.event == receipt.event_id && draft.owner == receipt.sender
+        ) else { continue; };
+        match receipt.outcome.as_str() {
+            "accepted" | "queued" => { entry.pending_drafts.remove(index); }
+            "rejected" | "unsupported" | "busy" | "unavailable" => {
+                let draft = entry.pending_drafts.remove(index);
+                entry.recovered_drafts.push(draft.text);
+                recovered = true;
+            }
+            _ => {} // Unknown application is never retried or restored as unapplied.
+        }
     }
-    entry.card = card;
+    if recovered {
+        restore_next_draft(entry);
+        entry.hint = "有指令未执行，原文已保留。可复制后发送，或在运行中重新提交。".into();
+    } else if !card.state.active() && entry.sent_event.is_some() && !entry.sent_queued && !last_acknowledged {
+        entry.hint = "运行已结束，操作结果未确认。请先核对；不会自动重发。".into();
+    }
+}
+fn restore_next_draft(entry: &mut Entry) -> bool {
+    if !entry.draft.is_empty() || entry.recovered_drafts.is_empty() { return false; }
+    entry.draft = entry.recovered_drafts.remove(0);
     true
+}
+pub fn restore_draft(key: &str) -> bool {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter_mut()
+        .find(|entry| entry.key == key).is_some_and(restore_next_draft)
 }
 /// Called only after the shared observer authenticates the Agent device and
 /// verifies the event belongs to this room and this signed-in generation.
@@ -148,6 +202,10 @@ pub(super) fn authenticated(
         hint: String::new(),
         sending: false,
         sent_event: None,
+        sent_owner: None,
+        sent_queued: false,
+        pending_drafts: Vec::new(),
+        recovered_drafts: Vec::new(),
         retry: None,
     };
     let mut edits: Vec<_> = store
@@ -207,6 +265,10 @@ pub fn request(key: &str, stop: bool) -> Option<Requested> {
     if entry.sending || entry.card.state != RunState::Running {
         return None;
     }
+    if !stop && entry.pending_drafts.len() + entry.recovered_drafts.len() >= protocol::MAX_ACTION_RECEIPTS {
+        entry.hint = "请先处理尚未确认或未执行的指令。".into();
+        return None;
+    }
     let action = if stop {
         Action::Interrupt {}
     } else if entry.card.runtime == "claude" {
@@ -247,6 +309,7 @@ pub fn request(key: &str, stop: bool) -> Option<Requested> {
             },
             content,
             queued,
+            text: (!stop).then(|| entry.draft.clone()),
         });
     entry.sending = true;
     entry.hint = "正在发送…".into();
@@ -264,10 +327,16 @@ pub fn sent(value: &Sent) -> bool {
     else {
         return false;
     };
+    apply_send_result(entry, value);
+    true
+}
+fn apply_send_result(entry: &mut Entry, value: &Sent) {
     entry.sending = false;
     match &value.result {
         Ok(event) => {
             entry.sent_event = Some(event.clone());
+            entry.sent_owner = Some(value.request.owner.clone());
+            entry.sent_queued = value.request.queued;
             entry.retry = None;
             entry.hint = if value.request.queued {
                 "已发送，等待下一轮处理。"
@@ -275,31 +344,23 @@ pub fn sent(value: &Sent) -> bool {
                 "已发送，等待 Agent 确认。"
             }
             .into();
-            if value.request.queued || value.request.content["action"]["kind"] == "steer" {
-                entry.draft.clear();
-            }
-            if let Some(receipt) = &entry.card.last_action
-                && receipt.event_id == *event
-            {
-                entry.hint = if receipt.outcome == "accepted" {
-                    "Agent 已接收此操作。"
-                } else {
-                    "操作结果："
+            if let Some(text) = &value.request.text {
+                if entry.draft == *text { entry.draft.clear(); }
+                if !value.request.queued && !entry.pending_drafts.iter().any(|draft| draft.event == *event) {
+                    entry.pending_drafts.push(PendingDraft {
+                        event: event.clone(), owner: value.request.owner.clone(), text: text.clone(),
+                    });
                 }
-                .to_owned()
-                    + if receipt.outcome == "accepted" {
-                        ""
-                    } else {
-                        &receipt.outcome
-                    };
             }
+            // The terminal card may arrive before the HTTP send response.
+            let card = entry.card.clone();
+            apply_receipts(entry, &card);
         }
         Err(_) => {
             entry.retry = Some(value.request.clone());
             entry.hint = "发送未获确认，可重试同一操作。".into();
         }
     }
-    true
 }
 pub fn send(request: Requested) {
     let client = crate::sliding_sync::get_client();
@@ -373,7 +434,11 @@ mod tests {
             sending: false,
             may_append: true,
             may_stop: true,
+            recovered_drafts: Vec::new(),
             sent_event: Some("$action".into()),
+            sent_owner: Some("@requester:test".into()),
+            sent_queued: false,
+            pending_drafts: Vec::new(),
             retry: None,
         }
     }
@@ -405,6 +470,32 @@ mod tests {
         assert_eq!(e.card.state, RunState::Interrupted);
     }
     #[test]
+    fn late_terminal_receipt_recovers_text_without_reopening_or_changing_the_run() {
+        let mut e = entry();
+        e.draft.clear();
+        e.pending_drafts.push(PendingDraft {
+            event: "$late".into(), owner: "@requester:test".into(), text: "keep this instruction".into(),
+        });
+        let mut card = e.card.clone();
+        card.state = RunState::Completed;
+        card.revision = 1;
+        assert!(apply(&mut e, card.clone()));
+        card.revision = 2;
+        card.action_receipts.push(protocol::Receipt {
+            event_id: "$late".into(), sender: "@requester:test".into(), outcome: "unavailable".into(),
+        });
+        assert!(apply(&mut e, card.clone()));
+        assert_eq!(e.draft, "keep this instruction");
+        assert_eq!(e.card.state, RunState::Completed);
+        assert!(!apply(&mut e, card.clone()), "duplicate revision");
+        card.revision = 3;
+        card.state = RunState::Interrupted;
+        assert!(!apply(&mut e, card.clone()), "the terminal outcome cannot change");
+        card.state = RunState::Running;
+        assert!(!apply(&mut e, card), "a receipt never reopens the run");
+    }
+
+    #[test]
     fn native_ack_changes_only_the_matching_action_and_not_completion() {
         let mut e = entry();
         let mut update = e.card.clone();
@@ -421,5 +512,132 @@ mod tests {
         assert!(apply(&mut e, update));
         assert_eq!(e.hint, "Agent 已接收此操作。");
         assert_eq!(e.card.state, RunState::Running);
+    }
+    #[test]
+    fn terminal_receipt_restores_each_unapplied_draft_and_checks_its_sender() {
+        let mut e = entry();
+        e.draft.clear();
+        for (event, text) in [("$one", "first"), ("$two", "second"), ("$three", "third")] {
+            e.pending_drafts.push(PendingDraft {
+                event: event.into(), owner: "@requester:test".into(), text: text.into(),
+            });
+        }
+        let mut card = e.card.clone();
+        card.revision = 1;
+        card.state = RunState::Completed;
+        card.action_receipts = [("$one", "@requester:test", "unavailable"),
+            ("$two", "@requester:test", "busy"), ("$three", "@other:test", "unavailable")]
+            .into_iter().map(|(event, sender, outcome)| protocol::Receipt {
+                event_id: event.into(), sender: sender.into(), outcome: outcome.into(),
+            }).collect();
+        assert!(apply(&mut e, card));
+        assert_eq!(e.draft, "first");
+        assert_eq!(e.recovered_drafts, ["second"]);
+        assert_eq!(e.pending_drafts.len(), 1);
+        assert_eq!(e.pending_drafts[0].event, "$three");
+        assert!(!restore_next_draft(&mut e), "Do not replace an edited or restored draft");
+        e.draft.clear();
+        assert!(restore_next_draft(&mut e));
+        assert_eq!(e.draft, "second");
+    }
+    #[test]
+    fn completion_before_send_response_keeps_newer_edits_and_recovers_the_sent_text() {
+        let mut e = entry();
+        e.draft = "newer edit".into();
+        e.card.state = RunState::Completed;
+        e.card.action_receipts.push(protocol::Receipt {
+            event_id: "$action".into(), sender: "@requester:test".into(), outcome: "unavailable".into(),
+        });
+        let sent = Sent {
+            request: Requested {
+                generation: 1, key: e.key.clone(), owner: "@requester:test".into(),
+                agent: e.agent.clone(), room: e.card.room_id.clone(),
+                txn: matrix_sdk::ruma::TransactionId::new(), kind: protocol::ACTION_EVENT,
+                content: serde_json::json!({"action":{"kind":"steer","text":"sent text"}}),
+                queued: false, text: Some("sent text".into()),
+            },
+            result: Ok("$action".into()),
+        };
+        apply_send_result(&mut e, &sent);
+        assert_eq!(e.draft, "newer edit");
+        assert_eq!(e.recovered_drafts, ["sent text"]);
+        assert!(e.pending_drafts.is_empty());
+    }
+    #[test]
+    fn unknown_application_is_not_restored_as_an_unapplied_draft() {
+        let mut e = entry();
+        e.draft.clear();
+        e.pending_drafts.push(PendingDraft {
+            event: "$action".into(), owner: "@requester:test".into(), text: "possibly applied".into(),
+        });
+        let mut card = e.card.clone();
+        card.revision = 1;
+        card.state = RunState::Unknown;
+        card.action_receipts.push(protocol::Receipt {
+            event_id: "$action".into(), sender: "@requester:test".into(), outcome: "unknown".into(),
+        });
+        assert!(apply(&mut e, card));
+        assert!(e.draft.is_empty() && e.recovered_drafts.is_empty());
+        assert_eq!(e.pending_drafts.len(), 1);
+        assert_eq!(e.unconfirmed_text().as_deref(), Some("possibly applied"));
+    }
+    #[test]
+    fn terminal_without_exact_receipt_exposes_unknown_text_for_both_delivery_orders() {
+        for completion_first in [false, true] {
+            let mut e = entry();
+            e.draft = "an unsent newer edit".into();
+            let mut terminal = e.card.clone();
+            terminal.revision = 1;
+            terminal.state = RunState::Completed;
+            if completion_first { assert!(apply(&mut e, terminal.clone())); }
+            let sent = Sent {
+                request: Requested {
+                    generation: 1, key: e.key.clone(), owner: "@requester:test".into(),
+                    agent: e.agent.clone(), room: e.card.room_id.clone(),
+                    txn: matrix_sdk::ruma::TransactionId::new(), kind: protocol::ACTION_EVENT,
+                    content: serde_json::json!({"action":{"kind":"steer","text":"exact sent text"}}),
+                    queued: false, text: Some("exact sent text".into()),
+                }, result: Ok("$missing-receipt".into()),
+            };
+            apply_send_result(&mut e, &sent);
+            if !completion_first { assert!(apply(&mut e, terminal.clone())); }
+            assert!(e.hint.contains("结果未确认"));
+            assert!(!e.hint.contains("等待"));
+            assert_eq!(e.unconfirmed_text().as_deref(), Some("exact sent text"));
+            assert_eq!(e.draft, "an unsent newer edit");
+            assert!(e.recovered_drafts.is_empty() && e.retry.is_none());
+            terminal.revision = 2;
+            terminal.action_receipts.push(protocol::Receipt {
+                event_id: "$missing-receipt".into(), sender: "@requester:test".into(), outcome: "accepted".into(),
+            });
+            assert!(apply(&mut e, terminal));
+            assert!(e.unconfirmed_text().is_none());
+            assert_eq!(e.draft, "an unsent newer edit");
+        }
+    }
+
+    #[test]
+    fn a_queued_chat_message_does_not_wait_for_a_per_run_control_receipt() {
+        let mut e = entry();
+        e.draft = "next turn".into();
+        let sent = Sent {
+            request: Requested {
+                generation: 1, key: e.key.clone(), owner: "@requester:test".into(),
+                agent: e.agent.clone(), room: e.card.room_id.clone(),
+                txn: matrix_sdk::ruma::TransactionId::new(), kind: "m.room.message",
+                content: serde_json::json!({"body":"next turn"}),
+                queued: true, text: Some("next turn".into()),
+            },
+            result: Ok("$queued".into()),
+        };
+        apply_send_result(&mut e, &sent);
+        assert!(e.draft.is_empty() && e.pending_drafts.is_empty());
+        let mut card = e.card.clone();
+        card.revision = 1;
+        card.state = RunState::Completed;
+        assert!(apply(&mut e, card));
+        assert!(e.recovered_drafts.is_empty());
+        assert!(e.unconfirmed_text().is_none());
+        assert_eq!(e.hint, "已发送，等待下一轮处理。");
     }
 }

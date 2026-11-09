@@ -399,6 +399,9 @@ impl Inner {
         )
         .await?;
         self.card_current(&card, cancel).await?;
+        let rooms = self.approval_rooms(std::slice::from_ref(&card.target().authority.engagement_id)).await?;
+        self.publish_approval_room_markers(&rooms, cancel, deadline, blocks_after_error).await?;
+        self.card_current(&card, cancel).await?;
         // Set before even submitting the original SDK command: a lost queue or
         // result acknowledgment cannot be classified as a no-effect refusal.
         blocks_after_error.store(true, Ordering::Release);

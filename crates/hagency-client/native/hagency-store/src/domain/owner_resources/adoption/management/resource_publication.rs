@@ -3,7 +3,7 @@ use super::*;
 use crate::management::{CommandReceipt, PublishResource};
 use crate::ResourcePublicationResult;
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn publish_resource(
         &self,
         profile: &ProfileAuthority,

@@ -4,19 +4,15 @@ use crate::management::{
     OperatorTaskChange as Change, OperatorTaskCommand as Command, OperatorTaskDetailQuery,
     OperatorTaskVersion as Version, TaskField, TransitionOperatorTask,
 };
-async fn setup() -> (Fixture, AdoptedManagementStore, Session, HostContext) {
+async fn setup() -> (Fixture, CurrentManagementStore, Session, HostContext) {
     let f = fixture().await;
-    let db = Connection::open(f.source.join("domain.sqlite3")).unwrap();
-    rewind_pool_schema(&db);
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE owner_operator_task_comments;DROP TABLE owner_operator_tasks;DROP TABLE owner_operator_task_histories;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=83;").unwrap();
-    drop(db);
     let b = active(&f).await;
     let c = context(&f);
     let s = writer(b.clone(), c.clone());
     (f, b, s, c)
 }
-fn writer(b: AdoptedManagementStore, c: HostContext) -> Session {
-    Session::new_adopted(
+fn writer(b: CurrentManagementStore, c: HostContext) -> Session {
+    Session::new_current(
         b,
         c,
         [
@@ -93,7 +89,7 @@ async fn rows(f: &Fixture) -> (u64, u64, u64) {
         .await
         .unwrap()
 }
-async fn close(f: Fixture, b: AdoptedManagementStore) {
+async fn close(f: Fixture, b: CurrentManagementStore) {
     b.shutdown().await.unwrap();
     f.registry.shutdown().await.unwrap();
 }
@@ -290,7 +286,7 @@ async fn task_writer_cas_receipt_collision_and_atomic_rollback() {
 #[tokio::test]
 async fn task_writer_no_permission_wrong_context_and_queued_retirement() {
     let (f, b, s, c) = setup().await;
-    let read = Session::new_adopted(
+    let read = Session::new_current(
         b.clone(),
         c.clone(),
         [Permission::ReadTasks],
@@ -391,15 +387,7 @@ async fn task_writer_postcommit_loss_original_journal_reopen_and_recovery() {
     drop(db);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal =
-        PrivateManagementJournal::open_existing(&f.source, transfer.archive_binding().unwrap())
-            .unwrap();
-    let b = transfer.adopted_management(journal).await.unwrap();
+    let b = current_backing(&f).await;
     let s = writer(b.clone(), c.clone());
     let original = s.pending_intents(&c).await.unwrap().remove(0);
     let recovered: Command = serde_json::from_value(original.input).unwrap();
@@ -518,6 +506,22 @@ async fn task_writer_missing_proof_and_foreign_profile_never_write() {
     let b = active(&f).await;
     let c = context(&f);
     let s = writer(b.clone(), c.clone());
+    // A current profile normally records the task-write proof during setup.
+    // Remove that proof explicitly to exercise a damaged current profile,
+    // without relying on an unsupported historical profile shape.
+    let profile = f.profile.digest.clone();
+    f.registry.0.store.call(1, move |db| {
+        assert!(db.db.execute(
+            "DELETE FROM owner_operator_task_histories WHERE profile=?1", [&profile]
+        ).is_err(), "normal writes cannot remove the current proof");
+        // Fault injection in this isolated fixture only: production keeps the
+        // immutable-history trigger and never exposes this operation.
+        db.db.execute_batch("DROP TRIGGER owner_operator_task_history_retained")?;
+        assert_eq!(db.db.execute(
+            "DELETE FROM owner_operator_task_histories WHERE profile=?1", [profile]
+        )?, 1);
+        Ok(())
+    }).await.unwrap();
     assert!(!s.operator_task_write_access(&c).await.unwrap());
     assert!(
         s.apply_operator_task(&c, create("unproven", "task_1"))

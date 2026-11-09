@@ -2,7 +2,7 @@
 use super::*;
 use super::context_io::ContextAction;
 use super::budget_work_io::WorkAction;
-use super::context_io::{paired, budget};
+use super::context_io::paired;
 pub(super) async fn prepare(
     io: &Io,
     b: &Bound,
@@ -16,13 +16,7 @@ pub(super) async fn prepare(
         let text=super::e2ee::input(io,b,w).await?;
         return r.prepare_shared_decrypted_input(a,w.clone(),text).await.map_err(store);
     }
-    let Some(version) = paired(b).await? else {
-        return r
-            .prepare_shared_legacy_input(a, w.clone())
-            .await
-            .map_err(store);
-    };
-    let budget = budget(r, &a, version).await?;
+    paired(b).await?;
     let mode: Timed<SharedWorkInputMode> = b
         .upload(
             WorkAction::Context(Box::new(ContextAction::Mode {
@@ -38,7 +32,10 @@ pub(super) async fn prepare(
         .await?;
     mode.value.validate().map_err(store)?;
     let mode = mode.value;
-    let context = if mode.mode == "thread_context_v1" {
+    if mode.mode != "thread_context_v1" {
+        return Err(failure(409, "native_context_protocol_required"));
+    }
+    let context = {
         let action = if let Some(hash) = &mode.context_digest {
             ContextAction::Recover {
                 work: w.id.clone(),
@@ -54,17 +51,15 @@ pub(super) async fn prepare(
                 input: SharedContextInput {
                     authority,
                     work_digest: digest(w)?,
-                    budget,
+                    version: 3,
                 },
             }
         };
         let c: Timed<SharedContextRecord> = b.upload(WorkAction::Context(Box::new(action)).into(), until).await?;
         c.value.render_for(w).map_err(store)?;
-        Some(c.value)
-    } else {
-        None
+        c.value
     };
-    r.prepare_shared_input(a, w.clone(), mode, context)
+    r.prepare_shared_input(a, w.clone(), mode, Some(context))
         .await
         .map_err(store)
 }
@@ -73,11 +68,11 @@ pub(super) async fn start(
     r: &OwnerResourceRegistry,
     attempt: SharedStartAttempt,
     w: &SharedWorkItem,
-    input: Option<&SharedPreparedInput>,
+    input: &SharedPreparedInput,
     authority: SharedActivityRef,
     until: Instant,
 ) -> Result<SharedCallCustody, NativeError> {
-    if let Some(c) = input.and_then(SharedPreparedInput::context) {
+    if let Some(c) = input.context() {
         let start: Timed<SharedContextStart> = b
             .upload(
                 WorkAction::Context(Box::new(ContextAction::Start {
@@ -97,6 +92,9 @@ pub(super) async fn start(
             .await
             .map_err(store)
     } else {
+        if !w.encrypted {
+            return Err(failure(409, "native_context_protocol_required"));
+        }
         let start: Timed<SharedWorkStart> = b
             .upload(
                 WorkAction::Start(SharedWorkInput {

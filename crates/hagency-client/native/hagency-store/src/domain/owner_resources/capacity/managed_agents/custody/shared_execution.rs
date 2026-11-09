@@ -57,8 +57,6 @@ pub use demand::*;
 mod context;
 mod context_types;
 pub use context::SharedPreparedInput;
-#[cfg(test)]
-pub(crate) use context::observed_context_window;
 pub use context_types::*;
 
 #[cfg(test)]

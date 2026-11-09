@@ -38,11 +38,6 @@ const RAW_READS: &[(&str, usize, &str)] = &[
         "the accessor: the definition fallback and the effective catalogue projection",
     ),
     (
-        "hagency-store/src/management.rs",
-        1,
-        "the legacy configure command's CeilingChange input",
-    ),
-    (
         "hagency-store/src/management/resource_edit.rs",
         1,
         "validates the edit or amendment request's CeilingChange input",
@@ -76,11 +71,6 @@ const RAW_READS: &[(&str, usize, &str)] = &[
     ),
     (
         "hagency-store/src/domain/owner_resources/capacity.rs",
-        1,
-        "budget.pool.ceiling of a budget computed from effective_ceiling",
-    ),
-    (
-        "hagency-store/src/domain/coordinator/migration.rs",
         1,
         "budget.pool.ceiling of a budget computed from effective_ceiling",
     ),

@@ -258,7 +258,7 @@ async fn native_claude_interrupt_completion_before_local_flush_keeps_the_origina
     driver.enable_continuous_session().unwrap();
     let (ready, ()) = tokio::join!(driver.initialize(), async {
         let init = read(&mut peer).await;
-        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":init["request_id"],"response":{}}}))).await.unwrap();
+        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":init["request_id"],"response":{"claude_code_version":"2.1.321"}}}))).await.unwrap();
     });
     ready.unwrap();
     let (sent, prompt) = tokio::join!(driver.prompt("one turn"), read(&mut peer));
@@ -526,4 +526,122 @@ async fn installed_claude_interrupts_a_pending_question_without_answering_or_rep
     driver.close();
     child.kill().await.unwrap();
     server.kill().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_accepted_interrupt_has_a_bounded_completion_drain() {
+    let (mut driver, mut peer, _) = continuous().await;
+    let mut prepared = driver.prepare_interrupt().unwrap();
+    send(&mut driver, &mut peer, &mut prepared).await;
+    tokio::time::advance(Duration::from_secs(9)).await;
+    event(&mut driver, &mut peer, ack(prepared.request_id()))
+        .await
+        .unwrap();
+    let accepted = tokio::time::Instant::now();
+    assert!(driver.interrupt_receipt().unwrap().accepted());
+    assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
+    assert_eq!(accepted.elapsed(), Duration::from_secs(10));
+    assert_eq!(driver.phase(), Phase::Closed);
+}
+
+#[tokio::test]
+async fn native_completion_receipt_survives_cleanup_but_cannot_prove_another_answer() {
+    let (mut driver, mut peer, prompt) = continuous().await;
+    let source = driver.observation_source().unwrap();
+    assert!(driver.completion_receipt().is_err());
+    let mut done = result();
+    done["user_message_uuid"] = prompt["uuid"].clone();
+    done["result"] = json!("original completed answer");
+    event(&mut driver, &mut peer, done).await.unwrap();
+    assert!(
+        driver.completion_receipt().is_err(),
+        "result alone cannot mint completion"
+    );
+    event(&mut driver, &mut peer, state("idle")).await.unwrap();
+    let receipt = driver.completion_receipt().unwrap();
+    assert!(receipt.source() == &source);
+    assert!(receipt.matches_text("original completed answer"));
+    assert!(!receipt.matches_text("different answer"));
+    assert!(!receipt.is_error() && !receipt.interrupted());
+    driver.close();
+    assert!(receipt.source().is_retired());
+    assert!(receipt.matches_text("original completed answer"));
+    let (other, _, _) = continuous().await;
+    assert!(receipt.source() != &other.observation_source().unwrap());
+}
+
+#[tokio::test]
+async fn native_claude_accepted_stop_drains_pending_background_notification_in_either_ack_order() {
+    for (ack_first, retry) in [(false, false), (true, false), (true, true)] {
+        let (mut driver, mut peer, prompt) = continuous().await;
+        event(
+            &mut driver,
+            &mut peer,
+            json!({"type":"system","subtype":"background_tasks_changed","session_id":"session-one",
+            "tasks":[{"task_id":"child","run_id":"child-run"}]}),
+        )
+        .await
+        .unwrap();
+        let mut first = result();
+        first["user_message_uuid"] = prompt["uuid"].clone();
+        event(&mut driver, &mut peer, first).await.unwrap();
+        event(
+            &mut driver,
+            &mut peer,
+            json!({"type":"system","subtype":"task_notification","session_id":"session-one",
+            "task_id":"child","run_id":"child-run","status":"completed"}),
+        )
+        .await
+        .unwrap();
+        event(&mut driver, &mut peer, json!({"type":"system","subtype":"background_tasks_changed","session_id":"session-one","tasks":[]})).await.unwrap();
+        event(&mut driver, &mut peer, state("idle")).await.unwrap();
+        assert_eq!(driver.phase(), Phase::Running);
+        if retry {
+            let mut previous = driver.prepare_interrupt().unwrap();
+            send(&mut driver, &mut peer, &mut previous).await;
+            event(&mut driver, &mut peer, state("running"))
+                .await
+                .unwrap();
+            event(&mut driver, &mut peer, terminal(&prompt))
+                .await
+                .unwrap();
+            event(&mut driver, &mut peer, state("idle")).await.unwrap();
+            event(
+                &mut driver,
+                &mut peer,
+                json!({"type":"control_response","response":{
+                "subtype":"error","request_id":previous.request_id(),"error":"refused"}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(driver.phase(), Phase::Running);
+        }
+        let mut interrupt = driver.prepare_interrupt().unwrap();
+        send(&mut driver, &mut peer, &mut interrupt).await;
+        if ack_first {
+            event(&mut driver, &mut peer, ack(interrupt.request_id()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            driver.phase(),
+            Phase::Running,
+            "a prior refused stop's result cannot finish this request"
+        );
+        event(&mut driver, &mut peer, state("running"))
+            .await
+            .unwrap();
+        event(&mut driver, &mut peer, terminal(&prompt))
+            .await
+            .unwrap();
+        event(&mut driver, &mut peer, state("idle")).await.unwrap();
+        if !ack_first {
+            assert_eq!(driver.phase(), Phase::Running);
+            event(&mut driver, &mut peer, ack(interrupt.request_id()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert!(driver.completion_receipt().unwrap().interrupted());
+    }
 }

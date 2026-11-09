@@ -2,8 +2,8 @@
 use super::*;
 fn record(w: &SharedWorkItem) -> SharedContextRecord {
     let c = SharedThreadContext {
-        version: 1,
-        input_profile: "shared_thread_text_v1".into(),
+        version: 3,
+        input_profile: "shared_native_text_v3".into(),
         work_id: w.id.clone(),
         work_digest: digest(w),
         assignment_id: w.assignment_id.clone(),
@@ -15,9 +15,8 @@ fn record(w: &SharedWorkItem) -> SharedContextRecord {
         event_id: w.event_id.clone(),
         received_at_ms: w.created_at_ms,
         context_ordinal: 1,
-        coverage: "prior_delivered_pairs_only".into(),
-        omitted_earlier: false,
-        budget: None,
+        coverage: "native_session_and_paged_room_history".into(),
+        omitted_earlier: true,
         history: vec![],
     };
     SharedContextRecord {
@@ -53,6 +52,11 @@ async fn input(a: &Active, w: &SharedWorkItem) -> SharedPreparedInput {
 async fn shared_context_call_plain_fallback_refused_and_exact_actual_input_is_captured() {
     let mut a = Box::pin(active()).await;
     let w = a.work("context_work");
+    a.f.registry.receive_shared_work(a.authority(), w.clone()).await.unwrap();
+    assert!(matches!(
+        a.f.registry.prepare_shared_call(a.authority(), w.clone()).await,
+        Err(Error::LocalAuthority)
+    ), "fresh unmarked plaintext cannot bypass V3 preparation");
     let input = input(&a, &w).await;
     assert!(
         a.f.registry
@@ -173,7 +177,7 @@ async fn shared_context_call_changed_snapshot_and_retired_scope_never_change_sav
     let input = input(&a, &w).await;
     assert!(
         a.f.registry
-            .prepare_shared_legacy_input(a.authority(), w.clone())
+            .prepare_shared_input(a.authority(), w.clone(), SharedWorkInputMode { mode:"plain_text_v1".into(),context_digest:None,input_digest:None }, None)
             .await
             .is_err(),
         "missing capability cannot downgrade known contextual work"
@@ -185,13 +189,13 @@ async fn shared_context_call_changed_snapshot_and_retired_scope_never_change_sav
         .unwrap();
     assert!(
         a.f.registry
-            .prepare_shared_legacy_input(a.authority(), other)
+            .prepare_shared_input(a.authority(), other, SharedWorkInputMode { mode:"plain_text_v1".into(),context_digest:None,input_digest:None }, None)
             .await
             .is_err(),
         "missing capability cannot downgrade another work on the same child"
     );
     let mut changed = record(&w);
-    changed.context.omitted_earlier = true;
+    changed.context.context_ordinal += 1;
     changed.context_digest = digest(&changed.context);
     changed.input_digest = format!(
         "{:x}",

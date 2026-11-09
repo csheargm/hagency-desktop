@@ -1,6 +1,23 @@
 //! Complete host execution with fixed localhost APIs and original native pipes.
 use super::*;
 use hagency_runtime::claude::account::{AccountBinding, PROVIDER};
+#[path = "claude_stop_tests.rs"]
+mod stop_tests;
+#[path = "claude_archive_tests.rs"]
+mod archive_tests;
+
+fn native_marker(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    fn collect(root: &std::path::Path, name: &str, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap(); let kind = entry.file_type().unwrap();
+            if kind.is_dir() { collect(&entry.path(), name, found); }
+            else if kind.is_file() && entry.file_name() == name { found.push(entry.path()); }
+        }
+    }
+    let mut found = Vec::new(); collect(root, name, &mut found);
+    assert_eq!(found.len(), 1, "exactly one marker in this authorized fixture scope: {name}");
+    found.pop().unwrap()
+}
 
 #[tokio::test]
 #[ignore = "requires explicit offline Claude probe; real host history reader and native MCP pipes"]
@@ -35,7 +52,7 @@ async fn native_shared_claude_full_host_reads_history_beyond_fallback_context_al
     transport.poll_claude_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
         binding, "shared-history").await.unwrap();
     stopped(&f).await;
-    let pages: Vec<Value> = serde_json::from_slice(&std::fs::read(root.join("work/agent_fixture/shared-claude.history")).unwrap()).unwrap();
+    let pages: Vec<Value> = serde_json::from_slice(&std::fs::read(native_marker(&root, "shared-claude.history")).unwrap()).unwrap();
     assert!(pages.last().is_some_and(|p| p["complete"] == true));
     assert_eq!(pages[0]["alreadyRead"], true, "initial preview is not repeated by the tool");
     assert!(pages.iter().all(|p| p.to_string().len() <= 12 * 1024 && p.get("reason").is_none()));
@@ -87,7 +104,6 @@ async fn resumed_host(plaintext: bool, missing: bool) {
         let mut state = f.state.lock().unwrap();
         state.shared.command = Some(command.clone());
         state.shared.contexts.active = plaintext;
-        state.shared.contexts.v2 = plaintext;
         state.shared.contexts.v3 = plaintext;
         let w = state.shared.work.as_mut().unwrap();
         w.runtime_command_digest = digest(&command).unwrap();
@@ -112,7 +128,7 @@ async fn resumed_host(plaintext: bool, missing: bool) {
     }).await.expect("original process stops without closing the host");
     let native: String = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap()
         .query_row("SELECT native_id FROM owner_shared_native_checkpoints", [], |r| r.get(0)).unwrap();
-    if missing { std::fs::remove_file(root.join(format!("work/agent_fixture/{native}.json"))).unwrap(); }
+    if missing { std::fs::remove_file(native_marker(&root, &format!("{native}.json"))).unwrap(); }
     attempts::prepare_lost_start(&f, &transport, &command).await;
     {
         let mut state = f.state.lock().unwrap();
@@ -130,7 +146,7 @@ async fn resumed_host(plaintext: bool, missing: bool) {
     second.poll_claude_successor_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
         binding, "shared-session").await.unwrap();
     attempts::wait_stopped(&f).await;
-    let prompt: Value = serde_json::from_slice(&std::fs::read(root.join("work/agent_fixture/shared-claude.prompt")).unwrap()).unwrap();
+    let prompt: Value = serde_json::from_slice(&std::fs::read(native_marker(&root, "shared-claude.prompt")).unwrap()).unwrap();
     assert_eq!(prompt["session_id"], if missing { "" } else { &native });
     if !plaintext && !missing {
         assert!(sent.lock().unwrap().iter().any(|(_, text)| text.contains("Remember encrypted blue comet")));
@@ -246,15 +262,26 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
         ));
         assert_eq!(f.state.lock().unwrap().shared.starts, 1);
         let prompt: Value = serde_json::from_slice(
-            &std::fs::read(root.join("work/agent_fixture/shared-claude.prompt")).unwrap(),
+            &std::fs::read(native_marker(&root, "shared-claude.prompt")).unwrap(),
         )
         .unwrap();
-        assert_eq!(prompt["message"]["content"], "Offline synthetic prompt");
+        let input: Value = serde_json::from_str(
+            prompt["message"]["content"].as_str().unwrap()
+                .strip_prefix(CONTEXT_PREFIX_V3).expect("current V3 input"),
+        ).unwrap();
+        let work = f.state.lock().unwrap().shared.work.clone().unwrap();
+        assert_eq!(input["version"], 3);
+        assert_eq!(input["currentRequest"], json!({
+            "eventId": work.event_id, "requesterMxid": work.requester_mxid,
+            "body": "Offline synthetic prompt",
+        }));
+        assert_eq!(input["context"]["history"], json!([]));
         f.stop().await;
     }
 }
 
 #[tokio::test]
+#[cfg(feature = "shared-successors")]
 #[ignore = "requires explicit HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised process"]
 async fn native_shared_claude_full_host_rebuilds_missing_rollout_before_input() {
     resumed_host(false, true).await;

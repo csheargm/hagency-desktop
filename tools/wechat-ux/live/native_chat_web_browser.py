@@ -79,7 +79,7 @@ def main():
     app.log = (app.output / "native.log").open("w")
     app.process = subprocess.Popen([str(args.binary.resolve())],
         env=dict(os.environ, MAKEPAD_REMOTE=str(port), MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1",
-                 RINX_DATA_DIR=str(root / "profile"), RAYON_NUM_THREADS="1",
+                 HAGENCY_DESKTOP_DATA_DIR=str(root / "profile"), RAYON_NUM_THREADS="1",
                  RINX_BROWSER_FIXTURE_URL=f"http://127.0.0.1:{server.server_port}",
                  RINX_BROWSER_FIXTURE_MODE="desktop" if args.desktop else "modal",
                  RINX_BROWSER_FIXTURE_OUTPUT=str(root),
@@ -406,7 +406,7 @@ def main():
                 app.window = None
                 app.process = subprocess.Popen([str(args.binary.resolve())],
                     env=dict(os.environ, MAKEPAD_REMOTE=str(port), MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1",
-                             RINX_DATA_DIR=str(root / "profile"), RAYON_NUM_THREADS="1",
+                             HAGENCY_DESKTOP_DATA_DIR=str(root / "profile"), RAYON_NUM_THREADS="1",
                              RINX_BROWSER_FIXTURE_URL=f"http://127.0.0.1:{server.server_port}",
                              RINX_BROWSER_FIXTURE_MODE="desktop",
                              RINX_BROWSER_FIXTURE_OUTPUT=str(root),

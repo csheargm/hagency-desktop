@@ -1,6 +1,5 @@
-//! Owner administration remains available after resource adoption. These closed
-//! commands use the server's current ownership/Matrix policy and the original
-//! native mutation journal; none opens the fenced local execution ledger.
+//! Current owner administration uses the server ownership/Matrix policy and
+//! the profile-bound native mutation journal.
 use super::Command;
 
 pub(super) fn allows(command: &Command) -> bool {

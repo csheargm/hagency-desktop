@@ -65,6 +65,34 @@ impl SharedCallCustody {
 }
 
 impl SharedCallSink {
+    /// Preserve a completed native answer when a later metadata query fails.
+    /// This receipt cannot be constructed from a result alone or transferred
+    /// to another process/turn. Unknown usage never establishes a checkpoint.
+    pub async fn finish_claude_unaccounted(
+        &mut self,
+        receipt: &native::CompletionReceipt,
+        text: &str,
+    ) -> Result<SharedWorkReceipt, Error> {
+        if !matches!(&self.source, Source::Claude(source) if source == receipt.source())
+            || !receipt.matches_text(text)
+            || receipt.sequence() > self.sequence
+            || !self.clean
+            || self.claude_result != Some(receipt.is_error())
+            || self.terminal.is_some()
+        {
+            return Err(Error::LocalAuthority);
+        }
+        self.claude_unaccounted = true;
+        self.terminal = Some(if receipt.interrupted() {
+            TurnResult::Interrupted
+        } else if receipt.is_error() {
+            TurnResult::Failed
+        } else {
+            TurnResult::Completed
+        });
+        self.append_text(text);
+        self.persist(false).await
+    }
     /// Feed every original native observation before deferring host callbacks.
     /// A Claude result can precede background work; it never closes this sink.
     pub async fn observe_claude(
@@ -82,14 +110,20 @@ impl SharedCallSink {
             return Err(Error::Conflict);
         }
         self.sequence = event.sequence();
+        if let Some(is_error) = event.result_error()
+            && !event.is_usage_snapshot()
+        {
+            self.claude_result = Some(is_error);
+        }
         match event.kind() {
             native::ObservationKind::Ignored => return Ok(None),
-            native::ObservationKind::Invalidated => self.clean = false,
+            // Numeric evidence can be unusable while result/idle remains
+            // authentic. Keep the answer and any earlier known lower bound.
+            native::ObservationKind::Invalidated => self.claude_unaccounted = true,
             native::ObservationKind::Usage(evidence) => {
                 self.usage = Some(Usage::Claude(evidence.clone()))
             }
-            native::ObservationKind::Result { usage, is_error } => {
-                self.claude_result.get_or_insert(*is_error);
+            native::ObservationKind::Result { usage, .. } => {
                 self.usage = Some(Usage::Claude(usage.clone()));
             }
         }

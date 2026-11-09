@@ -2,9 +2,7 @@
 use crate::{Error, wire};
 use hagency_core::{approvals::*, canonical};
 use matrix_sdk_base::sync::SyncResponse;
-use matrix_sdk_common::deserialized_responses::{
-    AlgorithmInfo, TimelineEventKind, VerificationState,
-};
+use matrix_sdk_common::deserialized_responses::{AlgorithmInfo, TimelineEventKind, VerificationState};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -629,7 +627,10 @@ fn select(
         }
         let d: Detail =
             serde_json::from_value(content.get("com.agentchat.approval")?.clone()).ok()?;
-        if d.version != 1 || d.kind != "verdict" {
+        if d.version != 1
+            || d.kind != "verdict"
+            || !crate::approval_delivery::state::request_id(&d.request_id)
+        {
             return None;
         }
         let choice = match d.action.as_str() {
@@ -711,12 +712,7 @@ mod tests {
         })
     }
 
-    /// nativeNotes `request-id-length` (ADR-143): the retained verdict parser
-    /// refuses a forty-hex request id; the native matcher accepts it, because
-    /// every native target id IS forty hex (`approvals.rs` generates
-    /// `approval_` + forty hex). The oracle row `forty-hex-request-id`
-    /// records `expected: null` on the retained side; this is the native
-    /// half, asserted against the real matcher.
+    /// Verdicts must use the persisted native forty-hex request identity.
     #[test]
     fn native_verdict_matcher_admits_forty_hex_request_ids() {
         let forty = format!("approval_{}", "b".repeat(40));
@@ -730,8 +726,7 @@ mod tests {
         );
         assert_eq!(matched.unwrap().0.request_id, forty);
         assert_eq!(choice, Some(ApprovalChoice::Once));
-        // Thirty-two hex remains matchable when the target carries it — the
-        // native rule is target equality, not a length cap.
+        // An obsolete target cannot make the old request format actionable.
         let thirty_two = format!("approval_{}", "a".repeat(32));
         let targets = [target(&thirty_two)];
         let (matched, choice) = select(
@@ -741,7 +736,7 @@ mod tests {
             &verdict_event(&thirty_two),
             true,
         );
-        assert_eq!(matched.unwrap().0.request_id, thirty_two);
-        assert_eq!(choice, Some(ApprovalChoice::Once));
+        assert!(matched.is_none());
+        assert!(choice.is_none());
     }
 }

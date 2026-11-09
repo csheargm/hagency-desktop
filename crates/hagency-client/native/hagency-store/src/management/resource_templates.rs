@@ -162,24 +162,22 @@ impl Session {
             return Err(Error::LocalAuthority);
         }
         self.check(context, permission)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
-            store.enrollment_registry(&self.adopted_profile(store)?)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        {
+            store.enrollment_registry(&self.current_profile(store)?)?;
             return self.check(context, permission);
         }
-        Err(Error::LocalAuthority)
     }
-    #[cfg(feature = "resource-adoption")]
     fn template_profile(
         &self,
         context: &HostContext,
         permission: Permission,
-        store: &crate::owner_resources::adoption::AdoptedManagementStore,
+        store: &crate::owner_resources::adoption::CurrentManagementStore,
     ) -> Result<crate::owner_resources::ProfileAuthority, Error> {
         self.resource_template_access(context, permission)?;
         let authority = self.authority();
         let context = context.clone();
-        self.adopted_profile(store)?
+        self.current_profile(store)?
             .with_native_gate(move || authority.authorize(&context, permission).is_ok())
     }
     pub async fn resource_templates(
@@ -193,15 +191,9 @@ impl Session {
         if let Some(id) = &after {
             identifier(id, 128)?;
         }
-        #[cfg(not(feature = "resource-adoption"))]
+
         {
-            Err(Error::LocalAuthority)
-        }
-        #[cfg(feature = "resource-adoption")]
-        {
-            let SessionStore::Adopted(store) = self.local_store()? else {
-                return Err(Error::LocalAuthority);
-            };
+            let SessionStore::Current(store) = self.local_store()?;
             let mut result = store
                 .resource_templates(
                     &self.template_profile(context, Permission::ReadResourceTemplates, store)?,
@@ -225,15 +217,9 @@ impl Session {
         self.resource_template_access(context, Permission::ReadResourceTemplates)?;
         identifier(&resource_id, 128)?;
         identifier(&id, 128)?;
-        #[cfg(not(feature = "resource-adoption"))]
+
         {
-            Err(Error::LocalAuthority)
-        }
-        #[cfg(feature = "resource-adoption")]
-        {
-            let SessionStore::Adopted(store) = self.local_store()? else {
-                return Err(Error::LocalAuthority);
-            };
+            let SessionStore::Current(store) = self.local_store()?;
             let mut result = store
                 .resource_template(
                     &self.template_profile(context, Permission::ReadResourceTemplates, store)?,
@@ -260,15 +246,9 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.resource_template_access(context, Permission::ManageResourceTemplates)?;
         input.validate()?;
-        #[cfg(not(feature = "resource-adoption"))]
+
         {
-            Err(Error::LocalAuthority)
-        }
-        #[cfg(feature = "resource-adoption")]
-        {
-            let SessionStore::Adopted(store) = self.local_store()? else {
-                return Err(Error::LocalAuthority);
-            };
+            let SessionStore::Current(store) = self.local_store()?;
             let receipt = CommandReceipt::new(
                 context,
                 "resource.template",
@@ -300,15 +280,9 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.resource_template_access(context, Permission::ManageResourceTemplates)?;
         input.validate()?;
-        #[cfg(not(feature = "resource-adoption"))]
+
         {
-            Err(Error::LocalAuthority)
-        }
-        #[cfg(feature = "resource-adoption")]
-        {
-            let SessionStore::Adopted(store) = self.local_store()? else {
-                return Err(Error::LocalAuthority);
-            };
+            let SessionStore::Current(store) = self.local_store()?;
             let receipt = CommandReceipt::new(
                 context,
                 "resource.template",

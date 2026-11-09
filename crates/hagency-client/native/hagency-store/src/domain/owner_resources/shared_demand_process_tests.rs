@@ -73,12 +73,12 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
     assert_eq!(h.reserved_tokens, 0);
     let attempt =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 attempt,
                 SharedWorkStart {
                     work: w.clone(),
@@ -91,10 +91,7 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
             .unwrap();
     a.process.start_shared_text_thread().await.unwrap();
     custody.check().unwrap();
-    a.process
-        .start_shared_text_turn(w.body.clone())
-        .await
-        .unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_turn(&a.process).unwrap();
     loop {
         let event = a.process.next_shared_text_event().await.unwrap();
@@ -148,7 +145,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id.clone())
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id.clone())
             .await
             .unwrap();
     a.f.registry
@@ -157,7 +154,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
         .unwrap();
     assert!(
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -315,12 +312,12 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -333,10 +330,7 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
             .unwrap();
     a.process.start_shared_text_thread().await.unwrap();
     custody.check().unwrap();
-    a.process
-        .start_shared_text_turn(w.body.clone())
-        .await
-        .unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_turn(&a.process).unwrap();
     loop {
         let event = a.process.next_shared_text_event().await.unwrap();

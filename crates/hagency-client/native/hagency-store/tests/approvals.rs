@@ -4,8 +4,6 @@ mod workspaces;
 mod execution_policy;
 #[path = "approvals/rebinding.rs"]
 mod rebinding;
-#[path = "approvals/tool_management.rs"]
-mod tool_management;
 #[path = "approvals/card.rs"]
 mod card;
 #[path = "approvals/clock.rs"]

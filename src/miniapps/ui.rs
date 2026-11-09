@@ -517,15 +517,10 @@ script_mod! {
             scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 heading := View {width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
                     Icon {width: 24 height: 24 draw_icon +: {svg: ICON_SHIELD color: RINX_ACCENT}}
-                    title := RinxPageTitle {width: Fill text: #(crate::i18n::tr("Review resource migration")) i18n_text: "Review resource migration"}
+                    title := RinxPageTitle {width: Fill text: #(crate::i18n::tr("Review device setup")) i18n_text: "Review device setup"}
                 }
                 owner := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
                 status := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
-                choices := View {width: Fill height: Fit flow: Down spacing: 12
-                    RinxLabel {width: Fill text: #(crate::i18n::tr("Shared monthly account limit")) i18n_text: "Shared monthly account limit"}
-                    tokens := RinxNumberInput {width: Fill millions: true empty_text: ""}
-                    RinxHint {width: Fill flow: Flow.Right{wrap: true} text: #(crate::i18n::tr("This shared limit is not a provider quota measurement. It does not grant tokens to a project.")) i18n_text: "This shared limit is not a provider quota measurement. It does not grant tokens to a project."}
-                }
                 details := RoundedView {width: Fill height: Fit flow: Down padding: 16
                     draw_bg +: {color: RINX_SURFACE border_color: RINX_BORDER border_size: 1 border_radius: theme.corner_radius}
                     copy := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
@@ -533,7 +528,7 @@ script_mod! {
             }
             buttons := View {width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 12
                 cancel := RinxButton {text: #(crate::i18n::tr("Close review")) i18n_text: "Close review"}
-                primary := RinxPrimaryButton {text: #(crate::i18n::tr("Review migration")) i18n_text: "Review migration"}
+                primary := RinxPrimaryButton {text: #(crate::i18n::tr("Set up this device")) i18n_text: "Set up this device"}
                 recover := RinxButton {text: #(crate::i18n::tr("Recover original")) i18n_text: "Recover original"}
             }
         }
@@ -1015,7 +1010,7 @@ impl MiniAppsPanel {
         } else if service==crate::host::hagency::resource_edit::EDIT {
             resource_enrollment_ui::ProviderReview::Edit(Box::new(resource_edit_ui::ResourceEditPrompt::begin(host.resource_edit_consent(lease,args)?)))
         } else {
-            resource_enrollment_ui::ProviderReview::Connect(host.provider_consent(lease,args)?)
+            return Err("unknown_management_service".into())
         };
         self.provider_confirmation = Some(ProviderConfirmation { consent, reply });
         self.present_provider_confirmation(cx);
@@ -1676,7 +1671,7 @@ impl MiniAppsPanel {
                     self.begin_adoption_confirmation(cx, args, (req.heap_key, req.req_id))
                 } else if req.service == crate::host::hagency::grants::REVIEW_GRANT {
                     self.begin_grant_confirmation(cx, args, (req.heap_key, req.req_id))
-                } else if crate::host::hagency::web_connections::is_consent(&req.service) || req.service == crate::host::hagency::CONNECT_PROVIDER || req.service == crate::host::hagency::enrollment::ENROLL || req.service == crate::host::hagency::retirement::RETIRE || req.service == crate::host::hagency::resource_edit::EDIT || req.service == crate::host::hagency::resource_create::CREATE || [crate::host::hagency::personal_configuration::MODEL,crate::host::hagency::personal_configuration::WORKSPACE,crate::host::hagency::personal_configuration::RULES].contains(&req.service.as_str()) {
+                } else if crate::host::hagency::web_connections::is_consent(&req.service) || req.service == crate::host::hagency::enrollment::ENROLL || req.service == crate::host::hagency::retirement::RETIRE || req.service == crate::host::hagency::resource_edit::EDIT || req.service == crate::host::hagency::resource_create::CREATE || [crate::host::hagency::personal_configuration::MODEL,crate::host::hagency::personal_configuration::WORKSPACE,crate::host::hagency::personal_configuration::RULES].contains(&req.service.as_str()) {
                     self.begin_provider_confirmation(cx, &req.service, args, (req.heap_key, req.req_id))
                 } else if req.service == "palpo.projects.select_room" {
                     self.begin_room_picker(cx, args, (req.heap_key, req.req_id))
@@ -1892,7 +1887,6 @@ impl Widget for MiniAppsPanel {
                 return;
             }
             if self.adoption_confirmation.is_some() {
-                self.capture_adoption_choices(cx);
                 if self.view.button(cx,ids!(adoption_confirmation.buttons.cancel)).clicked(actions) {self.close_adoption_confirmation(cx);}
                 else if self.view.button(cx,ids!(adoption_confirmation.buttons.primary)).clicked(actions) {self.adoption_primary(cx);}
                 else if self.view.button(cx,ids!(adoption_confirmation.buttons.recover)).clicked(actions) {self.adoption_recover(cx);}

@@ -43,7 +43,7 @@ pub(super) struct Controls {
     send: Option<(mpsc::Sender<Request>, mpsc::Sender<Request>)>,
     stop: mpsc::Receiver<Request>,
     steer: mpsc::Receiver<Request>,
-    task: Option<tokio::task::AbortHandle>,
+    task: Option<tokio::task::JoinHandle<()>>,
     active: bool,
 }
 impl Controls {
@@ -85,12 +85,9 @@ impl Controls {
             let io = io.clone();
             let command = command.clone();
             let card = self.card.clone();
-            self.task = Some(
-                tokio::spawn(async move {
-                    serve(io, command, card, stop, steer).await;
-                })
-                .abort_handle(),
-            );
+            self.task = Some(tokio::spawn(async move {
+                serve(io, command, card, stop, steer).await;
+            }));
         }
         self.receipts(process);
         // The separate stop slot cannot be exhausted by pending steering.
@@ -123,14 +120,26 @@ impl Controls {
         }
         Ok(())
     }
-    pub fn finish(
+    pub async fn finish(
         &mut self,
         process: &mut OwnedSession,
         result: &Result<SharedWorkReceipt, NativeError>,
     ) {
         self.receipts(process);
+        // Close intake before draining. Queued, unwritten requests settle as
+        // unavailable; a native write without a receipt remains unknown.
+        self.stop.close();
+        self.steer.close();
+        while let Ok(request) = self.stop.try_recv() {
+            drop(request);
+        }
+        while let Ok(request) = self.steer.try_recv() {
+            drop(request);
+        }
+        self.pending.clear();
         if let Some(task) = self.task.take() {
             task.abort();
+            let _ = task.await;
         }
         let state = match result {
             Ok(_)
@@ -180,7 +189,6 @@ async fn serve(
     if card.open(device).is_err() {
         return;
     }
-    let mut receipts = Vec::<(String, String, bool, oneshot::Receiver<RunOutcome>)>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -188,29 +196,13 @@ async fn serve(
         if stop_tx.is_closed() || steer_tx.is_closed() {
             return;
         }
-        for index in (0..receipts.len()).rev() {
-            let outcome = match receipts[index].3.try_recv() {
-                Ok(value) => value,
-                Err(oneshot::error::TryRecvError::Empty) => continue,
-                Err(_) => RunOutcome::Unknown,
-            };
-            let (event, sender, stop, _) = receipts.remove(index);
-            if card.receipt(&event, &sender, name(outcome), stop).is_err() {
-                return;
-            }
-        }
+        card.drain_receipts(false);
         let _ = card.publish().await;
         for (received, action) in card.actions().await.unwrap_or_default() {
             // Current server identity, assignment and command; native submission
             // additionally checks the same process's unexpired activity lease.
             if io.check_running(&command).await.is_err() {
-                if card.claim(&received.event_id) {
-                    let _ =
-                        card.receipt(&received.event_id, &received.sender, "unavailable", false);
-                }
-                continue;
-            }
-            if !card.claim(&received.event_id) {
+                let _ = card.receipt(&received.event_id, &received.sender, "unavailable", false);
                 continue;
             }
             let (action, stop) = match action {
@@ -236,7 +228,7 @@ async fn serve(
                 begun: false,
             };
             match (if stop { &stop_tx } else { &steer_tx }).try_send(request) {
-                Ok(()) => receipts.push((received.event_id, received.sender, stop, receipt)),
+                Ok(()) => card.track(received.event_id, received.sender, stop, receipt, name),
                 Err(error) => {
                     let outcome = if matches!(error, mpsc::error::TrySendError::Full(_)) {
                         "busy"

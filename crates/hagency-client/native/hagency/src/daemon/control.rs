@@ -6,13 +6,9 @@
 use super::protocol::{DaemonError, Reply, Request, errors};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, path::{Path, PathBuf}, sync::Mutex};
+use std::{path::{Path, PathBuf}, sync::Mutex};
 
-const FORMAT: &str = "hagency-owner-daemon-control";
-const VERSION: u8 = 1;
-/// The former JSON ring size, used only when importing pre-release state.
-const LEGACY_RECEIPTS: usize = 256;
-const MAX_BYTES: usize = 512 * 1024;
+const VERSION: i64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,13 +19,6 @@ impl Intent {
         match value { "hosting" => Ok(Self::Hosting), "paused" => Ok(Self::Paused), "stopped" => Ok(Self::Stopped), _ => Err(errors::STATE_UNAVAILABLE) }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Receipt { request_id: String, fingerprint: String, recorded_at_ms: u64, reply: Reply }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Saved { format: String, version: u8, revision: u64, intent: Intent, receipts: VecDeque<Receipt> }
-
 pub enum Lookup { New, Replay(Reply), Conflict, Unavailable }
 struct State { db: Connection, revision: u64, intent: Intent }
 pub struct ControlStore { path: PathBuf, state: Mutex<State> }
@@ -40,45 +29,53 @@ pub(crate) fn now_ms() -> u64 {
 fn storage<T>(result: rusqlite::Result<T>) -> Result<T, DaemonError> { result.map_err(|_| errors::STATE_UNAVAILABLE) }
 impl ControlStore {
     pub fn open(path: &Path) -> Result<Self, DaemonError> {
-        let database = path.with_extension("sqlite3");
-        let legacy: Option<Saved> = super::read_private(path, MAX_BYTES)
-            .map_err(|_| errors::STATE_UNAVAILABLE)?
-            .map(|raw| serde_json::from_slice(&raw).map_err(|_| errors::STATE_UNAVAILABLE)).transpose()?;
-        if legacy.as_ref().is_some_and(|s| s.format != FORMAT || s.version != VERSION || s.receipts.len() > LEGACY_RECEIPTS) {
+        if path.extension() != Some(std::ffi::OsStr::new("sqlite3")) {
             return Err(errors::STATE_UNAVAILABLE);
         }
+        // An obsolete file may contain a paused or stopped intent. Refuse it
+        // before creating/opening SQLite; never reinterpret it as fresh hosting.
+        match std::fs::symlink_metadata(path.with_extension("json")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(errors::STATE_UNAVAILABLE),
+        }
         // Creates/checks a 0600, owner-only, single-link non-symlink entry.
-        let file = match hagency_store::private::open(&database, true) {
-            Ok(file) => file,
+        let (file, created) = match hagency_store::private::open(path, true) {
+            Ok(file) => (file, true),
             Err(hagency_store::Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
-                hagency_store::private::open(&database, false).map_err(|_| errors::STATE_UNAVAILABLE)?,
+                (hagency_store::private::open(path, false).map_err(|_| errors::STATE_UNAVAILABLE)?, false),
             Err(_) => return Err(errors::STATE_UNAVAILABLE),
         };
         file.sync_all().map_err(|_| errors::STATE_UNAVAILABLE)?;
         // macOS /var is a system symlink; SQLite NOFOLLOW applies to every
         // path component. Resolve it only after validating the actual file.
-        let database = database.canonicalize().map_err(|_| errors::STATE_UNAVAILABLE)?;
+        let database = path.canonicalize().map_err(|_| errors::STATE_UNAVAILABLE)?;
         let mut db = storage(Connection::open_with_flags(&database,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW))?;
         storage(db.busy_timeout(std::time::Duration::from_secs(2)))?;
         let version: i64 = storage(db.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
-        if !matches!(version, 0 | 1) { return Err(errors::STATE_UNAVAILABLE) }
+        if !created && (version != VERSION || !storage(super::sqlite::has_tables(&db, &[
+            ("control", &["singleton", "revision", "intent"]),
+            ("receipts", &["request_id", "fingerprint", "recorded_at_ms", "reply"]),
+        ]))?) {
+            return Err(errors::STATE_UNAVAILABLE);
+        }
+        // Validate saved intent before any write, including journal-mode changes.
+        let (revision, intent) = if created {
+            (0, Intent::Hosting)
+        } else {
+            let count: u64 = storage(db.query_row("SELECT COUNT(*) FROM control", [], |r| r.get(0)))?;
+            if count != 1 { return Err(errors::STATE_UNAVAILABLE); }
+            let (revision, intent): (u64, String) = storage(db.query_row(
+                "SELECT revision,intent FROM control WHERE singleton=1", [], |r| Ok((r.get(0)?,r.get(1)?))))?;
+            (revision, Intent::parse(&intent)?)
+        };
         storage(db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;"))?;
         let tx = storage(db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate))?;
-        storage(tx.execute_batch("CREATE TABLE IF NOT EXISTS control (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL CHECK(revision>=0), intent TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS receipts (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, recorded_at_ms INTEGER NOT NULL, reply TEXT NOT NULL); PRAGMA user_version=1;"))?;
-        let current: Option<(u64, String)> = storage(tx.query_row("SELECT revision,intent FROM control WHERE singleton=1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional())?;
-        let (revision, intent) = if let Some((revision,intent)) = current { (revision, Intent::parse(&intent)?) } else {
-            let (revision,intent) = legacy.as_ref().map(|v|(v.revision,v.intent)).unwrap_or((0,Intent::Hosting));
-            if let Some(saved) = legacy {
-                for receipt in saved.receipts {
-                    let reply = serde_json::to_string(&receipt.reply).map_err(|_| errors::STATE_UNAVAILABLE)?;
-                    storage(tx.execute("INSERT INTO receipts VALUES(?1,?2,?3,?4)", params![receipt.request_id,receipt.fingerprint,receipt.recorded_at_ms,reply]))?;
-                }
-            }
+        if created {
+            storage(tx.execute_batch("CREATE TABLE control (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL CHECK(revision>=0), intent TEXT NOT NULL);
+                CREATE TABLE receipts (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, recorded_at_ms INTEGER NOT NULL, reply TEXT NOT NULL); PRAGMA user_version=1;"))?;
             storage(tx.execute("INSERT INTO control VALUES(1,?1,?2)", params![revision,intent.key()]))?;
-            (revision,intent)
-        };
+        }
         let revision = revision.checked_add(1).filter(|v| *v <= i64::MAX as u64).ok_or(errors::STATE_UNAVAILABLE)?;
         storage(tx.execute("UPDATE control SET revision=?1 WHERE singleton=1", [revision]))?;
         storage(tx.commit())?;
@@ -149,7 +146,7 @@ mod tests {
     #[test]
     fn intent_and_receipt_commit_together_and_survive_restart() {
         let temp = private_dir();
-        let path = temp.path().join("control.json");
+        let path = temp.path().join(super::super::CONTROL);
         let store = ControlStore::open(&path).unwrap();
         assert_eq!(store.revision(), 1);
         assert_eq!(store.intent(), Intent::Hosting);
@@ -183,7 +180,7 @@ mod tests {
     #[test]
     fn unchanged_intent_records_receipt_without_revision_change() {
         let temp = private_dir();
-        let store = ControlStore::open(&temp.path().join("control.json")).unwrap();
+        let store = ControlStore::open(&temp.path().join(super::super::CONTROL)).unwrap();
         let before = store.revision();
         store
             .commit(&request("a", Command::ResumeHosting), Some(Intent::Hosting), |r| {
@@ -198,10 +195,10 @@ mod tests {
     }
 
     #[test]
-    fn delayed_receipts_survive_the_former_retention_limit_and_restart() {
+    fn command_receipts_remain_durable_after_many_commands_and_restart() {
         let temp = private_dir();
-        let store = ControlStore::open(&temp.path().join("control.json")).unwrap();
-        for i in 0..LEGACY_RECEIPTS + 3 {
+        let store = ControlStore::open(&temp.path().join(super::super::CONTROL)).unwrap();
+        for i in 0..300 {
             let id = format!("r{i}");
             store
                 .commit(&request(&id, Command::PauseHosting), None, |r| {
@@ -214,11 +211,11 @@ mod tests {
             Lookup::Replay(_)
         ));
         assert!(matches!(
-            store.lookup(&request(&format!("r{}", LEGACY_RECEIPTS + 2), Command::PauseHosting)),
+            store.lookup(&request("r299", Command::PauseHosting)),
             Lookup::Replay(_)
         ));
         drop(store);
-        let store = ControlStore::open(&temp.path().join("control.json")).unwrap();
+        let store = ControlStore::open(&temp.path().join(super::super::CONTROL)).unwrap();
         assert!(matches!(store.lookup(&request("r0", Command::PauseHosting)), Lookup::Replay(_)));
         assert!(matches!(store.lookup(&request("r0", Command::StopHosting)), Lookup::Conflict));
     }
@@ -228,7 +225,7 @@ mod tests {
         let temp = private_dir();
         let dir = temp.path().join("gone");
         hagency_store::private::directory(&dir).unwrap();
-        let store = ControlStore::open(&dir.join("control.json")).unwrap();
+        let store = ControlStore::open(&dir.join(super::super::CONTROL)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         let error = store
             .commit(&request("x", Command::StopHosting), Some(Intent::Stopped), |r| {
@@ -246,8 +243,71 @@ mod tests {
     #[test]
     fn corrupt_or_foreign_state_is_refused() {
         let temp = private_dir();
-        let path = temp.path().join("control.json");
+        let path = temp.path().join(super::super::CONTROL);
         hagency_store::private::replace(&path, b"{\"format\":\"other\"}").unwrap();
         assert!(ControlStore::open(&path).is_err());
+    }
+
+    #[test]
+    fn old_json_intent_is_preserved_and_never_defaults_to_hosting() {
+        for intent in ["hosting", "paused", "stopped", "future"] {
+            let temp = private_dir();
+            let path = temp.path().join(super::super::CONTROL);
+            let old_path = temp.path().join("control.json");
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "format":"hagency-owner-daemon-control", "version":1,
+                "revision":17, "intent":intent, "receipts":[]
+            })).unwrap();
+            hagency_store::private::replace(&old_path, &raw).unwrap();
+            assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
+            assert!(matches!(ControlStore::open(&old_path), Err(errors::STATE_UNAVAILABLE)));
+            assert_eq!(std::fs::read(&old_path).unwrap(), raw);
+            assert!(!path.exists(), "unsupported intent created fresh hosting state");
+        }
+    }
+
+    #[test]
+    fn old_json_beside_current_sqlite_refuses_without_changing_either() {
+        let temp = private_dir();
+        let path = temp.path().join(super::super::CONTROL);
+        drop(ControlStore::open(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let old_path = temp.path().join("control.json");
+        let raw = br#"{"format":"hagency-owner-daemon-control","version":1,"revision":4,"intent":"paused","receipts":[]}"#;
+        hagency_store::private::replace(&old_path, raw).unwrap();
+        assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&old_path).unwrap(), raw);
+    }
+
+    #[test]
+    fn incomplete_or_unknown_sqlite_is_never_repaired_as_fresh_hosting() {
+        for change in [
+            "PRAGMA user_version=0",
+            "PRAGMA user_version=9",
+            "DELETE FROM control",
+            "UPDATE control SET intent='future'",
+            "ALTER TABLE control ADD COLUMN handover TEXT",
+            "DROP TABLE receipts",
+        ] {
+            let temp = private_dir();
+            let path = temp.path().join(super::super::CONTROL);
+            let store = ControlStore::open(&path).unwrap();
+            store.commit(&request("paused", Command::PauseHosting), Some(Intent::Paused), |rev| {
+                Reply::ok("paused", rev, serde_json::json!({}))
+            }).unwrap();
+            drop(store);
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(change).unwrap();
+            drop(db);
+            let before = std::fs::read(&path).unwrap();
+            assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)), "{change}");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{change}");
+        }
+        let temp = private_dir();
+        let path = temp.path().join(super::super::CONTROL);
+        hagency_store::private::write_new(&path, b"").unwrap();
+        assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
+        assert!(std::fs::read(&path).unwrap().is_empty());
     }
 }

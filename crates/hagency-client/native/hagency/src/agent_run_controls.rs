@@ -9,6 +9,10 @@ pub const MSGTYPE: &str = "im.hagency.agent_run";
 pub const ACTION_EVENT: &str = "im.hagency.agent_run.action";
 pub const VERSION: u64 = 1;
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
+pub const MAX_ACTION_RECEIPTS: usize = 64;
+// Edits carry both the outer card and m.new_content. Keep enough room for
+// the Matrix envelope even when receipt IDs contain long escaped strings.
+const MAX_CARD_BYTES: usize = 20 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -59,6 +63,8 @@ pub struct Card {
     pub preview: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_action: Option<Receipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_receipts: Vec<Receipt>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +99,7 @@ impl Card {
         original.revision = other.revision;
         original.preview = other.preview.clone();
         original.last_action = other.last_action.clone();
+        original.action_receipts = other.action_receipts.clone();
         original == *other
     }
     /// Shared-resource executors are not automatically the Agent's owner.
@@ -123,6 +130,7 @@ impl Card {
             revision: 0,
             preview: String::new(),
             last_action: None,
+            action_receipts: Vec::new(),
         };
         card.validate()?;
         Ok(card)
@@ -150,6 +158,7 @@ impl Card {
             revision: 0,
             preview: String::new(),
             last_action: None,
+            action_receipts: Vec::new(),
         };
         card.validate()?;
         Ok(card)
@@ -171,25 +180,51 @@ impl Card {
                 .preview
                 .chars()
                 .any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
-            || self.last_action.as_ref().is_some_and(|r| {
-                !event(&r.event_id)
-                    || !person(&r.sender)
-                    || !matches!(
-                        r.outcome.as_str(),
-                        "accepted"
-                            | "queued"
-                            | "rejected"
-                            | "unsupported"
-                            | "in_progress"
-                            | "busy"
-                            | "unavailable"
-                            | "unknown"
-                    )
-            })
+            || self.action_receipts.len() > MAX_ACTION_RECEIPTS
+            || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES)
+            || self
+                .last_action
+                .iter()
+                .chain(&self.action_receipts)
+                .any(|r| {
+                    !event(&r.event_id)
+                        || !person(&r.sender)
+                        || !matches!(
+                            r.outcome.as_str(),
+                            "accepted"
+                                | "queued"
+                                | "rejected"
+                                | "unsupported"
+                                | "in_progress"
+                                | "busy"
+                                | "unavailable"
+                                | "unknown"
+                        )
+                })
         {
             return Err("invalid_run_card");
         }
         Ok(())
+    }
+    pub fn record_receipt(&mut self, receipt: Receipt) {
+        self.action_receipts
+            .retain(|r| r.event_id != receipt.event_id);
+        self.action_receipts.push(receipt.clone());
+        self.last_action = Some(receipt);
+        self.fit_display();
+    }
+    pub(crate) fn fit_display(&mut self) {
+        while self.action_receipts.len() > 1
+            && (self.action_receipts.len() > MAX_ACTION_RECEIPTS
+                || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES))
+        {
+            self.action_receipts.remove(0);
+        }
+        // A later live preview may fill the space previously used by receipts.
+        // Presentation is optional: never make an admitted turn fail for it.
+        if serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES) {
+            self.preview.clear();
+        }
     }
     pub fn from_content(content: &Value) -> Option<Self> {
         if content["msgtype"] != MSGTYPE {
@@ -307,6 +342,35 @@ fn valid_text(text: &str) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn receipt_history_keeps_card_edits_within_the_wire_budget() {
+        let mut card = card();
+        for i in 0..100 {
+            card.record_receipt(Receipt {
+                event_id: format!("${i}{}", "x".repeat(1000)),
+                sender: "@requester:test".into(),
+                outcome: "unavailable".into(),
+            });
+        }
+        card.validate().unwrap();
+        assert!(card.action_receipts.len() < MAX_ACTION_RECEIPTS);
+        assert!(
+            card.last_action
+                .as_ref()
+                .unwrap()
+                .event_id
+                .starts_with("$99")
+        );
+        card.preview = "\\".repeat(hagency_runtime::live_text::MAX_PREVIEW_BYTES);
+        card.fit_display();
+        card.validate().unwrap();
+        let encoded = serde_json::to_vec(&card.edit_content("$card").unwrap()).unwrap();
+        assert!(encoded.len() < 44 * 1024);
+        assert!(
+            encoded.len().div_ceil(3) * 4 < 60 * 1024,
+            "leave room for the encrypted Matrix envelope"
+        );
+    }
     pub(crate) fn card() -> Card {
         Card {
             version: VERSION,
@@ -323,6 +387,7 @@ pub(crate) mod tests {
             revision: 0,
             preview: String::new(),
             last_action: None,
+            action_receipts: Vec::new(),
         }
     }
 
@@ -354,7 +419,10 @@ pub(crate) mod tests {
         let stop = c
             .action_content("$card", &c.owner, Action::Interrupt {})
             .unwrap();
-        assert_eq!(c.receive("$card", &c.owner, &stop), Some(Action::Interrupt {}));
+        assert_eq!(
+            c.receive("$card", &c.owner, &stop),
+            Some(Action::Interrupt {})
+        );
         let mut shared = c.clone();
         shared.owner = shared.requester.clone();
         assert!(

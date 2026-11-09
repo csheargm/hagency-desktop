@@ -1,7 +1,6 @@
 //! Account-scoped agent identities and Matrix AppService administration.
 pub mod model;
 pub mod commands;
-pub mod discovery;
 pub mod routing;
 pub mod ui;
 pub use ui::{AgentAccessAction, AgentAccessPanelWidgetRefExt, script_mod};

@@ -237,7 +237,7 @@ async fn native_graph_recipient_process_child() {
     drop(manager);
     drop(journal);
     drop(session);
-    let f = f.restart_adopted(registry, "graphs_original".into()).await;
+    let f = f.restart_current(registry, "current_fixture".into()).await;
     let manager = f.owner.management(recipient_package(3)).await.unwrap();
     // Original commit survives restart and remote drift. No rebind/no resend.
     let recovered = manager

@@ -8,6 +8,7 @@ mod questions;
 mod room_mcp;
 mod task_mcp;
 mod usage;
+mod version;
 mod missing_resume;
 use super::{ControlOutcome, EventKind, Message};
 pub use control::{
@@ -15,7 +16,7 @@ pub use control::{
 };
 pub use interrupt::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};
-pub use observation::{Observation, ObservationKind, ObservationSource};
+pub use observation::{CompletionReceipt, Observation, ObservationKind, ObservationSource};
 pub use room_mcp::{PreparedRoomReply, RoomToolRequest};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -52,6 +53,8 @@ pub enum Error {
     MissingResume,
     #[error("Claude initialization was refused")]
     Refused,
+    #[error("Claude CLI version is missing or outside supported 2.x (minimum 2.1.321)")]
+    UnsupportedVersion,
     #[error("Claude session identity or control response mismatch")]
     Identity,
     #[error("Claude permission request is cancelled or already answered")]
@@ -91,16 +94,40 @@ pub struct SessionDriver<R, W, E> {
     continuous: bool,
     awaiting_init: bool,
     prompt_id: Option<String>,
+    prompt_started: bool,
     control: control::State,
     interrupt: interrupt::State,
     source: Arc<()>,
     account: Option<super::account::Metadata>,
+    injected_account: Option<super::account::AccountBinding>,
     observations: observation::State,
     task_mcp: Option<super::TaskMcp>,
     task_mcp_attempted: bool,
     room_mcp: Option<room_mcp::State>,
 }
 impl<R, W, E> SessionDriver<R, W, E> {
+    pub(crate) fn bind_injected_account(
+        &mut self,
+        binding: &super::account::AccountBinding,
+    ) -> Result<(), Error> {
+        binding.check()?;
+        if self.phase != Phase::New || self.injected_account.is_some() {
+            return Err(Error::State);
+        }
+        self.injected_account = Some(binding.clone());
+        Ok(())
+    }
+    fn account_matches(&self, binding: &super::account::AccountBinding) -> bool {
+        self.account
+            .as_ref()
+            .is_some_and(|metadata| match &self.injected_account {
+                Some(injected) => {
+                    injected.provider_digest() == binding.provider_digest()
+                        && metadata.matches_injected(binding)
+                }
+                None => metadata.matches(binding),
+            })
+    }
     pub(crate) fn attach_shared_activity(
         &mut self,
         activity: Arc<dyn Fn() -> Option<tokio::time::Instant> + Send + Sync>,
@@ -115,8 +142,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         binding: &super::account::AccountBinding,
     ) -> Result<super::account::AccountObservation, Error> {
         binding.check()?;
-        if self.phase != Phase::Ready || !self.account.as_ref().is_some_and(|a| a.matches(binding))
-        {
+        if self.phase != Phase::Ready || !self.account_matches(binding) {
             return Err(Error::Identity);
         }
         Ok(super::account::AccountObservation {
@@ -130,10 +156,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
     ) -> bool {
         self.phase != Phase::Closed
             && Arc::ptr_eq(&self.source, &receipt.source)
-            && self
-                .account
-                .as_ref()
-                .is_some_and(|a| a.matches(&receipt.binding))
+            && self.account_matches(&receipt.binding)
     }
     pub fn new(stdout: R, stdin: W, stderr: E, limits: Limits) -> Result<Self, Error> {
         Ok(Self {
@@ -145,10 +168,12 @@ impl<R, W, E> SessionDriver<R, W, E> {
             continuous: false,
             awaiting_init: false,
             prompt_id: None,
+            prompt_started: false,
             control: control::State::default(),
             interrupt: Default::default(),
             source: Arc::new(()),
             account: None,
+            injected_account: None,
             observations: Default::default(),
             task_mcp: None,
             task_mcp_attempted: false,
@@ -158,15 +183,27 @@ impl<R, W, E> SessionDriver<R, W, E> {
     pub fn phase(&self) -> Phase {
         self.phase
     }
+    pub fn ignored_frames(&self) -> u64 {
+        self.wire.ignored_frames()
+    }
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+    pub(crate) fn failed_before_prompt(&self) -> bool {
+        self.phase == Phase::Closed && !self.prompt_started && self.wire.termination().is_some()
     }
     /// Pin the CLI's explicit resume argument before initialization or input.
     /// The original system/init must report this same native identity.
     pub(crate) fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
-        if self.phase != Phase::New || self.session_id.is_some()
-            || id.is_empty() || id.starts_with('-') || id.len() > 128
-            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        if self.phase != Phase::New
+            || self.session_id.is_some()
+            || id.is_empty()
+            || id.starts_with('-')
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
             return Err(Error::Identity);
         }
         self.session_id = Some(id.to_owned());
@@ -220,6 +257,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
                         self.awaiting_init = false;
                     }
                     Some(bound) if bound == session_id && !init && !self.awaiting_init => {}
+                    Some(bound) if bound == session_id && init && !self.awaiting_init => {
+                        self.completion.begin_background_response(payload)?;
+                    }
                     _ => return Err(Error::Identity),
                 }
                 if *kind == EventKind::Result
@@ -227,13 +267,20 @@ impl<R, W, E> SessionDriver<R, W, E> {
                         .prompt_id
                         .as_ref()
                         .is_some_and(|id| !lifecycle::correlated(payload, id))
+                    && !self.completion.background_result(payload)
                 {
                     return Err(Error::Identity);
                 }
                 self.completion.observe(*kind, payload)?;
+                if *kind == EventKind::Result && self.is_interrupting() {
+                    self.completion.observe_stop_result(
+                        self.interrupt.started_request_id().ok_or(Error::State)?,
+                    );
+                }
             }
             Message::Permission { request_id, .. } => {
-                if self.session_id.is_none() || self.awaiting_init
+                if self.session_id.is_none()
+                    || self.awaiting_init
                     || self.room_mcp.as_ref().is_some_and(|s| s.seen(request_id))
                 {
                     return Err(Error::Identity);
@@ -262,12 +309,19 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 self.interrupt.observe(request_id, outcome, &self.wire)?;
             }
         }
+        if let Some(receipt) = self.interrupt_receipt().filter(|r| r.accepted()) {
+            let id = receipt.request_id().to_owned();
+            self.completion.accepted_stop(&id);
+        }
         if self.completion.finished() && !self.interrupt.pending() {
             self.phase = Phase::ResultObserved;
         }
         self.control.observed();
-        self.observations
-            .accept(message, self.session_id.as_deref().ok_or(Error::Identity)?)?;
+        self.observations.accept(
+            message,
+            self.session_id.as_deref().ok_or(Error::Identity)?,
+            self.completion.snapshot_requested(),
+        )?;
         Ok(())
     }
 }
@@ -317,25 +371,47 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.wire
             .send(super::initialize(INITIALIZE_ID)?, until)
             .await?;
-        match self.wire.next(until).await?.message {
-            Message::ControlResponse {
-                request_id,
-                outcome,
-            } if request_id == INITIALIZE_ID => match outcome {
-                ControlOutcome::Success(value) => {
-                    // Missing identity metadata does not prevent personal
-                    // execution. A shared account qualification requires it.
-                    self.account = super::account::Metadata::read(&value["account"]);
-                    self.phase = Phase::Ready;
-                    Ok(())
+        for _ in 0..64 {
+            match self.wire.next(until).await?.message {
+                // Native2.1.321 can invalidate its UI before acknowledging
+                // initialization, even in stream-json mode. This frame binds
+                // no session, usage or authority and never extends the deadline.
+                Message::Event {
+                    kind: EventKind::System,
+                    payload,
+                    ..
+                } if payload["subtype"] == "ui_invalidate" => {
+                    self.wire.ignored_metadata();
                 }
-                ControlOutcome::Refused => Err(Error::Refused),
-            },
-            Message::Event { session_id, kind: EventKind::Result, payload }
-                if missing_resume::exact(self.session_id.as_deref(), &session_id, &payload) =>
-                Err(Error::MissingResume),
-            _ => Err(Error::Identity),
+                Message::ControlResponse {
+                    request_id,
+                    outcome,
+                } if request_id == INITIALIZE_ID => {
+                    return match outcome {
+                        ControlOutcome::Success(value) => {
+                            // The native initialize response precedes all model input.
+                            // Do not guess a protocol generation from executable name.
+                            version::check(&value["claude_code_version"])?;
+                            // Missing identity metadata does not prevent personal
+                            // execution. A shared account qualification requires it.
+                            self.account = super::account::Metadata::read(&value["account"]);
+                            self.phase = Phase::Ready;
+                            Ok(())
+                        }
+                        ControlOutcome::Refused => Err(Error::Refused),
+                    };
+                }
+                Message::Event {
+                    session_id,
+                    kind: EventKind::Result,
+                    payload,
+                } if missing_resume::exact(self.session_id.as_deref(), &session_id, &payload) => {
+                    return Err(Error::MissingResume);
+                }
+                _ => return Err(Error::Identity),
+            }
         }
+        Err(Error::Capacity)
     }
     /// Flushed stdin only: neither execution acknowledgement nor a task receipt.
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
@@ -369,6 +445,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             bytes
         };
         self.awaiting_init = true;
+        // Set before entering the writer: even a cancelled partial write can
+        // have delivered model input and must never authorize fresh replay.
+        self.prompt_started = true;
         self.phase = Phase::Running;
         self.wire.send(bytes, self.wire.event_deadline()).await
     }

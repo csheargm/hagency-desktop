@@ -55,7 +55,25 @@ pub(super) async fn fixture_claude() -> (Fixture, AccountBinding) {
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
 async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missing_idle() {
-    for complete in [true, false] {
+    for (complete, unaccounted, final_error) in [
+        (true, false, None),
+        (false, false, None),
+        (true, true, None),
+        (true, false, Some(false)),
+        (true, false, Some(true)),
+        (true, true, Some(false)),
+    ] {
+        let mode = match final_error {
+            None => "shared-usage",
+            Some(false) => "shared-followup-success",
+            Some(true) => "shared-followup-error",
+        };
+        let answer = if final_error.is_some() {
+            "shared background answer"
+        } else {
+            "shared offline answer"
+        };
+        let known = if final_error.is_some() { 32 } else { 16 };
         let (f, binding) = Box::pin(fixture_claude()).await;
         let mut command = command(&f).await;
         // Legacy metadata cannot silently claim this resource as Codex.
@@ -85,7 +103,7 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
         let mut environment = std::collections::BTreeMap::new();
         environment.insert("CLAUDE_CONFIG_DIR".into(), root.as_os_str().into());
         for (key, value) in [
-            ("HAGENCY_OFFLINE_CLAUDE_MODE", "shared-usage"),
+            ("HAGENCY_OFFLINE_CLAUDE_MODE", mode),
             ("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1"),
             ("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1"),
         ] {
@@ -168,18 +186,18 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
             .unwrap();
         let call = f
             .registry
-            .prepare_shared_call(authorization(), work.clone())
+            .prepare_current_call(|| authorization(), work.clone())
             .await
             .unwrap();
         let call_id = call.call_id.clone();
         let start = f
             .registry
-            .begin_shared_start(authorization(), work.clone(), call.call_id)
+            .begin_current_start(|| authorization(), work.clone(), call.call_id)
             .await
             .unwrap();
         let custody = f
             .registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: work.clone(),
@@ -206,19 +224,53 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
         // Existing billing units exclude cache reads: 10 input + 2 output + 4 cache writes.
         assert_eq!(pending.known_consumed_tokens, 16);
         if complete {
-            process.next_message().await.unwrap();
-            capture
-                .observe_claude(process.last_observation().unwrap())
-                .await
-                .unwrap();
-            let receipt = capture
-                .finish_claude(&process, "shared offline answer")
-                .await
-                .unwrap();
-            assert!(receipt.usage_complete);
-            assert_eq!(receipt.known_consumed_tokens, 16);
-            assert_eq!(receipt.state, "completed");
+            while process.phase() != hagency_runtime::claude::session::Phase::ResultObserved {
+                process.next_message().await.unwrap();
+                capture
+                    .observe_claude(process.last_observation().unwrap())
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                process.completion_receipt().unwrap().is_error(),
+                final_error.unwrap_or(false)
+            );
+            let receipt = if unaccounted {
+                let proof = process.completion_receipt().unwrap();
+                process.stop();
+                assert!(
+                    capture
+                        .finish_claude_unaccounted(&proof, "different answer")
+                        .await
+                        .is_err()
+                );
+                capture
+                    .finish_claude_unaccounted(&proof, answer)
+                    .await
+                    .unwrap()
+            } else {
+                capture.finish_claude(&process, answer).await.unwrap()
+            };
+            assert_eq!(receipt.usage_complete, !unaccounted);
+            assert_eq!(
+                receipt.body.as_deref(),
+                if final_error == Some(true) {
+                    None
+                } else {
+                    Some(answer)
+                }
+            );
+            assert_eq!(receipt.known_consumed_tokens, known);
+            assert_eq!(
+                receipt.state,
+                if final_error == Some(true) {
+                    "failed"
+                } else {
+                    "completed"
+                }
+            );
         } else {
+            assert!(process.completion_receipt().is_err());
             assert!(capture.finish_claude(&process, "premature").await.is_err());
             capture.record_unknown().await.unwrap();
         }
@@ -269,9 +321,16 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
             .managed_call_history(cleanup, call_id)
             .await
             .unwrap();
-        assert_eq!(history.known_consumed_tokens, 16);
-        assert_eq!(history.usage_complete, complete);
-        assert_eq!(history.state, if complete { "settled" } else { "unknown" });
+        assert_eq!(history.known_consumed_tokens, known);
+        assert_eq!(history.usage_complete, complete && !unaccounted);
+        assert_eq!(
+            history.state,
+            if complete && !unaccounted {
+                "settled"
+            } else {
+                "unknown"
+            }
+        );
         f.registry.shutdown().await.unwrap();
     }
 }

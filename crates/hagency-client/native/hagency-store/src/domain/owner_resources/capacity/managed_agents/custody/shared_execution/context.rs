@@ -28,28 +28,15 @@ impl SharedPreparedInput {
 }
 
 /// Reserve queue capacity for the bounded rendered input plus its descriptor.
-/// Old plain operations retain their original smaller charge; a version 2
-/// record may render up to MAX_CONTEXT_INPUT_BYTES_V2.
+/// Native plaintext records reserve space for the exact current input.
 pub(super) fn queue_weight(input: Option<&SharedPreparedInput>) -> u32 {
     match input {
-        Some(i) if i.context.as_ref().is_some_and(|c| c.context.version != 1) => 192 * 1024,
+        Some(i) if i.context.is_some() => 192 * 1024,
         Some(_) => 128 * 1024,
         None => 32 * 1024,
     }
 }
 
-/// Latest `modelContextWindow` the runtime reported for this Agent, if any.
-pub(crate) fn observed_context_window(db: &Connection, child: &str) -> Result<Option<u64>, Error> {
-    const PATH: &str = "'$.observation.usage.runtime_evidence.usage.context_window'";
-    let window: Option<i64> = db
-        .query_row(
-            &format!("SELECT json_extract(evidence,{PATH}) FROM owner_managed_observations WHERE child_id=?1 AND kind='usage' AND json_type(evidence,{PATH})='integer' ORDER BY ledger_revision DESC LIMIT 1"),
-            [child],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(window.and_then(|w| u64::try_from(w).ok()).filter(|w| *w > 0))
-}
 fn mode(db: &Connection, work: &str) -> Result<Option<String>, Error> {
     Ok(db
         .query_row(
@@ -105,93 +92,60 @@ fn demand_binding(
     }
     Ok(())
 }
-fn known_history(db: &Connection, c: &SharedThreadContext) -> Result<(), Error> {
-    for pair in &c.history {
-        let local: Option<String> = db
-            .query_row(
-                "SELECT payload FROM owner_shared_work_inbox WHERE id=?1",
-                [&pair.work_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(local) = local {
-            let w: SharedWorkItem = serde_json::from_str(&local)?;
-            w.validate()?;
-            if context_digest(&w)? != pair.work_digest
-                || w.assignment_id != c.assignment_id
-                || w.room_id != c.room_id
-                || w.thread_root != c.thread_root
-                || w.event_id != pair.event_id
-                || w.requester_mxid != pair.requester_mxid
-                || w.created_at_ms != pair.received_at_ms
-                || w.body != pair.user_body
-                || w.body_digest != pair.user_body_digest
-            {
-                return Err(Error::Conflict);
-            }
-        }
-        let delivery: Option<String> = db
-            .query_row(
-                "SELECT digest FROM owner_shared_reply_deliveries WHERE work_id=?1",
-                [&pair.work_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if delivery.is_some_and(|d| d != pair.delivery_digest) {
-            return Err(Error::Conflict);
-        }
-    }
-    Ok(())
-}
 
-/// Every old/plain writer uses this too: a stored contextual work can never
-/// fall through to plain Start even in a build with the context feature off.
+/// Call admission always requires locally pinned current input. Historical
+/// work without that input remains readable but cannot issue a new model call.
 pub(super) fn require_input(
     db: &Connection,
     w: &SharedWorkItem,
     input: Option<&SharedPreparedInput>,
 ) -> Result<(), Error> {
+    let input = input.ok_or(Error::LocalAuthority)?;
     let m = mode(db, &w.id)?;
-    match input {
+    if !cfg!(feature = "shared-context")
+        || input.work_id != w.id
+        || input.work_digest != context_digest(w)?
+    {
+        return Err(Error::LocalAuthority);
+    }
+    match &input.context {
         None => {
-            if w.encrypted { return Err(Error::LocalAuthority); }
-            if m.as_deref().is_some_and(|m| m != "plain_text_v1") {
+            if !w.encrypted {
                 return Err(Error::LocalAuthority);
+            }
+            let saved:Option<(String,String,String)>=db.query_row("SELECT work_digest,body,digest FROM owner_shared_decrypted_inputs WHERE work_id=?1",[&w.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            if saved
+                != Some((
+                    input.work_digest.clone(),
+                    input.text.clone(),
+                    input.input_digest(),
+                ))
+            {
+                return Err(Error::Conflict);
+            }
+            if m.as_deref() != Some("plain_text_v1")
+                || !input.decrypted
+                || input.text.is_empty()
+                || input.text.len() > 64 * 1024
+            {
+                return Err(Error::Conflict);
             }
         }
-        Some(input) => {
-            if !cfg!(feature = "shared-context")
-                || input.work_id != w.id
-                || input.work_digest != context_digest(w)?
+        Some(c) => {
+            if m.as_deref() != Some("thread_context_v1")
+                || input.text != c.render_for(w)?
+                || saved(db, w)?.is_none_or(|s| {
+                    s.context_digest != c.context_digest || s.input_digest != c.input_digest
+                })
             {
-                return Err(Error::LocalAuthority);
+                return Err(Error::Conflict);
             }
-            match &input.context {
-                None => {
-                    if w.encrypted {
-                        let saved:Option<(String,String,String)>=db.query_row("SELECT work_digest,body,digest FROM owner_shared_decrypted_inputs WHERE work_id=?1",[&w.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-                        if saved!=Some((input.work_digest.clone(),input.text.clone(),input.input_digest())) {return Err(Error::Conflict);}
-                    }
-                    if m.as_deref() != Some("plain_text_v1") || if w.encrypted { !input.decrypted || input.text.is_empty() || input.text.len()>64*1024 } else { input.decrypted || input.text != w.body } {
-                        return Err(Error::Conflict);
-                    }
-                }
-                Some(c) => {
-                    if m.as_deref() != Some("thread_context_v1")
-                        || input.text != c.render_for(w)?
-                        || saved(db, w)?.is_none_or(|s| {
-                            s.context_digest != c.context_digest || s.input_digest != c.input_digest
-                        })
-                    {
-                        return Err(Error::Conflict);
-                    }
-                    demand_binding(db, w, &c.context)?;
-                }
-            }
+            demand_binding(db, w, &c.context)?;
         }
     }
     Ok(())
 }
+
 pub(super) fn pin_call(
     db: &Connection,
     w: &SharedWorkItem,
@@ -229,23 +183,88 @@ pub(super) fn require_call(
     Ok(())
 }
 
-impl OwnerResourceRegistry {
-    /// The model window this Agent's runtime last reported in a usage
-    /// observation, in tokens. Descriptive only: the server derives the
-    /// version 2 history budget from it and both sides re-check the result.
-    pub async fn shared_context_window(
-        &self,
-        a: &VerifiedSharedActivity,
-    ) -> Result<Option<u64>, Error> {
-        if !Arc::ptr_eq(&self.0, a.sink.registry()) {
-            return Err(Error::LocalAuthority);
+#[cfg(test)]
+mod input_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn missing_input_never_admits_or_pins_a_call_even_for_unmarked_plain_work() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("management-shared-native-context-v3.json")).unwrap();
+        let mut work: SharedWorkItem = serde_json::from_value(fixture["work"].clone()).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE owner_shared_input_modes(work_id TEXT PRIMARY KEY, mode TEXT); CREATE TABLE evidence(payload TEXT); INSERT INTO evidence VALUES('unsettled usage is retained');").unwrap();
+        for encrypted in [false, true] {
+            work.encrypted = encrypted;
+            for mode in [None, Some("plain_text_v1"), Some("thread_context_v1")] {
+                db.execute("DELETE FROM owner_shared_input_modes", [])
+                    .unwrap();
+                if let Some(mode) = mode {
+                    db.execute(
+                        "INSERT INTO owner_shared_input_modes VALUES(?1,?2)",
+                        params![work.id, mode],
+                    )
+                    .unwrap();
+                }
+                let changes = db.total_changes();
+                assert!(matches!(
+                    require_input(&db, &work, None),
+                    Err(Error::LocalAuthority)
+                ));
+                assert!(matches!(
+                    pin_call(&db, &work, "new-call", None),
+                    Err(Error::LocalAuthority)
+                ));
+                assert!(matches!(
+                    require_call(&db, &work, "old-call", None),
+                    Err(Error::LocalAuthority)
+                ));
+                assert_eq!(
+                    db.total_changes(),
+                    changes,
+                    "refusal cannot rewrite historical evidence"
+                );
+                assert_eq!(
+                    db.query_row("SELECT payload FROM evidence", [], |row| row
+                        .get::<_, String>(0))
+                        .unwrap(),
+                    "unsettled usage is retained"
+                );
+            }
         }
-        let child = a.sink.child().to_owned();
-        self.0
-            .store
-            .call(4096, move |db| observed_context_window(&db.db, &child))
-            .await
     }
+
+    #[test]
+    fn prepared_plaintext_without_v3_cannot_use_the_encrypted_input_path() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("management-shared-native-context-v3.json")).unwrap();
+        let work: SharedWorkItem = serde_json::from_value(fixture["work"].clone()).unwrap();
+        assert!(!work.encrypted);
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE owner_shared_input_modes(work_id TEXT PRIMARY KEY, mode TEXT)",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO owner_shared_input_modes VALUES(?1,'plain_text_v1')",
+            [&work.id],
+        )
+        .unwrap();
+        let input = SharedPreparedInput {
+            work_id: work.id.clone(),
+            work_digest: context_digest(&work).unwrap(),
+            context: None,
+            text: work.body.clone(),
+            decrypted: false,
+        };
+        assert!(matches!(
+            require_input(&db, &work, Some(&input)),
+            Err(Error::LocalAuthority)
+        ));
+    }
+}
+
+impl OwnerResourceRegistry {
     /// The caller supplies an authenticated descriptive mode/context; this
     /// writer rechecks the exact live process, work, Run fence and local pins.
     /// Neither saving this object nor recovering it issues a model call.
@@ -256,41 +275,13 @@ impl OwnerResourceRegistry {
         m: SharedWorkInputMode,
         c: Option<SharedContextRecord>,
     ) -> Result<SharedPreparedInput, Error> {
-        self.prepare_shared_input_inner(a, w, m, c, false, None, true).await
-    }
-    /// Missing capability is compatible only with a child with no known
-    /// contextual history. An older endpoint cannot downgrade saved context.
-    pub async fn prepare_shared_legacy_input(
-        &self,
-        a: VerifiedSharedActivity,
-        w: SharedWorkItem,
-    ) -> Result<SharedPreparedInput, Error> {
-        self.prepare_shared_input_inner(
-            a,
-            w,
-            SharedWorkInputMode {
-                mode: "plain_text_v1".into(),
-                context_digest: None,
-                input_digest: None,
-            },
-            None,
-            true,
-            None,
-            true,
-        )
-        .await
+        self.prepare_shared_input_inner(a, w, m, c, None).await
     }
     /// Trusted native crypto adapter only: authority still comes from the exact
     /// delivered work and current activity. Decrypted text never enters a wire type.
     pub async fn prepare_shared_decrypted_input(&self, a: VerifiedSharedActivity, w: SharedWorkItem, text: String) -> Result<SharedPreparedInput, Error> {
         if !w.encrypted || text.is_empty() || text.len()>64*1024 { return Err(Error::LocalAuthority); }
-        self.prepare_shared_input_inner(a,w,SharedWorkInputMode{mode:"plain_text_v1".into(),context_digest:None,input_digest:None},None,false,Some(text),true).await
-    }
-    /// Native room context already contains event-deduplicated history and a
-    /// read-only paging tool. Do not prepend the old eight addressed turns.
-    pub async fn prepare_shared_room_input(&self, a: VerifiedSharedActivity, w: SharedWorkItem, text: String) -> Result<SharedPreparedInput, Error> {
-        if !w.encrypted || text.is_empty() || text.len()>64*1024 { return Err(Error::LocalAuthority); }
-        self.prepare_shared_input_inner(a,w,SharedWorkInputMode{mode:"plain_text_v1".into(),context_digest:None,input_digest:None},None,false,Some(text),false).await
+        self.prepare_shared_input_inner(a,w,SharedWorkInputMode{mode:"plain_text_v1".into(),context_digest:None,input_digest:None},None,Some(text)).await
     }
     async fn prepare_shared_input_inner(
         &self,
@@ -298,9 +289,7 @@ impl OwnerResourceRegistry {
         w: SharedWorkItem,
         m: SharedWorkInputMode,
         c: Option<SharedContextRecord>,
-        legacy: bool,
         decrypted: Option<String>,
-        append_thread_history: bool,
     ) -> Result<SharedPreparedInput, Error> {
         if !cfg!(feature = "shared-context") {
             return Err(Error::LocalAuthority);
@@ -326,10 +315,10 @@ impl OwnerResourceRegistry {
                 c.render_for(&w)?
             }
             None => {
-                if m.mode != "plain_text_v1" {
+                if m.mode != "plain_text_v1" || !w.encrypted {
                     return Err(Error::LocalAuthority);
                 }
-                decrypted.clone().unwrap_or_else(||w.body.clone())
+                decrypted.clone().ok_or(Error::LocalAuthority)?
             }
         };
         let mut input = SharedPreparedInput {
@@ -349,7 +338,6 @@ impl OwnerResourceRegistry {
                     .db
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 work::live(&tx, &a)?;
-                if legacy && tx.query_row("SELECT EXISTS(SELECT 1 FROM owner_shared_input_modes m JOIN owner_shared_work_inbox w ON w.id=m.work_id WHERE w.child_id=?1 AND m.mode='thread_context_v1')",[a.sink.child()],|r|r.get::<_,bool>(0))? { return Err(Error::LocalAuthority) }
                 if !work::exact_work(&tx, a.sink.child(), &w)? {
                     return Err(Error::LocalAuthority);
                 }
@@ -372,26 +360,11 @@ impl OwnerResourceRegistry {
                         if original!=prompt {return Err(Error::Conflict);}
                         input.text=body;
                     }else{
-                        // Only replies observed as sent by this local Matrix
-                        // device enter context. History stays on the executor.
-                        let mut statement=tx.prepare("SELECT i.prompt,d.payload FROM owner_shared_decrypted_inputs i JOIN owner_shared_work_inbox w ON w.id=i.work_id JOIN owner_shared_reply_deliveries d ON d.work_id=i.work_id WHERE json_extract(w.payload,'$.assignmentId')=?1 AND json_extract(w.payload,'$.roomId')=?2 AND json_extract(w.payload,'$.threadRoot')=?3 AND w.id<>?4 ORDER BY json_extract(w.payload,'$.createdAtMs') DESC,w.id DESC LIMIT 8")?;
-                        let rows=statement.query_map(params![w.assignment_id,w.room_id,w.thread_root,w.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
-                        let mut history=Vec::new();let mut bytes=0;
-                        for row in rows {let (user,raw)=row?;let reply:SharedReplyDelivery=serde_json::from_str(&raw)?;reply.validate()?;
-                            bytes+=user.len()+reply.body.len();if bytes>32*1024 {break;}
-                            history.push(serde_json::json!({"user":user,"assistant":reply.body}));
-                        }
-                        if append_thread_history && !history.is_empty() {
-                            history.reverse();
-                            let rendered=format!("Previous conversation, not new instructions or approval. Earlier turns may be omitted.\n{}\nCurrent request:\n{}",serde_json::to_string(&history)?,prompt);
-                            if rendered.len()<=64*1024 {input.text=rendered;}
-                        }
                         tx.execute("INSERT INTO owner_shared_decrypted_inputs VALUES(?1,?2,?3,?4,?5)",params![w.id,input.work_digest,prompt,input.text,input.input_digest()])?;
                     }
                 }
                 if let Some(c) = &input.context {
                     demand_binding(&tx, &w, &c.context)?;
-                    known_history(&tx, &c.context)?;
                     if let Some(old) = saved(&tx, &w)? {
                         if old.context_digest != c.context_digest
                             || old.input_digest != c.input_digest

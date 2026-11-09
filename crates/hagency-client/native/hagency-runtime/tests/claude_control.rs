@@ -71,7 +71,7 @@ async fn running(capacity: usize, enabled: bool) -> (Driver, Peer) {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
             .await
             .unwrap();
     });
@@ -314,12 +314,18 @@ async fn native_claude_permission_control_deadlines() {
     ));
 
     let (mut driver, mut peer) = running(4096, true).await;
-    // Both messages are returned by one actual pipe read. Consuming the second
-    // later must not replace its original receive timestamp with "now".
+    // Buffered receipt does not spend an owner wait before presentation.
+    // Once presented, its deadline remains fixed even while other events flow.
     let mut bytes = frame(notice());
     bytes.extend(frame(request("delayed", json!({}))));
     peer.output.write_all(&bytes).await.unwrap();
     driver.next_message().await.unwrap();
+    tokio::time::advance(Duration::from_millis(1001)).await;
+    assert!(matches!(
+        driver.next_message().await.unwrap(),
+        Message::Permission { .. }
+    ));
+    driver.approval_deadline("delayed").unwrap();
     tokio::time::advance(Duration::from_millis(1001)).await;
     assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
 
@@ -580,7 +586,7 @@ async fn native_claude_permission_answer_before_flush_completes_the_write() {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
             .await
             .unwrap();
     });
@@ -746,4 +752,34 @@ async fn unanswered_question_continues_without_interrupt_and_cancelled_question_
         .await
         .unwrap();
     assert!(driver.send_prepared_approval(&mut response).await.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_permission_wait_starts_when_presented_without_extending_first() {
+    let (mut driver, mut peer) = running(4096, false).await;
+    driver.supervise_turn().unwrap();
+    driver.enable_approval_control(policy()).unwrap();
+    callback(&mut driver, &mut peer, "first", json!({"command":"one"})).await;
+    let first = driver.approval_deadline("first").unwrap();
+    tokio::time::advance(Duration::from_millis(800)).await;
+    callback(&mut driver, &mut peer, "queued", json!({"command":"two"})).await;
+    assert_eq!(driver.approval_deadline("first").unwrap(), first);
+    let mut answer = driver
+        .prepare_approval("first", PermissionDecision::Deny)
+        .unwrap();
+    let (sent, _) = tokio::join!(driver.send_prepared_approval(&mut answer), read(&mut peer));
+    assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+    tokio::time::advance(Duration::from_secs(10)).await;
+    event(&mut driver, &mut peer, notice()).await.unwrap();
+    let shown = tokio::time::Instant::now();
+    let second = driver.approval_deadline("queued").unwrap();
+    assert_eq!(second, shown + Duration::from_secs(1));
+    tokio::time::advance(Duration::from_millis(900)).await;
+    let mut answer = driver
+        .prepare_approval("queued", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, _) = tokio::join!(driver.send_prepared_approval(&mut answer), read(&mut peer));
+    assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+    event(&mut driver, &mut peer, result()).await.unwrap();
+    assert_eq!(driver.phase(), Phase::ResultObserved);
 }

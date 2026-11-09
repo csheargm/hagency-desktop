@@ -45,7 +45,10 @@
           "tool_name": "item/commandExecution/requestApproval",
           "upstream_request_id": "0",
           "upstream_rpc_id": 0,
-          "version": 1
+          "version": 1,
+          "owner_mxid": "@owner:example.test",
+          "publisher_mxid": "@approval:example.test",
+          "revision": 1
         },
         "msgtype": "com.agentchat.approval.request.v1"
       },
@@ -96,7 +99,10 @@
           "tool_name": "item/commandExecution/requestApproval",
           "upstream_request_id": "9007199254740991",
           "upstream_rpc_id": 9007199254740991,
-          "version": 1
+          "version": 1,
+          "owner_mxid": "@owner:example.test",
+          "publisher_mxid": "@approval:example.test",
+          "revision": 1
         },
         "msgtype": "com.agentchat.approval.request.v1"
       },
@@ -147,7 +153,10 @@
           "tool_name": "item/commandExecution/requestApproval",
           "upstream_request_id": "001",
           "upstream_rpc_id": "001",
-          "version": 1
+          "version": 1,
+          "owner_mxid": "@owner:example.test",
+          "publisher_mxid": "@approval:example.test",
+          "revision": 1
         },
         "msgtype": "com.agentchat.approval.request.v1"
       },
@@ -182,7 +191,10 @@
           "tool_name": "unknown/requestApproval",
           "upstream_request_id": "opaque",
           "upstream_rpc_id": "opaque",
-          "version": 1
+          "version": 1,
+          "owner_mxid": "@owner:example.test",
+          "publisher_mxid": "@approval:example.test",
+          "revision": 1
         },
         "msgtype": "com.agentchat.approval.request.v1"
       },
@@ -217,7 +229,10 @@
           "tool_name": "unknown/requestApproval",
           "upstream_request_id": "7",
           "upstream_rpc_id": 7,
-          "version": 1
+          "version": 1,
+          "owner_mxid": "@owner:example.test",
+          "publisher_mxid": "@approval:example.test",
+          "revision": 1
         },
         "msgtype": "com.agentchat.approval.request.v1"
       },

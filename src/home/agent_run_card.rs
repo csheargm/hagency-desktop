@@ -34,10 +34,20 @@ script_mod! {
             width: Fill height: Fit flow: Right spacing: 8
             append := Button {text: "追加到当前运行"}
             stop := Button {text: "停止本次运行"}
+            restore := Button {text: "恢复未执行指令"}
         }
         hint := Label {
             width: Fill height: Fit
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+        }
+        unconfirmed_notice := Label {
+            visible: false width: Fill height: Fit
+            text: "以下指令结果未确认，原文可复制。请先核对，避免重复执行。"
+            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+        }
+        unconfirmed := ScrollYView {
+            visible: false width: Fill height: 120
+            text := HtmlOrPlaintext {width: Fill height: Fit selectable: true}
         }
     }
 }
@@ -63,10 +73,15 @@ impl Widget for AgentRunCard {
         }
         let stop = self.view.button(cx, ids!(buttons.stop)).clicked(actions);
         let append = self.view.button(cx, ids!(buttons.append)).clicked(actions);
-        if (stop || append)
-            && let Some(request) = run_controls::request(key, stop)
+        if self.view.button(cx, ids!(buttons.restore)).clicked(actions)
+            && run_controls::restore_draft(key)
         {
-            cx.action(request);
+            cx.action(PendingQuestionsChanged);
+        }
+        if stop || append {
+            if let Some(request) = run_controls::request(key, stop) {
+                cx.action(request);
+            }
             cx.action(PendingQuestionsChanged);
         }
     }
@@ -112,7 +127,7 @@ impl AgentRunCardRef {
         preview.show_plaintext(cx, &entry.card.preview);
         let open = entry.card.state == State::Running;
         let input = inner.view.text_input(cx, ids!(input));
-        input.set_visible(cx, open && entry.may_append);
+        input.set_visible(cx, entry.may_append && (open || !entry.draft.is_empty() || !entry.recovered_drafts.is_empty()));
         if changed || input.text() != entry.draft {
             input.set_text(cx, &entry.draft);
         }
@@ -130,13 +145,20 @@ impl AgentRunCardRef {
         let stop = inner.view.button(cx, ids!(buttons.stop));
         stop.set_visible(cx, open && entry.may_stop);
         stop.set_enabled(cx, !entry.sending);
+        let restore = inner.view.button(cx, ids!(buttons.restore));
+        restore.set_visible(cx, !entry.recovered_drafts.is_empty());
+        restore.set_enabled(cx, entry.draft.is_empty());
         inner
             .view
             .view(cx, ids!(buttons))
-            .set_visible(cx, open && (entry.may_append || entry.may_stop));
+            .set_visible(cx, (open && (entry.may_append || entry.may_stop)) || !entry.recovered_drafts.is_empty());
         let hint = inner.view.label(cx, ids!(hint));
         hint.set_visible(cx, !entry.hint.is_empty());
         hint.set_text(cx, &entry.hint);
+        let unconfirmed = entry.unconfirmed_text();
+        inner.view.label(cx, ids!(unconfirmed_notice)).set_visible(cx, unconfirmed.is_some());
+        inner.view.view(cx, ids!(unconfirmed)).set_visible(cx, unconfirmed.is_some());
+        inner.view.html_or_plaintext(cx, ids!(unconfirmed.text)).show_plaintext(cx, unconfirmed.as_deref().unwrap_or_default());
         inner.view.redraw(cx);
     }
 }

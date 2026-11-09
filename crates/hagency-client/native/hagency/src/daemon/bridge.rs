@@ -17,7 +17,7 @@ pub use client::{ControllerClient, ManagementClient};
 pub use journal::PendingCommand;
 #[cfg(feature = "resource-adoption")]
 pub use grants::{
-    AdoptedSelection, DeviceSetupReview, OwnerGrantAccess, OwnerGrantCancellationResult,
+    CurrentSelection, DeviceSetupReview, OwnerGrantAccess, OwnerGrantCancellationResult,
     OwnerGrantCancellationReview, OwnerGrantPublicationResult, OwnerGrantPublicationReview,
     OwnerGrantReview, OwnerGrantReviewResult, OwnerOperation, PreparedSharedSuccessor,
     SuccessorAssessment,
@@ -279,7 +279,6 @@ fn owner_mutation(command: &crate::native_owner::Command) -> bool {
                 action: LocalAction::AgentModel
                     | LocalAction::AgentPolicy
                     | LocalAction::Policy
-                    | LocalAction::Model
                     | LocalAction::Runtime
                     | LocalAction::AgentServiceStatus
                     | LocalAction::Approvals,

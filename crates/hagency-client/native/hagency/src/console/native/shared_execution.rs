@@ -3,6 +3,7 @@
 mod context_io;
 mod launch;
 mod claude_run;
+mod claude_workspace;
 mod e2ee;
 pub(in crate::console) mod history;
 pub(in crate::console) mod files;

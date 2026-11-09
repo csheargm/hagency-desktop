@@ -56,7 +56,7 @@ fn update_text(
     )?;
     Ok(())
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn operator_task_write_access(
         &self,
         profile: &ProfileAuthority,

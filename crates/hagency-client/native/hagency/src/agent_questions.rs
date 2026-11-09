@@ -542,9 +542,12 @@ impl Default for Entries {
 const RETAIN: Duration = Duration::from_millis(ANSWER_WAIT_MS + 120_000);
 const MAX_ENTRIES: usize = 256;
 
-/// Whether Megolm authenticates `sender` for an event: the device that set up
-/// the session belongs to the sender, is known, and broke no verification.
-/// (`EncryptionInfo::sender` is the event's own claim, never proof.)
+/// Whether Megolm authenticates `sender` for conversational input. A device
+/// without cross-signing is accepted when its sender link is authenticated,
+/// matching ordinary room messages. Questions and run steering still require
+/// an explicitly allowed responder and current membership; this does not grant tool
+/// approval authority. Missing/mismatched links and verification violations
+/// are refused. `EncryptionInfo::sender` alone is never proof.
 pub fn authentic(info: &EncryptionInfo, sender: &str) -> bool {
     info.sender.as_str() == sender
         && !matches!(
@@ -558,6 +561,10 @@ pub fn authentic(info: &EncryptionInfo, sender: &str) -> bool {
 }
 
 impl Entries {
+    fn pending_for(&self, room: &str, card: &str) -> bool {
+        self.answers.iter().any(|e| e.room_id == room && e.card_event_id == card)
+            || self.undecrypted.iter().any(|e| e.room_id == room && e.card_event_id == card)
+    }
     fn prune(&mut self) {
         self.answers.retain(|e| e.received.elapsed() < RETAIN);
         self.undecrypted.retain(|e| e.received.elapsed() < RETAIN);
@@ -653,6 +660,11 @@ impl Drop for Inbox {
     }
 }
 impl Inbox {
+    /// An empty checked batch may still have pending membership or decryption.
+    /// Closing hosts must retain their receipt journal until those are resolved.
+    pub(crate) fn pending_for(&self, room: &str, card: &str) -> bool {
+        self.entries.lock().map_or(true, |entries| entries.pending_for(room, card))
+    }
     pub fn attach(client: &Client) -> Self {
         Self::attach_event(client, ANSWER_EVENT)
     }
@@ -1022,6 +1034,35 @@ mod tests {
     }
 
     #[test]
+    fn conversational_controls_accept_unsigned_authenticated_devices_but_not_broken_links() {
+        use matrix_sdk::deserialized_responses::{AlgorithmInfo, DeviceLinkProblem};
+        let mut info = EncryptionInfo {
+            sender: "@owner:example.test".try_into().unwrap(),
+            sender_device: Some("OWNER".into()),
+            forwarder: None,
+            algorithm_info: AlgorithmInfo::MegolmV1AesSha2 {
+                curve25519_key: "key".into(),
+                sender_claimed_keys: Default::default(),
+                session_id: Some("session".into()),
+            },
+            verification_state: VerificationState::Verified,
+        };
+        for level in [VerificationLevel::UnsignedDevice, VerificationLevel::UnverifiedIdentity] {
+            info.verification_state = VerificationState::Unverified(level);
+            assert!(authentic(&info, "@owner:example.test"));
+            assert!(!authentic(&info, "@other:example.test"));
+        }
+        for level in [
+            VerificationLevel::None(DeviceLinkProblem::InsecureSource),
+            VerificationLevel::MismatchedSender,
+            VerificationLevel::VerificationViolation,
+        ] {
+            info.verification_state = VerificationState::Unverified(level);
+            assert!(!authentic(&info, "@owner:example.test"));
+        }
+    }
+
+    #[test]
     fn only_an_agent_of_the_rooms_server_posts_cards_and_expiry_is_bounded() {
         assert_eq!(server_name("!room:example.test"), Some("example.test"));
         assert_eq!(
@@ -1061,6 +1102,9 @@ mod tests {
             None,
         );
         entries.observe("!room:test", &event("$second", ANSWER_EVENT), None, None);
+        assert!(entries.pending_for("!room:test", "$card"));
+        assert!(!entries.pending_for("!other:test", "$card"));
+        assert!(!entries.pending_for("!room:test", "$other"));
         entries.observe(
             "!room:test",
             &event("$thread", "m.room.message"),
@@ -1075,6 +1119,7 @@ mod tests {
             Some(order),
         );
         assert!(entries.undecrypted.is_empty());
+        assert!(entries.pending_for("!room:test", "$card"));
         let ids: Vec<_> = entries
             .answers
             .iter()

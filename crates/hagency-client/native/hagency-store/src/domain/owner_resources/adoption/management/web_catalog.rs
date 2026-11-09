@@ -95,7 +95,7 @@ fn outcome(db:&Connection,receipt:&CommandReceipt)->Result<Option<Option<WebCata
     if value==json!({"cancelled":true}){return Ok(Some(None))}
     Ok(Some(Some(serde_json::from_value(value)?)))
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn cancel_web_catalog(&self,profile:&ProfileAuthority,input:WebCatalogCommand,receipt:CommandReceipt)->Result<Option<WebCatalogResult>,Error>{
         self.check(profile)?;input.validate()?;let backing=self.clone();let authority=profile.clone();
         let result=self.registry.0.store.call(64*1024,move|db|{

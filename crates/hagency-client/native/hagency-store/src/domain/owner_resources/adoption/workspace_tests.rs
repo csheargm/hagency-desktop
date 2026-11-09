@@ -17,8 +17,8 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(backing: &AdoptedManagementStore, ctx: &HostContext) -> Session {
-    Session::new_adopted(
+fn session(backing: &CurrentManagementStore, ctx: &HostContext) -> Session {
+    Session::new_current(
         backing.clone(),
         ctx.clone(),
         [Permission::ReadWorkspaces, Permission::ClearWorkspaceDirty],

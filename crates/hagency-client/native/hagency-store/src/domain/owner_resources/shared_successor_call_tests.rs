@@ -137,7 +137,7 @@ async fn prepare(a: &Active, w: &SharedWorkItem) -> ManagedCallHistory {
         .await
         .unwrap();
     a.f.registry
-        .prepare_shared_call(a.authority(), w.clone())
+        .prepare_current_call(|| a.authority(), w.clone())
         .await
         .unwrap()
 }
@@ -149,8 +149,8 @@ async fn shared_successor_call_failed_start_keeps_zero_and_unknown_distinct_afte
         let mut a = Box::pin(active()).await;
         let w = a.work("failed_start");
         let h = prepare(&a, &w).await;
-        let attempt = a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id).await.unwrap();
-        let custody = a.f.registry.issue_shared_call(attempt, SharedWorkStart {
+        let attempt = a.f.registry.begin_current_start(|| a.authority(), w.clone(), h.call_id).await.unwrap();
+        let custody = a.f.registry.issue_current_call(attempt, SharedWorkStart {
             work: w.clone(), work_digest: digest(&w), activity_epoch: 1, newly_started: true,
         }).await.unwrap();
         a.process.start_shared_text_thread().await.unwrap();
@@ -184,7 +184,7 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
     assert_eq!(h.reserved_tokens, 0);
     let replay =
         a.f.registry
-            .prepare_shared_call(a.authority(), w.clone())
+            .prepare_current_call(|| a.authority(), w.clone())
             .await
             .unwrap();
     assert_eq!(h.call_id, replay.call_id);
@@ -198,12 +198,12 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
     );
     let attempt =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id.clone())
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id.clone())
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 attempt,
                 SharedWorkStart {
                     work: w.clone(),
@@ -223,7 +223,7 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
     // with the same remainder.
     assert_eq!(
         a.f.registry
-            .prepare_shared_call(a.authority(), next)
+            .prepare_current_call(|| a.authority(), next)
             .await
             .unwrap()
             .reserved_tokens,
@@ -231,16 +231,13 @@ async fn shared_successor_call_holds_old_unknown_and_captures_only_exact_new_inp
     );
     assert!(matches!(
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await,
         Err(Error::OutcomeUnknown)
     ));
     a.process.start_shared_text_thread().await.unwrap();
     custody.check().unwrap();
-    a.process
-        .start_shared_text_turn(w.body.clone())
-        .await
-        .unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_turn(&a.process).unwrap();
     let final_receipt = loop {
         let event = a.process.next_shared_text_event().await.unwrap();
@@ -274,12 +271,12 @@ async fn shared_successor_call_lost_or_replayed_start_cannot_issue_model() {
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id.clone())
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id.clone())
             .await
             .unwrap();
     assert!(matches!(
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -293,7 +290,7 @@ async fn shared_successor_call_lost_or_replayed_start_cannot_issue_model() {
     ));
     assert!(matches!(
         a.f.registry
-            .begin_shared_start(a.authority(), w, h.call_id.clone())
+            .begin_current_start(|| a.authority(), w, h.call_id.clone())
             .await,
         Err(Error::OutcomeUnknown)
     ));
@@ -315,7 +312,7 @@ async fn shared_successor_call_rechecks_overrun_before_issue() {
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     a.f.registry
@@ -332,7 +329,7 @@ async fn shared_successor_call_rechecks_overrun_before_issue() {
         .unwrap();
     assert!(matches!(
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -354,12 +351,12 @@ async fn shared_successor_call_input_mismatch_never_attributes_other_text() {
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -403,13 +400,13 @@ async fn shared_successor_call_bounded_sibling_liability_is_preserved_without_bl
     assert_eq!(prior, (40, 7));
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     a.f.registry.0.store.call(1024,|db|{db.db.execute("UPDATE owner_managed_calls SET known_consumed_tokens=1200 WHERE id='sibling_unknown'",[])?;Ok(())}).await.unwrap();
     assert!(matches!(
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -439,8 +436,8 @@ async fn postpaid_v2_late_overrun_refuses_new_work_but_running_call_renews_and_f
     let w = a.work("in_flight");
     let h = prepare(&a, &w).await;
     assert_eq!(h.reserved_tokens, 0);
-    let intent = a.f.registry.begin_shared_start(a.authority(), w.clone(), h.call_id).await.unwrap();
-    let custody = a.f.registry.issue_shared_call(intent, SharedWorkStart {
+    let intent = a.f.registry.begin_current_start(|| a.authority(), w.clone(), h.call_id).await.unwrap();
+    let custody = a.f.registry.issue_current_call(intent, SharedWorkStart {
         work: w.clone(), work_digest: digest(&w), activity_epoch: 1, newly_started: true,
     }).await.unwrap();
     a.process.start_shared_text_thread().await.unwrap();
@@ -451,7 +448,7 @@ async fn postpaid_v2_late_overrun_refuses_new_work_but_running_call_renews_and_f
     call(&a.f, &a.original, "late_overrun", "settled", 1, 10_000, true, false).await;
     let next = a.work("after_overrun");
     a.f.registry.receive_shared_work(a.authority(), next.clone()).await.unwrap();
-    assert!(matches!(a.f.registry.prepare_shared_call(a.authority(), next).await, Err(Error::Capacity)));
+    assert!(matches!(a.f.registry.prepare_current_call(|| a.authority(), next).await, Err(Error::Capacity)));
     a.f.registry.prepare_shared_renewal(a.authority(), "finish_running_task".into()).await.unwrap();
     let receipt = loop {
         let event = a.process.next_shared_text_event().await.unwrap();

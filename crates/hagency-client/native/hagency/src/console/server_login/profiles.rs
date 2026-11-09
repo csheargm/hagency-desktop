@@ -11,7 +11,7 @@ fn id(binding: &Binding) -> Option<String> {
     let subject = binding.subject.as_ref()?;
     let raw = serde_json::to_vec(&(
         &binding.origin,
-        crate::server_admission::profile_namespace_issuer(&binding.origin),
+        crate::server_admission::profile_storage_namespace(&binding.origin),
         subject,
         owner,
     ))

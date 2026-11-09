@@ -22,7 +22,7 @@ include!("publication_observation_tests.rs");
 include!("succession_tests.rs");
 include!("recurring_tests.rs");
 #[cfg(feature = "resource-adoption")]
-include!("adoption_tests.rs");
+include!("current_profile_fixture.rs");
 #[cfg(feature = "resource-adoption")]
 include!("adoption_connection_tests.rs");
 #[cfg(feature = "resource-adoption")]

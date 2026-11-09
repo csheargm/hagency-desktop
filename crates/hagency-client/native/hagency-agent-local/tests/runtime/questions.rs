@@ -21,7 +21,7 @@ async fn claude_questions_share_host_channel_without_using_tool_permission() {
         "call",
         "dispatch",
         "ask questions",
-        BudgetMode::Estimated { reservation: 100 },
+        BudgetMode::Postpaid,
         &queue,
         None,
     );
@@ -78,7 +78,7 @@ async fn claude_withdrawal_closes_waiting_card_without_replaying_input() {
         "call",
         "dispatch",
         "ask questions",
-        BudgetMode::Estimated { reservation: 100 },
+        BudgetMode::Postpaid,
         &queue,
         None,
     );

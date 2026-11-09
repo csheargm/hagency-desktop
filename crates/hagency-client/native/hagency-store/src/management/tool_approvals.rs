@@ -247,22 +247,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadToolApprovals)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(131072, move |db| {
-                        db.management_tool_approvals(&query, |db| {
-                            session.check(&context, Permission::ReadToolApprovals)?;
-                            require_tool_resource(db, &query.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .tool_approvals(&self.adopted_profile(store)?, query)
+                    .tool_approvals(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -278,22 +265,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadToolApprovals)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(8192, move |db| {
-                        db.management_tool_approval(&query, |db| {
-                            session.check(&context, Permission::ReadToolApprovals)?;
-                            require_tool_resource(db, &query.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .tool_approval(&self.adopted_profile(store)?, query)
+                    .tool_approval(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -309,22 +283,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::InspectToolGrants)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(131072, move |db| {
-                        db.management_tool_grants(&query, |db| {
-                            session.check(&context, Permission::InspectToolGrants)?;
-                            require_tool_resource(db, &query.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .tool_grants(&self.adopted_profile(store)?, query)
+                    .tool_grants(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -341,9 +302,7 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::RevokeToolGrants)?;
         let profile = match self.local_store()? {
-            SessionStore::Legacy(_) => "",
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store.identity().0,
+            SessionStore::Current(store) => store.identity().0,
         };
         let receipt = CommandReceipt::new(
             context,
@@ -352,22 +311,9 @@ impl Session {
             &serde_json::json!({"profile":profile,"input":input}),
         )?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(24 * 1024, move |db| {
-                        db.management_revoke_tool_grant(&input, receipt, |db| {
-                            session.check(&context, Permission::RevokeToolGrants)?;
-                            require_tool_resource(db, &input.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .revoke_tool_grant(&self.adopted_profile(store)?, input, receipt)
+                    .revoke_tool_grant(&self.current_profile(store)?, input, receipt)
                     .await?
             }
         };

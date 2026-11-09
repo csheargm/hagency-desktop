@@ -23,6 +23,8 @@ pub struct Peer {
     pub claims: usize,
     pub shares: usize,
     pub events: Vec<Value>,
+    /// State events written by the real private approval-room marker publisher.
+    pub approval_markers: Vec<Value>,
     human: OlmMachine,
     one_time: BTreeMap<String, Value>,
     sender_master: Option<Value>,
@@ -90,6 +92,7 @@ impl Peer {
             claims: 0,
             shares: 0,
             events: Vec::new(),
+            approval_markers: Vec::new(),
             human,
             one_time,
             sender_master: None,
@@ -217,6 +220,7 @@ impl Peer {
             claims: 0,
             shares: 0,
             events: Vec::new(),
+            approval_markers: Vec::new(),
             human: self.human.clone(),
             one_time,
             sender_master: None,
@@ -238,6 +242,28 @@ impl Peer {
         target: &str,
         body: &Value,
     ) -> Option<(u16, Value)> {
+        const MARKER: &str = "com.agentchat.approval.room.v2";
+        if method == "PUT" {
+            if let Some(room) = target.strip_prefix("/_matrix/client/v3/rooms/")
+                .and_then(|tail| tail.strip_suffix(&format!("/state/{MARKER}/"))) {
+                assert_eq!(body["publisher_mxid"], self.sender.as_str());
+                assert_eq!(body["owner_mxid"], HUMAN);
+                assert_eq!(body["version"], 2);
+                let id = format!("$approval_marker_{}", self.approval_markers.len() + 1);
+                self.approval_markers.push(json!({"type":MARKER,"state_key":"","event_id":id,
+                    "room_id":room,"sender":self.sender.as_str(),"content":body}));
+                return Some((200, json!({"event_id":id})));
+            }
+        }
+        if method == "GET" && target.contains("/event/") {
+            if let Some(event) = self.approval_markers.iter().find(|event| {
+                let id = event["event_id"].as_str().unwrap();
+                target.ends_with(&format!("/event/{id}"))
+                    || target.ends_with(&format!("/event/%24{}", &id[1..]))
+            }) {
+                return Some((200, event.clone()));
+            }
+        }
         if method == "GET" && target == "/_matrix/client/versions" {
             return Some((200, json!({"versions":["v1.11","v1.12"]})));
         }

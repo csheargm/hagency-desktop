@@ -84,7 +84,6 @@ impl EditLocalResource {
         Ok(())
     }
 
-    #[cfg(feature = "resource-adoption")]
     fn receipt(&self, context: &HostContext, profile: &str) -> Result<CommandReceipt, Error> {
         CommandReceipt::new(
             context,
@@ -95,7 +94,6 @@ impl EditLocalResource {
     }
 }
 
-#[cfg(feature = "resource-adoption")]
 impl Session {
     /// Trusted native read-only provider observation. No generic JSON command
     /// receives this registry or authority; it cannot authorize an edit.
@@ -104,8 +102,8 @@ impl Session {
     ) -> Result<(crate::owner_resources::OwnerResourceRegistry, crate::owner_resources::ProfileAuthority), Error> {
         self.check(context, Permission::ReadResources)?;
         self.check(context, Permission::ReadProviders)?;
-        let SessionStore::Adopted(store) = self.local_store()? else {return Err(Error::LocalAuthority);};
-        let profile=self.adopted_profile(store)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        let profile=self.current_profile(store)?;
         let registry=store.enrollment_registry(&profile)?;
         self.check(context, Permission::ReadProviders)?;
         Ok((registry,profile))
@@ -122,10 +120,8 @@ impl Session {
         Error,
     > {
         self.check(context, Permission::ConfigureResources)?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
-        let profile = self.adopted_profile(store)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        let profile = self.current_profile(store)?;
         let registry = store.enrollment_registry(&profile)?;
         self.check(context, Permission::ConfigureResources)?;
         Ok((registry, profile))
@@ -139,13 +135,11 @@ impl Session {
     ) -> Result<Option<ResourceConfigurationResult>, Error> {
         self.check(context, Permission::ConfigureResources)?;
         input.validate()?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
+        let SessionStore::Current(store) = self.local_store()?;
         let receipt = input.receipt(context, store.identity().0)?;
         let result = store
             .recover_local_resource_edit(
-                &self.adopted_profile(store)?,
+                &self.current_profile(store)?,
                 input.resource_id.clone(),
                 receipt,
             )
@@ -169,12 +163,10 @@ impl Session {
         if !input.is_ceiling_amendment() {
             return Err(hagency_core::InvalidInput("not a ceiling amendment").into());
         }
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
+        let SessionStore::Current(store) = self.local_store()?;
         let receipt = input.receipt(context, store.identity().0)?;
         let result = store
-            .amend_resource_ceiling(&self.adopted_profile(store)?, input, receipt, confirmed_until)
+            .amend_resource_ceiling(&self.current_profile(store)?, input, receipt, confirmed_until)
             .await?;
         self.check(context, Permission::ConfigureResources)
             .map_err(|_| Error::OutcomeUnknown)?;
@@ -192,12 +184,10 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::ConfigureResources)?;
         input.validate()?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
+        let SessionStore::Current(store) = self.local_store()?;
         let receipt = input.receipt(context, store.identity().0)?;
         let result = store
-            .edit_local_resource(&self.adopted_profile(store)?, input, binding, receipt)
+            .edit_local_resource(&self.current_profile(store)?, input, binding, receipt)
             .await?;
         self.check(context, Permission::ConfigureResources)
             .map_err(|_| Error::OutcomeUnknown)?;

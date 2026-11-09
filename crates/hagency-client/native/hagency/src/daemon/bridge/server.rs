@@ -5,7 +5,6 @@ use super::{
 };
 use crate::native_owner::*;
 #[cfg(feature = "resource-adoption")]
-use crate::operator_graphs::reader;
 use hagency_store::management as service;
 use serde_json::Value;
 use std::{
@@ -188,7 +187,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
     ) -> Result<Value, NativeError> {
@@ -204,7 +203,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
     ) -> Result<Value, Failure> {
@@ -220,7 +219,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
         receipt_recorded: &AtomicBool,
@@ -773,14 +772,6 @@ impl Bridge {
                 let (id,): (String,) = decode(arguments)?;
                 encode(manager.personal_agent_settings(id).await?)
             },
-            Operation::providers => deferred! {
-                let (): () = decode(arguments)?;
-                encode(manager.providers().await?)
-            },
-            Operation::enroll_resource => deferred! {
-                let (input,): (EnrollResource,) = decode(arguments)?;
-                encode(manager.enroll_resource(input).await?)
-            },
             Operation::tool_approvals => deferred! {
                 let (query,): (ToolApprovalQuery,) = decode(arguments)?;
                 encode(manager.tool_approvals(query).await?)
@@ -809,33 +800,9 @@ impl Bridge {
                 let (query,): (service::ResourceDetailQuery,) = decode(arguments)?;
                 encode(manager.resource_detail(query).await?)
             },
-            Operation::configure_resource => deferred! {
-                let (input,): (service::ConfigureResource,) = decode(arguments)?;
-                encode(manager.configure_resource(input).await?)
-            },
             Operation::publish_resource => deferred! {
                 let (input,): (service::PublishResource,) = decode(arguments)?;
                 encode(manager.publish_resource(input).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_archives => deferred! {
-                let (): () = decode(arguments)?;
-                encode(manager.graph_history_archives().await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_page => deferred! {
-                let (q,): (reader::GraphHistoryQuery,) = decode(arguments)?;
-                encode(manager.graph_history_page(q).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_detail => deferred! {
-                let (q,): (reader::GraphHistoryDetailQuery,) = decode(arguments)?;
-                encode(manager.graph_history_detail(q).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_node => deferred! {
-                let (q,): (reader::GraphHistoryNodeQuery,) = decode(arguments)?;
-                encode(manager.graph_history_node(q).await?)
             },
             Operation::central => deferred! {
                 let (command,): (ManagementCommand,) = decode(arguments)?;
@@ -1118,9 +1085,8 @@ async fn recover_native_receipt(journal: &Journal, request_id: &str, manager: &A
         let terminal=AtomicBool::new(false);
         let result = match decode(arguments.clone())? {
             super::project_setup::SetupOperation::Resume { project } => match journal.native_pin(request_id)? {
-                None => return Ok(None),
-                Some(Some(id)) => transport.retry_command_terminal(id,&terminal).await,
-                Some(None) => transport.resume_begin_pinned(project, |id| journal.pin_native(request_id,&id)).await,
+                Some(id) => transport.retry_command_terminal(id,&terminal).await,
+                None => transport.resume_begin_pinned(project, |id| journal.pin_native(request_id,&id)).await,
             },
             super::project_setup::SetupOperation::Retry { command } => transport.retry_command_terminal(command,&terminal).await,
             super::project_setup::SetupOperation::Acknowledge { command } => transport.acknowledge_failure(command).await,
@@ -1192,6 +1158,6 @@ mod receipt_matching_tests {
         assert_ne!(journal.pending_for("owner","rename").unwrap(),id);
         saved.command_id="different".into();assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
         saved.command_id="rename-1".into();saved.input["name"]=Value::String("other".into());assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
-        saved.input=args[0].clone();assert!(matching_intent_reply(Operation::configure_resource,&args,&saved).is_none());
+        saved.input=args[0].clone();assert!(matching_intent_reply(Operation::publish_resource,&args,&saved).is_none());
     }
 }

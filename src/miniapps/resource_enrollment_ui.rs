@@ -1,7 +1,6 @@
-//! One native confirmation surface for provider connection or resource enrollment.
+//! Native confirmation for account and resource management.
 use super::*;
 pub(super) enum ProviderReview {
-    Connect(crate::host::hagency::ProviderConsent),
     Retire(crate::host::hagency::retirement::RetirementConsent),
     Enroll(crate::host::hagency::enrollment::ResourceConsent),
     Edit(Box<resource_edit_ui::ResourceEditPrompt>),
@@ -10,17 +9,16 @@ pub(super) enum ProviderReview {
     Connection(Box<web_connections_ui::ConnectionPrompt>),
 }
 impl ProviderReview {
-    pub(super) fn account(&self)->&str {match self {Self::Connect(v)=>v.account(),Self::Retire(v)=>v.account(),Self::Enroll(v)=>v.account(),Self::Create(v)=>v.account(),Self::Edit(v)=>v.account(),Self::Personal(v)=>v.account(),Self::Connection(v)=>v.account()}}
-    pub(super) fn details(&self)->String {match self {Self::Connect(v)=>v.runtime_name().into(),Self::Retire(v)=>v.details(),Self::Enroll(v)=>v.details(),Self::Create(v)=>v.details(),Self::Edit(v)=>v.details(),Self::Personal(v)=>v.details(),Self::Connection(v)=>v.details()}}
-    pub(super) fn expired(&self)->bool {match self {Self::Connect(v)=>v.expired(),Self::Retire(v)=>v.expired(),Self::Enroll(v)=>v.expired(),Self::Create(v)=>v.expired(),Self::Edit(v)=>v.expired(),Self::Personal(v)=>v.expired(),Self::Connection(v)=>v.expired()}}
-    pub(super) fn cancelled(&self)->&'static str {match self {Self::Connect(_)=>"provider_connection_cancelled",Self::Retire(_)=>"account_retirement_cancelled",Self::Enroll(_)=>"resource_enrollment_cancelled",Self::Create(_)=>"resource_create_cancelled",Self::Edit(_)=>"resource_edit_cancelled",Self::Personal(_)=>"personal_configuration_cancelled",Self::Connection(_)=>"web_connection_cancelled"}}
+    pub(super) fn account(&self)->&str {match self {Self::Retire(v)=>v.account(),Self::Enroll(v)=>v.account(),Self::Create(v)=>v.account(),Self::Edit(v)=>v.account(),Self::Personal(v)=>v.account(),Self::Connection(v)=>v.account()}}
+    pub(super) fn details(&self)->String {match self {Self::Retire(v)=>v.details(),Self::Enroll(v)=>v.details(),Self::Create(v)=>v.details(),Self::Edit(v)=>v.details(),Self::Personal(v)=>v.details(),Self::Connection(v)=>v.details()}}
+    pub(super) fn expired(&self)->bool {match self {Self::Retire(v)=>v.expired(),Self::Enroll(v)=>v.expired(),Self::Create(v)=>v.expired(),Self::Edit(v)=>v.expired(),Self::Personal(v)=>v.expired(),Self::Connection(v)=>v.expired()}}
+    pub(super) fn cancelled(&self)->&'static str {match self {Self::Retire(_)=>"account_retirement_cancelled",Self::Enroll(_)=>"resource_enrollment_cancelled",Self::Create(_)=>"resource_create_cancelled",Self::Edit(_)=>"resource_edit_cancelled",Self::Personal(_)=>"personal_configuration_cancelled",Self::Connection(_)=>"web_connection_cancelled"}}
     pub(super) fn ready(&self)->bool {match self {Self::Create(v)=>v.ready(),Self::Edit(v)=>v.ready(),Self::Personal(v)=>v.ready(),Self::Connection(v)=>v.ready(),_=>!self.expired()}}
     pub(super) fn poll(&mut self)->bool {match self {Self::Create(v)=>v.poll(),Self::Edit(v)=>v.poll(),Self::Personal(v)=>v.poll(),Self::Connection(v)=>v.poll(),_=>false}}
     pub(super) fn words(&self)->(&'static str,&'static str,&'static str,&'static str){
         match self {
             Self::Personal(v)=>v.words(),
             Self::Connection(v)=>v.words(),
-            Self::Connect(_)=>("Connect a provider account","Use the provider account already signed in on this device for Hagency. Credentials stay on this device; the mini app receives connection status and model choices.","Changing the provider connection can stop this owner's running agents. Connecting does not start an agent or publish resources.","Connect account"),
             Self::Retire(_)=>("Retire this account space","Hagency will stop using this account space on this device. It must have no associated resources or sign-in in progress.","This cannot be undone here. Provider sign-out is not performed, and credentials are not deleted. Existing resources and agents are not removed.","Retire account space"),
             Self::Enroll(_)=>("Enroll this account’s resource","Hagency will verify this account and model again, then save an unpublished resource on this device. Credentials stay with Codex.","The monthly limit is your declaration, not a provider balance. Resources using the same provider account share one limit. Enrollment does not publish capacity or start an agent.","Enroll resource"),
             Self::Create(v) if v.recovering() => ("Recover saved configuration creation","This original request already created a configuration. Recover its recorded result without creating another.","The recorded result identifies the new resource. Open its details to see its current configuration.","Recover saved result"),
@@ -34,7 +32,7 @@ impl ProviderReview {
     /// family, which stays open while the change saves.
     pub(super) fn ceiling(&self)->Option<&resource_edit_ui::ResourceEditPrompt>{match self {Self::Edit(v) if v.amendment_requested()=>Some(v),_=>None}}
     pub(super) fn ceiling_mut(&mut self)->Option<&mut resource_edit_ui::ResourceEditPrompt>{match self {Self::Edit(v) if v.amendment_requested()=>Some(v),_=>None}}
-    pub(super) async fn accept(self)->Result<Value,String>{match self {Self::Connect(v)=>v.accept().await,Self::Retire(v)=>v.accept().await,Self::Enroll(v)=>v.accept().await,Self::Create(v)=>v.accept().await,Self::Edit(v)=>v.accept().await,Self::Personal(v)=>v.accept().await,Self::Connection(v)=>v.accept().await}}
+    pub(super) async fn accept(self)->Result<Value,String>{match self {Self::Retire(v)=>v.accept().await,Self::Enroll(v)=>v.accept().await,Self::Create(v)=>v.accept().await,Self::Edit(v)=>v.accept().await,Self::Personal(v)=>v.accept().await,Self::Connection(v)=>v.accept().await}}
 }
 #[cfg(test)]
 mod tests {

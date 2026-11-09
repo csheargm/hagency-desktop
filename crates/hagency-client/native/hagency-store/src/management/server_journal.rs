@@ -1,12 +1,7 @@
-//! Private receipts for a server-only account. Existing receipt-only profiles
-//! retain their original database and lock, without a resource writer or migration.
+//! Private current-operation receipts bound to one authenticated profile.
 use super::*;
 use std::path::Path;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
-mod existing;
-#[cfg(all(test, feature = "resource-adoption"))]
-#[path = "server_journal/existing_tests.rs"]
-mod existing_tests;
 
 const DEADLINE: Duration = Duration::from_secs(2);
 const SCHEMA: &str = concat!(
@@ -179,6 +174,7 @@ mod tests {
         );
         journal.shutdown().await.unwrap();
     }
+
 }
 
 #[derive(Clone)]
@@ -186,6 +182,7 @@ pub struct ServerManagementJournal {
     tx: mpsc::Sender<Job>,
     bytes: Arc<Semaphore>,
     owner: String,
+    profile: String,
 }
 
 impl ServerManagementJournal {
@@ -200,14 +197,6 @@ impl ServerManagementJournal {
         }
         palpo_hagency_contract::MatrixUserId::try_from(owner.to_owned())
             .map_err(|_| Error::LocalAuthority)?;
-        match directory.join("domain.sqlite3").symlink_metadata() {
-            Ok(_) => {
-                let (database, files) = existing::open(directory, profile)?;
-                return Self::start(database, Some(files), owner);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
         let mut database = crate::database::open(
             directory,
             crate::database::Schema {
@@ -252,16 +241,16 @@ impl ServerManagementJournal {
             tx.execute("INSERT INTO server_journal_identity VALUES(1,?1)", [owner])?;
         }
         tx.commit()?;
-        Self::start(database, None, owner)
+        Self::start(database, profile, owner)
     }
     fn start(
         mut database: crate::database::Database,
-        original: Option<existing::Files>,
+        profile: &str,
         owner: &str,
     ) -> Result<Self, Error> {
         database
             .connection
-            .authorizer(Some(super::archive_journal::authorize_sql))?;
+            .authorizer(Some(super::journal_sql::authorize_sql))?;
         let (tx, mut rx) = mpsc::channel::<Job>(8);
         std::thread::Builder::new()
             .name("hagency-server-journal".into())
@@ -272,10 +261,6 @@ impl ServerManagementJournal {
                             let authority = command.authority.clone();
                             let deadline = command.deadline;
                             let result = (|| {
-                                if let Some(files) = &original {
-                                    files.check()?;
-                                    existing::check_command(&command)?;
-                                }
                                 database.connection.progress_handler(
                                     1000,
                                     Some(move || {
@@ -286,22 +271,12 @@ impl ServerManagementJournal {
                                 database
                                     .connection
                                     .progress_handler(0, None::<fn() -> bool>)?;
-                                if result.is_ok()
-                                    && original
-                                        .as_ref()
-                                        .is_some_and(|files| files.check().is_err())
-                                {
-                                    return Err(Error::OutcomeUnknown);
-                                }
                                 result
                             })();
                             let _ = reply.send(result);
                         }
                         Job::Shutdown(reply) => {
                             drop(database);
-                            // Retained file identities include a clone of the
-                            // original lock. Release it before acknowledging.
-                            drop(original);
                             let _ = reply.send(());
                             return;
                         }
@@ -312,15 +287,17 @@ impl ServerManagementJournal {
             tx,
             bytes: Arc::new(Semaphore::new(8 * 1024 * 1024)),
             owner: owner.into(),
+            profile: profile.into(),
         })
     }
-    pub(super) fn owner(&self) -> &str {
+    pub(crate) fn profile(&self) -> &str { &self.profile }
+    pub(crate) fn owner(&self) -> &str {
         &self.owner
     }
     pub fn is_live(&self) -> bool {
         !self.tx.is_closed()
     }
-    pub(super) async fn command(
+    pub(crate) async fn command(
         &self,
         command: JournalCommand,
     ) -> Result<Vec<PendingIntent>, Error> {

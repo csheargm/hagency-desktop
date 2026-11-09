@@ -445,6 +445,16 @@ fn room_root(f: &common::Fixture) -> std::path::PathBuf {
         .join("accounts")
         .join(format!("agent-rooms-provision_{}", admitted_id(f)))
 }
+fn protected_custody_files(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| (entry.file_name(), std::fs::read(entry.path()).unwrap()))
+        .collect()
+}
 async fn finish(f: common::Fixture, fake: common::Fake, c: Collector) {
     observed_account(&f, &c)
         .close_enrollment_sdk()
@@ -758,10 +768,16 @@ async fn native_provisioning_inline_rooms_replay() {
         Err(Error::Conflict)
     ));
     assert_eq!(fake.requests(), before);
-    let protected = std::fs::read(room_root(&f).join("complete")).unwrap();
-    {
+    let protected = protected_custody_files(&room_root(&f));
+    for owner_phase in [false, true] {
         let cancel = CancellationToken::new();
-        let replay = account.create_agent_rooms(REP_TOKEN, &cancel);
+        let replay = async {
+            if owner_phase {
+                account.invite_owner(REP_TOKEN, &cancel).await
+            } else {
+                account.create_agent_rooms(REP_TOKEN, &cancel).await
+            }
+        };
         tokio::pin!(replay);
         loop {
             tokio::select! {result=&mut replay=>{result.unwrap();break;},request=fake.next()=>{
@@ -769,15 +785,53 @@ async fn native_provisioning_inline_rooms_replay() {
             }}
         }
     }
-    assert_eq!(
-        std::fs::read(room_root(&f).join("complete")).unwrap(),
-        protected
-    );
+    assert_eq!(protected_custody_files(&room_root(&f)), protected);
     // ADR-184: createRoom, project invite, project join, owner invite.
     assert_eq!(server.posts, 4);
     assert_eq!(server.peer.writes.len(), 5);
     assert_account_only(&f, &c);
     finish(f, fake, c).await;
+}
+#[tokio::test]
+async fn native_provisioning_inline_rooms_retired_custody_refused_without_rewrite() {
+    for owner_phase in [false, true] {
+        let mut server = Server::new().await;
+        let (f, mut fake, c) = ready_inline_plan(Some((
+            REP_TOKEN,
+            vec![(OWNER.into(), server.peer.anchor())],
+        )))
+        .await;
+        drive(&f, &mut fake, &c, &mut server, true, |_, _| {})
+            .await
+            .unwrap();
+        let root = room_root(&f);
+        // Retain the original seven encrypted stages and their identity/key.
+        // They cannot substitute for the current enrollment/invitation order.
+        for stage in ["agent-rooms", "owner-invite-possible", "owner-invite-response"] {
+            std::fs::remove_file(root.join(stage)).unwrap();
+        }
+        let protected = protected_custody_files(&root);
+        assert_eq!(protected.len(), 10); // Seven stages, binding, key and lock.
+        let identity = protected_custody_files(&account_root(&f));
+        let before = fake.requests();
+        let account = observed_account(&f, &c);
+        for _ in 0..2 {
+            let cancel = CancellationToken::new();
+            let result = if owner_phase {
+                account.invite_owner(REP_TOKEN, &cancel).await
+            } else {
+                account.create_agent_rooms(REP_TOKEN, &cancel).await
+            };
+            assert_eq!(result, Err(Error::Storage));
+            assert_eq!(fake.requests(), before);
+            assert_eq!(protected_custody_files(&root), protected);
+            assert_eq!(protected_custody_files(&account_root(&f)), identity);
+            assert_eq!(account.created_agent_dm().unwrap().as_deref(), Some(DM));
+        }
+        assert_eq!(server.posts, 4);
+        assert_eq!(server.peer.writes.len(), 5);
+        finish(f, fake, c).await;
+    }
 }
 #[tokio::test]
 async fn native_provisioning_inline_rooms_custody() {

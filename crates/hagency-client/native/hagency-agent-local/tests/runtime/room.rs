@@ -6,13 +6,30 @@ use hagency_runtime::room_tools::{RoomTools, RoomOperation};
 async fn claude_slow_room_operation_returns_an_error_before_native_callback_expires() {
     let mut f = Fixture::new(Kind::Claude, "room_timeout", ToolPolicy::Deny);
     let mut process = f.process().await;
-    process.session.enable_room_tools(RoomTools::history_and_files()).await.unwrap();
-    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    process
+        .session
+        .enable_room_tools(RoomTools::history_and_files())
+        .await
+        .unwrap();
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
     let (queue, _) = codex::approval_queue(1).unwrap();
     let (room, mut requests) = room_queue(&f.scope, "dispatch").unwrap();
     let queue = queue.with_room_tools(room);
-    let run = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope, "call",
-        "dispatch", "Read slow history", BudgetMode::Postpaid, &queue, None);
+    let run = process.session.run_with_started(
+        &mut f.ledger,
+        "@owner:test",
+        &f.scope,
+        "call",
+        "dispatch",
+        "Read slow history",
+        BudgetMode::Postpaid,
+        &queue,
+        None,
+    );
     let host = async {
         let mut request = requests.recv().await.unwrap();
         tokio::time::pause();
@@ -149,6 +166,9 @@ async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() 
             "\"input\": {\"cursor\": None}",
         );
     let model_source = model_source
+        .replace(r#""cache_read_input_tokens": 0, "cache_creation_input_tokens": 0"#,
+            r#""cache_read_input_tokens": 3, "cache_creation_input_tokens": 7, "cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":2}, "output_tokens_details":{"thinking_tokens":4}"#)
+        .replace(r#""usage":{"output_tokens":9}"#, r#""usage":{"output_tokens":9,"output_tokens_details":{"thinking_tokens":4}}"#)
         .replace("        results = [block", "        messages = data.get('messages', [])\n        (root / 'native-context.json').write_text(json.dumps(messages))\n        turn = max((i for i, message in enumerate(messages) if message.get('role') == 'user' and 'Read room history round' in json.dumps(message)), default=0)\n        data['messages'] = messages[turn:]\n        results = [block")
         .replace("\"question-native\"", "f\"question-native-{turn}\"")
         .replace("\"msg_question\" if asking else \"msg_done\"", "f\"msg_{turn}_{asking}\"");
@@ -194,14 +214,33 @@ async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() 
         .unwrap();
     for round in 0..4 {
         if round == 1 || round == 3 {
-            process.session.continue_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+            process
+                .session
+                .continue_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
         } else if round == 2 {
             process.stop().await.unwrap();
-            process = spawn_for_scope_with_guardian(&f.profile, &f.reference,
-                &mut f.ledger, &f.scope, Some(guardian)).await.unwrap();
+            process = spawn_for_scope_with_guardian(
+                &f.profile,
+                &f.reference,
+                &mut f.ledger,
+                &f.scope,
+                Some(guardian),
+            )
+            .await
+            .unwrap();
             process.session.initialize().await.unwrap();
-            process.session.enable_room_tools(RoomTools::history_and_files()).await.unwrap();
-            process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+            process
+                .session
+                .enable_room_tools(RoomTools::history_and_files())
+                .await
+                .unwrap();
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
         }
         let dispatch = format!("room-round-{round}");
         let (queue, mut approvals) = codex::approval_queue(1).unwrap();
@@ -235,11 +274,23 @@ async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() 
         let done = done.unwrap();
         assert_eq!(done.text, "Offline native question completed.");
         assert!(done.usage.is_reported());
-        assert_eq!((done.usage.input, done.usage.output, done.usage.cached_input), (34, 18, 0), "round {round}");
-        assert_eq!(f.spent(), (52 * (round + 1), 0), "round {round}");
+        assert_eq!(
+            (done.usage.input, done.usage.output, done.usage.cached_input),
+            (54, 18, 6),
+            "round {round}"
+        );
+        assert_eq!(done.usage.cache_write_input, Some(14));
+        assert_eq!(
+            done.usage.reasoning_output, 0,
+            "thinking remains inside native output total"
+        );
+        assert_eq!(f.spent(), (72 * (round + 1), 0), "round {round}");
         let context = fs::read_to_string(f.path("native-context.json")).unwrap();
         for previous in 0..=round {
-            assert!(context.contains(&format!("Read room history round {previous}")), "native context lost round {previous} after round {round}");
+            assert!(
+                context.contains(&format!("Read room history round {previous}")),
+                "native context lost round {previous} after round {round}"
+            );
         }
         assert!(process.session.can_continue());
         assert!(approvals.try_recv().is_err());

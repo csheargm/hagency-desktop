@@ -34,7 +34,7 @@ Implemented so far:
   updates received while the menu is open, and survive restart.
 - Incoming/outgoing native image templates use bounded widths and heights;
   Matrix-loaded avatars work in Chats, Contacts, profiles and Me.
-- Absolute `ROBRIX_DATA_DIR` override for an isolated native test profile and cache.
+- Absolute `HAGENCY_DESKTOP_DATA_DIR` override for an isolated native test profile and cache.
 
 The native probe is intentionally strict: first-open blank pages, script errors,
 and messages that fail to reach a Matrix recipient fail the run. Debug captures

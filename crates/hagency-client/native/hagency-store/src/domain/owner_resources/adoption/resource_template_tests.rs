@@ -15,8 +15,8 @@ fn context(f: &Fixture, epoch: u64) -> HostContext {
     )
     .unwrap()
 }
-fn session(b: &AdoptedManagementStore, c: &HostContext) -> Session {
-    Session::new_adopted(
+fn session(b: &CurrentManagementStore, c: &HostContext) -> Session {
+    Session::new_current(
         b.clone(),
         c.clone(),
         [
@@ -152,17 +152,7 @@ async fn template_original_receipt_survives_update_delete_and_registry_restart()
     drop(b);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal = crate::management::PrivateManagementJournal::open_existing(
-        &f.source,
-        transfer.archive_binding().unwrap(),
-    )
-    .unwrap();
-    let b = transfer.adopted_management(journal).await.unwrap();
+    let b = current_backing(&f).await;
     let s = session(&b, &context(&f, 2));
     assert_eq!(
         s.apply_resource_template(&context(&f, 2), original)
@@ -292,7 +282,7 @@ async fn template_receipt_failure_and_queued_retirement_rollback_all_rows() {
 }
 
 #[tokio::test]
-async fn template_exact_grants_account_switch_bounded_pages_and_legacy_refusal() {
+async fn template_exact_grants_account_switch_bounded_pages_and_uninitialized_refusal() {
     let f = fixture().await;
     let b = resource_name_tests::active(&f).await;
     let c = context(&f, 1);
@@ -302,7 +292,7 @@ async fn template_exact_grants_account_switch_bounded_pages_and_legacy_refusal()
         vec![Permission::ReadResources],
         vec![Permission::ManageResourceTemplates],
     ] {
-        let denied = Session::new_adopted(
+        let denied = Session::new_current(
             b.clone(),
             c.clone(),
             rights,
@@ -314,7 +304,7 @@ async fn template_exact_grants_account_switch_bounded_pages_and_legacy_refusal()
             Err(Error::LocalAuthority)
         ));
     }
-    let read = Session::new_adopted(
+    let read = Session::new_current(
         b.clone(),
         c.clone(),
         [Permission::ReadResourceTemplates],
@@ -370,30 +360,12 @@ async fn template_exact_grants_account_switch_bounded_pages_and_legacy_refusal()
         Err(Error::Capacity)
     ));
     assert_eq!(counts(&f).await, (200, 0));
-    let legacy_dir = tempfile::tempdir().unwrap();
-    let legacy = crate::DomainStore::start(
-        DomainRepository::open_managed(&legacy_dir.path().join("legacy"), &f.profile.digest)
-            .unwrap(),
-        8,
-    )
-    .unwrap();
-    let legacy_session = Session::new(
-        legacy.clone(),
-        c.clone(),
-        [
-            Permission::ReadResourceTemplates,
-            Permission::ManageResourceTemplates,
-        ],
-        Instant::now() + Duration::from_secs(30),
-    )
-    .unwrap();
-    assert!(matches!(
-        legacy_session
-            .resource_templates(&c, f.resource.id(), None)
-            .await,
-        Err(Error::LocalAuthority)
-    ));
-    legacy.shutdown().await.unwrap();
+    let server_dir = tempfile::tempdir().unwrap();
+    let journal = crate::management::ServerManagementJournal::open(&server_dir.path().join("server"), &f.profile.digest, &f.profile.account).unwrap();
+    let server_session = Session::new_server(journal.clone(),c.clone(),
+        [Permission::ReadResourceTemplates,Permission::ManageResourceTemplates],Instant::now()+Duration::from_secs(30)).unwrap();
+    assert!(matches!(server_session.resource_templates(&c,f.resource.id(),None).await,Err(Error::ResourceSetupRequired)));
+    journal.shutdown().await.unwrap();
     b.shutdown().await.unwrap();
     f.registry.shutdown().await.unwrap();
 }
@@ -458,7 +430,7 @@ async fn template_cancel_races_on_original_receipt_without_replaying_or_mutating
     }
     assert_eq!(counts(&f).await, (1, 3));
     // Reading templates is not authority to withdraw a change.
-    let denied = Session::new_adopted(
+    let denied = Session::new_current(
         b.clone(),
         c.clone(),
         [Permission::ReadResourceTemplates],
@@ -467,27 +439,5 @@ async fn template_cancel_races_on_original_receipt_without_replaying_or_mutating
     .unwrap();
     assert!(denied.cancel_resource_template(&c, original).await.is_err());
     b.shutdown().await.unwrap();
-    f.registry.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn original_source_templates_are_not_silently_adopted() {
-    let f = fixture().await;
-    let db = Connection::open(f.source.join("domain.sqlite3")).unwrap();
-    db.execute(
-        "INSERT INTO agent_definitions VALUES('original',?1,'original_name','coding',1,1)",
-        [f.resource.id()],
-    )
-    .unwrap();
-    assert!(matches!(inventory(&f), Err(Error::Quarantined)));
-    assert_eq!(
-        db.query_row(
-            "SELECT name FROM agent_definitions WHERE id='original'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "original_name"
-    );
     f.registry.shutdown().await.unwrap();
 }

@@ -3,12 +3,7 @@ use super::*;
 pub(super) async fn input(a: &Active, w: &SharedWorkItem, version: u16) -> SharedPreparedInput {
     let c = SharedThreadContext {
         version,
-        input_profile: if version == 3 {
-            INPUT_PROFILE_V3
-        } else {
-            INPUT_PROFILE_V1
-        }
-        .into(),
+        input_profile: INPUT_PROFILE_V3.into(),
         work_id: w.id.clone(),
         work_digest: digest(w),
         assignment_id: w.assignment_id.clone(),
@@ -20,14 +15,8 @@ pub(super) async fn input(a: &Active, w: &SharedWorkItem, version: u16) -> Share
         event_id: w.event_id.clone(),
         received_at_ms: w.created_at_ms,
         context_ordinal: 1,
-        coverage: if version == 3 {
-            COVERAGE_NATIVE_HISTORY
-        } else {
-            COVERAGE_PRIOR_DELIVERED_PAIRS
-        }
-        .into(),
-        omitted_earlier: version == 3,
-        budget: None,
+        coverage: COVERAGE_NATIVE_HISTORY.into(),
+        omitted_earlier: true,
         history: vec![],
     };
     let record = SharedContextRecord {
@@ -55,7 +44,7 @@ pub(super) async fn input(a: &Active, w: &SharedWorkItem, version: u16) -> Share
 
 #[tokio::test]
 #[ignore = "requires original offline Codex processes, SQLite registry and frozen context pins"]
-async fn shared_native_session_plaintext_v3_restores_across_restart_but_legacy_input_stays_fresh() {
+async fn shared_native_session_plaintext_v3_restores_across_restart() {
     let mut a = Box::pin(active_mode(false, "text-native-session")).await;
     let first = turn_mode(
         &mut a,
@@ -89,17 +78,5 @@ async fn shared_native_session_plaintext_v3_restores_across_restart_but_legacy_i
     assert_ne!(first.call_id, follow.call_id);
     assert_ne!(first.process_digest, follow.process_digest);
     assert_eq!(follow.known_consumed_tokens, 11);
-    a = advance(a).await;
-    let legacy = turn_mode(
-        &mut a,
-        "legacy_plain",
-        "An already frozen legacy input",
-        false,
-        false,
-        false,
-        1,
-    )
-    .await;
-    assert_eq!(legacy.body.as_deref(), Some("Previous native inputs: "));
     a.stop().await;
 }

@@ -39,7 +39,7 @@ assert(calls[0].args.id=="task_a" && calls[1].args.id=="task_b" && calls[2].args
 assert(H.command==original)
 '''
  CASES['adopted_unavailable_has_no_fake_empty_board_or_editor']='''
-H.page="operator_tasks" H.task_page={supported:false reason:"task_history_not_migrated" tasks:[] nextOffset:nil}
+H.page="operator_tasks" H.task_page={supported:false reason:"current_task_proof_required" tasks:[] nextOffset:nil}
 let edits=[] let visit=fn(node){if !node.is_object(){return} for i key child in node{if key.to_string()=="task_open" || key.to_string()=="task_apply" || key.to_string()=="task_status"{edits.push(child)} visit(child)}}
 let root=View{'''+section+'''} visit(root)
 assert(edits.len()==0 && calls.len()==0 && H.command==original)

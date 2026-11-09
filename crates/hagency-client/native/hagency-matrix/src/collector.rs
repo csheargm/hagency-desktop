@@ -924,7 +924,6 @@ impl Inner {
         let mut invite_only = false;
         let mut encrypted = false;
         let mut ts_binding = None;
-        let mut legacy_binding = None;
         let mut facts = RoomAuthorityFacts::default();
         for event in events {
             let kind = event
@@ -1019,30 +1018,15 @@ impl Inner {
                     // Palpo also writes one under the empty key when it
                     // creates a project or approval room; TS never reads that
                     // tuple, so neither does the collector (not a refusal).
-                    if !key.is_empty() => {
+                    if !key.is_empty() && content.get("fleetId").and_then(Value::as_str) == Some(key) => {
                         ts_binding = Some(Value::Object(content.clone()));
-                    }
-                // Board #95: rooms bound by EARLIER Rust builds carry the
-                // legacy `com.hagency.project.binding.v1` under the empty
-                // state key. Read it too so such a room keeps working after
-                // the upgrade. The TS event is authoritative when present
-                // (chosen after the loop); the legacy event is carried only
-                // as a fall-back, and the field match the board requires
-                // (`fleetId`/`projectId`/`ownerMxid`/`v`/`purpose`/
-                // `authVersion`) is enforced by the existing `verify_request`
-                // gate downstream — a legacy binding naming a foreign fleet is
-                // refused there with exactly today's error. Native never
-                // writes this event again (no writer exists).
-                "com.hagency.project.binding.v1"
-                    if key.is_empty() => {
-                        legacy_binding = Some(Value::Object(content.clone()));
                     }
                 _ => {}
             }
         }
-        // Board #95: the TS event wins whenever it is present; the legacy
-        // event is only a fall-back for rooms an earlier Rust build bound.
-        facts.binding = ts_binding.or(legacy_binding);
+        // Only the current fleet-keyed administrative binding can establish
+        // project authority; unknown/retired event types are never aliases.
+        facts.binding = ts_binding;
         let t = &self.config.identity.transport;
         let observation = MatrixRoomObservation {
             engagement_id: t.engagement_id.clone(),

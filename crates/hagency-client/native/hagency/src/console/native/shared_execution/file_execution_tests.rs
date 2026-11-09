@@ -36,7 +36,6 @@ async fn native_shared_chat_files_cross_standard_yolo_successor_and_budget_runs(
         let work = {
             let mut s = f.state.lock().unwrap();
             s.shared.contexts.active = plaintext;
-            s.shared.contexts.v2 = plaintext;
             s.shared.contexts.v3 = plaintext;
             let w = s.shared.work.as_mut().unwrap();
             w.encrypted = !plaintext;

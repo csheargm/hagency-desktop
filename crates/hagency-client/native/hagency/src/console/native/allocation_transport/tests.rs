@@ -415,10 +415,7 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             }
                             #[cfg(feature="shared-budget-execution")]
                             caps.push("shared-budget-execution-v1");
-                            #[cfg(feature="shared-context")]
-                            if managed_agents::shared::context_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v1");}
-                            #[cfg(feature="shared-context")]
-                            if managed_agents::shared::context_v2_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v2");}
+                            #[cfg(feature = "shared-execution")]
                             if managed_agents::shared::context_v3_enabled(&state.lock().unwrap()){caps.push("shared-native-context-v3");}
                             json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,"capabilities":caps,"homeserver":origin,"issuer":issuer})
                         }
@@ -596,6 +593,22 @@ impl Fixture {
         let registry =
             OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
         let scope = transport.scope(Permission::PublishGrants).await.unwrap();
+        // Use the same canonical initializer as a fresh current account. The
+        // fixture never constructs a writable profile-domain management session.
+        let mut setup_package=package(90);
+        setup_package.permissions.push(Permission::ReadResources);
+        let setup=owner.management(setup_package).await.unwrap();
+        let journal=setup.current_setup_journal().await.unwrap();
+        let profile=crate::console::owned_agents::profile_identity(scope.device.origin(),scope.device.issuer(),scope.device.subject(),scope.device.owner_mxid()).unwrap();
+        let authority=hagency_store::owner_resources::adoption::ProfileInitializationAuthority::new(registry.clone(),scope.profile.clone(),scope.deadline,||true).unwrap();
+        registry.initialize_current_profile(authority,"current_fixture".into(),journal).await.unwrap();
+        let selection=super::super::CurrentProfileSelection::completed(&owner,registry.clone(),"current_fixture".into(),profile,scope.device.device_id().into());
+        selection.persist(&owner).unwrap();
+        drop(scope);drop(setup);drop(transport);
+        owner.suspend().await.unwrap();drop(owner);
+        let owner=selection.open_with_matrix_guarded(&root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone())),|_|Ok(())).await.unwrap();
+        let transport=AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        let scope=transport.scope(Permission::PublishGrants).await.unwrap();
         let claude = provider == hagency_runtime::claude::account::PROVIDER;
         let resource = registry
             .prepare_enrollment(
@@ -666,6 +679,25 @@ impl Fixture {
             task,
             current,
         }
+    }
+    async fn reopen(self) -> Self {
+        let Self { _root, owner, transport, registry, state, task, current } = self;
+        let path = _root.path().join("host");
+        let origin = owner.0.expected_origin.clone();
+        owner.suspend().await.unwrap();
+        registry.shutdown().await.unwrap();
+        drop(transport);
+        drop(owner);
+        drop(registry);
+        let registry = OwnerResourceRegistry::isolated_for_tests(&_root.path().join("registry")).unwrap();
+        let selection = crate::native_owner::CurrentProfileSelection::load_for_isolated_tests(
+            &path, &origin, "@owner:test", registry.clone(),
+        ).unwrap().unwrap();
+        let owner = selection.open_with_matrix_guarded(
+            &path, &origin, "@owner:test", Arc::new(Source(current.clone())), |_| Ok(()),
+        ).await.unwrap();
+        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        Self { _root, owner, transport, registry, state, task, current }
     }
     fn allocation(&self) -> AllocationCommand {
         let grant = self.state.lock().unwrap().grant.clone().unwrap();
@@ -998,11 +1030,8 @@ async fn native_allocation_transport_committed_child_survives_restart_and_parent
         .unwrap()
         .unwrap();
     assert_eq!(receipt.state, "reserved");
-    f.registry.shutdown().await.unwrap();
-    f.registry =
-        OwnerResourceRegistry::isolated_for_tests(&f._root.path().join("registry")).unwrap();
-    f.transport.manager.retire();
-    f.transport = AllocationTransport::new(f.owner.management(package(2)).await.unwrap());
+    drop(scope);
+    f = f.reopen().await;
     let result = f
         .transport
         .recover_allocation(&f.registry, command.command_id.clone(), command_digest)

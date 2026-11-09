@@ -270,6 +270,12 @@ impl<R, W, E> Wire<R, W, E> {
     pub fn has_buffered_input(&self) -> bool {
         !self.queue.is_empty() || self.start < self.end || self.decoder.buffered_bytes() != 0
     }
+    pub fn ignored_frames(&self) -> u64 {
+        self.decoder.ignored_frames()
+    }
+    pub fn ignored_metadata(&mut self) {
+        self.decoder.ignored_metadata();
+    }
     fn now_ms(&self) -> u64 {
         Instant::now()
             .duration_since(self.origin)

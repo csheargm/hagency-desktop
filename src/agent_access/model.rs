@@ -145,7 +145,6 @@ impl AgentAccessSettings {
         self.bot_settings
             .room_bindings
             .dedup_by(|a, b| a.room_id == b.room_id && a.bot_user_id == b.bot_user_id);
-        self.seed_agent_registry_from_known_bots();
     }
 
     /// Returns `true` if a new DM room with `target_user_id` should be encrypted.
@@ -166,49 +165,21 @@ impl AgentAccessSettings {
         log!(
             "DM encryption decision for {target_user_id}: encrypted={encrypted} \
             (registered_agent={is_agent}, identified_bot={is_bot}, \
-            agents={}, known_bots={}, bound_bots={}, botfather={:?})",
+            agents={}, bound_bots={}, botfather={:?})",
             self.agent_registry.len(),
-            self.bot_settings.known_bot_user_ids.len(),
             self.bot_settings.room_bindings.len(),
             self.bot_settings.resolved_bot_user_id(current_user_id).ok(),
         );
         encrypted
     }
 
-    /// Migration: if the agent registry is empty, seed it from the legacy
-    /// per-account known-bot list so upgraded users keep bot identification.
-    ///
-    /// Existing registry entries are never overwritten, and the legacy
-    /// `known_bot_user_ids` list is left intact (other flows still rely on it).
-    pub fn seed_agent_registry_from_known_bots(&mut self) {
-        self.bot_settings.prune_malformed_known_bot_user_ids();
-        if self.agent_registry.is_empty() {
-            for bot_user_id in self.bot_settings.known_bot_user_ids() {
-                self.agent_registry.register(
-                    bot_user_id,
-                    AgentEntry {
-                        framework: AgentFramework::Unknown,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-
-    /// Removes an AgentLab registration and the bot identity state that was
-    /// derived from that registration.
-    ///
-    /// Octos registration writes the same MXID into several legacy app-service
-    /// fields so slash commands and room binding keep working. Unbind must clear
-    /// those fields too, otherwise list/member bot markers keep rendering from
-    /// stale `known_bot_user_ids`, room bindings, or the configured BotFather ID.
+    /// Removes an explicit registration and its configured AppService bindings.
     pub fn unregister_agent_and_clear_bot_identity(
         &mut self,
         user_id: &UserId,
         current_user_id: Option<&UserId>,
     ) -> bool {
         let removed_agent = self.agent_registry.unregister(user_id);
-        let removed_known_bot = self.bot_settings.remove_known_bot_user_id(user_id);
         let removed_room_bindings = self
             .bot_settings
             .remove_room_bindings_where(|_, bot_user_id| bot_user_id == user_id);
@@ -216,7 +187,7 @@ impl AgentAccessSettings {
             .bot_settings
             .clear_configured_bot_if_matches(user_id, current_user_id);
 
-        removed_agent || removed_known_bot || removed_room_bindings > 0 || cleared_configured_bot
+        removed_agent || removed_room_bindings > 0 || cleared_configured_bot
     }
 }
 
@@ -230,8 +201,6 @@ pub struct BotSettingsState {
     pub botfather_user_id: String,
     /// The Octos service base URL used for health checks.
     pub octos_service_url: String,
-    /// Bots discovered from BotFather `/listbots` replies.
-    pub known_bot_user_ids: Vec<OwnedUserId>,
     /// Rooms that Robrix currently considers bot-bound,
     /// paired with the exact bot MXID used for that room.
     pub room_bindings: Vec<RoomBotBindingState>,
@@ -252,7 +221,6 @@ impl Default for BotSettingsState {
             enabled: false,
             botfather_user_id: Self::DEFAULT_BOTFATHER_LOCALPART.to_string(),
             octos_service_url: Self::DEFAULT_OCTOS_SERVICE_URL.to_string(),
-            known_bot_user_ids: Vec::new(),
             room_bindings: Vec::new(),
         }
     }
@@ -261,30 +229,6 @@ impl Default for BotSettingsState {
 impl BotSettingsState {
     pub const DEFAULT_BOTFATHER_LOCALPART: &'static str = "bot";
     pub const DEFAULT_OCTOS_SERVICE_URL: &'static str = "http://127.0.0.1:8010";
-
-    fn is_numeric_host_fragment(value: &str) -> bool {
-        value.contains('.') && value.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
-    }
-
-    fn is_port_only_server_name(value: &str) -> bool {
-        !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
-    }
-
-    pub(crate) fn is_valid_known_bot_user_id(bot_user_id: &UserId) -> bool {
-        let localpart = bot_user_id.localpart();
-        if localpart.is_empty() || Self::is_numeric_host_fragment(localpart) {
-            return false;
-        }
-
-        !Self::is_port_only_server_name(bot_user_id.server_name().as_str())
-    }
-
-    fn prune_malformed_known_bot_user_ids(&mut self) -> bool {
-        let original_len = self.known_bot_user_ids.len();
-        self.known_bot_user_ids
-            .retain(|bot_user_id| Self::is_valid_known_bot_user_id(bot_user_id.as_ref()));
-        original_len != self.known_bot_user_ids.len()
-    }
 
     pub fn resolved_octos_service_url(&self) -> &str {
         let raw = self.octos_service_url.trim();
@@ -402,48 +346,6 @@ impl BotSettingsState {
         all_bots
     }
 
-    /// Returns bot MXIDs discovered from BotFather `/listbots` replies.
-    pub fn known_bot_user_ids(&self) -> Vec<OwnedUserId> {
-        self.known_bot_user_ids.clone()
-    }
-
-    /// Merges the given discovered bot IDs into the known bot list.
-    ///
-    /// Returns `true` if the list changed.
-    pub fn record_known_bot_user_ids(
-        &mut self,
-        discovered_bot_user_ids: impl IntoIterator<Item = OwnedUserId>,
-    ) -> bool {
-        let mut changed = self.prune_malformed_known_bot_user_ids();
-        for bot_user_id in discovered_bot_user_ids {
-            if !Self::is_valid_known_bot_user_id(bot_user_id.as_ref()) {
-                continue;
-            }
-            if !self
-                .known_bot_user_ids
-                .iter()
-                .any(|existing| existing.as_str() == bot_user_id.as_str())
-            {
-                self.known_bot_user_ids.push(bot_user_id);
-                changed = true;
-            }
-        }
-        if changed {
-            self.known_bot_user_ids
-                .sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
-            self.known_bot_user_ids
-                .dedup_by(|lhs, rhs| lhs.as_str() == rhs.as_str());
-        }
-        changed
-    }
-
-    pub fn remove_known_bot_user_id(&mut self, bot_user_id: &UserId) -> bool {
-        let original_len = self.known_bot_user_ids.len();
-        self.known_bot_user_ids
-            .retain(|known_bot_user_id| known_bot_user_id.as_str() != bot_user_id.as_str());
-        original_len != self.known_bot_user_ids.len()
-    }
-
     pub fn clear_configured_bot_if_matches(
         &mut self,
         bot_user_id: &UserId,
@@ -502,38 +404,6 @@ impl BotSettingsState {
                     .retain(|binding| binding.room_id != room_id);
             }
         }
-    }
-
-    /// Auto-binds a DM room when it targets the configured app-service bot or a known bot.
-    ///
-    /// Returns `true` if a bot binding should exist for this room/target pair.
-    pub fn bind_dm_target_if_needed(
-        &mut self,
-        room_id: OwnedRoomId,
-        target_user_id: &UserId,
-        current_user_id: Option<&UserId>,
-    ) -> bool {
-        if !self.enabled {
-            return false;
-        }
-
-        let matches_configured_bot =
-            self.resolved_bot_user_id(current_user_id)
-                .ok()
-                .is_some_and(|configured_bot_user_id| {
-                    configured_bot_user_id.as_str() == target_user_id.as_str()
-                });
-        let matches_known_bot = self
-            .known_bot_user_ids
-            .iter()
-            .any(|known_bot_user_id| known_bot_user_id.as_str() == target_user_id.as_str());
-
-        if !(matches_configured_bot || matches_known_bot) {
-            return false;
-        }
-
-        self.set_room_bound(room_id, Some(target_user_id.to_owned()), true);
-        true
     }
 
     /// Updates the remark for a specific room bot binding.
@@ -615,8 +485,7 @@ impl BotSettingsState {
     }
 
     /// Returns `true` if the target user is a positively identified bot:
-    /// the resolved BotFather MXID, a bot discovered via `/listbots`, or a
-    /// bot MXID bound to some room.
+    /// the configured BotFather MXID or a bot explicitly bound to a room.
     pub fn is_identified_bot(
         &self,
         target_user_id: &UserId,
@@ -626,13 +495,6 @@ impl BotSettingsState {
             && self
                 .resolved_bot_user_id(current_user_id)
                 .is_ok_and(|bot_user_id| bot_user_id.as_str() == target_user_id.as_str())
-        {
-            return true;
-        }
-        if self
-            .known_bot_user_ids
-            .iter()
-            .any(|bot_user_id| bot_user_id.as_str() == target_user_id.as_str())
         {
             return true;
         }
@@ -661,6 +523,69 @@ impl BotSettingsState {
 mod tests {
     use super::*;
     #[test]
+    fn retired_bot_list_never_registers_an_agent_or_disables_dm_encryption() {
+        let original = serde_json::json!({
+            "bot_settings": {"known_bot_user_ids": ["@retired:example.test"]}
+        });
+        let mut settings: AgentAccessSettings = serde_json::from_value(original.clone()).unwrap();
+        settings.normalize();
+        let retired = matrix_sdk::ruma::user_id!("@retired:example.test");
+        assert!(settings.agent_registry.is_empty());
+        assert!(!settings.bot_settings.is_identified_bot(retired, None));
+        assert!(settings.should_create_encrypted_dm(retired, None));
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved["bot_settings"].get("known_bot_user_ids").is_none());
+        assert_eq!(
+            original["bot_settings"]["known_bot_user_ids"][0],
+            retired.as_str()
+        );
+    }
+
+    #[test]
+    fn current_registration_and_binding_survive_a_retired_extra_field() {
+        let mut settings: AgentAccessSettings = serde_json::from_value(serde_json::json!({
+            "agent_registry": {
+                "@current:example.test": {
+                    "display_name": "Current agent", "framework": "OctosDirect"
+                }
+            },
+            "bot_settings": {
+                "known_bot_user_ids": ["@retired:example.test"],
+                "room_bindings": [{
+                    "room_id": "!room:example.test",
+                    "bot_user_id": "@current:example.test",
+                    "remark": "Explicitly configured"
+                }]
+            }
+        }))
+        .unwrap();
+        settings.normalize();
+        let current = matrix_sdk::ruma::user_id!("@current:example.test");
+        let retired = matrix_sdk::ruma::user_id!("@retired:example.test");
+        let room = matrix_sdk::ruma::room_id!("!room:example.test");
+        assert_eq!(settings.agent_registry.len(), 1);
+        let entry = settings.agent_registry.get(current).unwrap();
+        assert_eq!(entry.display_name.as_deref(), Some("Current agent"));
+        assert_eq!(entry.framework, AgentFramework::OctosDirect);
+        assert_eq!(settings.bot_settings.bound_bot_user_id(room), Some(current));
+        assert_eq!(
+            settings.bot_settings.room_bindings[0].remark,
+            "Explicitly configured"
+        );
+        assert!(!settings.should_create_encrypted_dm(current, None));
+        assert!(settings.should_create_encrypted_dm(retired, None));
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved["bot_settings"].get("known_bot_user_ids").is_none());
+        assert_eq!(
+            serde_json::from_value::<AgentAccessSettings>(saved).unwrap(),
+            settings
+        );
+        assert!(settings.unregister_agent_and_clear_bot_identity(current, None));
+        assert!(settings.agent_registry.is_empty());
+        assert!(!settings.bot_settings.is_room_bound(room));
+    }
+
+    #[test]
     fn restored_bindings_are_normalized_before_binary_search() {
         let mut settings = AgentAccessSettings::default();
         for id in ["!z:test", "!a:test", "!z:test"] {
@@ -675,11 +600,9 @@ mod tests {
         }
         settings.normalize();
         assert_eq!(settings.bot_settings.room_bindings.len(), 2);
-        assert!(
-            settings
-                .bot_settings
-                .is_room_bound(matrix_sdk::ruma::room_id!("!a:test"))
-        );
+        assert!(settings
+            .bot_settings
+            .is_room_bound(matrix_sdk::ruma::room_id!("!a:test")));
         let serialized = serde_json::to_string(&settings).unwrap();
         assert_eq!(
             serde_json::from_str::<AgentAccessSettings>(&serialized).unwrap(),

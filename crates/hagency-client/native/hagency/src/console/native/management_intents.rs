@@ -373,20 +373,11 @@ impl NativeManagement {
                 serde_json::from_value(saved.input).map_err(|_|failure(503,"management_saved_command_invalid"))?,
                 std::time::Instant::now()+std::time::Duration::from_secs(30),
             )).await?),
-            IntentOperation::EnrollResource => serde_json::to_value(
-                Box::pin(self.enroll_resource(
-                    serde_json::from_value(saved.input)
-                        .map_err(|_| failure(503, "management_saved_command_invalid"))?,
-                ))
-                .await?,
-            ),
-            IntentOperation::ConfigureResource => serde_json::to_value(
-                Box::pin(self.configure_resource(
-                    serde_json::from_value(saved.input)
-                        .map_err(|_| failure(503, "management_saved_command_invalid"))?,
-                ))
-                .await?,
-            ),
+            // Retain the original saved receipt/input as historical custody.
+            // Removed definition operations cannot be replayed into a new writer.
+            IntentOperation::EnrollResource | IntentOperation::ConfigureResource => {
+                return Err(failure(409,"management_operation_retired"));
+            }
             IntentOperation::PublishResource => serde_json::to_value(
                 Box::pin(self.publish_resource(
                     serde_json::from_value(saved.input)

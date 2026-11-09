@@ -104,8 +104,8 @@ fn exact(v: &Value, keys: &[&str]) -> Result<(), NativeError> {
 #[serde(deny_unknown_fields)]
 struct ModelInput {
     profile: ModelProfile,
-    #[serde(default,rename="expectedProfileDigest")]
-    expected_profile_digest:Option<String>,
+    #[serde(rename="expectedProfileDigest")]
+    expected_profile_digest:String,
 }
 fn model_profile_shape(value: &Value) -> Result<(), NativeError> {
     if value.get("web_search").is_some() {
@@ -143,8 +143,8 @@ fn validate_input(op: &str, input: &Value) -> Result<(), NativeError> {
             exact(input, &[]).is_ok()
         }
         "save_agent_model" => {
-            (exact(input, &["profile"]).is_ok() || (exact(input,&["profile","expectedProfileDigest"]).is_ok()
-                && input["expectedProfileDigest"].as_str().is_some_and(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))))
+            (exact(input,&["profile","expectedProfileDigest"]).is_ok()
+                && input["expectedProfileDigest"].as_str().is_some_and(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))))
                 && model_profile_shape(&input["profile"]).is_ok()
                 && serde_json::from_value::<ModelInput>(input.clone()).is_ok()
         }
@@ -773,9 +773,7 @@ async fn apply(
             }
             let input: ModelInput = serde_json::from_value(w.input.clone())
                 .map_err(|_| failure(400, "invalid_arguments"))?;
-            if let Some(expected)=&input.expected_profile_digest {
-                if expected.len()!=64 {return Err(failure(400,"invalid_arguments"));}
-            }
+            if input.expected_profile_digest.len()!=64 {return Err(failure(400,"invalid_arguments"));}
             let runtime = hagency_agent_local::runtime::kind(&input.profile.credential_ref).name();
             let catalog = provider(native, runtime, ProviderAction::Models).await?;
             if catalog["authenticated"] != true
@@ -1160,9 +1158,9 @@ mod tests {
         assert!(validate_provider(&secret).is_err());
     }
     #[test]
-    fn personal_model_digest_protocol_preserves_legacy_and_rejects_ambiguous_shapes() {
+    fn personal_model_digest_protocol_requires_current_profile_and_rejects_old_shapes() {
         let old=json!({"profile":{"model":"fixture","credential_ref":"keychain:codex:owner","workspace_root":"/workspace","reasoning_effort":"high","web_search":true}});
-        validate_input("save_agent_model",&old).unwrap();
+        assert!(validate_input("save_agent_model",&old).is_err());
         let mut checked=old.clone();checked["expectedProfileDigest"]=json!("a".repeat(64));
         validate_input("save_agent_model",&checked).unwrap();
         for bad in [Value::Null,json!(1),json!("A".repeat(64)),json!("a".repeat(63))] {

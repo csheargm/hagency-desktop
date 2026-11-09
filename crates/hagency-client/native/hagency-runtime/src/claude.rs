@@ -65,6 +65,53 @@ fn keys(value: &Value, allowed: &[&str]) -> Result<(), Error> {
     Ok(())
 }
 
+fn known_type(kind: &str) -> bool {
+    matches!(
+        kind,
+        "control_request"
+            | "control_response"
+            | "control_cancel_request"
+            | "system"
+            | "assistant"
+            | "user"
+            | "result"
+            | "stream_event"
+            | "tool_progress"
+            | "tool_use_summary"
+            | "auth_status"
+            | "rate_limit_event"
+            | "command_lifecycle"
+    )
+}
+fn ignorable_type(kind: &str) -> bool {
+    identifier(kind) && !known_type(kind) && !kind.starts_with("control_")
+}
+// Read only a bounded prefix to classify an oversized non-authority event.
+// This never returns an actionable message; the entire line is discarded.
+fn oversized_metadata(prefix: &[u8]) -> bool {
+    use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
+    struct Type<'a>(&'a mut Option<String>);
+    impl<'de> Visitor<'de> for Type<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a native event envelope")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "type" {
+                    *self.0 = Some(map.next_value::<String>()?);
+                    return Err(serde::de::Error::custom("classified native prefix"));
+                }
+                map.next_value::<IgnoredAny>()?;
+            }
+            Err(serde::de::Error::custom("missing native type"))
+        }
+    }
+    let mut kind = None;
+    let _ = serde_json::Deserializer::from_slice(prefix).deserialize_map(Type(&mut kind));
+    kind.is_some_and(|kind| ignorable_type(&kind))
+}
+
 /// Payloads may contain private tool arguments/text; deliberately no Debug.
 pub enum Message {
     /// Private native SDK transport. Decoding alone supplies no room authority.
@@ -278,10 +325,18 @@ pub struct Decoder {
     since: Option<u64>,
     clock: u64,
     closed: bool,
+    discarding_metadata: bool,
+    ignored_frames: u64,
 }
 impl Decoder {
     pub fn buffered_bytes(&self) -> usize {
-        self.bytes.len()
+        self.bytes.len() + usize::from(self.discarding_metadata)
+    }
+    pub fn ignored_frames(&self) -> u64 {
+        self.ignored_frames
+    }
+    pub(crate) fn ignored_metadata(&mut self) {
+        self.ignored_frames = self.ignored_frames.saturating_add(1);
     }
     pub(crate) fn deadline_ms(&self) -> Option<u64> {
         self.since.map(|at| at.saturating_add(PARTIAL_FRAME_MS))
@@ -289,6 +344,7 @@ impl Decoder {
     fn fail<T>(&mut self, error: Error) -> Result<T, Error> {
         self.closed = true;
         self.bytes.clear();
+        self.discarding_metadata = false;
         Err(error)
     }
     pub fn check_deadline(&mut self, now_ms: u64) -> Result<(), Error> {
@@ -306,6 +362,16 @@ impl Decoder {
     }
     pub fn feed(&mut self, input: &[u8], now_ms: u64) -> Result<(usize, Option<Message>), Error> {
         self.check_deadline(now_ms)?;
+        if self.discarding_metadata {
+            let end = input.iter().position(|&byte| byte == b'\n');
+            if let Some(end) = end {
+                self.discarding_metadata = false;
+                self.since = None;
+                self.ignored_frames = self.ignored_frames.saturating_add(1);
+                return Ok((end + 1, None));
+            }
+            return Ok((input.len(), None));
+        }
         let remaining = MAX_FRAME_BYTES.saturating_sub(self.bytes.len());
         let end = input
             .iter()
@@ -313,6 +379,14 @@ impl Decoder {
             .position(|&byte| byte == b'\n');
         let length = end.unwrap_or(input.len());
         if length > remaining {
+            self.bytes.extend_from_slice(&input[..remaining]);
+            if oversized_metadata(&self.bytes) {
+                self.bytes.clear();
+                self.discarding_metadata = true;
+                self.since.get_or_insert(now_ms);
+                let (used, message) = self.feed(&input[remaining..], now_ms)?;
+                return Ok((remaining + used, message));
+            }
             return self.fail(Error::Capacity);
         }
         if length > 0 && self.since.is_none() {
@@ -324,11 +398,18 @@ impl Decoder {
         };
         let message = crate::json::parse(&self.bytes)
             .map_err(Error::from)
-            .and_then(Message::parse);
+            .and_then(|value| {
+                if ignorable_type(field(&value, "type")?) {
+                    self.ignored_frames = self.ignored_frames.saturating_add(1);
+                    Ok(None)
+                } else {
+                    Message::parse(value).map(Some)
+                }
+            });
         self.bytes.clear();
         self.since = None;
         match message {
-            Ok(message) => Ok((end + 1, Some(message))),
+            Ok(message) => Ok((end + 1, message)),
             Err(error) => self.fail(error),
         }
     }
@@ -336,7 +417,7 @@ impl Decoder {
         if self.closed {
             return Err(Error::Closed);
         }
-        let partial = !self.bytes.is_empty();
+        let partial = !self.bytes.is_empty() || self.discarding_metadata;
         self.closed = true;
         self.bytes.clear();
         if partial {

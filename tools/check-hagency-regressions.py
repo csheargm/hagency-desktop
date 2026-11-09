@@ -107,6 +107,9 @@ def main():
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
+        ("current-agent-registry", "agent_access::"),
+        ("miniapp-native-overlays", "app::back_navigation_tests::"),
+        ("agent-sidebar-palette", "navigation_tab_bar::rail_tests::"),
         ("agent-question-cards", "hagency::pending_questions::tests"),
         ("agent-run-cards", "hagency::run_controls::tests"),
         ("shared-worker", "hagency::backend::shared_worker::tests"),
@@ -127,6 +130,12 @@ def main():
         ("owner-approval-navigation", "owner_approvals::tests"),
         ("owner-dashboard-host", "hagency::owner_dashboard::tests"),
         ("owner-hosting", "hagency::hosting::tests"),
+        ("current-device-setup-ui", "adoption_ui::"),
+        ("current-device-setup-host", "host::hagency::adoption"),
+        ("shared-worker-status", "shared_protocol_"),
+        ("runtime-start-contract", "runtime_start_button_body_matches_the_native_request_parser"),
+        ("current-data-directory", "data_directory_tests::"),
+        ("removed-resource-services", "removed_resource_services_are_not_dispatchable"),
         ("owner-daemon-handoff", "hagency::backend::retirement_tests"),
         ("owner-renewal-warnings", "renewal_warning_tests"),
         ("article-editor", "article_app::"),
@@ -160,6 +169,16 @@ def main():
     run("native-server-management", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_management", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-adopted-server-administration", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_administration", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-server-journal", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_journal", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-profile", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "current_profile", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-management-contracts", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "current_management_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-approval-cards", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--test", "approvals", "card::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-approval-delivery", ["cargo", "test", "--locked", "-p", "hagency-matrix", "--lib", "approval_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-room-custody", ["cargo", "test", "--locked", "-p", "hagency-matrix", "--lib", "native_provisioning_inline_rooms", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-token-reattach", ["cargo", "test", "--locked", "-p", "hagency-matrix", "--test", "token_provision", "native_token_account_reattach_only_reads", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-profile-edit-contract", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "personal_model_digest_protocol", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-device-setup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "device_setup::tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-management-intents", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--test", "management_intents", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-profile-identity", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "current_profile::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-owner-daemon", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "daemon::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-owner-telemetry", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::telemetry::", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-metering-ledger", ["cargo", "test", "--locked", "-p", "hagency-metering", "--test", "dashboard"], cwd=CLIENT, rust_tests=True)
@@ -196,10 +215,36 @@ def main():
     if len(claude_probes) != 1:
         raise SystemExit("Expected one freshly built offline Claude probe")
     env["HAGENCY_TEST_CLAUDE_RUNTIME_PROBE"] = claude_probes[0]
+    run("native-claude-runtime-protocol", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "--test", "claude", "--test", "claude_control", "--test", "claude_owned", "--test", "claude_session", "--test", "claude_usage", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-shared-claude-custody", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_claude", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-shared-claude-lease", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_owned", "shared_claude"], cwd=CLIENT, rust_tests=True)
     run("native-shared-claude-approval", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_claude_encrypted_approval"], cwd=CLIENT, rust_tests=True)
     run("native-shared-claude-host", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_claude_full_host", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    for name, pattern in [
+        ("native-claude-renewal", "claude_run::authority::tests"),
+        ("native-claude-host-errors", "claude_run::host_tests"),
+        ("native-claude-owner-time-policy", "claude_run::policy::tests"),
+        ("native-claude-workspace-lifetime", "claude_workspace::"),
+        ("native-control-cancel-requeue", "canceled_action_membership_lookup_requeues_the_entire_taken_batch"),
+        ("native-current-runtime-intents", "obsolete_runtime_intents_do_not_restore_or_block_a_fresh_start_or_stop"),
+        ("native-current-service-options", "obsolete_service_preferences_reset_before_current_options_are_saved"),
+        ("native-fleet-atomic-identity", "native_fleet_identity"),
+        ("native-current-tool-receipts", "native_tool_grant"),
+        ("native-current-binding-receipts", "native_approval_binding"),
+        ("native-current-policy-receipts", "native_execution_policy"),
+        ("native-shared-worker-header", "shared_protocol_"),
+        ("native-current-graph-json", "current_graph_json_"),
+        ("native-current-connection", "current_connection_requires_explicit_reconnect_and_keeps_approval_and_custody"),
+        ("native-current-contribution", "current_contribution_provenance_is_durable_before_http_and_survives_rejection_and_lost_reply"),
+        ("native-current-namespace", "native_namespace_launch_after_current_setup_uses_selected_home_and_stops"),
+        ("native-current-provider-quota", "native_idle_quota_after_current_setup_is_account_bound_and_revocable"),
+    ]:
+        run(name, ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    for name, pattern in [
+        ("native-claude-stop-settlement", "native_shared_claude_daemon_stop_collects_final_output_usage"),
+        ("native-claude-idle-settlement", "native_shared_claude_explicit_owner_idle_policy_settles_silent_child"),
+    ]:
+        run(name, ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-shared-session", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_native_session_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-cold-resume-usage", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "codex::rollout_usage::tests"], cwd=CLIENT, rust_tests=True)
     run("native-personal-cold-usage", ["cargo", "test", "--locked", "-p", "hagency-agent-local", "--lib", "codex::native_usage::tests"], cwd=CLIENT, rust_tests=True)
@@ -215,6 +260,9 @@ def main():
         run(name, ["cargo", "test", "--locked", "-p", package, "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-question-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_question_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-room-history-input", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "encrypted_shared_input_is_pinned", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-current-input-boundary", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "input_boundary_tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-execution-feature-contract", ["cargo", "test", "--locked", "-p", "hagency", "--no-default-features", "--features", "shared-execution,resource-adoption", "--lib", "every_execution_feature_enables_the_current_native_context_contract", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-minimal-context-refusal", ["cargo", "test", "--locked", "-p", "hagency", "--no-default-features", "--features", "shared-execution,resource-adoption", "--lib", "native_shared_execution_requires_v3_before_call_admission", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-thread-context", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-first-turn-permissions", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_owner_policy_applies_before_the_first_model_call", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)

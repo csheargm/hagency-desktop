@@ -19,7 +19,6 @@ use crate::resource_publication_revision;
 use hagency_core::project::identifier;
 pub(in super::super) use managed_agents::unsettled_resource;
 pub(in super::super) use managed_agents::unsettled_resource_except;
-#[cfg(feature = "resource-adoption")]
 pub(in super::super) use managed_agents::unsettled_exact_resource;
 pub use managed_agents::{
     InterruptedCall, InterruptedCallPage, InterruptedCallQuery, InterruptedCallReconciliation,

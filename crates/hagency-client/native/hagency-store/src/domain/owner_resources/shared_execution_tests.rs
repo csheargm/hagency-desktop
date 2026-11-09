@@ -1,5 +1,8 @@
 use super::*;
 use shared_execution::*;
+#[path = "shared_current_input_fixture.rs"]
+mod current_input;
+use current_input::CurrentSharedInputFixture;
 #[path = "shared_process_custody_tests.rs"]
 mod process_custody;
 #[path = "shared_claude_process_tests.rs"]
@@ -417,7 +420,7 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     };
     assert!(
         f.registry
-            .prepare_shared_call(active(), work.clone())
+            .prepare_current_call(|| active(), work.clone())
             .await
             .is_err()
     );
@@ -431,12 +434,12 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
         .unwrap();
     let first = f
         .registry
-        .prepare_shared_call(active(), work.clone())
+        .prepare_current_call(|| active(), work.clone())
         .await
         .unwrap();
     let again = f
         .registry
-        .prepare_shared_call(active(), work.clone())
+        .prepare_current_call(|| active(), work.clone())
         .await
         .unwrap();
     assert_eq!(first.call_id, again.call_id);
@@ -451,18 +454,18 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     );
     let attempt = f
         .registry
-        .begin_shared_start(active(), work.clone(), first.call_id.clone())
+        .begin_current_start(|| active(), work.clone(), first.call_id.clone())
         .await
         .unwrap();
     assert!(matches!(
         f.registry
-            .begin_shared_start(active(), work.clone(), first.call_id.clone())
+            .begin_current_start(|| active(), work.clone(), first.call_id.clone())
             .await,
         Err(Error::OutcomeUnknown)
     ));
     let call = f
         .registry
-        .issue_shared_call(
+        .issue_current_call(
             attempt,
             SharedWorkStart {
                 work: work.clone(),
@@ -476,14 +479,12 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     call.check().unwrap();
     process.start_shared_text_thread().await.unwrap();
     call.check().unwrap();
-    process
-        .start_shared_text_turn(if mismatch {
-            "Different unbound fixture text".into()
-        } else {
-            work.body.clone()
-        })
-        .await
-        .unwrap();
+    if mismatch {
+        process.start_shared_text_turn("Different unbound fixture text".into())
+            .await.unwrap();
+    } else {
+        call.start_turn(&mut process).await.unwrap();
+    }
     if mismatch {
         assert!(matches!(
             call.bind_turn(&process),

@@ -151,7 +151,7 @@ class App(NativeApp):
         profile = self.root / 'profile'
         profile.mkdir(mode=0o700, exist_ok=True)
         (profile / 'window_geom_state.json').write_text(json.dumps({'inner_size': list(self.size), 'position': [50, 50], 'is_fullscreen': False}))
-        env = dict(os.environ, RINX_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1', RUST_BACKTRACE='1')
+        env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1', RUST_BACKTRACE='1')
         env.pop('MAKEPAD_FOCUS', None)
         self.process = subprocess.Popen([str(binary.resolve())], env=env, stdout=self.log, stderr=subprocess.STDOUT)
         for _ in range(150):

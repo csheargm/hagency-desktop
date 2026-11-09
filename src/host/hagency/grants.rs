@@ -739,7 +739,7 @@ impl Host {
             .lock()
             .map_err(|_| "management_unavailable")?
             .clone()
-            .ok_or("owner_source_adoption_required")?;
+            .ok_or("current_profile_required")?;
         let weak = std::sync::Arc::downgrade(&self.0);
         let gate_lease = lease.clone();
         access

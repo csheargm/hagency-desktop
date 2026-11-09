@@ -12,6 +12,7 @@ use crate::claude::{
 };
 use hagency_platform::Launch;
 use std::{path::Path, sync::Arc, time::Instant};
+mod isolation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SharedClaudePolicy {
@@ -52,14 +53,25 @@ impl SharedClaudePolicy {
     /// explicit owner's host policy, not a room member's bypass CLI flag.
     pub fn arguments(self, model: &str, effort: &str) -> Result<Vec<String>, claude::Error> {
         let mut args = claude::interactive_arguments(model, effort)?;
+        // Shared work never inherits a person's hooks, instructions, plugins,
+        // settings or connectors. The authenticated host installs the exact
+        // room's SDK MCP connection after initialization.
+        args.extend(
+            [
+                "--safe-mode",
+                "--setting-sources=",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "{\"mcpServers\":{}}",
+                "--no-chrome",
+            ]
+            .map(str::to_owned),
+        );
         if !self.tools() {
             args.extend(
                 [
                     "--tools",
                     if self.web() { "WebSearch,WebFetch" } else { "" },
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    "{\"mcpServers\":{}}",
                 ]
                 .map(str::to_owned),
             );
@@ -68,11 +80,21 @@ impl SharedClaudePolicy {
         }
         Ok(args)
     }
-    pub fn arguments_resuming(self, model: &str, effort: &str, resume: Option<&str>) -> Result<Vec<String>, claude::Error> {
+    pub fn arguments_resuming(
+        self,
+        model: &str,
+        effort: &str,
+        resume: Option<&str>,
+    ) -> Result<Vec<String>, claude::Error> {
         let mut args = self.arguments(model, effort)?;
         if let Some(id) = resume {
-            if id.is_empty() || id.starts_with('-') || id.len() > 128
-                || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            if id.is_empty()
+                || id.starts_with('-')
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
                 return Err(claude::Error::Input);
             }
             args.extend(["--resume".into(), id.into()]);
@@ -121,6 +143,31 @@ pub(super) struct State {
 }
 
 impl OwnedClaudeSession {
+    /// Shared credentials and plaintext stay in one host-owned conversation
+    /// scope. The OS sandbox covers the CLI and every native tool descendant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_shared_isolated_resuming(
+        guardian: &Path,
+        mut launch: Launch,
+        scope: &Path,
+        credential: &crate::claude::account::SharedCredential,
+        limits: Limits,
+        policy: SharedClaudePolicy,
+        resume: Option<&str>,
+    ) -> Result<Self, StartError> {
+        if !policy.matches_resume(&launch, resume) {
+            return Err(StartError::Settings);
+        }
+        credential
+            .inject(&mut launch)
+            .map_err(|_| StartError::Settings)?;
+        isolation::confine(&mut launch, scope)?;
+        let mut session = Self::start_shared(guardian, &launch, limits, policy, resume)?;
+        session
+            .bind_shared_credential(credential.binding())
+            .map_err(|_| StartError::Settings)?;
+        Ok(session)
+    }
     pub fn spawn_shared(
         guardian: &Path,
         launch: &Launch,
@@ -139,6 +186,15 @@ impl OwnedClaudeSession {
         if !policy.matches_resume(launch, resume) {
             return Err(StartError::Settings);
         }
+        Self::start_shared(guardian, launch, limits, policy, resume)
+    }
+    fn start_shared(
+        guardian: &Path,
+        launch: &Launch,
+        limits: Limits,
+        policy: SharedClaudePolicy,
+        resume: Option<&str>,
+    ) -> Result<Self, StartError> {
         let mut session = Self::spawn(guardian, launch, limits)?;
         session.shared = Some(State {
             source: SharedTextProcessSource::new(),
@@ -153,7 +209,9 @@ impl OwnedClaudeSession {
             .enable_continuous_session()
             .map_err(|_| StartError::Settings)?;
         if let Some(id) = resume {
-            session.expect_shared_resume(id).map_err(|_| StartError::Settings)?;
+            session
+                .expect_shared_resume(id)
+                .map_err(|_| StartError::Settings)?;
         }
         Ok(session)
     }

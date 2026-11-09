@@ -141,6 +141,54 @@ fn send(path: &str) -> RoomFileOperation {
     }
 }
 
+fn send_with_id(path: &str, id: &str) -> RoomFileOperation {
+    let mut operation = send(path);
+    if let RoomFileOperation::SendFile { call_id, .. } = &mut operation {
+        *call_id = id.into();
+    }
+    operation
+}
+
+#[tokio::test]
+async fn chat_files_shared_send_count_survives_restart_and_replays_at_the_limit() {
+    let (_temp, endpoint, mut files, workspace) = fixture();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    std::fs::write(workspace.join("report.pdf"), b"abc").unwrap();
+    let original = files.send(&send_with_id("report.pdf", "first")).await.unwrap();
+    endpoint.lose_upload.store(true, Ordering::SeqCst);
+    let uncertain = files.send(&send_with_id("report.pdf", "second")).await.unwrap();
+    assert_eq!(uncertain["status"], "outcome_unknown");
+    drop(files);
+    let mut files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    assert_eq!(files.send(&send_with_id("report.pdf", "first")).await.unwrap(), original);
+    assert_eq!(files.send(&send_with_id("report.pdf", "second")).await.unwrap(), uncertain);
+    assert_eq!(files.send(&send_with_id("report.pdf", "third")).await.unwrap_err(), "file_send_turn_limit");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 2);
+    assert_eq!(endpoint.events.lock().unwrap().len(), 1);
+    let mut next = work();
+    next.event_id = "$next-request:test".into();
+    next.thread_root = next.event_id.clone();
+    let mut files = Files::open(endpoint.clone(), &next, &workspace, &endpoint.records).unwrap();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    assert_eq!(files.send(&send_with_id("report.pdf", "first")).await.unwrap()["status"], "delivered");
+}
+
+#[tokio::test]
+async fn chat_files_shared_send_bytes_refuse_before_upload_without_stopping_other_operations() {
+    let (_temp, endpoint, mut files, workspace) = fixture();
+    files.send_allowance = Some(SendAllowance { count: 8, bytes: 5 });
+    std::fs::write(workspace.join("report.pdf"), b"abc").unwrap();
+    let original = files.send(&send_with_id("report.pdf", "first")).await.unwrap();
+    assert_eq!(files.send(&send_with_id("report.pdf", "second")).await.unwrap_err(), "file_send_turn_limit");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 1);
+    assert_eq!(files.delivery(original["delivery_id"].as_str().unwrap()).unwrap(), original);
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    std::fs::write(workspace.join("small.txt"), b"de").unwrap();
+    assert_eq!(files.send(&send_with_id("small.txt", "third")).await.unwrap()["status"], "delivered");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn chat_files_round_trip_preserves_binary_and_replay_never_overwrites() {
     let (_temp, endpoint, mut files, workspace) = fixture();

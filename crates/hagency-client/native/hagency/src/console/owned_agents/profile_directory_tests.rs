@@ -80,7 +80,7 @@ fn journal_access_never_rewrites_legacy_marker_or_authorizes_foreign_copied_data
     let legacy = LocalProfileIdentity {
         version: 1,
         origin: ORIGIN.into(),
-        issuer: crate::server_admission::profile_namespace_issuer(ORIGIN),
+        issuer: crate::server_admission::profile_storage_namespace(ORIGIN),
         subject: "subject-b".into(),
         owner: OWNER.into(),
     };
@@ -89,7 +89,7 @@ fn journal_access_never_rewrites_legacy_marker_or_authorizes_foreign_copied_data
     let journal = b.join("matrix-creations.json");
     hagency_store::private::write_new(&journal, b"[]").unwrap();
     let original = std::fs::read(&copied).unwrap();
-    assert_eq!(directory(&root, "subject-b"), b);
+    assert!(journal_profile_directory(&root, ORIGIN, ISSUER, "subject-b", OWNER).is_err());
     assert_eq!(std::fs::read(&copied).unwrap(), original);
     assert_eq!(std::fs::read(&marker).unwrap(), marker_bytes);
     assert_eq!(std::fs::read(&journal).unwrap(), b"[]");

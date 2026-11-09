@@ -27,6 +27,16 @@ pub use wire::ResourceGrantView;
 use wire::*;
 pub(super) use wire::{Delivery, Envelope};
 
+#[cfg(test)]
+pub(in crate::console) fn protocol_header_fixture(shared: bool) -> OwnerOperation {
+    let operation = if shared {
+        Operation::SharedExecution(super::shared_execution::ServerOperation::protocol_test_poll())
+    } else {
+        Operation::Session
+    };
+    OwnerOperation::Allocation(ServerOperation::new(operation).expect("valid sealed request"))
+}
+
 fn invalid() -> NativeError {
     failure(502, "invalid_allocation_response")
 }

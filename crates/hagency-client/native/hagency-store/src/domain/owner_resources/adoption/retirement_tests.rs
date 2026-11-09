@@ -8,7 +8,7 @@ async fn pool_retirement_preserves_expired_grants_and_unsettled_usage_after_conf
     let f=fixture().await;
     let backing=resource_name_tests::active(&f).await;
     let context=HostContext::new(f.profile.account.clone(),1,"b".repeat(64),1,"retirement_device".into(),1).unwrap();
-    let session=Session::new_adopted(backing.clone(),context.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(120)).unwrap();
+    let session=Session::new_current(backing.clone(),context.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(120)).unwrap();
     let resource=f.resource.id();
     let revision=session.resource(&context,resource.clone()).await.unwrap().revision;
     let enrollment=||VerifiedManagementEnrollment::new(f.profile.clone(),"retirement_enrollment".into(),"retirement_contribution".into(),resource.clone(),revision.clone(),f.profile.account.clone(),"device_a".into(),1,Instant::now()+Duration::from_secs(60)).unwrap().with_admission_request("retirement_admission".into()).unwrap();
@@ -84,7 +84,7 @@ async fn pool_retirement_keeps_recurring_authorization_after_its_initial_period(
     let f=fixture().await;
     let backing=resource_name_tests::active(&f).await;
     let context=HostContext::new(f.profile.account.clone(),1,"b".repeat(64),1,"retirement_calendar_device".into(),1).unwrap();
-    let session=Session::new_adopted(backing.clone(),context.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(120)).unwrap();
+    let session=Session::new_current(backing.clone(),context.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(120)).unwrap();
     let resource=f.resource.id();
     let revision=session.resource(&context,resource.clone()).await.unwrap().revision;
     let enrollment=VerifiedManagementEnrollment::new(f.profile.clone(),"retirement_enrollment".into(),"retirement_contribution".into(),resource.clone(),revision,f.profile.account.clone(),"device_a".into(),1,Instant::now()+Duration::from_secs(60)).unwrap().with_admission_request("retirement_admission".into()).unwrap();
