@@ -226,14 +226,19 @@ impl SharedExecutionTransport {
         // Time bound (ADR-193): a claimed process with no stop evidence and no
         // live local child is interrupted once its grace period has passed.
         let cleaning = historical.is_none() && d.cleanup_allowed && !d.execution_allowed;
-        if cleaning && local.as_ref().is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started")) {
-            if let Some(timeout) = r
-                .record_shared_attempt_timeout(b.cleanup(r, &c.original_runtime_command).await?, c.clone())
+        if cleaning
+            && local
+                .as_ref()
+                .is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started"))
+            && let Some(timeout) = r
+                .record_shared_attempt_timeout(
+                    b.cleanup(r, &c.original_runtime_command).await?,
+                    c.clone(),
+                )
                 .await
                 .map_err(store)?
             {
                 local = Some(timeout);
-            }
         }
         b.transport.check_scope(&b.scope, false).await?;
         if let Some(saved) = &d.recorded {
@@ -250,7 +255,9 @@ impl SharedExecutionTransport {
                     // A time-bound end is accepted only on a cleanup ticket;
                     // otherwise a later cleanup poll reports it.
                     if !cleaning || !attempt_run::upload_end(&b, &d, until, latest).await? {
-                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                            command_id: c.command_id.clone(),
+                        });
                     }
                     attempt_run::recover_process_work(&self.io, r, c).await?;
                     return Ok(SharedExecutionProgress::Recorded {
@@ -265,7 +272,7 @@ impl SharedExecutionTransport {
                     return Ok(SharedExecutionProgress::Recorded {
                         command_id: c.command_id.clone(),
                         observation_id: latest.observation_id.clone(),
-                    process_state: Some(latest.state.clone()),
+                        process_state: Some(latest.state.clone()),
                     });
                 }
                 if latest.ledger_revision == saved.ledger_revision
@@ -285,14 +292,16 @@ impl SharedExecutionTransport {
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: saved.observation_id.clone(),
-                    process_state: Some(saved.state.clone()),
+                process_state: Some(saved.state.clone()),
             });
         }
         if let Some(local) = local {
             // Non-issuance and time-bound ends are accepted only on a cleanup
             // ticket; a later cleanup poll reports them.
             if !cleaning && (local.state == "not_started" || local.reason.is_some()) {
-                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
             }
             // A never-started attempt of a demand asks the server to run the
             // same event again, with this evidence (ADR-193 amendment).
@@ -309,13 +318,15 @@ impl SharedExecutionTransport {
             // Report actual stop independently before accounting recovery: an
             // old work upload failure must not hide known process termination.
             if !attempt_run::upload_end(&b, &d, until, &local).await? {
-                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
             }
             attempt_run::recover_process_work(&self.io, r, c).await?;
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: local.observation_id,
-                    process_state: Some(local.state.clone()),
+                process_state: Some(local.state.clone()),
             });
         }
         if !d.execution_allowed {
@@ -357,13 +368,13 @@ impl SharedExecutionTransport {
             )
             .await
             .map_err(store)?;
-        if resource.framework != "codex"
+        if resource.framework != c.original_runtime_command.runtime().map_err(store)?
             || resource.revision != c.original_runtime_command.reserve_command.resource_revision
         {
             return Err(failure(409, "shared_execution_resource_changed"));
         }
         let launch = if let Some(prepared) = prepared {
-            prepared
+            launch::Launch::from(prepared)
         } else {
             let root = self
                 .manager
@@ -375,12 +386,20 @@ impl SharedExecutionTransport {
                 .server_login
                 .state_directory()
                 .ok_or_else(|| failure(409, "shared_execution_launch_unavailable"))?;
-            super::super::managed_runtime::PreparedLaunch::for_resource(
-                &root, &b.scope.device, r, &b.scope.profile, &resource, true,
-            ).await?
+            super::launch::Launch::for_resource(
+                &root,
+                &b.scope.device,
+                r,
+                &b.scope.profile,
+                &resource,
+            )
+            .await?
         };
-        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(&c.original_runtime_command.reserve_command.proposed_agent_id,c.tool_policy.as_ref().map(|p|p.mode.as_str()))?;
-        let process_io=self.io.with_namespace(launch.namespace());
+        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(
+            &c.original_runtime_command.reserve_command.proposed_agent_id,
+            c.tool_policy.as_ref().map(|p| p.mode.as_str()),
+        )?;
+        let process_io = launch.io(&self.io);
         let io = process_io.clone();
         let command = c.clone();
         let check: super::super::managed_runtime::LiveCheck = Arc::new(move || {
@@ -388,13 +407,7 @@ impl SharedExecutionTransport {
             let c = command.clone();
             Box::pin(async move { io.check(&c.original_runtime_command).await })
         });
-        let launch = self
-            .manager
-            .owner
-            .0
-            .managed_runtime
-            .prepare(launch, until, check)
-            .await?;
+        let launch = launch.prepare(&self.manager, until, check).await?;
         b.transport.check_scope(&b.scope, false).await?;
         self.manager
             .owner

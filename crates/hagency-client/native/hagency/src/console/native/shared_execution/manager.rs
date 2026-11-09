@@ -77,7 +77,9 @@ fn unknown() -> NativeError {
     failure(409, "shared_execution_outcome_unknown")
 }
 impl Manager {
-    pub(in crate::console::native) fn telemetry(&self) -> crate::console::native::telemetry::OwnerTelemetry {
+    pub(in crate::console::native) fn telemetry(
+        &self,
+    ) -> crate::console::native::telemetry::OwnerTelemetry {
         self.telemetry.clone()
     }
     pub fn close(&self) {
@@ -257,7 +259,7 @@ impl Manager {
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedRuntimeDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: SharedRuntimeDelivery,
         observed: u64,
@@ -308,7 +310,7 @@ impl Manager {
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedAttemptDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: super::attempt_io::Delivery,
         observed: u64,
@@ -355,13 +357,13 @@ impl Manager {
             },
         )
     }
-    #[cfg(feature="shared-budget-execution")]
+    #[cfg(feature = "shared-budget-execution")]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_budget_attempt(
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedBudgetAttemptDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: super::budget_io::Delivery,
         observed: u64,

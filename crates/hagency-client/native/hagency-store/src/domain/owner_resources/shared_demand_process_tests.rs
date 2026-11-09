@@ -135,6 +135,8 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
             .await
             .unwrap();
     assert_eq!((old.reserved_tokens, old.known_consumed_tokens), (40, 7));
+    assert!(!old.usage_complete);
+    assert_eq!(old.state, "unknown");
     a.stop().await;
 }
 #[tokio::test]
@@ -223,7 +225,8 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
     );
     let now = graphs::now_ms().unwrap();
     let command = SharedAttemptCommand {
-        web_search: false, tool_policy: None,
+        web_search: false,
+        tool_policy: None,
         version: 2,
         capability: SHARED_ATTEMPT_CAPABILITY.into(),
         operation: "agent.execution.provision".into(),
@@ -368,8 +371,8 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
         Instant::now() + Duration::from_secs(8),
     )
     .unwrap();
-    // The finished turn reported no usage. Its process has stopped, so that
-    // counts as zero and the next event starts instead of being blocked.
+    // No final usage was reported. Postpaid admission permits the next event
+    // while the old call remains explicitly unknown; stop never invents zero.
     let later =
         a.f.registry
             .prepare_shared_demand(proof, a.original.clone(), Some(a.command.clone()))
@@ -381,13 +384,15 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
         (observation.retained_tokens, observation.remaining_tokens),
         (7, 143)
     );
-    assert!(observation.usage_complete);
+    assert!(!observation.usage_complete);
     let old =
         a.f.registry
             .managed_call_history(cleanup(&a.f, &a.original, 1).await, "old_unknown".into())
             .await
             .unwrap();
     assert_eq!((old.reserved_tokens, old.known_consumed_tokens), (40, 7));
+    assert!(!old.usage_complete);
+    assert_eq!(old.state, "unknown");
     a.f.registry.shutdown().await.unwrap();
 }
 

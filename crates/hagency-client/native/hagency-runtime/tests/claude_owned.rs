@@ -74,9 +74,12 @@ fn stopped(marker: &Path) {
 async fn native_claude_account_observation_binds_original_process_and_rejects_shadowed_auth() {
     use hagency_runtime::claude::account::AccountBinding;
     let binding = AccountBinding::from_authenticated_profile(
-        "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
-        "owner@example.test", Instant::now() + Duration::from_secs(45),
-    ).unwrap();
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "89abcdef-0123-4567-89ab-cdef01234567",
+        "owner@example.test",
+        Instant::now() + Duration::from_secs(45),
+    )
+    .unwrap();
     let root = tempfile::tempdir().unwrap();
     let mut first = spawn(root.path(), "account-match", &root.path().join("first"));
     let mut second = spawn(root.path(), "account-match", &root.path().join("second"));
@@ -87,15 +90,27 @@ async fn native_claude_account_observation_binds_original_process_and_rejects_sh
     assert_eq!(receipt.provider_digest(), binding.provider_digest());
     assert!(first.matches_account_observation(&receipt));
     assert!(!second.matches_account_observation(&receipt));
-    assert!(!root.path().join("first.prompt").exists(), "qualification must not send model input");
+    assert!(
+        !root.path().join("first.prompt").exists(),
+        "qualification must not send model input"
+    );
     cleanup(first.stop());
     assert!(!first.matches_account_observation(&receipt));
     cleanup(second.stop());
-    for mode in ["account-wrong-email", "account-api-key", "account-provider", "account-missing"] {
+    for mode in [
+        "account-wrong-email",
+        "account-api-key",
+        "account-provider",
+        "account-missing",
+    ] {
         let mut runner = spawn(root.path(), mode, &root.path().join(mode));
         runner.initialize().await.unwrap();
         assert!(runner.qualify_account(&binding).is_err(), "{mode}");
-        assert_eq!(runner.phase(), Phase::Ready, "missing shared proof must not break personal execution");
+        assert_eq!(
+            runner.phase(),
+            Phase::Ready,
+            "missing shared proof must not break personal execution"
+        );
         cleanup(runner.stop());
     }
 }
@@ -111,12 +126,18 @@ async fn native_claude_interrupt_foreign_or_repeated_preparation_cannot_stop_cur
         runner.initialize().await.unwrap();
         runner.prompt("wait for the owner").await.unwrap();
         runner.next_message().await.unwrap();
-        assert!(matches!(runner.next_message().await.unwrap(), Message::Permission { .. }));
+        assert!(matches!(
+            runner.next_message().await.unwrap(),
+            Message::Permission { .. }
+        ));
     }
     let mut foreign = first.prepare_interrupt().unwrap();
     let _original = current.prepare_interrupt().unwrap();
     assert!(matches!(current.prepare_interrupt(), Err(Error::State)));
-    assert!(matches!(current.send_prepared_interrupt(&mut foreign).await, Err(Error::Identity)));
+    assert!(matches!(
+        current.send_prepared_interrupt(&mut foreign).await,
+        Err(Error::Identity)
+    ));
     assert_eq!(current.phase(), Phase::Running);
     assert_eq!(current.cleanup(), Cleanup::Pending);
     assert!(current.termination().is_none());
@@ -137,9 +158,19 @@ async fn native_claude_interrupt_unacknowledged_cancellation_keeps_process_custo
     runner.next_message().await.unwrap();
     runner.next_message().await.unwrap();
     let mut interrupt = runner.prepare_interrupt().unwrap();
-    assert!(matches!(runner.send_prepared_interrupt(&mut interrupt).await.unwrap(), InterruptUpdate::WriteAccepted(_)));
+    assert!(matches!(
+        runner
+            .send_prepared_interrupt(&mut interrupt)
+            .await
+            .unwrap(),
+        InterruptUpdate::WriteAccepted(_)
+    ));
     assert!(runner.interrupt_receipt().is_none());
-    assert!(tokio::time::timeout(Duration::from_millis(100), runner.next_message()).await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), runner.next_message())
+            .await
+            .is_err()
+    );
     assert_eq!(runner.phase(), Phase::Closed);
     assert!(runner.interrupt_receipt().is_none());
     cleanup(runner.cleanup());
@@ -403,4 +434,122 @@ async fn native_claude_owned_permission_roundtrip() {
         cleanup(runner.stop());
         stopped(&marker);
     }
+}
+
+fn shared_launch(root: &Path, mode: &str) -> Launch {
+    use hagency_runtime::owned::SharedClaudePolicy;
+    let mut value = launch(root, mode, &root.join("unused"));
+    value.arguments = SharedClaudePolicy::Standard { web: false }
+        .arguments("sonnet", "medium")
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    for (key, value_) in [
+        ("HAGENCY_OFFLINE_CLAUDE_MODE", mode),
+        ("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1"),
+        ("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1"),
+    ] {
+        value.environment.insert(key.into(), value_.into());
+    }
+    value
+        .environment
+        .insert("CLAUDE_CONFIG_DIR".into(), root.as_os_str().into());
+    value
+}
+async fn shared_session(root: &Path, mode: &str, until: Instant) -> OwnedClaudeSession {
+    use hagency_runtime::{claude::account::AccountBinding, owned::SharedClaudePolicy};
+    let policy = SharedClaudePolicy::Standard { web: false };
+    let mut session =
+        OwnedClaudeSession::spawn_shared(&binary(), &shared_launch(root, mode), limits(), policy)
+            .unwrap();
+    session.initialize().await.unwrap();
+    let binding = AccountBinding::from_authenticated_profile(
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "89abcdef-0123-4567-89ab-cdef01234567",
+        "owner@example.test",
+        Instant::now() + Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(
+        session.qualify_shared(&binding).is_err(),
+        "qualification needs original managed custody"
+    );
+    session
+        .shared_process_source()
+        .unwrap()
+        .claim_managed_custody(&"a".repeat(64), "offline-original")
+        .unwrap();
+    let qualification = session.qualify_shared(&binding).unwrap();
+    assert_eq!(
+        qualification.provider_digest(),
+        Some(binding.provider_digest())
+    );
+    session.install_renewable_shared_activity(1, until).unwrap();
+    session
+}
+#[tokio::test]
+async fn shared_claude_original_native_source_requires_account_policy_and_idle() {
+    use hagency_runtime::owned::SharedClaudePolicy;
+    let root = tempfile::tempdir().unwrap();
+    let policy = SharedClaudePolicy::Standard { web: false };
+    let mut wrong = shared_launch(root.path(), "shared-usage");
+    wrong
+        .arguments
+        .push("--dangerously-skip-permissions".into());
+    assert!(matches!(
+        OwnedClaudeSession::spawn_shared(&binary(), &wrong, limits(), policy),
+        Err(StartError::Settings)
+    ));
+    assert!(!root.path().join("shared-claude.entered").exists());
+    let mut session = shared_session(
+        root.path(),
+        "shared-usage",
+        Instant::now() + Duration::from_secs(5),
+    )
+    .await;
+    let source = session.shared_process_source().unwrap();
+    assert!(!root.path().join("shared-claude.prompt").exists());
+    session.prompt("original input").await.unwrap();
+    session.next_message().await.unwrap();
+    let native_source = session.observation_source().unwrap();
+    session.next_message().await.unwrap();
+    assert_eq!(session.phase(), Phase::Running, "result is not native idle");
+    assert!(matches!(
+        session.last_observation().unwrap().kind(),
+        ObservationKind::Result { .. }
+    ));
+    session.next_message().await.unwrap();
+    assert_eq!(session.phase(), Phase::ResultObserved);
+    assert!(!session.needs_usage_snapshot());
+    assert!(session.matches_observation_source(&native_source));
+    assert!(source.is_live());
+    assert_eq!(
+        session.stop_shared_observation().unwrap().state(),
+        hagency_runtime::owned::ManagedProcessState::Stopped
+    );
+    assert!(!source.is_live());
+    assert!(native_source.is_retired());
+}
+#[tokio::test]
+async fn shared_claude_renewal_keeps_original_pending_read_until_actual_expiry() {
+    let root = tempfile::tempdir().unwrap();
+    let initial = Instant::now() + Duration::from_secs(2);
+    let mut session = shared_session(root.path(), "shared-wait", initial).await;
+    session.prompt("original pending read").await.unwrap();
+    session.next_message().await.unwrap();
+    let control = session.shared_activity_control().unwrap();
+    // Shorten the initial lease before beginning this one pending native read.
+    let old = Instant::now() + Duration::from_millis(200);
+    control.renew_lease(2, old).unwrap();
+    let read = session.next_message();
+    tokio::pin!(read);
+    tokio::select! {biased;result=&mut read=>panic!("read ended before renewal: {:?}",result.err()),_=tokio::time::sleep(Duration::from_millis(50))=>{}}
+    let renewed = Instant::now() + Duration::from_millis(500);
+    control.renew_lease(3, renewed).unwrap();
+    tokio::select! {biased;result=&mut read=>panic!("renewal interrupted original read: {:?}",result.err()),_=tokio::time::sleep_until((old+Duration::from_millis(100)).into())=>{}}
+    assert!(
+        read.await.is_err(),
+        "actual lease expiry closes the process"
+    );
 }

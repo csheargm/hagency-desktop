@@ -78,9 +78,10 @@ async fn prepared_with_budget_lifetime(
         .unwrap();
     let r = f.state.lock().unwrap().allocation_receipt.clone().unwrap();
     let g = &p.grant_receipt;
+    let resource = f.registry.resource(&f.transport.scope(Permission::PublishGrants).await.unwrap().profile, g.resource_id.clone()).await.unwrap();
     let model = hagency_core::qualification::ModelProfile {
-        framework: "codex".into(),
-        model: "gpt-5.6-sol".into(),
+        framework: resource.framework,
+        model: resource.model,
         provider: None,
         reasoning: Some("medium".into()),
     };

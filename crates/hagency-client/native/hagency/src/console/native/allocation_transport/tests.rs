@@ -406,6 +406,10 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                                 caps.push("shared-durable-demand-v1");
                             }
                             #[cfg(feature = "shared-execution")]
+                            if managed_agents::shared::claude_enabled(&state.lock().unwrap()) {
+                                caps.push("shared-claude-execution-v1");
+                            }
+                            #[cfg(feature = "shared-execution")]
                             if managed_agents::shared::demand_retry_enabled(&state.lock().unwrap()) {
                                 caps.push("shared-demand-retry-v1");
                             }
@@ -591,18 +595,19 @@ impl Fixture {
         let registry =
             OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
         let scope = transport.scope(Permission::PublishGrants).await.unwrap();
+        let claude = provider == hagency_runtime::claude::account::PROVIDER;
         let resource = registry
             .prepare_enrollment(
                 scope.profile.clone(),
                 "enroll_fixture".into(),
                 VerifiedProviderAccount::new(
-                    "codex",
+                    if claude { "claude" } else { "codex" },
                     provider,
                     subject,
                     Instant::now() + Duration::from_secs(30),
                 )
                 .unwrap(),
-                "gpt-5.6-sol".into(),
+                if claude { "claude-opus-5" } else { "gpt-5.6-sol" }.into(),
                 Some("medium".into()),
                 total,
                 Instant::now() + Duration::from_secs(30),

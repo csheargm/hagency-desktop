@@ -2,7 +2,7 @@
 mod drain;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
-mod questions;
+pub(in crate::console) mod questions;
 mod room_tools;
 pub(in crate::console) mod run_controls;
 mod service;

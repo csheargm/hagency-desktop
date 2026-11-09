@@ -63,7 +63,7 @@ pub struct Sender {
 }
 #[derive(Clone)]
 pub struct Inbox(Arc<Binding>);
-pub(crate) struct Stream {
+pub struct Stream {
     binding: Arc<Binding>,
     steer: mpsc::Receiver<Pending>,
     interrupt: mpsc::Receiver<Pending>,
@@ -189,7 +189,7 @@ impl Inbox {
     }
     /// Claim before admission so a reused channel cannot start another model
     /// turn. Submission remains inactive until native start is acknowledged.
-    pub(crate) fn claim(&self, scope: &Scope, dispatch: &str, execution: &str) -> Result<Stream> {
+    pub fn claim(&self, scope: &Scope, dispatch: &str, execution: &str) -> Result<Stream> {
         self.validate(scope, dispatch, execution)?;
         let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(state.phase, Phase::New) {
@@ -217,7 +217,7 @@ impl Stream {
             .unwrap_or_else(|e| e.into_inner())
             .phase = Phase::Running;
     }
-    pub fn try_next(&mut self) -> Option<Pending> {
+    pub(crate) fn try_next(&mut self) -> Option<Pending> {
         loop {
             let pending = self
                 .interrupt
@@ -229,7 +229,7 @@ impl Stream {
             }
         }
     }
-    pub async fn next(&mut self) -> Pending {
+    pub(crate) async fn next(&mut self) -> Pending {
         loop {
             let pending = tokio::select! { biased;
                 value = self.interrupt.recv(), if self.interrupt_open => {

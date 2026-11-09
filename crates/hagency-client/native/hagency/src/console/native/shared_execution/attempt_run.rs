@@ -1,4 +1,4 @@
-use super::super::managed_runtime::PreparedLaunch;
+use super::launch::Launch;
 use super::attempt_io::{
     Acknowledgement as SharedRuntimeAcknowledgement, AttemptAction,
     Delivery as SharedRuntimeDelivery, Reply as DeliveryReply, ResultInput as SharedProcessInput,
@@ -11,7 +11,6 @@ use tokio::sync::{oneshot, watch};
 struct Activity {
     lease: SharedActivityLease,
     until: Instant,
-    maximum: Instant,
 }
 pub(super) async fn upload_process(
     b: &Bound,
@@ -147,7 +146,6 @@ fn activity(
     observed: u64,
     started: Instant,
     b: &Bound,
-    maximum: Instant,
 ) -> Result<Activity, NativeError> {
     lease.authority.validate().map_err(store)?;
     if lease.command_digest != digest(sink.command())?
@@ -162,15 +160,13 @@ fn activity(
         observed,
         started,
         &b.scope,
-    )?
-    .min(maximum);
+    )?;
     if Instant::now() >= until {
         return Err(failure(409, "shared_execution_expired"));
     }
     Ok(Activity {
         lease,
         until,
-        maximum,
     })
 }
 async fn proof(
@@ -222,13 +218,12 @@ async fn renew(
         reply.observed,
         started,
         &b,
-        a.maximum,
     )?;
     if next.lease.authority.epoch <= a.lease.authority.epoch {
         return Err(invalid());
     }
     control
-        .renew(next.lease.authority.epoch, next.until, a.maximum)
+        .renew_lease(next.lease.authority.epoch, next.until)
         .map_err(|_| failure(409, "shared_execution_expired"))?;
     *a = next;
     Ok(())
@@ -323,7 +318,7 @@ async fn start_while_active(
 pub(super) async fn run(
     r: OwnerResourceRegistry,
     custody: SharedAttemptCustody,
-    launch: PreparedLaunch,
+    launch: Launch,
     io: Io,
     d: SharedRuntimeDelivery,
     observed: u64,
@@ -333,6 +328,23 @@ pub(super) async fn run(
     sender: oneshot::Sender<Result<SharedExecutionProgress, NativeError>>,
     telemetry: crate::console::native::telemetry::OwnerTelemetry,
 ) -> Result<(), DrainFailure> {
+    let launch = match launch {
+        Launch::Codex(launch) => launch,
+        Launch::Claude(launch) => {
+            return super::claude_run::run(
+                r,
+                super::claude_run::Claimed::Attempt(Box::new((custody, d))),
+                launch,
+                io,
+                observed,
+                started,
+                until,
+                cancel,
+                sender,
+            )
+            .await;
+        }
+    };
     let mut sender = Some(sender);
     let mut process = match launch.spawn(until) {
         Ok(v) => v,
@@ -373,18 +385,9 @@ pub(super) async fn run(
         let lease = ack
             .activity
             .ok_or_else(|| failure(409, "shared_execution_activity_missing"))?;
-        let maximum = started
-            + Duration::from_millis(
-                d.command
-                    .original_runtime_command
-                    .reserve_command
-                    .expires_at_ms
-                    .checked_sub(observed)
-                    .ok_or_else(invalid)?,
-            );
-        let active = activity(&sink, lease, at, sent, &b, maximum)?;
+        let active = activity(&sink, lease, at, sent, &b)?;
         process
-            .install_shared_text_activity(active.lease.authority.epoch, active.until, maximum)
+            .install_renewable_shared_text_activity(active.lease.authority.epoch, active.until)
             .map_err(|_| failure(409, "shared_execution_expired"))?;
         Ok(active)
     })
@@ -579,7 +582,9 @@ async fn work_loop(
                 .map_err(|_| failure(409, "shared_history_tool_unavailable"))?;
         }
         if history.is_some() && process.shared_tools_enabled() {
-            process.enable_shared_room_files().map_err(|_|failure(409,"shared_file_tool_unavailable"))?;
+            process
+                .enable_shared_room_files()
+                .map_err(|_| failure(409, "shared_file_tool_unavailable"))?;
         }
         super::questions::offer(process);
         process
@@ -597,8 +602,16 @@ async fn work_loop(
     })
     .await?;
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let mut files = prepare_while_active(io,r,sink,control,a,cancel,
-        super::files::Files::new(io,&b,&work,process)).await?;
+    let mut files = prepare_while_active(
+        io,
+        r,
+        sink,
+        control,
+        a,
+        cancel,
+        super::files::Files::new(io, &b, &work, process),
+    )
+    .await?;
     let (_, p) = proof(io, r, sink, a).await?;
     let call = if let Some(input) = &input {
         r.prepare_shared_input_call(p, work.clone(), input.clone())

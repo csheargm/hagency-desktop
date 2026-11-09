@@ -489,6 +489,10 @@ fn main() -> io::Result<()> {
         return hagency_platform::run_guardian();
     }
     match args.as_slice() {
+        [first, ..] if first == "--print" => {
+            let mode = std::env::var("HAGENCY_OFFLINE_CLAUDE_MODE").map_err(io::Error::other)?;
+            claude_probe::run(&mode, &std::env::current_dir()?.join("shared-claude"))
+        }
         [command] if command == "app-server" => {
             // Fixed host installation entrypoint for offline dispatch fixtures.
             // The environment is explicitly supplied by that test host only.

@@ -72,7 +72,7 @@ impl SharedAttemptProcessSink {
             if !self.source.is_live()
                 || observation.provider_digest() != Some(&self.custody.provider)
                 || observation.policy_digest()
-                    != Some(canonical::digest(&json!({"policy":hagency_runtime::owned::shared_execution_policy(self.custody.command.web_search,self.custody.command.tool_policy.as_ref().map(|p|p.mode.as_str()))}))?.as_str())
+                    != Some(canonical::digest(&json!({"policy":self.custody.command.original_runtime_command.execution_policy(self.custody.command.web_search,self.custody.command.tool_policy.as_ref().map(|p|p.mode.as_str()))?}))?.as_str())
             {
                 return Err(Error::LocalAuthority);
             }

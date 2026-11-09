@@ -2,6 +2,8 @@ use super::*;
 use shared_execution::*;
 #[path = "shared_process_custody_tests.rs"]
 mod process_custody;
+#[path = "shared_claude_process_tests.rs"]
+mod claude_process;
 #[path = "shared_successor_tests.rs"]
 mod successor;
 fn digest<T: Serialize>(v: &T) -> String {

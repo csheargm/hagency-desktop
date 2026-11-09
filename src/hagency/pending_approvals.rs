@@ -276,6 +276,11 @@ pub fn describe(row: &Value) -> (String, String) {
             }
             format!("{name} wants to change files / 想修改文件")
         }
+        Some("claude/can_use_tool") => {
+            let tool=params["toolName"].as_str().unwrap_or("tool");
+            lines.push(short_json(&params["input"]));
+            format!("{name} wants to use {tool} / 想调用 {tool}")
+        }
         Some("item/permissions/requestApproval") => {
             let p = &params["permissions"];
             if p.get("network").is_some() {

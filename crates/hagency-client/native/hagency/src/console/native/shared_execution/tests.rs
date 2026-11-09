@@ -12,6 +12,8 @@ mod encrypted;
 #[cfg(feature="shared-context")]
 #[path="question_tests.rs"]
 mod question_runs;
+#[path = "claude_tests.rs"]
+mod claude_runs;
 #[cfg(feature = "shared-successors")]
 #[path = "attempt_tests.rs"]
 mod attempts;
@@ -92,6 +94,9 @@ pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
         .contains(&elapsed)
         .then(|| Duration::from_millis(31_500 - elapsed))
 }
+pub(crate) fn claude_enabled(s: &super::State) -> bool {
+    s.shared.command.as_ref().is_some_and(|c| c.version == 4)
+}
 pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Option<Value> {
     if path.ends_with("/crypto/device") {
         // Plaintext execution fixtures have no Agent device grant. Run cards
@@ -126,7 +131,7 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     let at = now();
     let c = s.shared.command.clone().unwrap();
     let h = digest(&c).unwrap();
-    if path.ends_with("/runtime/poll") || path.contains("/runtime/") && path.ends_with("/recover") {
+    if path.ends_with("/runtime/poll") || path.ends_with("/runtime/poll-v4") || path.contains("/runtime/") && path.ends_with("/recover") {
         let history = path.ends_with("/recover");
         if history {
             assert_eq!(body["commandDigest"], h);
@@ -230,7 +235,7 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     if path.ends_with("/work/poll") {
         let mut w = serde_json::to_value(w).unwrap();
         if s.shared.forged_work {
-            w["requesterMxid"] = json!("@other:test");
+            w["assignmentId"] = json!("foreign_assignment");
         }
         return Some(json!({"work":w,"observedAtMs":at}));
     }
@@ -558,7 +563,9 @@ async fn native_shared_execution_uncertain_or_replayed_start_never_runs_model() 
             .await
             .unwrap();
         let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
-        assert!(!methods.contains("turn/start") && !methods.contains("thread/start"));
+        // Native thread creation prepares context before admission. Only
+        // turn/start sends model input and must never happen on uncertainty.
+        assert!(!methods.contains("turn/start"));
         assert_eq!(f.state.lock().unwrap().shared.starts, 1);
         assert_eq!(rows(&f, "owner_managed_calls"), 1);
         assert_eq!(f.state.lock().unwrap().shared.work_writes, 0);
@@ -628,7 +635,7 @@ async fn native_shared_execution_logout_during_turn_drains_and_retains_unknown_e
 }
 #[tokio::test]
 #[ignore = "requires explicitly built offline supervised probe"]
-async fn native_shared_execution_foreign_request_is_denied_before_call_hold() {
+async fn native_shared_execution_foreign_assignment_is_denied_before_call_hold() {
     let (f, t, _) = fixture().await;
     f.state.lock().unwrap().shared.forged_work = true;
     t.poll_fixture(&f.registry, launch(&f, "text-usage"))
@@ -639,6 +646,24 @@ async fn native_shared_execution_foreign_request_is_denied_before_call_hold() {
     assert_eq!(f.state.lock().unwrap().shared.starts, 0);
     let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
     assert!(!methods.contains("turn/start"));
+    f.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly built offline supervised probe"]
+async fn native_shared_execution_authorized_group_requester_keeps_its_identity() {
+    let (f, t, _) = fixture().await;
+    f.state.lock().unwrap().shared.work.as_mut().unwrap().requester_mxid = "@member:test".into();
+    t.poll_fixture(&f.registry, launch(&f, "text-usage")).await.unwrap();
+    stopped(&f).await;
+    {
+        let state = f.state.lock().unwrap();
+        assert_eq!(state.shared.starts, 1);
+        assert_eq!(state.shared.work.as_ref().unwrap().requester_mxid, "@member:test");
+        assert!(state.shared.receipts.values().any(|receipt| receipt.state == "completed"));
+    }
+    let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
+    assert_eq!(methods.lines().filter(|line| *line == "turn/start").count(), 1);
     f.stop().await;
 }
 

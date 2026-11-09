@@ -66,7 +66,8 @@ enum Input<T> {
     Host(T),
     Action(Pending),
 }
-pub(super) struct Controls {
+pub(super) struct Controls<'a, C: super::claude_turn::Capture> {
+    capture: &'a mut C,
     stream: Option<Stream>,
     writing: Option<(Pending, PreparedInterrupt)>,
     waiting: Option<(Pending, String)>,
@@ -74,15 +75,17 @@ pub(super) struct Controls {
     output: Option<hagency_runtime::live_text::LiveText>,
     message_id: String,
 }
-impl Controls {
+impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
     pub fn new(
         mut stream: Option<Stream>,
         output: Option<hagency_runtime::live_text::LiveText>,
+        capture: &'a mut C,
     ) -> Self {
         if let Some(stream) = &mut stream {
             stream.activate();
         }
         Self {
+            capture,
             stream,
             writing: None,
             waiting: None,
@@ -91,7 +94,17 @@ impl Controls {
             message_id: String::new(),
         }
     }
-    pub fn observe_output(&mut self, message: &Message) {
+    pub async fn observe_message(&mut self, wire: &Claude, message: &Message) -> Result<()> {
+        if let Some(observation) = wire.last_observation() {
+            self.capture.observe(observation).await?;
+        }
+        self.observe_output(message);
+        Ok(())
+    }
+    pub async fn complete(&mut self, wire: &Claude, text: &str) -> Result<()> {
+        self.capture.complete(wire, text).await
+    }
+    fn observe_output(&mut self, message: &Message) {
         let Some(output) = &self.output else {
             return;
         };
@@ -201,7 +214,7 @@ impl Controls {
                     .map_err(|_| Error::Protocol("Claude interrupt write"))?
                 {
                     InterruptUpdate::Message(message) => {
-                        self.observe_output(&message);
+                        self.observe_message(wire, &message).await?;
                         return Ok(Update::Message((message, wire.last_observation().cloned())));
                     }
                     InterruptUpdate::Unavailable => {
@@ -234,7 +247,7 @@ impl Controls {
             };
             match update {
                 ControlUpdate::Message(message) => {
-                    self.observe_output(&message);
+                    self.observe_message(wire, &message).await?;
                     self.receipt(wire);
                     return Ok(Update::Message((message, wire.last_observation().cloned())));
                 }

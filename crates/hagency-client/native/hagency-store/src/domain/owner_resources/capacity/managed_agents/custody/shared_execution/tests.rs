@@ -72,3 +72,23 @@ fn shared_room_receipt_is_bound_to_exact_assignment_room_and_generation() {
     work=valid.clone();work.room_binding.as_mut().unwrap().assignment_id="another_agent".into();assert!(work.validate().is_err());
     work=valid;work.room_binding.as_mut().unwrap().generation=0;assert!(work.validate().is_err());
 }
+
+#[test]
+fn shared_claude_root_cannot_relabel_legacy_codex_or_broaden_owner_policy() {
+    let fixture: serde_json::Value=serde_json::from_str(include_str!("management-shared-execution-v1.json")).unwrap();
+    let original: SharedRuntimeCommand=serde_json::from_value(fixture["command"].clone()).unwrap();
+    let mut claude=original.clone();
+    claude.version=4;claude.capability=SHARED_CLAUDE_CAPABILITY.into();claude.policy=SHARED_CLAUDE_POLICY.into();
+    claude.validate(&claude.reserve_command.manager_mxid).unwrap();
+    assert_eq!(claude.runtime().unwrap(), "claude");
+    assert_eq!(claude.execution_policy(true,Some("standard")).unwrap(),"claude_tools_standard_web_v1");
+    assert!(claude.execution_policy(true,Some("arbitrary")).is_err());
+    assert_ne!(canonical::digest(&serde_json::to_value(&claude).unwrap()).unwrap(), fixture["commandDigest"]);
+    assert_eq!(canonical::digest(&serde_json::to_value(&original).unwrap()).unwrap(), fixture["commandDigest"]);
+    assert_eq!(canonical::digest(&serde_json::to_value(&claude.reserve_command).unwrap()).unwrap(), original.reserve_command_digest);
+    for field in ["version","capability","policy"] {
+        let mut mixed=serde_json::to_value(&claude).unwrap();
+        mixed[field]=fixture["command"][field].clone();
+        assert!(serde_json::from_value::<SharedRuntimeCommand>(mixed).unwrap().validate(&original.reserve_command.manager_mxid).is_err(),"{field}");
+    }
+}

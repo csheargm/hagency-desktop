@@ -22,6 +22,7 @@ pub struct OwnedClaudeSession {
     session: SessionDriver<Receiver, Sender, Receiver>,
     owner: SupervisedProcess,
     cleanup: Cleanup,
+    pub(super) shared: Option<super::claude_shared::State>,
 }
 impl OwnedClaudeSession {
     /// Use on an IO-enabled execution worker: guardian startup/stop is bounded
@@ -62,6 +63,7 @@ impl OwnedClaudeSession {
                 session,
                 owner,
                 cleanup: Cleanup::Pending,
+                shared: None,
             }),
             Err(error) => Err(StartError::Uncertain {
                 kind: error.kind(),
@@ -86,10 +88,15 @@ impl OwnedClaudeSession {
         &self,
         binding: &crate::claude::account::AccountBinding,
     ) -> Result<crate::claude::account::AccountObservation, Error> {
-        if self.cleanup != Cleanup::Pending { return Err(Error::Closed); }
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
         self.session.qualify_account(binding)
     }
-    pub fn matches_account_observation(&self, receipt: &crate::claude::account::AccountObservation) -> bool {
+    pub fn matches_account_observation(
+        &self,
+        receipt: &crate::claude::account::AccountObservation,
+    ) -> bool {
         self.cleanup == Cleanup::Pending && self.session.matches_account_observation(receipt)
     }
     pub fn observation_source(&self) -> Result<ObservationSource, Error> {
@@ -100,6 +107,12 @@ impl OwnedClaudeSession {
     }
     pub fn last_observation(&self) -> Option<&Observation> {
         self.session.last_observation()
+    }
+    pub(super) fn attach_shared_activity(
+        &mut self,
+        activity: std::sync::Arc<dyn Fn() -> Option<tokio::time::Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        self.session.attach_shared_activity(activity)
     }
     pub fn cleanup(&self) -> Cleanup {
         self.cleanup
@@ -187,6 +200,9 @@ impl OwnedClaudeSession {
     /// ResultObserved is not automatic stop: background activity may survive a
     /// Claude result. Only the retained owner can supply physical stop evidence.
     pub fn stop(&mut self) -> Cleanup {
+        if let Some(shared) = &self.shared {
+            shared.source.retire();
+        }
         self.session.close();
         if !matches!(self.cleanup,Cleanup::Observed(report) if report.scope.whole_tree_stopped) {
             self.cleanup = observe_stop(&mut self.owner);
@@ -200,7 +216,14 @@ impl OwnedClaudeSession {
     }
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
         let operation = Operation::new(self)?;
-        let result = operation.runner.session.prompt(text).await;
+        let result = async {
+            if let Some(shared) = &operation.runner.shared {
+                shared.source.begin_thread().map_err(|_| Error::State)?;
+                shared.source.begin_turn(text).map_err(|_| Error::State)?;
+            }
+            operation.runner.session.prompt(text).await
+        }
+        .await;
         operation.finish(result)
     }
     pub async fn bind_task_mcp(&mut self, helper: crate::claude::TaskMcp) -> Result<(), Error> {

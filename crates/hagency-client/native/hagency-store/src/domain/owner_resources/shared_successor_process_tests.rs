@@ -237,8 +237,9 @@ async fn shared_successor_actual_process_stop_allows_attempt_three_without_rebin
         ),
         (7, 7, 143)
     );
-    // The original process stopped, so its old call closed at its known usage.
-    assert!(third.budget_observation.usage_complete);
+    // Stopping proves there is no live spender. It does not turn partial
+    // usage into a final bill; postpaid admission still permits the next call.
+    assert!(!third.budget_observation.usage_complete);
     assert_eq!(third.original_runtime_digest, digest(&original));
     let SharedAttemptClaim::Issued(third_custody) = f
         .registry

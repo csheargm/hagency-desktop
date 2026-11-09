@@ -62,8 +62,16 @@ def main():
                 command.insert(1, '--offline')
             command = [command[0], "--config", str(args.cargo_config.resolve()), *command[1:]]
         log = output / (name + ".log")
+        run_env = env.copy()
+        if command[0] == "cargo" and "CARGO_TARGET_DIR" not in run_env and "--manifest-path" not in command:
+            # Swift/Clang modules store absolute cache paths. Reusing the same
+            # target through its worktree symlink and its real path otherwise
+            # loads each module twice and can crash the compiler.
+            target = cwd / "target"
+            if target.is_symlink():
+                run_env["CARGO_TARGET_DIR"] = str(target.resolve())
         with log.open("w") as stream:
-            result = subprocess.run(command, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT)
+            result = subprocess.run(command, cwd=cwd, env=run_env, stdout=stream, stderr=subprocess.STDOUT)
         text = log.read_text()
         count = sum(int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text))
         unchanged = native_lock is None or native_lock == (ROOT / 'Cargo.lock').read_bytes().split(b'[[patch.unused]]', 1)[0]
@@ -178,12 +186,21 @@ def main():
     run("native-model-qualification", ["cargo", "test", "--locked", "-p", "hagency-core", "--test", "qualification"], cwd=CLIENT, rust_tests=True)
     run("native-model-catalog", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "resource_onboarding::tests"], cwd=CLIENT, rust_tests=True)
     run("native-resource-creation", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "additional_configuration_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
-    probe_build = run("native-context-probe", ["cargo", "build", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--bin", "hagency-managed-runtime-probe", "--message-format=json"], cwd=CLIENT)
+    probe_build = run("native-context-probe", ["cargo", "build", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--bin", "hagency-managed-runtime-probe", "--bin", "hagency-runtime-probe", "--message-format=json"], cwd=CLIENT)
     artifacts = [json.loads(line) for line in probe_build.splitlines() if line.startswith("{")]
     probes = [item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "hagency-managed-runtime-probe" and item.get("executable")]
     if len(probes) != 1:
         raise SystemExit("Expected one freshly built offline context probe")
     env["HAGENCY_TEST_RUNTIME_PROBE"] = probes[0]
+    claude_probes = [item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "hagency-runtime-probe" and item.get("executable")]
+    if len(claude_probes) != 1:
+        raise SystemExit("Expected one freshly built offline Claude probe")
+    env["HAGENCY_TEST_CLAUDE_RUNTIME_PROBE"] = claude_probes[0]
+    run("native-shared-claude-custody", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_claude", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-shared-claude-lease", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--test", "claude_owned", "shared_claude"], cwd=CLIENT, rust_tests=True)
+    run("native-shared-claude-approval", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_claude_encrypted_approval"], cwd=CLIENT, rust_tests=True)
+    run("native-shared-claude-host", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_claude_full_host", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-renewable-activity", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--lib", "renewable_activity_keeps_exact_epochs"], cwd=CLIENT, rust_tests=True)
     run("native-run-card-startup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_run_card_device_delay_does_not_block_native_turn", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-postpaid-shared", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "postpaid_", "--", "--include-ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     for name, package, pattern in [

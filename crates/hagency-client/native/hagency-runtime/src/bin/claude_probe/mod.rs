@@ -29,6 +29,9 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "account-api-key"
             | "account-provider"
             | "account-missing"
+            | "shared-usage"
+            | "shared-result-exit"
+            | "shared-wait"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -51,7 +54,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         return super::pulse(marker);
     }
     let mut initialization = json!({});
-    if mode.starts_with("account-") && mode != "account-missing" {
+    if (mode.starts_with("account-") && mode != "account-missing") || mode.starts_with("shared-") {
         initialization["account"] = json!({"email":"owner@example.test","apiProvider":"firstParty"});
         match mode {
             "account-wrong-email" => initialization["account"]["email"] = json!("another@example.test"),
@@ -72,7 +75,16 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         marker.with_extension("prompt"),
         serde_json::to_vec(&prompt)?,
     )?;
-    emit(json!({"type":"system","subtype":"init","session_id":"owned-claude"}))?;
+    emit(json!({"type":"system","subtype":"init","session_id":"owned-claude","user_message_uuid":prompt["uuid"]}))?;
+    if mode.starts_with("shared-") {
+        if matches!(mode, "shared-usage" | "shared-result-exit") {
+            emit(json!({"type":"result","subtype":"success","session_id":"owned-claude","is_error":false,"result":"shared offline answer","user_message_uuid":prompt["uuid"],"user_message_uuids":[prompt["uuid"]],"modelUsage":{"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}}}))?;
+            if mode == "shared-result-exit" { return Ok(()); }
+            emit(json!({"type":"system","subtype":"session_state_changed","session_id":"owned-claude","state":"idle"}))?;
+        }
+        drop(stdin);
+        return super::pulse(marker);
+    }
     if mode.starts_with("permission-") {
         let input = json!({"command":"offline literal $(no shell) 中文"});
         emit(

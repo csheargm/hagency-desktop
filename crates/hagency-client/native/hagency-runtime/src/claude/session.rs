@@ -98,18 +98,39 @@ pub struct SessionDriver<R, W, E> {
     room_mcp: Option<room_mcp::State>,
 }
 impl<R, W, E> SessionDriver<R, W, E> {
+    pub(crate) fn attach_shared_activity(
+        &mut self,
+        activity: Arc<dyn Fn() -> Option<tokio::time::Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        if self.phase != Phase::Ready {
+            return Err(Error::State);
+        }
+        self.wire.attach_activity(activity)
+    }
     pub(crate) fn qualify_account(
-        &self, binding: &super::account::AccountBinding,
+        &self,
+        binding: &super::account::AccountBinding,
     ) -> Result<super::account::AccountObservation, Error> {
         binding.check()?;
-        if self.phase != Phase::Ready || !self.account.as_ref().is_some_and(|a| a.matches(binding)) {
+        if self.phase != Phase::Ready || !self.account.as_ref().is_some_and(|a| a.matches(binding))
+        {
             return Err(Error::Identity);
         }
-        Ok(super::account::AccountObservation { source: self.source.clone(), binding: binding.clone() })
+        Ok(super::account::AccountObservation {
+            source: self.source.clone(),
+            binding: binding.clone(),
+        })
     }
-    pub(crate) fn matches_account_observation(&self, receipt: &super::account::AccountObservation) -> bool {
-        self.phase != Phase::Closed && Arc::ptr_eq(&self.source, &receipt.source)
-            && self.account.as_ref().is_some_and(|a| a.matches(&receipt.binding))
+    pub(crate) fn matches_account_observation(
+        &self,
+        receipt: &super::account::AccountObservation,
+    ) -> bool {
+        self.phase != Phase::Closed
+            && Arc::ptr_eq(&self.source, &receipt.source)
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|a| a.matches(&receipt.binding))
     }
     pub fn new(stdout: R, stdin: W, stderr: E, limits: Limits) -> Result<Self, Error> {
         Ok(Self {
@@ -220,7 +241,10 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     self.control.cancel(request_id)?;
                 }
             }
-            Message::ControlResponse { request_id, outcome } => {
+            Message::ControlResponse {
+                request_id,
+                outcome,
+            } => {
                 self.interrupt.observe(request_id, outcome, &self.wire)?;
             }
         }
@@ -358,22 +382,23 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     // work finishes. Metadata never becomes usage or callback authority.
     fn observe_prelude(&mut self, message: &Message) -> Result<bool, Error> {
         if self.awaiting_init
-                && let Message::Event {
-                    session_id,
-                    kind,
-                    payload } = message
-                && (*kind == EventKind::CommandLifecycle
-                    || (*kind == EventKind::System
-                        && payload["subtype"] == "session_state_changed"))
+            && let Message::Event {
+                session_id,
+                kind,
+                payload,
+            } = message
+            && (*kind == EventKind::CommandLifecycle
+                || (*kind == EventKind::System && payload["subtype"] == "session_state_changed"))
+        {
+            if self
+                .prelude_session_id
+                .as_ref()
+                .is_some_and(|id| id != session_id)
+                || self.session_id.as_ref().is_some_and(|id| id != session_id)
             {
-                if self
-                    .prelude_session_id
-                    .as_ref()
-                    .is_some_and(|id| id != session_id)
-                || self.session_id.as_ref().is_some_and(|id| id != session_id) {
-                    return Err(Error::Identity);
-                }
-                self.prelude_session_id = Some(session_id.clone());
+                return Err(Error::Identity);
+            }
+            self.prelude_session_id = Some(session_id.clone());
             return Ok(true);
         }
         Ok(false)

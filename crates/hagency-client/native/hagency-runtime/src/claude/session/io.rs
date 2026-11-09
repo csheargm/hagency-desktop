@@ -98,6 +98,7 @@ pub(super) struct Wire<R, W, E> {
     origin: Instant,
     lifetime: Deadline,
     supervised: bool,
+    activity: Option<std::sync::Arc<dyn Fn() -> Option<Instant> + Send + Sync>>,
     input: [u8; READ_BYTES],
     start: usize,
     end: usize,
@@ -126,6 +127,7 @@ impl<R, W, E> Wire<R, W, E> {
             origin,
             lifetime: (origin + Duration::from_millis(limits.lifetime_ms)).into(),
             supervised: false,
+            activity: None,
             input: [0; READ_BYTES],
             start: 0,
             end: 0,
@@ -139,6 +141,26 @@ impl<R, W, E> Wire<R, W, E> {
             writing: None,
             termination: None,
         })
+    }
+    pub fn attach_activity(
+        &mut self,
+        activity: std::sync::Arc<dyn Fn() -> Option<Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        if self.activity.is_some()
+            || self.termination.is_some()
+            || activity().is_none_or(|until| until <= Instant::now())
+        {
+            return Err(Error::State);
+        }
+        self.activity = Some(activity);
+        Ok(())
+    }
+    fn external_deadline(&self) -> Deadline {
+        self.activity
+            .as_ref()
+            .map_or(Deadline::UNBOUNDED, |activity| {
+                activity().unwrap_or_else(Instant::now).into()
+            })
     }
     pub fn event_deadline(&self) -> Instant {
         Instant::now() + Duration::from_millis(self.limits.event_wait_ms)
@@ -260,7 +282,12 @@ impl<R, W, E> Wire<R, W, E> {
             return Err(Error::Closed);
         }
         self.decoder.check_deadline(self.now_ms())?;
-        if until.into().limit(self.lifetime).expired() {
+        if until
+            .into()
+            .limit(self.lifetime)
+            .limit(self.external_deadline())
+            .expired()
+        {
             return Err(Error::Timeout);
         }
         Ok(())
@@ -272,7 +299,10 @@ impl<R, W, E> Wire<R, W, E> {
             .and_then(|ms| self.origin.checked_add(Duration::from_millis(ms)))
             .map(Deadline::from)
             .unwrap_or(Deadline::UNBOUNDED);
-        until.limit(self.lifetime).limit(partial)
+        until
+            .limit(self.lifetime)
+            .limit(self.external_deadline())
+            .limit(partial)
     }
     fn parse(&mut self) -> Result<(), Error> {
         let before = self.decoder.buffered_bytes();
@@ -427,8 +457,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 return Ok(Some(output));
             }
             Observed::Deadline => {
+                // An original lease can renew while this exact read waits.
+                // Re-evaluate it without cancelling/restarting the operation.
                 self.check(until)?;
-                return Err(Error::Timeout);
+                return Ok(None);
             }
             Observed::Write(Ok(0)) => return Err(Error::Io("stdin write zero")),
             Observed::Read(Ok(0)) => {

@@ -119,7 +119,23 @@ impl Files<Source> {
         work: &SharedWorkItem,
         process: &OwnedSession,
     ) -> std::result::Result<Option<Self>, NativeError> {
-        if !work.encrypted || !process.shared_tools_enabled() {
+        Self::for_workspace(
+            io,
+            b,
+            work,
+            process.shared_workspace(),
+            process.shared_tools_enabled(),
+        )
+        .await
+    }
+    pub(super) async fn for_workspace(
+        io: &Io,
+        b: &Bound,
+        work: &SharedWorkItem,
+        workspace: &Path,
+        enabled: bool,
+    ) -> std::result::Result<Option<Self>, NativeError> {
+        if !work.encrypted || !enabled {
             return Ok(None);
         }
         #[cfg(test)]
@@ -128,7 +144,7 @@ impl Files<Source> {
                 Some(f) => Self::open(
                     Arc::new(Source::Fixture(f.clone())),
                     work,
-                    process.shared_workspace(),
+                    workspace,
                     &f.records,
                 )
                 .map(Some)
@@ -145,7 +161,7 @@ impl Files<Source> {
                 work: work.id.clone(),
             }),
             work,
-            process.shared_workspace(),
+            workspace,
             &root,
         )
         .map(Some)
@@ -159,11 +175,25 @@ impl<S: FileIo> Files<S> {
         workspace: &Path,
         records: &Path,
     ) -> Result<Self> {
-        Self::for_room(source, Conversation { namespace: &work.assignment_id, room: &work.room_id,
-            event: &work.event_id, requester: &work.requester_mxid,
-            thread: (work.thread_root != work.event_id).then_some(work.thread_root.as_str()) }, workspace, records)
+        Self::for_room(
+            source,
+            Conversation {
+                namespace: &work.assignment_id,
+                room: &work.room_id,
+                event: &work.event_id,
+                requester: &work.requester_mxid,
+                thread: (work.thread_root != work.event_id).then_some(work.thread_root.as_str()),
+            },
+            workspace,
+            records,
+        )
     }
-    pub(in crate::console) fn for_room(source: Arc<S>, room: Conversation<'_>, workspace: &Path, records: &Path) -> Result<Self> {
+    pub(in crate::console) fn for_room(
+        source: Arc<S>,
+        room: Conversation<'_>,
+        workspace: &Path,
+        records: &Path,
+    ) -> Result<Self> {
         // Preserve the shared-agent receipt namespace byte-for-byte.
         let scope = sha(serde_json::to_vec(&json!([
             room.namespace,

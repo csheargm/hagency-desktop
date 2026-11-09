@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod claude_controls;
+pub mod claude_turn;
 
 type Claude = hagency_runtime::owned::OwnedClaudeSession;
 type Octos = hagency_runtime::owned::OwnedOctosSession;
@@ -464,10 +465,15 @@ impl Session {
     }
     /// Bind once after initialize, before opening/running the native context.
     /// Every call's host authority is supplied separately by ApprovalQueue.
-    pub async fn enable_room_tools(&mut self, tools: hagency_runtime::room_tools::RoomTools) -> Result<()> {
+    pub async fn enable_room_tools(
+        &mut self,
+        tools: hagency_runtime::room_tools::RoomTools,
+    ) -> Result<()> {
         match self {
             Self::Codex(session) => session.enable_room_tools(tools).await,
-            Self::Claude { wire, .. } => wire.bind_room_tools(tools).await
+            Self::Claude { wire, .. } => wire
+                .bind_room_tools(tools)
+                .await
                 .map_err(|_| Error::Protocol("Claude room tools startup")),
             Self::Octos { .. } => Err(Error::Profile("room tools unavailable for this runtime")),
         }
@@ -688,8 +694,12 @@ impl Session {
             _ => unreachable!(),
         };
         let TurnResult {
-            text, mut usage,
-            status, requests, returns, cumulative,
+            text,
+            mut usage,
+            status,
+            requests,
+            returns,
+            cumulative,
         } = result?;
         let is_claude = matches!(self, Self::Claude { .. });
         let (context, session) = match self {
@@ -849,13 +859,76 @@ async fn permission(
         _ => false,
     }
 }
-struct TurnResult {
-    text: String,
-    usage: Usage,
-    status: TurnStatus,
-    requests: usize,
-    returns: usize,
-    cumulative: bool,
+type TurnResult = claude_turn::Outcome;
+
+struct PersonalClaudeHost<'a> {
+    ledger: &'a mut Ledger,
+    owner: &'a str,
+    scope: &'a Scope,
+    call: &'a str,
+    context: &'a str,
+    dispatch: &'a str,
+    queue: &'a ApprovalQueue,
+}
+impl claude_turn::Host for PersonalClaudeHost<'_> {
+    async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
+        process
+            .prompt(input)
+            .await
+            .map(|_| ())
+            .map_err(|_| Error::Protocol("Claude prompt"))
+    }
+    fn bind_session(&mut self, session: &str) -> Result<()> {
+        self.ledger
+            .bind_external_session(
+                self.scope,
+                self.call,
+                self.context,
+                session,
+                &Usage {
+                    input: 0,
+                    output: 0,
+                    cached_input: 0,
+                    cache_write_input: Some(0),
+                    reasoning_output: 0,
+                    accounting_version: "claude-reported-v1".into(),
+                },
+            )
+            .map_err(Into::into)
+    }
+    async fn permission(
+        &mut self,
+        _request_id: &str,
+        tool: String,
+        arguments: Value,
+        directory: &Path,
+    ) -> bool {
+        permission(
+            self.ledger,
+            self.owner,
+            self.scope,
+            self.dispatch,
+            tool,
+            arguments,
+            directory,
+            self.queue,
+        )
+        .await
+    }
+}
+// Personal accounting is retained by its original session ledger and native
+// final model totals. Shared execution supplies its separate typed call sink.
+struct PersonalClaudeCapture;
+impl claude_turn::Capture for PersonalClaudeCapture {
+    async fn bind(&mut self, _process: &Claude) -> Result<()> {
+        Ok(())
+    }
+    async fn observe(&mut self, _observation: &claude::session::Observation) -> Result<()> {
+        Ok(())
+    }
+    async fn complete(&mut self, _process: &Claude, _text: &str) -> Result<()> {
+        Ok(())
+    }
 }
 #[allow(clippy::too_many_arguments)]
 async fn run_claude(
@@ -872,358 +945,28 @@ async fn run_claude(
     started: Option<tokio::sync::oneshot::Sender<()>>,
     stream: Option<crate::run_controls::Stream>,
 ) -> Result<TurnResult> {
-    if queue.room.as_ref().is_some_and(|room| !room.matches(scope, dispatch)) {
-        return Err(Error::Protocol("room tool dispatch differs"));
-    }
-    wire.prompt(input)
-        .await
-        .map_err(|_| Error::Protocol("Claude prompt"))?;
-    // Claude binds its session on the first system/init event after prompt.
-    let init = wire
-        .next_message()
-        .await
-        .map_err(|_| Error::Protocol("Claude session init"))?;
-    if !matches!(
-        init,
-        claude::Message::Event {
-            kind: claude::EventKind::System,
-            ..
-        }
-    ) {
-        return Err(Error::Protocol("Claude session init"));
-    }
-    ledger.bind_external_session(
+    let mut host = PersonalClaudeHost {
+        ledger,
+        owner,
         scope,
         call,
         context,
-        wire.session_id().ok_or(Error::Unknown)?,
-        &Usage {
-            input: 0,
-            output: 0,
-            cached_input: 0,
-            cache_write_input: Some(0),
-            reasoning_output: 0,
-            accounting_version: "claude-reported-v1".into(),
-        },
-    )?;
-    wire.supervise_turn()
-        .map_err(|_| Error::Protocol("Claude turn supervision"))?;
-    wire.enable_approval_control(claude::session::ApprovalControlPolicy {
-        owner_wait_ms: 300_000,
-        response_reserve_ms: 10_000,
-    })
-    .map_err(|_| Error::Protocol("Claude control"))?;
-    wire.set_question_wait(610_000)
-        .map_err(|_| Error::Protocol("Claude question wait"))?;
-    if queue.room.is_some() {
-        wire.enable_room_tool_callbacks().map_err(|_| Error::Protocol("Claude room tools"))?;
-    }
-    let mut controls = claude_controls::Controls::new(stream, queue.live_text.clone());
-    if let Some(send) = started {
-        let _ = send.send(());
-    }
-    let mut requests = std::collections::BTreeSet::new();
-    let mut returns = std::collections::BTreeSet::new();
-    let mut buffered = std::collections::VecDeque::new();
-    let mut completed: Option<(String, Usage, TurnStatus, bool)> = None;
-    let unresolved = |completed: Option<(String, Usage, TurnStatus, bool)>,
-                      requested,
-                      returned|
-     -> Result<TurnResult> {
-        let (text, _, status, _) = completed.ok_or(Error::Unknown)?;
-        Ok(TurnResult {
-            text,
-            usage: crate::unreported_usage(),
-            status,
-            requests: requested,
-            returns: returned,
-            cumulative: false,
-        })
+        dispatch,
+        queue,
     };
-    loop {
-        if buffered.is_empty()
-            && controls.settled()
-            && wire.phase() == claude::session::Phase::ResultObserved
-        {
-            if wire.needs_usage_snapshot() && !wire.usage_snapshot_requested() {
-                if wire.request_usage_snapshot().await.is_err() {
-                    return unresolved(completed.take(), requests.len(), returns.len());
-                }
-                continue;
-            }
-            let (text, mut usage, status, cumulative) = completed.take().ok_or(Error::Unknown)?;
-            if wire.needs_usage_snapshot() {
-                usage = crate::unreported_usage();
-            }
-            return Ok(TurnResult {
-                text,
-                usage,
-                status,
-                requests: requests.len(),
-                returns: returns.len(),
-                cumulative,
-            });
-        }
-        let (message, observation) = if let Some(item) = buffered.pop_front() {
-            item
-        } else {
-            match controls.message(wire).await {
-                Ok(Some(observed)) => observed,
-                Ok(None) => continue,
-                Err(_) if wire.usage_snapshot_requested() => {
-                    // The original answer and idle state were already proven.
-                    // A failed accounting query must not discard that answer;
-                    // its unknown charge remains held for reconciliation.
-                    return unresolved(completed.take(), requests.len(), returns.len());
-                }
-                Err(_) => return Err(Error::Protocol("Claude event")),
-            }
-        };
-        if controls.accepted()
-            && matches!(message,
-                claude::Message::Mcp { .. } | claude::Message::Permission { .. }
-            )
-        {
-            continue;
-        }
-        match message {
-            claude::Message::Mcp { request_id, .. } => {
-                let request = wire.room_tool_request(&request_id)
-                    .map_err(|_| Error::Protocol("Claude room callback"))?;
-                let mut prepared = if let Some(operation) = request.operation() {
-                    let channel = queue.room.as_ref().ok_or(Error::Protocol("Claude room authority missing"))?;
-                    // Leave the native writer its own ten-second bound so a
-                    // slow Matrix operation can return an error and reasoning
-                    // can continue instead of expiring the entire callback.
-                    let deadline = request.response_deadline().checked_sub(Duration::from_secs(10))
-                        .unwrap_or_else(tokio::time::Instant::now)
-                        .min(tokio::time::Instant::now() + Duration::from_secs(65));
-                    let reply = channel.call(operation.clone(), request.tool_use_id().unwrap_or(&request_id).into(), deadline);
-                    tokio::pin!(reply);
-                    let answer = loop {
-                        match controls.next(wire, reply.as_mut(), true).await? {
-                            claude_controls::Update::Ready(answer) => break Some(answer),
-                            claude_controls::Update::Interrupted | claude_controls::Update::Idle => break None,
-                            claude_controls::Update::Message((message, observation)) => {
-                                let cancelled = matches!(&message, claude::Message::ControlCancel { request_id: id } if id == &request_id);
-                                let ended = wire.phase() == claude::session::Phase::ResultObserved;
-                                claude_controls::defer(&mut buffered, message, observation)?;
-                                if cancelled || ended { break None; }
-                            }
-                        }
-                    };
-                    let Some(answer) = answer else { continue; };
-                    wire.prepare_room_tool_reply(&request, answer.text(), answer.is_error())
-                } else {
-                    wire.prepare_room_metadata_reply(&request)
-                }.map_err(|_| Error::Protocol("Claude room response"))?;
-                loop {
-                    match wire.send_prepared_room_reply(&mut prepared).await
-                        .map_err(|_| Error::Protocol("Claude room response write"))? {
-                        claude::session::PreparedUpdate::WriteAccepted(_) => break,
-                        claude::session::PreparedUpdate::Message(message) => {
-                            controls.observe_output(&message);
-                            claude_controls::defer(&mut buffered, message, wire.last_observation().cloned())?;
-                        }
-                    }
-                }
-            }
-            claude::Message::Permission {
-                request_id,
-                tool_name,
-                input,
-                ..
-            } => {
-                let directory = approval_directory(&profile.cwd, &input);
-                enum Decision {
-                    Tool(bool),
-                    Question(Option<crate::questions::SubmittedAnswer>),
-                }
-                let questions = if tool_name == "AskUserQuestion" {
-                    Some(
-                        wire.question(&request_id)
-                            .map_err(|_| Error::Protocol("Claude question"))?,
-                    )
-                } else {
-                    None
-                };
-                let question_id = request_id.clone();
-                let question_deadline = wire
-                    .approval_deadline(&request_id)
-                    .map_err(|_| Error::Protocol("Claude question deadline"))?
-                    .min(tokio::time::Instant::now() + Duration::from_secs(600));
-                let decision = async {
-                    // Only our bound, closed-schema Matrix SDK tools inherit
-                    // this dispatch's room authority. External MCP tools still
-                    // use the owner's ordinary permission policy below.
-                    if let Some(name) = tool_name.strip_prefix("mcp__hagency_matrix__") {
-                        return Decision::Tool(queue.room.is_some()
-                            && hagency_runtime::room_tools::RoomTools::history_and_files().parse(name, &input).is_ok());
-                    }
-                    if let Some(questions) = questions {
-                        return Decision::Question(match &queue.questions {
-                            Some(channel) => {
-                                channel
-                                    .ask(scope, dispatch, question_id, questions, question_deadline)
-                                    .await
-                            }
-                            None => None,
-                        });
-                    }
-                    Decision::Tool(
-                        permission(
-                            ledger,
-                            owner,
-                            scope,
-                            dispatch,
-                            format!("claude.{tool_name}"),
-                            input,
-                            &directory,
-                            queue,
-                        )
-                        .await,
-                    )
-                };
-                tokio::pin!(decision);
-                let allow = loop {
-                    match controls.next(wire, decision.as_mut(), true)
-                        .await? {
-                        claude_controls::Update::Ready(allow) => break Some(allow),
-                        claude_controls::Update::Interrupted | claude_controls::Update::Idle => {
-                            break None;
-                        }
-                        claude_controls::Update::Message((message, observation)) => {
-                            let cancelled = matches!(&message,claude::Message::ControlCancel {request_id:id} if id==&request_id);
-                            let ended = wire.phase() == claude::session::Phase::ResultObserved;
-                            claude_controls::defer(&mut buffered, message, observation)?;
-                            if cancelled || ended {
-                                break None;
-                            }
-                        }
-                    }
-                };
-                let Some(decision) = allow else {
-                    continue;
-                };
-                let mut submitted = None;
-                let mut prepared = match decision {
-                    Decision::Question(answer) => {
-                        let answers = answer
-                            .as_ref()
-                            .map(|a| a.answers.clone())
-                            .unwrap_or_default();
-                        submitted = answer;
-                        wire.prepare_question(&request_id, &answers)
-                    }
-                    Decision::Tool(allow) => wire.prepare_approval(
-                        &request_id,
-                        if allow {
-                            claude::session::PermissionDecision::Allow
-                        } else {
-                            claude::session::PermissionDecision::Deny
-                        },
-                    ),
-                }
-                .map_err(|_| Error::Protocol("Claude decision"))?;
-                loop {
-                    match wire
-                        .send_prepared_approval(&mut prepared)
-                        .await
-                        .map_err(|_| Error::Protocol("Claude approval write"))?
-                    {
-                        claude::session::PreparedUpdate::WriteAccepted(_) => break,
-                        claude::session::PreparedUpdate::Message(message) => {
-                            controls.observe_output(&message);
-                            claude_controls::defer(&mut buffered, message, wire.last_observation().cloned())?;
-                        }
-                    }
-                }
-                if let Some(answer) = submitted {
-                    answer.accepted();
-                }
-            }
-            claude::Message::Event { kind, payload, .. } => {
-                if let Some(content) = payload["message"]["content"].as_array() {
-                    for block in content {
-                        if block["type"] == "tool_use"
-                            && let Some(id) = block["id"].as_str()
-                        {
-                            claude_controls::remember_tool(&mut requests, id)?;
-                        }
-                        if block["type"] == "tool_result"
-                            && let Some(id) = block["tool_use_id"].as_str()
-                        {
-                            claude_controls::remember_tool(&mut returns, id)?;
-                        }
-                    }
-                }
-                if kind == claude::EventKind::Result {
-                    let Some(observation) = observation else {
-                        return Err(Error::Unknown);
-                    };
-                    let claude::session::ObservationKind::Result { usage, is_error } =
-                        observation.kind()
-                    else {
-                        return Err(Error::Unknown);
-                    };
-                    let counts = usage.counts();
-                    let cumulative =
-                        usage.coverage() == claude::session::UsageCoverage::ReportedModelsResult;
-                    let usage = match (
-                        counts.input(),
-                        counts.cache_read(),
-                        counts.cache_write(),
-                        counts.output(),
-                    ) {
-                        (Some(fresh), Some(cache), Some(write), Some(output)) => Usage {
-                            input: fresh
-                                .checked_add(cache)
-                                .and_then(|v| v.checked_add(write))
-                                .ok_or(Error::Unknown)?,
-                            output,
-                            cached_input: cache,
-                            cache_write_input: Some(write),
-                            reasoning_output: 0,
-                            accounting_version: "claude-reported-v1".into(),
-                        },
-                        _ => crate::unreported_usage(),
-                    };
-                    if wire.usage_snapshot_requested() {
-                        let original = completed.as_mut().ok_or(Error::Unknown)?;
-                        if usage.is_reported()
-                            && original.1.is_reported()
-                            && (usage.input < original.1.input
-                                || usage.output < original.1.output
-                                || usage.cached_input < original.1.cached_input
-                                || matches!((usage.cache_write_input, original.1.cache_write_input), (Some(next), Some(prior)) if next < prior))
-                        {
-                            return unresolved(completed.take(), requests.len(), returns.len());
-                        }
-                        original.1 = if *is_error || !cumulative {
-                            crate::unreported_usage()
-                        } else {
-                            usage
-                        };
-                        original.3 = cumulative;
-                    } else {
-                        completed = Some((
-                            payload["result"].as_str().unwrap_or("").into(),
-                            usage,
-                            if payload["terminal_reason"] == "aborted_streaming" {
-                                TurnStatus::Interrupted
-                            } else if *is_error {
-                                TurnStatus::Failed
-                            } else {
-                                TurnStatus::Completed
-                            },
-                            cumulative,
-                        ));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    claude_turn::run(
+        wire,
+        profile,
+        scope,
+        dispatch,
+        input,
+        queue,
+        started,
+        stream,
+        &mut host,
+        &mut PersonalClaudeCapture,
+    )
+    .await
 }
 #[allow(clippy::too_many_arguments)]
 async fn run_octos(
@@ -1442,8 +1185,12 @@ pub struct ClaudeAccountStatus {
 }
 impl ClaudeAccountStatus {
     pub fn oauth_metadata(&self) -> Option<(&str, &str)> {
-        if !self.authenticated || self.method.as_deref() != Some("claude.ai")
-            || self.provider.as_deref() != Some("firstParty") { return None; }
+        if !self.authenticated
+            || self.method.as_deref() != Some("claude.ai")
+            || self.provider.as_deref() != Some("firstParty")
+        {
+            return None;
+        }
         Some((self.email.as_deref()?, self.organization.as_deref()?))
     }
 }
@@ -1490,7 +1237,11 @@ pub async fn claude_account_status(
     let field = |key: &str| -> Result<Option<String>> {
         match value.get(key) {
             None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) if !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control) => Ok(Some(s.clone())),
+            Some(Value::String(s))
+                if !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control) =>
+            {
+                Ok(Some(s.clone()))
+            }
             _ => Err(Error::Protocol("account metadata")),
         }
     };

@@ -5,16 +5,26 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::Weak;
 
-pub(in crate::console::native) struct ServerOperation(Box<Action>);
+pub(in crate::console::native) struct ServerOperation(Box<Action>, bool);
 pub(super) enum Action {
     Crypto(super::e2ee::CryptoAction),
-    ApprovalRegister {authority: SharedActivityRef, work: SharedWorkItem, id:String, request:Value, remaining_ms:u64},
-    ApprovalTake {authority: SharedActivityRef,id:String,digest:String},
-    #[cfg(feature="shared-budget-execution")]
+    ApprovalRegister {
+        authority: SharedActivityRef,
+        work: SharedWorkItem,
+        id: String,
+        request: Value,
+        remaining_ms: u64,
+    },
+    ApprovalTake {
+        authority: SharedActivityRef,
+        id: String,
+        digest: String,
+    },
+    #[cfg(feature = "shared-budget-execution")]
     BudgetDemand(Box<super::budget_demand_io::BudgetDemandAction>),
-    #[cfg(feature="shared-budget-execution")]
+    #[cfg(feature = "shared-budget-execution")]
     Budget(Box<super::budget_io::AttemptAction>),
-    #[cfg(feature="shared-budget-execution")]
+    #[cfg(feature = "shared-budget-execution")]
     BudgetWork(Box<super::budget_work_io::WorkAction>),
     Context(Box<super::context_io::ContextAction>),
     Demand(Box<super::demand_io::DemandAction>),
@@ -47,14 +57,38 @@ pub(super) enum Action {
 impl ServerOperation {
     fn new(action: Action) -> Result<Self, NativeError> {
         match &action {
-            Action::Crypto(_) => {},
-            Action::ApprovalRegister {authority,work,id,request,remaining_ms}=>{authority.validate().map_err(store)?;work.validate().map_err(store)?;super::super::key(id)?;if *remaining_ms==0 || *remaining_ms>120_000 || serde_json::to_vec(request).map_or(true,|v|v.len()>64*1024){return Err(invalid())}},
-            Action::ApprovalTake {authority,id,digest}=>{authority.validate().map_err(store)?;super::super::key(id)?;hash(digest)?;},
-            #[cfg(feature="shared-budget-execution")]
+            Action::Crypto(_) => {}
+            Action::ApprovalRegister {
+                authority,
+                work,
+                id,
+                request,
+                remaining_ms,
+            } => {
+                authority.validate().map_err(store)?;
+                work.validate().map_err(store)?;
+                super::super::key(id)?;
+                if *remaining_ms == 0
+                    || *remaining_ms > 120_000
+                    || serde_json::to_vec(request).map_or(true, |v| v.len() > 64 * 1024)
+                {
+                    return Err(invalid());
+                }
+            }
+            Action::ApprovalTake {
+                authority,
+                id,
+                digest,
+            } => {
+                authority.validate().map_err(store)?;
+                super::super::key(id)?;
+                hash(digest)?;
+            }
+            #[cfg(feature = "shared-budget-execution")]
             Action::BudgetDemand(a) => a.validate()?,
-            #[cfg(feature="shared-budget-execution")]
+            #[cfg(feature = "shared-budget-execution")]
             Action::Budget(a) => a.validate()?,
-            #[cfg(feature="shared-budget-execution")]
+            #[cfg(feature = "shared-budget-execution")]
             Action::BudgetWork(a) => a.validate()?,
             Action::Context(a) => a.validate()?,
             Action::Attempt(a) => a.validate()?,
@@ -101,7 +135,7 @@ impl ServerOperation {
                 hash(&input.token)?;
             }
         }
-        Ok(Self(Box::new(action)))
+        Ok(Self(Box::new(action), false))
     }
     pub(in crate::console::native) fn request(
         self,
@@ -115,15 +149,31 @@ impl ServerOperation {
             ));
         }
         let read = matches!(&*self.0,Action::Demand(a) if matches!(&**a,super::demand_io::DemandAction::Control{..}));
-        let (path, body) = match *self.0 {
+        let (mut path, body) = match *self.0 {
             Action::Crypto(v) => v.body(),
-            Action::ApprovalRegister {authority,work,id,request,remaining_ms}=>("approvals/register".into(),json!({"authority":authority,"workId":work.id,"workDigest":digest(&work).map_err(|_|OwnerError{status:400,code:"invalid_shared_work".into()})?,"id":id,"request":request,"remainingMs":remaining_ms})),
-            Action::ApprovalTake {authority,id,digest}=>("approvals/take".into(),json!({"authority":authority,"id":id,"digest":digest})),
-            #[cfg(feature="shared-budget-execution")]
+            Action::ApprovalRegister {
+                authority,
+                work,
+                id,
+                request,
+                remaining_ms,
+            } => (
+                "approvals/register".into(),
+                json!({"authority":authority,"workId":work.id,"workDigest":digest(&work).map_err(|_|OwnerError{status:400,code:"invalid_shared_work".into()})?,"id":id,"request":request,"remainingMs":remaining_ms}),
+            ),
+            Action::ApprovalTake {
+                authority,
+                id,
+                digest,
+            } => (
+                "approvals/take".into(),
+                json!({"authority":authority,"id":id,"digest":digest}),
+            ),
+            #[cfg(feature = "shared-budget-execution")]
             Action::BudgetDemand(a) => a.body(),
-            #[cfg(feature="shared-budget-execution")]
+            #[cfg(feature = "shared-budget-execution")]
             Action::Budget(a) => a.body(),
-            #[cfg(feature="shared-budget-execution")]
+            #[cfg(feature = "shared-budget-execution")]
             Action::BudgetWork(a) => a.body(),
             Action::Context(a) => a.body(),
             Action::Attempt(a) => a.body(),
@@ -145,11 +195,32 @@ impl ServerOperation {
             Action::WorkRecover { id, input } => (format!("work/{id}/recover"), json!(input)),
             Action::WorkResult { id, input } => (format!("work/{id}/result"), json!(input)),
         };
-        if serde_json::to_vec(&body).map_or(true, |v| v.len() > if path.starts_with("approvals/"){96*1024}else if path.contains("work/") && path.ends_with("/result"){64*1024}else{16*1024}) {
+        if serde_json::to_vec(&body).map_or(true, |v| {
+            v.len()
+                > if path.starts_with("approvals/") {
+                    96 * 1024
+                } else if path.contains("work/") && path.ends_with("/result") {
+                    64 * 1024
+                } else {
+                    16 * 1024
+                }
+        }) {
             return Err(OwnerError {
                 status: 400,
                 code: "invalid_shared_execution_payload".into(),
             });
+        }
+        if self.1
+            && matches!(
+                path.as_str(),
+                "runtime/poll"
+                    | "attempts/poll"
+                    | "budget-attempts/poll"
+                    | "demands/poll"
+                    | "budget-demands/poll"
+            )
+        {
+            path.push_str("-v4");
         }
         Ok((
             if read {
@@ -170,6 +241,8 @@ pub(super) struct Io {
     manager: Weak<NativeManagement>,
     host_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
+    provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, bool)>>>,
     #[cfg(test)]
     pub(super) crypto_fixture: Option<Arc<super::e2ee::CryptoFixture>>,
 }
@@ -178,15 +251,34 @@ pub(super) struct Bound {
     pub transport: AllocationTransport,
     pub scope: Scope,
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
+    provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, bool)>>>,
 }
 impl Io {
-    pub(super) fn hosting_admission(&self) -> Result<Arc<crate::console::hosting::Admission>, NativeError> {
-        let manager = self.manager.upgrade().ok_or_else(|| failure(409, "shared_execution_closed"))?;
+    pub(super) fn hosting_admission(
+        &self,
+    ) -> Result<Arc<crate::console::hosting::Admission>, NativeError> {
+        let manager = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| failure(409, "shared_execution_closed"))?;
         Ok(manager.owner.0.host.console.hosting_admission())
     }
     pub(super) fn crypto_directory(&self) -> Result<std::path::PathBuf, NativeError> {
-        let manager=self.manager.upgrade().ok_or_else(||failure(409,"shared_execution_closed"))?;
-        let root=manager.owner.0.host.console.0.server_login.state_directory().ok_or_else(||failure(409,"shared_crypto_storage_unavailable"))?.join("shared-matrix-devices");
+        let manager = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| failure(409, "shared_execution_closed"))?;
+        let root = manager
+            .owner
+            .0
+            .host
+            .console
+            .0
+            .server_login
+            .state_directory()
+            .ok_or_else(|| failure(409, "shared_crypto_storage_unavailable"))?
+            .join("shared-matrix-devices");
         hagency_store::private::directory(&root).map_err(store)?;
         Ok(root)
     }
@@ -197,6 +289,8 @@ impl Io {
             permission: Permission::ExecuteManagedAgents,
             host_gate: None,
             namespace: None,
+            provider_gate: None,
+            claude_discovery: Arc::default(),
             #[cfg(test)]
             crypto_fixture: None,
         }
@@ -208,8 +302,20 @@ impl Io {
             ..Self::new(manager)
         }
     }
-    pub fn with_namespace(&self,namespace:Option<Arc<hagency_store::owner_resources::ResourceNamespace>>)->Self {
-        Self{namespace,..self.clone()}
+    pub fn with_provider_gate(&self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            provider_gate: Some(gate),
+            ..self.clone()
+        }
+    }
+    pub fn with_namespace(
+        &self,
+        namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
+    ) -> Self {
+        Self {
+            namespace,
+            ..self.clone()
+        }
     }
     pub fn restrict_to_host(&mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) {
         let prior = self.host_gate.take();
@@ -235,6 +341,8 @@ impl Io {
             scope,
             permission: self.permission,
             namespace: self.namespace.clone(),
+            provider_gate: self.provider_gate.clone(),
+            claude_discovery: self.claude_discovery.clone(),
         })
     }
     pub async fn check(&self, c: &SharedRuntimeCommand) -> Result<(), NativeError> {
@@ -267,7 +375,10 @@ impl Io {
     /// real revocation: no retry, the run stops now.
     fn revoked(&self) -> bool {
         self.host_gate.as_ref().is_some_and(|gate| !gate())
-            || self.manager.upgrade().is_none_or(|manager| manager.is_retired())
+            || self
+                .manager
+                .upgrade()
+                .is_none_or(|manager| manager.is_retired())
     }
     /// A boundary failure worth waiting out: one of the shared codes, and not a
     /// real revocation.
@@ -325,10 +436,21 @@ fn transient_boundary(error: &NativeError) -> bool {
     )
 }
 impl Bound {
-    async fn check_namespace(&self,c:&SharedRuntimeCommand)->Result<(),NativeError> {
-        if let Some(namespace)=&self.namespace {
-            if !namespace.matches_resource(&c.reserve_command.resource_id,&c.reserve_command.resource_revision) {return Err(invalid());}
-            namespace.check_with(self.scope.profile.clone()).await.map_err(|_|failure(409,"shared_execution_namespace_unavailable"))?;
+    async fn check_namespace(&self, c: &SharedRuntimeCommand) -> Result<(), NativeError> {
+        if self.provider_gate.as_ref().is_some_and(|gate| !gate()) {
+            return Err(failure(409, "provider_account_changed"));
+        }
+        if let Some(namespace) = &self.namespace {
+            if !namespace.matches_resource(
+                &c.reserve_command.resource_id,
+                &c.reserve_command.resource_revision,
+            ) {
+                return Err(invalid());
+            }
+            namespace
+                .check_with(self.scope.profile.clone())
+                .await
+                .map_err(|_| failure(409, "shared_execution_namespace_unavailable"))?;
         }
         Ok(())
     }
@@ -344,6 +466,50 @@ impl Bound {
             .await
     }
 
+    async fn operation(&self, action: Action) -> Result<ServerOperation, NativeError> {
+        let poll = match &action {
+            Action::Poll { .. } => true,
+            Action::Attempt(a) => matches!(**a, super::attempt_io::AttemptAction::Poll { .. }),
+            Action::Demand(a) => matches!(**a, super::demand_io::DemandAction::Poll { .. }),
+            #[cfg(feature = "shared-budget-execution")]
+            Action::Budget(a) => matches!(**a, super::budget_io::AttemptAction::Poll { .. }),
+            #[cfg(feature = "shared-budget-execution")]
+            Action::BudgetDemand(a) => matches!(
+                **a,
+                super::budget_demand_io::BudgetDemandAction::Poll { .. }
+            ),
+            _ => false,
+        };
+        let mut operation = ServerOperation::new(action)?;
+        if poll {
+            let mut cached = self.claude_discovery.lock().await;
+            let supported = if let Some((at, value)) = *cached
+                && at.elapsed() < Duration::from_secs(30)
+            {
+                value
+            } else {
+                let supported = match self.demand_discovery().await {
+                    Ok(discovery) => {
+                        if discovery.capabilities.len() > 64
+                            || discovery.capabilities.iter().any(|c| c.len() > 128)
+                        {
+                            return Err(invalid());
+                        }
+                        discovery
+                            .capabilities
+                            .iter()
+                            .any(|c| c == "shared-claude-execution-v1")
+                    }
+                    Err(error) if error.status == 404 => false,
+                    Err(error) => return Err(error),
+                };
+                *cached = Some((Instant::now(), supported));
+                supported
+            };
+            operation.1 = supported;
+        }
+        Ok(operation)
+    }
     fn check_action(&self, action: &Action) -> Result<(), NativeError> {
         if self.permission == Permission::ChangeAgentRunControl
             && !matches!(action,Action::Demand(a) if matches!(&**a,super::demand_io::DemandAction::Stop{..}|super::demand_io::DemandAction::Control{..}|super::demand_io::DemandAction::Discovery))
@@ -361,7 +527,7 @@ impl Bound {
         self.transport
             .request(
                 &self.scope,
-                Operation::SharedExecution(ServerOperation::new(a)?),
+                Operation::SharedExecution(self.operation(a).await?),
                 uncertain,
             )
             .await
@@ -375,7 +541,7 @@ impl Bound {
         self.transport
             .upload(
                 &self.scope,
-                Operation::SharedExecution(ServerOperation::new(a)?),
+                Operation::SharedExecution(self.operation(a).await?),
                 until,
             )
             .await
@@ -387,17 +553,21 @@ impl Bound {
         fresh: bool,
     ) -> Result<VerifiedManagementEnrollment, NativeError> {
         binding(&self.scope, c, fresh)?;
-        if fresh {self.check_namespace(c).await?;}
-        let grant=if let Some(grant)=&c.reserve_command.pool_grant {grant.clone()} else {
-        r
-            .managed_agent_project_history(
+        if fresh {
+            self.check_namespace(c).await?;
+        }
+        let grant = if let Some(grant) = &c.reserve_command.pool_grant {
+            grant.clone()
+        } else {
+            r.managed_agent_project_history(
                 self.scope.profile.clone(),
                 self.scope.device.device_id().into(),
                 c.reserve_command.allocation_id.clone(),
                 c.reserve_command.allocation_receipt_digest.clone(),
             )
             .await
-            .map_err(store)?.grant_receipt
+            .map_err(store)?
+            .grant_receipt
         };
         if digest(&grant)? != c.reserve_command.grant_receipt_digest {
             return Err(invalid());
@@ -407,7 +577,9 @@ impl Bound {
             .enrollment(&self.scope, &grant, fresh)
             .await?;
         self.transport.check_scope(&self.scope, false).await?;
-        if fresh {self.check_namespace(c).await?;}
+        if fresh {
+            self.check_namespace(c).await?;
+        }
         Ok(e)
     }
     pub async fn cleanup(
@@ -495,4 +667,69 @@ pub(super) fn window(
         return Err(failure(409, "shared_execution_ticket_expired"));
     }
     Ok(deadline)
+}
+
+#[cfg(test)]
+mod claude_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn shared_claude_poll_opt_in_keeps_legacy_bodies_and_effect_routes() {
+        fn poll(kind: usize) -> Action {
+            match kind {
+                0 => Action::Poll {
+                    after: Some("original_cursor".into()),
+                },
+                1 => super::super::attempt_io::AttemptAction::Poll {
+                    after: Some("original_cursor".into()),
+                }
+                .into(),
+                2 => super::super::demand_io::DemandAction::Poll {
+                    after: Some("original_cursor".into()),
+                    retries: true,
+                }
+                .into(),
+                #[cfg(feature = "shared-budget-execution")]
+                3 => super::super::budget_io::AttemptAction::Poll {
+                    after: Some("original_cursor".into()),
+                }
+                .into(),
+                #[cfg(feature = "shared-budget-execution")]
+                4 => super::super::budget_demand_io::BudgetDemandAction::Poll {
+                    after: Some("original_cursor".into()),
+                }
+                .into(),
+                _ => unreachable!(),
+            }
+        }
+        let count = if cfg!(feature = "shared-budget-execution") {
+            5
+        } else {
+            3
+        };
+        for kind in 0..count {
+            let legacy = ServerOperation::new(poll(kind)).unwrap().request().unwrap();
+            let mut opted = ServerOperation::new(poll(kind)).unwrap();
+            opted.1 = true;
+            let opted = opted.request().unwrap();
+            assert_eq!(legacy.0, opted.0);
+            assert_eq!(legacy.2, opted.2);
+            assert_eq!(format!("{}-v4", legacy.1), opted.1);
+        }
+        fn recovery() -> Action {
+            Action::Recover {
+                id: "immutable_original".into(),
+                digest: "a".repeat(64),
+                observation: Some("original_receipt".into()),
+            }
+        }
+        let legacy = ServerOperation::new(recovery()).unwrap().request().unwrap();
+        let mut opted = ServerOperation::new(recovery()).unwrap();
+        opted.1 = true;
+        assert_eq!(
+            legacy,
+            opted.request().unwrap(),
+            "discovery cannot rewrite original recovery paths or IDs"
+        );
+    }
 }
