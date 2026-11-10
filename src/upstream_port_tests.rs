@@ -31,14 +31,17 @@ fn draw(cx: &mut Cx, ui: &WidgetRef, size: DVec2) {
     let pass = DrawPass::new(cx);
     pass.set_size(cx, size);
     let mut list = DrawList2d::new(cx);
+    let mut overlay = cx.with_vm(|vm| Overlay::script_new(vm));
     let event = DrawEvent::default();
     let mut draw = CxDraw::new(cx, &event);
     let mut cx2d = Cx2d::new(&mut draw);
     cx2d.begin_pass(&pass, None);
     list.begin_always(&mut cx2d);
+    overlay.begin(&mut cx2d);
     cx2d.begin_root_turtle(size, Layout::flow_down());
     ui.draw_walk_all(&mut cx2d, &mut Scope::empty(), Walk::fixed(size.x, size.y));
     cx2d.end_pass_sized_turtle();
+    overlay.end(&mut cx2d);
     list.end(&mut cx2d);
     cx2d.end_pass(&pass);
 }

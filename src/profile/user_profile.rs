@@ -523,8 +523,9 @@ impl Widget for UserProfileSlidingPane {
                 self.member_abilities = fetched.abilities;
                 self.abilities_epoch = fetched.epoch;
                 info.room_member = fetched.room_member.clone();
+                self.redraw(cx);
             }
-            if invalidated { self.request_member_abilities(); }
+            if invalidated { self.request_member_abilities(); self.redraw(cx); }
         }
         // A UI Signal indicates that this user profile's info may have been updated by a background task.
         if let Event::Signal = event {
