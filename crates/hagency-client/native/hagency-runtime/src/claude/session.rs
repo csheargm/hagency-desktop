@@ -12,7 +12,8 @@ mod version;
 mod missing_resume;
 use super::{ControlOutcome, EventKind, Message};
 pub use control::{
-    ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
+    ApprovalControlPolicy, ControlUpdate, DENIED, PermissionDecision, PreparedApproval,
+    PreparedUpdate,
 };
 pub use interrupt::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};

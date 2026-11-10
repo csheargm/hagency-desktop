@@ -15,6 +15,10 @@ use tokio::{
 
 const MAX_CALLBACKS: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
+/// What the model reads when a tool call was refused: by the Agent's rules,
+/// by its owner, or because the owner did not answer in time. It must not
+/// keep asking for the same thing in other words.
+pub const DENIED: &str = "This tool call was not allowed by the Agent's owner or its rules. Do not retry it or work around it. Tell the requester what was not allowed and finish with what you can do without it.";
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApprovalControlPolicy {
@@ -261,7 +265,11 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.prepare_response(id, |tool, input| match decision {
             PermissionDecision::Allow if tool == super::questions::TOOL => Err(Error::PermissionUnavailable),
             PermissionDecision::Allow => Ok(json!({"behavior":"allow","updatedInput":input})),
-            PermissionDecision::Deny => Ok(json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})),
+            // A refusal is an answer, not a stop: the model is told and ends
+            // the turn in its own words, so the requester reads what was not
+            // allowed. `interrupt: true` made the CLI abort the turn, which
+            // reached the room as a failed request with no reply.
+            PermissionDecision::Deny => Ok(json!({"behavior":"deny","message":DENIED,"interrupt":false})),
         })
     }
 

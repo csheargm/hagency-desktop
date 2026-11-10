@@ -108,6 +108,11 @@ async fn claude_unknown_request_and_state_mid_turn_keep_the_turn_and_the_exact_o
         let decision: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(f.path("decision")).unwrap()).unwrap();
         assert_eq!(decision["behavior"], if verdict { "allow" } else { "deny" });
+        if !verdict {
+            // A refusal leaves the turn to the model; it never aborts it.
+            assert_eq!(decision["interrupt"], false);
+            assert!(decision["message"].as_str().is_some_and(|m| m.contains("not allowed")));
+        }
         assert_eq!(f.path("effect").exists(), verdict);
         assert_eq!(f.spent(), (24, 0));
         process.stop().await.unwrap();

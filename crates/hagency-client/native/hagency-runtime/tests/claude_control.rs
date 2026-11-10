@@ -152,7 +152,9 @@ async fn native_claude_permission_exact_response() {
         let expected = match decision {
             PermissionDecision::Allow => json!({"behavior":"allow","updatedInput":original}),
             PermissionDecision::Deny => {
-                json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})
+                // The model is told and the turn goes on: the CLI aborts a
+                // turn whose refusal says `interrupt: true`.
+                json!({"behavior":"deny","message":hagency_runtime::claude::session::DENIED,"interrupt":false})
             }
         };
         assert_eq!(

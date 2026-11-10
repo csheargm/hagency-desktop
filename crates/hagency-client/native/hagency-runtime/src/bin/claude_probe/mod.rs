@@ -244,7 +244,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         let expected = if mode == "permission-allow" {
             json!({"behavior":"allow","updatedInput":input})
         } else {
-            json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})
+            json!({"behavior":"deny","message":hagency_runtime::claude::session::DENIED,"interrupt":false})
         };
         if response
             != json!({"type":"control_response","response":{
