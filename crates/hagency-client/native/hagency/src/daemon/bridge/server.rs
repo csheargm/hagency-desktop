@@ -1122,7 +1122,34 @@ async fn recover_native_receipt(journal: &Journal, request_id: &str, manager: &A
             service::IntentReply::Failure { status, code } => Err(Failure { status, code, terminal:true }),
         }));
     }
+    if operation == Operation::observe_personal_settings {
+        // Natively idempotent under its command ID: the saved request asks
+        // the server again with its original key and gets the original row.
+        // An observation only reads the device, so entering native code a
+        // second time cannot apply anything twice. Without this the bridge
+        // answered every retry with recovery_required and the request could
+        // never be settled.
+        let (input,): (ObservePersonalSettings,) = decode(arguments.clone())?;
+        return Ok(Some(match manager.observe_personal_settings(input).await {
+            Ok(value) => Ok(value),
+            Err(error) => match matching_native_receipt(manager, operation, arguments).await? {
+                Some(receipt) => receipt,
+                None => Err(Failure::from(error)),
+            },
+        }));
+    }
     matching_native_receipt(manager, operation, arguments).await
+}
+
+/// An observation's saved input wraps the original arguments with the
+/// requesting device, under another operation name than the bridge's.
+fn observation_reply(arguments: &Value, saved: &service::PendingIntent) -> Option<service::IntentReply> {
+    let input = arguments.as_array()?.first()?;
+    (saved.operation == service::IntentOperation::PersonalAgentObservation
+        && input.get("commandId").and_then(Value::as_str) == Some(saved.command_id.as_str())
+        && saved.input.get("input") == Some(input))
+        .then(|| saved.reply.clone())
+        .flatten()
 }
 
 fn original_intent(operation: Operation, arguments: &Value) -> Option<(String, service::IntentOperation, Value)> {
@@ -1142,6 +1169,16 @@ fn matching_intent_reply(operation: Operation, arguments: &Value, saved: &servic
     (saved.command_id == id && saved.operation == kind && saved.input == input).then(|| saved.reply.clone()).flatten()
 }
 async fn matching_native_receipt(manager: &Arc<NativeManagement>, operation: Operation, arguments: &Value) -> Result<Option<Result<Value, Failure>>, NativeError> {
+    if operation == Operation::observe_personal_settings {
+        let Some(id) = arguments.get(0).and_then(|input| input.get("commandId")).and_then(Value::as_str) else { return Ok(None) };
+        let Some(saved) = manager.original_command_receipt(id.to_owned()).await? else { return Ok(None) };
+        // Only a recorded refusal settles here. A recorded success is
+        // returned by the native call itself under the same command ID.
+        return Ok(match observation_reply(arguments, &saved) {
+            Some(service::IntentReply::Failure { status, code }) => Some(Err(Failure { status, code, terminal: true })),
+            _ => None,
+        });
+    }
     let Some((id, _, _)) = original_intent(operation, arguments) else { return Ok(None) };
     let Some(saved) = manager.original_command_receipt(id.clone()).await? else { return Ok(None) };
     Ok(match matching_intent_reply(operation, arguments, &saved) {
@@ -1174,5 +1211,25 @@ mod receipt_matching_tests {
         saved.command_id="different".into();assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
         saved.command_id="rename-1".into();saved.input["name"]=Value::String("other".into());assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
         saved.input=args[0].clone();assert!(matching_intent_reply(Operation::publish_resource,&args,&saved).is_none());
+    }
+    #[test]
+    fn closed_observation_settles_only_its_own_saved_request() {
+        let args=serde_json::json!([{"commandId":"observe-1","agentId":"agent_a","expectedGeneration":3}]);
+        let requester=serde_json::json!({"origin":"https://s/","userId":"@o:s","deviceId":"D"});
+        let mut saved:service::PendingIntent=serde_json::from_value(serde_json::json!({"commandId":"observe-1","operation":"personal_agent_observation",
+            "input":{"commandId":"observe-1","input":args[0],"requester":requester},
+            "reply":{"kind":"failure","data":{"status":409,"code":"configuration_provider_unavailable"}}})).unwrap();
+        // The generic matcher does not know this operation's saved shape.
+        assert!(matching_intent_reply(Operation::observe_personal_settings,&args,&saved).is_none());
+        let Some(service::IntentReply::Failure{status,code})=observation_reply(&args,&saved) else {panic!("expected the recorded refusal")};
+        assert_eq!((status,code.as_str()),(409,"configuration_provider_unavailable"));
+        let mut other=args.clone();other[0]["expectedGeneration"]=serde_json::json!(4);
+        assert!(observation_reply(&other,&saved).is_none());
+        other=args.clone();other[0]["commandId"]=serde_json::json!("observe-2");
+        assert!(observation_reply(&other,&saved).is_none());
+        saved.operation=service::IntentOperation::PersonalAgentPolicy;
+        assert!(observation_reply(&args,&saved).is_none());
+        saved.operation=service::IntentOperation::PersonalAgentObservation;saved.reply=None;
+        assert!(observation_reply(&args,&saved).is_none());
     }
 }

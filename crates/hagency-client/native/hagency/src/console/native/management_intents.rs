@@ -267,6 +267,11 @@ impl NativeManagement {
             // before current revision/retained-commitment eligibility.
             && !(intent.operation() == IntentOperation::PublishResource
                 && result.as_ref().is_err_and(|error| matches!(error.code.as_str(), "management_resource_in_use" | "management_revision_conflict")))
+            // The retry asks under the original key and reads the original
+            // request's own row. That is its answer, and an observation leaves
+            // nothing behind that an earlier attempt could have committed.
+            && !(intent.operation() == IntentOperation::PersonalAgentObservation
+                && result.as_ref().is_err_and(super::personal_agent_observation::request_closed))
             && result
                 .as_ref()
                 .is_err_and(|error| known_failure_for(intent.operation(), error))

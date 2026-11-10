@@ -16,6 +16,7 @@ use std::{
 };
 mod commands;
 mod direct;
+mod earlier_archive;
 #[cfg(test)]
 mod profile_directory_tests;
 
@@ -524,6 +525,9 @@ pub(crate) fn ledger_path(
 ) -> Result<PathBuf, Error> {
     let profile = checked_profile_directory(root, origin, issuer, subject, owner)?;
     let path = profile.path.join("agent-local.sqlite");
+    // An earlier build's archive of this ledger is deleted, not opened: this
+    // owner then starts with an empty one.
+    earlier_archive::discard(&path, owner, &profile.digest)?;
     hagency_store::private::open(&path, true)
         .or_else(|_| hagency_store::private::open(&path, false))
         .map_err(|_| Error::Unavailable)?;
@@ -1449,6 +1453,27 @@ mod profile_tests {
         );
         hagency_store::private::replace(&marker, &vec![b' '; 32769]).unwrap();
         assert!(ledger_path(&root, origin, issuer, &subject, &owner).is_err());
+    }
+
+    #[test]
+    fn earlier_builds_archive_in_the_profile_folder_gives_way_to_an_empty_ledger() {
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let root = temp.path().join("state");
+        let origin = "https://server.example/";
+        let issuer = "https://server.example/auth/";
+        let owner = "@owner:example";
+        let path = ledger_path(&root, origin, issuer, "subject", owner).unwrap();
+        let profile = profile_identity(origin, issuer, "subject", owner).unwrap();
+        earlier_archive::archive(&path, owner, &profile);
+        // As found on a computer where the earlier build had set up pools:
+        // the ledger cannot be opened, so no local Agent could run.
+        assert!(Ledger::open_scoped(&path, owner, &profile).is_err());
+        assert_eq!(
+            ledger_path(&root, origin, issuer, "subject", owner).unwrap(),
+            path
+        );
+        drop(Ledger::open_scoped(&path, owner, &profile).unwrap());
+        hagency_store::private::open(&path, false).unwrap();
     }
 
     #[test]

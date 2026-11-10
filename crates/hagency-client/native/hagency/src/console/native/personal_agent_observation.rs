@@ -42,9 +42,38 @@ pub(super) fn known_failure(e: &NativeError) -> bool {
             | "configuration_request_busy"
             | "execution_device_required"
             | "agent_retired"
-    )
+    ) || request_closed(e)
     // In particular, configuration_unsupported can follow a successful POST
     // when discovery changes during polling. It keeps original custody.
+}
+/// The state of the original request as the server keeps it under its
+/// idempotency key: the execution device completed it as failed, no device
+/// claimed it before it expired, or it was claimed and has not been answered
+/// (this side stops waiting after about a minute). Asking again reads the
+/// same row, so this is the original request's answer and not a later check.
+/// An observation only reads the device: none of these can leave a change
+/// behind, and one that is answered late only refreshes the stored settings.
+/// Treating them as unknown left a request that no retry could ever settle.
+/// Requester-side errors that share a code carry another status (400 before
+/// the request is sent, 401 when the device authority changed) and are not
+/// matched here.
+pub(super) fn request_closed(e: &NativeError) -> bool {
+    e.status == 409
+        && matches!(
+            e.code.as_str(),
+            "invalid_arguments"
+                | "configuration_runtime_busy"
+                | "configuration_model_unavailable"
+                | "configuration_provider_unavailable"
+                | "configuration_local_state_unavailable"
+                | "configuration_authority_changed"
+                | "configuration_authority_invalidated"
+                | "configuration_operation_unsupported"
+                | "configuration_target_changed"
+                | "configuration_request_failed"
+                | "configuration_request_expired"
+                | "configuration_outcome_unknown"
+        )
 }
 impl NativeManagement {
     pub async fn observe_personal_settings(

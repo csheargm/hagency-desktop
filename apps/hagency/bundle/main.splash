@@ -2767,9 +2767,21 @@ A.personal_reason = fn(code){
     if code == "configuration_outcome_unknown" || code == "configuration_request_expired" || code == "management_outcome_unknown" {return A.t("The settings request outcome is unknown. Recover the original saved request; do not submit a replacement.", "设置请求结果未知，请恢复已保存的原请求，不要另建替代请求。")}
     return A.error_text(code)
 }
+// A sync only reads the computer that runs the Agent. When that computer answers
+// "failed", or never answers, the sync is over and nothing changed: say so and let
+// the person sync again, instead of keeping a request no retry can settle.
+A.observe_closed = fn(code){
+    return code == "configuration_provider_unavailable" || code == "configuration_local_state_unavailable" || code == "configuration_request_failed" || code == "configuration_operation_unsupported" || code == "configuration_model_unavailable" || code == "invalid_arguments" || code == "configuration_runtime_busy" || code == "configuration_authority_changed" || code == "configuration_authority_invalidated" || code == "configuration_target_changed" || code == "configuration_request_expired" || code == "configuration_outcome_unknown"
+}
+A.observe_reason = fn(code){
+    if code == "configuration_runtime_busy" {return A.t("The Agent is busy. Nothing was changed. Sync again when its current work is finished.", "Agent 正在工作，没有改动任何内容。请等当前工作结束后重新同步。")}
+    if code == "configuration_request_expired" || code == "configuration_outcome_unknown" {return A.t("The computer that runs this Agent did not answer in time. Nothing was changed. Make sure Hagency is running there, then sync again.", "运行这个 Agent 的电脑没有及时回应，没有改动任何内容。请确认那台电脑上 Hagency 正在运行，然后重新同步。")}
+    if code == "configuration_authority_changed" || code == "configuration_authority_invalidated" || code == "configuration_target_changed" {return A.t("The Agent’s computer or its sign-in changed during the sync. Nothing was changed. Refresh, then sync again.", "同步期间，运行 Agent 的电脑或它的登录状态发生了变化，没有改动任何内容。请刷新后重新同步。")}
+    return A.t("The computer that runs this Agent could not read its settings. Nothing was changed. Check that its coding tool is installed and signed in there, then sync again.", "运行这个 Agent 的电脑没能读取它的设置，没有改动任何内容。请确认那台电脑上已安装并登录编码工具，然后重新同步。")
+}
 A.personal_not_applied = fn(service,code){
     let common=code == "personal_agent_not_found" || code == "personal_agent_settings_changed" || code == "configuration_device_offline" || code == "configuration_device_unavailable" || code == "configuration_queue_full" || code == "configuration_request_busy" || code == "execution_device_required" || code == "agent_retired"
-    if service == "hagency.personal_agents.observe" {return common || code == "invalid_personal_observation"}
+    if service == "hagency.personal_agents.observe" {return common || code == "invalid_personal_observation" || A.observe_closed(code)}
     if service == "hagency.personal_agents.policy.save" {return common || code == "invalid_personal_policy" || code == "personal_policy_observation_required" || code == "local_revision_conflict" || code == "invalid_local_policy"}
     return false
 }
@@ -7955,7 +7967,7 @@ A.retry_command = fn(){
             if command.service == "hagency.agents.control.set" {H.agent_control=nil}
             if command.service == "hagency.agents.settlement.request" {H.settlement=nil}
             if command.service=="hagency.alerts.triage" {H.alert_detail=nil H.alert_draft=nil}
-            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error(r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
+            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error(r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if command.service == "hagency.personal_agents.observe" && A.observe_closed(r.error) {A.observe_reason(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
             if topup_service {H.agent_budget=nil H.budget_topup=nil H.budget_confirmation=nil H.budget_mode=""}
             if name_service {H.resource_detail=nil H.resource_name_mode="" H.resource_name_draft=nil}
             let kept_draft=H.personal_draft
