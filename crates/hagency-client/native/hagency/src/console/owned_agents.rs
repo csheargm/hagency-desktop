@@ -1456,6 +1456,45 @@ mod profile_tests {
     }
 
     #[test]
+    fn native_model_save_body_is_what_the_endpoint_and_the_ledger_accept() {
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let owner = "@owner:example";
+        let identity = "a".repeat(64);
+        let mut ledger =
+            Ledger::open_scoped(&temp.path().join("agent-local.sqlite"), owner, &identity).unwrap();
+        // The endpoint fills in the work folder before the ledger sees the profile.
+        let first = json!({"model":"m1","credential_ref":"keychain:codex:owner","workspace_root":temp.path().to_string_lossy(),"reasoning_effort":"low","web_search":true});
+        // No profile saved yet: the read reply carries null.
+        let read = serde_json::to_value(ledger.agent_model_profile(owner, "a1").unwrap()).unwrap();
+        let body = crate::native_owner::model_save_request(&read, first.clone()).unwrap();
+        let input: EditAgentModel = serde_json::from_value(body).unwrap();
+        ledger
+            .set_agent_model_profile_checked(owner, "a1", &input.expected_profile_digest, &input.profile)
+            .unwrap();
+        // The body without the digest is what the Desktop screen used to send.
+        assert!(serde_json::from_value::<EditAgentModel>(json!({"profile":first})).is_err());
+        // A change is made against the profile that was read back.
+        let read = serde_json::to_value(ledger.agent_model_profile(owner, "a1").unwrap()).unwrap();
+        assert_eq!(read, first);
+        let mut second = first.clone();
+        second["model"] = json!("m2");
+        let body = crate::native_owner::model_save_request(&read, second.clone()).unwrap();
+        let input: EditAgentModel = serde_json::from_value(body.clone()).unwrap();
+        ledger
+            .set_agent_model_profile_checked(owner, "a1", &input.expected_profile_digest, &input.profile)
+            .unwrap();
+        // The same body again is stale: the stored profile moved on.
+        let stale: EditAgentModel = serde_json::from_value(body).unwrap();
+        assert!(
+            ledger
+                .set_agent_model_profile_checked(owner, "a1", &stale.expected_profile_digest, &stale.profile)
+                .is_err()
+        );
+        // Something that is not a profile gives no body at all.
+        assert!(crate::native_owner::model_save_request(&json!({"model":1}), second).is_none());
+    }
+
+    #[test]
     fn earlier_builds_archive_in_the_profile_folder_gives_way_to_an_empty_ledger() {
         let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let root = temp.path().join("state");

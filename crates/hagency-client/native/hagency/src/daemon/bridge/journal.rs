@@ -121,6 +121,12 @@ impl Journal {
         if matches!(result, Admission::New) { self.1.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?.insert(id.into()); }
         Ok(result)
     }
+    /// Take a command that needs recovery back into flight, for a command
+    /// that may run again. False when it is already running: two retries of
+    /// one request never run side by side.
+    pub fn reenter(&self, id: &str) -> Result<bool, NativeError> {
+        Ok(self.1.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?.insert(id.into()))
+    }
     /// An admitted current command with no pin has not entered native execution.
     pub fn native_pin(&self, id: &str) -> Result<Option<String>, NativeError> {
         self.0.lock().map_err(|_| error(503, "daemon_bridge_journal_unavailable"))?
@@ -321,6 +327,32 @@ mod tests {
             assert_eq!(Journal::open(&path).err().unwrap().code, "daemon_bridge_journal_unavailable");
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
+    }
+    #[test]
+    fn a_refused_command_that_may_run_again_reenters_once_and_keeps_its_last_answer() {
+        let temp=tempfile::tempdir().unwrap();let path=temp.path().join("journal");let journal=Journal::open(&path).unwrap();
+        let id=journal.pending_for("owner","start").unwrap();
+        assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::New));
+        journal.finish(&id,&Err(Failure::from(error(409,"runtime_profile_unavailable")))).unwrap();
+        // Refused, not final: the same request is not a new one.
+        assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::RecoveryRequired));
+        assert!(journal.reenter(&id).unwrap());
+        // While it runs, the same request waits instead of running beside it.
+        assert!(!journal.reenter(&id).unwrap());
+        assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::RecoveryRequired));
+        // Refused again: still open for the next try.
+        journal.finish(&id,&Err(Failure::from(error(409,"runtime_profile_unavailable")))).unwrap();
+        assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::RecoveryRequired));
+        assert!(journal.reenter(&id).unwrap());
+        journal.finish(&id,&Ok(serde_json::json!({"started":true}))).unwrap();
+        drop(journal);let journal=Journal::open(&path).unwrap();
+        assert!(matches!(journal.admit(&id,"scope").unwrap(),Admission::Result(Ok(_))));
+        // After a restart cut a run short, the admitted request can be taken up again.
+        let cut=journal.pending_for("owner","stop").unwrap();
+        assert!(matches!(journal.admit(&cut,"scope-2").unwrap(),Admission::New));
+        drop(journal);let journal=Journal::open(&path).unwrap();
+        assert!(matches!(journal.admit(&cut,"scope-2").unwrap(),Admission::RecoveryRequired));
+        assert!(journal.reenter(&cut).unwrap());
     }
     #[test]
     fn recorded_native_unknown_is_reconciled_to_terminal_receipt_under_same_id() {

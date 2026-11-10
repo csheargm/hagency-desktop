@@ -430,6 +430,16 @@ impl Bridge {
                 if mutation {
                     match self.journal.admit(request_id, &fingerprint)? {
                         Admission::Pending => return Err(error(503, "daemon_command_pending")),
+                        // A command that only states what should be runs
+                        // again; every other one keeps its first outcome.
+                        Admission::RecoveryRequired if super::repeatable_owner_command(&command) => {
+                            if !live.load(Ordering::Acquire) {
+                                return Err(error(401, "management_scope_changed"));
+                            }
+                            if !self.journal.reenter(request_id)? {
+                                return Err(error(503, "daemon_command_pending"));
+                            }
+                        }
                         Admission::RecoveryRequired => return Err(error(409, "daemon_command_recovery_required")),
                         Admission::Result(r) => { receipt_recorded.store(true,Ordering::Release); return r.map_err(Failure::native); },
                         Admission::New => {}

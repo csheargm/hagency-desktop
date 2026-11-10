@@ -2140,8 +2140,14 @@ impl HagencyPanel {
             });
         });
     }
-    fn model_save_input(&self, cx: &mut Cx, model: &Value, effort: &str) -> Value {
-        json!({"profile":{"model":model["model"],"credential_ref":self.selected_credential(cx),"workspace_root":self.input(cx,ids!(workspace)),"reasoning_effort":effort,"web_search":self.view.check_box(cx,ids!(web_search)).active(cx)}})
+    /// The save names the profile this screen last read, so a change made
+    /// elsewhere in between is not overwritten. `None` when that profile
+    /// cannot be read back as one.
+    fn model_save_input(&self, cx: &mut Cx, model: &Value, effort: &str) -> Option<Value> {
+        ::hagency::native_owner::model_save_request(
+            &self.policy["modelProfile"],
+            json!({"model":model["model"],"credential_ref":self.selected_credential(cx),"workspace_root":self.input(cx,ids!(workspace)),"reasoning_effort":effort,"web_search":self.view.check_box(cx,ids!(web_search)).active(cx)}),
+        )
     }
     fn render_policy(&self, cx: &mut Cx) {
         self.view.check_box(cx,ids!(web_search)).set_active(cx,self.policy["modelProfile"]["web_search"].as_bool().unwrap_or(true),Animate::No);
@@ -3978,7 +3984,7 @@ impl Widget for HagencyPanel {
             let Some(model)=self.selected(cx,ids!(model),&self.provider_models) else {self.status(cx,"Select a model or profile from this device's catalog.");return;};
             if !self.provider_authenticated || self.credential_ref.is_empty() {self.status(cx,"Connect your local account first.");return;}
             let Some(effort)=self.runtime_efforts.get(self.view.drop_down(cx,ids!(effort)).selected_item()).cloned() else {self.status(cx,"Select a supported reasoning effort.");return;};
-            let input = self.model_save_input(cx,&model,&effort);
+            let Some(input) = self.model_save_input(cx,&model,&effort) else {self.status(cx, "Load this Agent's local resources before saving.");return;};
             self.local(cx, Target::Policy, LocalAction::SaveAgentModel, Some(input));
             return;
         }
@@ -4408,8 +4414,18 @@ mod tests {
         panel.render_policy(&mut cx);
         assert!(panel.view.check_box(&mut cx,ids!(web_search)).active(&mut cx));
         panel.view.check_box(&mut cx,ids!(web_search)).set_active(&mut cx,false,Animate::No);
-        let saved=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low");
+        let saved=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").unwrap();
         assert_eq!(saved["profile"]["web_search"],false);
+        // The save names the profile that was read: its digest goes with it,
+        // and another one is sent once the saved profile is read back.
+        let digest=saved["expectedProfileDigest"].as_str().unwrap().to_owned();
+        assert!(digest.len()==64 && saved.as_object().unwrap().len()==2);
+        let none=std::mem::replace(&mut panel.policy["modelProfile"],Value::Null);
+        let first=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").unwrap();
+        assert_ne!(first["expectedProfileDigest"],digest);
+        panel.policy["modelProfile"]=json!({"model":1});
+        assert!(panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").is_none());
+        panel.policy["modelProfile"]=none;
         panel.view.check_box(&mut cx,ids!(web_search)).set_active(&mut cx,true,Animate::No);
         panel.policy["modelProfile"]=saved["profile"].clone();
         panel.render_policy(&mut cx);
