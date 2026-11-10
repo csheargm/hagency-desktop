@@ -77,7 +77,7 @@ async fn ordinary_provider_stop_retains_entry_during_cancelled_wait() {
     )
     .unwrap();
     let binary = root.join("provider-fixture");
-    std::fs::write(&binary,"#!/usr/bin/env python3\nimport sys,json\nfor line in sys.stdin:\n r=json.loads(line)\n if 'id' in r: print(json.dumps({'id':r['id'],'result':{}}),flush=True)\n").unwrap();
+    std::fs::write(&binary,"#!/usr/bin/env python3\nimport sys,json\nfor line in sys.stdin:\n r=json.loads(line)\n if 'id' in r: print(json.dumps({'id':r['id'],'result':{'userAgent':'fixture/0.167.0'}}),flush=True)\n").unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     let manager = OwnerProvider::default();
     let process = Process::spawn_inner(&paths, &binary, false, &manager.tasks)

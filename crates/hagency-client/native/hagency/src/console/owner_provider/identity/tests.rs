@@ -107,7 +107,7 @@ for line in sys.stdin:
   assert m=='initialized'
   continue
  with (home/'methods.jsonl').open('a') as f:f.write(json.dumps(m)+'\n')
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':json.loads((home/'config.json').read_text())}
  else:
   assert m==expected[offset], 'identity must not login, fetch credentials, or run a model'
@@ -313,7 +313,7 @@ for line in sys.stdin:
  if i is None:
   assert m=='initialized'; continue
  with (home/'methods.jsonl').open('a') as f:f.write(json.dumps(m)+'\n')
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api','model_providers':{}}}
  else:
   assert m==expected[offset], 'idle refresh cannot login or perform inference'
