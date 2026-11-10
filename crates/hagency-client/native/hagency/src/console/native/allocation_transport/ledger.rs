@@ -65,30 +65,54 @@ fn outcome(
     }
 }
 
-impl AllocationTransport {
-    /// Runs before every request that can lease work or carry a receipt.
-    /// One declaration per device and database for the life of this owner;
-    /// a failed one is repeated by the next request and blocks it meanwhile.
-    pub(super) async fn declare_ledger(&self, scope: &Scope) -> Result<(), NativeError> {
-        let Some(ledger_id) = self.manager.ledger_id() else {
+impl NativeManagement {
+    /// Names this owner's database to the server through `send`, unless that
+    /// is settled for this device. One declaration per device and database
+    /// for the life of this owner; a failed one is repeated by the next
+    /// caller and blocks it meanwhile.
+    ///
+    /// A database that was created empty says so (`fresh`). The server then
+    /// ends what the device's earlier database left there. That is only true
+    /// while this database has offered nothing itself, so every offer
+    /// declares first (see `declare_ledger_before_offer`), and a database
+    /// that has to report to a server without declarations stops saying it.
+    pub(in crate::console::native) async fn declare_ledger<F, Fut>(
+        &self,
+        device: DeviceIdentity,
+        send: F,
+    ) -> Result<(), NativeError>
+    where
+        F: FnOnce(Operation) -> Fut,
+        Fut: std::future::Future<Output = Result<Value, NativeError>>,
+    {
+        let Some(ledger_id) = self.ledger_id() else {
             return Ok(());
         };
-        let device = DeviceIdentity::from(&scope.device);
-        let mut state = self.manager.owner.0.management.ledger.lock().await;
+        let mut state = self.owner.0.management.ledger.lock().await;
         if state.settles(&device, &ledger_id, Instant::now()) {
             return Ok(());
         }
-        let reply = self
-            .send::<Declared>(scope, Operation::DeclareLedger(ledger_id.clone()), false)
-            .await;
+        let fresh = self.ledger_created_empty();
+        let reply = send(Operation::DeclareLedger {
+            id: ledger_id.clone(),
+            fresh,
+        })
+        .await
+        .and_then(|value| serde_json::from_value::<Declared>(value).map_err(|_| invalid()));
         let epoch = reply.as_ref().map_or(0, |declared| declared.epoch);
         match outcome(&ledger_id, reply) {
             Ok(true) => {
-                tracing::info!(epoch, "Owner ledger declared to the server");
+                tracing::info!(epoch, fresh, "Owner ledger declared to the server");
                 *state = LedgerDeclaration::Declared { device, ledger_id };
                 Ok(())
             }
             Ok(false) => {
+                // What follows reaches this server undeclared. If the note
+                // cannot be removed, nothing may follow.
+                if let Err(error) = self.ledger_reports_undeclared() {
+                    *state = LedgerDeclaration::Unknown;
+                    return Err(error);
+                }
                 *state = LedgerDeclaration::Unsupported {
                     device,
                     ledger_id,
@@ -102,6 +126,47 @@ impl AllocationTransport {
                 Err(error)
             }
         }
+    }
+
+    /// A pool offer does not go through the allocation transport, and it is
+    /// the first thing a database tells the server. Declare before it: the
+    /// declaration of a new database ends every pool the device offered
+    /// before, and must never find one that this database offered.
+    pub(in crate::console::native) async fn declare_ledger_before_offer(
+        &self,
+        device: &AuthorizedDevice,
+    ) -> Result<(), NativeError> {
+        let pin = DeviceIdentity::from(device);
+        self.declare_ledger(pin.clone(), |operation| async move {
+            let reply = self
+                .owner
+                .0
+                .host
+                .console
+                .owner_api_pinned(&pin, OwnerOperation::Allocation(ServerOperation::new(operation)?))
+                .await
+                .map_err(|e| failure(e.status, &e.code))?;
+            if reply.owner != device.owner_mxid()
+                || reply.origin != device.origin()
+                || reply.issuer != device.issuer()
+                || reply.subject != device.subject()
+            {
+                return Err(failure(401, "management_scope_changed"));
+            }
+            wire::decode_bounded(reply.value, 32 * 1024)
+        })
+        .await
+    }
+}
+
+impl AllocationTransport {
+    /// Runs before every request that can lease work or carry a receipt.
+    pub(super) async fn declare_ledger(&self, scope: &Scope) -> Result<(), NativeError> {
+        self.manager
+            .declare_ledger(DeviceIdentity::from(&scope.device), |operation| {
+                self.send::<Value>(scope, operation, false)
+            })
+            .await
     }
 }
 

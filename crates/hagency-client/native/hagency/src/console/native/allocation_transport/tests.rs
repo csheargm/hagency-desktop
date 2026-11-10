@@ -161,6 +161,8 @@ struct State {
     owner_coordinator: bool,
     /// The ledger databases this device named, in order.
     ledger_declarations: Vec<String>,
+    /// The `fresh` member of each declaration, as sent: absent, or its value.
+    ledger_fresh: Vec<Option<bool>>,
     /// Some: the answer to a declaration, in place of a current server's.
     ledger_reply: Option<Value>,
 }
@@ -182,6 +184,8 @@ fn settlement_view(g: &NativeGrantReceipt, r: &NativeGrantSettlementReceipt) -> 
 fn management(path: &str, body: &Value, state: &mut State) -> Option<Value> {
     if path.ends_with("/management/executor-ledger/declare") {
         state.ledger_declarations.push(body["ledgerId"].as_str().unwrap().to_owned());
+        state.ledger_fresh.push(body.get("fresh").map(|v| v.as_bool().unwrap()));
+        assert!(body.as_object().unwrap().keys().all(|k| k == "ledgerId" || k == "fresh"));
         return Some(state.ledger_reply.clone().unwrap_or_else(
             || json!({"ledgerId":body["ledgerId"],"epoch":1,"observedAtMs":now()}),
         ));
@@ -572,6 +576,11 @@ async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_
     assert_eq!(declared(&f), vec![f.registry.ledger_id()]);
     assert_ne!(f.registry.ledger_id(), f.registry.id());
     assert_eq!(f.state.lock().unwrap().result_writes, 1);
+    // This database was created empty for the fixture, and says so: what the
+    // server holds for the device came from an earlier database.
+    let fresh = |f: &Fixture| f.state.lock().unwrap().ledger_fresh.clone();
+    assert!(f.registry.ledger_created_empty());
+    assert_eq!(fresh(&f), vec![Some(true)]);
 
     // The server says this database's numbers are spent. Every request asks
     // again and none goes further.
@@ -587,6 +596,9 @@ async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_
     assert_eq!(error.code, "agent_executor_ledger_retired");
     assert_eq!(declared(&f).len(), 4);
     assert_eq!(f.state.lock().unwrap().result_writes, 1);
+    // A refused declaration sent nothing else, so the database is still new.
+    assert!(f.registry.ledger_created_empty());
+    assert_eq!(fresh(&f), vec![Some(true); 4]);
 
     // A server from before declarations: asked once, then used as before.
     f.state.lock().unwrap().ledger_reply =
@@ -595,6 +607,9 @@ async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_
         assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
     }
     assert_eq!(declared(&f).len(), 5);
+    // What followed reached that server undeclared. The database can no
+    // longer say that what a server holds for this device is not its own.
+    assert!(!f.registry.ledger_created_empty());
 
     // Once that server is upgraded the next question opens the space.
     *f.owner.0.management.ledger.lock().await = LedgerDeclaration::Unknown;
@@ -604,6 +619,8 @@ async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_
     }
     assert_eq!(declared(&f).len(), 6);
     assert!(declared(&f).iter().all(|id| *id == f.registry.ledger_id()));
+    // The member is left out, never sent as false.
+    assert_eq!(fresh(&f)[4..], [Some(true), None]);
     f.stop().await;
 }
 struct Fixture {

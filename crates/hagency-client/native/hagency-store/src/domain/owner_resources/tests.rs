@@ -33,6 +33,45 @@ mod provenance_history;
 #[path = "readmission_tests.rs"]
 mod readmission;
 
+/// A database notes that it was created empty, under the name the server
+/// will know it by. Only that database can claim the note, and it stops
+/// claiming it once it has to report to a server it could not declare to.
+#[tokio::test]
+async fn a_database_created_empty_says_so_until_it_reports_undeclared() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("owner");
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    let note = root.canonicalize().unwrap().join("ledger-created-empty");
+    assert!(registry.ledger_created_empty());
+    assert_eq!(std::fs::read(&note).unwrap(), registry.ledger_id().as_bytes());
+    // The same database after a restart is still the one that was created empty.
+    let name = registry.ledger_id();
+    registry.shutdown().await.unwrap();
+    drop(registry);
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    assert_eq!(registry.ledger_id(), name);
+    assert!(registry.ledger_created_empty());
+    // A note left for another database is not this one's.
+    crate::private::replace(&note, "0".repeat(64).as_bytes()).unwrap();
+    assert!(!registry.ledger_created_empty());
+    crate::private::replace(&note, name.as_bytes()).unwrap();
+    assert!(registry.ledger_created_empty());
+    // Reporting undeclared ends the claim for good, and may be repeated.
+    registry.ledger_reports_undeclared().unwrap();
+    assert!(!note.exists());
+    assert!(!registry.ledger_created_empty());
+    registry.ledger_reports_undeclared().unwrap();
+    // Opening the existing database again never writes the note: a database
+    // from before this note existed, or one that reported undeclared, stays so.
+    registry.shutdown().await.unwrap();
+    drop(registry);
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    assert_eq!(registry.ledger_id(), name);
+    assert!(!note.exists());
+    assert!(!registry.ledger_created_empty());
+    registry.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn resource_owner_can_allocate_a_legacy_delegated_grant_without_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();

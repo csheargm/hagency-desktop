@@ -20,6 +20,13 @@ fn provenance_fixture_reply(body: &Value, publications: &PublicationFixture) -> 
     assert_eq!(kind, "contribution");
     assert_eq!(command, "first_offer");
     assert_eq!(revision, body["resourceRevision"]);
+    // An offer is the first thing a database tells the server, and the
+    // declaration of a new database ends every pool the device offered
+    // before it. The server must know the database before its first offer.
+    assert!(
+        state.connections.ledger_declarations > 0,
+        "the owner database is declared before an offer reaches the server"
+    );
     state.connections.contribution_posts += 1;
     if matches!(
         body["commandId"].as_str(),

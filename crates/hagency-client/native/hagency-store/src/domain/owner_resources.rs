@@ -58,9 +58,24 @@ use std::{
 
 static REGISTRIES: LazyLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<Inner>>>> =
     LazyLock::new(Default::default);
+/// Written beside the database when it is created, holding the name the
+/// server will know it by. While the note is there and names this database,
+/// the database was created empty and has told no server anything that a
+/// declaration did not precede.
+const CREATED_EMPTY: &str = "ledger-created-empty";
+
+fn ledger_name(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"hagency-owner-ledger-v1\0");
+    hash.update(id.as_bytes());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 struct Inner {
     store: DomainStore,
     id: String,
+    root: PathBuf,
     closed: AtomicBool,
     /// Call ids whose custody object is alive in this process. Owner
     /// reconciliation refuses them: only a dead process leaves a call open.
@@ -365,6 +380,7 @@ impl OwnerResourceRegistry {
         let inner = Arc::new(Inner {
             store,
             id,
+            root: root.clone(),
             closed: AtomicBool::new(false),
             live_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
@@ -378,11 +394,24 @@ impl OwnerResourceRegistry {
     /// counts from 1, so a server tells two databases of one device apart by
     /// this name. It is derived, so the database identity itself stays local.
     pub fn ledger_id(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hash = Sha256::new();
-        hash.update(b"hagency-owner-ledger-v1\0");
-        hash.update(self.0.id.as_bytes());
-        hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        ledger_name(&self.0.id)
+    }
+    /// This database was created empty by this build and has not reported to
+    /// a server without declaring itself first. Whatever a server still holds
+    /// for this device therefore came from an earlier database.
+    pub fn ledger_created_empty(&self) -> bool {
+        crate::private::read_secret(&self.0.root.join(CREATED_EMPTY))
+            .is_ok_and(|note| note == self.ledger_id().as_bytes())
+    }
+    /// The database is about to report to a server that cannot be told which
+    /// database is speaking. From here on it can no longer claim that what
+    /// the server holds is not its own.
+    pub fn ledger_reports_undeclared(&self) -> Result<(), Error> {
+        match std::fs::remove_file(self.0.root.join(CREATED_EMPTY)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
     pub async fn shutdown(&self) -> Result<(), Error> {
         self.0.closed.store(true, Ordering::Release);
@@ -546,6 +575,10 @@ impl DomainRepository {
                 let mut bytes = [0; 32];
                 getrandom::fill(&mut bytes).map_err(|_| Error::Unavailable)?;
                 let id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                // Before the identity exists: a failure after this leaves a
+                // note for a database that was never created, which the next
+                // one replaces and no other can match.
+                crate::private::replace(&root.join(CREATED_EMPTY), ledger_name(&id).as_bytes())?;
                 tx.execute(
                     "INSERT INTO owner_resource_identity VALUES(1,?1,?2,1)",
                     params![id, identity],

@@ -4,8 +4,9 @@ use crate::console::server_login::OwnerError;
 pub(in crate::console) struct ServerOperation(Box<Operation>);
 pub(in crate::console::native) enum Operation {
     Session,
-    /// The owner database this device now reports receipts from.
-    DeclareLedger(String),
+    /// The owner database this device now reports from. `fresh`: it was
+    /// created empty, so what the server holds for the device is not its own.
+    DeclareLedger { id: String, fresh: bool },
     #[cfg(feature="agent-budget")]
     AgentBudget(super::super::managed_agent_budget_transport::ServerOperation),
     AgentSettlement(super::super::managed_agent_settlement_transport::ServerOperation),
@@ -46,7 +47,7 @@ impl ServerOperation {
     pub(super) fn new(operation: Operation) -> Result<Self, NativeError> {
         match &operation {
             Operation::Session => {},
-            Operation::DeclareLedger(id) => hash(id)?,
+            Operation::DeclareLedger { id, .. } => hash(id)?,
             #[cfg(feature="agent-budget")]
             Operation::AgentBudget(_) => {},
             Operation::AgentSettlement(_)
@@ -121,10 +122,12 @@ impl ServerOperation {
         };
         let (method, suffix, body) = match *self.0 {
             Operation::Session => (reqwest::Method::GET, "session".into(), None),
-            Operation::DeclareLedger(id) => (
+            // `fresh` is sent only when true: a server that knows
+            // declarations but not this field refuses an unknown one.
+            Operation::DeclareLedger { id, fresh } => (
                 reqwest::Method::POST,
                 "executor-ledger/declare".into(),
-                Some(json!({"ledgerId":id})),
+                Some(if fresh { json!({"ledgerId":id,"fresh":true}) } else { json!({"ledgerId":id}) }),
             ),
             #[cfg(feature="agent-budget")]
             Operation::AgentBudget(_) => unreachable!("budget handled above"),

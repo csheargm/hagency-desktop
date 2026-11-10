@@ -62,6 +62,14 @@ impl CurrentManagementStore {
     pub fn ledger_id(&self) -> String {
         self.registry.ledger_id()
     }
+    /// See [`OwnerResourceRegistry::ledger_created_empty`].
+    pub fn ledger_created_empty(&self) -> bool {
+        self.registry.ledger_created_empty()
+    }
+    /// See [`OwnerResourceRegistry::ledger_reports_undeclared`].
+    pub fn ledger_reports_undeclared(&self) -> Result<(), Error> {
+        self.registry.ledger_reports_undeclared()
+    }
     pub fn matches_registry(&self, registry: &OwnerResourceRegistry) -> bool {
         Arc::ptr_eq(&self.registry.0, &registry.0)
     }

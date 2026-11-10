@@ -205,6 +205,10 @@ async fn server() -> (
                     }
                     // A current server: the database a device names opens its number space.
                     "/hagency/api/v1/management/executor-ledger/declare" => {
+                        #[cfg(feature = "resource-adoption")]
+                        {
+                            publications.lock().unwrap().connections.ledger_declarations += 1;
+                        }
                         json!({"ledgerId":body["ledgerId"],"epoch":1})
                     }
                     _ => panic!("unexpected route in native grant-intent fixture: {path}"),

@@ -7,6 +7,8 @@ struct ConnectionFixtureState {
     lose_resume_reply: bool,
     provenance_path: Option<PathBuf>,
     contribution_posts: usize,
+    /// Ledger declarations the fixture server has answered.
+    ledger_declarations: usize,
 }
 fn connection_fixture_reply(
     path: &str,

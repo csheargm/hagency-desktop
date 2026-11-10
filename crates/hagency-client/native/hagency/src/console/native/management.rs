@@ -408,6 +408,22 @@ impl NativeManagement {
         }
         None
     }
+    /// See `OwnerResourceRegistry::ledger_created_empty`.
+    pub(super) fn ledger_created_empty(&self) -> bool {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return store.ledger_created_empty();
+        }
+        false
+    }
+    /// See `OwnerResourceRegistry::ledger_reports_undeclared`.
+    pub(super) fn ledger_reports_undeclared(&self) -> Result<(), NativeError> {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return store.ledger_reports_undeclared().map_err(store_error);
+        }
+        Ok(())
+    }
     pub(super) fn account_enrollment_ready(&self)->bool {
         #[cfg(feature="resource-adoption")]
         {matches!(&self.store,ManagementStore::Current(_))}
