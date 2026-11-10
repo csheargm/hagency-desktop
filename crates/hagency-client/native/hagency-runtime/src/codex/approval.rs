@@ -510,7 +510,7 @@ mod tests {
     fn ready() -> Connection {
         let mut c = Connection::default();
         let (id, _) = c.initialize("test", 0, 1000).unwrap();
-        let line=encode(Message::Response{id,result:json!({"userAgent":"fixture","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"})}).unwrap();
+        let line=encode(Message::Response{id,result:json!({"userAgent":"fixture/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"})}).unwrap();
         c.receive(&line, 1).unwrap();
         c.initialized(2).unwrap();
         c

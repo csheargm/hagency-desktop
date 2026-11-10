@@ -19,7 +19,7 @@ fn invented_request() -> Value {
         "params": {"threadId": "thread-one", "private": "peer-text"}})
 }
 fn initialize_result(id: &Value) -> Value {
-    json!({"id": id, "result": {"userAgent": "fixture/0.153.4", "platformFamily": "unix",
+    json!({"id": id, "result": {"userAgent": "fixture/0.167.0", "platformFamily": "unix",
         "platformOs": "fixture", "codexHome": "/fixture"}})
 }
 /// Run a turn to completion and assert the host sees the ending.

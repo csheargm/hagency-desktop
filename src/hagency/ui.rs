@@ -274,7 +274,7 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
         "owner_daemon_update_required" => "The resource owner's Hagency service needs an update. Update Hagency and start its service; the original message can then continue.",
         "owner_daemon_unavailable" => "The resource owner's Hagency service is unavailable. The original message is waiting for that service to reconnect.",
         "claude_binary_unavailable" => "Claude Code is not installed or could not be started. Check the local installation.",
-        "shared_claude_version_unsupported" | "claude_version_unsupported" => "Update Claude Code to version 2.1.321 or a newer 2.x release, then retry.",
+        "shared_claude_version_unsupported" | "claude_version_unsupported" => "Update Claude Code to version 2.1.322 or newer, then retry.",
         "octos_binary_unavailable" => "Octos is not installed or could not be started. Check the local installation.",
         "claude_account_unavailable" | "local_provider_not_signed_in" => "Check your local Claude sign-in, then connect the account again.",
         "local_provider_home_unavailable" => "The local runtime's account directory is unavailable. Check its local setup.",
@@ -282,6 +282,7 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
         "provider_authorization_lost" => "The local runtime's account or configuration is unavailable. Check Model & resources and reconnect.",
         "local_provider_login_managed_locally" => "Sign in through the local runtime, then connect it here.",
         "codex_binary_unavailable" => "Codex is not installed or could not be started. Check the local Codex installation.",
+        "codex_version_unsupported" => "Update Codex to version 0.167.0 or newer, then retry.",
         "local_codex_home_unavailable" | "provider_directory_unavailable" | "provider_directory_not_canonical" => "Codex's local account or workspace directory is unavailable. Check its local permissions and retry.",
         "local_codex_configuration_unsupported" | "provider_file_credentials_or_config_rejected" => "This Codex configuration cannot be safely used by Hagency. Your existing account has not been changed. Check the configuration or use a separate Codex account.",
         "provider_profile_mismatch" | "provider_choice_unavailable" => "The saved local account selection is unavailable or does not match this profile. Reconnect the intended account and retry.",
@@ -5382,7 +5383,7 @@ mod tests {
     }
     #[test]
     fn provider_diagnostics_are_explicit_but_never_render_untrusted_details() {
-        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch", "owner_daemon_update_required", "owner_daemon_unavailable"] {
+        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch", "codex_version_unsupported", "claude_version_unsupported", "owner_daemon_update_required", "owner_daemon_unavailable"] {
             let message = visible_error(code);
             assert!(message.contains(code), "approved static diagnostic is visible");
             assert!(!message.starts_with(code), "explain the problem before the code");

@@ -17,7 +17,7 @@ for line in sys.stdin:
  r=json.loads(line);i=r.get('id');m=r.get('method')
  if i is None:continue
  with (home/'fixture-methods').open('a') as f:f.write(m+'\n')
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api'}}
  elif m=='account/read':v={'requiresOpenaiAuth':True,'account':{'type':'chatgpt','email':'fixture-private@example.test','planType':'plus'}}
  elif m=='account/rateLimits/read':v={'accountId':'fixture-quota-identity','rateLimits':{}}

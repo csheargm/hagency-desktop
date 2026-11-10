@@ -321,14 +321,14 @@ async fn claude_unsupported_version_never_counts_towards_a_fresh_start() {
     let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
     call(&mut f, "before_upgrade").await;
     let saved = saved_sessions(&f);
-    fs::write(f.path("cli-version"), "3.0.0").unwrap();
+    fs::write(f.path("cli-version"), "2.1.321").unwrap();
     for attempt in 0..5 {
         let error = match start(&mut f).await {
             Ok(_) => panic!("attempt {attempt}: an unsupported installation started a process"),
             Err(error) => error,
         };
         assert!(
-            matches!(error, Error::Protocol(text) if text.contains("2.1.321")),
+            matches!(error, Error::Protocol(text) if text.contains("2.1.322")),
             "attempt {attempt}: {error:?}"
         );
         assert_eq!(saved_sessions(&f), saved, "attempt {attempt}");
@@ -337,17 +337,17 @@ async fn claude_unsupported_version_never_counts_towards_a_fresh_start() {
     assert_eq!(launched.len(), 6);
     assert!(launched[1..].iter().all(|launch| resumes(launch, &saved[0])));
     // A supported installation then resumes the same session at once.
-    fs::write(f.path("cli-version"), "2.1.321").unwrap();
+    fs::write(f.path("cli-version"), "2.1.322").unwrap();
     let mut resumed = start(&mut f).await.unwrap();
     assert_eq!(resumed.discarded_session, None);
     resumed.stop().await.unwrap();
     // Mixed in with real failures, it still does not count.
     fs::write(f.path("missing-context"), "eof").unwrap();
     fails_and_keeps(&mut f, &saved, "first").await;
-    fs::write(f.path("cli-version"), "3.0.0").unwrap();
+    fs::write(f.path("cli-version"), "2.1.321").unwrap();
     fs::remove_file(f.path("missing-context")).unwrap();
     assert!(start(&mut f).await.is_err());
-    fs::write(f.path("cli-version"), "2.1.321").unwrap();
+    fs::write(f.path("cli-version"), "2.1.322").unwrap();
     fs::write(f.path("missing-context"), "eof").unwrap();
     fails_and_keeps(&mut f, &saved, "second, after an unsupported version in between").await;
 }

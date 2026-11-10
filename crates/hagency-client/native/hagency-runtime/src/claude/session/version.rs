@@ -1,6 +1,11 @@
-//! Version of the qualified native stdio contract, reported before input.
+//! Oldest Claude Code this host talks to, reported before input. Nothing older
+//! is supported and nothing newer is refused: the resource owner keeps the CLI
+//! current.
 use super::Error;
 use serde_json::Value;
+
+/// Claude Code on the day this floor was set (2026-11-10).
+pub const MINIMUM: [u32; 3] = [2, 1, 322];
 
 pub(super) fn check(value: &Value) -> Result<(), Error> {
     let version = value
@@ -18,7 +23,7 @@ pub(super) fn check(value: &Value) -> Result<(), Error> {
         })
         .collect();
     match parts.as_deref() {
-        Some([2, minor, patch]) if (*minor, *patch) >= (1, 321) => Ok(()),
+        Some(&[major, minor, patch]) if [major, minor, patch] >= MINIMUM => Ok(()),
         _ => Err(Error::UnsupportedVersion),
     }
 }

@@ -151,7 +151,7 @@ async fn running() -> (Session, Peer) {
     let (result, ()) = tokio::join!(s.initialize(), async {
         let r = read(&mut p).await;
         assert_eq!(r["method"], "initialize");
-        write(&mut p,json!({"id":r["id"],"result":{"userAgent":"offline/0.153.4","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"}})).await;
+        write(&mut p,json!({"id":r["id"],"result":{"userAgent":"offline/0.167.0","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"}})).await;
         assert_eq!(read(&mut p).await["method"], "initialized");
     });
     result.unwrap();

@@ -63,8 +63,8 @@ Native Codex and Claude sessions retain their context between turns. Shared Clau
 on macOS uses a separate workspace and Seatbelt confinement; owner hooks, settings
 and unrelated MCP servers are not loaded. Native session files are sealed while
 the process is stopped and require fresh scope authorization before reopening.
-Claude Code 2.1.321 is the verified version; the runtime accepts 2.1.321 or newer
-2.x versions. Conversational controls accept authenticated Matrix sender devices
+The runtime requires Claude Code 2.1.322 or newer and Codex 0.167.0 or newer;
+older versions are refused. Conversational controls accept authenticated Matrix sender devices
 without requiring cross-signing, and still check the card's responder and current
 Room membership. They do not grant tool-approval authority.
 

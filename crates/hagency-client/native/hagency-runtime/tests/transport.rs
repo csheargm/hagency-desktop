@@ -83,7 +83,7 @@ async fn ready(driver: &mut TestDriver, peer: &mut Peer) {
     assert_eq!(receipt.bytes, sent.len());
     assert_eq!(receipt.request_id, Some(RequestId::Number(0)));
     peer.stdout.write_all(&line(json!({ "id": 0, "result": {
-        "userAgent": "fixture/0.153.4", "platformFamily": "unix", "platformOs": "macos", "codexHome": "/fixture"
+        "userAgent": "fixture/0.167.0", "platformFamily": "unix", "platformOs": "macos", "codexHome": "/fixture"
     } }))).await.unwrap();
     assert!(matches!(
         driver.next_event().await,

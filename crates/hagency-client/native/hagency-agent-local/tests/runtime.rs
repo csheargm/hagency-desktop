@@ -922,7 +922,7 @@ async fn claude_unsupported_version_is_actionable_without_prompt_or_fresh_retry(
         .await
         .unwrap();
     process.stop().await.unwrap();
-    fs::write(f.path("cli-version"), "3.0.0").unwrap();
+    fs::write(f.path("cli-version"), "2.1.321").unwrap();
     let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
     let error = spawn_for_scope_with_guardian(
         &f.profile,
@@ -934,7 +934,7 @@ async fn claude_unsupported_version_is_actionable_without_prompt_or_fresh_retry(
     .await
     .err()
     .expect("unsupported CLI");
-    assert!(matches!(error, Error::Protocol(message) if message.contains("2.1.321")));
+    assert!(matches!(error, Error::Protocol(message) if message.contains("2.1.322")));
     assert_eq!(
         fs::read_to_string(f.path("argv")).unwrap().lines().count(),
         2

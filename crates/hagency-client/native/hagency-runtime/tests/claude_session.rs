@@ -88,7 +88,7 @@ async fn initialize(driver: &mut Driver, peer: &mut Peer) {
         );
         peer.output
             .write_all(&encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
+            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
@@ -106,7 +106,7 @@ async fn native_claude_initialize_ignores_captured_ui_frame_without_binding_a_se
         let mut bytes = encoded(native_ui_invalidate());
         bytes.extend(encoded(json!({"type":"control_response","response":{
             "subtype":"success","request_id":request["request_id"],
-            "response":{"claude_code_version":"2.1.321", "account":{
+            "response":{"claude_code_version":"2.1.322", "account":{
                 "tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty"}}
         }})));
         peer.output.write_all(&bytes).await.unwrap();
@@ -125,7 +125,7 @@ async fn native_claude_initialize_ignores_captured_ui_frame_without_binding_a_se
 async fn native_claude_initialize_ui_metadata_does_not_hide_authority_or_extend_deadlines() {
     for invalid in [
         permission("early"),
-        json!({"type":"control_response","response":{"subtype":"success","request_id":"wrong","response":{"claude_code_version":"2.1.321"}}}),
+        json!({"type":"control_response","response":{"subtype":"success","request_id":"wrong","response":{"claude_code_version":"2.1.322"}}}),
         init(),
     ] {
         let (mut driver, mut peer) = pair(4096, limits());
@@ -705,7 +705,7 @@ async fn native_claude_session_identity_and_result() {
     let (result, ()) = tokio::join!(driver.initialize(), async {
         let request = read(&mut peer).await;
         let mut bytes = encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.321"}}}));
+            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.322"}}}));
         bytes.extend(encoded(init()));
         peer.output.write_all(&bytes).await.unwrap();
     });
@@ -1004,14 +1004,14 @@ async fn native_claude_protocol_version_is_checked_before_any_prompt() {
     for version in [
         Value::Null,
         json!(2),
-        json!("2.1.320"),
+        json!("2.1.321"),
         json!("3.0.0"),
         json!("2.01.321"),
-        json!("2.1.321-beta"),
-        json!("2.1.321"),
+        json!("2.1.322-beta"),
+        json!("2.1.322"),
         json!("2.2.0"),
     ] {
-        let supported = version == "2.1.321" || version == "2.2.0";
+        let supported = version == "2.1.322" || version == "2.2.0" || version == "3.0.0";
         let (mut driver, mut peer) = pair(8192, limits());
         let (result, ()) = tokio::join!(driver.initialize(), async {
             let request = read(&mut peer).await;

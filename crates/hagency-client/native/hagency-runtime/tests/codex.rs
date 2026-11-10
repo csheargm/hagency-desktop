@@ -19,7 +19,7 @@ fn accept(connection: &mut Connection, value: Value, now: u64) -> Result<Event, 
 
 fn init_response(id: RequestId) -> Value {
     json!({ "id": id, "result": {
-        "userAgent": "codex-fixture/0.153.4", "platformFamily": "unix",
+        "userAgent": "codex-fixture/0.167.0", "platformFamily": "unix",
         "platformOs": "macos", "codexHome": "/fixture/codex"
     } })
 }
@@ -333,7 +333,7 @@ fn native_codex_correlation_wrong_types_limits_and_invalid_initialize() {
     for result in [
         Value::Null,
         json!({}),
-        json!({ "userAgent": "fixture", "platformFamily": "unix", "platformOs": "linux" }),
+        json!({ "userAgent": "fixture/0.167.0", "platformFamily": "unix", "platformOs": "linux" }),
     ] {
         let mut connection = Connection::default();
         let (id, _) = connection.initialize("0.1", 0, 100).unwrap();

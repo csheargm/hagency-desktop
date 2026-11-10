@@ -7,6 +7,7 @@ use crate::json;
 pub mod session;
 pub mod transport;
 pub mod tree;
+pub mod version;
 mod wire;
 
 pub use connection::{Connection, Event, Phase, TurnScope};
@@ -61,6 +62,8 @@ pub enum Error {
     UnexpectedEof,
     #[error("Codex protocol transport failed")]
     Transport,
+    #[error("Codex is older than the oldest supported version")]
+    Version,
 }
 
 fn text(value: &str, max: usize) -> bool {

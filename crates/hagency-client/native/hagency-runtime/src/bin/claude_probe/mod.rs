@@ -127,7 +127,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             return Ok(());
         }
     }
-    let mut initialization = json!({"claude_code_version":"2.1.321"});
+    let mut initialization = json!({"claude_code_version":"2.1.322"});
     if (mode.starts_with("account-") && mode != "account-missing") || mode.starts_with("shared-") {
         initialization["account"] =
             json!({"email":"owner@example.test","apiProvider":"firstParty"});

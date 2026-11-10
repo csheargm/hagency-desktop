@@ -1330,6 +1330,9 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         codex::Error::Profile("dedicated owner provider login required") => RuntimeError::Provider,
         codex::Error::Profile(_) | codex::Error::Ledger(_) => RuntimeError::Profile,
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
+        codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
+            RuntimeError::Execution("codex_version_unsupported")
+        }
         codex::Error::Protocol(_) | codex::Error::EventScope { .. } | codex::Error::Json(_) => {
             RuntimeError::Execution("codex_protocol_mismatch")
         }
@@ -2804,6 +2807,10 @@ mod tests {
                 super::codex::Error::Protocol("cross-turn event"),
                 "codex_protocol_mismatch",
             ),
+            (
+                super::codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED),
+                "codex_version_unsupported",
+            ),
             (super::codex::Error::Unknown, "codex_provider_unavailable"),
             (super::codex::Error::Timeout, "codex_provider_timeout"),
             (
@@ -4093,7 +4100,7 @@ for raw in sys.stdin:
     frame=json.loads(raw); method=frame.get('method'); ident=frame.get('id')
     def reply(result):
         print(json.dumps({'id':ident,'result':result}),flush=True)
-    if method=='initialize': reply({})
+    if method=='initialize': reply({'userAgent':'fixture/0.167.0'})
     elif method=='initialized': pass
     elif method=='thread/name/set': reply({})
     elif method=='config/read':

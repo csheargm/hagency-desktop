@@ -158,7 +158,7 @@ async fn initialize(session: &mut Session, peer: &mut Peer) {
     let (result, ()) = tokio::join!(session.initialize(), async {
         let request = read(&mut peer.stdin).await;
         assert_eq!(request["method"], "initialize");
-        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.153.4", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
+        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.167.0", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
         assert_eq!(read(&mut peer.stdin).await["method"], "initialized");
     });
     result.unwrap();
@@ -175,7 +175,7 @@ async fn native_codex_session_identity_global_runtime_notices_grant_no_scope() {
         let request = read(&mut peer.stdin).await;
         write(&mut peer, protocol_fixture["messages"][0].clone()).await;
         write(&mut peer, notice.clone()).await;
-        write(&mut peer, json!({"id":request["id"],"result":{"userAgent":"fixture/0.154.0","platformFamily":"unix","platformOs":"linux","codexHome":"/fixture"}})).await;
+        write(&mut peer, json!({"id":request["id"],"result":{"userAgent":"fixture/0.167.0","platformFamily":"unix","platformOs":"linux","codexHome":"/fixture"}})).await;
         assert_eq!(read(&mut peer.stdin).await["method"], "initialized");
     });
     result.unwrap();

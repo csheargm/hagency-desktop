@@ -103,7 +103,7 @@ async fn native_claude_unknown_control_request_before_the_initialize_response_is
         let _ = peer
             .output
             .write_all(&encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
+            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await;
         reply
     });
@@ -153,7 +153,7 @@ async fn native_claude_control_frames_with_extra_keys_keep_the_session() {
             .write_all(&encoded(json!({"type":"control_response","uuid":"u-1","response":{
             "subtype":"success","request_id":request["request_id"],"future_note":{"x":1},
             "pending_permission_requests":[],"pending_user_dialog_requests":[],
-            "response":{"claude_code_version":"2.1.321"}}})))
+            "response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
@@ -261,7 +261,7 @@ async fn native_claude_inert_metadata_before_the_initialize_response_is_ignored(
         }
         bytes.extend(encoded(json!({"type":"control_response","response":{
             "subtype":"success","request_id":request["request_id"],
-            "response":{"claude_code_version":"2.1.321"}}})));
+            "response":{"claude_code_version":"2.1.322"}}})));
         peer.output.write_all(&bytes).await.unwrap();
     });
     assert_eq!(

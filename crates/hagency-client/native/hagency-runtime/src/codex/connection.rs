@@ -632,6 +632,14 @@ impl Connection {
                         return Err(Error::Envelope);
                     }
                 }
+                // Before `initialized`, so an older Codex is never given work.
+                if !obj
+                    .get("userAgent")
+                    .and_then(Value::as_str)
+                    .is_some_and(super::version::supported)
+                {
+                    return Err(Error::Version);
+                }
                 // These are observations, not effective sandbox/OS qualification.
                 self.phase = Phase::AwaitingInitialized;
                 Ok(Event::Initialized { result })

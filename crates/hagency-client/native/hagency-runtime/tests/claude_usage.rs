@@ -57,7 +57,7 @@ async fn running_with_completion(completion: bool) -> (Driver, Peer) {
         let v = read(&mut p).await;
         p.output
             .write_all(&encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":v["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
+            "subtype":"success","request_id":v["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });

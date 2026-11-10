@@ -37,7 +37,7 @@ while time.monotonic() < until:
 while not (root / 'heartbeat').exists(): time.sleep(0.005)
 sys.stderr.write('x' * 262144)
 sys.stderr.flush()
-print(json.dumps({'id':request['id'], 'result':{'userAgent':'offline'}}), flush=True)
+print(json.dumps({'id':request['id'], 'result':{'userAgent':'offline/0.167.0'}}), flush=True)
 json.loads(sys.stdin.readline())
 if exit_leader:
     (root / 'leader-exited').write_text('done')

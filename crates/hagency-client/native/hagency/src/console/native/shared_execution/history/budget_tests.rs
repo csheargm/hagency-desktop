@@ -46,7 +46,7 @@ async fn samples() -> Vec<ContextUsage> {
     )
     .unwrap();
     let (result, ()) = tokio::join!(session.initialize(), async {
-        reply(&mut peer, json!({"userAgent":"fixture","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})).await;
+        reply(&mut peer, json!({"userAgent":"fixture/0.167.0","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})).await;
         assert_eq!(read(&mut peer).await["method"], "initialized");
     });
     result.unwrap();

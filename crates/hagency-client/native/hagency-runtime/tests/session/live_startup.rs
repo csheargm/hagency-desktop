@@ -11,7 +11,7 @@ use super::*;
 /// Captured `initialize` result (codex 0.157.0).
 fn real_initialize_result() -> Value {
     json!({
-        "userAgent": "hagency/0.157.0 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (hagency; 0.1.0)",
+        "userAgent": "hagency/0.167.0 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (hagency; 0.1.0)",
         "codexHome": "/fixture/.codex",
         "platformFamily": "unix",
         "platformOs": "macos"

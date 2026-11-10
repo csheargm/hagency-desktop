@@ -35,7 +35,7 @@ with (home/'fixture-spawns').open('a') as f:f.write('spawn\n')
 for line in sys.stdin:
  r=json.loads(line);i=r.get('id');m=r.get('method')
  if i is None:continue
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api'}}
  elif m=='account/read':v={'requiresOpenaiAuth':True,'account':({'type':'chatgpt','email':('changed@example.test' if (home/'fixture-switched').exists() else 'not-for-mini-app@example.test'),'planType':'plus'} if (home/'fixture-complete').exists() else None)}
  elif m=='model/list':

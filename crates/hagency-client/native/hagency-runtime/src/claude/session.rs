@@ -54,7 +54,7 @@ pub enum Error {
     MissingResume,
     #[error("Claude initialization was refused")]
     Refused,
-    #[error("Claude CLI version is missing or outside supported 2.x (minimum 2.1.321)")]
+    #[error("Claude CLI version is missing or older than 2.1.322")]
     UnsupportedVersion,
     #[error("Claude session identity or control response mismatch")]
     Identity,

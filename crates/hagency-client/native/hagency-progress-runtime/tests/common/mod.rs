@@ -123,7 +123,7 @@ pub async fn initialize(session: &mut Session, peer: &mut Peer) {
     let (result, ()) = tokio::join!(session.initialize(), async {
         let request = read(&mut peer.stdin).await;
         assert_eq!(request["method"], "initialize");
-        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.153.4", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
+        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.167.0", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
         assert_eq!(read(&mut peer.stdin).await["method"], "initialized");
     });
     result.unwrap();

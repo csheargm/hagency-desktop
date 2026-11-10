@@ -74,7 +74,7 @@ if kind == 'claude':
             'modelUsage':{},'permission_denials':[],'errors':[('Native session file cannot be opened: ' if failure == 'reworded' else 'No conversation found with session ID: ') + saved],
             'usage':{'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}})
         sys.exit(1)
-    acknowledged = {'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {'claude_code_version':(root / 'cli-version').read_text() if (root / 'cli-version').exists() else '2.1.321'}}}
+    acknowledged = {'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {'claude_code_version':(root / 'cli-version').read_text() if (root / 'cli-version').exists() else '2.1.322'}}}
     if mode == 'future_start':
         # A newer CLI: inert metadata before the acknowledgement, and keys on
         # the acknowledgement that this host does not read.

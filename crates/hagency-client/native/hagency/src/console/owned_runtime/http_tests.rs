@@ -371,7 +371,7 @@ for raw in sys.stdin:
  f=json.loads(raw);m=f.get('method');ident=f.get('id');p=f.get('params',{})
  def reply(v): print(json.dumps({'id':ident,'result':v}),flush=True)
  def emit(m,p): print(json.dumps({'method':m,'params':p}),flush=True)
- if m=='initialize': reply({})
+ if m=='initialize': reply({'userAgent':'fixture/0.167.0'})
  elif m=='initialized': pass
  elif m=='account/read': reply({'requiresOpenaiAuth':True,'account':{'type':'chatgpt'}})
  elif m=='config/read':

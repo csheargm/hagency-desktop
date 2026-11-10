@@ -121,7 +121,7 @@ fn main() -> io::Result<()> {
         let value = match method {
             "turn/interrupt" if mode.ends_with("interrupt-usage") => json!({}),
             "initialize" => {
-                json!({"userAgent":"managed-offline-fixture","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})
+                json!({"userAgent":"managed-offline-fixture/0.167.0","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})
             }
             "config/read" => {
                 let mut config: Value =

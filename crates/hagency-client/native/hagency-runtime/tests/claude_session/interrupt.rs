@@ -258,7 +258,7 @@ async fn native_claude_interrupt_completion_before_local_flush_keeps_the_origina
     driver.enable_continuous_session().unwrap();
     let (ready, ()) = tokio::join!(driver.initialize(), async {
         let init = read(&mut peer).await;
-        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":init["request_id"],"response":{"claude_code_version":"2.1.321"}}}))).await.unwrap();
+        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":init["request_id"],"response":{"claude_code_version":"2.1.322"}}}))).await.unwrap();
     });
     ready.unwrap();
     let (sent, prompt) = tokio::join!(driver.prompt("one turn"), read(&mut peer));

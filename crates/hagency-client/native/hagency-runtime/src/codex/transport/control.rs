@@ -276,7 +276,7 @@ mod shared_wait_tests {
             })
             .await
             .unwrap();
-        peer.write_all(b"{\"id\":0,\"result\":{\"userAgent\":\"fixture\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\",\"codexHome\":\"/fixture\"}}\n")
+        peer.write_all(b"{\"id\":0,\"result\":{\"userAgent\":\"fixture/0.167.0\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\",\"codexHome\":\"/fixture\"}}\n")
             .await
             .unwrap();
         assert!(matches!(

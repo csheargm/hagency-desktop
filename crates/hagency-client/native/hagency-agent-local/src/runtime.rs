@@ -936,7 +936,7 @@ fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
 fn claude_initialize_error(error: claude::session::Error) -> Error {
     match error {
         claude::session::Error::UnsupportedVersion => {
-            Error::Protocol("Claude Code 2.x version 2.1.321 or newer is required")
+            Error::Protocol("Claude Code 2.1.322 or newer is required")
         }
         _ => Error::Protocol("Claude initialize"),
     }

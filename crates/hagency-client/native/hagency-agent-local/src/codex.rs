@@ -857,6 +857,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             return Err(Error::Protocol("already initialized"));
         }
         let reply=self.rpc("initialize",value!({"clientInfo":{"name":"hagency-client","title":"Hagency Client","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+        // Before `initialized`, so an older Codex is never given work.
+        if !reply["userAgent"]
+            .as_str()
+            .is_some_and(hagency_runtime::codex::version::supported)
+        {
+            return Err(Error::Protocol(hagency_runtime::codex::version::REQUIRED));
+        }
         self.write(value!({"method":"initialized"})).await?;
         self.initialized = true;
         Ok(reply)
@@ -2271,7 +2278,7 @@ mod tests {
                     Some("initialize") => {
                         emit(
                             &mut w,
-                            value!({"id":frame["id"],"result":{"userAgent":"fake-codex"}}),
+                            value!({"id":frame["id"],"result":{"userAgent":"fake-codex/0.167.0"}}),
                         )
                         .await
                     }

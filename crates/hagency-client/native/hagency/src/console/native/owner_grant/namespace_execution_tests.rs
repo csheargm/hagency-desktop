@@ -143,7 +143,7 @@ for line in sys.stdin:
  with (home/'namespace-runtime-methods').open('a') as f:f.write(method+'\n')
  if method=='initialize':
   with (home/'namespace-runtime-initialized').open('a') as f:f.write('initialized\n')
-  value={'userAgent':'namespace-probe','platformFamily':'unix','platformOs':'fixture','codexHome':str(home)}
+  value={'userAgent':'namespace-probe/0.167.0','platformFamily':'unix','platformOs':'fixture','codexHome':str(home)}
  elif method=='config/read':value={'config':config}
  elif method=='account/read':value={'requiresOpenaiAuth':True,'account':{'type':'chatgpt','email':None,'planType':'plus'}}
  elif method=='account/rateLimits/read':value={'accountId':'independent-namespace-quota','rateLimits':{}}
@@ -274,7 +274,7 @@ for line in sys.stdin:
  r=json.loads(line);i=r.get('id');m=r.get('method')
  if i is None:continue
  with (home/'namespace-provider-methods').open('a') as f:f.write(m+'\n')
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api'}}
  elif m=='account/read':
   if (home/'provider-quota-hold').exists():

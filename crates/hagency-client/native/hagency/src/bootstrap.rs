@@ -468,6 +468,7 @@ fn transport_error_label(error: hagency_runtime::codex::transport::Error) -> &'s
             WireError::Clock => "protocol_clock",
             WireError::UnexpectedEof => "protocol_unexpected_eof",
             WireError::Transport => "protocol_transport",
+            WireError::Version => "protocol_version",
         },
     }
 }

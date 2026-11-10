@@ -71,7 +71,7 @@ async fn running(capacity: usize, enabled: bool) -> (Driver, Peer) {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
@@ -588,7 +588,7 @@ async fn native_claude_permission_answer_before_flush_completes_the_write() {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.321"}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });

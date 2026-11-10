@@ -336,7 +336,7 @@ fn fake(mode: &str, marker: &Path) -> io::Result<()> {
     }
     result(
         &request,
-        json!({ "userAgent": "offline-fixture/0.153.4", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" }),
+        json!({ "userAgent": "offline-fixture/0.167.0", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" }),
     )?;
     method(&read(stdin.as_mut().unwrap(), marker)?, "initialized")?;
     let request = read(stdin.as_mut().unwrap(), marker)?;

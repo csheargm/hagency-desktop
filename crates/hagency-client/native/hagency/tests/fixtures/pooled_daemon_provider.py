@@ -30,7 +30,7 @@ for raw in sys.stdin:
         print(json.dumps({'id': ident, 'result': v}), flush=True)
     def emit(m, v):
         print(json.dumps({'method': m, 'params': v}), flush=True)
-    if method == 'initialize': reply({'userAgent': 'managed-offline-fixture', 'platformFamily': 'unix', 'platformOs': 'fixture', 'codexHome': '/fixture'})
+    if method == 'initialize': reply({'userAgent': 'managed-offline-fixture/0.167.0', 'platformFamily': 'unix', 'platformOs': 'fixture', 'codexHome': '/fixture'})
     elif method == 'initialized': pass
     elif method == 'account/read':
         reply({'requiresOpenaiAuth': True, 'account': {'type': 'chatgpt', 'email': None, 'planType': 'plus'}})

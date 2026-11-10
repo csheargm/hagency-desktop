@@ -213,7 +213,7 @@ pub(super) async fn run(
 
 fn initialize_error(error: hagency_runtime::claude::session::Error) -> NativeError {
     if matches!(error, hagency_runtime::claude::session::Error::UnsupportedVersion) {
-        tracing::warn!("Shared Claude requires Claude Code 2.x, version 2.1.321 or newer");
+        tracing::warn!("Shared Claude requires Claude Code 2.1.322 or newer");
         failure(409, "shared_claude_version_unsupported")
     } else {
         failure(409, "shared_execution_initialize_failed")

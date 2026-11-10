@@ -364,7 +364,7 @@ fn fake() -> io::Result<()> {
     let init = request(&mut input, "initialize", &mut log)?;
     send(
         &mut output,
-        json!({"id":init["id"],"result":{"userAgent":"offline/0.153.4","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}}),
+        json!({"id":init["id"],"result":{"userAgent":"offline/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}}),
     )?;
     request(&mut input, "initialized", &mut log)?;
     let thread = request(&mut input, "thread/start", &mut log)?;
