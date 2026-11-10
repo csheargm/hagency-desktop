@@ -3,7 +3,7 @@ use hagency_runtime::claude::session::{
     ApprovalControlPolicy, InterruptUpdate, PermissionDecision, PreparedInterrupt,
 };
 
-async fn continuous() -> (Driver, Peer, Value) {
+pub(super) async fn continuous() -> (Driver, Peer, Value) {
     let (mut driver, mut peer) = pair(8192, limits());
     driver.enable_native_completion().unwrap();
     driver.enable_continuous_session().unwrap();

@@ -13,6 +13,8 @@ mod room_mcp;
 mod interrupt;
 #[path = "claude_session/frames.rs"]
 mod frames;
+#[path = "claude_session/steer.rs"]
+mod steer;
 
 struct FlushProbe {
     fail: bool,

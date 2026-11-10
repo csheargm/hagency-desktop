@@ -227,6 +227,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
         if let Some(deadline) = self.interrupt.deadline() {
             until = until.limit(deadline);
         }
+        if let Some(deadline) = self.completion.steers.deadline() {
+            until = until.limit(deadline);
+        }
         if let Some(state) = &self.room_mcp {
             for pending in state.pending.values() {
                 if matches!(pending.stage, Stage::Waiting | Stage::Prepared(_)) {

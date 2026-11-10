@@ -53,6 +53,13 @@ pub(super) struct Request {
     started: bool,
     written: bool,
     receipt: Option<InterruptReceipt>,
+    cancels: Vec<Cancel>,
+}
+/// One steer the stop withdraws, written in the same frame ahead of it.
+struct Cancel {
+    id: String,
+    steer: String,
+    cancelled: Option<bool>,
 }
 #[derive(Default)]
 pub(super) struct State(Option<Request>);
@@ -81,6 +88,15 @@ impl State {
             && self
                 .receipt()
                 .is_none_or(|r| r.still_queued.as_ref().is_none_or(Vec::is_empty))
+            && self.0.as_ref().is_none_or(|r| {
+                !r.started || r.cancels.iter().all(|c| c.cancelled.is_some())
+            })
+    }
+    /// A request that was not natively refused, started or not.
+    pub(super) fn outstanding(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|r| r.receipt.as_ref().is_none_or(|r| r.accepted))
     }
     fn receipt(&self) -> Option<&InterruptReceipt> {
         self.0.as_ref()?.receipt.as_ref()
@@ -91,18 +107,36 @@ impl State {
             r.id == id && r.started && r.receipt.as_ref().is_none_or(|r| r.accepted)
         })
     }
+    /// Returns the steer whose withdrawal this response confirms, if any.
     pub(super) fn observe<R, W, E>(
         &mut self,
         id: &str,
         outcome: &ControlOutcome,
         wire: &io::Wire<R, W, E>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<String>, Error> {
         let request = self
             .0
             .as_mut()
-            .filter(|r| r.id == id && r.started && r.receipt.is_none())
+            .filter(|r| r.started)
             .ok_or(Error::Identity)?;
         if !request.written && !wire.prepared_bytes_sent(request.sequence) {
+            return Err(Error::Identity);
+        }
+        if let Some(cancel) = request.cancels.iter_mut().find(|c| c.id == id) {
+            if cancel.cancelled.is_some() {
+                return Err(Error::Identity);
+            }
+            // False: the native queue no longer held it, so it had started.
+            let cancelled = match outcome {
+                ControlOutcome::Refused => false,
+                ControlOutcome::Success(value) => {
+                    value["cancelled"].as_bool().ok_or(Error::Malformed)?
+                }
+            };
+            cancel.cancelled = Some(cancelled);
+            return Ok(cancelled.then(|| cancel.steer.clone()));
+        }
+        if request.id != id || request.receipt.is_some() {
             return Err(Error::Identity);
         }
         let still_queued = match outcome {
@@ -140,7 +174,7 @@ impl State {
         if matches!(outcome, ControlOutcome::Success(_)) {
             request.deadline = Instant::now() + Duration::from_secs(10);
         }
-        Ok(())
+        Ok(None)
     }
 }
 impl<R, W, E> SessionDriver<R, W, E> {
@@ -164,7 +198,21 @@ impl<R, W, E> SessionDriver<R, W, E> {
         let id = super::lifecycle::prompt_id();
         let sequence = self.control.next_sequence()?;
         let deadline = Instant::now() + Duration::from_secs(10);
-        let frame = io::PreparedFrame::new(sequence, super::super::interrupt(&id)?, deadline);
+        // Stop means stop. An interrupt alone leaves a queued steer for the
+        // native peer to run next, so the same write first withdraws each one.
+        let mut bytes = Vec::new();
+        let mut cancels = Vec::new();
+        for steer in self.completion.steers.cancellable() {
+            let cancel = super::lifecycle::prompt_id();
+            bytes.extend(super::super::cancel_async_message(&cancel, steer)?);
+            cancels.push(Cancel {
+                id: cancel,
+                steer: steer.into(),
+                cancelled: None,
+            });
+        }
+        bytes.extend(super::super::interrupt(&id)?);
+        let frame = io::PreparedFrame::new(sequence, bytes, deadline);
         self.interrupt.0 = Some(Request {
             id: id.clone(),
             sequence,
@@ -172,6 +220,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             started: false,
             written: false,
             receipt: None,
+            cancels,
         });
         Ok(PreparedInterrupt {
             source: self.source.clone(),
@@ -182,6 +231,16 @@ impl<R, W, E> SessionDriver<R, W, E> {
     }
     pub fn interrupt_receipt(&self) -> Option<&InterruptReceipt> {
         self.interrupt.receipt()
+    }
+    /// The native answer to the withdrawal the current stop wrote for this
+    /// steer. None: no withdrawal was written for it, or it has no answer yet.
+    pub fn steer_cancelled(&self, message_id: &str) -> Option<bool> {
+        let request = self.interrupt.0.as_ref()?;
+        request
+            .cancels
+            .iter()
+            .find(|c| c.steer == message_id)?
+            .cancelled
     }
     /// While true, hold host answer/tool futures and keep reading native
     /// events. Withdraw those futures once the request is accepted; an explicit

@@ -69,6 +69,19 @@ pub struct Observation {
     kind: ObservationKind,
     result_error: Option<bool>,
     accounting_snapshot: bool,
+    continues_answer: bool,
+}
+/// The turn's answer when a steer ran as a cycle of its own: the non-empty
+/// result texts in order, separated by a blank line. The completion receipt
+/// verifies exactly this string.
+pub fn join_answer(answer: &mut String, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if !answer.is_empty() {
+        answer.push_str("\n\n");
+    }
+    answer.push_str(text);
 }
 impl Observation {
     pub fn source(&self) -> &ObservationSource {
@@ -86,6 +99,11 @@ impl Observation {
     }
     pub fn is_usage_snapshot(&self) -> bool {
         self.accounting_snapshot
+    }
+    /// This result closed a steer's own cycle. Join its text to the answer
+    /// read so far with `join_answer`; any other result replaces the answer.
+    pub fn continues_answer(&self) -> bool {
+        self.continues_answer
     }
 }
 pub(super) struct State {
@@ -128,6 +146,7 @@ impl State {
         message: &Message,
         session: &str,
         accounting_snapshot: bool,
+        continues_answer: bool,
     ) -> Result<(), Error> {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
         let kind = match message {
@@ -139,6 +158,7 @@ impl State {
             sequence: self.sequence,
             kind,
             accounting_snapshot,
+            continues_answer,
             result_error: match message {
                 Message::Event {
                     kind: super::EventKind::Result,

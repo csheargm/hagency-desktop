@@ -3,6 +3,7 @@ use crate::claude::session::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
 };
 use crate::claude::session::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
+use crate::claude::session::{PreparedSteer, SteerState, SteerUpdate};
 use crate::claude::session::{Observation, ObservationSource, PreparedRoomReply, RoomToolRequest};
 use crate::claude::{
     Message,
@@ -364,6 +365,27 @@ impl OwnedClaudeSession {
             .session
             .send_prepared_interrupt(prepared)
             .await;
+        operation.finish_interrupt(result)
+    }
+    pub fn prepare_steer(&mut self, text: &str) -> Result<PreparedSteer, Error> {
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
+        // As for a stop, a refused preparation leaves the turn untouched.
+        self.session.prepare_steer(text)
+    }
+    pub fn steer_state(&self, message_id: &str) -> Option<SteerState> {
+        self.session.steer_state(message_id)
+    }
+    pub fn steer_cancelled(&self, message_id: &str) -> Option<bool> {
+        self.session.steer_cancelled(message_id)
+    }
+    pub async fn send_prepared_steer(
+        &mut self,
+        prepared: &mut PreparedSteer,
+    ) -> Result<SteerUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.send_prepared_steer(prepared).await;
         operation.finish_interrupt(result)
     }
     pub async fn next_or_control<F: std::future::Future + ?Sized>(

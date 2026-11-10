@@ -95,6 +95,18 @@ if kind == 'claude':
         response = {'subtype':'error','request_id':request['request_id'],'error':'refused'} if refused else {'subtype':'success','request_id':request['request_id'],'response':{'still_queued':[]}}
         send({'type':'control_response','response':response})
         return not refused
+    def lifecycle(ident, state):
+        send({'type':'command_lifecycle','command_uuid':ident,'state':state,'session_id':'offline-session'})
+    def read_steer(prompt, acknowledge=True):
+        # Native 2.1.322 acknowledges a user frame written into a running turn
+        # with `queued` for that frame's own uuid.
+        frame = read()
+        assert frame['type'] == 'user' and frame['session_id'] == 'offline-session' and 'priority' not in frame, frame
+        assert frame['uuid'] != prompt['uuid'] and frame['parent_tool_use_id'] is None, frame
+        (root / 'steer-read').write_text(frame['message']['content'])
+        if acknowledge:
+            lifecycle(frame['uuid'], 'queued')
+        return frame['uuid']
     def long_stream(session, marker):
         send({'type':'stream_event','session_id':session,'event':{'type':'message_start','message':{'id':'stream-message'}}})
         for n in range(20_000):
@@ -141,6 +153,42 @@ if kind == 'claude':
                 assert response['response']['request_id'] == 'waiting'
                 assert response['response']['response']['behavior'] == 'allow'
                 (root / 'effect').write_text('one')
+        steers = []
+        if mode == 'steer_injected':
+            # Steers written while a tool waits for its owner are taken into
+            # the running cycle at its next model request.
+            send({'type':'control_request','request_id':'waiting','request':{'subtype':'can_use_tool','tool_name':'Write','tool_use_id':'waiting-tool','input':{'file_path':str(root / 'outside' / 'result'),'content':'exact'}}})
+            for _ in range(int((root / 'steer-count').read_text())):
+                steers.append(read_steer(prompt))
+            response = read()
+            assert response['response']['request_id'] == 'waiting' and response['response']['response']['behavior'] == 'allow'
+            (root / 'effect').write_text('one')
+            for ident in steers: lifecycle(ident, 'started')
+            for ident in steers: lifecycle(ident, 'completed')
+        if mode == 'steer_cycle':
+            # A text-only turn ends its cycle first and then runs the steer as
+            # a second cycle of the same turn, with no idle in between.
+            steers.append(read_steer(prompt))
+            send({'type':'result','subtype':'success','is_error':False,'result':'offline reply','session_id':session,
+                'user_message_uuid':prompt['uuid'],'user_message_uuids':[prompt['uuid']],
+                'modelUsage':{'main':{'inputTokens':10,'outputTokens':7,'cacheReadInputTokens':3,'cacheCreationInputTokens':4}}})
+            lifecycle('fixture-command', 'completed')
+            lifecycle(steers[0], 'started')
+            send({'type':'system','subtype':'init','session_id':session,'user_message_uuids':steers})
+        if mode in ('steer_stop', 'steer_stop_unacked'):
+            # Stop arrives as one write: the cancel of the queued steer, then
+            # the interrupt. The steer is withdrawn and never starts.
+            steers.append(read_steer(prompt, mode == 'steer_stop'))
+            cancel = read()
+            assert cancel['type'] == 'control_request' and cancel['request'] == {'subtype':'cancel_async_message','message_uuid':steers[0]}, cancel
+            if mode == 'steer_stop_unacked':
+                lifecycle(steers[0], 'queued')
+            lifecycle(steers[0], 'cancelled')
+            send({'type':'control_response','response':{'subtype':'success','request_id':cancel['request_id'],'response':{'cancelled':True}}})
+            aborted = stop_control(False)
+        if mode == 'steer_exit':
+            read_steer(prompt, False)
+            sys.exit(0)
         if mode.startswith('room') and mode != 'room_queued_cancel':
             # An unrelated external MCP tool is never approved by Matrix IO.
             send({'type':'control_request','request_id':'external','request':{'subtype':'can_use_tool','tool_name':'mcp__external__send_file','input':{'path':'result.txt'}}})
@@ -240,6 +288,11 @@ if kind == 'claude':
         result = {'type': 'result', 'subtype': 'error' if failed else 'success', 'is_error': failed, 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
         if aborted and 'success' not in mode:
             result.update({'is_error':True,'terminal_reason':'error_during_execution' if 'generic' in mode else 'aborted_streaming'})
+        if mode == 'steer_injected' or mode.startswith('steer_stop'):
+            result['user_message_uuids'] = [prompt['uuid']] + ([] if aborted else steers)
+        if mode == 'steer_cycle':
+            result.update({'result':'steered reply','user_message_uuid':steers[0],'user_message_uuids':steers,
+                'modelUsage':{'main':{'inputTokens':20,'outputTokens':14,'cacheReadInputTokens':6,'cacheCreationInputTokens':8}}})
         if mode == 'overflow_usage':
             result['modelUsage'] = {'main': {'inputTokens':9007199254740991,'outputTokens':1,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
         if mode == 'long_usage':
@@ -260,6 +313,8 @@ if kind == 'claude':
             if mode == 'background_native_followup': child_task['run_id'] = 'native-child-run'
             send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[child_task]})
         send(result)
+        if mode == 'steer_cycle':
+            lifecycle(steers[0], 'completed')
         if mode.endswith('_exit') and not mode.startswith('background_'):
             # The answer is written; the process ends before native idle.
             sys.exit(0)

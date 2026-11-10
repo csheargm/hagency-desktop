@@ -5,7 +5,10 @@ use super::{Claude, Error, Result};
 use crate::run_controls::{self, Action, Outcome, Pending, Stream};
 use hagency_runtime::claude::{
     Message,
-    session::{ControlUpdate, InterruptUpdate, Observation, PreparedInterrupt},
+    session::{
+        ControlUpdate, InterruptUpdate, Observation, PreparedInterrupt, PreparedSteer, SteerState,
+        SteerUpdate, join_answer,
+    },
 };
 use std::{future::Future, pin::Pin};
 
@@ -88,11 +91,19 @@ enum Input<T> {
     Host(T),
     Action(Pending),
 }
+/// The one control frame in flight. Each is resumed across native messages
+/// until its flush; no other host write may start inside it.
+enum Writing {
+    Stop(Pending, PreparedInterrupt),
+    Steer(Pending, PreparedSteer),
+}
 pub(super) struct Controls<'a, C: super::claude_turn::Capture> {
     capture: &'a mut C,
     stream: Option<Stream>,
-    writing: Option<(Pending, PreparedInterrupt)>,
+    writing: Option<Writing>,
     waiting: Option<(Pending, String)>,
+    /// Written steers the native queue has not answered for, by message id.
+    steers: Vec<(Pending, String)>,
     accepted: bool,
     output: Option<hagency_runtime::live_text::LiveText>,
     message_id: String,
@@ -112,6 +123,7 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             stream,
             writing: None,
             waiting: None,
+            steers: Vec::new(),
             accepted: false,
             output,
             message_id: String::new(),
@@ -131,14 +143,21 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             return;
         };
         // The accounting query's own result is never the answer.
-        if wire
+        let Some(observation) = wire
             .last_observation()
-            .is_some_and(|observation| observation.is_usage_snapshot())
-        {
+            .filter(|observation| !observation.is_usage_snapshot())
+        else {
             return;
-        }
+        };
+        // A steer that ran as a cycle of its own continues the answer read so
+        // far, as the driver's receipt does. Any other result replaces it.
+        let mut text = match self.answer.take() {
+            Some(answer) if observation.continues_answer() => answer.text,
+            _ => String::new(),
+        };
+        join_answer(&mut text, payload["result"].as_str().unwrap_or(""));
         self.answer = Some(Answer {
-            text: payload["result"].as_str().unwrap_or("").into(),
+            text,
             clean: payload["is_error"] == false
                 && payload["terminal_reason"] != "aborted_streaming",
         });
@@ -210,16 +229,14 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
         self.accepted
     }
     pub fn settled(&self) -> bool {
-        self.writing.is_none() && self.waiting.is_none()
+        self.writing.is_none() && self.waiting.is_none() && self.steers.is_empty()
     }
     fn receipt(&mut self, wire: &Claude) {
-        let Some(receipt) = wire.interrupt_receipt() else {
-            return;
-        };
-        if self
-            .waiting
-            .as_ref()
-            .is_some_and(|(_, id)| id == receipt.request_id())
+        if let Some(receipt) = wire.interrupt_receipt()
+            && self
+                .waiting
+                .as_ref()
+                .is_some_and(|(_, id)| id == receipt.request_id())
         {
             let (pending, _) = self.waiting.take().expect("original interrupt");
             self.accepted = receipt.accepted();
@@ -229,23 +246,113 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
                 Outcome::Rejected
             });
         }
+        // The native queue acknowledges a steer; its flushed write does not.
+        // A stop in progress withdraws a queued steer, so its answer waits
+        // for that: withdrawn text was not taken and goes back to its sender.
+        let stopping = self.accepted
+            || self.waiting.is_some()
+            || matches!(self.writing, Some(Writing::Stop(..)));
+        let mut owed = Vec::new();
+        for (pending, id) in self.steers.drain(..) {
+            match wire.steer_state(&id) {
+                Some(SteerState::Unacknowledged) => owed.push((pending, id)),
+                Some(SteerState::Queued) if stopping => owed.push((pending, id)),
+                Some(SteerState::Queued | SteerState::Started | SteerState::Completed) => {
+                    pending.reply(Outcome::Accepted)
+                }
+                Some(SteerState::Cancelled) | None => pending.reply(Outcome::Unavailable),
+            }
+        }
+        self.steers = owed;
     }
     fn receive(&mut self, wire: &mut Claude, pending: Pending) {
-        match pending.action {
-            // Claude's busy user messages are next commands, not steering of
-            // the current turn. The Matrix host queues/admit/settles those as
-            // independent calls on the retained session.
-            Action::Steer { .. } => pending.reply(Outcome::Unsupported),
-            Action::Interrupt
-                if self.accepted || self.waiting.is_some() || self.writing.is_some() =>
-            {
-                pending.reply(Outcome::InProgress)
-            }
+        let stopping = self.accepted || self.waiting.is_some() || self.writing.is_some();
+        match &pending.action {
+            // As for Codex: nothing joins a turn whose stop was requested,
+            // and a turn that no longer runs takes no input.
+            Action::Steer { .. } if stopping => pending.reply(Outcome::Unavailable),
+            Action::Steer { text } => match wire.prepare_steer(text) {
+                Ok(prepared) => self.writing = Some(Writing::Steer(pending, prepared)),
+                Err(hagency_runtime::claude::session::Error::Capacity) => {
+                    pending.reply(Outcome::Busy)
+                }
+                Err(_) => pending.reply(Outcome::Unavailable),
+            },
+            Action::Interrupt if stopping => pending.reply(Outcome::InProgress),
             Action::Interrupt => match wire.prepare_interrupt() {
-                Ok(prepared) => self.writing = Some((pending, prepared)),
+                Ok(prepared) => self.writing = Some(Writing::Stop(pending, prepared)),
                 Err(_) => pending.reply(Outcome::Unavailable),
             },
         }
+    }
+    /// Continue the control frame in flight. A native message read meanwhile
+    /// is returned for the caller to handle before the same frame resumes.
+    async fn write(&mut self, wire: &mut Claude) -> Result<Option<Observed>> {
+        let message = match self.writing.as_mut() {
+            Some(Writing::Stop(pending, prepared)) => {
+                pending.begin_write();
+                match wire
+                    .send_prepared_interrupt(prepared)
+                    .await
+                    .map_err(|_| Error::Protocol("Claude interrupt write"))?
+                {
+                    InterruptUpdate::Message(message) => message,
+                    InterruptUpdate::Unavailable => {
+                        if let Some(Writing::Stop(pending, _)) = self.writing.take() {
+                            pending.reply(Outcome::Unavailable);
+                        }
+                        return Ok(None);
+                    }
+                    InterruptUpdate::WriteAccepted(_) => {
+                        if let Some(Writing::Stop(pending, prepared)) = self.writing.take() {
+                            self.waiting = Some((pending, prepared.request_id().into()));
+                        }
+                        self.receipt(wire);
+                        return Ok(None);
+                    }
+                }
+            }
+            Some(Writing::Steer(pending, prepared)) => {
+                pending.begin_write();
+                match wire
+                    .send_prepared_steer(prepared)
+                    .await
+                    .map_err(|_| Error::Protocol("Claude steer write"))?
+                {
+                    SteerUpdate::Message(message) => message,
+                    SteerUpdate::Unavailable => {
+                        if let Some(Writing::Steer(pending, _)) = self.writing.take() {
+                            pending.reply(Outcome::Unavailable);
+                        }
+                        return Ok(None);
+                    }
+                    SteerUpdate::WriteAccepted(_) => {
+                        if let Some(Writing::Steer(pending, prepared)) = self.writing.take() {
+                            self.steers.push((pending, prepared.message_id().into()));
+                        }
+                        self.receipt(wire);
+                        return Ok(None);
+                    }
+                }
+            }
+            None => return Ok(None),
+        };
+        self.observe_message(wire, &message).await?;
+        Ok(Some((message, wire.last_observation().cloned())))
+    }
+    /// A control write that a native message suspended must finish before
+    /// the caller starts a host write that no cooperative read precedes.
+    pub async fn finish_write(
+        &mut self,
+        wire: &mut Claude,
+        buffered: &mut std::collections::VecDeque<Observed>,
+    ) -> Result<()> {
+        while self.writing.is_some() {
+            if let Some((message, observation)) = self.write(wire).await? {
+                defer(buffered, message, observation)?;
+            }
+        }
+        Ok(())
     }
     pub async fn next<T, F: Future<Output = T> + ?Sized>(
         &mut self,
@@ -263,26 +370,9 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             {
                 return Ok(Update::Idle);
             }
-            if let Some((pending, prepared)) = self.writing.as_mut() {
-                pending.begin_write();
-                match wire
-                    .send_prepared_interrupt(prepared)
-                    .await
-                    .map_err(|_| Error::Protocol("Claude interrupt write"))?
-                {
-                    InterruptUpdate::Message(message) => {
-                        self.observe_message(wire, &message).await?;
-                        return Ok(Update::Message((message, wire.last_observation().cloned())));
-                    }
-                    InterruptUpdate::Unavailable => {
-                        let (pending, _) = self.writing.take().expect("original interrupt");
-                        pending.reply(Outcome::Unavailable);
-                    }
-                    InterruptUpdate::WriteAccepted(_) => {
-                        let (pending, prepared) = self.writing.take().expect("original interrupt");
-                        self.waiting = Some((pending, prepared.request_id().into()));
-                        self.receipt(wire);
-                    }
+            if self.writing.is_some() {
+                if let Some(observed) = self.write(wire).await? {
+                    return Ok(Update::Message(observed));
                 }
                 continue;
             }

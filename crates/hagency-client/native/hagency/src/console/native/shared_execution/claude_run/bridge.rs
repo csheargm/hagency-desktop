@@ -510,9 +510,10 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
                 let _ = card.receipt(&event.event_id, &event.sender, "unavailable", false);
                 continue;
             }
-            let action = match action {
-                MatrixAction::Interrupt {} => controls::Action::Interrupt,
-                _ => {
+            let (action, stop) = match action {
+                MatrixAction::Steer { text } => (controls::Action::Steer { text }, false),
+                MatrixAction::Interrupt {} => (controls::Action::Interrupt, true),
+                MatrixAction::Queue { .. } => {
                     let _ = card.receipt(&event.event_id, &event.sender, "unsupported", false);
                     continue;
                 }
@@ -521,7 +522,7 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
                 Ok(submission) => card.track(
                     event.event_id,
                     event.sender,
-                    true,
+                    stop,
                     submission.receipt,
                     outcome_name,
                 ),
@@ -534,7 +535,7 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
                         } else {
                             "unavailable"
                         },
-                        true,
+                        stop,
                     );
                 }
             }

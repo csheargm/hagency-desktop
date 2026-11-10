@@ -24,7 +24,6 @@ pub struct Entry {
     pub recovered_drafts: Vec<String>,
     sent_event: Option<String>,
     sent_owner: Option<String>,
-    sent_queued: bool,
     pending_drafts: Vec<PendingDraft>,
     retry: Option<Requested>,
 }
@@ -51,7 +50,6 @@ pub struct Requested {
     txn: OwnedTransactionId,
     kind: &'static str,
     content: Value,
-    queued: bool,
     text: Option<String>,
 }
 #[derive(Debug)]
@@ -124,7 +122,7 @@ fn apply_receipts(entry: &mut Entry, card: &Card) {
     if recovered {
         restore_next_draft(entry);
         entry.hint = "有指令未执行，原文已保留。可复制后发送，或在运行中重新提交。".into();
-    } else if !card.state.active() && entry.sent_event.is_some() && !entry.sent_queued && !last_acknowledged {
+    } else if !card.state.active() && entry.sent_event.is_some() && !last_acknowledged {
         entry.hint = "运行已结束，操作结果未确认。请先核对；不会自动重发。".into();
     }
 }
@@ -203,7 +201,6 @@ pub(super) fn authenticated(
         sending: false,
         sent_event: None,
         sent_owner: None,
-        sent_queued: false,
         pending_drafts: Vec::new(),
         recovered_drafts: Vec::new(),
         retry: None,
@@ -269,26 +266,15 @@ pub fn request(key: &str, stop: bool) -> Option<Requested> {
         entry.hint = "请先处理尚未确认或未执行的指令。".into();
         return None;
     }
+    // Codex and Claude alike take the text into the running turn.
     let action = if stop {
         Action::Interrupt {}
-    } else if entry.card.runtime == "claude" {
-        Action::Queue {
-            text: entry.draft.clone(),
-        }
     } else {
         Action::Steer {
             text: entry.draft.clone(),
         }
     };
-    let queued = matches!(&action, Action::Queue { .. });
-    let content = if let Action::Queue { text } = &action {
-        entry
-            .card
-            .queued_message(key, &owner, &entry.agent, text)
-            .ok()?
-    } else {
-        entry.card.action_content(key, &owner, action).ok()?
-    };
+    let content = entry.card.action_content(key, &owner, action).ok()?;
     // A failed HTTP send retries this exact transaction. An explicit later
     // action gets a new transaction, even if its text happens to be identical.
     let request = entry
@@ -302,13 +288,8 @@ pub fn request(key: &str, stop: bool) -> Option<Requested> {
             agent: entry.agent.clone(),
             room: entry.card.room_id.clone(),
             txn: matrix_sdk::ruma::TransactionId::new(),
-            kind: if queued {
-                "m.room.message"
-            } else {
-                protocol::ACTION_EVENT
-            },
+            kind: protocol::ACTION_EVENT,
             content,
-            queued,
             text: (!stop).then(|| entry.draft.clone()),
         });
     entry.sending = true;
@@ -336,17 +317,11 @@ fn apply_send_result(entry: &mut Entry, value: &Sent) {
         Ok(event) => {
             entry.sent_event = Some(event.clone());
             entry.sent_owner = Some(value.request.owner.clone());
-            entry.sent_queued = value.request.queued;
             entry.retry = None;
-            entry.hint = if value.request.queued {
-                "已发送，等待下一轮处理。"
-            } else {
-                "已发送，等待 Agent 确认。"
-            }
-            .into();
+            entry.hint = "已发送，等待 Agent 确认。".into();
             if let Some(text) = &value.request.text {
                 if entry.draft == *text { entry.draft.clear(); }
-                if !value.request.queued && !entry.pending_drafts.iter().any(|draft| draft.event == *event) {
+                if !entry.pending_drafts.iter().any(|draft| draft.event == *event) {
                     entry.pending_drafts.push(PendingDraft {
                         event: event.clone(), owner: value.request.owner.clone(), text: text.clone(),
                     });
@@ -437,7 +412,6 @@ mod tests {
             recovered_drafts: Vec::new(),
             sent_event: Some("$action".into()),
             sent_owner: Some("@requester:test".into()),
-            sent_queued: false,
             pending_drafts: Vec::new(),
             retry: None,
         }
@@ -554,7 +528,7 @@ mod tests {
                 agent: e.agent.clone(), room: e.card.room_id.clone(),
                 txn: matrix_sdk::ruma::TransactionId::new(), kind: protocol::ACTION_EVENT,
                 content: serde_json::json!({"action":{"kind":"steer","text":"sent text"}}),
-                queued: false, text: Some("sent text".into()),
+                text: Some("sent text".into()),
             },
             result: Ok("$action".into()),
         };
@@ -596,7 +570,7 @@ mod tests {
                     agent: e.agent.clone(), room: e.card.room_id.clone(),
                     txn: matrix_sdk::ruma::TransactionId::new(), kind: protocol::ACTION_EVENT,
                     content: serde_json::json!({"action":{"kind":"steer","text":"exact sent text"}}),
-                    queued: false, text: Some("exact sent text".into()),
+                    text: Some("exact sent text".into()),
                 }, result: Ok("$missing-receipt".into()),
             };
             apply_send_result(&mut e, &sent);
@@ -617,27 +591,44 @@ mod tests {
     }
 
     #[test]
-    fn a_queued_chat_message_does_not_wait_for_a_per_run_control_receipt() {
-        let mut e = entry();
-        e.draft = "next turn".into();
-        let sent = Sent {
-            request: Requested {
-                generation: 1, key: e.key.clone(), owner: "@requester:test".into(),
-                agent: e.agent.clone(), room: e.card.room_id.clone(),
-                txn: matrix_sdk::ruma::TransactionId::new(), kind: "m.room.message",
-                content: serde_json::json!({"body":"next turn"}),
-                queued: true, text: Some("next turn".into()),
-            },
-            result: Ok("$queued".into()),
-        };
-        apply_send_result(&mut e, &sent);
-        assert!(e.draft.is_empty() && e.pending_drafts.is_empty());
-        let mut card = e.card.clone();
-        card.revision = 1;
-        card.state = RunState::Completed;
-        assert!(apply(&mut e, card));
-        assert!(e.recovered_drafts.is_empty());
-        assert!(e.unconfirmed_text().is_none());
-        assert_eq!(e.hint, "已发送，等待下一轮处理。");
+    fn claude_input_joins_the_running_turn_and_waits_for_its_receipt_like_codex() {
+        for runtime in ["codex", "claude"] {
+            let mut e = entry();
+            e.key = format!("$card-{runtime}");
+            e.card.runtime = runtime.into();
+            e.draft = "also check the tests".into();
+            (e.sent_event, e.sent_owner) = (None, None);
+            {
+                let mut store = STORE.lock().unwrap_or_else(|e| e.into_inner());
+                store.owner = "@requester:test".into();
+                store.entries.push(e.clone());
+            }
+            let request = request(&e.key, false).unwrap();
+            STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.retain(|entry| entry.key != e.key);
+            // One per-run action bound to this card: not a separate room message.
+            assert_eq!(request.kind, protocol::ACTION_EVENT, "{runtime}");
+            assert!(matches!(
+                e.card.receive(&e.key, "@requester:test", &request.content),
+                Some(Action::Steer { text }) if text == "also check the tests"
+            ), "{runtime}");
+            // Its receipt is awaited, and text the run did not take comes back.
+            apply_send_result(&mut e, &Sent { request, result: Ok("$steer".into()) });
+            assert_eq!(e.hint, "已发送，等待 Agent 确认。");
+            assert!(e.draft.is_empty());
+            assert_eq!(e.pending_drafts.len(), 1);
+            let mut accepted = e.clone();
+            let mut card = e.card.clone();
+            card.revision = 1;
+            card.action_receipts.push(protocol::Receipt {
+                event_id: "$steer".into(), sender: "@requester:test".into(), outcome: "accepted".into(),
+            });
+            assert!(apply(&mut accepted, card.clone()));
+            assert_eq!(accepted.hint, "Agent 已接收此操作。");
+            assert!(accepted.pending_drafts.is_empty() && accepted.draft.is_empty());
+            card.action_receipts[0].outcome = "unavailable".into();
+            assert!(apply(&mut e, card));
+            assert_eq!(e.draft, "also check the tests", "{runtime}");
+            assert!(e.pending_drafts.is_empty());
+        }
     }
 }

@@ -306,6 +306,7 @@ async fn drive<H: Host, C: Capture>(
         }
         match message {
             claude::Message::Mcp { request_id, .. } => {
+                controls.finish_write(wire, &mut buffered).await?;
                 let request = wire
                     .room_tool_request(&request_id)
                     .map_err(|_| Error::Protocol("Claude room callback"))?;
@@ -553,8 +554,17 @@ async fn drive<H: Host, C: Capture>(
                         };
                         original.3 = cumulative;
                     } else {
+                        // Joined exactly as the driver's receipt verifies it.
+                        let mut text = match completed.take() {
+                            Some((text, ..)) if observation.continues_answer() => text,
+                            _ => String::new(),
+                        };
+                        claude::session::join_answer(
+                            &mut text,
+                            payload["result"].as_str().unwrap_or(""),
+                        );
                         completed = Some((
-                            payload["result"].as_str().unwrap_or("").into(),
+                            text,
                             usage,
                             if wire.answer_interrupted()
                                 || payload["terminal_reason"] == "aborted_streaming"

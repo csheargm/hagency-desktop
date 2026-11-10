@@ -451,6 +451,45 @@ async fn native_claude_real_model_metadata_does_not_double_count_or_hide_usage()
     assert_eq!(counts(evidence).into_iter().flatten().sum::<u64>(), 36);
 }
 
+#[tokio::test]
+async fn native_claude_steer_cycle_usage_lands_in_the_same_call() {
+    let (mut d, mut p) = running_with_completion(true).await;
+    let prompt = p.prompt["uuid"].clone();
+    let mut prepared = d.prepare_steer("more").unwrap();
+    let (sent, frame) = tokio::join!(d.send_prepared_steer(&mut prepared), read(&mut p));
+    assert!(matches!(sent.unwrap(), SteerUpdate::WriteAccepted(_)));
+    let steer = frame["uuid"].clone();
+    let lifecycle = |state: &str| json!({"type":"command_lifecycle","command_uuid":steer,"state":state,"session_id":"same-session"});
+    event(&mut d, &mut p, lifecycle("queued")).await;
+    let mut first = result();
+    first["user_message_uuid"] = prompt.clone();
+    first["user_message_uuids"] = json!([prompt]);
+    event(&mut d, &mut p, first).await;
+    assert_eq!(counts(usage(&d)), [Some(101), Some(202), Some(303), Some(404)]);
+    // The steer runs as a cycle of its own. Its result reports only its own
+    // delta, and the same call's evidence becomes the sum of both.
+    event(&mut d, &mut p, lifecycle("started")).await;
+    event(&mut d, &mut p, json!({"type":"system","subtype":"init","session_id":"same-session","user_message_uuids":[steer]})).await;
+    event(&mut d, &mut p, step("steer-step")).await;
+    assert!(usage(&d).coverage() == UsageCoverage::MainLoopSteps);
+    let mut second = result();
+    second["uuid"] = json!("native-result-two");
+    second["user_message_uuid"] = steer.clone();
+    second["user_message_uuids"] = json!([steer]);
+    event(&mut d, &mut p, second).await;
+    let observation = d.last_observation().unwrap();
+    assert!(observation.continues_answer() && !observation.is_usage_snapshot());
+    assert!(usage(&d).coverage() == UsageCoverage::ReportedModelsResult);
+    assert_eq!(counts(usage(&d)), [Some(202), Some(404), Some(606), Some(808)]);
+    assert_eq!(usage(&d).models(), 2);
+    assert!(d.completion_receipt().is_err());
+    event(&mut d, &mut p, lifecycle("completed")).await;
+    event(&mut d, &mut p, json!({"type":"system","subtype":"session_state_changed","state":"idle","session_id":"same-session"})).await;
+    assert_eq!(d.phase(), Phase::ResultObserved);
+    assert!(!d.needs_usage_snapshot());
+    assert!(d.completion_receipt().unwrap().is_error());
+}
+
 /// Captured from installed Claude 2.1.321 with a localhost-only model: the
 /// original result precedes the child, which triggers another native main loop.
 #[tokio::test]

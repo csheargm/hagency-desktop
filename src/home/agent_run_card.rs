@@ -108,13 +108,7 @@ impl AgentRunCardRef {
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
         use ::hagency::agent_run_controls::State;
         let status = match entry.card.state {
-            State::Running => {
-                if entry.card.runtime == "claude" {
-                    "运行中。追加指令会在下一轮处理。"
-                } else {
-                    "运行中。追加指令会加入当前运行。"
-                }
-            }
+            State::Running => "运行中。追加指令会加入当前运行。",
             State::Stopping => "正在停止，等待运行时结束并结算。",
             State::Completed => "已完成",
             State::Interrupted => "已停止",
@@ -133,14 +127,7 @@ impl AgentRunCardRef {
         }
         let append = inner.view.button(cx, ids!(buttons.append));
         append.set_visible(cx, open && entry.may_append);
-        append.set_text(
-            cx,
-            if entry.card.runtime == "claude" {
-                "发送到下一轮"
-            } else {
-                "追加到当前运行"
-            },
-        );
+        append.set_text(cx, "追加到当前运行");
         append.set_enabled(cx, !entry.sending);
         let stop = inner.view.button(cx, ids!(buttons.stop));
         stop.set_visible(cx, open && entry.may_stop);

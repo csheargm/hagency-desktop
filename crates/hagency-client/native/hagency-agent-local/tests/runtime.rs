@@ -19,6 +19,8 @@ mod postpaid;
 mod room;
 #[path = "runtime/controls.rs"]
 mod controls;
+#[path = "runtime/steer.rs"]
+mod steer;
 #[path = "runtime/long_stream.rs"]
 mod long_stream;
 #[path = "runtime/queued_cancel.rs"]

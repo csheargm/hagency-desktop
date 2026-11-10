@@ -6,6 +6,7 @@ mod lifecycle;
 mod observation;
 mod questions;
 mod room_mcp;
+mod steer;
 mod task_mcp;
 mod usage;
 mod version;
@@ -17,8 +18,11 @@ pub use control::{
 };
 pub use interrupt::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
 pub use io::{Limits, StderrSnapshot, Termination, WriteProgress};
-pub use observation::{CompletionReceipt, Observation, ObservationKind, ObservationSource};
+pub use observation::{
+    CompletionReceipt, Observation, ObservationKind, ObservationSource, join_answer,
+};
 pub use room_mcp::{PreparedRoomReply, RoomToolRequest};
+pub use steer::{PreparedSteer, SteerState, SteerUpdate};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 pub use usage::{UsageCounts, UsageCoverage, UsageDiagnostics, UsageEvidence};
@@ -243,6 +247,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.wire.close(error);
     }
     fn observe(&mut self, message: &Message, received: tokio::time::Instant) -> Result<(), Error> {
+        let mut continues = false;
         match message {
             Message::Event {
                 session_id,
@@ -272,21 +277,30 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     }
                     Some(bound) if bound == session_id && !init && !self.awaiting_init => {}
                     Some(bound) if bound == session_id && init && !self.awaiting_init => {
-                        self.completion.begin_background_response(payload)?;
+                        if !self.completion.begin_steer_cycle(payload)? {
+                            self.completion.begin_background_response(payload)?;
+                        }
                     }
                     _ => return Err(Error::Identity),
+                }
+                if *kind == EventKind::CommandLifecycle {
+                    let stopped = self.interrupt_receipt().is_some_and(|r| r.accepted());
+                    self.completion
+                        .steers
+                        .lifecycle(payload, &self.wire, stopped)?;
                 }
                 if *kind == EventKind::Result
                     && self
                         .prompt_id
                         .as_ref()
-                        .is_some_and(|id| !lifecycle::correlated(payload, id))
+                        .is_some_and(|id| !self.completion.correlate(payload, id))
                     && !self.completion.background_result(payload)
                 {
                     return Err(Error::Identity);
                 }
                 self.completion.observe(*kind, payload)?;
                 if *kind == EventKind::Result {
+                    continues = self.completion.continues_answer();
                     let stop = if self.is_interrupting() {
                         Some(self.interrupt.started_request_id().ok_or(Error::State)?)
                     } else {
@@ -323,7 +337,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 request_id,
                 outcome,
             } => {
-                self.interrupt.observe(request_id, outcome, &self.wire)?;
+                if let Some(steer) = self.interrupt.observe(request_id, outcome, &self.wire)? {
+                    self.completion.steers.cancelled(&steer)?;
+                }
             }
         }
         if let Some(receipt) = self.interrupt_receipt().filter(|r| r.accepted()) {
@@ -338,6 +354,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             message,
             self.session_id.as_deref().ok_or(Error::Identity)?,
             self.completion.snapshot_requested(),
+            continues,
         )?;
         Ok(())
     }

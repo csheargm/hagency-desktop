@@ -264,9 +264,7 @@ impl Card {
             && person(sender)
             && match action {
                 Action::Interrupt {} => sender == self.requester || sender == self.owner,
-                Action::Steer { text } => {
-                    sender == self.requester && self.runtime == "codex" && valid_text(text)
-                }
+                Action::Steer { text } => sender == self.requester && valid_text(text),
                 Action::Queue { text } => {
                     sender == self.requester && self.runtime == "claude" && valid_text(text)
                 }
@@ -294,9 +292,10 @@ impl Card {
         })
         .map_err(|_| "run_action")
     }
-    /// Claude's busy input is a separate admitted turn. Send an ordinary
-    /// addressed room message through the existing durable dispatch queue;
-    /// never invent a dispatch or feed a second unaccounted native command.
+    /// The earlier form of Claude's busy input, kept on the wire: a separate
+    /// admitted turn. It is an ordinary addressed room message through the
+    /// existing durable dispatch queue. Busy input now joins the running turn
+    /// as `Action::Steer`, for Claude as for Codex.
     pub fn queued_message(
         &self,
         card_event: &str,
@@ -489,7 +488,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn claude_queue_preserves_dispatch_scope_and_uses_ordinary_addressed_message() {
+    fn claude_steer_joins_the_run_and_the_queue_form_keeps_its_dispatch_scope() {
+        assert!(
+            card()
+                .queued_message("$card", "@requester:test", "@_hagency_agt_test:test", "next")
+                .is_err(),
+            "Codex never had the queued form"
+        );
         let mut c = card();
         c.runtime = "claude".into();
         let agent = "@_hagency_agt_test:test";
@@ -516,15 +521,19 @@ pub(crate) mod tests {
             c.queued_message("$card", &c.owner, agent, "next task")
                 .is_err()
         );
-        assert!(
-            c.action_content(
-                "$card",
-                &c.requester,
-                Action::Steer {
-                    text: "extra".into()
-                }
-            )
-            .is_err()
-        );
+        // Busy input joins the running Claude turn under the Codex rules:
+        // the requester only, bound to this card and execution, valid text.
+        let steer = |sender: &str, text: &str| {
+            c.action_content("$card", sender, Action::Steer { text: text.into() })
+        };
+        let value = steer(&c.requester, "extra").unwrap();
+        assert!(matches!(
+            c.receive("$card", &c.requester, &value),
+            Some(Action::Steer { text }) if text == "extra"
+        ));
+        assert!(c.receive("$card", &c.owner, &value).is_none());
+        assert!(c.receive("$another", &c.requester, &value).is_none());
+        assert!(steer(&c.owner, "extra").is_err());
+        assert!(steer(&c.requester, " ").is_err());
     }
 }

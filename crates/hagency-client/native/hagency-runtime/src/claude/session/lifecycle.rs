@@ -15,6 +15,9 @@ pub(super) struct Completion {
     saw_child_work: bool,
     snapshot: Option<String>,
     answer: Option<([u8; 32], bool)>,
+    answer_text: sha2::Sha256,
+    answer_joined: bool,
+    pub(super) steers: super::steer::State,
     task_runs: BTreeMap<String, String>,
     notified_runs: BTreeSet<String>,
     consumed_runs: BTreeSet<String>,
@@ -52,6 +55,7 @@ impl Completion {
             || !self.result
             || self.snapshot.is_some()
             || self.background_response
+            || self.steers.cycle_open()
             || self.notified_runs.is_empty()
             || payload
                 .get("user_message_uuid")
@@ -65,6 +69,35 @@ impl Completion {
         self.background_response = true;
         self.idle = false;
         Ok(())
+    }
+    /// A second init that names user messages opens a steer cycle or is
+    /// refused. False: it names none, and the background rules decide.
+    pub(super) fn begin_steer_cycle(&mut self, payload: &Value) -> Result<bool, Error> {
+        if ["user_message_uuid", "user_message_uuids"]
+            .iter()
+            .all(|key| payload.get(key).is_none_or(Value::is_null))
+        {
+            return Ok(false);
+        }
+        if !self.result || self.snapshot.is_some() || self.background_response {
+            return Err(Error::Identity);
+        }
+        self.steers.begin_cycle(payload)?;
+        self.idle = false;
+        Ok(true)
+    }
+    /// Whether this result belongs to the prompt or to a steer of this turn.
+    /// A turn without steers, and the accounting query, keep the exact rule.
+    pub(super) fn correlate(&mut self, payload: &Value, prompt: &str) -> bool {
+        if self.snapshot.is_some() || self.steers.is_empty() {
+            return correlated(payload, prompt);
+        }
+        self.steers.result(payload, prompt)
+    }
+    /// The result just observed closed a steer cycle: its text continues the
+    /// turn's answer. Every other result replaces the answer.
+    pub(super) fn continues_answer(&self) -> bool {
+        self.snapshot.is_none() && self.steers.continues()
     }
     pub(super) fn background_result(&self, payload: &Value) -> bool {
         self.background_response
@@ -171,8 +204,22 @@ impl Completion {
                 }
                 if self.snapshot.is_none() {
                     use sha2::{Digest, Sha256};
+                    // Exactly `join_answer`: the non-empty texts of the cycles
+                    // that continue one answer, separated by a blank line.
+                    if !self.steers.continues() {
+                        self.answer_text = Sha256::new();
+                        self.answer_joined = false;
+                    }
+                    let text = payload["result"].as_str().unwrap_or("");
+                    if !text.is_empty() {
+                        if self.answer_joined {
+                            self.answer_text.update(b"\n\n");
+                        }
+                        self.answer_text.update(text.as_bytes());
+                        self.answer_joined = true;
+                    }
                     self.answer = Some((
-                        Sha256::digest(payload["result"].as_str().unwrap_or("").as_bytes()).into(),
+                        self.answer_text.clone().finalize().into(),
                         payload["is_error"] == true,
                     ));
                 }
@@ -203,6 +250,7 @@ impl Completion {
             && self.background.is_empty()
             && !self.background_response
             && self.notified_runs.is_empty()
+            && self.steers.settled()
     }
     /// `request` is the stop that was in flight or accepted when this result
     /// arrived. An answer read before any such stop keeps no stop identity,
