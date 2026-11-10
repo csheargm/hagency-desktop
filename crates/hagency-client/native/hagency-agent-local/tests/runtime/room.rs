@@ -150,6 +150,20 @@ async fn claude_cancelled_room_callback_withdraws_host_operation() {
 #[tokio::test]
 #[ignore = "explicit installed Claude; isolated localhost model, no provider account or paid request"]
 async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() {
+    installed_claude_personal_room_roundtrip(false).await;
+}
+
+/// An owner's Claude home usually has hooks. The native CLI reports a hook's
+/// start and result as `system` frames, the first ones before it answers
+/// `initialize`. They are the owner's own configuration at work and must not
+/// end the session.
+#[tokio::test]
+#[ignore = "explicit installed Claude; isolated localhost model, no provider account or paid request"]
+async fn installed_claude_personal_room_roundtrip_runs_with_the_owners_hooks() {
+    installed_claude_personal_room_roundtrip(true).await;
+}
+
+async fn installed_claude_personal_room_roundtrip(hooks: bool) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use std::process::Stdio;
     let executable = PathBuf::from(
@@ -159,6 +173,22 @@ async fn installed_claude_personal_room_roundtrip_uses_the_production_adapter() 
     .unwrap();
     let mut f = Fixture::new(Kind::Claude, "room", ToolPolicy::Deny);
     f.profile.model = "sonnet".into();
+    if hooks {
+        let hook = |text: &str| json!([{"hooks":[{"type":"command","command":format!("echo {text}")}]}]);
+        let tool = |text: &str| json!([{"matcher":"*","hooks":[{"type":"command","command":format!("echo {text}")}]}]);
+        fs::write(
+            f.profile.codex_home.join("settings.json"),
+            serde_json::to_vec(&json!({"hooks":{
+                "SessionStart": hook("owner-session-start"),
+                "UserPromptSubmit": hook("owner-prompt"),
+                "PreToolUse": tool("owner-before-tool"),
+                "PostToolUse": tool("owner-after-tool"),
+                "Stop": hook("owner-stop"),
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
     let model_source = include_str!("../../../hagency-runtime/tests/claude_question_fixture.py")
         .replace("AskUserQuestion", "mcp__hagency_matrix__read_room_history")
         .replace(

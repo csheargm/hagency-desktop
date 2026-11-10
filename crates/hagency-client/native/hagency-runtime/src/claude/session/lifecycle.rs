@@ -412,6 +412,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         || (kind == EventKind::System
                             && payload["subtype"] == "session_state_changed"
                             && payload["state"] == "idle")
+                        // A hook that ended after the turn did.
+                        || (kind == EventKind::System && super::hook_report(&payload))
                         || (kind == EventKind::CommandLifecycle
                             && payload["state"] == "completed")) => {}
                 _ => return Err(Error::Identity),

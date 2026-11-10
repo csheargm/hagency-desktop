@@ -1,0 +1,25 @@
+[
+  {
+    "type": "system",
+    "subtype": "hook_started",
+    "hook_id": "01626e35-5a9a-4be4-ba7f-54a3793de506",
+    "hook_name": "SessionStart:startup",
+    "hook_event": "SessionStart",
+    "uuid": "b1206609-0b1a-4dd3-b5c0-76f71e0ff4b5",
+    "session_id": "91bf0bc0-c13a-4162-abe7-dc62e3ad27c2"
+  },
+  {
+    "type": "system",
+    "subtype": "hook_response",
+    "hook_id": "01626e35-5a9a-4be4-ba7f-54a3793de506",
+    "hook_name": "SessionStart:startup",
+    "hook_event": "SessionStart",
+    "output": "owner-session-start\n",
+    "stdout": "owner-session-start\n",
+    "stderr": "",
+    "exit_code": 0,
+    "outcome": "success",
+    "uuid": "daa8c448-2230-48f6-a6b6-54ca112366e9",
+    "session_id": "91bf0bc0-c13a-4162-abe7-dc62e3ad27c2"
+  }
+]

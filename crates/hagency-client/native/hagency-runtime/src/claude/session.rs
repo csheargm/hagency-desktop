@@ -351,9 +351,21 @@ fn startup_metadata(kind: EventKind, payload: &serde_json::Value) -> bool {
         EventKind::System => {
             payload["subtype"] == "ui_invalidate"
                 || (payload["subtype"] == "session_state_changed" && payload["state"] == "idle")
+                || hook_report(payload)
         }
         _ => false,
     }
+}
+/// The native CLI reports a hook from the account's own settings as `system`
+/// frames: its start, its progress and its result. A session-start hook is
+/// reported before the initialize response. The frames describe the owner's
+/// configuration at work; they carry no model output, usage or authority, and
+/// their text is never read here.
+fn hook_report(payload: &serde_json::Value) -> bool {
+    matches!(
+        payload["subtype"].as_str(),
+        Some("hook_started" | "hook_progress" | "hook_response")
+    )
 }
 struct Operation<'a, R, W, E> {
     driver: &'a mut SessionDriver<R, W, E>,
@@ -502,6 +514,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     // Ordinary reads and cooperative control reads must admit exactly the
     // same pre-init metadata, including the native /usage query after child
     // work finishes. Metadata never becomes usage or callback authority.
+    // A hook of the account's own settings may be reported here too, bound to
+    // the same session as the init that follows.
     fn observe_prelude(&mut self, message: &Message) -> Result<bool, Error> {
         if self.awaiting_init
             && let Message::Event {
@@ -510,7 +524,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 payload,
             } = message
             && (*kind == EventKind::CommandLifecycle
-                || (*kind == EventKind::System && payload["subtype"] == "session_state_changed"))
+                || (*kind == EventKind::System
+                    && (payload["subtype"] == "session_state_changed" || hook_report(payload))))
         {
             if self
                 .prelude_session_id

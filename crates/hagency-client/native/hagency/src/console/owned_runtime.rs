@@ -1304,6 +1304,19 @@ fn failure_code(result: &Result<(), RuntimeError>) -> Option<&'static str> {
         _ => Some("device_transport_unavailable"),
     }
 }
+/// The check before a room worker goes online: the tool starts, answers and
+/// is signed in. The owner is told to look at the account either way; the log
+/// names what actually failed, which is often not the account.
+fn startup_check_failure(error: &codex::Error) -> RuntimeError {
+    let (kind, detail) = error.diagnostic();
+    tracing::warn!(
+        kind,
+        detail,
+        event = error.diagnostic_event(),
+        "Local provider start-up check failed"
+    );
+    RuntimeError::Provider
+}
 fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
     let (kind, detail) = error.diagnostic();
     tracing::warn!(
@@ -1533,7 +1546,7 @@ async fn run_host(
     // Verify the owner's dedicated provider before any acquisition or explicit
     // takeover can disrupt an existing device. This is account/config only.
     let mut provider = tokio::select! {biased;_=canceled(&mut cancel)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn(&initial.config.profile,&initial.config.credential_ref))=>p.map_err(|_|RuntimeError::Provider)?};
-    let checked = tokio::select! {biased;_=canceled(&mut cancel)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|_|RuntimeError::Provider)};
+    let checked = tokio::select! {biased;_=canceled(&mut cancel)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|error|startup_check_failure(&error))};
     provider.stop().await.map_err(|_| RuntimeError::Provider)?;
     checked?;
     let mut ledger = local(Ledger::open_scoped(&path, &owner, &profile_id))?;
@@ -1584,7 +1597,7 @@ async fn run_host(
                 let mut work=work;
                 let result=async {
                     let mut provider=tokio::select! {biased;_=canceled(&mut work.receiver)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn(&work.config.profile,&work.config.credential_ref))=>p.map_err(|_|RuntimeError::Profile)?};
-                    let checked=tokio::select! {biased;_=canceled(&mut work.receiver)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|_|RuntimeError::Provider)};
+                    let checked=tokio::select! {biased;_=canceled(&mut work.receiver)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|error|startup_check_failure(&error))};
                     provider.stop().await.map_err(|_|RuntimeError::Provider)?;checked?;
                     let mut ledger=local(Ledger::open_scoped(&path,&owner,&profile_id))?;
                     let mut ready=RuntimeStatus::new(&work.config.agent_id,if models_allowed{"online_chat_only"}else{"ledger_recovery_required"},if models_allowed{None}else{Some("ledger_recovery_required")}).with_capabilities(&work.config);ready.binding_id=Some(work.config.binding_id.clone());work.status.send_replace(ready);

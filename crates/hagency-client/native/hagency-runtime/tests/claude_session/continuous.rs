@@ -160,6 +160,47 @@ async fn native_claude_followup_probe_drains_idle_metadata_after_prior_deadline(
     assert!(driver.can_followup());
 }
 
+/// A hook of the account's own settings can end after the turn did. Its
+/// report is then waiting when the next message is prepared.
+#[tokio::test(start_paused = true)]
+async fn native_claude_followup_probe_passes_a_late_hook_report_of_the_same_session() {
+    for other_session in [false, true] {
+        let (mut driver, mut peer) = pair(8192, limits());
+        driver.enable_native_completion().unwrap();
+        driver.enable_continuous_session().unwrap();
+        initialize(&mut driver, &mut peer).await;
+        let first = next_prompt(&mut driver, &mut peer).await;
+        let session = driver.session_id().unwrap().to_owned();
+        completed(&mut driver, &mut peer, &first).await;
+        let mut report: Vec<Value> =
+            serde_json::from_str(include_str!("../fixtures/claude-native-hook-reports.json"))
+                .unwrap();
+        let mut report = report.remove(1);
+        report["hook_event"] = json!("Stop");
+        report["session_id"] = json!(if other_session {
+            "different-session".to_owned()
+        } else {
+            session
+        });
+        peer.output.write_all(&encoded(report)).await.unwrap();
+        let native = async {
+            let probe = read(&mut peer).await;
+            assert_eq!(probe["request"]["subtype"], "mcp_status");
+            peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":probe["request_id"],"response":{"mcpServers":[]}}}))).await.unwrap();
+        };
+        let (prepared, ()) = tokio::join!(driver.prepare_followup(limits()), native);
+        if other_session {
+            assert_eq!(prepared, Err(Error::Identity));
+            assert_eq!(driver.phase(), Phase::Closed);
+        } else {
+            prepared.unwrap();
+            let second = next_prompt(&mut driver, &mut peer).await;
+            completed(&mut driver, &mut peer, &second).await;
+            assert!(driver.can_followup());
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn native_claude_supervision_is_per_turn_and_never_unbounds_metadata() {
     let (mut driver, mut peer) = pair(8192, limits());

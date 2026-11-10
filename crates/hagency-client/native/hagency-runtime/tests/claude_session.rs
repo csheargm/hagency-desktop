@@ -169,6 +169,122 @@ async fn native_claude_initialize_ui_metadata_does_not_hide_authority_or_extend_
     assert_eq!(result, Err(Error::Timeout));
     assert_eq!(elapsed, Duration::from_millis(limits().event_wait_ms));
 }
+/// Captured from CLI 2.1.322 started with one session-start hook in the
+/// account's settings: the hook's start and result, printed before the
+/// initialize response.
+fn native_hook_reports() -> Vec<Value> {
+    serde_json::from_str(include_str!("fixtures/claude-native-hook-reports.json")).unwrap()
+}
+#[tokio::test]
+async fn native_claude_initialize_accepts_reports_of_the_accounts_own_hooks() {
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = Vec::new();
+        for report in native_hook_reports() {
+            bytes.extend(encoded(report));
+        }
+        bytes.extend(encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322"}}})));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
+    assert_eq!(driver.ignored_frames(), 2);
+    // A hook report binds no session and is no observation.
+    assert!(driver.session_id().is_none());
+    assert!(driver.observation_source().is_err());
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+    assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+}
+#[tokio::test]
+async fn native_claude_hook_reports_hide_no_authority_before_initialize() {
+    for invalid in [permission("early"), init()] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        let (result, ()) = tokio::join!(driver.initialize(), async {
+            read(&mut peer).await;
+            let mut bytes = Vec::new();
+            for report in native_hook_reports() {
+                bytes.extend(encoded(report));
+            }
+            bytes.extend(encoded(invalid));
+            peer.output.write_all(&bytes).await.unwrap();
+        });
+        assert_eq!(result, Err(Error::Identity));
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert_eq!(driver.ignored_frames(), 2);
+    }
+    // Another system frame is still not start-up metadata.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        read(&mut peer).await;
+        let mut other = native_hook_reports().remove(0);
+        other["subtype"] = json!("hook_unknown");
+        peer.output.write_all(&encoded(other)).await.unwrap();
+    });
+    assert_eq!(result, Err(Error::Identity));
+}
+#[tokio::test]
+async fn native_claude_hook_report_before_init_belongs_to_the_session_that_follows() {
+    for other_session in [false, true] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        let mut bytes = Vec::new();
+        for mut report in native_hook_reports() {
+            report["hook_event"] = json!("UserPromptSubmit");
+            report["session_id"] = json!(if other_session {
+                "different-session"
+            } else {
+                "session-one"
+            });
+            bytes.extend(encoded(report));
+        }
+        bytes.extend(encoded(init()));
+        let (result, sent) = tokio::join!(driver.next_message(), peer.output.write_all(&bytes));
+        sent.unwrap();
+        if other_session {
+            assert!(matches!(result, Err(Error::Identity)));
+            assert_eq!(driver.phase(), Phase::Closed);
+        } else {
+            assert!(matches!(
+                result,
+                Ok(Message::Event {
+                    kind: EventKind::System,
+                    ..
+                })
+            ));
+            // Init stays observation one; the reports before it are none.
+            assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+        }
+    }
+}
+#[tokio::test]
+async fn native_claude_hook_reports_during_a_turn_are_plain_events_of_that_session() {
+    let (mut driver, mut peer) = running().await;
+    for mut report in native_hook_reports() {
+        report["hook_event"] = json!("PreToolUse");
+        report["session_id"] = json!("session-one");
+        assert!(matches!(
+            event(&mut driver, &mut peer, report).await,
+            Ok(Message::Event {
+                kind: EventKind::System,
+                ..
+            })
+        ));
+    }
+    assert_eq!(driver.phase(), Phase::Running);
+    // A report that names another session ends this one, as any event does.
+    let mut foreign = native_hook_reports().remove(0);
+    foreign["session_id"] = json!("different-session");
+    assert!(matches!(
+        event(&mut driver, &mut peer, foreign).await,
+        Err(Error::Identity)
+    ));
+}
 async fn prompt(driver: &mut Driver, peer: &mut Peer) {
     let (result, value) = tokio::join!(
         driver.prompt("literal $(not a shell) 中文\nnext"),
