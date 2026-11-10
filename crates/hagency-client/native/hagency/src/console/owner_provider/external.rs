@@ -181,6 +181,25 @@ pub(crate) fn paths_for_reference(
         shared: true,
     })
 }
+/// What "use my local account" records, for tests of the code that reads it.
+#[cfg(test)]
+pub(crate) fn record_connection(
+    root: &Path,
+    origin: &str,
+    issuer: &str,
+    subject: &str,
+    owner: &str,
+    kind: Kind,
+) -> Result<(), ProviderError> {
+    let directory = directory(root, origin, issuer, subject, owner)?;
+    let (_, folder) = homes(kind)?;
+    hagency_store::private::replace(
+        &consent_path(&directory, kind),
+        &serde_json::to_vec(&json!({"version":1,"runtime":kind.name(),"home":folder}))
+            .map_err(|_| failure(503, "provider_choice_unavailable"))?,
+    )
+    .map_err(|_| failure(503, "provider_choice_unavailable"))
+}
 /// The original owner-selected local provider, without accepting a path or
 /// credential reference from a resource command.
 pub(in crate::console) fn connected_paths(

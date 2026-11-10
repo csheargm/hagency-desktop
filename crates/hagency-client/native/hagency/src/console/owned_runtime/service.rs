@@ -186,6 +186,52 @@ fn active_binding_ids(bindings: &[Binding], agent: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The profile must be this owner's own connection to the coding tool the
+/// Agent uses: the same checks as a single Room start (`OwnedRuntime::start`).
+/// Comparing with the owner's Codex account alone refused every Claude Code
+/// and Octos Agent with "runtime_profile_unavailable".
+fn owner_connection(
+    root: &std::path::Path,
+    origin: &str,
+    issuer: &str,
+    subject: &str,
+    owner: &str,
+    config: &StartConfig,
+) -> Result<(), RuntimeError> {
+    use super::super::owner_provider::{external, selected_reference};
+    runtime::validate(&config.profile, &config.credential_ref)
+        .map_err(|_| RuntimeError::Profile)?;
+    let expected = external::paths_for_reference(
+        root,
+        origin,
+        issuer,
+        subject,
+        owner,
+        &config.credential_ref,
+    )
+    .map_err(|_| RuntimeError::Profile)?;
+    if config.profile.executable
+        != external::executable(runtime::kind(&config.credential_ref))
+            .map_err(|_| RuntimeError::Profile)?
+        || config.profile.codex_home != expected.codex_home
+        || config.profile.home != expected.home
+        || config.profile.shared_auth != expected.shared
+        || config.credential_ref != expected.credential_ref
+    {
+        return Err(RuntimeError::Profile);
+    }
+    if runtime::managed_reference(&config.credential_ref).is_some() {
+        external::verify_reference(&config.profile.codex_home, &config.credential_ref)
+            .map_err(|_| RuntimeError::Profile)?;
+    } else if selected_reference(&config.profile.codex_home, config.profile.shared_auth)
+        .map_err(|_| RuntimeError::Profile)?
+        != config.credential_ref
+    {
+        return Err(RuntimeError::Profile);
+    }
+    Ok(())
+}
+
 impl OwnedRuntime {
     pub(in crate::console) async fn saved_service_options(
         &self,
@@ -234,38 +280,19 @@ impl OwnedRuntime {
         if config.host_files {
             return Err(RuntimeError::Profile);
         }
-        config
-            .profile
-            .validate()
-            .map_err(|_| RuntimeError::Profile)?;
         let root = console
             .0
             .server_login
             .state_directory()
             .ok_or(RuntimeError::Profile)?;
-        let expected = super::super::owner_provider::paths(
+        owner_connection(
             &root,
             device.origin(),
             device.issuer(),
             device.subject(),
             device.owner_mxid(),
-        )
-        .map_err(|_| RuntimeError::Profile)?;
-        if config.profile.executable
-            != super::super::owner_provider::executable().map_err(|_| RuntimeError::Profile)?
-            || config.profile.codex_home != expected.codex_home
-            || config.profile.home != expected.home
-            || config.profile.shared_auth != expected.shared
-            || config.credential_ref != expected.credential_ref
-            || super::super::owner_provider::selected_reference(
-                &config.profile.codex_home,
-                config.profile.shared_auth,
-            )
-            .map_err(|_| RuntimeError::Profile)?
-                != config.credential_ref
-        {
-            return Err(RuntimeError::Profile);
-        }
+            &config,
+        )?;
         let (path, profile_id) = intent_location(&console, &device)?;
 
         let key = identity(&device, &config.agent_id);
@@ -654,6 +681,93 @@ impl OwnedRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const CHILD: &str =
+        "console::owned_runtime::service::tests::agent_wide_start_accepts_the_owners_claude_connection_child";
+    const CHILD_ROOT: &str = "HAGENCY_SERVICE_CONNECTION_TEST_ROOT";
+    // Claude's folder and binary come from the environment. Run in a child
+    // test process: the suite's own environment and any installed Claude
+    // sign-in stay untouched.
+    #[test]
+    fn agent_wide_start_accepts_the_owners_claude_connection() {
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir(root.join("work")).unwrap();
+        std::fs::write(root.join("claude"), b"").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD, "--ignored", "--nocapture"])
+            .env("HOME", &home)
+            .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+            .env("HAGENCY_CLAUDE_BINARY", root.join("claude"))
+            .env(CHILD_ROOT, &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+    #[test]
+    #[ignore = "isolated child of agent_wide_start_accepts_the_owners_claude_connection"]
+    fn agent_wide_start_accepts_the_owners_claude_connection_child() {
+        use super::super::super::owner_provider::external;
+        const ORIGIN: &str = "https://server.example/";
+        const ISSUER: &str = "https://server.example/auth/";
+        const OWNER: &str = "@alice:example";
+        let root = PathBuf::from(std::env::var_os(CHILD_ROOT).unwrap());
+        let state = root.join("state");
+        let folder = root.join("home/.claude");
+        let config = StartConfig {
+            agent_id: "agent-a".into(),
+            binding_id: ALL_ROOMS.into(),
+            profile: Profile {
+                executable: root.join("claude"),
+                home: root.join("home"),
+                codex_home: folder.clone(),
+                cwd: root.join("work"),
+                model: "haiku".into(),
+                effort: "low".into(),
+                shared_auth: true,
+                web_search: false,
+            },
+            credential_ref: runtime::local_reference(runtime::Kind::Claude, &folder, None),
+            takeover: Takeover::Never,
+            host_files: false,
+            owner_direct: false,
+            recovery_device_id: None,
+            recovery_consent_id: None,
+        };
+        let check = |config: &StartConfig| {
+            owner_connection(&state, ORIGIN, ISSUER, "subject", OWNER, config)
+        };
+        // The owner has not chosen "use my local account" yet.
+        assert!(matches!(check(&config), Err(RuntimeError::Profile)));
+        external::record_connection(&state, ORIGIN, ISSUER, "subject", OWNER, runtime::Kind::Claude)
+            .unwrap();
+        // This is the start that was refused before.
+        check(&config).unwrap();
+        // Another owner on this computer has no such connection.
+        assert!(matches!(
+            owner_connection(&state, ORIGIN, ISSUER, "other", OWNER, &config),
+            Err(RuntimeError::Profile)
+        ));
+        // A profile that names another folder or another binary is not it.
+        let mut other = config.clone();
+        other.profile.codex_home = root.join("work");
+        assert!(matches!(check(&other), Err(RuntimeError::Profile)));
+        let mut other = config.clone();
+        std::fs::write(root.join("other"), b"").unwrap();
+        other.profile.executable = root.join("other");
+        assert!(matches!(check(&other), Err(RuntimeError::Profile)));
+        // Nor is a Codex reference on Claude's folders.
+        let mut other = config.clone();
+        other.credential_ref = "codex".into();
+        assert!(matches!(check(&other), Err(RuntimeError::Profile)));
+    }
     #[test]
     fn obsolete_service_preferences_reset_before_current_options_are_saved() {
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
