@@ -54,6 +54,7 @@ impl CurrentManagementStore {
         self.check(profile)?;
         Ok(self.registry.clone())
     }
+    // Cleanup belongs to adopted management even without shared intake.
     pub fn native_owner_cleanup_registry(&self, profile: &ProfileAuthority) -> Result<OwnerResourceRegistry, Error> {
         self.check(profile)?;
         Ok(self.registry.clone())
