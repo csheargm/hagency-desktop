@@ -48,6 +48,20 @@ impl RecentEmojis {
             .insert(0, (key.to_owned(), count.saturating_add(1)));
         self.picked.truncate(256);
     }
+
+    fn frequent(&self, max: usize) -> Vec<&'static Emoji> {
+        let mut recent: Vec<_> = self
+            .picked
+            .iter()
+            .filter_map(|(text, count)| Some((emojis::get(text).filter(|e| can_draw(e))?, *count)))
+            .collect();
+        recent.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        recent
+            .into_iter()
+            .take(max)
+            .map(|(emoji, _)| emoji)
+            .collect()
+    }
 }
 
 pub fn record_emoji_pick(cx: &mut Cx, emoji: &str) {
@@ -58,15 +72,7 @@ pub fn record_emoji_pick(cx: &mut Cx, emoji: &str) {
 }
 
 pub fn get_frequently_used_emojis(cx: &mut Cx, max: usize) -> Vec<&'static Emoji> {
-    let mut recent: Vec<_> = current(cx)
-        .saved
-        .picked
-        .iter()
-        .filter_map(|(text, count)| Some((emojis::get(text).filter(|e| can_draw(e))?, *count)))
-        .take(max)
-        .collect();
-    recent.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-    recent.into_iter().map(|(emoji, _)| emoji).collect()
+    current(cx).saved.frequent(max)
 }
 
 pub fn get_pick_counts(cx: &mut Cx) -> HashMap<&'static str, u64> {
@@ -112,6 +118,16 @@ pub fn clear_recent_emojis(cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frequently_used_emoji_survives_more_recent_single_use_picks() {
+        let mut recent = RecentEmojis::default();
+        for emoji in ["❤️", "❤️", "❤️", "👍", "🎉"] {
+            recent.record(emoji);
+        }
+        let frequent: Vec<_> = recent.frequent(2).into_iter().map(Emoji::as_str).collect();
+        assert_eq!(frequent, ["❤️", "🎉"]);
+    }
+
     #[test]
     fn picks_are_canonical_counted_and_roundtrip_with_skin_tone() {
         let mut recent = RecentEmojis::default();

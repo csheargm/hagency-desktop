@@ -83,9 +83,12 @@ fn picker_and_moderation_modals_fit_small_windows_and_large_desktops() {
     ui.moderation_modal(&mut cx, ids!(moderation.content))
         .set_info(
             &mut cx,
-            ModerationRequest::Report(crate::moderation::ReportTarget::User {
+            ModerationRequest::Member(crate::moderation::MemberModeration {
+                room_id: ruma::room_id!("!room:test").to_owned(),
+                room_name: "Room with a long title ".repeat(8),
                 user_id: ruma::user_id!("@report:test").to_owned(),
                 user_name: "Member with a long display name ".repeat(8),
+                action: crate::moderation::MemberAction::Kick,
             }),
         );
     ui.modal(&mut cx, ids!(moderation)).open(&mut cx);

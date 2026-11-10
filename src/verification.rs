@@ -123,8 +123,9 @@ pub fn add_verification_event_handlers_and_sync_client(client: Client) -> tokio:
 
 /// Keeps the UI's cache of users' verification states up to date as their identities change.
 pub fn handle_user_identities_subscriber(client: Client) -> tokio::task::JoinHandle<()> {
-    let epoch = crate::account_session::epoch();
+    let session = crate::matrix_context::SessionPin::capture(&client);
     crate::account_session::spawn(async move {
+        let Some(session) = session.filter(|pin| pin.is_current()) else { return };
         let Some(own_user_id) = client.user_id().map(ToOwned::to_owned) else { return };
         let identity_updates = match client.encryption().user_identities_stream().await {
             Ok(stream) => stream,
@@ -135,8 +136,9 @@ pub fn handle_user_identities_subscriber(client: Client) -> tokio::task::JoinHan
         };
         let mut identity_updates = std::pin::pin!(identity_updates);
         while let Some(updates) = identity_updates.next().await {
+            if !session.is_current() { return; }
             if updates.new.contains_key(&own_user_id) || updates.changed.contains_key(&own_user_id) {
-                enqueue_user_verification_update(epoch, UserVerificationUpdate::OwnIdentityChanged);
+                enqueue_user_verification_update(session.clone(), UserVerificationUpdate::OwnIdentityChanged);
                 continue;
             }
             let states: Vec<_> = updates.new.into_iter()
@@ -144,7 +146,7 @@ pub fn handle_user_identities_subscriber(client: Client) -> tokio::task::JoinHan
                 .map(|(user_id, identity)| (user_id, UserVerificationState::from(&identity)))
                 .collect();
             if !states.is_empty() {
-                enqueue_user_verification_update(epoch, UserVerificationUpdate::States(states));
+                enqueue_user_verification_update(session.clone(), UserVerificationUpdate::States(states));
             }
         }
     })

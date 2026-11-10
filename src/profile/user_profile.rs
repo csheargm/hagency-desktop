@@ -1,7 +1,7 @@
 //! Widgets and types related to displaying info about a user profile.
 use crate::profile::user_verification_cache::{get_or_fetch_user_verification_state, UserVerificationState, UserVerificationStatesUpdated};
 
-use crate::moderation::{MemberAbilities, MemberAbilitiesFetched, MemberAbilitiesInvalidated, MemberAction, MemberModeration, ReportTarget};
+use crate::moderation::{MemberAbilities, MemberAbilitiesFetched, MemberAbilitiesInvalidated, MemberAction, MemberModeration};
 use crate::moderation_modal::{ModerationModalAction, ModerationRequest};
 use std::{borrow::Cow, ops::{Deref, DerefMut}};
 use makepad_widgets::*;
@@ -246,10 +246,6 @@ script_mod! {
                 text: #(crate::i18n::tr("Verify this User")) i18n_text: "Verify this User"
             }
 
-            report_user_button := RobrixNegativeIconButton {
-                margin: 0 padding: 10 draw_icon.svg: ICON_FLAG icon_walk: Walk{width: 16 height: 16}
-                text: #(crate::i18n::tr("Report User")) i18n_text: "Report User"
-            }
             block_user_button := RobrixNegativeIconButton {
                 padding: Inset{top: 10, bottom: 10, left: 12, right: 15}
                 margin: 0,
@@ -320,7 +316,6 @@ script_mod! {
                     DetailGap {}
                     DetailSection {mp_message := DetailAction {title.text: #(crate::i18n::tr("Messages")) title.i18n_text: "Messages"}}
                     DetailGap {}
-                    mp_report_section := DetailSection {mp_report := DetailAction {title.text: #(crate::i18n::tr("Report User")) title.i18n_text: "Report User"}}
                     mobile_moderation := ModerationActions {}
                     mp_block_section := DetailSection {mp_block := DetailAction {title +: {text: #(crate::i18n::tr("Block")) i18n_text: "Block" draw_text.color: mod.widgets.RINX_DANGER_FG}}}
                 }
@@ -634,11 +629,7 @@ impl Widget for UserProfileSlidingPane {
             }
 
             if !self.is_animating_out {
-                let request = if self.button(cx, ids!(report_user_button)).clicked(actions)
-                    || self.view.navigation_bar_button(cx, ids!(mp_report)).clicked(actions) {
-                    Some(ModerationRequest::Report(ReportTarget::User {user_id: info.user_id.clone(), user_name: info.displayable_name().to_owned()}))
-                } else {
-                    [ids!(desktop_moderation), ids!(mobile_moderation)].into_iter().find_map(|panel| {
+                let request = [ids!(desktop_moderation), ids!(mobile_moderation)].into_iter().find_map(|panel| {
                         let view = self.view.view(cx, panel);
                         [(ids!(mute), MemberAction::Mute), (ids!(unmute), MemberAction::Unmute),
                          (ids!(kick), MemberAction::Kick), (ids!(ban), MemberAction::Ban), (ids!(unban), MemberAction::Unban)]
@@ -649,8 +640,7 @@ impl Widget for UserProfileSlidingPane {
                                 user_name: info.displayable_name().to_owned(), action,
                             }))
                         })
-                    })
-                };
+                    });
                 if let Some(request) = request {
                     cx.action(ModerationModalAction::Open(request));
                     self.is_animating_out = true;
@@ -762,8 +752,6 @@ impl Widget for UserProfileSlidingPane {
         block_user_button.set_visible(cx, !is_pane_showing_current_account);
         // Unfortunately the Matrix SDK's RoomMember type does not properly track
         // the blocked state of a user, so we have to maintain it separately.
-        self.button(cx, ids!(report_user_button)).set_visible(cx, !is_pane_showing_current_account);
-        self.view(cx, ids!(mp_report_section)).set_visible(cx, !is_pane_showing_current_account);
         let abilities = if self.abilities_epoch == crate::account_session::epoch() { self.member_abilities } else {MemberAbilities::empty()};
         for panel in [ids!(desktop_moderation), ids!(mobile_moderation)] {
             let view = self.view.view(cx, panel);

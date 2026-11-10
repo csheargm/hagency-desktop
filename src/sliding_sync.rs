@@ -2005,7 +2005,7 @@ async fn matrix_worker_task(
             }
             MatrixRequest::GetUserVerificationState { user_id } => {
                 let Some(client) = get_client() else { continue };
-                let epoch = crate::account_session::epoch();
+                let Some(session) = crate::matrix_context::SessionPin::capture(&client) else { continue };
                 crate::account_session::spawn(async move {
                     use crate::profile::user_verification_cache::{enqueue_user_verification_update, UserVerificationState, UserVerificationUpdate};
                     let state = match client.encryption().get_user_identity(&user_id).await {
@@ -2016,7 +2016,7 @@ async fn matrix_worker_task(
                             UserVerificationState::Unverified
                         }
                     };
-                    enqueue_user_verification_update(epoch, UserVerificationUpdate::States(vec![(user_id, state)]));
+                    enqueue_user_verification_update(session, UserVerificationUpdate::States(vec![(user_id, state)]));
                 });
             }
 

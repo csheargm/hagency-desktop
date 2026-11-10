@@ -1,4 +1,4 @@
-//! Moderating a room's members, and reporting messages, rooms, and users to homeserver admins.
+//! Moderating a room's members and reporting messages to homeserver admins.
 //!
 //! Everything here runs on the background matrix worker task;
 //! see [`ModerationModal`](crate::moderation_modal::ModerationModal) for how the user confirms these.
@@ -11,7 +11,6 @@ use matrix_sdk::{
     room::RoomMember,
     ruma::{
         OwnedEventId, OwnedRoomId, OwnedUserId, UserId,
-        api::client::reporting::report_user,
         events::{
             MessageLikeEventType,
             room::{member::MembershipState, power_levels::RoomPowerLevels},
@@ -22,7 +21,6 @@ use matrix_sdk::{
 
 use crate::{
     shared::popup_list::{PopupKind, enqueue_popup_notification},
-    utils::RoomNameId,
 };
 
 /// How long to show the popup notification for a request that succeeded, in seconds.
@@ -148,18 +146,11 @@ pub struct MemberModeration {
     pub action: MemberAction,
 }
 
-/// The thing being reported to the homeserver's admins.
+/// The message being reported to the homeserver's admins.
 #[derive(Clone, Debug)]
-pub enum ReportTarget {
-    Message {
-        room_id: OwnedRoomId,
-        event_id: OwnedEventId,
-    },
-    Room(RoomNameId),
-    User {
-        user_id: OwnedUserId,
-        user_name: String,
-    },
+pub struct ReportTarget {
+    pub room_id: OwnedRoomId,
+    pub event_id: OwnedEventId,
 }
 
 /// Fetches what the current user can do to the given user in the given room,
@@ -291,35 +282,14 @@ pub async fn moderate_member(client: Client, moderation: MemberModeration, reaso
 /// Sends the given report to the homeserver's admins, showing the result in a popup notification.
 pub async fn report(client: Client, target: ReportTarget, reason: Option<String>) {
     let result: Result<()> = async {
-        match &target {
-            ReportTarget::Message { room_id, event_id } => {
-                get_room(&client, room_id)?
-                    .report_content(event_id.clone(), reason)
-                    .await?;
-            }
-            ReportTarget::Room(room_name_id) => {
-                get_room(&client, room_name_id.room_id())?
-                    .report_room(reason.unwrap_or_default())
-                    .await?;
-            }
-            ReportTarget::User { user_id, .. } => {
-                client
-                    .send(report_user::v3::Request::new(
-                        user_id.clone(),
-                        reason.unwrap_or_default(),
-                    ))
-                    .await?;
-            }
-        }
+        get_room(&client, &target.room_id)?
+            .report_content(target.event_id.clone(), reason)
+            .await?;
         Ok(())
     }
     .await;
 
-    let description = match &target {
-        ReportTarget::Message { .. } => crate::i18n::tr("this message").to_owned(),
-        ReportTarget::Room(room_name_id) => format!("\"{room_name_id}\""),
-        ReportTarget::User { user_name, .. } => user_name.clone(),
-    };
+    let description = crate::i18n::tr("this message");
     match result {
         Ok(()) => enqueue_popup_notification(
             crate::i18n::format(

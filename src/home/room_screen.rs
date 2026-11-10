@@ -3155,7 +3155,7 @@ impl RoomScreen {
                     let Some(tl) = self.tl_state.as_ref() else { return };
                     let Some(event) = Self::find_event_in_timeline(&tl.items, details) else {continue};
                     if !tl.user_power.can_send_reaction() {continue;}
-                    let reactions = event.content().as_msglike().map(|message| &message.reactions);
+                    let reactions = Some(event.reactions());
                     super::event_reaction_list::toggle_reaction(cx, &tl.kind, &details.timeline_event_id, reactions, reaction);
                 }
                 MessageAction::Reply(details) => {
@@ -3502,7 +3502,7 @@ impl RoomScreen {
                     let Some(tl) = self.tl_state.as_ref() else {return};
                     if Self::find_event_in_timeline(&tl.items, details).is_none() {continue;}
                     let Some(event_id) = details.event_id() else {continue};
-                    cx.action(ModerationModalAction::Open(ModerationRequest::Report(ReportTarget::Message {
+                    cx.action(ModerationModalAction::Open(ModerationRequest::Report(ReportTarget {
                         room_id: tl.kind.room_id().clone(), event_id: event_id.clone(),
                     })));
                 }
@@ -4676,8 +4676,9 @@ pub enum TimelineUpdate {
     /// A notice with an option of Media Request Parameters that one or more requested media items (images, videos, etc.)
     /// that should be displayed in this timeline have now been fetched and are available.
     MediaFetched(MediaRequestParameters),
-    /// A notice that one or more members of a this room are currently typing.
+    /// Members whose changed cryptographic identities need acknowledgement.
     IdentityResets(Vec<IdentityReset>),
+    /// A notice that one or more members of this room are currently typing.
     TypingUsers {
         /// The list of users (their displayable name) who are currently typing in this room.
         users: Vec<String>,

@@ -207,21 +207,9 @@ impl ModerationModal {
                 "Delete",
                 &self.icon_delete,
             ),
-            ModerationRequest::Report(ReportTarget::Message { .. }) => (
+            ModerationRequest::Report(_) => (
                 "Report this message?",
                 crate::i18n::tr("Are you sure you want to report this message to your homeserver's admins?\n\nIf this room is encrypted, they won't be able to read the message.").to_owned(),
-                "Report",
-                &self.icon_report,
-            ),
-            ModerationRequest::Report(ReportTarget::Room(room_name_id)) => (
-                "Report this room?",
-                crate::i18n::format("Are you sure you want to report \"{room_name_id}\" to your homeserver's admins?", &[("room_name_id", room_name_id.to_string())]),
-                "Report",
-                &self.icon_report,
-            ),
-            ModerationRequest::Report(ReportTarget::User { user_name, .. }) => (
-                "Report this user?",
-                crate::i18n::format("Are you sure you want to report {user_name} to your homeserver's admins?", &[("user_name", user_name.to_string())]),
                 "Report",
                 &self.icon_report,
             ),

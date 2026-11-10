@@ -7,7 +7,7 @@ use super::rooms_list::RoomNotificationModeUpdated;
 use crate::{home::invite_modal::InviteModalAction, settings::app_preferences::preferred_receipt_type, shared::{context_menu::{ContextMenuClosed, expected_menu_size}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{MatrixRequest, submit_async_request}, utils::RoomNameId};
 
 /// Nothing here is conditionally shown, so keep these matching the DSL below.
-const NUM_BUTTONS: usize = 14;
+const NUM_BUTTONS: usize = 13;
 const NUM_DIVIDERS: usize = 3;
 
 script_mod! {
@@ -81,10 +81,6 @@ script_mod! {
 
             divider3 := mod.widgets.ContextMenuDivider { }
 
-            report_button := mod.widgets.ContextMenuDangerButton {
-                draw_icon.svg: ICON_FLAG
-                text: #(crate::i18n::tr("Report Room")) i18n_text: "Report Room"
-            }
             leave_button := mod.widgets.ContextMenuDangerButton {
                 draw_icon.svg: (ICON_LOGOUT)
                 text: #(crate::i18n::tr("Leave Room")) i18n_text: "Leave Room"
@@ -287,12 +283,6 @@ impl WidgetMatchEvent for RoomContextMenu {
             });
             close_menu = true;
         }
-        else if self.button(cx, ids!(report_button)).clicked(actions) {
-            cx.action(crate::moderation_modal::ModerationModalAction::Open(crate::moderation_modal::ModerationRequest::Report(
-                crate::moderation::ReportTarget::Room(details.room_name_id.clone())
-            )));
-            close_menu = true;
-        }
         else if self.button(cx, ids!(leave_button)).clicked(actions) {
             use crate::join_leave_room_modal::{JoinLeaveRoomModalAction, JoinLeaveModalKind};
             use crate::room::BasicRoomDetails;
@@ -328,7 +318,7 @@ impl RoomContextMenu {
         self.focus_after_draw = true;
         for id in [ids!(hide_chat_button), ids!(delete_chat_button)] { self.button(cx, id).set_visible(cx, !shown); }
         for id in [ids!(mark_unread_button), ids!(favorite_button), ids!(priority_button), ids!(copy_link_button),
-            ids!(room_settings_button), ids!(search_history_button), ids!(shared_attachments_button), ids!(notifications_button), ids!(invite_button), ids!(diagnostics_button), ids!(report_button), ids!(leave_button),
+            ids!(room_settings_button), ids!(search_history_button), ids!(shared_attachments_button), ids!(notifications_button), ids!(invite_button), ids!(diagnostics_button), ids!(leave_button),
             ids!(divider1), ids!(divider2), ids!(divider3)] {
             self.view.widget(cx, id).set_visible(cx, !shown);
         }
@@ -379,7 +369,6 @@ impl RoomContextMenu {
         self.button(cx, ids!(notifications_button)).reset_hover(cx);
         self.button(cx, ids!(invite_button)).reset_hover(cx);
         self.button(cx, ids!(diagnostics_button)).reset_hover(cx);
-        self.button(cx, ids!(report_button)).reset_hover(cx);
         self.button(cx, ids!(leave_button)).reset_hover(cx);
 
         self.redraw(cx);

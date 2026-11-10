@@ -11,6 +11,7 @@ use matrix_sdk::{
 use std::{cell::RefCell, collections::BTreeMap};
 
 use crate::{
+    matrix_context::SessionPin,
     sliding_sync::{submit_async_request, MatrixRequest},
 };
 
@@ -19,6 +20,23 @@ thread_local! {
     /// The key is a user ID,
     /// and the value is that user's verification state, or `None` while it's being fetched.
     static USER_VERIFICATION_CACHE: RefCell<BTreeMap<OwnedUserId, Option<UserVerificationState>>> = const { RefCell::new(BTreeMap::new()) };
+    static CACHE_SESSION: RefCell<Option<SessionPin>> = const { RefCell::new(None) };
+}
+
+/// Retire already-rendered trust as well as pending updates on SDK replacement,
+/// including a re-login with the very same Matrix user and device IDs.
+fn refresh_cache_session() -> bool {
+    let current = crate::sliding_sync::get_client()
+        .and_then(|client| SessionPin::capture(&client))
+        .filter(SessionPin::is_current);
+    CACHE_SESSION.with_borrow_mut(|session| {
+        if *session == current {
+            return false;
+        }
+        *session = current;
+        USER_VERIFICATION_CACHE.with_borrow_mut(|cache| cache.clear());
+        true
+    })
 }
 
 /// Whether we've verified a user's cryptographic identity.
@@ -48,6 +66,10 @@ pub fn get_or_fetch_user_verification_state(
     _cx: &mut Cx,
     user_id: &UserId,
 ) -> Option<UserVerificationState> {
+    refresh_cache_session();
+    if CACHE_SESSION.with_borrow(Option::is_none) {
+        return None;
+    }
     USER_VERIFICATION_CACHE.with_borrow_mut(|cache| {
         if let Some(state) = cache.get(user_id) {
             return *state;
@@ -61,11 +83,15 @@ pub fn get_or_fetch_user_verification_state(
 }
 
 /// The queue of verification state updates waiting to be processed by the UI thread's event handler.
-static PENDING_USER_VERIFICATION_UPDATES: SegQueue<(u64, UserVerificationUpdate)> = SegQueue::new();
+static PENDING_USER_VERIFICATION_UPDATES: SegQueue<(SessionPin, UserVerificationUpdate)> =
+    SegQueue::new();
 
 /// Enqueues a new verification state update and signals the UI that an update is available.
-pub fn enqueue_user_verification_update(epoch: u64, update: UserVerificationUpdate) {
-    PENDING_USER_VERIFICATION_UPDATES.push((epoch, update));
+pub(crate) fn enqueue_user_verification_update(
+    session: SessionPin,
+    update: UserVerificationUpdate,
+) {
+    PENDING_USER_VERIFICATION_UPDATES.push((session, update));
     SignalToUI::set_ui_signal();
 }
 
@@ -88,10 +114,13 @@ pub struct UserVerificationStatesUpdated;
 ///
 /// The App calls this upon every Signal, before any widget handles that Signal.
 pub fn process_user_verification_updates(cx: &mut Cx) {
-    let mut has_updates = false;
+    let mut has_updates = refresh_cache_session();
     USER_VERIFICATION_CACHE.with_borrow_mut(|cache| {
-        while let Some((epoch, update)) = PENDING_USER_VERIFICATION_UPDATES.pop() {
-            has_updates |= apply_update(cache, crate::account_session::epoch(), epoch, update);
+        while let Some((session, update)) = PENDING_USER_VERIFICATION_UPDATES.pop() {
+            if session.is_current() {
+                apply_update(cache, update);
+                has_updates = true;
+            }
         }
     });
     if has_updates {
@@ -103,70 +132,98 @@ pub fn process_user_verification_updates(cx: &mut Cx) {
 pub fn clear_user_verification_cache(_cx: &mut Cx) {
     while PENDING_USER_VERIFICATION_UPDATES.pop().is_some() {}
     USER_VERIFICATION_CACHE.with_borrow_mut(|cache| cache.clear());
+    CACHE_SESSION.with_borrow_mut(|session| *session = None);
 }
 
 fn apply_update(
     cache: &mut BTreeMap<OwnedUserId, Option<UserVerificationState>>,
-    current_epoch: u64,
-    update_epoch: u64,
     update: UserVerificationUpdate,
-) -> bool {
-    if current_epoch != update_epoch {
-        return false;
-    }
+) {
     match update {
         UserVerificationUpdate::States(states) => {
             cache.extend(states.into_iter().map(|(user, state)| (user, Some(state))))
         }
         UserVerificationUpdate::OwnIdentityChanged => cache.clear(),
     }
-    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn identity_reset_replaces_trust_but_old_account_updates_are_ignored() {
+    fn identity_reset_replaces_trust() {
         let user = ruma::user_id!("@bob:test").to_owned();
         let mut cache = BTreeMap::new();
         let update = |state| UserVerificationUpdate::States(vec![(user.clone(), state)]);
-        assert!(apply_update(
-            &mut cache,
-            10,
-            10,
-            update(UserVerificationState::Verified)
-        ));
-        assert!(!apply_update(
-            &mut cache,
-            10,
-            9,
-            update(UserVerificationState::Unverified)
-        ));
+        apply_update(&mut cache, update(UserVerificationState::Verified));
         assert_eq!(cache[&user], Some(UserVerificationState::Verified));
         apply_update(
             &mut cache,
-            10,
-            10,
             update(UserVerificationState::VerificationViolation),
         );
         assert_eq!(
             cache[&user],
             Some(UserVerificationState::VerificationViolation)
         );
-        apply_update(
-            &mut cache,
-            10,
-            10,
-            UserVerificationUpdate::OwnIdentityChanged,
-        );
+        apply_update(&mut cache, UserVerificationUpdate::OwnIdentityChanged);
         assert!(cache.is_empty());
-        assert!(!apply_update(
-            &mut cache,
-            11,
-            10,
-            update(UserVerificationState::Verified)
-        ));
-        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn same_account_relogin_drops_cached_trust_and_late_identity_updates() {
+        const NAME: &str = "profile::user_verification_cache::tests::same_account_relogin_drops_cached_trust_and_late_identity_updates";
+        if std::env::var("HAGENCY_TRUST_CACHE_TEST").as_deref() != Ok(NAME) {
+            let profile = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env("HAGENCY_TRUST_CACHE_TEST", NAME)
+                .env("HAGENCY_DESKTOP_DATA_DIR", profile.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        use crate::settings::crypto_settings::test_support::{Server, install_link_client};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = Server::with_handler(false, std::sync::Arc::new(|_| None));
+            let client = server.room().await.client();
+            install_link_client(Some(client.clone()));
+            let mut cx = Cx::new(Box::new(|_, _| {}));
+            let user = ruma::user_id!("@bob:test").to_owned();
+            let update = |state| UserVerificationUpdate::States(vec![(user.clone(), state)]);
+            let old = SessionPin::capture(&client).unwrap();
+            enqueue_user_verification_update(old.clone(), update(UserVerificationState::Verified));
+            process_user_verification_updates(&mut cx);
+            USER_VERIFICATION_CACHE.with_borrow(|cache| {
+                assert_eq!(cache[&user], Some(UserVerificationState::Verified))
+            });
+
+            // Replacing even this exact SDK instance revokes the old pin.
+            install_link_client(Some(client.clone()));
+            enqueue_user_verification_update(old, update(UserVerificationState::Verified));
+            process_user_verification_updates(&mut cx);
+            USER_VERIFICATION_CACHE.with_borrow(|cache| assert!(cache.is_empty()));
+
+            enqueue_user_verification_update(
+                SessionPin::capture(&client).unwrap(),
+                update(UserVerificationState::VerificationViolation),
+            );
+            process_user_verification_updates(&mut cx);
+            USER_VERIFICATION_CACHE.with_borrow(|cache| {
+                assert_eq!(
+                    cache[&user],
+                    Some(UserVerificationState::VerificationViolation)
+                )
+            });
+            install_link_client(None);
+            process_user_verification_updates(&mut cx);
+            USER_VERIFICATION_CACHE.with_borrow(|cache| assert!(cache.is_empty()));
+        });
     }
 }
