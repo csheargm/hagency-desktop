@@ -65,6 +65,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     mobile_details::script_mod(vm);
     text_or_image::script_mod(vm);
     article_makepad::diagram_view::script_mod(vm);
+    inline_image::script_mod(vm);
     html_or_plaintext::script_mod(vm);
     agent_usage::script_mod(vm);
     bouncing_dots::script_mod(vm);
@@ -82,3 +83,8 @@ pub fn script_mod(vm: &mut ScriptVm) {
     web_browser::script_mod(vm);
     web_browser_window::script_mod(vm);
 }
+
+pub mod emoji_catalog;
+pub mod recent_emojis;
+
+pub mod inline_image;

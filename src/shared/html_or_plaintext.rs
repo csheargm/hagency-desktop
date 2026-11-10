@@ -166,6 +166,7 @@ script_mod! {
         font := mod.widgets.MatrixHtmlSpan { }
         span := mod.widgets.MatrixHtmlSpan { }
         a := mod.widgets.RobrixHtmlLink { }
+        img := mod.widgets.InlineImage { }
         chatdiagram := mod.widgets.MarkdownDiagram {
             draw_selection +: {color: mod.widgets.RINX_TEXT_SELECTION_BG}
         }

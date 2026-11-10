@@ -778,3 +778,13 @@ mod tests {
         assert_eq!(member_tile_rects(100, dvec2(36., 36.)).len(), 9);
     }
 }
+
+/// Compact read receipts overlap adjacent avatars, preserving the existing footer.
+/// Ported from project-robius/robrix b5c1bec3.
+pub fn draw_stacked_avatars<'a>(cx: &mut Cx2d, scope: &mut Scope, avatars: impl Iterator<Item = &'a AvatarRef>) {
+    for (i, avatar) in avatars.enumerate() {
+        let mut walk = avatar.walk(cx);
+        if i > 0 { walk.margin.left = -5.0; }
+        let _ = avatar.draw_walk(cx, scope, walk);
+    }
+}

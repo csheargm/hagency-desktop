@@ -418,6 +418,8 @@ pub struct RoomsListEntryContent {
     #[live] mobile: bool,
 
     #[rust] room_id: Option<OwnedRoomId>,
+    #[rust] room_name: String,
+    #[rust] is_name_tooltip_shown: bool,
 
     /// `true` while a context menu that we opened is being shown.
     #[rust] is_context_menu_open: bool,
@@ -472,6 +474,9 @@ impl ScriptHook for RoomsListEntryContent {
 
 impl Widget for RoomsListEntryContent {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if matches!(event, Event::ClearHover | Event::Scroll(_)) {
+            self.hide_name_tooltip(cx);
+        }
         if self.animator_handle_event(cx, event).must_redraw() {
             self.redraw(cx);
         }
@@ -550,7 +555,27 @@ impl Widget for RoomsListEntryContent {
             // TODO: Invited rooms have no context menu, so don't emit secondary clicks.
             //       We should add a context menu for invited rooms.
             match hit {
+                Hit::FingerHoverIn(_) if !self.mobile && !self.room_name.is_empty() && !self.is_context_menu_open => {
+                    let name_label = self.child_refs(cx).room_name.clone();
+                    let truncated = name_label.borrow().is_none_or(|label| {
+                        utils::unwrapped_text_width(cx, &label.draw_text, &self.room_name)
+                            > label.area().rect(cx).size.x + 1.0
+                    });
+                    if truncated {
+                        cx.widget_action(uid, TooltipAction::HoverIn {
+                            text: self.room_name.clone(),
+                            widget_rect: area.rect(cx),
+                            options: CalloutTooltipOptions {
+                                position: TooltipPosition::Right,
+                                ..Default::default()
+                            },
+                        });
+                        self.is_name_tooltip_shown = true;
+                    }
+                }
+                Hit::FingerHoverOut(_) => self.hide_name_tooltip(cx),
                 Hit::FingerDown(fe) => {
+                    self.hide_name_tooltip(cx);
                     self.swipe_dragged = false;
                     cx.set_key_focus(area);
                     if !self.is_invited && fe.device.mouse_button().is_some_and(|b| b.is_secondary()) {
@@ -599,6 +624,22 @@ impl Widget for RoomsListEntryContent {
 }
 
 impl RoomsListEntryContent {
+    fn set_room_name(&mut self, cx: &mut Cx, name: &str) {
+        self.child_refs(cx).room_name.set_text(cx, name);
+        if self.room_name != name {
+            self.hide_name_tooltip(cx);
+            self.room_name.clear();
+            self.room_name.push_str(name);
+        }
+    }
+
+    fn hide_name_tooltip(&mut self, cx: &mut Cx) {
+        if self.is_name_tooltip_shown {
+            self.is_name_tooltip_shown = false;
+            cx.widget_action(self.widget_uid(), TooltipAction::HoverOut);
+        }
+    }
+
     fn child_refs(&mut self, cx: &mut Cx) -> &EntryChildRefs {
         self.child_refs.get_or_insert_with(|| EntryChildRefs {
             room_name: self.view.label(cx, ids!(room_name)),
@@ -624,6 +665,7 @@ impl RoomsListEntryContent {
     fn set_room(&mut self, cx: &mut Cx, room_id: &RoomId, is_invited: bool) {
         // If the room ID changed, reset any UI state that belongs to the previous room.
         if self.room_id.as_deref() != Some(room_id) {
+            self.hide_name_tooltip(cx);
             self.set_swipe_open(cx, false);
             self.left_swipe = Default::default();
             self.is_context_menu_open = false;
@@ -645,7 +687,7 @@ impl RoomsListEntryContent {
         // Note: in general, we must always set all fields in case a rooms list entry widget
         // was re-used by the portal list, to avoid showing any old content for a different entry.
         let refs = self.child_refs(cx).clone();
-        refs.room_name.set_text(cx, &room_info.room_name_id.display());
+        self.set_room_name(cx, &room_info.room_name_id.display());
         if let Some(latest) = room_info.latest.as_ref().filter(|e| super::chat_actions::cleared_through(room_info.room_name_id.room_id()).is_none_or(|t| u64::from(e.timestamp.0) > t)) {
             let time = if self.mobile {
                 utils::unix_time_millis_to_datetime(latest.timestamp).map(|dt| {
@@ -701,7 +743,7 @@ impl RoomsListEntryContent {
             false => name,
         };
         let refs = self.child_refs(cx).clone();
-        refs.room_name.set_text(cx, &name);
+        self.set_room_name(cx, &name);
         // Hide the timestamp field, and use the latest message field to show the inviter.
         refs.timestamp.set_text(cx, "");
         let inviter_string = match &room_info.inviter_info {

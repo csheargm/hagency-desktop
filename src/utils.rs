@@ -878,6 +878,11 @@ pub fn linkify_get_urls<'t>(
                 .flatten()
                 .is_some_and(ends_with_href)
         };
+        // A URL in any other attribute isn't a link either, e.g., an `<img>`'s `src`.
+        let is_link_within_other_attr = |link: &Link| {
+            text.get(.. link.start())
+                .is_some_and(|before| before.rfind('<') > before.rfind('>'))
+        };
 
         // The above checks are relevant to real HTML, but plaintext links are just regular text,
         // not html attributes/tags, so we have to linkify + escap) the URL.
@@ -892,6 +897,8 @@ pub fn linkify_get_urls<'t>(
                     links_found.push(url);
                 }
             }
+        } else if is_html && is_link_within_other_attr(&link) {
+            linkified_text.push_str(text.get(last_end_index..link.end()).unwrap_or_default());
         } else {
             match link.kind() {
                 LinkKind::Url => {
@@ -1758,4 +1765,11 @@ mod tests_ends_with_href {
     fn test_ends_with_href38() {
         assert!(!ends_with_href(" hrf= "));
     }
+}
+
+/// Width of one unwrapped line, used to disclose truncated labels on hover.
+/// Ported from project-robius/robrix (room-name tooltips, 40a0281f).
+pub fn unwrapped_text_width(cx: &mut Cx, draw_text: &makepad_widgets::DrawText, text: &str) -> f64 {
+    draw_text.layout(cx, 0.0, 0.0, None, false, makepad_widgets::Align::default(), text).size_in_lpxs.width as f64
+        * draw_text.font_scale as f64
 }

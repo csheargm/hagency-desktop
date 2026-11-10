@@ -10,6 +10,8 @@ script_mod! {
     mod.widgets.ICON_ADD_PHOTO        = crate_resource("self://resources/icons/add_photo.svg")
     mod.widgets.ICON_ADD_USER         = crate_resource("self://resources/icons/add_user.svg")
     mod.widgets.ICON_ADD_WALLET       = crate_resource("self://resources/icons/add_wallet.svg")
+    mod.widgets.ICON_FLAG = crate_resource("self://resources/icons/flag.svg")
+    mod.widgets.ICON_MUTE = crate_resource("self://resources/icons/microphone_off.svg")
     mod.widgets.ICON_FORBIDDEN        = crate_resource("self://resources/icons/forbidden.svg")
     mod.widgets.ICON_CHECKMARK        = crate_resource("self://resources/icons/checkmark.svg")
     mod.widgets.ICON_CLOSE            = crate_resource("self://resources/icons/close.svg")

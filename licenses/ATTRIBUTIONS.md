@@ -6,3 +6,10 @@ Nearly all icons used in Robrix are obtained from [SVG Repo](https://www.svgrepo
 Other icons are individually attributed below, as required.
 
 * Add Wallet by Creative Stall from <a href="https://thenounproject.com/browse/icons/term/add-wallet/" target="_blank" title="Add Wallet Icons">Noun Project</a> (CC BY 3.0)
+
+* The report flag icon is from Microsoft's [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons) (MIT).
+
+## Data
+
+* The emoji search keywords in `src/shared/emoji_keywords.tsv` are from the [Unicode CLDR](https://cldr.unicode.org/) project's English emoji annotations, under the [Unicode License v3](https://www.unicode.org/license.txt). Copyright © 1991-2026 Unicode, Inc.
+* The last column contains Discord emoji names for search compatibility.

@@ -528,6 +528,7 @@ pub async fn save_session(
     }
     write_private_session(&session_file, serialized_session.as_bytes()).await?;
     save_latest_user_id(&user_id).await?;
+    super::space_graph::delete_space_graph(&user_id).await;
 
     install_session_callbacks(client, session_file.clone())?;
     crate::accounts::refresh()?;

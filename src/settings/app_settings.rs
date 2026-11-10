@@ -301,6 +301,12 @@ script_mod! {
             flow: Down,
             margin: Inset{left: 6},
 
+            show_invites_in_unread_filters_toggle := ToggleFlat {
+                margin: Inset{left: 0.5, top: 5, bottom: 10}, padding: Inset{left: 15}
+                active: true, draw_bg +: {size: 21}
+                text: #(crate::i18n::tr("Include invitations in unread room filters")) i18n_text: "Include invitations in unread room filters"
+                draw_text +: {text_style: mod.widgets.SETTINGS_BOLD_TEXT_STYLE {}}
+            }
             show_read_receipts_toggle := ToggleFlat {
                 margin: Inset{left: 0.5, top: 5, bottom: 10}
                 padding: Inset { left: 15}
@@ -605,6 +611,10 @@ impl AppSettings {
             }
         }
 
+        if let Some(show) = self.view.check_box(cx, ids!(show_invites_in_unread_filters_toggle)).changed(actions) {
+            app_state.app_prefs.show_invites_in_unread_filters = show;
+            app_state.app_prefs.on_show_invites_in_unread_filters_changed(cx);
+        }
         let show_receipts_toggle = self.view.check_box(cx, ids!(show_read_receipts_toggle));
         if let Some(show) = show_receipts_toggle.changed(actions) {
             if show != app_state.app_prefs.show_read_receipts {
@@ -669,6 +679,7 @@ impl AppSettings {
         let send_toggle = self.view.check_box(cx, ids!(send_on_cmd_enter_toggle));
         send_toggle.set_active(cx, !prefs.send_on_enter, Animate::No);
 
+        self.view.check_box(cx, ids!(show_invites_in_unread_filters_toggle)).set_active(cx, prefs.show_invites_in_unread_filters, Animate::No);
         self.view.check_box(cx, ids!(show_read_receipts_toggle))
             .set_active(cx, prefs.show_read_receipts, Animate::No);
         self.view.check_box(cx, ids!(tabbed_chats_toggle))

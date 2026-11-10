@@ -126,6 +126,7 @@ rand = "0.8.5"
 rangemap = "1.5.0"
 sanitize-filename = "0.6"
 serde = "1.0"
+emojis = { version = "=0.9.0", features = ["serde"] }
 serde_json = "1.0"
 thiserror = "2.0.16"
 tokio = { version = "1.43.1", features = ["macros", "rt-multi-thread"] }
