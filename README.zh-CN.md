@@ -73,7 +73,8 @@ Codex 和 Claude 原生 session 会在轮次间保留上下文。macOS 的共享
 通用外部 **Agent Access** 工具与原生 Hagency Agents 管理不同，配置 Hagency
 不需要填写 BotFather 或 loopback 服务地址。
 
-`HAGENCY_DESKTOP_DATA_DIR` 可指定绝对路径以隔离数据，是唯一支持的数据目录环境变量。
+`HAGENCY_DESKTOP_DATA_DIR` 可指定绝对路径以隔离数据。启动器仍识别
+`RINX_DATA_DIR`、`ROBRIX_DATA_DIR` 环境别名，但这不代表兼容已退休 Fleet 数据。
 账本、工作目录及提供方关联按完整授权身份隔离。换执行设备不会转让所有权。
 本次原生 CLI 切换要求配套的当前 Desktop、daemon 和服务器，不恢复旧版本运行
 选项或审批协议。旧的运行意图会被丢弃，需要重新明确启动各个 Room。

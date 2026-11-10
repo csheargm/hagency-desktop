@@ -84,8 +84,9 @@ language are in Preferences. Generic external **Agent Access** controls are sepa
 from Hagency's native Agents; a BotFather or loopback endpoint is not required for
 Hagency setup.
 
-`HAGENCY_DESKTOP_DATA_DIR` selects an absolute, isolated data directory. It is the
-only supported data-directory override. Owner ledgers,
+`HAGENCY_DESKTOP_DATA_DIR` selects an absolute, isolated data directory. Existing
+`RINX_DATA_DIR` and `ROBRIX_DATA_DIR` environment aliases remain in the desktop
+launcher. They do not enable compatibility with retired Fleet data. Owner ledgers,
 workspaces and provider associations stay scoped to the full authenticated account.
 Moving execution to another device does not transfer ownership. This native CLI
 cutover requires matching current Desktop, daemon and server builds; it does not

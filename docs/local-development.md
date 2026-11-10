@@ -39,8 +39,8 @@ HAGENCY_DESKTOP_DATA_DIR="$PWD/.run/desktop-test-profile" \
 cargo run --locked --bin rinx
 ```
 
-Use the same absolute path for later starts. It isolates app data and cache.
-Do not open two
+Use the same absolute path for later starts. It isolates app data and cache;
+`RINX_DATA_DIR` and `ROBRIX_DATA_DIR` are lower-priority aliases. Do not open two
 instances against the same data directory. A new directory starts with no saved
 accounts; it does not clone another account's keys, ledger or provider association.
 Keep private state and logs out of Git. Logs may contain account/Room metadata.

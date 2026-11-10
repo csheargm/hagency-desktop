@@ -34,8 +34,8 @@ HAGENCY_DESKTOP_DATA_DIR="$PWD/.run/desktop-test-profile" \
 cargo run --locked --bin rinx
 ```
 
-后续使用同一绝对路径；该设置隔离数据与缓存。同一目录不要同时开多个实例。
-新目录没有保存账号，也不复制其他
+后续使用同一绝对路径；该设置隔离数据与缓存，`RINX_DATA_DIR`、`ROBRIX_DATA_DIR`
+是较低优先级别名。同一目录不要同时开多个实例。新目录没有保存账号，也不复制其他
 账号的密钥、账本或模型关联。私人状态和日志不提交 Git，日志可能含账号/Room 元数据。
 
 server 按[安装说明](../../hagency-server/README.zh-CN.md)与
