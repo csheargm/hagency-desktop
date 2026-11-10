@@ -107,6 +107,7 @@ impl Server {
         space: bool,
     ) -> Room {
         let builder = Client::builder()
+            .with_event_cache(true)
             .http_client(
                 matrix_sdk::reqwest::Client::builder()
                     .no_proxy()
@@ -141,7 +142,7 @@ impl Server {
             )
             .await
             .unwrap();
-        client.event_cache().subscribe().unwrap();
+        // The upstream SDK subscribes the enabled cache during construction.
         client
             .sync_once(matrix_sdk::config::SyncSettings::default().timeout(Duration::ZERO))
             .await
@@ -154,7 +155,7 @@ impl Server {
             assert!(room.is_space());
             return room;
         }
-        let (cache, _handles) = client.event_cache().room(room_id).await.unwrap();
+        let (cache, _handles) = crate::sliding_sync::event_cache(&client).room(room_id).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if cache

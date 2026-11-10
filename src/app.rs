@@ -22,7 +22,7 @@ use crate::{
         event_source_modal::{EventSourceModalAction, EventSourceModalWidgetRefExt}, invite_modal::{InviteModalAction, InviteModalWidgetRefExt}, main_desktop_ui::MainDesktopUiAction, navigation_tab_bar::{NavigationBarAction, SelectedTab}, new_message_context_menu::NewMessageContextMenuWidgetRefExt, room_context_menu::RoomContextMenuWidgetRefExt, room_screen::{InviteAction, MessageAction, clear_timeline_states, invalidate_single_timeline_state}, rooms_list::{RoomsListAction, RoomsListRef, RoomsListUpdate, clear_all_invited_rooms, enqueue_rooms_list_update}
     }, join_leave_room_modal::{
         JoinLeaveModalKind, JoinLeaveRoomModalAction, JoinLeaveRoomModalWidgetRefExt
-    }, login::login_screen::LoginAction, logout::logout_confirm_modal::{LogoutAction, LogoutConfirmModalAction, LogoutConfirmModalWidgetRefExt}, persistence, profile::user_profile_cache::clear_user_profile_cache, room::BasicRoomDetails, settings::app_preferences::{AppPreferences, UiZoom}, shared::{confirmation_modal::{ConfirmationModalContent, ConfirmationModalWidgetRefExt}, context_menu::{ContextMenuClosed, menu_position_margin}, image_viewer::{ImageViewerAction, ImageViewerWidgetRefExt, LoadState}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{DirectMessageRoomAction, MatrixRequest, TimelineKind, current_user_id, submit_async_request}, utils::RoomNameId, verification::VerificationAction, verification_modal::{
+    }, login::login_screen::LoginAction, logout::logout_confirm_modal::{LogoutAction, LogoutConfirmModalAction, LogoutConfirmModalWidgetRefExt}, persistence, profile::user_profile_cache::clear_user_profile_cache, room::BasicRoomDetails, settings::app_preferences::{AppPreferences, UiZoom}, shared::{confirmation_modal::{ConfirmationModalContent, ConfirmationModalWidgetRefExt}, context_menu::{ContextMenuClosed, menu_position_margin}, image_viewer::{ImageViewerAction, ImageViewerWidgetRefExt, LoadState}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{DirectMessageRoomAction, MatrixRequest, TimelineKind, current_user_id, submit_async_request}, utils::RoomNameId, verification::{VerificationAction, ScopedVerificationAction}, verification_modal::{
         VerificationModalAction,
         VerificationModalWidgetRefExt,
     }
@@ -1002,7 +1002,9 @@ impl MatchEvent for App {
             // Therefore, we cannot use `as_widget_action().cast()` to match them.
             //
             // Note: other verification actions are handled by the verification modal itself.
-            if let Some(VerificationAction::RequestReceived(state)) = action.downcast_ref() {
+            if let Some(scoped) = action.downcast_ref::<ScopedVerificationAction>()
+                && scoped.scope.is_current()
+                && let VerificationAction::RequestReceived(state) = &scoped.action {
                 self.ui.verification_modal(cx, ids!(verification_modal.content))
                     .initialize_with_data(cx, state.clone());
                 self.ui.modal(cx, ids!(verification_modal)).open(cx);
@@ -1276,6 +1278,11 @@ impl App {
 
     fn clear_session_ui(&mut self, cx: &mut Cx) {
         self.matrix_link_navigation.cancel();
+        {
+            use crate::settings::crypto_settings::CryptoSettingsWidgetRefExt;
+            self.ui.crypto_settings(cx, ids!(encryption_recovery)).clear(cx);
+        }
+        self.ui.verification_modal(cx, ids!(verification_modal.content)).clear(cx);
         self.lifecycle.last_app_state_save = None;
         self.pending_signup_navigation = None;
         self.ui.image_viewer(cx, ids!(image_viewer_modal.content)).reset(cx);

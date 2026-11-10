@@ -1944,6 +1944,10 @@ impl Widget for RoomScreen {
         }
 
 
+        // Recovery can finish while Settings covers this cached page.
+        let list = self.view.portal_list(cx, ids!(timeline.list));
+        self.process_timeline_updates(cx, &list);
+
         let room_screen_widget_uid = self.widget_uid();
         let has_agent_status = self.has_agent_status(cx);
         while let Some(subview) = self.view.draw_walk(cx, scope, walk).step() {
@@ -5903,8 +5907,7 @@ fn populate_message_view(
     if !used_cached_item {
         // Redacted messages must never show reactions, even if the SDK still reports some.
         let reactions = (!matches!(msg_like_content.kind, MsgLikeKind::Redacted))
-            .then(|| event_tl_item.content().reactions())
-            .flatten();
+            .then(|| event_tl_item.reactions());
         item.reaction_list(cx, ids!(content.reaction_list)).set_list(
             cx,
             reactions,
@@ -8418,6 +8421,102 @@ mod desktop_information_columns_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+pub(crate) mod crypto_recovery_resume_tests {
+    use super::*;
+    use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    pub(crate) fn prepare(cx: &mut Cx, screen: &RoomScreenRef) -> crossbeam_channel::Sender<TimelineUpdate> {
+        let id = matrix_sdk::ruma::room_id!("!recovery-resume:example.org").to_owned();
+        let (sender, update_receiver) = crossbeam_channel::unbounded();
+        let (request_sender, _requests) = tokio::sync::watch::channel(crate::sliding_sync::TimelineRequest {
+            backwards_paginate: Vec::new(), is_timeline_open: true,
+        });
+        let update_sender = sender.clone();
+        let mut state = TimelineUiState {
+                    kind: TimelineKind::MainRoom {room_id: id.clone()},
+                    // Initially, we assume the user has all power levels by default.
+                    // This avoids unexpectedly hiding any UI elements that should be visible to the user.
+                    // This doesn't mean that the user can actually perform all actions;
+                    // the power levels will be updated from the homeserver once the room is opened.
+                    user_power: UserPowerLevels::all(),
+                    is_encrypted: false,
+                    // Room members start as None and get populated when fetched from the server
+                    room_members: None,
+                    // We assume timelines being viewed for the first time haven't been fully paginated.
+                    fully_paginated: false,
+                    is_paginating: false,
+                    items: Vector::new(),
+                    index_of_last_own_sent: None,
+                    index_of_first_own_failed: None,
+                    content_drawn_since_last_update: RangeSet::new(),
+                    profile_drawn_since_last_update: RangeSet::new(),
+                    update_receiver,
+                    request_sender,
+                    media_cache: MediaCache::new(Some(update_sender.clone())),
+                    link_preview_cache: LinkPreviewCache::new(Some(update_sender)),
+                    fetched_thread_summaries: HashMap::new(),
+                    pending_thread_summary_fetches: HashSet::new(),
+                    saved_state: SavedState::default(),
+                    message_highlight_animation_state: MessageHighlightAnimationState::default(),
+                    pending_reached_start: false,
+                    num_backwards_pagination_rounds_without_progress: 0,
+                    last_sent_read_receipt: None,
+                    last_sent_fully_read: None,
+                    tombstone_info: None,
+                    pending_downloads: SmallVec::new(),
+                    expanded_reply_previews: HashSet::new(),
+                    expanded_system_updates: HashSet::new(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_approvals: ApprovalUiState::default(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_expiry_timer: Timer::empty(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_expiry_deadline_millis: None,
+        };
+        state.content_drawn_since_last_update.insert(0..3);
+        state.profile_drawn_since_last_update.insert(0..3);
+        let mut inner = screen.borrow_mut().unwrap();
+        inner.is_loaded = true;
+        inner.timeline_kind = Some(TimelineKind::MainRoom {room_id: id.clone()});
+        inner.room_name_id = Some(RoomNameId::empty(id));
+        inner.tl_state = Some(state);
+        inner.redraw(cx);
+        sender
+    }
+    pub(crate) fn assert_updated(screen: &RoomScreenRef) {
+        let inner=screen.borrow().unwrap();let state=inner.tl_state.as_ref().unwrap();
+        assert!(state.is_encrypted, "returning from recovery must apply queued Room state");
+        assert!(!state.content_drawn_since_last_update.contains(&0), "stale encrypted rows must be repainted");
+        assert!(!state.profile_drawn_since_last_update.contains(&0));
+    }
+    pub(crate) fn queue(sender: &crossbeam_channel::Sender<TimelineUpdate>) {
+        sender.send(TimelineUpdate::RoomEncrypted).unwrap();
+        sender.send(TimelineUpdate::NewItems {
+            new_items: Vector::new(), changed_indices: 0..3, clear_cache: true, is_append: false,
+        }).unwrap();
+    }
+    #[test]
+    fn recovery_resumed_draw_applies_queued_updates_without_signal() {
+        let mut cx=Cx::new(Box::new(|_,_|{}));
+        let screen=cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);
+            vm.bx.captured_errors=Some(Vec::new());
+            let value=script_eval!(vm,{mod.widgets.RoomScreen {}});
+            let widget=WidgetRef::script_from_value(vm,value);assert!(vm.take_errors().is_empty());widget.as_room_screen()
+        });
+        let sender=prepare(&mut cx,&screen);queue(&sender);
+        let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(560.0,700.0));
+        let mut list=DrawList2d::new(&mut cx);let event=DrawEvent::default();
+        let mut draw=CxDraw::new(&mut cx,&event);let mut cx2d=Cx2d::new(&mut draw);
+        cx2d.begin_pass(&pass,None);list.begin_always(&mut cx2d);
+        cx2d.begin_root_turtle(dvec2(560.0,700.0),Layout::flow_overlay());
+        screen.draw_walk_all(&mut cx2d,&mut Scope::empty(),Walk::fill());
+        cx2d.end_pass_sized_turtle();list.end(&mut cx2d);cx2d.end_pass(&pass);
+        drop(cx2d);drop(draw);assert_updated(&screen);
+    }
 }
 
 #[path = "room_screen/system_updates.rs"]

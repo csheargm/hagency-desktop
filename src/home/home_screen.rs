@@ -612,7 +612,10 @@ impl Widget for HomeScreen {
                                 self.explore_return_tab.clone()
                             } else { self.previous_selection.clone() };
                             cx.action(NavigationBarAction::TabSelected(app_state.selected_tab.clone()));
-                            self.update_active_page_from_selection(cx, app_state);
+                            if let Some(page) = self.update_active_page_from_selection(cx, app_state) {
+                                page.handle_event(cx, &Event::Signal, &mut Scope::with_data(app_state));
+                                page.redraw(cx);
+                            }
                             self.view.redraw(cx);
                         }
                     }
@@ -1262,6 +1265,27 @@ pub(crate) mod responsive_layout_tests {
             Some(if desktop { id!(Desktop) } else { id!(Mobile) }));
         assert_eq!(effective_is_desktop(cx), desktop);
         assert_eq!(crate::home::account_menu::is_desktop_layout(cx), desktop);
+    }
+
+    #[test]
+    fn recovery_closing_settings_catches_up_the_covered_room() {
+        let (mut cx, mut home, mut state)=home();state.selected_tab=SelectedTab::Home;
+        let page=home.update_active_page_from_selection(&mut cx,&mut state).unwrap();
+        let widget=cx.with_vm(|vm| {
+            let value=script_eval!(vm,{mod.widgets.RoomScreen {}});WidgetRef::script_from_value(vm,value)
+        });
+        page.as_view().borrow_mut().unwrap().children.push((id!(recovery_probe),widget.clone()));
+        let room=widget.as_room_screen();
+        let sender=super::super::room_screen::crypto_recovery_resume_tests::prepare(&mut cx,&room);
+        draw_pane(&mut cx,&mut home,&mut state,1280.0);
+        let actions=cx.capture_actions(|cx|cx.action(NavigationBarAction::OpenSettings));
+        home.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab,SelectedTab::Settings);
+        super::super::room_screen::crypto_recovery_resume_tests::queue(&sender);
+        let actions=cx.capture_actions(|cx|cx.action(NavigationBarAction::CloseSettings));
+        home.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab,SelectedTab::Home);
+        super::super::room_screen::crypto_recovery_resume_tests::assert_updated(&room);
     }
 
     #[test]

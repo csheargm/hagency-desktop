@@ -1,3 +1,4 @@
+use super::crypto_settings::CryptoSettingsWidgetExt;
 use std::cell::RefCell;
 
 use makepad_widgets::{text::selection::Cursor, *};
@@ -43,7 +44,7 @@ script_mod! {
                     color: (COLOR_FG_ACCEPT_GREEN),
                     text_style: theme.font_bold { font_size: (11.5 * mod.widgets.RINX_TEXT_SCALE) },
                 }
-                text: #(crate::i18n::tr("This device is verified and can access encrypted messages.")) i18n_text: "This device is verified and can access encrypted messages."
+                text: #(crate::i18n::tr("This device is verified. Encrypted history also requires its room keys.")) i18n_text: "This device is verified. Encrypted history also requires its room keys."
             }
         }
 
@@ -70,7 +71,7 @@ script_mod! {
                     color: (COLOR_FG_DANGER_RED),
                     text_style: theme.font_bold { font_size: (11.5 * mod.widgets.RINX_TEXT_SCALE) },
                 }
-                text: #(crate::i18n::tr("This device is not verified and can't view encrypted messages.")) i18n_text: "This device is not verified and can't view encrypted messages."
+                text: #(crate::i18n::tr("This device is not verified. Verify it or restore your recovery key.")) i18n_text: "This device is not verified. Verify it or restore your recovery key."
             }
 
             verify_device_button := RobrixIconButton {
@@ -106,6 +107,8 @@ script_mod! {
                 text: ""
             }
         }
+
+        encryption_recovery := CryptoSettings {}
 
         SubsectionLabel {
             text: #(crate::i18n::tr("Your Avatar:")) i18n_text: "Your Avatar:"
@@ -426,9 +429,17 @@ impl MatchEvent for AccountSettings {
         let upload_avatar_button = self.view.button(cx, ids!(upload_avatar_button));
 
         for action in actions {
-            if let Some(VerificationStateAction::Update(state)) = action.downcast_ref() {
-                self.verification_state = *state;
-                self.update_verification_banner(cx);
+            if let Some(update) = action.downcast_ref::<VerificationStateAction>() {
+                if update.pin.is_current() {
+                    let changed = self.verification_state != update.state;
+                    self.verification_state = update.state;
+                    self.update_verification_banner(cx);
+                    // A fresh key query can emit the same verification value.
+                    // Refreshing on that echo would start another key query.
+                    if changed {
+                        self.view.crypto_settings(cx, ids!(encryption_recovery)).refresh(cx);
+                    }
+                }
                 continue;
             }
 
@@ -693,6 +704,7 @@ impl AccountSettings {
             self.own_profile = Some(new_profile);
         }
         self.populate_inner(cx, PopulateMode::Initial);
+        self.view.crypto_settings(cx, ids!(encryption_recovery)).refresh(cx);
     }
 
     /// Restores widget state after `Event::ScriptReapply` reset DSL-bound

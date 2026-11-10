@@ -14,6 +14,11 @@ version = "0.5.0-rc.5"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
+hagency-store = { path = "crates/hagency-client/native/hagency-store" }
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
+zeroize = "1"
+
 # Native grant-review bridge types are used by the host in every build mode.
 # Original-source adoption entry points retain the Desktop feature gate below.
 hagency = { path = "crates/hagency-client/native/hagency", features = ["resource-adoption"] }
@@ -155,6 +160,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 ] }
 
 [dev-dependencies]
+tempfile = "3.24.0"
 # Host unit tests use dashboard snapshots without enabling fixtures in production.
 hagency-owner-dashboard = { path = "crates/owner-dashboard", features = ["fixtures"] }
 # Native writer fixtures must never acquire the user's installation authority.
@@ -266,6 +272,24 @@ name = "palpo_action_room"
 required-features = ["palpo-instrument"]
 
 [patch.crates-io]
+# Keep direct Ruma types on the same official revision as the SDK.
+ruma = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-client-api = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-common = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-events = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-html = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-identifiers-validation = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+ruma-macros = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c" }
+# Official upstream prepared-key API; package version 0.19.1 predates this Git interface.
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-base = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-common = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-crypto = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-indexeddb = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-sqlite = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-store-encryption = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "61905c3e46496340fad7faa6c5f77b8f363d88e7" }
+
 # Octos' existing OpenHarmony ioctl ABI correction for rustyline's nix 0.29.
 nix = { git = "https://github.com/octos-org/octos.git", rev = "deb433e9a452c03d8fe7f4f6a26b42785c47ced7" }
 # Pending additive App Hub contract release; see vendor/octosense-app-contract/RINX-PATCH.md.

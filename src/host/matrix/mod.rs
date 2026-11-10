@@ -639,7 +639,7 @@ pub async fn execute(
                     let mut out: Vec<serde_json::Value> = Vec::new();
                     // Serve each pin from the event cache/store; only misses go
                     // to the network, and those run concurrently.
-                    let cache = client.event_cache().room(&room_id).await.ok();
+                    let cache = crate::sliding_sync::event_cache(&client).room(&room_id).await.ok();
                     let cache_ref = cache.as_ref().map(|(c, _)| c);
                     let room_ref = &room;
                     let fetched = futures_util::future::join_all(pinned_ids.iter().take(10).map(
@@ -769,7 +769,7 @@ pub async fn execute(
                         // What is in memory plus everything Robrix has stored
                         // for the room: decrypted content, no network.
                         let mut events = Vec::new();
-                        if let Ok((cache, _guard)) = client.event_cache().room(room.room_id()).await
+                        if let Ok((cache, _guard)) = crate::sliding_sync::event_cache(&client).room(room.room_id()).await
                             && let Ok(cached) = cache.events().await
                         {
                             events.extend(cached);

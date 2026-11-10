@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use makepad_widgets::*;
 use matrix_sdk::{encryption::verification::Verification, ruma::events::key::verification::cancel::CancelCode};
 
-use crate::verification::{VerificationAction, VerificationRequestActionState, VerificationUserResponse};
+use crate::verification::{VerificationAction, VerificationRequestActionState, VerificationUserResponse, ScopedVerificationAction, VerificationScope};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -17,20 +17,20 @@ script_mod! {
         padding: Inset{top: 6, right: 6, bottom: 6, left: 6}
         spacing: 4
 
-        symbol := Label {
+        symbol := RinxLabel {
             width: 72, height: Fit
             align: Align{x: 0.5}
             draw_text +: {
-                text_style: REGULAR_TEXT {font_size: (30 * mod.widgets.RINX_TEXT_SCALE)},
+                text_style: REGULAR_TEXT {font_size: (30 * mod.widgets.RINX_TEXT_SCALE)}, // style-size: glyph
                 color: mod.widgets.RINX_INK
             }
         }
-        description := Label {
+        description := RinxLabel {
             width: 72, height: Fit
             flow: Flow.Right{wrap: true}
             align: Align{x: 0.5}
             draw_text +: {
-                text_style: REGULAR_TEXT {font_size: (9 * mod.widgets.RINX_TEXT_SCALE)},
+                text_style: REGULAR_TEXT {font_size: mod.widgets.RINX_META_SIZE},
                 color: mod.widgets.RINX_INK
             }
         }
@@ -68,7 +68,7 @@ script_mod! {
 
             cancel_button := RobrixNegativeIconButton {
                 align: Align{x: 0.5, y: 0.5}
-                padding: 15,
+                padding: Inset{left: 15 right: 15 top: 0 bottom: 0},
                 draw_icon.svg: (ICON_FORBIDDEN)
                 icon_walk: Walk{width: 16, height: 16, margin: Inset{left: -2, right: -1} }
                 text: #(crate::i18n::tr("Cancel")) i18n_text: "Cancel"
@@ -76,7 +76,7 @@ script_mod! {
 
             accept_button := RobrixPositiveIconButton {
                 align: Align{x: 0.5, y: 0.5}
-                padding: 15,
+                padding: Inset{left: 15 right: 15 top: 0 bottom: 0},
                 draw_icon.svg: (ICON_CHECKMARK)
                 icon_walk: Walk{width: 16, height: 16, margin: Inset{left: -2, right: -1} }
                 text: #(crate::i18n::tr("Yes")) i18n_text: "Yes"
@@ -89,6 +89,7 @@ script_mod! {
 pub struct VerificationModal {
     #[deref] view: View,
     #[rust] state: Option<VerificationRequestActionState>,
+    #[rust] active_scope: Option<VerificationScope>,
     /// Whether the modal is in a "final" state,
     /// meaning that the verification process has ended
     /// and that any further interaction with it should close the modal.
@@ -106,6 +107,11 @@ pub enum VerificationModalAction {
 
 impl Widget for VerificationModal {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if self.active_scope.as_ref().is_some_and(|scope| !scope.is_current()) {
+            self.reset_state();
+            cx.action(VerificationModalAction::Close);
+            return;
+        }
         self.view.handle_event(cx, event, scope);
         self.widget_match_event(cx, event, scope);
     }
@@ -160,7 +166,9 @@ impl WidgetMatchEvent for VerificationModal {
         let mut needs_redraw = false;
         for action in actions {
             // `VerificationAction`s come from a background thread, so they are NOT widget actions.
-            if let Some(verification_action) = action.downcast_ref::<VerificationAction>() {
+            if let Some(scoped) = action.downcast_ref::<ScopedVerificationAction>() {
+                if !scoped.scope.is_current() || self.active_scope.as_ref()!=Some(&scoped.scope) {continue;}
+                let verification_action = &scoped.action;
                 // `RequestReceived` is handled by the top-level app.
                 if matches!(verification_action, VerificationAction::RequestReceived(_)) {
                     continue;
@@ -313,9 +321,7 @@ impl WidgetMatchEvent for VerificationModal {
                     VerificationAction::RequestCompleted => {
                         self.label(cx, ids!(body)).set_text(
                             cx,
-                            "Verification completed successfully!\n\n\
-                            Now you can send and receive encrypted messages, \
-                            and everyone you chat with can trust this device is yours.",
+                            crate::i18n::tr("Verification completed. The compared keys matched. Encrypted history still requires its room keys."),
                         );
                         self.transition_to_final_state(cx, &accept_button, &cancel_button);
                     }
@@ -338,6 +344,7 @@ impl WidgetMatchEvent for VerificationModal {
 impl VerificationModal {
     fn reset_state(&mut self) {
         self.state = None;
+        self.active_scope = None;
         self.is_final = false;
         self.is_comparing_keys = false;
     }
@@ -400,6 +407,7 @@ impl VerificationModal {
         cancel_button.set_enabled(cx, true);
         cancel_button.set_visible(cx, true);
 
+        self.active_scope=Some(state.scope.clone());
         self.state = Some(state);
         self.is_final = false;
         self.is_comparing_keys = false;
@@ -407,6 +415,9 @@ impl VerificationModal {
 }
 
 impl VerificationModalRef {
+    pub(crate) fn clear(&self,cx:&mut Cx) {
+        if let Some(mut inner)=self.borrow_mut() {inner.reset_state();inner.view.redraw(cx);}
+    }
     pub fn initialize_with_data(
         &self,
         cx: &mut Cx, 
@@ -415,5 +426,73 @@ impl VerificationModalRef {
         if let Some(mut inner) = self.borrow_mut() {
             inner.initialize_with_data(cx, state);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::crypto_settings::test_support::{Server, install_link_client};
+
+    #[test]
+    fn queued_verification_results_require_the_exact_session_peer_and_flow() {
+        const NAME: &str = "verification_modal::tests::queued_verification_results_require_the_exact_session_peer_and_flow";
+        if std::env::var("HAGENCY_VERIFY_SCOPE_TEST").as_deref() != Ok(NAME) {
+            let profile = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env("HAGENCY_VERIFY_SCOPE_TEST", NAME)
+                .env("HAGENCY_DESKTOP_DATA_DIR", profile.path()).output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = Server::with_handler(false, std::sync::Arc::new(|_| None));
+            let first = server.room().await.client();
+            install_link_client(Some(first.clone()));
+            let scope = VerificationScope {
+                session: crate::matrix_context::SessionPin::capture(&first).unwrap(),
+                peer: matrix_sdk::ruma::user_id!("@alice:example.org").to_owned(),
+                flow_id: "second-flow".into(),
+            };
+            let mut cx = Cx::new(Box::new(|_, _| {}));
+            let mut modal = cx.with_vm(|vm| {
+                makepad_widgets::script_mod(vm);
+                crate::app::register_widgets(vm);
+                let value = script_eval!(vm, { mod.widgets.VerificationModal {} });
+                VerificationModal::script_from_value(vm, value)
+            });
+            modal.active_scope = Some(scope.clone());
+            let send = |modal: &mut VerificationModal, cx: &mut Cx, incoming: VerificationScope| {
+                let actions = cx.capture_actions(|cx| cx.action(ScopedVerificationAction {
+                    scope: incoming, action: VerificationAction::RequestCompleted,
+                }));
+                modal.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+            };
+            let mut old_flow = scope.clone(); old_flow.flow_id = "first-flow".into();
+            send(&mut modal, &mut cx, old_flow);
+            assert!(!modal.is_final, "old transaction cannot finish a new modal");
+            let mut wrong_peer = scope.clone(); wrong_peer.peer = matrix_sdk::ruma::user_id!("@bob:example.org").to_owned();
+            send(&mut modal, &mut cx, wrong_peer);
+            assert!(!modal.is_final, "peer is part of the transaction identity");
+            send(&mut modal, &mut cx, scope.clone());
+            assert!(modal.is_final, "current exact completion is rendered");
+            modal.is_final = false;
+            let second = server.room().await.client();
+            assert_eq!(first.user_id(), second.user_id());
+            assert_eq!(first.device_id(), second.device_id());
+            install_link_client(Some(second.clone()));
+            send(&mut modal, &mut cx, scope.clone());
+            assert!(!modal.is_final, "same IDs after re-login do not authorize old SDK results");
+            let current = VerificationScope {session: crate::matrix_context::SessionPin::capture(&second).unwrap(), ..scope};
+            modal.active_scope = Some(current.clone());
+            send(&mut modal, &mut cx, current);
+            assert!(modal.is_final);
+            modal.reset_state();
+            assert!(modal.active_scope.is_none());
+            install_link_client(None);
+        });
     }
 }

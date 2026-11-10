@@ -85,6 +85,10 @@ workspaces and provider associations stay scoped to the full authenticated accou
 Moving execution to another device does not move ownership or reset historical
 costs; restore the same owner's complete ledger when the recovery gate requires it.
 
+Device verification and key recovery are available under **Settings → Account → Encryption and recovery**.
+Verified devices still need their room keys to read encrypted history. See
+[device verification and recovery](docs/device-verification-recovery.md).
+
 ## Build and check
 
 The owner engine is maintained in [`crates/hagency-client`](crates/hagency-client/README.md)
