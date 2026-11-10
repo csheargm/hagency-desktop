@@ -944,7 +944,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         {
             return Err(Error::Profile("host tools require binding workspace"));
         }
-        let mut params = value!({"cwd":profile.cwd,"model":profile.model,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"web_search":"live"},"runtimeWorkspaceRoots":[profile.cwd],"environments":[]});
+        // No "environments" entry: Codex then runs in its default local
+        // environment in `cwd`. An empty list turns the environment off; the
+        // Agent could then run no command and change no file ("no execution
+        // environment is available") and never asked for a native approval.
+        let mut params = value!({"cwd":profile.cwd,"model":profile.model,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write","config":{"sandbox_workspace_write.network_access":false,"web_search":"live"},"runtimeWorkspaceRoots":[profile.cwd]});
         params["config"]["features.default_mode_request_user_input"] = true.into();
         if let Some(bridge) = &self.room_mcp {
             params["config"][format!("mcp_servers.{}", room_mcp::SERVER)] = bridge.config();
@@ -1283,7 +1287,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         }
         self.items.clear();
         self.server_ids.clear();
-        let reply=self.rpc("turn/start",value!({"threadId":thread,"input":[{"type":"text","text":input,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true},"environments":[]})).await?;
+        let reply=self.rpc("turn/start",value!({"threadId":thread,"input":[{"type":"text","text":input,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true}})).await?;
         let turn = reply["turn"]["id"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 1024 && !id.chars().any(char::is_control))
@@ -2334,6 +2338,8 @@ mod tests {
                     Some("thread/start" | "thread/resume") => {
                         assert_eq!(frame["params"]["approvalPolicy"], "untrusted");
                         assert_eq!(frame["params"]["sandbox"], "workspace-write");
+                        // The thread keeps Codex's default environment.
+                        assert!(frame["params"].get("environments").is_none());
                         if kind == "historical_usage" {
                             emit(&mut w, value!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-a","turnId":"previous-turn","tokenUsage":{"total":{"inputTokens":9999,"outputTokens":0,"cachedInputTokens":0,"reasoningOutputTokens":0,"totalTokens":9999}}}})).await;
                         }
@@ -2342,6 +2348,9 @@ mod tests {
                     Some("turn/start") => {
                         assert_eq!(frame["params"]["approvalPolicy"], "untrusted");
                         assert_eq!(frame["params"]["sandboxPolicy"]["networkAccess"], false);
+                        // And so does every turn: an empty list here would
+                        // switch the environment off for the turn.
+                        assert!(frame["params"].get("environments").is_none());
                         emit(&mut w,value!({"id":frame["id"],"result":{"turn":{"id":if kind=="missing_turn" { "" } else { "turn-a" },"status":"inProgress"}}})).await;
                         if kind.starts_with("control_") {
                             controls::exchange(&mut r, &mut w, &cwd, kind, &tally).await;
