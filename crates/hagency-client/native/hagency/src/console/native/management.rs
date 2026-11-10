@@ -62,6 +62,8 @@ pub(super) struct Registry {
     drain: tokio::sync::Mutex<Drain>,
     sessions: Mutex<Vec<service::WeakManagementAuthority>>,
     pub(super) mutations: tokio::sync::Mutex<()>,
+    /// What this owner last told the server about its ledger database.
+    pub(super) ledger: tokio::sync::Mutex<super::allocation_transport::LedgerDeclaration>,
 }
 
 #[derive(Default)]
@@ -396,6 +398,15 @@ impl NativeManagement {
             return Err(failure(401, "management_scope_changed"));
         }
         Ok(())
+    }
+    /// The server-facing name of the owner database whose mutation numbers
+    /// this manager's receipts carry. Only a current profile has one.
+    pub(super) fn ledger_id(&self) -> Option<String> {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return Some(store.ledger_id());
+        }
+        None
     }
     pub(super) fn account_enrollment_ready(&self)->bool {
         #[cfg(feature="resource-adoption")]

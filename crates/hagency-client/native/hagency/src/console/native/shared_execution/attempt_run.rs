@@ -907,7 +907,7 @@ async fn work_loop(
         })
         .await
         {
-            Ok(status) => status,
+            Ok(status) => Some(status),
             // A lost acknowledgement is not a reason to fence a reply that the
             // central transaction may still deliver. Retry only saved evidence,
             // under this same live process; never repeat the model turn.
@@ -924,7 +924,7 @@ async fn work_loop(
             }
             Err(error) => return Err(error),
         };
-        if matches!(status.as_deref(), Some("sent" | "blocked")) {
+        if reply_settled(status.as_ref().map(|s| s.as_deref()), &terminal.state) {
             return Ok(());
         }
         guarded(cancel, a.until, || async {

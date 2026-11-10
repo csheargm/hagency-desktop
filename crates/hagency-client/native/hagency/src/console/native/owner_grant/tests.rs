@@ -203,6 +203,10 @@ async fn server() -> (
                     "/hagency/api/v1/sessions/current" => {
                         json!({})
                     }
+                    // A current server: the database a device names opens its number space.
+                    "/hagency/api/v1/management/executor-ledger/declare" => {
+                        json!({"ledgerId":body["ledgerId"],"epoch":1})
+                    }
                     _ => panic!("unexpected route in native grant-intent fixture: {path}"),
                 };
                 let body = value.to_string();

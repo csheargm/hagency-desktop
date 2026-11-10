@@ -176,6 +176,60 @@ async fn native_amendment_is_reviewed_published_and_flipped_on_acceptance() {
 }
 
 #[tokio::test]
+async fn native_successor_journal_follows_an_admission_whose_revisions_moved() {
+    let mut f = Fixture::new().await;
+    f.published_root().await;
+    // A reviewed amendment is a well-formed successor of the recorded root.
+    let successor = f.amend(500).await.unwrap().original.clone();
+    let moved = |request: Option<&str>| {
+        let mut round = serde_json::to_value(successor.admission.as_ref().unwrap()).unwrap();
+        round["requestRevision"] = json!(3);
+        round["contributionRevision"] = json!(3);
+        if let Some(request) = request {
+            round["requestId"] = json!(request);
+        }
+        let mut next = successor.clone();
+        next.admission = Some(serde_json::from_value(round).unwrap());
+        next
+    };
+    let mut h = f.history().await;
+    let at = h
+        .data
+        .records
+        .iter()
+        .position(|r| r.original.intent_id == successor.intent_id)
+        .unwrap();
+    h.data.records.remove(at);
+    // Another request is another admission: not this chain.
+    assert_eq!(
+        h.insert_successor(moved(Some("another_request"))).err().unwrap().code,
+        "owner_grant_history_unavailable"
+    );
+    // A pool published before the administrator's decision has its root
+    // journaled at the first revisions; the decision moves both. The request
+    // is the same, so the chain continues.
+    h.insert_successor(moved(None)).unwrap();
+    assert_eq!(h.data.records.len(), at + 1);
+    f.stop().await;
+}
+
+#[test]
+fn admission_identity_is_the_request_not_its_revisions() {
+    let round = |request: &str, revision: u64| {
+        serde_json::from_value::<admission::AdmissionRound>(json!({
+            "requestId": request, "requestRevision": revision, "contributionRevision": revision
+        }))
+        .ok()
+    };
+    use admission::AdmissionRound as Round;
+    assert!(Round::same_request(&round("r", 1), &round("r", 3)));
+    assert!(!Round::same_request(&round("r", 1), &round("other", 1)));
+    assert!(Round::same_request(&None, &None));
+    assert!(!Round::same_request(&round("r", 1), &None));
+    assert!(!Round::same_request(&None, &round("r", 1)));
+}
+
+#[tokio::test]
 async fn native_successor_rejection_and_lost_reply_settle_from_the_server() {
     let mut f = Fixture::new().await;
     f.published_root().await;

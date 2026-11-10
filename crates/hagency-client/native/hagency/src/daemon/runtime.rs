@@ -602,16 +602,15 @@ impl Inner {
             return Err(OpenError::Terminal("native_owner_drain_required".into()));
         }
         let adopted = selection.is_some();
-        if !adopted {
-            // Saved explicit consent is not authority: every restore re-enters
-            // the normal start controller with fresh gates.
-            match owner.restore_runtime_intents().await {
-                Ok(value) => {
-                    let total = value["recoveries"].as_array().map_or(0, Vec::len);
-                    tracing::info!(total, "Agent startup recovery evaluated");
-                }
-                Err(error) => tracing::warn!(code = %error.code, "Agent startup recovery unavailable"),
+        // The owner's local Agents run with or without pools on this device.
+        // Saved explicit consent is not authority: every restore re-enters
+        // the normal start controller with fresh gates.
+        match owner.restore_runtime_intents().await {
+            Ok(value) => {
+                let total = value["recoveries"].as_array().map_or(0, Vec::len);
+                tracing::info!(total, "Agent startup recovery evaluated");
             }
+            Err(error) => tracing::warn!(code = %error.code, "Agent startup recovery unavailable"),
         }
         let gate: Arc<dyn Fn() -> bool + Send + Sync> = {
             let custody = Arc::downgrade(&custody);
@@ -776,6 +775,12 @@ impl Inner {
             task.abort();
             let _ = task.await;
         }
+        // Desktop windows retain management, grant and review handles through
+        // the bridge, and each holds the open owner. The drain below fences
+        // them, but only dropping them releases the owner-root lock; with a
+        // window attached the next start could otherwise never reopen the
+        // root. The other stop-then-reopen paths revoke the bridge the same way.
+        self.bridge.revoke_all();
         let mut hosted_slot=self.hosted.lock().await;
         let result = match hosted_slot.as_ref() {
             Some(hosted) => {
@@ -1421,6 +1426,22 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(runtime.inner.settle_provider_refresh_within(Duration::from_secs(5)).await, Ok(()));
         assert!(runtime.inner.provider_refresh.lock().await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hosting_stop_releases_what_desktop_windows_hold_through_the_bridge() {
+        let temp = private_home();
+        let runtime = OwnerRuntime::new(temp.path().into()).unwrap();
+        let generation = runtime.inner.generation.load(Ordering::Acquire);
+        // An attached window: its managers, grants and reviews each hold the
+        // open owner, and with it the owner-root lock.
+        let live = runtime.inner.bridge.attach_for_tests("window", generation);
+        assert!(runtime.inner.bridge.validate("window", generation).is_ok());
+        assert_eq!(runtime.inner.stop().await, Ok(()));
+        // Stop let them go, so a later start can reopen the root. The window
+        // attaches again after that start.
+        assert!(!live.load(Ordering::Acquire));
+        assert!(runtime.inner.bridge.validate("window", generation).is_err());
     }
 
     #[test]

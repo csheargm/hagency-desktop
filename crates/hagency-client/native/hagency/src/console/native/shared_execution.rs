@@ -16,7 +16,7 @@ mod guarded;
 mod stop_capture;
 mod run_controls;
 mod cooperative;
-use guarded::guarded;
+use guarded::{guarded, reply_settled};
 pub use demands::{
     SharedDemandPoll, SharedDemandProgress, SharedDemandResume, SharedDemandStopReceipt,
     SharedDemandStopResume,

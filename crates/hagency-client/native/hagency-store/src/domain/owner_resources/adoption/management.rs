@@ -58,6 +58,10 @@ impl CurrentManagementStore {
         self.check(profile)?;
         Ok(self.registry.clone())
     }
+    /// See [`OwnerResourceRegistry::ledger_id`].
+    pub fn ledger_id(&self) -> String {
+        self.registry.ledger_id()
+    }
     pub fn matches_registry(&self, registry: &OwnerResourceRegistry) -> bool {
         Arc::ptr_eq(&self.registry.0, &registry.0)
     }

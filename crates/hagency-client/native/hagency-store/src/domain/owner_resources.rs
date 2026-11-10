@@ -374,6 +374,16 @@ impl OwnerResourceRegistry {
     pub fn id(&self) -> &str {
         &self.0.id
     }
+    /// Names this database's mutation numbers to the server. Every database
+    /// counts from 1, so a server tells two databases of one device apart by
+    /// this name. It is derived, so the database identity itself stays local.
+    pub fn ledger_id(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"hagency-owner-ledger-v1\0");
+        hash.update(self.0.id.as_bytes());
+        hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
     pub async fn shutdown(&self) -> Result<(), Error> {
         self.0.closed.store(true, Ordering::Release);
         self.0.store.shutdown().await

@@ -862,6 +862,8 @@ impl NativeOwner {
     pub(crate) fn set_hosting_admission(&self, admission: Arc<super::hosting::Admission>) {
         *self.0.host.console.0.hosting.lock().unwrap_or_else(|p| p.into_inner()) = admission;
     }
+    /// Only for state a current profile must never create: the regular
+    /// management journal. Local execution does not use this check.
     fn require_regular_mode(&self) -> Result<(), NativeError> {
         #[cfg(feature = "resource-adoption")]
         if self.0.current_profile.get().is_some() {
@@ -1103,6 +1105,9 @@ impl NativeOwner {
                             let _ = native.suspend().await;
                             return Err(error);
                         }
+                        // Local Agents of this owner are configured through
+                        // the same device worker as without pools.
+                        configuration::start(&native);
                     }
                 }
                 if native
@@ -1129,9 +1134,11 @@ impl NativeOwner {
             }
         }
     }
+    /// Local Agents run beside pools: a current profile syncs for its local
+    /// execution under the same rule as for its management, once that
+    /// management is installed.
     async fn sync_matrix(&self) -> Result<(), NativeError> {
-        self.require_regular_mode()?;
-        self.sync_matrix_source().await
+        self.sync_management_matrix().await
     }
     async fn sync_management_matrix(&self) -> Result<(), NativeError> {
         #[cfg(feature = "resource-adoption")]
@@ -1265,7 +1272,6 @@ impl NativeOwner {
     /// assigned device. Each request re-enters the normal start controller; no
     /// lease, tool permission or unknown model execution is replayed here.
     pub async fn restore_runtime_intents(&self) -> Result<Value, NativeError> {
-        self.require_regular_mode()?;
         let intents = {
             let _guard = self.0.calls.lock().await;
             self.sync_matrix().await?;
@@ -1334,7 +1340,10 @@ impl NativeOwner {
     async fn admit_owner_command(&self, command: &Command) -> Result<bool, NativeError> {
         #[cfg(feature = "resource-adoption")]
         if self.0.current_profile.get().is_some() {
-            if !server_administration::allows(command)
+            // An owner who hosts pools still owns local Agents: both command
+            // sets pass, under the current profile's stricter authorization.
+            if !(server_administration::allows(command)
+                || server_administration::allows_local(command))
                 || !self.0.management.current_ready().await
             {
                 return Err(failure(403, "source_current_profile_only"));
@@ -1342,7 +1351,6 @@ impl NativeOwner {
             return Ok(true);
         }
         let _ = command;
-        self.require_regular_mode()?;
         Ok(false)
     }
     async fn execute_locked(&self, command: Command) -> Result<Value, NativeError> {

@@ -35,11 +35,40 @@ where
     })
 }
 
+/// Whether a driver's wait for the central reply is over.
+///
+/// `reported` is `None` while the report itself is still being retried, and
+/// `Some(reply state)` once the server holds the terminal receipt. The server
+/// makes a reply only for completed work, so a recorded receipt of any other
+/// state (a stopped or failed turn) has nothing left to deliver: waiting on it
+/// would hold the process, and every later message, for ever.
+pub(super) fn reply_settled(reported: Option<Option<&str>>, terminal_state: &str) -> bool {
+    match reported {
+        Some(Some("sent" | "blocked")) => true,
+        Some(None) => terminal_state != "completed",
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     use std::time::Duration;
+
+    #[test]
+    fn reply_wait_ends_on_delivery_or_when_no_reply_can_exist() {
+        assert!(reply_settled(Some(Some("sent")), "completed"));
+        assert!(reply_settled(Some(Some("blocked")), "completed"));
+        // Still being delivered, or the report is still being retried.
+        assert!(!reply_settled(Some(Some("pending")), "completed"));
+        assert!(!reply_settled(Some(None), "completed"));
+        assert!(!reply_settled(None, "completed"));
+        assert!(!reply_settled(None, "failed"));
+        // A recorded stop or failure has no reply to wait for.
+        assert!(reply_settled(Some(None), "failed"));
+        assert!(reply_settled(Some(None), "unknown"));
+    }
 
     #[tokio::test]
     async fn shared_phase_does_not_construct_after_retirement_or_expiry() {

@@ -4,6 +4,8 @@ mod executor;
 mod publication;
 pub(super) use publication::PublicationObservation;
 mod succession;
+mod ledger;
+pub(super) use ledger::LedgerDeclaration;
 mod routes;
 mod wire;
 use super::{NativeError, NativeManagement, failure};
@@ -254,6 +256,19 @@ impl AllocationTransport {
         })
     }
     pub(super) async fn request<T: serde::de::DeserializeOwned>(
+        &self,
+        scope: &Scope,
+        operation: Operation,
+        uncertain: bool,
+    ) -> Result<T, NativeError> {
+        // Nothing of this request has been sent yet, so a failed declaration
+        // is reported as itself, never as an unknown outcome.
+        if !matches!(&operation, Operation::Session) {
+            self.declare_ledger(scope).await?;
+        }
+        self.send(scope, operation, uncertain).await
+    }
+    async fn send<T: serde::de::DeserializeOwned>(
         &self,
         scope: &Scope,
         operation: Operation,

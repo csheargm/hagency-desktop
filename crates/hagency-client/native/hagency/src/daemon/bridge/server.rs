@@ -85,6 +85,21 @@ impl Bridge {
             reviews.clear();
         }
     }
+    /// A Desktop window's controller, as an attach leaves it.
+    #[cfg(test)]
+    pub(crate) fn attach_for_tests(&self, id: &str, generation: u64) -> Arc<AtomicBool> {
+        let live = Arc::new(AtomicBool::new(true));
+        self.state.lock().unwrap().controllers.insert(
+            id.into(),
+            Controller {
+                epoch: 1,
+                generation,
+                expires: Arc::new(Mutex::new(Instant::now() + LEASE_TTL)),
+                live: live.clone(),
+            },
+        );
+        live
+    }
     fn expire(state: &mut State, generation: u64) {
         let now = Instant::now();
         state.controllers.retain(|_, c| {

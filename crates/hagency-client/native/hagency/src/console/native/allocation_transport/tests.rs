@@ -159,6 +159,10 @@ struct State {
     reject_publication: Option<&'static str>,
     changed_coordinator: bool,
     owner_coordinator: bool,
+    /// The ledger databases this device named, in order.
+    ledger_declarations: Vec<String>,
+    /// Some: the answer to a declaration, in place of a current server's.
+    ledger_reply: Option<Value>,
 }
 fn admission(g: &NativeGrantReceipt) -> Value {
     let at = now();
@@ -176,6 +180,12 @@ fn settlement_view(g: &NativeGrantReceipt, r: &NativeGrantSettlementReceipt) -> 
 // None deliberately closes the real HTTP connection after the simulated
 // central commit. Tests then recover through the production pinned adapter.
 fn management(path: &str, body: &Value, state: &mut State) -> Option<Value> {
+    if path.ends_with("/management/executor-ledger/declare") {
+        state.ledger_declarations.push(body["ledgerId"].as_str().unwrap().to_owned());
+        return Some(state.ledger_reply.clone().unwrap_or_else(
+            || json!({"ledgerId":body["ledgerId"],"epoch":1,"observedAtMs":now()}),
+        ));
+    }
     if path.ends_with("/agent-requests/human_request/settlement") {return human_settlement::management(body,state);}
     if path.contains("/agent-settlement-executor/") { return managed_agents::settlements::management(path,body,state); }
     #[cfg(all(feature="agent-budget", feature="shared-execution"))]
@@ -536,6 +546,64 @@ async fn native_allocation_transport_late_upload_keeps_receipt_and_permission_bl
     let denied = AllocationTransport::new(f.owner.management(denied).await.unwrap());
     assert!(denied.poll_allocation(&f.registry, None).await.is_err());
     assert_eq!(f.state.lock().unwrap().result_writes, 1);
+    f.stop().await;
+}
+/// The device names its ledger database to the server once, before the first
+/// request that can lease work or carry a receipt, and does what the answer
+/// says: a current server opens the number space, an older server is used as
+/// before and asked again later, a spent database uploads nothing.
+#[tokio::test]
+async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_answer() {
+    let f = Fixture::new().await;
+    let command = f.allocation();
+    f.state.lock().unwrap().allocation = Some(command.clone());
+    f.transport.poll_allocation(&f.registry, None).await.unwrap();
+    let recover = || async {
+        f.transport
+            .recover_allocation(
+                &f.registry,
+                command.command_id.clone(),
+                digest(&command).unwrap(),
+            )
+            .await
+    };
+    assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    let declared = |f: &Fixture| f.state.lock().unwrap().ledger_declarations.clone();
+    assert_eq!(declared(&f), vec![f.registry.ledger_id()]);
+    assert_ne!(f.registry.ledger_id(), f.registry.id());
+    assert_eq!(f.state.lock().unwrap().result_writes, 1);
+
+    // The server says this database's numbers are spent. Every request asks
+    // again and none goes further.
+    *f.owner.0.management.ledger.lock().await = LedgerDeclaration::Unknown;
+    f.state.lock().unwrap().ledger_reply =
+        Some(json!({"code":"agent_executor_ledger_retired"}));
+    for _ in 0..2 {
+        let error = recover().await.unwrap_err();
+        assert_eq!((error.status, error.code.as_str()), (409, "agent_executor_ledger_retired"));
+    }
+    assert_eq!(declared(&f).len(), 3);
+    let error = f.transport.poll_allocation(&f.registry, None).await.unwrap_err();
+    assert_eq!(error.code, "agent_executor_ledger_retired");
+    assert_eq!(declared(&f).len(), 4);
+    assert_eq!(f.state.lock().unwrap().result_writes, 1);
+
+    // A server from before declarations: asked once, then used as before.
+    f.state.lock().unwrap().ledger_reply =
+        Some(json!({"code":"not_found","fixtureStatus":404}));
+    for _ in 0..2 {
+        assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    }
+    assert_eq!(declared(&f).len(), 5);
+
+    // Once that server is upgraded the next question opens the space.
+    *f.owner.0.management.ledger.lock().await = LedgerDeclaration::Unknown;
+    f.state.lock().unwrap().ledger_reply = None;
+    for _ in 0..2 {
+        assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    }
+    assert_eq!(declared(&f).len(), 6);
+    assert!(declared(&f).iter().all(|id| *id == f.registry.ledger_id()));
     f.stop().await;
 }
 struct Fixture {

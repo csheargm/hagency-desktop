@@ -143,6 +143,11 @@ impl Fixture {
                         }
                         "/hagency/api/v1/sessions/current" => json!({}),
                         "/hagency/api/v1/agents" => json!({"agents":[]}),
+                        // A current server: the database a device names opens its number space.
+                        "/hagency/api/v1/management/executor-ledger/declare" => {
+                            let body: Value = serde_json::from_slice(&raw[end..end + length]).unwrap();
+                            json!({"ledgerId":body["ledgerId"],"epoch":1})
+                        }
                         _ => panic!("unexpected fixture route: {path}"),
                     }};
                     let body = value.to_string();
@@ -286,7 +291,9 @@ impl Fixture {
         let missing=NativeOwner::open_current_profile_with_matrix_guarded(&state,&origin,"@owner:test",source.clone(),registry.clone(),"missing-current".into(),|_|Ok(())).await;
         assert!(missing.is_err());drop(missing);
         let owner=NativeOwner::open_current_profile_with_matrix_guarded(&state,&origin,"@owner:test",source,registry,initialization_id,|_|Ok(())).await.unwrap();
-        assert_eq!(owner.0.configuration_tasks.lock().unwrap().len(),1);
+        // The alert observer, plus the device configuration worker and its
+        // heartbeat: a current profile configures its local Agents too.
+        assert_eq!(owner.0.configuration_tasks.lock().unwrap().len(),3);
         Self {_serial,temp,owner,origin,profile,live,calls,network,recipient_routes,recipient_requests,server}
     }
 }
