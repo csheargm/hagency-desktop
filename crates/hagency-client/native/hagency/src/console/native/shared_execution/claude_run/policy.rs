@@ -1,5 +1,7 @@
 //! Optional local owner policy, outside the shared child's writable namespace.
-//! Missing policy means no idle or total-turn limit. Neither is a quota cap.
+//! Without a policy file one shared turn may run for an hour in total and has
+//! no idle limit. A policy file is taken as written: a field that is absent or
+//! null removes that limit. Neither limit is a quota cap.
 use super::*;
 use serde::Deserialize;
 use std::{io::Read, path::Path};
@@ -17,7 +19,7 @@ pub(super) fn load(path: &Path) -> Result<TurnPolicy, NativeError> {
     let file = match hagency_store::private::open(path, false) {
         Ok(file) => file,
         Err(hagency_store::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(TurnPolicy::default());
+            return Ok(TurnPolicy::unwritten());
         }
         Err(_) => return Err(failure(409, "shared_claude_turn_policy_invalid")),
     };
@@ -44,7 +46,18 @@ pub(super) fn load(path: &Path) -> Result<TurnPolicy, NativeError> {
     }
     Ok(policy)
 }
+/// How long one shared turn may run when the owner wrote no policy. Without
+/// it a room member can hold a pooled Agent until the owner notices and stops
+/// the run.
+const UNWRITTEN_MAX_TURN_MS: u64 = 60 * 60 * 1000;
 impl TurnPolicy {
+    /// The policy in force when no policy file exists.
+    fn unwritten() -> Self {
+        Self {
+            no_progress_ms: None,
+            max_turn_ms: Some(UNWRITTEN_MAX_TURN_MS),
+        }
+    }
     pub async fn expired(&self, mut progress: watch::Receiver<Clock>) -> NativeError {
         let maximum = self
             .max_turn_ms
@@ -82,12 +95,17 @@ impl TurnPolicy {
 mod tests {
     use super::*;
     #[test]
-    fn absent_policy_has_no_limit_and_explicit_policy_is_strict() {
+    fn absent_policy_limits_a_turn_to_one_hour_and_explicit_policy_is_strict() {
         let directory =
             hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = directory.path().join("shared-claude-turn-policy.json");
         let absent = load(&path).unwrap();
-        assert!(absent.no_progress_ms.is_none() && absent.max_turn_ms.is_none());
+        assert!(absent.no_progress_ms.is_none());
+        assert_eq!(absent.max_turn_ms, Some(3_600_000));
+        // A written policy is taken as written, including "no limit at all".
+        hagency_store::private::replace(&path, b"{}").unwrap();
+        let unlimited = load(&path).unwrap();
+        assert!(unlimited.no_progress_ms.is_none() && unlimited.max_turn_ms.is_none());
         for value in [
             r#"{"noProgressMs":0}"#,
             r#"{"maxTurnMs":-1}"#,
@@ -143,6 +161,26 @@ mod tests {
             )
             .await
             .is_err()
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_without_a_written_policy_ends_after_one_hour_even_while_it_progresses() {
+        let (send, receive) = watch::channel(Clock::now());
+        let began = Clock::now();
+        let policy = TurnPolicy::unwritten();
+        let waiting = policy.expired(receive);
+        tokio::pin!(waiting);
+        let error = loop {
+            tokio::select! {
+                error = &mut waiting => break error,
+                _ = tokio::time::sleep(Duration::from_secs(60)) => { send.send_replace(Clock::now()); }
+            }
+        };
+        assert_eq!(error.code, "shared_claude_owner_duration_reached");
+        let ran = began.elapsed();
+        assert!(
+            ran >= Duration::from_secs(3600) && ran < Duration::from_secs(3661),
+            "{ran:?}"
         );
     }
 }

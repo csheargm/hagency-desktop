@@ -189,8 +189,21 @@ impl<R, W, E> SessionDriver<R, W, E> {
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
+    /// The startup failed, for whatever reason, before any prompt byte was
+    /// written. It is not evidence about the saved context.
     pub(crate) fn failed_before_prompt(&self) -> bool {
         self.phase == Phase::Closed && !self.prompt_started && self.wire.termination().is_some()
+    }
+    /// The native CLI itself reported, before any input, that the pinned
+    /// resume context does not exist. A timeout, refusal, exit or unexpected
+    /// frame during startup says nothing about the saved context.
+    pub(crate) fn resume_missing_before_prompt(&self) -> bool {
+        self.phase == Phase::Closed
+            && !self.prompt_started
+            && self
+                .wire
+                .termination()
+                .is_some_and(|t| t.cause == Error::MissingResume)
     }
     /// Pin the CLI's explicit resume argument before initialization or input.
     /// The original system/init must report this same native identity.
@@ -272,10 +285,13 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     return Err(Error::Identity);
                 }
                 self.completion.observe(*kind, payload)?;
-                if *kind == EventKind::Result && self.is_interrupting() {
-                    self.completion.observe_stop_result(
-                        self.interrupt.started_request_id().ok_or(Error::State)?,
-                    );
+                if *kind == EventKind::Result {
+                    let stop = if self.is_interrupting() {
+                        Some(self.interrupt.started_request_id().ok_or(Error::State)?)
+                    } else {
+                        None
+                    };
+                    self.completion.observe_result_stop(stop);
                 }
             }
             Message::Permission { request_id, .. } => {
@@ -323,6 +339,20 @@ impl<R, W, E> SessionDriver<R, W, E> {
             self.completion.snapshot_requested(),
         )?;
         Ok(())
+    }
+}
+/// Metadata that may precede the initialize response: the kinds a retained
+/// idle process may also emit before its next input. It reports no model,
+/// tool or command activity and binds no identity. Everything else there,
+/// including any other session state, still ends the session.
+fn startup_metadata(kind: EventKind, payload: &serde_json::Value) -> bool {
+    match kind {
+        EventKind::AuthStatus | EventKind::RateLimit => true,
+        EventKind::System => {
+            payload["subtype"] == "ui_invalidate"
+                || (payload["subtype"] == "session_state_changed" && payload["state"] == "idle")
+        }
+        _ => false,
     }
 }
 struct Operation<'a, R, W, E> {
@@ -374,13 +404,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         for _ in 0..64 {
             match self.wire.next(until).await?.message {
                 // Native2.1.321 can invalidate its UI before acknowledging
-                // initialization, even in stream-json mode. This frame binds
+                // initialization, even in stream-json mode. Such a frame binds
                 // no session, usage or authority and never extends the deadline.
-                Message::Event {
-                    kind: EventKind::System,
-                    payload,
-                    ..
-                } if payload["subtype"] == "ui_invalidate" => {
+                Message::Event { kind, payload, .. } if startup_metadata(kind, &payload) => {
                     self.wire.ignored_metadata();
                 }
                 Message::ControlResponse {

@@ -31,6 +31,21 @@ pub(super) fn defer(
     message: Message,
     observation: Option<Observation>,
 ) -> Result<()> {
+    // The CLI can withdraw a callback that still waits here behind another
+    // host decision. The driver has already retired that identity, so it can
+    // no longer be presented or answered: drop only that queued request and
+    // keep the turn. A withdrawal of the request being answered is seen by
+    // its own wait, and every other callback stays queued in order.
+    if let Message::ControlCancel { request_id } = &message {
+        buffered.retain(|(queued, _)| {
+            !matches!(
+                queued,
+                Message::Permission { request_id: id, .. } | Message::Mcp { request_id: id, .. }
+                    if id == request_id
+            )
+        });
+        return Ok(());
+    }
     let needed = match &message {
         Message::Permission { .. } | Message::Mcp { .. } => true,
         Message::Event { kind, payload, .. } => {
@@ -53,6 +68,13 @@ pub(super) fn defer(
     }
     Ok(())
 }
+/// The last original result of this turn exactly as it was read, so that a
+/// later failure of the native stream cannot discard a clean final answer.
+pub(super) struct Answer {
+    pub text: String,
+    /// A successful result that the native peer did not abort.
+    pub clean: bool,
+}
 // Keep native events inline on this hot read path. Boxing every text delta
 // would add an allocation solely to shrink the occasional empty control arm.
 #[allow(clippy::large_enum_variant)]
@@ -74,6 +96,7 @@ pub(super) struct Controls<'a, C: super::claude_turn::Capture> {
     accepted: bool,
     output: Option<hagency_runtime::live_text::LiveText>,
     message_id: String,
+    answer: Option<Answer>,
 }
 impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
     pub fn new(
@@ -92,9 +115,36 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             accepted: false,
             output,
             message_id: String::new(),
+            answer: None,
         }
     }
+    pub fn take_answer(&mut self) -> Option<Answer> {
+        self.answer.take()
+    }
+    fn observe_answer(&mut self, wire: &Claude, message: &Message) {
+        let Message::Event {
+            kind: hagency_runtime::claude::EventKind::Result,
+            payload,
+            ..
+        } = message
+        else {
+            return;
+        };
+        // The accounting query's own result is never the answer.
+        if wire
+            .last_observation()
+            .is_some_and(|observation| observation.is_usage_snapshot())
+        {
+            return;
+        }
+        self.answer = Some(Answer {
+            text: payload["result"].as_str().unwrap_or("").into(),
+            clean: payload["is_error"] == false
+                && payload["terminal_reason"] != "aborted_streaming",
+        });
+    }
     pub async fn observe_message(&mut self, wire: &Claude, message: &Message) -> Result<()> {
+        self.observe_answer(wire, message);
         if let Some(observation) = wire.last_observation() {
             self.capture.observe(observation).await?;
         }

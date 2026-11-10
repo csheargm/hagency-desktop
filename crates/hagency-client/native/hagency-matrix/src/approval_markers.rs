@@ -166,8 +166,16 @@ impl Inner {
                 serde_json::to_string(&content).map_err(|_| Error::Wire)?,
                 cancel,
             )
-            .await?
-            .success()?;
+            .await?;
+        if (300..500).contains(&response.status) {
+            // The homeserver answered and refused: it stored no event, so
+            // nothing is pending and a later attempt may write again. Left
+            // set, this flag fails every later approval until the process
+            // restarts. A 5xx or a lost reply can hide a stored event and
+            // stays fenced.
+            pending_write.store(false, Ordering::Release);
+        }
+        let response = response.success()?;
         let event_id = response
             .get("event_id")
             .and_then(Value::as_str)

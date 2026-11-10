@@ -92,6 +92,27 @@ async fn native_shared_claude_full_host_resumes_plaintext_v3_without_history_rei
 
 #[cfg(feature = "shared-successors")]
 async fn resumed_host(plaintext: bool, missing: bool) {
+    resumed_host_with(plaintext, missing, None).await
+}
+/// A failure of the resumed launch that happens while its saved native context
+/// is still present (see the probe's `<id>.startup`).
+#[cfg(feature = "shared-successors")]
+#[derive(Clone, Copy)]
+struct Startup {
+    failure: &'static str,
+    /// Consecutive failed starts of this same saved session by earlier
+    /// requests. This harness drives one request per saved session, so they
+    /// are entered in the host's count directly.
+    earlier: u32,
+    /// The fresh launch that replaces the saved session cannot start either.
+    fresh_fails: bool,
+}
+#[cfg(feature = "shared-successors")]
+fn resume_count(native: &str) -> String {
+    format!("shared\n{native}")
+}
+#[cfg(feature = "shared-successors")]
+async fn resumed_host_with(plaintext: bool, missing: bool, startup: Option<Startup>) {
     let binding = AccountBinding::from_authenticated_profile(
         "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
         "owner@example.test", Instant::now() + Duration::from_secs(45)).unwrap();
@@ -129,6 +150,16 @@ async fn resumed_host(plaintext: bool, missing: bool) {
     let native: String = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap()
         .query_row("SELECT native_id FROM owner_shared_native_checkpoints", [], |r| r.get(0)).unwrap();
     if missing { std::fs::remove_file(native_marker(&root, &format!("{native}.json"))).unwrap(); }
+    if let Some(startup) = startup {
+        let saved = native_marker(&root, &format!("{native}.json"));
+        std::fs::write(saved.with_extension("startup"), startup.failure).unwrap();
+        if startup.fresh_fails { std::fs::write(saved.with_file_name("fresh.startup"), "eof").unwrap(); }
+        for _ in 0..startup.earlier { hagency_runtime::claude::resume_failures::record(&resume_count(&native)); }
+    } else if !missing {
+        // Earlier failed starts are forgotten once the session resumes.
+        hagency_runtime::claude::resume_failures::record(&resume_count(&native));
+        hagency_runtime::claude::resume_failures::record(&resume_count(&native));
+    }
     attempts::prepare_lost_start(&f, &transport, &command).await;
     {
         let mut state = f.state.lock().unwrap();
@@ -143,8 +174,40 @@ async fn resumed_host(plaintext: bool, missing: bool) {
         let work = f.state.lock().unwrap().shared.work.clone().unwrap();
         second.with_history_fixture(work.room_id, work.event_id, vec![]).0
     } else { second };
-    second.poll_claude_successor_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
-        binding, "shared-session").await.unwrap();
+    let polled = second.poll_claude_successor_fixture(&f.registry, command.reserve_command.resource_id.clone(), root.clone(),
+        binding, "shared-session").await;
+    let mut replaced = missing;
+    if let Some(Startup { failure, earlier, fresh_fails }) = startup {
+        let limit = hagency_runtime::claude::resume_failures::LIMIT;
+        if earlier + 1 < limit || fresh_fails {
+            // F5: the failure is returned, no fresh process answers in place of
+            // the saved session, and the saved session is still the one on record.
+            assert_eq!(polled.as_ref().err().map(|e| e.code.as_str()), Some("shared_execution_initialize_failed"),
+                "a resumed launch that failed to start ({failure}, {earlier} earlier) was replaced by a fresh session");
+            attempts::wait_stopped(&f).await;
+            let saved: Vec<String> = {
+                let db = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+                let mut rows = db.prepare("SELECT native_id FROM owner_shared_native_checkpoints").unwrap();
+                rows.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+            };
+            assert_eq!(saved, [native.clone()], "{failure}");
+            let prompt: Value = serde_json::from_slice(&std::fs::read(native_marker(&root, "shared-claude.prompt")).unwrap()).unwrap();
+            assert_eq!(prompt["message"]["content"].as_str().is_some_and(|text| text.contains("What did I say?")), false,
+                "the new request reached no process: {failure}");
+            assert_eq!(f.state.lock().unwrap().shared.receipts.values().filter(|r| r.state == "completed").count(), 1, "{failure}");
+            // F5b: this failed start was counted once, and the count is kept.
+            assert_eq!(hagency_runtime::claude::resume_failures::record(&resume_count(&native)), earlier + 2, "{failure}");
+            hagency_runtime::claude::resume_failures::clear(&resume_count(&native));
+            f.stop().await;
+            return;
+        }
+        // F5b: the third consecutive failure continues in a fresh session.
+        assert!(polled.is_ok(), "the third consecutive failed resume ({failure}) still failed the request: {:?}",
+            polled.as_ref().err().map(|e| e.code.as_str()));
+        replaced = true;
+    }
+    let missing = replaced;
+    polled.unwrap();
     attempts::wait_stopped(&f).await;
     let prompt: Value = serde_json::from_slice(&std::fs::read(native_marker(&root, "shared-claude.prompt")).unwrap()).unwrap();
     assert_eq!(prompt["session_id"], if missing { "" } else { &native });
@@ -171,6 +234,9 @@ async fn resumed_host(plaintext: bool, missing: bool) {
         assert_ne!(completed[0].call_id, completed[1].call_id);
         assert_ne!(completed[0].process_digest, completed[1].process_digest);
     }
+    // A session that resumed, or was discarded, has no failed starts counted.
+    assert_eq!(hagency_runtime::claude::resume_failures::record(&resume_count(&native)), 1);
+    hagency_runtime::claude::resume_failures::clear(&resume_count(&native));
     f.stop().await;
 }
 
@@ -181,7 +247,20 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
         .with_test_writer()
         .with_env_filter("hagency=debug")
         .try_init();
-    for complete in [true, false] {
+    // After "shared-usage", every stream fails, or needs a second accounting
+    // query, only after the final answer was read: that answer is delivered and
+    // its usage stays incomplete. An error result is never an answer.
+    let mut dropped = Vec::new();
+    for (mode, answered) in [
+        ("shared-usage", true),
+        ("shared-result-exit", true),
+        ("shared-background-exit", true),
+        ("shared-result-oversized", true),
+        ("shared-result-garbled", true),
+        ("shared-snapshot-again", true),
+        ("shared-error-exit", false),
+    ] {
+        let complete = mode == "shared-usage";
         let binding = AccountBinding::from_authenticated_profile(
             "01234567-89ab-cdef-0123-456789abcdef",
             "89abcdef-0123-4567-89ab-cdef01234567",
@@ -212,11 +291,7 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
                     command.reserve_command.resource_id.clone(),
                     root.clone(),
                     binding,
-                    if complete {
-                        "shared-usage"
-                    } else {
-                        "shared-result-exit"
-                    }
+                    mode
                 )
                 .await
                 .unwrap(),
@@ -234,14 +309,18 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
                 .unwrap()
                 .clone()
         };
-        assert_eq!(saved.state, if complete { "completed" } else { "unknown" });
-        assert_eq!(saved.known_consumed_tokens, 16);
-        assert_eq!(saved.retained_tokens, Some(16));
-        assert_eq!(saved.usage_complete, complete);
-        assert_eq!(
-            saved.body.as_deref(),
-            complete.then_some("shared offline answer")
-        );
+        // Keeping an answer never changes how its usage is classified.
+        assert_eq!(saved.known_consumed_tokens, 16, "{mode}");
+        assert_eq!(saved.retained_tokens, Some(16), "{mode}");
+        assert_eq!(saved.usage_complete, complete, "{mode}");
+        let expected = if answered {
+            ("completed", Some("shared offline answer"))
+        } else {
+            ("unknown", None)
+        };
+        if (saved.state.as_str(), saved.body.as_deref()) != expected {
+            dropped.push(format!("{mode}: {} {:?}", saved.state, saved.body));
+        }
         assert_eq!(rows(&f, "owner_managed_calls"), 1);
         assert!(matches!(
             transport
@@ -278,6 +357,10 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
         assert_eq!(input["context"]["history"], json!([]));
         f.stop().await;
     }
+    assert!(
+        dropped.is_empty(),
+        "receipt state and body differ from the answer that was read: {dropped:?}"
+    );
 }
 
 #[tokio::test]
@@ -286,4 +369,39 @@ async fn native_shared_claude_full_host_preserves_usage_recovery_and_missing_idl
 async fn native_shared_claude_full_host_rebuilds_missing_rollout_before_input() {
     resumed_host(false, true).await;
     resumed_host(true, true).await;
+}
+
+/// F5: only the native missing-context diagnostic retires a saved shared
+/// session. Any other failed startup of the resumed launch returns the failure
+/// and keeps the saved session for the next request.
+#[tokio::test]
+#[cfg(feature = "shared-successors")]
+#[ignore = "requires explicit HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised process"]
+async fn native_shared_claude_full_host_keeps_the_saved_session_when_a_resumed_start_fails() {
+    for failure in ["refused", "eof", "unexpected", "reworded"] {
+        resumed_host_with(true, false, Some(Startup { failure, earlier: 0, fresh_fails: false })).await;
+    }
+    // The second consecutive failure keeps it too.
+    resumed_host_with(true, false, Some(Startup { failure: "eof", earlier: 1, fresh_fails: false })).await;
+}
+
+/// F5b: a saved shared session whose resumed start fails three times in a row
+/// before any input, without the missing-context diagnostic, is replaced by a
+/// fresh session that answers the same request.
+#[tokio::test]
+#[cfg(feature = "shared-successors")]
+#[ignore = "requires explicit HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised process"]
+async fn native_shared_claude_full_host_starts_fresh_on_the_third_consecutive_failed_resume() {
+    for failure in ["unexpected", "eof"] {
+        resumed_host_with(true, false, Some(Startup { failure, earlier: 2, fresh_fails: false })).await;
+    }
+}
+
+/// F5b: when the fresh launch cannot start either, nothing is retired and the
+/// count is kept, so the next request tries the fresh start again.
+#[tokio::test]
+#[cfg(feature = "shared-successors")]
+#[ignore = "requires explicit HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised process"]
+async fn native_shared_claude_full_host_keeps_the_saved_session_when_the_fresh_start_also_fails() {
+    resumed_host_with(true, false, Some(Startup { failure: "eof", earlier: 2, fresh_fails: true })).await;
 }

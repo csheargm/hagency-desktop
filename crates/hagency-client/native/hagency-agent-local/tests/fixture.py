@@ -57,10 +57,15 @@ with (root / 'argv').open('a') as out:
 if kind == 'claude':
     (root / 'launch-config').write_text(os.environ.get('CLAUDE_CONFIG_DIR', '<native-default>'))
     init = read()
+    if '--resume' not in sys.argv and (root / 'fresh-start-fails').exists():
+        sys.exit(1)
     if '--resume' in sys.argv and (root / 'missing-context').exists():
         saved = sys.argv[sys.argv.index('--resume') + 1]
         failure = (root / 'missing-context').read_text()
         if failure == 'eof': sys.exit(1)
+        if failure == 'unexpected':
+            send({'type':'system','subtype':'status','session_id':saved,'status':'compacting'})
+            sys.exit(1)
         if failure == 'refused':
             send({'type':'control_response','response':{'subtype':'error','request_id':init['request_id'],'error':'Resume failed'}})
             sys.exit(1)
@@ -69,7 +74,16 @@ if kind == 'claude':
             'modelUsage':{},'permission_denials':[],'errors':[('Native session file cannot be opened: ' if failure == 'reworded' else 'No conversation found with session ID: ') + saved],
             'usage':{'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}})
         sys.exit(1)
-    send({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {'claude_code_version':(root / 'cli-version').read_text() if (root / 'cli-version').exists() else '2.1.321'}}})
+    acknowledged = {'type': 'control_response', 'response': {'subtype': 'success', 'request_id': init['request_id'], 'response': {'claude_code_version':(root / 'cli-version').read_text() if (root / 'cli-version').exists() else '2.1.321'}}}
+    if mode == 'future_start':
+        # A newer CLI: inert metadata before the acknowledgement, and keys on
+        # the acknowledgement that this host does not read.
+        send({'type':'auth_status','session_id':'offline-session','isAuthenticating':False,'output':[]})
+        send({'type':'rate_limit_event','session_id':'offline-session','rate_limit_info':{}})
+        send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':'offline-session'})
+        acknowledged['uuid'] = 'future-envelope-key'
+        acknowledged['response'].update({'future_note':{'x':1},'pending_permission_requests':[],'pending_user_dialog_requests':[]})
+    send(acknowledged)
     room_bound = False
     room_tools = []
     def room_metadata(ident, message):
@@ -127,7 +141,7 @@ if kind == 'claude':
                 assert response['response']['request_id'] == 'waiting'
                 assert response['response']['response']['behavior'] == 'allow'
                 (root / 'effect').write_text('one')
-        if mode.startswith('room'):
+        if mode.startswith('room') and mode != 'room_queued_cancel':
             # An unrelated external MCP tool is never approved by Matrix IO.
             send({'type':'control_request','request_id':'external','request':{'subtype':'can_use_tool','tool_name':'mcp__external__send_file','input':{'path':'result.txt'}}})
             assert read()['response']['response']['behavior'] == 'deny'
@@ -166,6 +180,50 @@ if kind == 'claude':
                 if response['behavior'] == 'allow':
                     (root / 'effect').write_text('one')
             send({'type': 'user', 'session_id': session, 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1', 'content': 'done'}]}})
+        if mode == 'future_turn':
+            # A newer CLI mid-turn: a request this host can only refuse, its
+            # late withdrawal, a session state it does not know, and extra
+            # keys on the permission request it does answer.
+            send({'type':'control_request','request_id':'future-1','uuid':'future-envelope-key','request':{'subtype':'future_dialog','detail':{'private':'never shown'}}})
+            refusal = read()
+            (root / 'refusal').write_text(json.dumps(refusal))
+            assert refusal['type'] == 'control_response' and refusal['response']['subtype'] == 'error'
+            assert refusal['response']['request_id'] == 'future-1'
+            send({'type':'control_cancel_request','request_id':'future-1','reason':'answered'})
+            send({'type':'system','subtype':'session_state_changed','state':'future_state','session_id':session})
+            send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
+            send({'type': 'control_request', 'request_id': 'approval-1', 'uuid': 'future-envelope-key', 'session_id': session, 'request': {'subtype': 'can_use_tool', 'tool_name': 'Write', 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
+            response = read()['response']
+            assert response['request_id'] == 'approval-1'
+            (root / 'decision').write_text(json.dumps(response['response']))
+            if response['response']['behavior'] == 'allow':
+                (root / 'effect').write_text('one')
+            send({'type': 'user', 'session_id': session, 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1', 'content': 'done'}]}})
+        if mode in ('queued_cancel', 'queued_cancel_question', 'room_queued_cancel'):
+            # Two parallel native callbacks. The second waits behind the first
+            # owner decision and the CLI withdraws it before that decision.
+            send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [
+                {'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}},
+                {'type': 'tool_use', 'id': 'tool-2', 'name': 'Queued', 'input': {}}],
+                'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
+            send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': 'Write', 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
+            if mode == 'room_queued_cancel':
+                queued = {'subtype':'mcp_message','server_name':'hagency_matrix','message':{'jsonrpc':'2.0','id':7,'method':'tools/call','params':{'name':'read_room_history','arguments':{'cursor':None},'_meta':{'claudecode/toolUseId':'tool-2'}}}}
+            elif mode == 'queued_cancel_question':
+                queued = {'subtype':'can_use_tool','tool_name':'AskUserQuestion','tool_use_id':'tool-2','input':{'questions':[{'question':'Continue?','header':'Continue','multiSelect':False,'options':[{'label':'Yes','description':'Continue'},{'label':'No','description':'Stop'}]}]}}
+            else:
+                queued = {'subtype':'can_use_tool','tool_name':'Bash','tool_use_id':'tool-2','input':{'command':'never-presented'}}
+            send({'type':'control_request','request_id':'queued','request':queued})
+            send({'type':'control_cancel_request','request_id':'queued'})
+            # Ordered witness: once this text is live the host has read the cancel.
+            send({'type':'stream_event','session_id':session,'event':{'type':'message_start','message':{'id':'witness'}}})
+            send({'type':'stream_event','session_id':session,'event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'queued callback withdrawn'}}})
+            answered = read()['response']
+            assert answered['request_id'] == 'approval-1'
+            (root / 'decision').write_text(json.dumps(answered['response']))
+            if answered['response']['behavior'] == 'allow':
+                (root / 'effect').write_text('one')
+            send({'type': 'user', 'session_id': session, 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1', 'content': 'done'}]}})
         if mode in ('questions', 'question_cancel'):
             questions = [{'question':f'Question {i}?','header':f'Q{i}','multiSelect':i == 0,
                 'options':[{'label':'One','description':'First'},{'label':'Two','description':'Second'}]} for i in range(4)]
@@ -178,14 +236,15 @@ if kind == 'claude':
                 response = read()['response']['response']
                 (root / 'question-answer').write_text(json.dumps(response))
         usage = {} if mode in ('unknown', 'long_stream_unknown') else {'input_tokens': 10, 'output_tokens': 7, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
-        result = {'type': 'result', 'subtype': 'error' if mode == 'failed' else 'success', 'is_error': mode == 'failed', 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
-        if aborted:
+        failed = mode in ('failed', 'failed_exit')
+        result = {'type': 'result', 'subtype': 'error' if failed else 'success', 'is_error': failed, 'result': 'offline reply', 'session_id': session, 'usage': usage, 'user_message_uuid':prompt.get('uuid')}
+        if aborted and 'success' not in mode:
             result.update({'is_error':True,'terminal_reason':'error_during_execution' if 'generic' in mode else 'aborted_streaming'})
         if mode == 'overflow_usage':
             result['modelUsage'] = {'main': {'inputTokens':9007199254740991,'outputTokens':1,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
         if mode == 'long_usage':
             result['modelUsage'] = {'main':{'inputTokens':12000,'outputTokens':1200,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
-        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof', 'background_native_followup'):
+        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof', 'background_native_followup', 'background_stop_after_answer'):
             count_file = root / 'count'
             count = int(count_file.read_text()) + 1 if count_file.exists() else 1
             count_file.write_text(str(count))
@@ -201,12 +260,31 @@ if kind == 'claude':
             if mode == 'background_native_followup': child_task['run_id'] = 'native-child-run'
             send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[child_task]})
         send(result)
+        if mode.endswith('_exit') and not mode.startswith('background_'):
+            # The answer is written; the process ends before native idle.
+            sys.exit(0)
         if mode.startswith('background_'):
-            if mode == 'background_approval':
+            if mode == 'background_exit':
+                # The CLI dies while its background child is still running.
+                sys.exit(0)
+            if mode == 'background_fatal_frame':
+                print('{"type":"assistant","session_id":', flush=True)
+                sys.stdin.read()
+                sys.exit(0)
+            if mode == 'background_oversized':
+                # One child tool result over the host's 1 MiB frame bound.
+                send({'type':'user','session_id':session,'parent_tool_use_id':'child-tool','message':{'content':[{'type':'tool_result','tool_use_id':'child-tool','content':'x' * (1024 * 1024 + 1)}]}})
+                sys.stdin.read()
+                sys.exit(0)
+            if mode in ('background_approval', 'background_stop_after_answer'):
                 send({'type':'control_request','request_id':'child-approval','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'offline-child-command'}}})
-                response = read()['response']['response']
-                if response['behavior'] == 'allow':
-                    (root / 'child-effect').write_text('one')
+                if mode == 'background_stop_after_answer':
+                    # The owner stops the run instead of answering the child.
+                    stop_control(False)
+                else:
+                    response = read()['response']['response']
+                    if response['behavior'] == 'allow':
+                        (root / 'child-effect').write_text('one')
             if mode != 'background_native_followup':
                 send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
             import time

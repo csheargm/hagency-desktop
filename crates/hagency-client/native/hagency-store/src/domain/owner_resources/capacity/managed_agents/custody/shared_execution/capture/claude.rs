@@ -65,9 +65,11 @@ impl SharedCallCustody {
 }
 
 impl SharedCallSink {
-    /// Preserve a completed native answer when a later metadata query fails.
-    /// This receipt cannot be constructed from a result alone or transferred
-    /// to another process/turn. Unknown usage never establishes a checkpoint.
+    /// Preserve a native answer that was read when the later accounting query
+    /// fails, or when the stream itself fails or closes after that answer.
+    /// The receipt is minted only by this turn's original stream and cannot be
+    /// transferred to another process/turn. Usage stays incomplete, and
+    /// unknown usage never establishes a checkpoint.
     pub async fn finish_claude_unaccounted(
         &mut self,
         receipt: &native::CompletionReceipt,
@@ -150,18 +152,14 @@ impl SharedCallSink {
         {
             return Err(Error::LocalAuthority);
         }
-        self.terminal = Some(
-            if process
-                .interrupt_receipt()
-                .is_some_and(|receipt| receipt.accepted())
-            {
-                TurnResult::Interrupted
-            } else if self.claude_result == Some(true) {
-                TurnResult::Failed
-            } else {
-                TurnResult::Completed
-            },
-        );
+        // A stop accepted after the final answer was read does not undo it.
+        self.terminal = Some(if process.answer_interrupted() {
+            TurnResult::Interrupted
+        } else if self.claude_result == Some(true) {
+            TurnResult::Failed
+        } else {
+            TurnResult::Completed
+        });
         self.append_text(text);
         self.persist(false).await
     }

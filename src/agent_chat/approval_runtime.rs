@@ -248,6 +248,17 @@ fn decision_locked(
             .into(),
         );
     }
+    // "Expired" means the deadline passed before the user decided. A verdict
+    // that left this device, or may have, is not that: keep showing what was
+    // sent until the canonical state above replaces it.
+    if let Some(
+        delivery @ (ApprovalDecisionState::Sending(_)
+        | ApprovalDecisionState::Sent(_)
+        | ApprovalDecisionState::OutcomeUnknown(_)),
+    ) = &entry.delivery
+    {
+        return delivery.clone();
+    }
     if request.is_expired(now) {
         return ApprovalDecisionState::Expired;
     }
@@ -822,6 +833,48 @@ mod tests {
             decision_locked(&state, &key(room(), &request), source(), &request, 1000),
             ApprovalDecisionState::OutcomeUnknown(_)
         ));
+    }
+
+    #[test]
+    fn a_verdict_sent_in_time_is_not_shown_as_expired_after_the_deadline() {
+        let content = corpus().remove(0);
+        let request = super::super::approval::parse_approval_request(&content).unwrap();
+        let after = request.expires_at_millis + 1;
+        let read = |state: &Runtime| {
+            decision_locked(state, &key(room(), &request), source(), &request, after)
+        };
+
+        // Nobody decided before the deadline.
+        let mut state = blank(&request);
+        ingest(&mut state, source(), &content, 1000);
+        assert_eq!(read(&state), ApprovalDecisionState::Expired);
+
+        // The verdict left this device in time; the bridge has not confirmed it.
+        let mut state = blank(&request);
+        ingest(&mut state, source(), &content, 1000);
+        let claim = take_claim(&mut state, source(), &request, "approve_once", 1000).unwrap();
+        assert!(matches!(read(&state), ApprovalDecisionState::Sending(_)));
+        complete_locked(&mut state, &claim, model::SendResult::Sent, 1000);
+        assert!(matches!(read(&state), ApprovalDecisionState::Sent(_)));
+
+        // The send may have reached the bridge.
+        let mut state = blank(&request);
+        ingest(&mut state, source(), &content, 1000);
+        let claim = take_claim(&mut state, source(), &request, "approve_once", 1000).unwrap();
+        complete_locked(&mut state, &claim, model::SendResult::OutcomeUnknown, 1000);
+        assert!(matches!(read(&state), ApprovalDecisionState::OutcomeUnknown(_)));
+
+        // A send that definitely did not happen leaves only the deadline to show.
+        let mut state = blank(&request);
+        ingest(&mut state, source(), &content, 1000);
+        let claim = take_claim(&mut state, source(), &request, "approve_once", 1000).unwrap();
+        complete_locked(
+            &mut state,
+            &claim,
+            model::SendResult::ConfirmedPreSendFailure,
+            1000,
+        );
+        assert_eq!(read(&state), ApprovalDecisionState::Expired);
     }
 
     #[test]

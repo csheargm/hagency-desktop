@@ -414,9 +414,13 @@ impl ServerLogin {
         {
             return Err("matrix_account_mismatch");
         }
-        session.authorized_until = session
-            .authorized_until
-            .min(deadline(&json!({"validUntilMs":proof.valid_until_ms}))?);
+        // A proof outside the local clock window says the clocks disagree or
+        // the answer was slow, not that the owner signed out. Renewal treats
+        // the same miss as unavailable; so does this restore.
+        session.authorized_until = session.authorized_until.min(
+            deadline(&json!({"validUntilMs":proof.valid_until_ms}))
+                .map_err(|_| "native_resume_unavailable")?,
+        );
         let after = source
             .access_token()
             .await

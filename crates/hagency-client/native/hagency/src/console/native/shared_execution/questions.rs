@@ -323,7 +323,7 @@ fn outbox_key(source: &Source, records: Option<&Path>) -> String {
         (Some(path), _) => path.display().to_string(),
         (None, Source::Device(device)) => format!("device:{:p}", Arc::as_ptr(device)),
         #[cfg(test)]
-        (None, Source::Fixture(fixture)) => format!("fixture:{:p}", Arc::as_ptr(fixture)),
+        (None, Source::Fixture(fixture)) => format!("fixture:{}", fixture.id),
     }
 }
 fn enqueue(key: &str, closings: Vec<Closing>) {
@@ -672,6 +672,18 @@ pub(in crate::console) struct QuestionContext {
     pub thread_root: String,
     pub responders: Vec<String>,
 }
+impl QuestionContext {
+    /// The thread a card is posted in. A request outside any thread (an
+    /// owner's direct conversation) names its room as the root; its card goes
+    /// into the thread its own message starts, where its run card already is.
+    fn card_thread(&self) -> String {
+        if self.thread_root == self.room_id {
+            self.event_id.clone()
+        } else {
+            self.thread_root.clone()
+        }
+    }
+}
 
 pub(in crate::console) trait CardRequest: Sized {
     type Key: Clone + PartialEq + Serialize;
@@ -838,7 +850,7 @@ impl<R: CardRequest> Questions<R> {
                 Card::ask_questions(
                     id,
                     work.event_id.clone(),
-                    work.thread_root.clone(),
+                    work.card_thread(),
                     expires_at_ms,
                     &request.questions(),
                     work.responders.clone(),
@@ -1321,6 +1333,10 @@ fn now_ms() -> u64 {
 /// wait, the Codex response, the outbox and the lease handling stay real.
 #[cfg(test)]
 pub(in crate::console) struct Fixture {
+    /// Names this room's outbox. An address would be reused by the next
+    /// fixture, which then inherits this one's flush time and waits out
+    /// `FLUSH_INTERVAL` before its first outcome is shown.
+    id: u64,
     posts: std::sync::Mutex<Vec<(String, String, Value)>>,
     answers: std::sync::Mutex<Vec<(String, String, Value)>>,
     /// Every answer event, readable back like the room's own.
@@ -1346,7 +1362,9 @@ pub(in crate::console) struct Fixture {
 #[cfg(test)]
 impl Fixture {
     pub(super) fn new(members: &[&str], wait: Duration, records: Option<PathBuf>) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             posts: Default::default(),
             answers: Default::default(),
             answer_log: Default::default(),
@@ -1620,6 +1638,51 @@ mod outbox_tests {
         }
         assert_eq!(fixture.cards().len(),7);
         assert!(edited(&fixture).iter().all(|(_,card)|card.state==CardState::Answered));
+    }
+
+    #[tokio::test]
+    async fn a_question_outside_any_thread_is_shown_under_its_own_message() {
+        // An owner's direct conversation is not threaded: its requests name
+        // the room as their root.
+        let fixture = Arc::new(Fixture::new(&["@owner:test"], Duration::from_secs(60), None));
+        let mut questions: Questions = Questions::default();
+        questions.adopt((Arc::new(Source::Fixture(fixture.clone())), None));
+        let context = QuestionContext {
+            id: "dispatch".into(),
+            room_id: ROOM.into(),
+            event_id: "$trigger".into(),
+            thread_root: ROOM.into(),
+            responders: vec!["@owner:test".into()],
+        };
+        let request = UserInputRequest::parse(RequestId::Number(1), &json!({"threadId":"native-thread","turnId":"native-turn","itemId":"item","isBlocking":true,
+            "questions":[{"id":"q","header":"Pick","question":"Which one?","options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}]})).unwrap();
+        assert!(
+            questions.ask_on_device(&context, request).await.unwrap().is_none(),
+            "the question is asked, not answered with nothing"
+        );
+        let (event, content) = fixture.cards().last().unwrap().clone();
+        // Where the run card of the same request already is.
+        assert_eq!(content["m.relates_to"]["rel_type"], "m.thread");
+        assert_eq!(content["m.relates_to"]["event_id"], "$trigger");
+        let card = Card::from_content(&content).unwrap();
+        assert_eq!(card.trigger_event_id, "$trigger");
+        let answers = [("q".into(), protocol::AnswerValue::Option("Two".into()))].into();
+        fixture.answer("@owner:test", card.answer_content(&event, &answers).unwrap());
+        let ready = questions.collect_ready().await.unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].result(), &json!({"answers":{"q":{"answers":["Two"]}}}));
+        // Finish the card like a real run does, so that no outcome is left in
+        // the process-wide outbox when this test's runtime stops.
+        questions.delivered(ready[0].request_id(), true);
+        questions.publish().await.unwrap();
+        eventually("the answered card is shown", || fixture.edits().len() == 1).await;
+        assert_eq!(edited(&fixture)[0].1.state, CardState::Answered);
+        // Any other root that is not an event stays refused.
+        let request = UserInputRequest::parse(RequestId::Number(2), &json!({"threadId":"native-thread","turnId":"native-turn","itemId":"item-2","isBlocking":true,
+            "questions":[{"id":"q","header":"Pick","question":"Which one?","options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}]})).unwrap();
+        let elsewhere = QuestionContext { thread_root: "!other:test".into(), ..context };
+        assert!(questions.ask_on_device(&elsewhere, request).await.unwrap().is_some());
+        assert_eq!(fixture.cards().len(), 1);
     }
 
     #[tokio::test]

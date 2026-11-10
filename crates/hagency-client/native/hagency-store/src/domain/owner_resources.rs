@@ -11,6 +11,7 @@ mod edit_binding;
 pub use edit_binding::ResourceEditBinding;
 mod provider_binding;
 pub use provider_binding::VerifiedOwnerResourceBinding;
+mod previous_build;
 #[cfg(test)]
 mod tests;
 use super::*;

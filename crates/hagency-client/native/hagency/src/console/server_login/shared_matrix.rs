@@ -201,6 +201,16 @@ impl ServerLogin {
             Ok(None)
         }
     }
+    /// Test hook: the next renewal asks the server again instead of reusing a
+    /// proof it checked within the last five seconds.
+    #[cfg(test)]
+    pub(in crate::console) async fn forget_recent_check(&self) {
+        for session in self.sessions.lock().await.values_mut() {
+            session.checked = Instant::now()
+                .checked_sub(Duration::from_secs(6))
+                .expect("monotonic clock older than six seconds");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -408,7 +418,7 @@ mod tests {
                             json!({"deviceId":"device","token":"b".repeat(64),"generation":1,"validUntilMs":until})
                         }
                         "/hagency/api/v1/devices/current" => {
-                            json!({"userId":"uid","mxid":mxid,"issuer":issuer,"subject":"sub","clientId":"sdk-client","deviceId":"device","generation":if behavior.load(Ordering::Acquire)==5 {2}else{1},"validUntilMs":until})
+                            json!({"userId":"uid","mxid":mxid,"issuer":issuer,"subject":"sub","clientId":"sdk-client","deviceId":"device","generation":if behavior.load(Ordering::Acquire)==5 {2}else{1},"validUntilMs":if behavior.load(Ordering::Acquire)==12 {until+90_000}else{until}})
                         }
                         "/hagency/api/v1/sessions/current/renew" => {
                             json!({"validUntilMs":if short_proof{until-25_000}else{until}})

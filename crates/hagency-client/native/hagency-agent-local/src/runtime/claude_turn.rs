@@ -57,6 +57,10 @@ pub struct Outcome {
     pub requests: usize,
     pub returns: usize,
     pub cumulative: bool,
+    /// The failure that ended the native stream after this answer was read.
+    /// The answer is still delivered. The host leaves the call's usage as it
+    /// does for any failed stream and never reuses the process.
+    pub late_failure: Option<Error>,
 }
 type TurnResult = Outcome;
 
@@ -81,6 +85,54 @@ async fn unresolved<C: Capture>(
         requests,
         returns,
         cumulative: false,
+        late_failure: None,
+    })
+}
+
+/// A clean final answer that was already read stays deliverable when the
+/// native stream then fails or closes: a later frame over the size bound, a
+/// fatal frame, process exit or an expired read bound. That stream can report
+/// no further usage, so usage stays unreported. Everything else keeps the
+/// original failure: an error or aborted result, text that arrived under a
+/// stop, a refused capture, and any host-side failure while the stream is
+/// still open.
+async fn kept_answer<C: Capture>(
+    wire: &Claude,
+    controls: &mut claude_controls::Controls<'_, C>,
+    requests: usize,
+    returns: usize,
+    error: Error,
+) -> Result<TurnResult> {
+    if wire.phase() != claude::session::Phase::Closed {
+        return Err(error);
+    }
+    let Some(answer) = controls
+        .take_answer()
+        .filter(|answer| answer.clean && !answer.text.is_empty())
+    else {
+        return Err(error);
+    };
+    let Ok(receipt) = wire.closed_answer_receipt() else {
+        return Err(error);
+    };
+    if receipt.is_error()
+        || receipt.interrupted()
+        || !receipt.matches_text(&answer.text)
+        || controls
+            .complete_unaccounted(&receipt, &answer.text)
+            .await
+            .is_err()
+    {
+        return Err(error);
+    }
+    Ok(TurnResult {
+        text: answer.text,
+        usage: crate::unreported_usage(),
+        status: TurnStatus::Completed,
+        requests,
+        returns,
+        cumulative: false,
+        late_failure: Some(error),
     })
 }
 
@@ -140,6 +192,36 @@ pub async fn run<H: Host, C: Capture>(
     }
     let mut requests = std::collections::BTreeSet::new();
     let mut returns = std::collections::BTreeSet::new();
+    let driven = drive(
+        wire,
+        profile,
+        scope,
+        dispatch,
+        queue,
+        host,
+        &mut controls,
+        &mut requests,
+        &mut returns,
+    )
+    .await;
+    match driven {
+        Err(error) => kept_answer(wire, &mut controls, requests.len(), returns.len(), error).await,
+        done => done,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive<H: Host, C: Capture>(
+    wire: &mut Claude,
+    profile: &Profile,
+    scope: &Scope,
+    dispatch: &str,
+    queue: &ApprovalQueue,
+    host: &mut H,
+    controls: &mut claude_controls::Controls<'_, C>,
+    requests: &mut std::collections::BTreeSet<String>,
+    returns: &mut std::collections::BTreeSet<String>,
+) -> Result<TurnResult> {
     let mut buffered = std::collections::VecDeque::new();
     let mut completed: Option<(String, Usage, TurnStatus, bool)> = None;
     let mut completion_receipt = None;
@@ -152,7 +234,7 @@ pub async fn run<H: Host, C: Capture>(
                 completion_receipt = Some(wire.completion_receipt().map_err(|_| Error::Unknown)?);
                 if wire.request_usage_snapshot().await.is_err() {
                     return unresolved(
-                        &mut controls,
+                        controls,
                         completion_receipt.as_ref(),
                         completed.take(),
                         requests.len(),
@@ -162,15 +244,26 @@ pub async fn run<H: Host, C: Capture>(
                 }
                 continue;
             }
-            let (text, mut usage, status, cumulative) = completed.take().ok_or(Error::Unknown)?;
             if wire.needs_usage_snapshot() {
-                usage = crate::unreported_usage();
+                // The one accounting query is spent and background work has
+                // reported again. The answer and idle state remain proven:
+                // keep that answer and leave its usage unreported.
+                return unresolved(
+                    controls,
+                    completion_receipt.as_ref(),
+                    completed.take(),
+                    requests.len(),
+                    returns.len(),
+                )
+                .await;
             }
+            let (text, usage, status, cumulative) = completed.take().ok_or(Error::Unknown)?;
             controls.complete(wire, &text).await?;
             return Ok(TurnResult {
                 text,
                 usage,
-                status: if controls.accepted() {
+                // A stop accepted after the final answer does not undo it.
+                status: if wire.answer_interrupted() {
                     TurnStatus::Interrupted
                 } else {
                     status
@@ -178,6 +271,7 @@ pub async fn run<H: Host, C: Capture>(
                 requests: requests.len(),
                 returns: returns.len(),
                 cumulative,
+                late_failure: None,
             });
         }
         let (message, observation) = if let Some(item) = buffered.pop_front() {
@@ -191,7 +285,7 @@ pub async fn run<H: Host, C: Capture>(
                     // A failed accounting query must not discard that answer;
                     // its unknown usage remains recorded for reconciliation.
                     return unresolved(
-                        &mut controls,
+                        controls,
                         completion_receipt.as_ref(),
                         completed.take(),
                         requests.len(),
@@ -383,12 +477,12 @@ pub async fn run<H: Host, C: Capture>(
                         if block["type"] == "tool_use"
                             && let Some(id) = block["id"].as_str()
                         {
-                            claude_controls::remember_tool(&mut requests, id)?;
+                            claude_controls::remember_tool(requests, id)?;
                         }
                         if block["type"] == "tool_result"
                             && let Some(id) = block["tool_use_id"].as_str()
                         {
-                            claude_controls::remember_tool(&mut returns, id)?;
+                            claude_controls::remember_tool(returns, id)?;
                         }
                     }
                 }
@@ -444,7 +538,7 @@ pub async fn run<H: Host, C: Capture>(
                                 || matches!((usage.cache_write_input, original.1.cache_write_input), (Some(next), Some(prior)) if next < prior))
                         {
                             return unresolved(
-                                &mut controls,
+                                controls,
                                 completion_receipt.as_ref(),
                                 completed.take(),
                                 requests.len(),
@@ -462,7 +556,7 @@ pub async fn run<H: Host, C: Capture>(
                         completed = Some((
                             payload["result"].as_str().unwrap_or("").into(),
                             usage,
-                            if controls.accepted()
+                            if wire.answer_interrupted()
                                 || payload["terminal_reason"] == "aborted_streaming"
                             {
                                 TurnStatus::Interrupted

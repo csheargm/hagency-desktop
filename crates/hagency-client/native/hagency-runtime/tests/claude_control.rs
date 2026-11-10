@@ -783,3 +783,188 @@ async fn queued_permission_wait_starts_when_presented_without_extending_first() 
     event(&mut driver, &mut peer, result()).await.unwrap();
     assert_eq!(driver.phase(), Phase::ResultObserved);
 }
+
+fn unknown_request(id: &str) -> Vec<u8> {
+    frame(json!({"type":"control_request","request_id":id,
+        "request":{"subtype":"future_dialog","detail":{"private":"sentinel"}}}))
+}
+fn assert_refusal(reply: &Value, id: &str) {
+    assert_eq!(reply["type"], "control_response");
+    assert_eq!(reply["response"]["subtype"], "error");
+    assert_eq!(reply["response"]["request_id"], id);
+    assert!(reply["response"]["error"].is_string());
+    assert!(reply["response"].get("response").is_none());
+}
+/// A frame that was split or never finished shows up as a peer that waits
+/// forever for the rest of its line: fail instead of hanging.
+async fn whole_frames<T>(exchange: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), exchange)
+        .await
+        .expect("every host frame is written whole and in order")
+}
+async fn send_to_completion(
+    driver: &mut Driver,
+    prepared: &mut hagency_runtime::claude::session::PreparedApproval,
+) -> Result<usize, Error> {
+    let mut messages = 0;
+    loop {
+        match driver.send_prepared_approval(prepared).await? {
+            PreparedUpdate::WriteAccepted(_) => return Ok(messages),
+            PreparedUpdate::Message(_) => messages += 1,
+        }
+    }
+}
+
+/// F8: an unknown native request that arrives while an approval reply is
+/// partly written is refused only after that reply, as its own frame.
+#[tokio::test]
+async fn native_claude_unknown_request_during_a_partial_approval_reply_keeps_both_frames_whole() {
+    let (mut driver, mut peer) = running(128, true).await;
+    let input = json!({"command":"x".repeat(4000)});
+    callback(&mut driver, &mut peer, "partial", input.clone()).await;
+    let mut prepared = driver
+        .prepare_approval("partial", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, line) = whole_frames(async {
+        tokio::join!(send_to_completion(&mut driver, &mut prepared), async {
+            // Part of the approval reply has left before the unknown request arrives.
+            let mut line = vec![0; 8];
+            peer.input.read_exact(&mut line).await.unwrap();
+            // The request is followed by half of another frame: that fences
+            // the approval reply, and must not let the refusal in instead.
+            let mut bytes = unknown_request("future-1");
+            let notice = frame(notice());
+            bytes.extend(&notice[..notice.len() - 1]);
+            peer.output.write_all(&bytes).await.unwrap();
+            let mut chunk = [0; 256];
+            while let Ok(Ok(read)) = tokio::time::timeout(
+                Duration::from_millis(50),
+                peer.input.read(&mut chunk),
+            )
+            .await
+            {
+                line.extend(&chunk[..read]);
+            }
+            peer.output.write_all(b"\n").await.unwrap();
+            let mut rest = Vec::new();
+            peer.input.read_until(b'\n', &mut rest).await.unwrap();
+            line.extend(rest);
+            line
+        })
+    })
+    .await;
+    assert!(
+        sent.is_ok(),
+        "an unknown control request ended the session during an approval reply: {:?}",
+        sent.err()
+    );
+    // The unknown request was never a host message: only the notice was.
+    assert_eq!(sent.unwrap(), 1);
+    let approval: Value = serde_json::from_slice(&line).expect("one whole approval frame");
+    assert_eq!(approval["response"]["request_id"], "partial");
+    assert_eq!(
+        approval["response"]["response"],
+        json!({"behavior":"allow","updatedInput":input})
+    );
+    // A refusal is never reported as a host write.
+    assert!(driver.write_progress().is_none());
+    let (message, reply) = whole_frames(async {
+        tokio::join!(driver.next_message(), async {
+            let reply = read(&mut peer).await;
+            peer.output.write_all(&frame(notice())).await.unwrap();
+            reply
+        })
+    })
+    .await;
+    message.unwrap();
+    assert_refusal(&reply, "future-1");
+    assert!(driver.termination().is_none());
+}
+
+/// F8: a refusal that is partly written is finished before a later approval
+/// reply starts, and it neither blocks nor counts as that host write.
+#[tokio::test]
+async fn native_claude_partial_refusal_is_finished_before_a_later_approval_reply() {
+    let (mut driver, mut peer) = running(64, true).await;
+    let input = json!({"command":"exact"});
+    // With this identity the refusal is longer than everything the 64-byte
+    // pipe and the peer's one small read can take before the next request.
+    let id = format!("future-{}", "2".repeat(200));
+    let (message, prefix) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&unknown_request(&id)).await.unwrap();
+        // Only part of the refusal has left.
+        let mut prefix = vec![0; 8];
+        if peer.input.read_exact(&mut prefix).await.is_err() {
+            return None;
+        }
+        let _ = peer
+            .output
+            .write_all(&frame(request("after", input.clone())))
+            .await;
+        Some(prefix)
+    });
+    assert!(
+        matches!(message, Ok(Message::Permission { .. })),
+        "an unknown control request ended the turn: {:?}",
+        message.err()
+    );
+    let mut first = prefix.expect("the refusal was started");
+    assert!(driver.write_progress().is_none());
+    let mut prepared = driver
+        .prepare_approval("after", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, second) = whole_frames(async {
+        tokio::join!(send_to_completion(&mut driver, &mut prepared), async {
+            let mut rest = Vec::new();
+            peer.input.read_until(b'\n', &mut rest).await.unwrap();
+            first.extend(rest);
+            read(&mut peer).await
+        })
+    })
+    .await;
+    assert_eq!(sent.unwrap(), 0);
+    assert!(first.len() > 8 + 2 * 64, "the refusal was still being written");
+    let refusal: Value = serde_json::from_slice(&first).expect("one whole refusal frame");
+    assert_refusal(&refusal, &id);
+    assert_eq!(second["response"]["request_id"], "after");
+    assert_eq!(
+        second["response"]["response"],
+        json!({"behavior":"allow","updatedInput":input})
+    );
+    assert!(driver.termination().is_none());
+}
+
+/// F8: a permission request whose envelope carries keys this host does not
+/// read is presented and answered from exactly its original tool and input.
+#[tokio::test]
+async fn native_claude_permission_with_extra_envelope_keys_gets_its_exact_response() {
+    for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
+        let (mut driver, mut peer) = running(4096, true).await;
+        let input = json!({"command":"exact"});
+        let mut value = request("extra", input.clone());
+        value["uuid"] = json!("u-1");
+        value["session_id"] = json!("session-one");
+        let admitted = event(&mut driver, &mut peer, value).await;
+        assert!(
+            matches!(&admitted, Ok(Message::Permission { request_id, tool_name, .. })
+                if request_id == "extra" && tool_name == "Bash"),
+            "extra keys on a permission request ended the session: {:?}",
+            admitted.err()
+        );
+        let mut prepared = driver.prepare_approval("extra", decision).unwrap();
+        let (sent, reply) = tokio::join!(
+            driver.send_prepared_approval(&mut prepared),
+            read(&mut peer)
+        );
+        assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+        assert_eq!(reply["response"]["request_id"], "extra");
+        if decision == PermissionDecision::Allow {
+            assert_eq!(
+                reply["response"]["response"],
+                json!({"behavior":"allow","updatedInput":input})
+            );
+        } else {
+            assert_eq!(reply["response"]["response"]["behavior"], "deny");
+        }
+    }
+}

@@ -55,15 +55,36 @@ pub(super) async fn fixture_claude() -> (Fixture, AccountBinding) {
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
 async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missing_idle() {
-    for (complete, unaccounted, final_error) in [
-        (true, false, None),
-        (false, false, None),
-        (true, true, None),
-        (true, false, Some(false)),
-        (true, false, Some(true)),
-        (true, true, Some(false)),
-    ] {
+    captured_calls(&[
+        (true, false, None, false),
+        (false, false, None, false),
+        (true, true, None, false),
+        (true, false, Some(false), false),
+        (true, false, Some(true), false),
+        (true, true, Some(false), false),
+    ])
+    .await;
+}
+/// A stop that the native peer accepts only after the final answer was read
+/// ends nothing that answer depends on: the call completes with its body and
+/// its settled usage.
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
+async fn shared_claude_stop_accepted_after_the_answer_still_completes_the_call() {
+    captured_calls(&[(true, false, None, true)]).await;
+}
+/// The stream closes after the final answer was read and before native idle:
+/// the call keeps that answer, and its usage stays incomplete as before.
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
+async fn shared_claude_answer_read_before_the_stream_closed_keeps_incomplete_usage() {
+    captured_calls(&[(false, true, None, false)]).await;
+}
+/// Each case is `(complete, unaccounted, final_error, stop_after_answer)`.
+async fn captured_calls(cases: &[(bool, bool, Option<bool>, bool)]) {
+    for &(complete, unaccounted, final_error, stop_after_answer) in cases {
         let mode = match final_error {
+            None if stop_after_answer => "shared-stop-after-answer",
             None => "shared-usage",
             Some(false) => "shared-followup-success",
             Some(true) => "shared-followup-error",
@@ -224,6 +245,22 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
         // Existing billing units exclude cache reads: 10 input + 2 output + 4 cache writes.
         assert_eq!(pending.known_consumed_tokens, 16);
         if complete {
+            if stop_after_answer {
+                use hagency_runtime::claude::session::InterruptUpdate;
+                let mut stop = process.prepare_interrupt().unwrap();
+                loop {
+                    match process.send_prepared_interrupt(&mut stop).await.unwrap() {
+                        InterruptUpdate::WriteAccepted(_) => break,
+                        InterruptUpdate::Message(_) => {
+                            capture
+                                .observe_claude(process.last_observation().unwrap())
+                                .await
+                                .unwrap();
+                        }
+                        InterruptUpdate::Unavailable => panic!("the turn is still running"),
+                    }
+                }
+            }
             while process.phase() != hagency_runtime::claude::session::Phase::ResultObserved {
                 process.next_message().await.unwrap();
                 capture
@@ -252,6 +289,15 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
                 capture.finish_claude(&process, answer).await.unwrap()
             };
             assert_eq!(receipt.usage_complete, !unaccounted);
+            if stop_after_answer {
+                assert!(process.interrupt_receipt().unwrap().accepted());
+                assert_eq!(receipt.known_consumed_tokens, known);
+                assert_eq!(
+                    (receipt.state.as_str(), receipt.body.as_deref()),
+                    ("completed", Some(answer)),
+                    "a stop accepted after the final answer keeps the completed answer"
+                );
+            }
             assert_eq!(
                 receipt.body.as_deref(),
                 if final_error == Some(true) {
@@ -272,7 +318,32 @@ async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missi
         } else {
             assert!(process.completion_receipt().is_err());
             assert!(capture.finish_claude(&process, "premature").await.is_err());
-            capture.record_unknown().await.unwrap();
+            if unaccounted {
+                assert!(
+                    process.closed_answer_receipt().is_err(),
+                    "an open stream continues to native idle instead"
+                );
+                process.stop();
+                let proof = process.closed_answer_receipt().unwrap();
+                assert!(
+                    capture
+                        .finish_claude_unaccounted(&proof, "different answer")
+                        .await
+                        .is_err()
+                );
+                let receipt = capture
+                    .finish_claude_unaccounted(&proof, answer)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (receipt.state.as_str(), receipt.body.as_deref()),
+                    ("completed", Some(answer))
+                );
+                assert!(!receipt.usage_complete);
+                assert_eq!(receipt.known_consumed_tokens, known);
+            } else {
+                capture.record_unknown().await.unwrap();
+            }
         }
         sink.record(process.stop_shared_observation().unwrap())
             .await

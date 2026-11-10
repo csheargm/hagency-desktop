@@ -12,6 +12,9 @@ const MAX_QUEUED: usize = 16;
 const MAX_QUEUED_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DURATION_MS: u64 = 1_200_000;
 const STDERR_BYTES: usize = 16 * 1024;
+// Error replies owed to native requests this host does not implement. A peer
+// that asks faster than it reads its answers is closed, not served unbounded.
+const MAX_REFUSALS: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -110,6 +113,11 @@ pub(super) struct Wire<R, W, E> {
     queue: VecDeque<(Received, usize)>,
     queued_bytes: usize,
     writing: Option<Writing>,
+    // Each refusal is a whole frame of its own. It is written between host
+    // frames, never inside one, and is neither a host write nor an authority:
+    // `writing`, its progress and its barriers describe host frames only.
+    refusals: VecDeque<Vec<u8>>,
+    refusing: Option<(Vec<u8>, usize)>,
     termination: Option<Termination>,
 }
 impl<R, W, E> Wire<R, W, E> {
@@ -139,6 +147,8 @@ impl<R, W, E> Wire<R, W, E> {
             queue: VecDeque::new(),
             queued_bytes: 0,
             writing: None,
+            refusals: VecDeque::new(),
+            refusing: None,
             termination: None,
         })
     }
@@ -261,6 +271,8 @@ impl<R, W, E> Wire<R, W, E> {
         });
         self.streams = None;
         self.writing = None;
+        self.refusals.clear();
+        self.refusing = None;
         self.queue.clear();
         self.queued_bytes = 0;
         self.start = 0;
@@ -316,6 +328,20 @@ impl<R, W, E> Wire<R, W, E> {
             .decoder
             .feed(&self.input[self.start..self.end], self.now_ms())?;
         self.start += consumed;
+        while let Some((id, subtype)) = self.decoder.take_unsupported_request() {
+            if self.refusals.len() >= MAX_REFUSALS {
+                return Err(Error::Capacity);
+            }
+            // The subtype is a bounded protocol word without whitespace or
+            // control characters; the request's content is never logged.
+            tracing::warn!(
+                code = "claude_control_request_unsupported",
+                subtype = %subtype.chars().take(64).collect::<String>(),
+                "Claude sent a control request this host does not implement; it is refused and the session continues"
+            );
+            self.refusals
+                .push_back(crate::claude::unsupported_reply(&id)?);
+        }
         if let Some(message) = message {
             let charge = before.checked_add(consumed).ok_or(Error::Capacity)?;
             let total = self
@@ -427,13 +453,22 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
         enum Observed<T> {
             Write(std::io::Result<usize>),
             Flush(std::io::Result<()>),
+            // `Some(n)`: bytes of the refusal written; `None`: it was flushed.
+            Refusal(std::io::Result<Option<usize>>),
             Read(std::io::Result<usize>),
             Stderr(std::io::Result<usize>),
             Deadline,
             Control(T),
         }
+        // A refusal whose first byte has left is finished before a host frame
+        // may start; a host frame that has started is never interleaved.
+        let refusal_started = self
+            .refusing
+            .as_ref()
+            .is_some_and(|(bytes, offset)| *offset > 0 && *offset < bytes.len());
         let writing = write
             && !partial
+            && !refusal_started
             && self
                 .writing
                 .as_ref()
@@ -444,6 +479,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 .writing
                 .as_ref()
                 .is_some_and(|w| w.offset == w.bytes.len() && !w.flushed);
+        let host_started = self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.offset > 0 && w.offset < w.bytes.len());
+        if self.refusing.is_none() && !writing && !flushing && !host_started {
+            self.refusing = self.refusals.pop_front().map(|bytes| (bytes, 0));
+        }
+        let refusing = !writing && !flushing && !host_started && self.refusing.is_some();
         let observed = tokio::select! {
             biased;
             _=deadline.wait()=>Observed::Deadline,
@@ -453,8 +496,17 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 if writing {
                     let frame=self.writing.as_ref().ok_or(Error::Closed)?;
                     Ok::<_,Error>(Observed::Write(streams.stdin.write(&frame.bytes[frame.offset..]).await))
-                } else {Ok(Observed::Flush(streams.stdin.flush().await))}
-            }, if writing || flushing=>result?,
+                } else if flushing {
+                    Ok(Observed::Flush(streams.stdin.flush().await))
+                } else {
+                    let (bytes, offset) = self.refusing.as_ref().ok_or(Error::Closed)?;
+                    Ok(Observed::Refusal(if *offset < bytes.len() {
+                        streams.stdin.write(&bytes[*offset..]).await.map(Some)
+                    } else {
+                        streams.stdin.flush().await.map(|()| None)
+                    }))
+                }
+            }, if writing || flushing || refusing=>result?,
             result=streams.stderr.read(&mut self.stderr_buffer), if self.stderr_open=>Observed::Stderr(result),
         };
         match observed {
@@ -468,7 +520,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 self.check(until)?;
                 return Ok(None);
             }
-            Observed::Write(Ok(0)) => return Err(Error::Io("stdin write zero")),
+            Observed::Write(Ok(0)) | Observed::Refusal(Ok(Some(0))) => {
+                return Err(Error::Io("stdin write zero"));
+            }
+            Observed::Refusal(Ok(Some(n))) => {
+                let (bytes, offset) = self.refusing.as_mut().ok_or(Error::Closed)?;
+                *offset = offset
+                    .checked_add(n)
+                    .filter(|&n| n <= bytes.len())
+                    .ok_or(Error::Io("stdin write"))?;
+            }
+            Observed::Refusal(Ok(None)) => self.refusing = None,
+            Observed::Refusal(Err(_)) => return Err(Error::Io("stdin write")),
             Observed::Read(Ok(0)) => {
                 self.decoder.eof()?;
                 return Err(Error::PeerEof);

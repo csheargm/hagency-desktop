@@ -84,6 +84,22 @@ pub(super) fn activation_registry(
         OwnerResourceRegistry::open()
     }
 }
+/// Deletes the canonical resource database an earlier build left, unless it
+/// is open or a profile of this build uses it. A test build never reaches the
+/// OS owner's own database: without a fixture root it refuses.
+pub(super) fn discard_previous_registry() -> Result<bool, hagency_store::Error> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let root = FIXTURE_INSTALLATION
+            .lock()
+            .map_err(|_| hagency_store::Error::Unavailable)?
+            .clone()
+            .ok_or(hagency_store::Error::Unavailable)?;
+        OwnerResourceRegistry::discard_previous_build_for_tests(&root.join("canonical"))
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    OwnerResourceRegistry::discard_previous_build()
+}
 fn error(code: &str) -> NativeError {
     failure(409, code)
 }

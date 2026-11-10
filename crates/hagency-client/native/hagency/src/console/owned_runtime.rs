@@ -2448,7 +2448,21 @@ async fn run_turn<T: Transport>(
     let mut provider = match cached {
         Some(provider) => provider,
         None => {
-            tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?}
+            let provider = tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?};
+            // The only discards of a saved session: the native CLI reported
+            // its context missing before any input, or the same saved session
+            // failed to start three times in a row and a fresh one started. A
+            // notice to the room that the earlier conversation is gone would
+            // be sent from here.
+            if let Some(reason) = provider.discarded_session {
+                tracing::warn!(
+                    code = "claude_saved_session_discarded",
+                    scope = "personal",
+                    reason,
+                    "A saved Claude session was discarded; this conversation continues in a fresh one"
+                );
+            }
+            provider
         }
     };
     if config.host_files {
@@ -2541,6 +2555,8 @@ async fn run_turn<T: Transport>(
         }
         if !fresh_running(transport,lease,&prepared.dispatch,&prepared.execution_id,&mut pre_model_cancel).await {return Err(codex::Error::Protocol("running dispatch authorization lost"));}
         provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,BudgetMode::Postpaid,&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
+            // The answer was read before the provider stream failed: it is still delivered, with unknown usage.
+            .inspect(|completed|{if let Some(error) = &completed.late_failure {provider_failure("provider_turn_after_answer", error);}})
         };
         let model = async {
             tokio::select! {

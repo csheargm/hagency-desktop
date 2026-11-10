@@ -11,6 +11,8 @@ mod continuous;
 mod room_mcp;
 #[path = "claude_session/interrupt.rs"]
 mod interrupt;
+#[path = "claude_session/frames.rs"]
+mod frames;
 
 struct FlushProbe {
     fail: bool,

@@ -12,13 +12,15 @@ mod archive;
 fn unavailable() -> NativeError {
     failure(409, "shared_claude_workspace_unavailable")
 }
+/// The server also answers `shared_assignment_authority_changed` for a paused
+/// Agent and for a lapsed reservation. Both can be resumed, so that code does
+/// not remove a conversation's saved session or work folder.
 pub(super) fn scope_revoked(error: &NativeError) -> bool {
     matches!(
         error.code.as_str(),
         "provider_account_changed"
             | "shared_room_authority_changed"
             | "shared_room_binding_changed"
-            | "shared_assignment_authority_changed"
             | "shared_execution_enrollment_changed"
     )
 }
@@ -110,10 +112,11 @@ impl Root {
             _lock: lock,
         })
     }
-    fn retired(
+    /// Removes what an earlier generation of this assignment left behind.
+    fn superseded(
         &self,
         assignment: &str,
-        generation: Option<u64>,
+        generation: u64,
         active: &[PathBuf],
     ) -> Result<(), NativeError> {
         for entry in std::fs::read_dir(self.path.join("sealed")).map_err(|_| unavailable())? {
@@ -132,7 +135,7 @@ impl Root {
             if active.contains(&path) {
                 continue;
             }
-            if m.assignment == assignment && generation.is_none_or(|g| g != m.generation) {
+            if m.assignment == assignment && m.generation != generation {
                 remove(&entry.path())?;
                 remove(&path)?;
             }
@@ -246,7 +249,7 @@ impl Workspaces {
                     .map(|_| s.path.clone())
             })
             .collect::<Vec<_>>();
-        root.retired(assignment, Some(generation), &active)?;
+        root.superseded(assignment, generation, &active)?;
         let directory = match archive::manifest(&root.cipher, &root.path.join("sealed").join(key))?
         {
             Some(m)
@@ -303,27 +306,6 @@ impl Workspaces {
         scope.prepare(key)?;
         state.scopes.insert(path, scope.clone());
         Ok(Lease { scope })
-    }
-    pub(super) fn retire_assignment(&self, assignment: &str) -> Result<(), NativeError> {
-        let state = self.0.lock().map_err(|_| unavailable())?;
-        for scope in state.scopes.values().filter(|s| s.assignment == assignment) {
-            scope.retire()?;
-        }
-        let active = state
-            .scopes
-            .values()
-            .filter_map(|s| {
-                s.state
-                    .lock()
-                    .ok()
-                    .filter(|s| s.active)
-                    .map(|_| s.path.clone())
-            })
-            .collect::<Vec<_>>();
-        for root in state.roots.values() {
-            root.retired(assignment, None, &active)?;
-        }
-        Ok(())
     }
     pub(super) fn close(&self) {
         if let Ok(mut state) = self.0.lock() {
@@ -416,7 +398,7 @@ mod tests {
             .unwrap();
         let path = a.path().to_path_buf();
         std::fs::write(path.join("config/session"), "encrypted-room-plaintext").unwrap();
-        workspaces.retire_assignment("assignment").unwrap();
+        a.retire();
         assert!(path.exists()); // The running scope retains custody until stop.
         drop(a);
         assert!(!path.exists());
@@ -489,7 +471,7 @@ mod tests {
             std::fs::read_to_string(path.join("work/project")).unwrap(),
             "normal workspace"
         );
-        reopened.retire_assignment("assignment").unwrap();
+        restored.retire();
         drop(restored);
         assert!(!path.exists());
         assert!(!base.join("sealed").join(key).exists());
@@ -549,12 +531,17 @@ mod tests {
         for code in [
             "shared_room_authority_changed",
             "shared_room_binding_changed",
-            "shared_assignment_authority_changed",
             "provider_account_changed",
+            "shared_execution_enrollment_changed",
         ] {
             assert!(scope_revoked(&failure(409, code)));
         }
         for code in [
+            // What the server answers for a paused Agent or a lapsed reservation.
+            "shared_assignment_authority_changed",
+            "shared_assignment_not_running",
+            "shared_budget_exhausted",
+            "shared_capacity_exhausted",
             "shared_execution_closed",
             "management_scope_changed",
             "shared_activity_expired_or_changed",

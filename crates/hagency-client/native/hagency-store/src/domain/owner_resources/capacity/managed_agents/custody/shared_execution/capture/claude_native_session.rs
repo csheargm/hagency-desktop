@@ -238,12 +238,26 @@ impl SharedClaudeSession {
     pub fn is_resuming(&self) -> bool {
         self.previous.is_some()
     }
-    /// Rebuild only before binding a call, from this exact stopped native
-    /// process's failed startup before prompt bytes. No usage is rewritten.
+    /// Rebuild only before binding a call, and only when this exact stopped
+    /// native process reported the saved context missing before prompt bytes.
+    /// No other failed startup retires it. No usage is rewritten.
     pub fn rebuild_missing(&mut self, process: &OwnedClaudeSession) -> Result<(), Error> {
+        self.rebuild(process, process.pre_prompt_resume_id())
+    }
+    /// Rebuild only before binding a call, from this exact stopped native
+    /// process's failed startup before prompt bytes, without a report that the
+    /// context is missing. One such failure is no evidence about the saved
+    /// context: the host calls this only after
+    /// `hagency_runtime::claude::resume_failures::LIMIT` consecutive failed
+    /// starts of this saved session, and only once a fresh process has
+    /// initialized. No usage is rewritten.
+    pub fn rebuild_unresumable(&mut self, failed: &OwnedClaudeSession) -> Result<(), Error> {
+        self.rebuild(failed, failed.failed_before_prompt_resume_id())
+    }
+    fn rebuild(&mut self, process: &OwnedClaudeSession, stopped: Option<&str>) -> Result<(), Error> {
         if self.bound.is_some()
             || self.previous.is_none()
-            || process.pre_prompt_resume_id() != self.resume_id()
+            || stopped != self.resume_id()
             || process
                 .shared_resume_id()
                 .map_err(|_| Error::LocalAuthority)?

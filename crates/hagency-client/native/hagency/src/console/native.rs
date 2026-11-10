@@ -188,6 +188,21 @@ pub(in crate::console) fn sdk_source_failure(error: NativeError) -> &'static str
         _ => "matrix_authorization_required",
     }
 }
+/// Codes by which the SDK token source, or this owner's own closed
+/// authorization service, reports that the enrolled Matrix account is no
+/// longer the one in use. Only these retire the owner. A server refusal, an
+/// unreadable answer, an unfinished registration or a command this profile
+/// does not allow fails that one command and leaves local work running.
+pub(in crate::console) fn matrix_source_lost(code: &str) -> bool {
+    matches!(
+        code,
+        "matrix_account_changed"
+            | "matrix_account_mismatch"
+            | "matrix_oauth_sign_in_required"
+            | "matrix_authorization_required"
+            | "unsupported_hagency_issuer"
+    )
+}
 pub trait MatrixTokenSource: Send + Sync {
     /// Trusted host provenance from a new explicit SDK sign-in. Restored SDK
     /// sessions return false; this cannot resurrect issued runtime custody.
@@ -1220,6 +1235,14 @@ impl NativeOwner {
         super::server_login::ServerLogin::resume_client_id(state, origin, owner)
             .map_err(|code| failure(409, code))
     }
+    /// True once this owner has retired its local capabilities, by its host or
+    /// by itself after a Matrix source loss. It never becomes false again; a
+    /// host that sees it without having closed the owner must release it.
+    pub fn is_retired(&self) -> bool {
+        self.0
+            .configuration_stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
     pub fn retire(&self) {
         self.0.account_logins.close();
         self.0.shared_execution.close();
@@ -1340,16 +1363,25 @@ impl NativeOwner {
             .map_err(|code| failure(if code.ends_with("unavailable") { 503 } else { 401 }, code))
     }
     async fn command_matrix_error(&self, error: NativeError, stage: &'static str) -> NativeError {
-        if error.status == 503 {
+        if matrix_source_lost(&error.code) {
+            // A source/account transition retires local execution before the
+            // next await. Only explicit logout withdraws the saved session.
             tracing::warn!(
                 stage,
                 code = %error.code,
-                "Matrix authorization temporarily unavailable; preserving recovery state"
+                "Matrix account is no longer current; retiring local execution"
             );
-        } else {
-            // A source/account transition retires local execution before the
-            // next await. Only explicit logout withdraws the saved session.
             let _ = self.suspend().await;
+        } else {
+            // Everything else says nothing about the account: the server was
+            // unreachable or refused, its answer was unreadable, a device
+            // registration is unfinished. Retiring here would stop every Agent
+            // until the host restarts. The command fails; the next one retries.
+            tracing::warn!(
+                stage,
+                code = %error.code,
+                "Matrix authorization failed for this command; preserving recovery state"
+            );
         }
         error
     }

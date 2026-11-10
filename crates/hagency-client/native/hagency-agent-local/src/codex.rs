@@ -635,6 +635,9 @@ pub struct Completed {
     /// A response may report denial/failure; it does not imply a successful effect.
     pub tool_requests: usize,
     pub tool_returns: usize,
+    /// The failure that ended the provider stream after this answer was read.
+    /// The answer is delivered; the call's usage stays unknown.
+    pub late_failure: Option<Error>,
 }
 #[derive(Default)]
 struct TurnTools {
@@ -1383,6 +1386,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         elapsed_seconds: started.elapsed().as_secs(),
                         tool_requests: tools.requested.len(),
                         tool_returns: tools.returned.len(),
+                        late_failure: None,
                     },
                     counters,
                 ));
@@ -1420,11 +1424,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         } else if let Some(answer) = answer.take()
                             && tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
                     let response = match &answer.submitted {
-                        Some(submitted) => answer
+                        // An empty reply is the host saying it has no answer:
+                        // the question could not be shown, or its card closed
+                        // first. The model then decides on its own.
+                        Some(submitted) if !submitted.answers.is_empty() => answer
                             .request
                             .answer_host(&submitted.answers)
                             .map_err(|_| Error::Protocol("invalid question answer"))?,
-                        None => answer.request.unanswered(),
+                        _ => answer.request.unanswered(),
                     };
                     self.write(value!({"id":response.request_id(),"result":response.result()}))
                         .await?;
@@ -1461,6 +1468,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                                     elapsed_seconds: started.elapsed().as_secs(),
                                     tool_requests: tools.requested.len(),
                                     tool_returns: tools.returned.len(),
+                                    late_failure: None,
                                 },
                                 None,
                             ));
@@ -2381,7 +2389,7 @@ mod tests {
                                 assert_eq!(answer["id"], id);
                                 assert_eq!(
                                     answer["result"],
-                                    if kind == "question_approval" {
+                                    if matches!(kind, "question_approval" | "question_unanswered") {
                                         value!({"answers":{}})
                                     } else {
                                         value!({"answers":{"database":{"answers":["SQLite"]}}})
@@ -3482,6 +3490,7 @@ mod tests {
             "question_cancel",
             "question_partial_cancel",
             "question_approval",
+            "question_unanswered",
         ] {
             let (_temp, mut ledger, profile) = setup(true);
             let (mut session, responses, peer) =
@@ -3518,6 +3527,11 @@ mod tests {
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                         assert!(!pending.reply(Default::default()).accepted().await);
+                    } else if kind == "question_unanswered" {
+                        // The host could not show the question while Codex
+                        // still waits. The turn goes on with no answers.
+                        assert!(!pending.is_closed());
+                        assert!(pending.reply(Default::default()).accepted().await);
                     } else {
                         if kind == "question_partial_cancel" {
                             tokio::time::sleep(Duration::from_millis(40)).await;
@@ -3537,7 +3551,7 @@ mod tests {
                 responses.load(Ordering::SeqCst),
                 match kind {
                     "questions" => 7,
-                    "question_approval" => 1,
+                    "question_approval" | "question_unanswered" => 1,
                     _ => 0,
                 }
             );

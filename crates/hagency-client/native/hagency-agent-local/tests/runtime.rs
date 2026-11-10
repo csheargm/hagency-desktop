@@ -21,6 +21,14 @@ mod room;
 mod controls;
 #[path = "runtime/long_stream.rs"]
 mod long_stream;
+#[path = "runtime/queued_cancel.rs"]
+mod queued_cancel;
+#[path = "runtime/answer_kept.rs"]
+mod answer_kept;
+#[path = "runtime/future_frames.rs"]
+mod future_frames;
+#[path = "runtime/resume_kept.rs"]
+mod resume_kept;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -785,7 +793,9 @@ fn now() -> i64 {
 
 #[tokio::test]
 async fn claude_missing_native_context_rebuilds_once_without_replaying_or_rewriting_usage() {
-    for failure in ["deleted", "reworded", "eof", "refused"] {
+    // Only the native missing-context diagnostic rebuilds. Every other failed
+    // startup keeps the saved session: see `resume_kept`.
+    for failure in ["deleted"] {
         let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
         for call in ["before_missing", "after_missing"] {
             if call == "after_missing" {

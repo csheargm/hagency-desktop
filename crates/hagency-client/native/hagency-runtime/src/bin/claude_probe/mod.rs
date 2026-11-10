@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 mod shared_session;
 mod shared_history;
 mod shared_interrupt;
+mod shared_answer;
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -53,6 +54,12 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "shared-interrupt"
             | "shared-followup-success"
             | "shared-followup-error"
+            | "shared-background-exit"
+            | "shared-result-oversized"
+            | "shared-result-garbled"
+            | "shared-error-exit"
+            | "shared-snapshot-again"
+            | "shared-stop-after-answer"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -76,6 +83,38 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
     }
     if mode == "shared-session" {
         let args: Vec<_> = std::env::args().collect();
+        // A resumed launch can fail to start while its saved context is still
+        // on disk. `<id>.startup` names that failure; none of these outputs
+        // says the context is missing.
+        if let Some(id) = args.windows(2).find(|p| p[0] == "--resume").map(|p| &p[1])
+            && let Ok(failure) = fs::read_to_string(marker.with_file_name(format!("{id}.startup")))
+        {
+            match failure.as_str() {
+                "refused" => emit(
+                    json!({"type":"control_response","response":{"subtype":"error","request_id":request["request_id"],"error":"Resume failed"}}),
+                )?,
+                "unexpected" => emit(
+                    json!({"type":"system","subtype":"status","session_id":id,"status":"compacting"}),
+                )?,
+                "reworded" => emit(
+                    json!({"type":"result","session_id":id,"subtype":"error_during_execution",
+                        "is_error":true,"num_turns":0,"duration_api_ms":0,"total_cost_usd":0,
+                        "modelUsage":{},"permission_denials":[],"errors":[format!("Native session file cannot be opened: {id}")],
+                        "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}),
+                )?,
+                "stall" => {
+                    drop(stdin);
+                    return super::pulse(marker);
+                }
+                // "eof": the process ends without a word.
+                _ => {}
+            }
+            return Ok(());
+        }
+        // A fresh launch can be made to end before it answers, too.
+        if !args.iter().any(|a| a == "--resume") && marker.with_file_name("fresh.startup").exists() {
+            return Ok(());
+        }
         if let Some(id) = args.windows(2).find(|p| p[0] == "--resume").map(|p| &p[1])
             && !marker.with_file_name(format!("{id}.json")).exists()
         {
@@ -129,6 +168,10 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         json!({"type":"system","subtype":"init","session_id":"owned-claude","user_message_uuid":prompt["uuid"]}),
     )?;
     if mode.starts_with("shared-") {
+        if let Some(hold) = shared_answer::run(mode, &mut stdin, &prompt)? {
+            drop(stdin);
+            return if hold { super::pulse(marker) } else { Ok(()) };
+        }
         if matches!(mode, "shared-followup-success" | "shared-followup-error") {
             let final_error = mode == "shared-followup-error";
             let delta = json!({"offline-model":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4}});

@@ -89,9 +89,27 @@ impl OwnedClaudeSession {
     pub fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
         self.session.expect_resume(id)
     }
-    /// Any failed startup before model input plus observed physical cleanup.
-    /// Native wording is diagnostic; no failure after input permits replay.
+    /// The pinned resume identity, only once the native CLI reported before
+    /// any model input that this context does not exist (`MissingResume`) and
+    /// the physical cleanup of that process was observed. This is the sole
+    /// permission to retire a saved session and start fresh. Every other
+    /// startup failure returns `None`: the saved session is kept for a retry.
+    /// No failure after input permits replay.
     pub fn pre_prompt_resume_id(&self) -> Option<&str> {
+        if self.session.resume_missing_before_prompt()
+            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped)
+        {
+            self.session_id()
+        } else {
+            None
+        }
+    }
+    /// The pinned resume identity of a launch that failed before any model
+    /// input, for whatever reason, once the physical cleanup of that process
+    /// was observed. This is not evidence that the saved context is missing
+    /// and permits nothing alone: a host may replace the saved session on it
+    /// only after `claude::resume_failures::LIMIT` consecutive such failures.
+    pub fn failed_before_prompt_resume_id(&self) -> Option<&str> {
         if self.session.failed_before_prompt()
             && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped)
         {
@@ -185,6 +203,14 @@ impl OwnedClaudeSession {
     }
     pub fn completion_receipt(&self) -> Result<crate::claude::session::CompletionReceipt, Error> {
         self.session.completion_receipt()
+    }
+    pub fn answer_interrupted(&self) -> bool {
+        self.session.answer_interrupted()
+    }
+    pub fn closed_answer_receipt(
+        &self,
+    ) -> Result<crate::claude::session::CompletionReceipt, Error> {
+        self.session.closed_answer_receipt()
     }
     pub async fn request_usage_snapshot(&mut self) -> Result<(), Error> {
         let operation = Operation::new(self)?;

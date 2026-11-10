@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod persistence;
+mod previous_build;
 mod allocation_executor;
 pub use allocation_executor::CurrentAllocationExecutor;
 mod shared_executor;
@@ -140,8 +141,23 @@ impl CurrentProfileSelection {
         let origin = origin.to_owned();
         let owner = owner.to_owned();
         tokio::task::spawn_blocking(move || {
-            let Some(descriptor) = read_descriptor(&state)? else {
-                return Ok(None);
+            let descriptor = match read_descriptor(&state) {
+                Ok(Some(descriptor)) => descriptor,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    // Only what an earlier build wrote is discarded. A damaged
+                    // or unreadable record stays the error it was.
+                    let Some(earlier) = previous_build::record(&state) else {
+                        return Err(error);
+                    };
+                    previous_build::discard(
+                        &state,
+                        earlier,
+                        super::device_setup::discard_previous_registry,
+                        || Ok(super::device_setup::activation_registry(true)?.id().to_owned()),
+                    )?;
+                    return Ok(None);
+                }
             };
             let registry =
                 super::device_setup::activation_registry(true).map_err(|_| descriptor_error())?;

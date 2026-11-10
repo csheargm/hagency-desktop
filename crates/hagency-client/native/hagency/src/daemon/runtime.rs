@@ -845,6 +845,15 @@ fn drain_detail(code: &str) -> &'static str {
     }
 }
 
+/// The engine retires itself when a command finds the Matrix account, or its
+/// server session, gone. SDK custody can still read as authorized then, and
+/// nothing else would release an owner that can no longer do any work: the
+/// daemon would keep reporting Running. Retired custody means the host itself
+/// is already closing this owner.
+fn owner_retired_itself(custody: AuthState, owner_retired: bool) -> bool {
+    owner_retired && custody != AuthState::Retired
+}
+
 async fn monitor(
     inner: std::sync::Weak<Inner>,
     custody: Arc<SdkCustody>,
@@ -861,29 +870,34 @@ async fn monitor(
         if retired.load(Ordering::Acquire) || inner.generation.load(Ordering::Acquire) != epoch {
             return;
         }
-        match custody.state() {
-            AuthState::SignInRequired => {
-                // Fence execution; keep native enrollment for an explicit
-                // re-enrollment or sign-out decision by the owner.
-                inner.event(ActivityState::Warning, "Owner authorization expired", "matrix_authorization_required");
-                retired.store(true, Ordering::Release);
-                // close() aborts this monitor: run it in its own task.
-                tokio::spawn(async move {
-                    let mut hosted_slot=inner.hosted.lock().await;
-                    if inner.generation.load(Ordering::Acquire)!=epoch {return;}
-                    if let Some(hosted) = hosted_slot.as_ref() {
-                        let result = inner.close(hosted, false).await;
-                        if result.is_ok() {hosted_slot.take();}
-                        if inner.generation.load(Ordering::Acquire)==epoch {
-                            inner.set_phase(
-                                Phase::Failed,
-                                Some(result.err().unwrap_or("matrix_authorization_required").into()),
-                            );
-                        }
+        let state = custody.state();
+        if state == AuthState::SignInRequired || owner_retired_itself(state, owner.is_retired()) {
+            // Fence execution; keep native enrollment for an explicit
+            // re-enrollment or sign-out decision by the owner.
+            inner.event(
+                ActivityState::Warning,
+                if state == AuthState::SignInRequired { "Owner authorization expired" } else { "Owner authorization ended" },
+                "matrix_authorization_required",
+            );
+            retired.store(true, Ordering::Release);
+            // close() aborts this monitor: run it in its own task.
+            tokio::spawn(async move {
+                let mut hosted_slot=inner.hosted.lock().await;
+                if inner.generation.load(Ordering::Acquire)!=epoch {return;}
+                if let Some(hosted) = hosted_slot.as_ref() {
+                    let result = inner.close(hosted, false).await;
+                    if result.is_ok() {hosted_slot.take();}
+                    if inner.generation.load(Ordering::Acquire)==epoch {
+                        inner.set_phase(
+                            Phase::Failed,
+                            Some(result.err().unwrap_or("matrix_authorization_required").into()),
+                        );
                     }
-                });
-                return;
-            }
+                }
+            });
+            return;
+        }
+        match state {
             AuthState::Unavailable => {
                 inner.set_phase(Phase::Offline, Some("matrix_authorization_unavailable".into()))
             }
@@ -896,7 +910,7 @@ async fn monitor(
                     );
                 }
             }
-            AuthState::Retired => return,
+            AuthState::SignInRequired | AuthState::Retired => return,
         }
         if last_provider.is_none_or(|t|t.elapsed()>=PROVIDER_PERIOD) {
             last_provider=Some(tokio::time::Instant::now());
@@ -1416,6 +1430,15 @@ mod tests {
         assert_eq!(drain_detail("management_drain_unavailable"), "management_drain_unavailable");
         assert_eq!(drain_detail("/Users/x/.codex/auth.json secret"), "native_owner_drain_required");
         assert_eq!(static_code("native_provider_drain_unknown"), "native_owner_drain_required", "returned codes stay coarse");
+    }
+
+    #[test]
+    fn a_self_retired_owner_is_released_unless_the_host_is_already_closing_it() {
+        for custody in [AuthState::Authorized, AuthState::Unavailable, AuthState::SignInRequired] {
+            assert!(owner_retired_itself(custody, true), "{custody:?}");
+            assert!(!owner_retired_itself(custody, false), "{custody:?}");
+        }
+        assert!(!owner_retired_itself(AuthState::Retired, true));
     }
 
     #[test]

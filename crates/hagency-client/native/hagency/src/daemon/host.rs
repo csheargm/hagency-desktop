@@ -55,6 +55,14 @@ pub async fn run(
     shutdown: hagency_matrix::CancellationToken,
 ) -> Result<(), HostError> {
     let home = DaemonHome::open(home)?;
+    // Under the home lock and before either file is read: what an earlier
+    // Hagency version left here is discarded, not migrated.
+    if ControlStore::discard_imported_json(&home.control()) {
+        tracing::warn!("Removed the control file an earlier Hagency version left behind");
+    }
+    if Enrollment::discard_earlier_format(home.path()) {
+        tracing::warn!("Removed the enrollment an earlier Hagency version wrote; hosting must be set up again");
+    }
     let store = ControlStore::open(&home.control()).map_err(|e| HostError::Code(e.code))?;
     let runtime = Arc::new(OwnerRuntime::new(home.path().into()).map_err(HostError::Code)?);
     let controller = Controller::new(store, runtime);

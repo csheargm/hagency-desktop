@@ -13,7 +13,11 @@ pub(crate) const MARKER_FRESHNESS_MS: u64 = 300_000;
 const MAX_ACCOUNTS: usize = 16;
 const MAX_APPROVALS: usize = 1024;
 const MAX_MARKERS: usize = 256;
-const MAX_ASSOCIATIONS: usize = 64;
+/// The publisher writes up to 256 associations into one marker
+/// (`hagency-store` `approvals/card.rs`, `hagency-matrix` `approval_markers.rs`).
+/// A lower limit here refuses a marker the publisher considers valid, and the
+/// approval room then reads as unavailable.
+const MAX_ASSOCIATIONS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1370,6 +1374,24 @@ mod tests {
                 1000
             ),
             MarkerResolution::Missing,
+        );
+
+        // The publisher's own maximum is accepted.
+        let mut largest = marker_v2();
+        largest["project_room_associations"] = Value::Array(
+            (0..256)
+                .map(|item| {
+                    json!({
+                        "agent": format!("agent{item}"),
+                        "project_room_id": format!("!project{item}:test"),
+                        "active": true
+                    })
+                })
+                .collect(),
+        );
+        assert_eq!(
+            ApprovalMarkerIndex::default().ingest_marker(A, R, "$largest", MARKER_TYPE, P, "", &largest, 2000),
+            Ok(()),
         );
 
         let mut overflow = marker_v2();

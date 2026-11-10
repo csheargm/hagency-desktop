@@ -52,19 +52,82 @@ pub(super) async fn run(
     let initialized = guarded(&mut cancel, until, || async {
         io.check_running(claimed.root()).await?;
         launch.check()?;
+        // Failed resumed starts are counted per saved session, for this host
+        // process only.
+        let counted = session.resume_id().map(|saved| format!("shared\n{saved}"));
         if let Err(error) = process.initialize().await {
-            if matches!(&error, hagency_runtime::claude::session::Error::UnsupportedVersion) {
-                // This is a host installation problem, not a missing rollout.
-                // Do not retire a valid session or spawn the same binary again.
-                return Err(initialize_error(error));
+            use hagency_runtime::claude::{resume_failures, session::Error as Native};
+            if !matches!(&error, Native::MissingResume) {
+                // A timeout, a refusal, an exit or an unexpected frame says
+                // nothing about the saved session: do not retire it, return
+                // the failure, so that the next request resumes it. An
+                // unsupported installation is never counted: a fresh start
+                // meets the same thing.
+                let Some(counted) = counted.filter(|_| !matches!(&error, Native::UnsupportedVersion)) else {
+                    return Err(initialize_error(error));
+                };
+                let failures = resume_failures::record(&counted);
+                tracing::warn!(
+                    code = "claude_resume_start_failed",
+                    scope = "shared",
+                    cause = %error,
+                    failures,
+                    "A resumed Claude session failed to start before input"
+                );
+                // Only a saved session that keeps failing this way, and whose
+                // failed process is proven stopped before any prompt byte, is
+                // replaced, and only once a fresh process has initialized.
+                if failures < resume_failures::LIMIT
+                    || process.failed_before_prompt_resume_id() != session.resume_id()
+                {
+                    return Err(initialize_error(error));
+                }
+                io.check_running(claimed.root()).await?;
+                launch.check()?;
+                let mut fresh = launch.spawn(until, None)?;
+                if let Err(error) = fresh.initialize().await {
+                    // Nothing is retired and the count is kept. The fresh
+                    // process is the one whose cleanup is bound below.
+                    fresh.stop();
+                    process = fresh;
+                    return Err(initialize_error(error));
+                }
+                if session.rebuild_unresumable(&process).is_err() {
+                    fresh.stop();
+                    process = fresh;
+                    return Err(failure(409, "shared_execution_initialize_failed"));
+                }
+                resume_failures::clear(&counted);
+                process = fresh;
+                tracing::warn!(
+                    code = "claude_saved_session_discarded",
+                    scope = "shared",
+                    reason = "native_resume_failed_repeatedly",
+                    "A saved Claude session was discarded; this conversation continues in a fresh one"
+                );
+                return Ok(());
             }
             session.rebuild_missing(&process)
                 .map_err(|_| failure(409, "shared_execution_initialize_failed"))?;
+            if let Some(counted) = &counted {
+                resume_failures::clear(counted);
+            }
+            // The only discard of a saved shared session on a single failure.
+            // A notice to the room that the earlier conversation is gone
+            // would be raised from here, and from the discard above.
+            tracing::warn!(
+                code = "claude_saved_session_discarded",
+                scope = "shared",
+                reason = "native_context_missing",
+                "A saved Claude session was discarded; this conversation continues in a fresh one"
+            );
             io.check_running(claimed.root()).await?;
             launch.check()?;
             process = launch.spawn(until, None)?;
             process.initialize().await
                 .map_err(initialize_error)?;
+        } else if let Some(counted) = &counted {
+            hagency_runtime::claude::resume_failures::clear(counted);
         }
         Ok(())
     }).await;
@@ -499,6 +562,17 @@ async fn work(
     // Always retain original failure/unknown accounting before physical stop.
     let receipt = capture.finish(&mut host).await;
     matrix.finish(&result);
+    if let Ok(outcome) = &result
+        && let Some(error) = &outcome.late_failure
+    {
+        let (kind, detail) = error.diagnostic();
+        tracing::warn!(
+            code = "shared_claude_answer_kept_after_stream_failure",
+            kind,
+            detail,
+            "Shared Claude stream failed after its final answer; the answer is kept and its usage stays incomplete"
+        );
+    }
     match receipt {
         Ok(Some(receipt)) => {
             if let Err(error) = live

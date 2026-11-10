@@ -650,10 +650,57 @@ async fn pre_prompt_resume_failure_requires_whole_process_stop() {
     process.enable_continuous_session().unwrap();
     process.expect_resume("missing-native").unwrap();
     assert_eq!(process.pre_prompt_resume_id(), None);
+    assert_eq!(process.failed_before_prompt_resume_id(), None);
     assert_eq!(process.initialize().await, Err(Error::MissingResume));
     cleanup(process.cleanup());
     assert_eq!(process.pre_prompt_resume_id(), Some("missing-native"));
     assert!(!marker.with_extension("prompt").exists());
     process.stop();
     assert_eq!(process.pre_prompt_resume_id(), Some("missing-native"));
+}
+
+/// F5: only the native missing-context diagnostic permits retiring a saved
+/// session. Every other failed startup of a resumed launch leaves the saved
+/// session to be tried again, even after the whole process is stopped.
+#[tokio::test]
+async fn pre_prompt_startup_failure_without_the_missing_diagnostic_never_permits_a_rebuild() {
+    let mut permitted = Vec::new();
+    for (failure, expected) in [
+        ("stall", Error::Timeout),
+        ("eof", Error::PeerEof),
+        ("refused", Error::Refused),
+        ("unexpected", Error::Identity),
+        ("reworded", Error::Identity),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("saved");
+        // The saved native context is present and readable.
+        fs::write(root.path().join("saved-native.json"), b"{}").unwrap();
+        fs::write(root.path().join("saved-native.startup"), failure).unwrap();
+        let mut l = launch(root.path(), "shared-session", &marker);
+        l.arguments
+            .extend(["--resume".into(), "saved-native".into()]);
+        let mut process = OwnedClaudeSession::spawn(&binary(), &l, limits()).unwrap();
+        process.enable_native_completion().unwrap();
+        process.enable_continuous_session().unwrap();
+        process.expect_resume("saved-native").unwrap();
+        assert_eq!(process.initialize().await, Err(expected), "{failure}");
+        cleanup(process.cleanup());
+        assert!(!marker.with_extension("prompt").exists(), "{failure}");
+        process.stop();
+        if process.pre_prompt_resume_id().is_some() {
+            permitted.push(failure);
+        }
+        // It is still known as a failed start before input, which a host may
+        // count; that alone retires nothing.
+        assert_eq!(
+            process.failed_before_prompt_resume_id(),
+            Some("saved-native"),
+            "{failure}"
+        );
+    }
+    assert!(
+        permitted.is_empty(),
+        "a startup failure that does not report the context missing permitted discarding the saved session: {permitted:?}"
+    );
 }

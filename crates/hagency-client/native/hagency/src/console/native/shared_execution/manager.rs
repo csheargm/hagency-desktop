@@ -131,7 +131,9 @@ impl Manager {
         assignment: &str,
         revision: u64,
     ) -> Result<(), NativeError> {
-        self.claude_workspaces.retire_assignment(assignment)?;
+        // Stop pauses the Agent; a later Run continues it. Saved sessions and
+        // work folders are therefore kept here. Only loss of a conversation's
+        // authority removes that conversation's files (`Lease::retire`).
         let mut s = self
             .state
             .lock()

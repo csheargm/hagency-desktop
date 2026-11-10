@@ -3,6 +3,7 @@
 pub mod account;
 use serde_json::{Value, json};
 
+pub mod resume_failures;
 pub mod session;
 mod task_mcp;
 pub use task_mcp::{TaskMcp, task_arguments};
@@ -53,16 +54,20 @@ fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
 fn object(value: &Value) -> Result<(), Error> {
     value.as_object().map(|_| ()).ok_or(Error::Envelope)
 }
-fn keys(value: &Value, allowed: &[&str]) -> Result<(), Error> {
-    if value
-        .as_object()
-        .ok_or(Error::Envelope)?
-        .keys()
-        .any(|key| !allowed.contains(&key.as_str()))
-    {
-        return Err(Error::Envelope);
+/// A well-formed native control request whose subtype this host does not
+/// implement, as `(request_id, subtype)`. The stream answers it with an error
+/// reply; it never reaches the session or its host. A request without a usable
+/// identity cannot be answered and stays an invalid envelope.
+fn unsupported_request(value: &Value) -> Result<Option<(String, String)>, Error> {
+    if value.get("type").and_then(Value::as_str) != Some("control_request") {
+        return Ok(None);
     }
-    Ok(())
+    let request_id = field(value, "request_id")?;
+    let request = value.get("request").ok_or(Error::Envelope)?;
+    object(request)?;
+    let subtype = field(request, "subtype")?;
+    Ok((!matches!(subtype, "can_use_tool" | "mcp_message"))
+        .then(|| (request_id.to_owned(), subtype.to_owned())))
 }
 
 fn known_type(kind: &str) -> bool {
@@ -160,13 +165,13 @@ impl Message {
     fn parse(value: Value) -> Result<Self, Error> {
         object(&value)?;
         match field(&value, "type")? {
+            // Keys this host does not read are ignored on every control frame:
+            // each reply is built only from the fields validated here.
             "control_request" => {
-                keys(&value, &["type", "request_id", "request"])?;
                 let request_id = field(&value, "request_id")?.to_owned();
                 let request = value.get("request").ok_or(Error::Envelope)?;
                 object(request)?;
                 if field(request, "subtype")? == "mcp_message" {
-                    keys(request, &["subtype", "server_name", "message"])?;
                     let message = request.get("message").ok_or(Error::Envelope)?;
                     object(message)?;
                     return Ok(Self::Mcp {
@@ -199,21 +204,14 @@ impl Message {
                 })
             }
             "control_response" => {
-                keys(&value, &["type", "response"])?;
                 let response = value.get("response").ok_or(Error::Envelope)?;
                 let request_id = field(response, "request_id")?.to_owned();
                 let outcome = match field(response, "subtype")? {
                     "success" => {
-                        keys(
-                            response,
-                            &[
-                                "subtype",
-                                "request_id",
-                                "response",
-                                "pending_permission_requests",
-                                "pending_user_dialog_requests",
-                            ],
-                        )?;
+                        // An acceptance that also carries a refusal is neither.
+                        if response.get("error").is_some() {
+                            return Err(Error::Envelope);
+                        }
                         // Installed CLI2.1.270 carries these on initialize. A
                         // fresh one-prompt session cannot adopt preexisting work.
                         for name in [
@@ -232,7 +230,10 @@ impl Message {
                         ControlOutcome::Success(body.clone())
                     }
                     "error" => {
-                        keys(response, &["subtype", "request_id", "error"])?;
+                        // A refusal that also carries an accepted body is neither.
+                        if response.get("response").is_some() {
+                            return Err(Error::Envelope);
+                        }
                         response
                             .get("error")
                             .and_then(Value::as_str)
@@ -248,7 +249,6 @@ impl Message {
                 })
             }
             "control_cancel_request" => {
-                keys(&value, &["type", "request_id"])?;
                 Ok(Self::ControlCancel {
                     request_id: field(&value, "request_id")?.to_owned(),
                 })
@@ -327,8 +327,44 @@ pub struct Decoder {
     closed: bool,
     discarding_metadata: bool,
     ignored_frames: u64,
+    unsupported: std::collections::VecDeque<(String, String)>,
+    refused: std::collections::VecDeque<String>,
 }
+const MAX_UNSUPPORTED: usize = 16;
+const MAX_REFUSED: usize = 64;
 impl Decoder {
+    /// The next native control request this host does not implement, as
+    /// `(request_id, subtype)`. Its one answer is `unsupported_reply`.
+    pub fn take_unsupported_request(&mut self) -> Option<(String, String)> {
+        self.unsupported.pop_front()
+    }
+    fn refuse(&mut self, request: (String, String)) -> Result<(), Error> {
+        // A reader that never takes these cannot grow this without bound.
+        if self.unsupported.len() >= MAX_UNSUPPORTED {
+            return Err(Error::Capacity);
+        }
+        // Remember the identity so the native peer may withdraw the request;
+        // only the most recent ones are kept.
+        if self.refused.len() >= MAX_REFUSED {
+            self.refused.pop_front();
+        }
+        self.refused.push_back(request.0.clone());
+        self.unsupported.push_back(request);
+        self.ignored_frames = self.ignored_frames.saturating_add(1);
+        Ok(())
+    }
+    /// The withdrawal of a request that was only ever refused carries nothing.
+    fn withdrawn(&mut self, message: &Message) -> bool {
+        let Message::ControlCancel { request_id } = message else {
+            return false;
+        };
+        let Some(index) = self.refused.iter().position(|id| id == request_id) else {
+            return false;
+        };
+        self.refused.remove(index);
+        self.ignored_frames = self.ignored_frames.saturating_add(1);
+        true
+    }
     pub fn buffered_bytes(&self) -> usize {
         self.bytes.len() + usize::from(self.discarding_metadata)
     }
@@ -402,8 +438,11 @@ impl Decoder {
                 if ignorable_type(field(&value, "type")?) {
                     self.ignored_frames = self.ignored_frames.saturating_add(1);
                     Ok(None)
+                } else if let Some(request) = unsupported_request(&value)? {
+                    self.refuse(request).map(|()| None)
                 } else {
-                    Message::parse(value).map(Some)
+                    let message = Message::parse(value)?;
+                    Ok((!self.withdrawn(&message)).then_some(message))
                 }
             });
         self.bytes.clear();
@@ -451,6 +490,17 @@ pub fn initialize(request_id: &str) -> Result<Vec<u8>, Error> {
 }
 pub fn interrupt(request_id: &str) -> Result<Vec<u8>, Error> {
     control(request_id, json!({"subtype":"interrupt"}))
+}
+/// The one answer to a native control request this host does not implement.
+/// It is an error, never a decision: the native peer treats its own request
+/// as failed. Nothing from the request except its identity is echoed.
+pub fn unsupported_reply(request_id: &str) -> Result<Vec<u8>, Error> {
+    if !identifier(request_id) {
+        return Err(Error::Input);
+    }
+    encode(json!({"type":"control_response","response":{
+        "subtype":"error","request_id":request_id,
+        "error":"Unsupported control request"}}))
 }
 pub fn prompt(text: &str, session_id: Option<&str>) -> Result<Vec<u8>, Error> {
     if text.is_empty() || text.len() > MAX_TEXT_BYTES || session_id.is_some_and(|v| !identifier(v))

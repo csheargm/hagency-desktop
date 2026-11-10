@@ -28,6 +28,24 @@ pub(crate) fn now_ms() -> u64 {
 }
 fn storage<T>(result: rusqlite::Result<T>) -> Result<T, DaemonError> { result.map_err(|_| errors::STATE_UNAVAILABLE) }
 impl ControlStore {
+    /// An earlier build imported its JSON control file into `control.sqlite3`
+    /// in the transaction that created the control row, and left the JSON in
+    /// place. Once that row exists the JSON holds nothing this build needs, so
+    /// it is removed at start (product decision: discard earlier-format
+    /// hosting data without asking). Without the row the JSON may be the only
+    /// record of a paused or stopped intent: it stays and `open` refuses it.
+    pub fn discard_imported_json(path: &Path) -> bool {
+        let json = path.with_extension("json");
+        let regular = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
+        if path.extension() != Some(std::ffi::OsStr::new("sqlite3")) || !regular(path) || !regular(&json) {
+            return false;
+        }
+        let imported = Connection::open_with_flags(path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .and_then(|db| db.query_row("SELECT COUNT(*) FROM control WHERE singleton=1", [], |r| r.get::<_, u64>(0)))
+            .is_ok_and(|rows| rows == 1);
+        imported && std::fs::remove_file(&json).is_ok()
+    }
     pub fn open(path: &Path) -> Result<Self, DaemonError> {
         if path.extension() != Some(std::ffi::OsStr::new("sqlite3")) {
             return Err(errors::STATE_UNAVAILABLE);
@@ -278,6 +296,57 @@ mod tests {
         assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(std::fs::read(&old_path).unwrap(), raw);
+    }
+
+    /// The earlier build that imported the JSON left it in place. At start it
+    /// is removed once the SQLite store holds the control row, and the intent
+    /// that store recorded is the one that continues.
+    #[test]
+    fn an_imported_old_json_is_removed_at_start_and_the_saved_intent_continues() {
+        let temp = private_dir();
+        let path = temp.path().join(super::super::CONTROL);
+        let store = ControlStore::open(&path).unwrap();
+        store.commit(&request("stopped", Command::StopHosting), Some(Intent::Stopped), |rev| {
+            Reply::ok("stopped", rev, serde_json::json!({}))
+        }).unwrap();
+        drop(store);
+        let old_path = temp.path().join("control.json");
+        hagency_store::private::replace(&old_path,
+            br#"{"format":"hagency-owner-daemon-control","version":1,"revision":4,"intent":"hosting","receipts":[]}"#).unwrap();
+        assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
+        assert!(ControlStore::discard_imported_json(&path));
+        assert!(!old_path.exists());
+        assert!(!ControlStore::discard_imported_json(&path), "nothing is left to remove");
+        assert_eq!(ControlStore::open(&path).unwrap().intent(), Intent::Stopped);
+    }
+
+    /// Without a complete SQLite store the JSON may be the only record of a
+    /// paused or stopped intent. It is never removed.
+    #[test]
+    fn an_old_json_that_was_never_imported_is_kept_and_still_refused() {
+        let raw = br#"{"format":"hagency-owner-daemon-control","version":1,"revision":4,"intent":"paused","receipts":[]}"#;
+        for sqlite in [None, Some(""), Some("DELETE FROM control")] {
+            let temp = private_dir();
+            let path = temp.path().join(super::super::CONTROL);
+            match sqlite {
+                None => {}
+                Some("") => drop(hagency_store::private::open(&path, true).unwrap()),
+                Some(change) => {
+                    drop(ControlStore::open(&path).unwrap());
+                    Connection::open(&path).unwrap().execute_batch(change).unwrap();
+                }
+            }
+            let old_path = temp.path().join("control.json");
+            hagency_store::private::replace(&old_path, raw).unwrap();
+            assert!(!ControlStore::discard_imported_json(&path), "{sqlite:?}");
+            assert_eq!(std::fs::read(&old_path).unwrap(), raw);
+            assert!(matches!(ControlStore::open(&path), Err(errors::STATE_UNAVAILABLE)));
+        }
+        // No JSON at all: nothing to do, and the store is not created.
+        let temp = private_dir();
+        let path = temp.path().join(super::super::CONTROL);
+        assert!(!ControlStore::discard_imported_json(&path));
+        assert!(!path.exists());
     }
 
     #[test]

@@ -22,8 +22,10 @@ impl ObservationSource {
 }
 
 /// Original answer completion, independent of the subsequent accounting
-/// query. Private construction requires native result, idle and no live
-/// descendants. Retirement does not erase this already observed evidence.
+/// query. Private construction requires the native result of this stream and
+/// either native idle with no live descendants (`completion_receipt`) or a
+/// stream that has since failed or closed (`closed_answer_receipt`). Neither
+/// carries usage. Retirement does not erase this already observed evidence.
 pub struct CompletionReceipt {
     source: ObservationSource,
     sequence: u64,

@@ -20,6 +20,7 @@ pub(super) struct Completion {
     consumed_runs: BTreeSet<String>,
     background_response: bool,
     stop_result: Option<String>,
+    answer_stop: Option<String>,
 }
 impl Completion {
     fn remember_run(&mut self, task: &Value) -> Result<(), Error> {
@@ -86,11 +87,10 @@ impl Completion {
         match kind {
             EventKind::System => match payload["subtype"].as_str() {
                 Some("session_state_changed") => {
-                    self.idle = match payload["state"].as_str() {
-                        Some("idle") => true,
-                        Some("running" | "requires_action") => false,
-                        _ => return Err(Error::Protocol(super::super::Error::Envelope)),
-                    };
+                    // Only native idle can complete a turn. Every other state,
+                    // including one this host does not know, is not idle: the
+                    // turn keeps waiting for a later idle instead of ending.
+                    self.idle = payload["state"] == "idle";
                 }
                 Some("background_tasks_changed") => {
                     let tasks = payload["tasks"].as_array().ok_or(Error::Identity)?;
@@ -204,8 +204,16 @@ impl Completion {
             && !self.background_response
             && self.notified_runs.is_empty()
     }
-    pub(super) fn observe_stop_result(&mut self, request: &str) {
-        self.stop_result = Some(request.into());
+    /// `request` is the stop that was in flight or accepted when this result
+    /// arrived. An answer read before any such stop keeps no stop identity,
+    /// and an accounting snapshot never replaces the answer's own record.
+    pub(super) fn observe_result_stop(&mut self, request: Option<&str>) {
+        if self.snapshot.is_none() {
+            self.answer_stop = request.map(str::to_owned);
+        }
+        if let Some(request) = request {
+            self.stop_result = Some(request.into());
+        }
     }
     pub(super) fn accepted_stop(&mut self, request: &str) {
         // An acknowledged interrupt's terminal result ends pending native
@@ -236,8 +244,37 @@ impl<R, W, E> SessionDriver<R, W, E> {
             self.session_id.as_deref().ok_or(Error::State)?,
             digest,
             is_error,
-            self.interrupt_receipt()
-                .is_some_and(|receipt| receipt.accepted()),
+            self.answer_interrupted(),
+        ))
+    }
+    /// An acknowledged stop interrupts the answer only when that answer
+    /// arrived after the stop was started. A stop that the native peer accepts
+    /// after the final answer was read ends nothing the answer depends on.
+    pub fn answer_interrupted(&self) -> bool {
+        self.interrupt_receipt().is_some_and(|receipt| {
+            receipt.accepted()
+                && self.completion.answer_stop.as_deref() == Some(receipt.request_id())
+        })
+    }
+    /// The last original answer of a stream that has since failed or closed.
+    /// Unlike `completion_receipt` this proves neither native idle nor that
+    /// descendants finished, so it carries no usage authority: a host may
+    /// deliver the text and must leave the call's usage unknown. A stop that
+    /// was in flight or accepted when the answer arrived, acknowledged or
+    /// not, is reported as an interruption.
+    pub fn closed_answer_receipt(&self) -> Result<super::CompletionReceipt, Error> {
+        if self.phase != Phase::Closed || !self.prompt_started {
+            return Err(Error::State);
+        }
+        let (digest, is_error) = self.completion.answer.ok_or(Error::State)?;
+        Ok(self.observations.completed(
+            self.session_id.as_deref().ok_or(Error::State)?,
+            digest,
+            is_error,
+            self.completion
+                .answer_stop
+                .as_deref()
+                .is_some_and(|id| self.interrupt.unrefused(id)),
         ))
     }
     /// Use only while the host continuously supervises the admitted turn and

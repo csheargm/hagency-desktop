@@ -151,6 +151,8 @@ struct State {
     source: Option<Arc<AtomicBool>>,
     project_reads: usize,
     fail_source_at_projects: Option<Arc<AtomicBool>>,
+    /// The server refuses the saved owner session; the SDK account is unchanged.
+    refuse_renewal: bool,
     invalidate_at_contribution: bool,
     invalidate_at_result: bool,
     lose_before_publication: bool,
@@ -434,7 +436,11 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             json!({"deviceId":"device","token":"b".repeat(64),"generation":state.lock().unwrap().generation.max(1),"validUntilMs":at+30000})
                         }
                         "/hagency/api/v1/sessions/current/renew" => {
-                            json!({"validUntilMs":at+30000})
+                            if state.lock().unwrap().refuse_renewal {
+                                json!({"code":"sign_in_required","fixtureStatus":401})
+                            } else {
+                                json!({"validUntilMs":at+30000})
+                            }
                         }
                         "/hagency/api/v1/sessions/current" => json!({}),
                         "/hagency/api/v1/projects" => {

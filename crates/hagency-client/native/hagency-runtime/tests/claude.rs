@@ -268,10 +268,8 @@ fn native_claude_stream_envelopes() {
     ] {
         malformed(&line(value), Error::Envelope);
     }
-    malformed(
-        &line(json!({"type":"control_request","request_id":"i","request":{"subtype":"unknown"}})),
-        Error::Unsupported,
-    );
+    // An unknown control request subtype is refused without closing the
+    // stream: see `future_control_request_subtype_keeps_the_stream_open`.
     let mut decoder = Decoder::default();
     assert!(
         decoder
@@ -401,4 +399,185 @@ fn unknown_metadata_is_counted_and_bounded_but_authority_frames_remain_strict() 
         decoder.check_deadline(1 + PARTIAL_FRAME_MS),
         Err(Error::Timeout)
     );
+}
+
+/// F8: an unknown request subtype is never decoded as a host message, and
+/// the stream stays open for the frames that follow it.
+#[test]
+fn future_control_request_subtype_keeps_the_stream_open() {
+    let mut decoder = Decoder::default();
+    let unknown = line(json!({"type":"control_request","request_id":"future-1",
+        "request":{"subtype":"future_dialog","detail":{"private":"sentinel"}}}));
+    let (used, message) = decoder
+        .feed(&unknown, 1)
+        .unwrap_or_else(|error| panic!("an unknown control request closed the stream: {error:?}"));
+    assert_eq!(used, unknown.len());
+    assert!(message.is_none());
+    assert!(matches!(
+        decoder
+            .feed(&line(json!({"type":"control_cancel_request","request_id":"other"})), 2)
+            .unwrap()
+            .1,
+        Some(Message::ControlCancel { request_id }) if request_id == "other"
+    ));
+    // The stream owes that request exactly one answer: an error that echoes
+    // nothing but its identity.
+    assert_eq!(
+        decoder.take_unsupported_request(),
+        Some(("future-1".into(), "future_dialog".into()))
+    );
+    assert_eq!(decoder.take_unsupported_request(), None);
+    assert_eq!(decoder.ignored_frames(), 1);
+    let reply = claude::unsupported_reply("future-1").unwrap();
+    assert_eq!(reply.last(), Some(&b'\n'));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reply).unwrap(),
+        json!({"type":"control_response","response":{
+            "subtype":"error","request_id":"future-1","error":"Unsupported control request"}})
+    );
+    assert!(claude::unsupported_reply("bad id").is_err());
+    // The native peer may withdraw it once; that carries nothing. Any other
+    // withdrawal is still decoded for the session to judge.
+    let withdrawn = line(json!({"type":"control_cancel_request","request_id":"future-1"}));
+    assert!(decoder.feed(&withdrawn, 3).unwrap().1.is_none());
+    assert_eq!(decoder.ignored_frames(), 2);
+    assert!(matches!(
+        decoder.feed(&withdrawn, 4).unwrap().1,
+        Some(Message::ControlCancel { request_id }) if request_id == "future-1"
+    ));
+    // Answers that nobody takes are bounded.
+    let mut decoder = Decoder::default();
+    for n in 0..16 {
+        let request = line(json!({"type":"control_request","request_id":format!("flood-{n}"),
+            "request":{"subtype":"future_dialog"}}));
+        assert!(decoder.feed(&request, 1).unwrap().1.is_none());
+    }
+    malformed_after(
+        &mut decoder,
+        &line(json!({"type":"control_request","request_id":"flood-16","request":{"subtype":"future_dialog"}})),
+        Error::Capacity,
+    );
+}
+fn malformed_after(decoder: &mut Decoder, bytes: &[u8], error: Error) {
+    assert!(matches!(decoder.feed(bytes, 5), Err(actual) if actual == error));
+    assert!(matches!(decoder.feed(b"{}\n", 6), Err(Error::Closed)));
+}
+
+/// F8: keys this host does not read never change the frame it decodes.
+#[test]
+fn control_frames_with_extra_keys_are_decoded_by_the_keys_this_host_reads() {
+    let mut closed = Vec::new();
+    let mut extra = |name: &str, value: Value| -> Option<Message> {
+        match Decoder::default().feed(&line(value), 1) {
+            Ok((_, message)) => message,
+            Err(error) => {
+                closed.push(format!("{name}: {error:?}"));
+                None
+            }
+        }
+    };
+    let permission = extra(
+        "permission envelope",
+        json!({"type":"control_request","request_id":"request-1","uuid":"u-1","session_id":"s",
+        "request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-1","input":{"command":"exact"}}}),
+    );
+    let mcp = extra(
+        "sdk mcp request",
+        json!({"type":"control_request","request_id":"request-2","uuid":"u-2",
+        "request":{"subtype":"mcp_message","server_name":"hagency_matrix","origin":"future",
+            "message":{"jsonrpc":"2.0","id":1,"method":"ping"}}}),
+    );
+    let success = extra(
+        "success response",
+        json!({"type":"control_response","uuid":"u-3","response":{"subtype":"success",
+        "request_id":"i","response":{"ok":true},"future_note":{"x":1},
+        "pending_permission_requests":[],"pending_user_dialog_requests":[]}}),
+    );
+    // A refusal stays a refusal whatever else the native peer attaches to it.
+    let refusal = extra(
+        "error response",
+        json!({"type":"control_response","response":{"subtype":"error","request_id":"i",
+        "error":"private upstream text","pending_permission_requests":[{"request_id":"p"}],"code":7}}),
+    );
+    let cancel = extra(
+        "cancel",
+        json!({"type":"control_cancel_request","request_id":"request-1","reason":"future"}),
+    );
+    assert!(
+        closed.is_empty(),
+        "extra keys on a control frame closed the stream: {closed:?}"
+    );
+    match permission.unwrap() {
+        Message::Permission {
+            request_id,
+            tool_name,
+            tool_use_id,
+            input,
+        } => {
+            assert_eq!(request_id, "request-1");
+            assert_eq!(tool_name, "Bash");
+            assert_eq!(tool_use_id.as_deref(), Some("tool-1"));
+            assert_eq!(input, json!({"command":"exact"}));
+        }
+        _ => panic!("permission shape"),
+    }
+    match mcp.unwrap() {
+        Message::Mcp {
+            request_id,
+            server_name,
+            message,
+        } => {
+            assert_eq!(request_id, "request-2");
+            assert_eq!(server_name, "hagency_matrix");
+            assert_eq!(message, json!({"jsonrpc":"2.0","id":1,"method":"ping"}));
+        }
+        _ => panic!("mcp shape"),
+    }
+    assert!(matches!(
+        success.unwrap(),
+        Message::ControlResponse { request_id, outcome: ControlOutcome::Success(body) }
+            if request_id == "i" && body == json!({"ok":true})
+    ));
+    assert!(matches!(
+        refusal.unwrap(),
+        Message::ControlResponse { request_id, outcome: ControlOutcome::Refused } if request_id == "i"
+    ));
+    assert!(matches!(
+        cancel.unwrap(),
+        Message::ControlCancel { request_id } if request_id == "request-1"
+    ));
+}
+
+/// F8, unchanged on purpose: control frames that cannot be answered,
+/// classified or adopted still close the stream.
+#[test]
+fn control_frames_that_cannot_be_answered_or_classified_still_close_the_stream() {
+    for (value, error) in [
+        // No usable identity to refuse.
+        (json!({"type":"control_request","request":{"subtype":"future_dialog"}}), Error::Envelope),
+        (json!({"type":"control_request","request_id":"bad id","request":{"subtype":"future_dialog"}}), Error::Envelope),
+        (json!({"type":"control_request","request_id":"i","request":{}}), Error::Envelope),
+        (json!({"type":"control_request","request_id":"i","request":"future_dialog"}), Error::Envelope),
+        // A known request that cannot be presented faithfully.
+        (json!({"type":"control_request","request_id":"i","request":{"subtype":"can_use_tool","input":{}}}), Error::Envelope),
+        (json!({"type":"control_request","request_id":"i","request":{"subtype":"mcp_message","server_name":"hagency_matrix","message":[]}}), Error::Envelope),
+        // An answer to this host's own request that is neither accepted nor refused.
+        (json!({"type":"control_response","response":{"subtype":"partial","request_id":"i","response":{}}}), Error::Unsupported),
+        (json!({"type":"control_response","response":{"subtype":"success","request_id":"i","response":{},"error":"conflicting"}}), Error::Envelope),
+        (json!({"type":"control_response","response":{"subtype":"error","request_id":"i"}}), Error::Envelope),
+        (json!({"type":"control_response","response":{"subtype":"error","request_id":"i","error":"refused","response":{}}}), Error::Envelope),
+        // Work that predates this host's one admitted input.
+        (json!({"type":"control_response","response":{"subtype":"success","request_id":"i","response":{},
+            "pending_permission_requests":[{"request_id":"preexisting"}]}}), Error::Unsupported),
+        // A control frame type this host has no reply shape for.
+        (json!({"type":"control_future","request_id":"i"}), Error::Unsupported),
+    ] {
+        let mut decoder = Decoder::default();
+        let bytes = line(value.clone());
+        assert!(
+            matches!(decoder.feed(&bytes, 1), Err(actual) if actual == error),
+            "{value}"
+        );
+        assert!(matches!(decoder.feed(b"{}\n", 2), Err(Error::Closed)));
+    }
 }

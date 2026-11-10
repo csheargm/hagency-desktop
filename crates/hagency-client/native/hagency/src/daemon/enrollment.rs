@@ -66,6 +66,20 @@ fn path(home: &Path) -> PathBuf {
 }
 
 impl Enrollment {
+    /// Product decision for a journal an earlier build wrote: remove it at
+    /// start, without asking, and begin unenrolled. Only a readable journal
+    /// that names an earlier version qualifies; a damaged one stays the
+    /// storage error it was. The daemon's Matrix session is not touched.
+    pub fn discard_earlier_format(home: &Path) -> bool {
+        let Ok(Some(raw)) = super::read_private(&path(home), LIMIT) else {
+            return false;
+        };
+        let earlier = serde_json::from_slice::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.as_object()?.get("version")?.as_u64())
+            .is_some_and(|version| (1..u64::from(VERSION)).contains(&version));
+        earlier && std::fs::remove_file(path(home)).is_ok()
+    }
     pub fn load(home: &Path) -> Result<Option<Self>, EnrollmentError> {
         let Some(raw) =
             super::read_private(&path(home), LIMIT).map_err(|_| EnrollmentError::Storage)?
@@ -216,6 +230,50 @@ mod tests {
             .parent()
             .unwrap()
             .join(format!("{name}-{}", super::super::new_request_id()))
+    }
+
+    /// The published earlier build wrote version 1 with a `handover` field.
+    #[test]
+    fn an_earlier_format_journal_is_removed_at_start_and_nothing_else_is() {
+        let temp = home();
+        let registered = root(&temp, "earlier-root");
+        let earlier = serde_json::to_vec(&serde_json::json!({
+            "version": 1, "origin": "https://s/", "owner": "@o:s", "displayName": null,
+            "ownerRoot": registered, "handover": {"state": "active", "source": null, "sinceMs": 1},
+        }))
+        .unwrap();
+        let journal = path(temp.path());
+        hagency_store::private::replace(&journal, &earlier).unwrap();
+        let session = temp.path().join(super::super::MATRIX).join("session.json");
+        hagency_store::private::directory(session.parent().unwrap()).unwrap();
+        hagency_store::private::replace(&session, b"the daemon's own Matrix session").unwrap();
+        assert_eq!(Enrollment::load(temp.path()), Err(EnrollmentError::Storage));
+        assert!(Enrollment::discard_earlier_format(temp.path()));
+        assert_eq!(Enrollment::load(temp.path()), Ok(None));
+        assert!(session.exists());
+        assert!(!Enrollment::discard_earlier_format(temp.path()));
+    }
+
+    #[test]
+    fn a_current_or_damaged_journal_is_never_removed() {
+        let temp = home();
+        let registered = root(&temp, "current-root");
+        let current =
+            Enrollment::prepare(temp.path(), "https://s/", "@o:s", None, registered).unwrap();
+        assert!(!Enrollment::discard_earlier_format(temp.path()));
+        assert_eq!(Enrollment::load(temp.path()).unwrap().unwrap(), current);
+        for kept in [
+            &br#"{"version":0}"#[..],
+            br#"{"version":9}"#,
+            br#"{"version":"1"}"#,
+            br#"[1]"#,
+            b"damaged",
+        ] {
+            hagency_store::private::replace(&path(temp.path()), kept).unwrap();
+            assert!(!Enrollment::discard_earlier_format(temp.path()));
+            assert_eq!(std::fs::read(path(temp.path())).unwrap(), kept);
+            assert_eq!(Enrollment::load(temp.path()), Err(EnrollmentError::Storage));
+        }
     }
 
     #[test]

@@ -645,3 +645,179 @@ async fn native_claude_accepted_stop_drains_pending_background_notification_in_e
         assert!(driver.completion_receipt().unwrap().interrupted());
     }
 }
+
+#[tokio::test]
+async fn native_claude_stop_accepted_after_the_answer_keeps_it_a_completed_answer() {
+    // The answer was read before this stop was started, so the acknowledged
+    // stop ends nothing the answer depends on.
+    for ack_before_idle in [true, false] {
+        let (mut driver, mut peer, prompt) = continuous().await;
+        let mut done = result();
+        done["user_message_uuid"] = prompt["uuid"].clone();
+        done["result"] = json!("answer before the stop");
+        event(&mut driver, &mut peer, done).await.unwrap();
+        assert_eq!(driver.phase(), Phase::Running);
+        let mut prepared = driver.prepare_interrupt().unwrap();
+        send(&mut driver, &mut peer, &mut prepared).await;
+        if ack_before_idle {
+            event(&mut driver, &mut peer, ack(prepared.request_id()))
+                .await
+                .unwrap();
+        }
+        event(&mut driver, &mut peer, state("idle")).await.unwrap();
+        if !ack_before_idle {
+            event(&mut driver, &mut peer, ack(prepared.request_id()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert!(driver.interrupt_receipt().unwrap().accepted());
+        let receipt = driver.completion_receipt().unwrap();
+        assert!(receipt.matches_text("answer before the stop"));
+        assert!(!receipt.is_error());
+        assert!(
+            !receipt.interrupted(),
+            "a stop accepted after the final answer does not interrupt that answer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_claude_answer_that_arrives_under_a_stop_stays_interrupted() {
+    // Even a successful result is not a completed task when it arrives after
+    // the stop was started and that stop is then acknowledged.
+    for (ack_first, refused) in [(true, false), (false, false), (false, true)] {
+        let (mut driver, mut peer, prompt) = continuous().await;
+        let mut prepared = driver.prepare_interrupt().unwrap();
+        send(&mut driver, &mut peer, &mut prepared).await;
+        if ack_first {
+            event(&mut driver, &mut peer, ack(prepared.request_id()))
+                .await
+                .unwrap();
+        }
+        let mut done = result();
+        done["user_message_uuid"] = prompt["uuid"].clone();
+        done["result"] = json!("text captured during the stop");
+        event(&mut driver, &mut peer, done).await.unwrap();
+        event(&mut driver, &mut peer, state("idle")).await.unwrap();
+        if refused {
+            event(
+                &mut driver,
+                &mut peer,
+                json!({"type":"control_response","response":{
+                    "subtype":"error","request_id":prepared.request_id(),"error":"refused"}}),
+            )
+            .await
+            .unwrap();
+        } else if !ack_first {
+            event(&mut driver, &mut peer, ack(prepared.request_id()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert_eq!(
+            driver.completion_receipt().unwrap().interrupted(),
+            !refused,
+            "only an acknowledged stop interrupts the answer it preceded"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_closed_answer_receipt_keeps_only_the_answer_of_a_failed_stream() {
+    let (mut driver, mut peer, prompt) = continuous().await;
+    let source = driver.observation_source().unwrap();
+    assert!(driver.closed_answer_receipt().is_err());
+    event(&mut driver, &mut peer, background(true))
+        .await
+        .unwrap();
+    let mut done = result();
+    done["user_message_uuid"] = prompt["uuid"].clone();
+    done["result"] = json!("answer before the failure");
+    event(&mut driver, &mut peer, done).await.unwrap();
+    assert_eq!(driver.phase(), Phase::Running);
+    assert!(
+        driver.closed_answer_receipt().is_err(),
+        "an open stream continues to native idle instead"
+    );
+    // A fatal frame while the background child is still running.
+    assert!(
+        event(
+            &mut driver,
+            &mut peer,
+            json!({"type":"assistant","session_id":"session-one"})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(driver.phase(), Phase::Closed);
+    assert!(
+        driver.completion_receipt().is_err(),
+        "a failed stream never proves native idle"
+    );
+    let receipt = driver.closed_answer_receipt().unwrap();
+    assert!(receipt.source() == &source && receipt.source().is_retired());
+    assert!(receipt.matches_text("answer before the failure"));
+    assert!(!receipt.matches_text("different answer"));
+    assert!(!receipt.is_error() && !receipt.interrupted());
+
+    // A stream that closed before any answer has nothing to keep.
+    let (mut driver, _peer, _) = continuous().await;
+    driver.close();
+    assert!(driver.closed_answer_receipt().is_err());
+
+    // An error result is kept as an error, never as an answer.
+    let (mut driver, mut peer, prompt) = continuous().await;
+    let mut failed = result();
+    failed["user_message_uuid"] = prompt["uuid"].clone();
+    failed["is_error"] = json!(true);
+    event(&mut driver, &mut peer, failed).await.unwrap();
+    driver.close();
+    assert!(driver.closed_answer_receipt().unwrap().is_error());
+}
+
+#[tokio::test]
+async fn native_closed_answer_receipt_reports_a_stop_that_preceded_the_answer() {
+    // `None`: the stream fails before the native peer answers the stop.
+    for (acknowledged, interrupted) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let (mut driver, mut peer, prompt) = continuous().await;
+        let mut prepared = driver.prepare_interrupt().unwrap();
+        send(&mut driver, &mut peer, &mut prepared).await;
+        let mut done = result();
+        done["user_message_uuid"] = prompt["uuid"].clone();
+        event(&mut driver, &mut peer, done).await.unwrap();
+        match acknowledged {
+            Some(true) => {
+                event(&mut driver, &mut peer, ack(prepared.request_id()))
+                    .await
+                    .unwrap();
+            }
+            Some(false) => {
+                event(
+                    &mut driver,
+                    &mut peer,
+                    json!({"type":"control_response","response":{
+                        "subtype":"error","request_id":prepared.request_id(),"error":"refused"}}),
+                )
+                .await
+                .unwrap();
+            }
+            None => {}
+        }
+        driver.close();
+        assert_eq!(
+            driver.closed_answer_receipt().unwrap().interrupted(),
+            interrupted,
+            "stop acknowledgement {acknowledged:?}"
+        );
+    }
+    // A stop started only after the answer never interrupts that answer.
+    let (mut driver, mut peer, prompt) = continuous().await;
+    let mut done = result();
+    done["user_message_uuid"] = prompt["uuid"].clone();
+    event(&mut driver, &mut peer, done).await.unwrap();
+    let mut prepared = driver.prepare_interrupt().unwrap();
+    send(&mut driver, &mut peer, &mut prepared).await;
+    driver.close();
+    assert!(!driver.closed_answer_receipt().unwrap().interrupted());
+}

@@ -133,3 +133,59 @@ async fn native_private_approval_marker_refuses_foreign_state_and_swapped_acknow
         f.fake.close().await;
     }
 }
+
+#[tokio::test]
+async fn native_private_approval_marker_write_refusal_is_retried_and_an_unknown_outcome_stays_fenced() {
+    for (status, refusal, retried) in [
+        (403, Error::Unauthorized, true),
+        (400, Error::Remote(400), true),
+        // The homeserver may have stored the event behind a failing reply.
+        (503, Error::Remote(503), false),
+    ] {
+        let mut f = Fixture::new().await;
+        let result = drive_with(
+            f.collector
+                .prepare_private_approval_rooms(&CancellationToken::new()),
+            &mut f.fake,
+            &mut f.peer,
+            |request, peer, response| {
+                if request.method == "PUT"
+                    && request.target.contains("/state/com.agentchat.approval.room.v2")
+                {
+                    // The homeserver stored nothing.
+                    peer.approval_markers.pop();
+                    *response = (status, json!({"errcode":"M_FORBIDDEN","error":"refused"}));
+                }
+            },
+        )
+        .await;
+        assert_eq!(result, Err(refusal.clone()), "status {status}");
+        assert!(f.peer.approval_markers.is_empty());
+        if retried {
+            // A refused write made no mutation: the same collector publishes
+            // the marker once the homeserver accepts it, without a restart.
+            drive(
+                f.collector
+                    .prepare_private_approval_rooms(&CancellationToken::new()),
+                &mut f.fake,
+                &mut f.peer,
+            )
+            .await
+            .unwrap();
+            assert_eq!(f.peer.approval_markers.len(), 1);
+            assert_eq!(f.peer.approval_markers[0]["content"]["binding_generation"], 1);
+        } else {
+            assert_eq!(
+                f.collector
+                    .prepare_private_approval_rooms(&CancellationToken::new())
+                    .await,
+                Err(refusal),
+                "an uncertain publication cannot silently re-enter writes"
+            );
+            assert!(f.peer.approval_markers.is_empty());
+        }
+        let _ = f.collector.close().await;
+        common::shutdown_domain(&f.base.store, "marker-write-refusal").await;
+        f.fake.close().await;
+    }
+}

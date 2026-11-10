@@ -160,7 +160,15 @@ pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
 
 pub struct Process {
     pub session: Session,
+    /// Set when this start retired a saved native session, with the stable
+    /// reason code. The host records it; it changes nothing else.
+    pub discarded_session: Option<&'static str>,
 }
+/// The native CLI reported, before any input, that the saved context is gone.
+pub const SESSION_DISCARDED_MISSING: &str = "native_context_missing";
+/// The resumed start failed before any input `claude::resume_failures::LIMIT`
+/// times in a row without that report, and a fresh process then initialized.
+pub const SESSION_DISCARDED_RESUME_FAILED: &str = "native_resume_failed_repeatedly";
 impl Process {
     pub async fn stop(&mut self) -> Result<()> {
         match &mut self.session {
@@ -248,30 +256,79 @@ pub async fn spawn_for_scope_with_guardian(
             .map_err(|_| Error::Protocol("Claude continuous session"))?;
         wire.expect_resume(saved)
             .map_err(|_| Error::Protocol("Claude resume identity"))?;
-        if let Err(error) = wire.initialize().await {
-            if error == claude::session::Error::UnsupportedVersion {
-                return Err(claude_initialize_error(error));
+        // Failed resumed starts are counted per saved row, for this host
+        // process only.
+        let counted = format!("personal\n{context}\n{profile_key}\n{saved}");
+        match wire.initialize().await {
+            Ok(()) => claude::resume_failures::clear(&counted),
+            // The installation, not the saved session: a fresh start meets the
+            // same thing. Keep the row; this is never counted.
+            Err(error) if error == claude::session::Error::UnsupportedVersion => {
+                return Err(claude_resume_error(error));
             }
-            if wire.pre_prompt_resume_id() != Some(saved) {
-                return Err(Error::Protocol("Claude initialize"));
+            // The native CLI's own report that this context does not exist is
+            // the only single failure that retires the saved row.
+            Err(claude::session::Error::MissingResume) => {
+                if wire.pre_prompt_resume_id() != Some(saved) {
+                    return Err(Error::Protocol("Claude initialize"));
+                }
+                retire_saved_session(ledger, scope, &context, &profile_key, saved)?;
+                claude::resume_failures::clear(&counted);
+                process = spawn_inner(profile, reference, None, guardian).await?;
+                process.discarded_session = Some(SESSION_DISCARDED_MISSING);
             }
-            // This is only a context pointer. Preserve every original usage,
-            // reservation and uncertain call; verify authority again after IO.
-            crate::verify(&ledger.db, scope)?;
-            let removed = ledger
-                .db
-                .execute(
-                    "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
-                    (&context, &profile_key, saved),
-                )
-                .map_err(crate::Error::from)?;
-            if removed != 1 {
-                return Err(Error::Protocol("Claude context changed"));
+            // A timeout, a refusal, an exit or an unexpected frame before the
+            // prompt says nothing about the saved context: keep the row and
+            // return the failure, so that the next message resumes it. Only a
+            // session that keeps failing this way, and whose failed process is
+            // proven stopped before any prompt byte, is replaced below.
+            Err(error) => {
+                if claude::resume_failures::record(&counted) < claude::resume_failures::LIMIT
+                    || wire.failed_before_prompt_resume_id() != Some(saved)
+                {
+                    return Err(claude_resume_error(error));
+                }
+                // The saved row is retired only once a fresh process has
+                // initialized. If that fails too, the row and the count stay
+                // and the next message tries again.
+                let mut fresh = spawn_inner(profile, reference, None, guardian).await?;
+                let retired = match fresh.session.initialize().await {
+                    Ok(()) => retire_saved_session(ledger, scope, &context, &profile_key, saved),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = retired {
+                    let _ = fresh.stop().await;
+                    return Err(error);
+                }
+                claude::resume_failures::clear(&counted);
+                fresh.discarded_session = Some(SESSION_DISCARDED_RESUME_FAILED);
+                process = fresh;
             }
-            process = spawn_inner(profile, reference, None, guardian).await?;
         }
     }
     Ok(process)
+}
+/// Remove one saved context pointer. Preserve every original usage,
+/// reservation and uncertain call; verify authority again after IO.
+fn retire_saved_session(
+    ledger: &mut Ledger,
+    scope: &Scope,
+    context: &str,
+    profile_key: &str,
+    saved: &str,
+) -> Result<()> {
+    crate::verify(&ledger.db, scope)?;
+    let removed = ledger
+        .db
+        .execute(
+            "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
+            (context, profile_key, saved),
+        )
+        .map_err(crate::Error::from)?;
+    if removed != 1 {
+        return Err(Error::Protocol("Claude context changed"));
+    }
+    Ok(())
 }
 async fn spawn_inner(
     profile: &Profile,
@@ -287,6 +344,7 @@ async fn spawn_inner(
             .unwrap_or(std::env::current_exe()?);
         return Ok(Process {
             session: Session::Codex(Box::new(codex::Owned::spawn(profile, &guardian)?)),
+            discarded_session: None,
         });
     }
     let mut command = tokio::process::Command::new(&profile.executable);
@@ -438,7 +496,10 @@ async fn spawn_inner(
         },
         Kind::Codex => unreachable!(),
     };
-    Ok(Process { session })
+    Ok(Process {
+        session,
+        discarded_session: None,
+    })
 }
 
 fn now() -> i64 {
@@ -736,7 +797,22 @@ impl Session {
             requests,
             returns,
             cumulative,
+            late_failure,
         } = result?;
+        if late_failure.is_some() {
+            // The native stream failed after this answer was read. The charge
+            // stays unsettled, so dropping it marks the call unknown exactly
+            // as when such a turn failed outright; only the answer is new.
+            return Ok(Completed {
+                text,
+                usage,
+                status,
+                elapsed_seconds: began.elapsed().as_secs(),
+                tool_requests: requests,
+                tool_returns: returns,
+                late_failure,
+            });
+        }
         let is_claude = matches!(self, Self::Claude { .. });
         let (context, session) = match self {
             Self::Claude { wire, context, .. } => {
@@ -840,6 +916,7 @@ impl Session {
             elapsed_seconds: began.elapsed().as_secs(),
             tool_requests: requests,
             tool_returns: returns,
+            late_failure: None,
         })
     }
 }
@@ -862,6 +939,18 @@ fn claude_initialize_error(error: claude::session::Error) -> Error {
             Error::Protocol("Claude Code 2.x version 2.1.321 or newer is required")
         }
         _ => Error::Protocol("Claude initialize"),
+    }
+}
+/// A resumed launch that failed before input for any reason other than a
+/// missing context. The saved session row is kept in every one of these cases.
+fn claude_resume_error(error: claude::session::Error) -> Error {
+    use claude::session::Error as Native;
+    match error {
+        Native::UnsupportedVersion => claude_initialize_error(error),
+        Native::Timeout => Error::Protocol("Claude resume timed out before input"),
+        Native::Refused => Error::Protocol("Claude resume was refused before input"),
+        Native::PeerEof => Error::Protocol("Claude resume process ended before input"),
+        _ => Error::Protocol("Claude resume failed before input"),
     }
 }
 
@@ -1203,6 +1292,7 @@ async fn run_octos(
                     requests: requests.len(),
                     returns: returns.len(),
                     cumulative: evidence.coverage() == octos::session::UsageCoverage::Session,
+                    late_failure: None,
                 });
             }
             octos::session::Event::ToolCall { params } => {

@@ -85,6 +85,12 @@ impl State {
     fn receipt(&self) -> Option<&InterruptReceipt> {
         self.0.as_ref()?.receipt.as_ref()
     }
+    /// This started request was accepted or has no native answer yet.
+    pub(super) fn unrefused(&self, id: &str) -> bool {
+        self.0.as_ref().is_some_and(|r| {
+            r.id == id && r.started && r.receipt.as_ref().is_none_or(|r| r.accepted)
+        })
+    }
     pub(super) fn observe<R, W, E>(
         &mut self,
         id: &str,
