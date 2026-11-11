@@ -581,18 +581,20 @@ pub fn interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, E
     ]);
     Ok(args)
 }
-fn arguments_for_workspace(model: &str, may_write: bool) -> Result<Vec<String>, Error> {
-    // Native aliases include context suffixes (sonnet[1m]); Bedrock accepts
-    // full inference-profile ARNs. Keep these as one argv value, never a shell
-    // fragment or an extra option. Availability is checked by the native CLI.
-    if model.is_empty()
-        || model.len() > 1024
-        || !model.as_bytes()[0].is_ascii_alphanumeric()
-        || !model.bytes().all(|b| {
+/// Native aliases include context suffixes (sonnet[1m]); Bedrock accepts full
+/// inference-profile ARNs. Such a name is one argv value, never a shell
+/// fragment or an extra option. Availability is checked by the native CLI.
+pub(crate) fn model_name(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 1024
+        && model.as_bytes()[0].is_ascii_alphanumeric()
+        && model.bytes().all(|b| {
             b.is_ascii_alphanumeric()
                 || matches!(b, b'.' | b'_' | b'-' | b':' | b'/' | b'@' | b'[' | b']')
         })
-    {
+}
+fn arguments_for_workspace(model: &str, may_write: bool) -> Result<Vec<String>, Error> {
+    if !model_name(model) {
         return Err(Error::Input);
     }
     let mut args = [

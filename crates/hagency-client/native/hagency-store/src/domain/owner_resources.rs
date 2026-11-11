@@ -195,7 +195,7 @@ impl VerifiedProviderAccount {
     }
     pub fn from_claude_binding(binding: hagency_runtime::claude::account::AccountBinding) -> Result<Self, Error> {
         binding.check().map_err(|_| Error::LocalAuthority)?;
-        let mut proof = Self::new("claude", hagency_runtime::claude::account::PROVIDER, binding.subject(), binding.expires())?;
+        let mut proof = Self::new("claude", binding.provider(), binding.subject(), binding.expires())?;
         if proof.digest != binding.provider_digest() { return Err(Error::LocalAuthority); }
         proof.claude = Some(binding);
         Ok(proof)

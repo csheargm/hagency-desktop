@@ -1362,6 +1362,20 @@ impl ClaudeAccountStatus {
         }
         Some((self.email.as_deref()?, self.organization.as_deref()?))
     }
+    /// The CLI uses an API key (true) or a bearer token (false) rather than a
+    /// claude.ai sign-in. Claude Code 2.1.322 reports these as `api_key` and
+    /// `oauth_token`; the second also covers a claude.ai token in the
+    /// environment, which the caller tells apart by the variable it finds.
+    pub fn api_credential(&self) -> Option<bool> {
+        if !self.authenticated || self.provider.as_deref() != Some("firstParty") {
+            return None;
+        }
+        match self.method.as_deref()? {
+            "api_key" => Some(true),
+            "oauth_token" => Some(false),
+            _ => None,
+        }
+    }
 }
 
 pub async fn claude_account_status(

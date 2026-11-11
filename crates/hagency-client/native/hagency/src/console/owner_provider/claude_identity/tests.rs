@@ -116,6 +116,82 @@ async fn claude_identity_requires_authenticated_uuid_and_unchanged_native_login(
     }
 }
 
+#[cfg(unix)]
+fn api_status(method: &str) -> Value {
+    json!({"loggedIn":true,"authMethod":method,"apiProvider":"firstParty"})
+}
+#[cfg(unix)]
+fn write_settings(paths: &ProviderPaths, value: &Value, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = paths.codex_home.join("settings.json");
+    std::fs::write(&path, value.to_string()).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+#[cfg(unix)]
+async fn observe_api(paths: &ProviderPaths, binary: &std::path::Path) -> Result<AccountBinding, ProviderError> {
+    observe_selected(paths, binary, Instant::now() + Duration::from_secs(20), PROFILE, async {
+        panic!("an API credential never touches the claude.ai sign-in")
+    })
+    .await
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_identity_binds_an_api_credential_from_the_settings_file() {
+    let token = json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example/","ANTHROPIC_AUTH_TOKEN":"gateway-token",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL":"open-model-a","ANTHROPIC_CUSTOM_HEADERS":"x: y"},"permissions":{}});
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
+    write_settings(&paths, &token, 0o644);
+    let binding = observe_api(&paths, &binary).await.unwrap();
+    assert!(binding.is_api_credential());
+    let expected = AccountBinding::from_api_credential(
+        Some("https://gateway.example"), "gateway-token", false, Instant::now() + Duration::from_secs(20)).unwrap();
+    assert_eq!(binding.provider_digest(), expected.provider_digest());
+
+    let key = json!({"env":{"ANTHROPIC_API_KEY":"sk-ant-api03-example"}});
+    let (_root, paths, binary) = fixture(api_status("api_key"), api_status("api_key"));
+    write_settings(&paths, &key, 0o600);
+    let binding = observe_api(&paths, &binary).await.unwrap();
+    let expected = AccountBinding::from_api_credential(
+        None, "sk-ant-api03-example", true, Instant::now() + Duration::from_secs(20)).unwrap();
+    assert_eq!(binding.provider_digest(), expected.provider_digest());
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_identity_refuses_an_api_credential_it_cannot_take_from_the_settings_file() {
+    let gateway = json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":"gateway-token"}});
+    for (mode, method, settings, permissions) in [
+        // The CLI says "API key" but the file holds no key (a helper or a shell variable).
+        ("key-elsewhere", "api_key", json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example"}}), 0o644),
+        ("no-env", "oauth_token", json!({"permissions":{}}), 0o644),
+        // Both set: the CLI would use the bearer token, not the key it reported.
+        ("both", "api_key", json!({"env":{"ANTHROPIC_API_KEY":"sk-ant-api03-example","ANTHROPIC_AUTH_TOKEN":"t"}}), 0o644),
+        // A claude.ai sign-in token, or a bearer token for Anthropic's own API.
+        ("subscription-token", "oauth_token", json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":"sk-ant-oat01-example"}}), 0o644),
+        ("bearer-anthropic", "oauth_token", json!({"env":{"ANTHROPIC_AUTH_TOKEN":"some-token"}}), 0o644),
+        ("claude-oauth-variable", "oauth_token", json!({"env":{"CLAUDE_CODE_OAUTH_TOKEN":"sk-ant-oat01-example"}}), 0o644),
+        ("bad-endpoint", "oauth_token", json!({"env":{"ANTHROPIC_BASE_URL":"file:///etc","ANTHROPIC_AUTH_TOKEN":"gateway-token"}}), 0o644),
+        ("not-a-string", "oauth_token", json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":7}}), 0o644),
+        ("writable-by-others", "oauth_token", gateway.clone(), 0o666),
+    ] {
+        let (_root, paths, binary) = fixture(api_status(method), api_status(method));
+        write_settings(&paths, &settings, permissions);
+        assert!(observe_api(&paths, &binary).await.is_err(), "{mode}");
+    }
+    // No settings file, a symlink in its place, and a sign-in that changes meanwhile.
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
+    assert!(observe_api(&paths, &binary).await.is_err());
+    let (root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
+    let real = root.path().join("elsewhere.json");
+    std::fs::write(&real, gateway.to_string()).unwrap();
+    std::os::unix::fs::symlink(&real, paths.codex_home.join("settings.json")).unwrap();
+    assert!(observe_api(&paths, &binary).await.is_err());
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("api_key"));
+    write_settings(&paths, &gateway, 0o644);
+    assert!(observe_api(&paths, &binary).await.is_err());
+}
+
 #[tokio::test]
 #[cfg(unix)]
 async fn claude_identity_never_reads_credentials_for_other_backends_or_unidentified_login() {
