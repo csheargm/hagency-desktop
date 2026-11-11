@@ -47,7 +47,12 @@ async fn ready() -> (Driver, Peer) {
     let (mut d, mut p) = pair();
     let (result, ()) = tokio::join!(d.initialize(), async {
         let v = read(&mut p).await;
-        reply(&mut p, &v["request_id"], json!({})).await;
+        reply(
+            &mut p,
+            &v["request_id"],
+            json!({"claude_code_version":"2.1.322"}),
+        )
+        .await;
     });
     result.unwrap();
     (d, p)
