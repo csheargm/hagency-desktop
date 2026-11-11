@@ -1,8 +1,12 @@
 //! Real normal personal-ledger opener must reject an archive refusal sentinel.
 //! Only these synthetic fixtures create one; production adoption stays absent.
 use hagency_agent_local::{Error, Ledger};
-use hagency_store::{management::MANAGEMENT_ARCHIVE_APPLICATION_ID, private};
+use hagency_store::private;
 use rusqlite::Connection;
+
+/// The application id of the archive files an earlier version wrote. Nothing
+/// writes one any more; a file left on disk must still be refused untouched.
+const MANAGEMENT_ARCHIVE_APPLICATION_ID: i32 = 0x48415231;
 
 #[test]
 fn archive_sentinel_blocks_absent_personal_ledger_initialization() {
