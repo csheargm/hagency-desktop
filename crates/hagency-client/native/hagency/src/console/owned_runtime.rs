@@ -2189,6 +2189,12 @@ async fn monitor_running<T: Transport>(
     prepared: &inbox::Prepared,
     mut cancel: watch::Receiver<bool>,
 ) -> RuntimeError {
+    // A check that gets no answer says nothing about the run. One slow
+    // request (a busy computer, an owner renewal in progress) ended a healthy
+    // turn as "outcome unknown". Only an answer ends the turn at once; no
+    // answer ends it after the grace. A server that cannot be reached is
+    // still fenced by the device lease, which the heartbeat must renew.
+    let mut unanswered_since: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {biased;_=canceled(&mut cancel)=>return RuntimeError::Stopped,_=tokio::time::sleep(Duration::from_secs(5))=>{}}
         match tokio::time::timeout(
@@ -2203,12 +2209,29 @@ async fn monitor_running<T: Transport>(
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                unanswered_since = None;
+                continue;
+            }
+            Ok(Err(RuntimeError::Transport)) | Err(_) => {}
             Ok(Err(error)) => return error,
-            Err(_) => return RuntimeError::Transport,
         }
+        let unanswered = unanswered_since
+            .get_or_insert_with(tokio::time::Instant::now)
+            .elapsed();
+        if unanswered >= RUNNING_CHECK_GRACE {
+            return RuntimeError::Transport;
+        }
+        tracing::warn!(
+            stage = "running_check",
+            unanswered_ms = unanswered.as_millis() as u64,
+            "Running check got no answer; the turn continues and the check is retried"
+        );
     }
 }
+/// How long the running check may go unanswered before the turn is given up.
+/// The same length as the device lease.
+const RUNNING_CHECK_GRACE: Duration = Duration::from_secs(30);
 /// Best effort only: this notification cannot trigger or retry provider work.
 async fn processing_notice<T: Transport>(
     transport: &T,
@@ -5401,13 +5424,14 @@ for raw in sys.stdin:
             })
         }
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn running_monitor_preserves_transport_failure_instead_of_revoking_agent() {
         let (_stop, cancel) = watch::channel(false);
         let prepared = inbox::Prepared {
             dispatch: event(),
             execution_id: "execution-a".into(),
         };
+        let started = tokio::time::Instant::now();
         let result = monitor_running(
             &RunningFailureFake {
                 authorization: false,
@@ -5418,6 +5442,49 @@ for raw in sys.stdin:
         )
         .await;
         assert!(matches!(result, RuntimeError::Transport));
+        // Given up only after the grace, and not much later.
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(15), "{waited:?}");
+    }
+    /// What each running check returns, in order; `None` never answers.
+    struct RunningSequenceFake {
+        answers: StdMutex<std::collections::VecDeque<Option<RuntimeError>>>,
+    }
+    impl Transport for RunningSequenceFake {
+        async fn execute(&self, op: Op) -> Result<Response, RuntimeError> {
+            assert!(matches!(op, Op::AuthorizeTool { .. }));
+            let next = self.answers.lock().unwrap().pop_front();
+            match next.expect("more running checks than the test expects") {
+                Some(error) => Err(error),
+                None => std::future::pending().await,
+            }
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn running_monitor_survives_unanswered_checks_and_ends_on_an_answer() {
+        let (_stop, cancel) = watch::channel(false);
+        let prepared = inbox::Prepared {
+            dispatch: event(),
+            execution_id: "execution-a".into(),
+        };
+        // One check that hangs past its own time limit and one transport
+        // failure, as on a busy computer; then the server refuses the run.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    None,
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        let result = monitor_running(&fake, &lease(), &prepared, cancel).await;
+        assert!(matches!(result, RuntimeError::Authorization));
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+        assert!(fake.answers.lock().unwrap().is_empty());
     }
     struct RestartLeaseFake {
         history_calls: std::sync::atomic::AtomicUsize,
