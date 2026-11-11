@@ -9,7 +9,7 @@ def main():
     source=(APP/'bundle/main.splash').read_text()
     recovery=source[source.index('A.recover_native = fn('):source.index('A.saved_label = fn(')]
     helpers=source[source.index('A.begin_setup = fn('):source.index('A.fields_changed = fn(')]
-    start=source.index('        if H.page == "provider_accounts" ||')
+    start=source.index('        if H.page == "provider_accounts" {View{')
     pages=source[start:source.index('        if A.sub_page() &&',start)]
     fixture='''
 let Down=3
@@ -18,6 +18,10 @@ mod.widgets.RINX_INFO_BG=1 mod.widgets.RINX_INFO_FG=1
 mod.widgets.HagencyList=base mod.widgets.HagencyFitRow=base mod.widgets.HagencyRowBody=base mod.widgets.HagencyRowIcon=base
 mod.widgets.HagencyRowGlyph=base mod.widgets.HagencyListText=base mod.widgets.HagencyWrapTitle=base mod.widgets.HagencyWrapSubtitle=base
 mod.widgets.HagencyChevron=base mod.widgets.HagencyRowCover=base
+let Inset={} let Align={}
+mod.widgets.HagencyColumn=base mod.widgets.HagencyLargeTitle=base mod.widgets.HagencyListNote=base mod.widgets.HagencyListLabel=base
+mod.widgets.HagencyListRow=base mod.widgets.HagencyListBody=base mod.widgets.HagencyListValue=base mod.widgets.HagencyListDivider=base
+mod.widgets.HagencyListTap=base mod.widgets.HagencyListTitle=base mod.widgets.HagencyAccentText=base mod.widgets.RINX_MUTED=1
 mod.widgets.RINX_SPACING=1 mod.rinx_icons.connection=1 mod.rinx_icons.close=1
 H.ux.accountId="" H.ux.resourceJourney=false
 H.owner={accountId:"" accountLabel:"" accountTab:"login" creatingPool:false setupOpen:false}
@@ -38,6 +42,7 @@ A.open_resource=fn(id){H.page="resource_detail" H.resource_id=id}
 let row={id:"account_original" identityKey:"identity_one" kind:"managed_namespace" runtime:"codex" state:"active" ordinal:1 revision:"revision" profile:"codex-default-namespace-v1" readiness:"unknown" resourceCount:1}
 let inventory={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[row] account:nil resources:[] nextAfter:nil}
 let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] account:row resources:[{id:"resource_original" model:"Coding model"}] nextAfter:nil}
+let second={id:"account_second" identityKey:"identity_one" kind:"managed_namespace" runtime:"codex" state:"active" ordinal:2 revision:"revision" profile:"codex-default-namespace-v1" readiness:"subscription" resourceCount:0}
 let claude={id:"account_claude_code" kind:"local_configuration" runtime:"claude" state:"active" revision:"revision_claude" readiness:"subscription" resourceCount:1}
 H.pool_create=nil H.pool_create_seq=0
 '''
@@ -61,18 +66,22 @@ H.pool_create=nil H.pool_create_seq=0
       'prepare_entry':('H.account_inventory=inventory','button("account_prepare_review").on_click()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.onboarding.status")\nH.callback({state:"active"})\nassert(H.page=="account_prepare")'),
       'prepare_needs_setup':('H.account_inventory=inventory A.dev_open=fn(page,from){H.page=page}','button("account_prepare_review").on_click()\nH.callback({state:"uninitialized"})\nassert(H.page=="pool_device_setup" && H.calls.len()==1)'),
       'prepare_late_setup':('H.account_inventory=inventory','button("account_prepare_review").on_click()\nH.page="overview"\nH.callback({state:"active"})\nassert(H.page=="overview")'),
-      'loading':('H.busy=true','assert(has(A.t("Reading accounts…","正在读取账号…")))\nassert(!button("accounts_refresh").enabled)'),
-      'failed':('','assert(has(A.t("Account list unavailable","账号列表暂不可用")))\nassert(!has(A.t("No recorded accounts in this profile","当前身份暂无账号记录")))'),
-      'empty':('H.account_inventory=inventory inventory.accounts=[]','assert(has(A.t("No recorded accounts in this profile","当前身份暂无账号记录")))'),
-      'managed':('H.account_inventory=inventory','assert(has(A.t("Codex account ","Codex 账号 ")+"1"))\nassert(has(A.t("Login status not verified","登录状态未验证")))\nbutton("account_open").on_click()\nassert(H.calls[0].service=="hagency.accounts.get" && H.calls[0].args.id=="account_original")'),
+      'loading':('H.busy=true','assert(has(A.t("Reading accounts…","正在读取账号…")))\nassert(button("account_prepare_review")==nil && !button("owner_setup").enabled)'),
+      'failed':('','assert(has(A.t("Account list unavailable","账号列表暂不可用")))\nassert(!has(A.t("No Codex account yet","还没有 Codex 账号")))'),
+      'empty':('H.account_inventory=inventory inventory.accounts=[]','assert(has(A.t("No Codex account yet","还没有 Codex 账号")) && has(A.t("Not connected yet","尚未接入")))\nassert(button("account_prepare_review").enabled && button("account_open")==nil && button("account_local_pool")==nil && button("account_pending_toggle")==nil)'),
+      # One group per coding tool, each ending in its own action; nothing is left outside a group.
+      'tools_grouped':('H.account_inventory=inventory inventory.accounts=[row,claude] A.dev_open=fn(page,from){H.page=page}','assert(has("CODEX") && has("CLAUDE CODE") && has(A.t("DEVICE","设备")) && !has(A.t("OTHER RECORDS","其他记录")))\nassert(has(A.t("Connect a Codex Account","接入 Codex 账号")) && has(A.t("New Pool","新建资源池")))\nassert(!has(A.t("Not connected yet","尚未接入")) && !has(A.t("No Codex account yet","还没有 Codex 账号")))\nbutton("owner_setup").on_click()\nassert(H.page=="pool_device")'),
+      'shared_identity':('H.account_inventory=inventory inventory.accounts=[row,second]','assert(has(A.t("Codex account ","Codex 账号 ")+"1 · "+A.account_kind(row)+" 1") && has(A.t("Codex account ","Codex 账号 ")+"1 · "+A.account_kind(row)+" 2"))\nassert(has(A.t("These login records share a recorded account identity. Actions apply to the selected login only.","这些登录记录关联同一账号身份。操作仅作用于所选登录记录。")))\nassert(has(A.t("Subscription login observed","已检测到订阅登录")))'),
+      'unconfirmed_closed':('H.account_inventory=inventory row.identityKey=nil H.account_pending_open=false','assert(has(A.t("Unconfirmed records","待确认记录")) && has("1") && button("account_record_open")==nil)\nbutton("account_pending_toggle").on_click()\nassert(H.account_pending_open)'),
+      'managed':('H.account_inventory=inventory','assert(has(A.t("Codex account ","Codex 账号 ")+"1"))\nassert(has(A.t("Login status not verified · pools: 1","登录状态未验证 · 已有 1 个资源池")))\nbutton("account_open").on_click()\nassert(H.calls[0].service=="hagency.accounts.get" && H.calls[0].args.id=="account_original")'),
       # Claude Code as this computer has it set up is a coding tool of its own on this page, not a record to confirm.
       'claude_code_listed':('H.account_inventory=inventory inventory.accounts=[row,claude]','let g=A.account_groups()\nassert(g.local.len()==1 && g.unconfirmed.len()==0 && g.known.len()==1)\nassert(has("Claude Code"))\nassert(has(A.pool_login_text(claude)))\nassert(button("account_local_pool").enabled)'),
       'claude_code_new_pool':('H.account_inventory=inventory inventory.accounts=[row,claude]','button("account_local_pool").on_click()\nassert(H.page=="pool_create" && H.pool_create.account==nil && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")\nH.host_callback({is_ok:true data:{accounts:[row,claude]}})\nassert(H.pool_create.account.id=="account_claude_code" && H.pool_create.accounts.len()==2)\nassert(H.calls.len()==2 && H.calls[1].service=="hagency.accounts.get" && H.calls[1].args.id=="account_claude_code")'),
       'claude_code_pending':('H.account_inventory=inventory inventory.accounts=[row,claude] H.command={service:"original"}','assert(!button("account_local_pool").enabled)\nbutton("account_local_pool").on_click()\nassert(H.page=="provider_accounts" && H.calls.len()==0)'),
-      'uncertain':('H.account_inventory=inventory row.identityKey=nil row.state="uncertain"','assert(has(A.t("Preparation outcome unknown","准备结果未确认")+" · "+A.account_readiness(row)))'),
-      'retired':('H.account_inventory=inventory row.identityKey=nil row.state="retired"','assert(has(A.t("Retired","已停用")+" · "+A.account_readiness(row)))'),
-      'linked':('H.account_inventory=inventory row.identityKey=nil row.kind="resource_binding" row.state="linked"','assert(has(A.t("Recorded resource association","已记录资源关联")+" · "+A.account_readiness(row)))'),
-      'observed':('H.account_inventory=inventory row.readiness="subscription"','assert(has(A.t("Subscription login observed","已检测到订阅登录")))'),
+      'uncertain':('H.account_inventory=inventory row.identityKey=nil row.state="uncertain"','assert(has(A.t("Preparation outcome unknown","准备结果未确认")+" · "+A.account_readiness(row)+A.t(" · pools: 1"," · 已有 1 个资源池")))'),
+      'retired':('H.account_inventory=inventory row.identityKey=nil row.state="retired"','assert(has(A.t("Retired","已停用")+" · "+A.account_readiness(row)+A.t(" · pools: 1"," · 已有 1 个资源池")))'),
+      'linked':('H.account_inventory=inventory row.identityKey=nil row.kind="resource_binding" row.state="linked"','assert(has(A.t("Recorded resource association","已记录资源关联")+" · "+A.account_readiness(row)+A.t(" · pools: 1"," · 已有 1 个资源池")))'),
+      'observed':('H.account_inventory=inventory row.readiness="subscription" row.resourceCount=0','assert(has(A.t("Subscription login observed","已检测到订阅登录")))'),
       'list_pagination':('H.account_inventory=inventory inventory.nextAfter="account_original"','A.open_accounts(nil)\nH.callback(inventory)\nassert(H.account_inventory==nil && H.calls.len()==2 && H.calls[1].service=="hagency.accounts.list" && H.calls[1].args.after=="account_original")'),
       'models_entry':('H.page="provider_account" H.account_detail=detail','button("account_models_check").on_click()\nassert(H.calls.len()==1 && H.calls[0].service=="hagency.accounts.models" && H.calls[0].args.accountId=="account_original")\nassert(H.busy && H.account_models==nil)'),
       'models_empty':('H.page="provider_account" H.account_detail=detail H.account_models_attempted=true H.account_models={provider:{models:[]}}','assert(has(A.t("This account returned no available models.","此账号未返回可用模型。")))'),

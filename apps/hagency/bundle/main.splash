@@ -7634,6 +7634,26 @@ A.account_groups = fn(){
     }
     return result
 }
+// Coding Tools rows: which sign-in it is, then its state and how many pools run on it.
+A.account_title=fn(group,index,member_index){
+    let name=if group.runtime=="codex" {A.t("Codex account ","Codex 账号 ")+(index+1)} else {group.runtime+A.t(" account "," 账号 ")+(index+1)}
+    return if group.members.len()>1 {name+" · "+A.account_kind(group.members[member_index])+" "+(member_index+1)} else {name}
+}
+A.account_pools=fn(row){
+    let {resourceCount=0}=row
+    return if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
+}
+A.account_subtitle=fn(row){
+    let text=A.account_readiness(row)
+    if row.kind!="managed_namespace" {text=A.account_kind(row)+" · "+text} else if row.state!="active" {text=A.account_state(row)+" · "+text}
+    return text+A.account_pools(row)
+}
+// The unconfirmed records to list: none while their row is closed.
+A.account_pending_rows=fn(groups){return if H.account_pending_open {groups.unconfirmed} else {[]}}
+A.account_shared=fn(groups){
+    for group in groups.known {if group.members.len()>1 {return true}}
+    return false
+}
 // Coding Tools lists Claude Code too. It has no sign-in to manage there; its row leads to a new pool on it.
 A.account_pool_create=fn(row){
     if H.busy || H.command!=nil {return}
@@ -10844,10 +10864,120 @@ A.render_page = fn(){
                 }}
             }}
         }}
-        if H.page == "provider_accounts" || H.page == "provider_account" || H.page == "account_prepare" {mod.widgets.HagencyDetailCard{
+        if H.page == "provider_accounts" {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{bottom:28} mod.widgets.HagencyColumn{
+            mod.widgets.HagencyLargeTitle{text:A.t("Coding Tools","编码工具")}
+            mod.widgets.HagencyListNote{padding:Inset{left:2 right:7 top:0 bottom:6} text:A.t("Connect the tool that runs on this device. Manage its login, server access and resource pools in one place.","接入此设备运行的编码工具，集中管理登录、服务器接入及其资源池。")}
+            if H.account_inventory==nil {mod.widgets.HagencyList{mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{
+                mod.widgets.HagencyListValue{text:if H.busy {A.t("Reading accounts…","正在读取账号…")}else{A.t("Account list unavailable","账号列表暂不可用")}}
+            }}}}
+            if H.account_inventory!=nil {
+                let groups=A.account_groups()
+                // One group per coding tool: its sign-ins, then the one thing to do with it from here.
+                View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:"CODEX"}
+                    mod.widgets.HagencyList{
+                        if groups.known.len()==0 {View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("No Codex account yet","还没有 Codex 账号")}}}
+                            mod.widgets.HagencyListDivider{margin:Inset{left:14}}
+                        }}
+                        for index, group in groups.known {let g=group let at=index for member_index, member in g.members {let row=member let nth=member_index View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyFitRow{
+                                mod.widgets.HagencyRowBody{
+                                    mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
+                                    mod.widgets.HagencyListText{
+                                        mod.widgets.HagencyWrapTitle{text:A.account_title(g,at,nth)}
+                                        mod.widgets.HagencyWrapSubtitle{text:A.account_subtitle(row)}
+                                    }
+                                    mod.widgets.HagencyChevron{}
+                                }
+                                account_open := mod.widgets.HagencyRowCover{enabled:!H.busy on_click: || A.open_account(row.id,nil)}
+                            }
+                            mod.widgets.HagencyListDivider{}
+                        }}}
+                        mod.widgets.HagencyListRow{
+                            account_prepare_review := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.review_account_preparation()}
+                            mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("Connect a Codex Account","接入 Codex 账号")}}
+                        }
+                    }
+                    mod.widgets.HagencyListNote{text:A.t("You sign in on the provider’s page. Hagency keeps the login private to this Matrix profile.","在服务商页面登录；Hagency 会将登录信息独立保存在当前 Matrix 身份下。")}
+                    if A.account_shared(groups) {mod.widgets.HagencyListNote{text:A.t("These login records share a recorded account identity. Actions apply to the selected login only.","这些登录记录关联同一账号身份。操作仅作用于所选登录记录。")}}
+                }
+                View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:"CLAUDE CODE"}
+                    mod.widgets.HagencyList{
+                        if groups.local.len()==0 {mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
+                            mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_FIELD mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection draw_icon.color:mod.widgets.RINX_MUTED}}
+                            mod.widgets.HagencyListText{
+                                mod.widgets.HagencyWrapTitle{text:A.t("Not connected yet","尚未接入")}
+                                mod.widgets.HagencyWrapSubtitle{text:A.t("Connect Claude Code under My Agents. It is then listed here and can be shared as a pool.","在「我的 Agent」中接入 Claude Code 后，它会列在这里，也可以用来创建资源池。")}
+                            }
+                        }}}
+                        for index, item in groups.local {let row=item View{width:Fill height:Fit flow:Down
+                            if index>0 {mod.widgets.HagencyListDivider{}}
+                            mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
+                                mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
+                                mod.widgets.HagencyListText{
+                                    mod.widgets.HagencyWrapTitle{text:A.pool_account_name(row,false)}
+                                    account_local_login := mod.widgets.HagencyWrapSubtitle{text:A.pool_login_text(row)}
+                                }
+                            }}
+                            mod.widgets.HagencyListDivider{}
+                            mod.widgets.HagencyListRow{
+                                account_local_pool := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.account_pool_create(row)}
+                                mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("New Pool","新建资源池")}}
+                            }
+                        }}
+                    }
+                    if groups.local.len()>0 {mod.widgets.HagencyListNote{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}}
+                }
+                if groups.unconfirmed.len()>0 {View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:A.t("OTHER RECORDS","其他记录")}
+                    mod.widgets.HagencyList{
+                        mod.widgets.HagencyListRow{
+                            account_pending_toggle := mod.widgets.HagencyListTap{grab_key_focus:true enabled:!H.busy on_click:||{H.account_pending_open=!H.account_pending_open A.redraw()}}
+                            mod.widgets.HagencyListBody{
+                                mod.widgets.HagencyListTitle{text:A.t("Unconfirmed records","待确认记录")}
+                                mod.widgets.HagencyListValue{text:""+groups.unconfirmed.len()}
+                                mod.widgets.HagencyRowGlyph{draw_icon.svg:if H.account_pending_open {mod.rinx_icons.collapse} else {mod.rinx_icons.expand} draw_icon.color:mod.widgets.RINX_MUTED}
+                            }
+                        }
+                        for item in A.account_pending_rows(groups) {let row=item View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyListDivider{margin:Inset{left:14}}
+                            mod.widgets.HagencyFitRow{
+                                mod.widgets.HagencyRowBody{
+                                    mod.widgets.HagencyListText{
+                                        mod.widgets.HagencyWrapTitle{text:A.pool_account_name(row,false)+" · "+A.account_kind(row)+if row.ordinal!=nil{" #"+row.ordinal}else{""}}
+                                        mod.widgets.HagencyWrapSubtitle{text:A.account_state(row)+" · "+A.account_readiness(row)+A.account_pools(row)}
+                                    }
+                                    mod.widgets.HagencyChevron{}
+                                }
+                                account_record_open := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.open_account(row.id,nil)}
+                            }
+                        }}
+                    }
+                    mod.widgets.HagencyListNote{text:A.t("These records do not establish another provider account. Open a record to continue setup or inspect its resources.","这些记录尚不能证明是另一个服务商账号。展开后可继续登录设置或查看资源。")}
+                }}
+            }
+            // This computer's setup lives under Resource Pools; the same row as there leads to it.
+            View{width:Fill height:Fit flow:Down spacing:6
+                mod.widgets.HagencyListLabel{text:A.t("DEVICE","设备")}
+                mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
+                    mod.widgets.HagencyRowBody{
+                        mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_INFO_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.device draw_icon.color:mod.widgets.RINX_INFO_FG}}
+                        mod.widgets.HagencyListText{
+                            mod.widgets.HagencyWrapTitle{text:A.t("This Computer","这台电脑")}
+                            mod.widgets.HagencyWrapSubtitle{text:A.t("Set up, move to a new computer, pick up interrupted tasks","设置、迁移到新电脑、接回中断的任务")}
+                        }
+                        mod.widgets.HagencyChevron{}
+                    }
+                    owner_setup := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.pool_device_open("accounts")}
+                }}
+            }
+        }}}
+        if H.page == "provider_account" || H.page == "account_prepare" {mod.widgets.HagencyDetailCard{
             mod.widgets.HagencyActions{
-                accounts_back := mod.widgets.HagencyButton{visible:H.page!="provider_accounts" enabled:!H.busy text:if H.page=="provider_account" {A.t("Coding tools","编码工具")}else{A.t("Back to resources","返回资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click: || {if H.page=="provider_account"{A.open_accounts(H.account_after)}else{A.navigate("resources")}}}
-                accounts_refresh := mod.widgets.HagencyButton{visible:H.page!="provider_accounts" enabled:!H.busy && !A.must_reopen() text:if H.busy{A.t("Updating…","正在更新…")}else{A.t("Refresh","刷新")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.refresh on_click: || A.refresh()}
+                accounts_back := mod.widgets.HagencyButton{enabled:!H.busy text:if H.page=="provider_account" {A.t("Coding tools","编码工具")}else{A.t("Back to resources","返回资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click: || {if H.page=="provider_account"{A.open_accounts(H.account_after)}else{A.navigate("resources")}}}
+                accounts_refresh := mod.widgets.HagencyButton{enabled:!H.busy && !A.must_reopen() text:if H.busy{A.t("Updating…","正在更新…")}else{A.t("Refresh","刷新")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.refresh on_click: || A.refresh()}
             }
             mod.widgets.HagencySection{
                 mod.widgets.HagencyEyebrow{text:A.t("01 / CODING TOOLS","01 / 编码工具")}
@@ -10865,62 +10995,6 @@ A.render_page = fn(){
                     account_prepare_cancel := mod.widgets.HagencyButton{enabled:!H.busy && H.command==nil text:A.t("Cancel", "取消") on_click: || {if !H.busy && H.command==nil {A.open_accounts(nil)}}}
                     account_prepare_confirm := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("Prepare private sign-in", "准备独立登录") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.submit_account_preparation()}
                 }
-            }}
-            if H.page=="provider_accounts" {
-                if H.account_inventory!=nil {mod.widgets.HagencyActions{
-                    account_prepare_review := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("Connect Codex", "接入 Codex") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.review_account_preparation()}
-                }}
-                if H.account_inventory==nil {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:if H.busy {A.t("Reading accounts…","正在读取账号…")}else{A.t("Account list unavailable","账号列表暂不可用")}}}}
-                if H.account_inventory!=nil {
-                    if H.account_inventory.accounts.len()==0 {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:A.t("No recorded accounts in this profile","当前身份暂无账号记录")} mod.widgets.HagencyHint{text:A.t("Add a Codex account to begin. You’ll sign in on the provider’s page; Hagency keeps the login private to this Matrix profile.","添加 Codex 账号即可开始。你将在服务商页面登录，Hagency 会将登录信息独立保存在当前 Matrix 身份下。")}}}
-                    let groups=A.account_groups()
-                    View{width:Fill height:Fit flow:Down spacing:16
-                    for row in groups.local {mod.widgets.HagencySection{
-                        mod.widgets.HagencySectionTitle{text:A.pool_account_name(row,false)}
-                        account_local_login := mod.widgets.HagencyCopy{text:A.pool_login_text(row)}
-                        mod.widgets.HagencyHint{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}
-                        mod.widgets.HagencyActions{
-                            account_local_pool := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("New Pool","新建资源池") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.account_pool_create(row)}
-                        }
-                    }}
-                    for index, group in groups.known {mod.widgets.HagencySection{
-                        mod.widgets.HagencySectionTitle{text:if group.runtime=="codex" {A.t("Codex account ","Codex 账号 ")+(index+1)}else{group.runtime+A.t(" account "," 账号 ")+(index+1)}}
-                        mod.widgets.HagencyCopy{text:A.t("Resource pools: ","资源池：")+group.resources}
-                        if group.members.len()>1 {mod.widgets.HagencyHint{text:A.t("These login records share a recorded account identity. Actions apply to the selected login only.","这些登录记录关联同一账号身份。操作仅作用于所选登录记录。")}}
-                        for member_index, row in group.members {View{width:Fill height:Fit flow:Down spacing:(6 * mod.widgets.RINX_SPACING)
-                            if group.members.len()>1 {mod.widgets.HagencyCopy{text:A.account_kind(row)+" "+(member_index+1)}}
-                            if row.state!="active" && row.kind=="managed_namespace" {mod.widgets.HagencyHint{text:A.account_state(row)}}
-                            mod.widgets.HagencyHint{text:A.account_readiness(row)}
-                            account_open := mod.widgets.HagencyButton{enabled:!H.busy text:if row.kind=="managed_namespace"{A.t("Manage tool","管理工具")}else{A.t("View associated resources","查看关联资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click: || A.open_account(row.id,nil)}
-                        }}
-                    }}
-                    }
-                    if groups.unconfirmed.len()>0 {mod.widgets.HagencySection{
-                        account_pending_toggle := mod.widgets.HagencyDisclosure{grab_key_focus:true enabled:!H.busy text:A.t("Unconfirmed records · ","待确认记录 · ")+groups.unconfirmed.len() icon_walk:Walk{width:16 height:16} draw_icon.svg:if H.account_pending_open{mod.rinx_icons.collapse}else{mod.rinx_icons.expand} on_click:||{H.account_pending_open=!H.account_pending_open A.redraw()}}
-                        mod.widgets.HagencyHint{text:A.t("These records do not establish another provider account. Open a record to continue setup or inspect its resources.","这些记录尚不能证明是另一个服务商账号。展开后可继续登录设置或查看资源。")}
-                        if H.account_pending_open {for row in groups.unconfirmed {View{width:Fill height:Fit flow:Down spacing:(6 * mod.widgets.RINX_SPACING)
-                            mod.widgets.HagencyCopy{text:row.runtime+" · "+A.account_kind(row)+if row.ordinal!=nil{" #"+row.ordinal}else{""}}
-                            mod.widgets.HagencyHint{text:A.account_state(row)+" · "+A.account_readiness(row)}
-                            mod.widgets.HagencyHint{text:A.t("Resource pools: ","资源池：")+row.resourceCount}
-                            account_record_open := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View record","查看记录") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click:||A.open_account(row.id,nil)}
-                        }}}
-                    }}
-                }
-            }
-            if H.page=="provider_accounts" {mod.widgets.HagencySection{
-                mod.widgets.HagencyHint{text:A.t("Sign in to Codex here. Claude Code needs no sign-in on this page: connect it under My Agents, and it is then listed here and offered as a coding tool when you create a pool.","这里用于登录 Codex。Claude Code 不需要在此登录：先在「我的 Agent」中接入，之后它会列在这里，创建资源池时也可以选择它。")}
-                // This computer's setup lives under Resource Pools; the same row as there leads to it.
-                mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
-                    mod.widgets.HagencyRowBody{
-                        mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_INFO_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.device draw_icon.color:mod.widgets.RINX_INFO_FG}}
-                        mod.widgets.HagencyListText{
-                            mod.widgets.HagencyWrapTitle{text:A.t("This Computer","这台电脑")}
-                            mod.widgets.HagencyWrapSubtitle{text:A.t("Set up, move to a new computer, pick up interrupted tasks","设置、迁移到新电脑、接回中断的任务")}
-                        }
-                        mod.widgets.HagencyChevron{}
-                    }
-                    owner_setup := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.pool_device_open("accounts")}
-                }}
             }}
             if H.page=="provider_account" {
                 if H.account_detail==nil {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:if H.busy {A.t("Reading account…","正在读取账号…")}else{A.t("Account details unavailable","账号详情暂不可用")}}}}

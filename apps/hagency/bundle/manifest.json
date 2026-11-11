@@ -163,7 +163,7 @@
   ],
   "id": "im.palpo.operations",
   "integrity": {
-    "bundle_blake3": "cdfbe9297de3fe260a661146c5c83a7c413bf80d58076569886e5f1b084372d4"
+    "bundle_blake3": "a86bf0eae93194992b881dd716974675d590b783822b902e4a3e391af81cc78b"
   },
   "name": "Hagency",
   "requires": [
