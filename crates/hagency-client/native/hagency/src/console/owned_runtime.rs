@@ -2471,7 +2471,11 @@ async fn run_turn<T: Transport>(
         if let Some(console) = host.as_ref() {
             let gate = Arc::new(LiveToolGate { console: console.clone(), lease: lease.clone(),
                 expected: prepared.dispatch.clone(), execution: prepared.execution_id.clone(), cancel: cancel.clone() });
-            let host = room_tools::Host::new(gate, config, &profile.cwd)?;
+            #[cfg(unix)]
+            let room_folder = working_directory::for_room_files(&config.profile, &profile, owner, &scope, config.shared_workspace)?;
+            #[cfg(not(unix))]
+            let room_folder = profile.cwd.clone();
+            let host = room_tools::Host::new(gate, config, &room_folder)?;
             let (channel, receiver) = hagency_agent_local::room_tools::room_queue(&scope, &prepared.dispatch.id)
                 .map_err(|_| RuntimeError::Profile)?;
             queue = queue.with_room_tools(channel);
