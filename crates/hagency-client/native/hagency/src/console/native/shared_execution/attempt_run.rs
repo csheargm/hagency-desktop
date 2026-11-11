@@ -198,7 +198,6 @@ async fn renew(
     control: &SharedTextActivityControl,
     a: &mut Activity,
 ) -> Result<(), NativeError> {
-    let (b, verified) = proof(io, r, sink, a).await?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| failure(503, "native_random_unavailable"))?;
     let id = format!(
@@ -208,9 +207,20 @@ async fn renew(
             .map(|v| format!("{v:02x}"))
             .collect::<String>()
     );
-    r.prepare_shared_renewal(verified, id.clone())
-        .await
-        .map_err(store)?;
+    // The proof and its local record are one retried step. A credential
+    // refresh between the two supersedes the proof, and the record's closing
+    // check then reports an unknown outcome, which ended the turn. The record
+    // is idempotent for one id, process and epoch, so the same id is recorded
+    // again under a fresh proof while the lease lasts.
+    let b = io
+        .settled(a.until, || async {
+            let (b, verified) = proof(io, r, sink, a).await?;
+            r.prepare_shared_renewal(verified, id.clone())
+                .await
+                .map_err(store)?;
+            Ok(b)
+        })
+        .await?;
     let started = Instant::now();
     let renewal = SharedActivityRenewInput {
         authority: a.lease.authority.clone(),
@@ -243,7 +253,9 @@ async fn maybe_renew(
     a: &mut Activity,
 ) -> Result<(), NativeError> {
     if a.until.saturating_duration_since(Instant::now()) <= Duration::from_secs(20) {
-        renew(io, r, sink, control, a).await?
+        renew(io, r, sink, control, a).await.inspect_err(|error| {
+            tracing::warn!(code = %error.code, "Shared activity renewal failed");
+        })?
     }
     Ok(())
 }
@@ -274,7 +286,18 @@ async fn prepare_while_active<T>(
             // across later renewals without rechecking that superseded proof.
             result = &mut preparation => return result,
             _ = tokio::time::sleep_until(wake.into()) => {
-                guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)).await?;
+                // The pending provider call keeps being polled beside the
+                // renewal: the renewal that refreshes the daemon's token takes
+                // seconds, and the call's own bound ran out meanwhile.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)),
+                    preparation.as_mut(),
+                )
+                .await;
+                renewed?;
+                if let Some(result) = finished {
+                    return result;
+                }
             }
         }
     }
@@ -306,9 +329,21 @@ async fn start_while_active(
             // Begin under the exact admitted proof before advancing its epoch.
             result = &mut start => return result.map(|()| None),
             _ = tokio::time::sleep_until(wake.into()) => {
-                match guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await {
-                    Ok(()) => continue,
-                    Err(error) => error,
+                // As in `prepare_while_active`: the start acknowledgement is
+                // read while the renewal runs, not after it.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)),
+                    start.as_mut(),
+                )
+                .await;
+                match (renewed, finished) {
+                    (Ok(()), None) => continue,
+                    (Ok(()), Some(result)) => return result.map(|()| None),
+                    // Acknowledged while its renewal failed: the outcome of
+                    // the retained wait below, without waiting again.
+                    (Err(error), Some(Ok(()))) => return Ok(Some(error)),
+                    (Err(error), Some(Err(_))) => return Err(error),
+                    (Err(error), None) => error,
                 }
             }
         };
