@@ -1223,6 +1223,8 @@ async fn heartbeat(
     use std::sync::atomic::Ordering;
     let first_expiry = deadline(&lease).unwrap_or_else(|_| Instant::now());
     let mut next = heartbeat_next(Instant::now(), first_expiry.min(device.valid_until()));
+    // Since when the device refresh after a renewal has had no answer.
+    let mut refresh_unanswered: Option<Instant> = None;
     let reason = loop {
         let Ok(expiry) = deadline(&lease) else {
             break "lease_deadline_elapsed";
@@ -1258,9 +1260,29 @@ async fn heartbeat(
             let fresh = tokio::select! {biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(fresh_expiry.into())=>break "device_refresh_deadline", result=console.authorized_device()=>result};
             let fresh = match fresh {
                 Ok(fresh) => fresh,
-                Err(super::Error::Unavailable) => break "device_refresh_transport",
+                // No answer says nothing about the device, and the lease was
+                // just renewed under the pinned identity. Keep that pin, renew
+                // again on the next pass and ask once more. Only a refresh
+                // that stays unanswered for a lease length stops the runtime;
+                // a refusal still stops it at once.
+                Err(super::Error::Unavailable) => {
+                    let now = Instant::now();
+                    let since = *refresh_unanswered.get_or_insert(now);
+                    if device_refresh_given_up(since, now) {
+                        break "device_refresh_transport";
+                    }
+                    tracing::warn!(
+                        stage = "device_refresh",
+                        unanswered_ms = now.saturating_duration_since(since).as_millis() as u64,
+                        "Device refresh got no answer; retrying with the next renewal"
+                    );
+                    next = heartbeat_next(now, fresh_expiry);
+                    tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(next.min(fresh_expiry).into())=>{} }
+                    continue;
+                }
                 _ => break "device_authorization_required",
             };
+            refresh_unanswered = None;
             if fresh.origin() != device.origin()
                 || fresh.issuer() != device.issuer()
                 || fresh.subject() != device.subject()
@@ -1283,6 +1305,11 @@ async fn heartbeat(
     );
     failed.store(if terminal { 1 } else { 2 }, Ordering::Release);
     stop.send_replace(true);
+}
+/// Whether a device refresh that has had no answer since `since` is given up:
+/// after the same grace as an unanswered running check.
+fn device_refresh_given_up(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= RUNNING_CHECK_GRACE
 }
 fn device_error(error: super::Error) -> RuntimeError {
     if matches!(error, super::Error::Unavailable) {
@@ -2902,6 +2929,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unanswered_device_refresh_is_retried_for_one_lease_length() {
+        let since = Instant::now();
+        assert!(!device_refresh_given_up(since, since));
+        assert!(!device_refresh_given_up(
+            since,
+            since + RUNNING_CHECK_GRACE - Duration::from_millis(1)
+        ));
+        assert!(device_refresh_given_up(since, since + RUNNING_CHECK_GRACE));
+    }
     #[test]
     fn heartbeat_schedule_precedes_short_proof_deadline() {
         let now = std::time::Instant::now();
