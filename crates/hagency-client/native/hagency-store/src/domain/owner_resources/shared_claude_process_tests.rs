@@ -109,6 +109,58 @@ async fn claude_api_credential_enrolls_without_a_folder_and_marks_the_owners_own
     let summary = registry.resource(&profile, rated.resource_id).await.unwrap();
     assert!(summary.capabilities.contains(&"architect".to_owned()), "{:?}", summary.capabilities);
 }
+/// The owner's Claude Code configuration is one account with no sign-in folder
+/// to tell its pools apart. A second pool of the same model and reasoning, and
+/// a new one after the first was deleted, is a pool of its own.
+#[tokio::test]
+async fn claude_configuration_makes_another_pool_of_the_same_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
+    let profile = authority('a');
+    let until = || Instant::now() + Duration::from_secs(45);
+    let proof = || {
+        VerifiedProviderAccount::from_claude_binding(
+            AccountBinding::from_authenticated_profile(
+                "01234567-89ab-cdef-0123-456789abcdef",
+                "89abcdef-0123-4567-89ab-cdef01234567",
+                "owner@example.test",
+                until(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let enroll = |command: &str, tokens: u64| {
+        registry
+            .prepare_enrollment(profile.clone(), command.into(), proof(), "claude-opus-5".into(), Some("medium".into()), tokens, until())
+            .unwrap()
+            .approve()
+    };
+    let first = enroll("first", 1000).await.unwrap();
+    // Asking for exactly the pool that is there is that pool, not a copy.
+    assert_eq!(enroll("first_again", 1000).await.unwrap().resource_id, first.resource_id);
+    // Another monthly maximum is another pool; the first keeps its own.
+    let second = enroll("second", 2000).await.expect("a second pool of the same model");
+    assert_ne!(second.resource_id, first.resource_id);
+    assert!(second.active);
+    assert_eq!(enroll("second", 2000).await.unwrap().resource_id, second.resource_id, "the same command is the same receipt");
+    for id in [&first.resource_id, &second.resource_id] {
+        let summary = registry.resource(&profile, id.clone()).await.unwrap();
+        assert_eq!((summary.framework.as_str(), summary.model.as_str(), summary.reasoning.as_deref()), ("claude", "claude-opus-5", Some("medium")));
+        registry.verify_provider_resource(profile.clone(), id.clone(), proof()).await.unwrap();
+    }
+    // Deleting the first pool does not use the model up.
+    registry
+        .prepare_revoke(profile.clone(), "delete_first".into(), first.resource_id.clone(), until())
+        .unwrap()
+        .approve()
+        .await
+        .unwrap();
+    let third = enroll("third", 3000).await.expect("a new pool after the first was deleted");
+    assert!(third.active);
+    assert!(third.resource_id != first.resource_id && third.resource_id != second.resource_id);
+    assert!(registry.resource(&profile, first.resource_id.clone()).await.is_err(), "the deleted pool stays deleted");
+}
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]
 async fn shared_claude_call_captures_native_usage_and_stop_never_completes_missing_idle() {

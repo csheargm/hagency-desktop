@@ -1555,3 +1555,35 @@ fn grant_commitment(
         _ => current,
     })
 }
+
+/// Why a pool's grants still stand in the way of deleting it.
+///
+/// Deleting removes the owner's listing, not its accounting history. An
+/// expired legacy grant can remain active in the settlement ledger; that flag
+/// alone does not mean it can authorize new work. Recurring and future grants
+/// still protect their owner's outstanding authorization. A grant replaced
+/// within its month keeps its row for the accounts and never gets a closure of
+/// its own: once the grant that replaced it is closed it authorizes nothing,
+/// like a successor that never held capacity.
+pub(crate) fn retirement_grant_blocker(db: &Connection, resource: &str) -> Result<Option<&'static str>, Error> {
+    let now = graphs::now_ms()?;
+    let rows = db
+        .prepare("SELECT id,receipt FROM owner_capacity_grants WHERE resource_id=?1 AND active=1 ORDER BY id")?
+        .query_map([resource], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, raw) in rows {
+        let Ok(grant) = serde_json::from_str::<NativeGrantReceipt>(&raw) else {
+            return Ok(Some("grant_state_unknown"));
+        };
+        if grant.resource_id != resource {
+            return Ok(Some("grant_state_unknown"));
+        }
+        if succession::void(db, &id)? || succession::superseded_into_closed_head(db, &id)? {
+            continue;
+        }
+        if grant.calendar.is_some() || (grant.period_end_ms > now && grant.delegation_expires_at_ms > now) {
+            return Ok(Some("active_grant"));
+        }
+    }
+    Ok(None)
+}

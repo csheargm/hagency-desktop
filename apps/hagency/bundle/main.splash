@@ -4840,7 +4840,8 @@ A.owner_requests=fn(connection){
 }
 A.connection_capacity_active=fn(connection){
     let c=H.connection_capacity
-    return c.id==connection.id && c.state=="ready" && c.pool!=nil && c.pool.publishedTokens!=nil && c.pool.grantRevision!=nil
+    // A closed connection publishes nothing, whatever the pool's last grant says.
+    return connection.state=="admitted" && c.id==connection.id && c.state=="ready" && c.pool!=nil && c.pool.publishedTokens!=nil && c.pool.grantRevision!=nil
 }
 A.load_connection_capacity=fn(connection){
     if H.entry_role!="owner" || H.page!="action" || connection.ownerMxid!=H.session.account{return}
@@ -7897,6 +7898,8 @@ A.retry_command = fn(){
             if command.service == "hagency.allocations.decide" || command.service == "hagency.allocations.release" {A.open_allocation(r.data.allocation.id)}
             if command.service=="hagency.connections.create" && A.publication_draft(r.data.admission.contribution) {A.publish_offer(r.data.admission.contribution) return}
             if command.service=="hagency.connections.reoffer" || command.service == "hagency.connections.create" || command.service == "hagency.inbox.decide" || command.service == "hagency.connections.revoke" || command.service == "hagency.connections.verify" || command.service == "hagency.connections.resume" { A.open_connection(r.data.admission.contribution.id) }
+            // The pool's own pages read the connection from the pool list: closing it is news there too.
+            if command.service == "hagency.connections.revoke" && H.pool_meta!=nil {A.pool_meta_load()}
             if command.service == "hagency.projects.request" || command.service == "hagency.projects.decide" || command.service == "hagency.projects.revoke" {A.open_project(r.data.project.id)}
         } else {
             if A.pool_mutation(command.service) {
