@@ -737,6 +737,42 @@ fn continuity_complete_unknown_hold_and_settled_cost_survive_restart_but_reset_b
     );
 }
 #[test]
+fn continuity_reply_with_unreported_usage_survives_restart_but_an_open_reservation_fails() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("local.db");
+    let mut l = setup(&path);
+    received(&mut l);
+    let p = l.prepare_execution(OWNER, &event().id).unwrap();
+    l.confirm_execution_start(OWNER, &response(&p, true))
+        .unwrap();
+    charge_policy(&mut l);
+    l.reserve(&event().scope(), &p.execution_id, &event().id, 50, 10)
+        .unwrap();
+    // A stopped turn: the provider reported no usage and the stop notice is
+    // the reply. Seen live: the Agent refused to start after the next restart.
+    l.settle(&event().scope(), &p.execution_id, &crate::unreported_usage())
+        .unwrap();
+    l.persist_execution_reply(OWNER, &event().id, &p.execution_id, "stopped")
+        .unwrap();
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
+    assert!(
+        l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+    drop(l);
+    let l = Ledger::open(&path, OWNER).unwrap();
+    assert!(
+        l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+    // A reply beside a reservation that was never closed is still refused.
+    l.db.execute("UPDATE calls SET state='pending'", []).unwrap();
+    assert!(
+        !l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+}
+#[test]
 fn postpaid_history_survives_restart_and_compaction_without_forgiving_or_replaying_usage() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("local.db");

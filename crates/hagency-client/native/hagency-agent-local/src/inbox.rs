@@ -891,9 +891,14 @@ impl Ledger {
             {
                 return Ok(false);
             }
+            // A finished execution never keeps an open reservation. Its charge
+            // is settled, or unknown when the provider reported no usage: a
+            // stopped turn whose stop notice is the reply, or an answer kept
+            // after its result was lost. Unknown stays unmeasured and is never
+            // replayed; refusing it here kept the Agent from starting again.
             if snapshots.len() != 3
                 || (matches!(state.as_str(), "reply_ready" | "replied" | "failed")
-                    && charge != "settled")
+                    && charge == "pending")
             {
                 return Ok(false);
             }
