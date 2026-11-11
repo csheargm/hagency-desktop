@@ -125,6 +125,56 @@ fn personal_runtime_categories_are_deduplicated_persisted_and_separate_from_rent
 }
 
 #[test]
+fn pooled_claude_calls_reach_the_pool_resource_once_and_survive_restart() {
+    use shared_claude::pooled_claude_binding;
+    assert!(capabilities().iter().any(|c| c.runtime == Runtime::Claude
+        && c.path == ExecutionPath::ManagedRental
+        && c.usage == Support::Collected));
+    let dir = tempfile::tempdir().unwrap();
+    // A store that has covered the whole period: no coverage gap in the reads below.
+    drop(store::Store::open(&dir.path().join("telemetry"), 0).unwrap());
+    let telemetry = OwnerTelemetry::new(0);
+    telemetry.attach_store(&dir.path().join("telemetry")).unwrap();
+    let at = now_ms();
+    let start = at - at % BUCKET;
+    let options = SnapshotOptions {
+        period: UsagePeriod::Range { start_ms: start, end_ms: start + BUCKET }, ..Default::default()
+    };
+    let usage = hagency_agent_local::Usage { input: 17, output: 3, cached_input: 5,
+        cache_write_input: Some(2), reasoning_output: 0, accounting_version: "claude-reported-v1".into() };
+    let measured = pooled_claude_binding("pool-claude", "allocation", "agent", "@user:test", "!room:test", "call-1", "claude-test");
+    assert_eq!(measured.execution_id, "shared:call-1");
+    assert_eq!(measured.account_id, None);
+    telemetry.pooled_claude_call(measured.clone(), Some(&usage)).unwrap();
+    // Read at the end of the period: an open period is partial by definition.
+    let pool = |telemetry: &OwnerTelemetry| telemetry.parts(start + BUCKET, options).unwrap().resources.into_iter()
+        .find(|resource| resource.resource_id == "pool-claude").unwrap();
+    let row = pool(&telemetry);
+    assert_eq!(row.counts, TokenCounts { input: Some(10), output: Some(3), cache_read: Some(5), cache_write: Some(2) });
+    assert_eq!((row.executions, row.state, row.account_id), (1, ResourceState::Measured, None));
+    // The same call recorded again adds nothing.
+    telemetry.pooled_claude_call(measured.clone(), Some(&usage)).unwrap();
+    let row = pool(&telemetry);
+    assert_eq!(row.counts, TokenCounts { input: Some(10), output: Some(3), cache_read: Some(5), cache_write: Some(2) });
+    assert_eq!(row.executions, 1);
+    // A call whose receipt does not hold complete usage is listed, never counted as zero.
+    let unknown = pooled_claude_binding("pool-claude", "allocation", "agent", "@user:test", "!room:test", "call-2", "claude-test");
+    telemetry.pooled_claude_call(unknown, None).unwrap();
+    let row = pool(&telemetry);
+    assert_eq!(row.counts, TokenCounts { input: Some(10), output: Some(3), cache_read: Some(5), cache_write: Some(2) });
+    assert_eq!((row.executions, row.state), (2, ResourceState::Partial));
+    drop(telemetry);
+    let telemetry = OwnerTelemetry::new(at);
+    telemetry.attach_store(&dir.path().join("telemetry")).unwrap();
+    let row = pool(&telemetry);
+    assert_eq!(row.counts.input, Some(10));
+    assert_eq!((row.executions, row.state), (2, ResourceState::Partial));
+    let report = telemetry.usage_report(start + BUCKET, options, None).unwrap();
+    assert!(report.by_model.iter().any(|(model, usage)| model.as_deref() == Some("claude-test") && usage.counts.output == Some(3)));
+    assert!(report.by_requester.iter().any(|(requester, _)| requester.as_deref() == Some("@user:test")));
+}
+
+#[test]
 fn transient_storage_failure_retains_measurements_for_ordered_retry() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("telemetry");

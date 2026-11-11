@@ -10087,7 +10087,7 @@ A.render_page = fn(){
                     }
                 }}
                 if c.accounts!=nil && c.accounts.len()==0 {View{width:Fill height:Fit flow:Down
-                    View{width:Fill height:Fit padding:Inset{left:14 right:14 top:12 bottom:12} mod.widgets.HagencyListSubtitle{text:A.t("No coding tool is connected yet. Connect Codex first; you’ll sign in on the provider’s page.","还没有接入编码工具。请先接入 Codex，会在服务商页面登录。")}}
+                    View{width:Fill height:Fit padding:Inset{left:14 right:14 top:12 bottom:12} mod.widgets.HagencyListSubtitle{text:A.t("No coding tool is connected yet. Connect Codex under Coding Tools (you’ll sign in on the provider’s page), or connect Claude Code under My Agents.","还没有接入编码工具。请在「编码工具」中接入 Codex（会在服务商页面登录），或在「我的 Agent」中接入 Claude Code。")}}
                     mod.widgets.HagencyListDivider{margin:Inset{left:14}}
                     mod.widgets.HagencyListRow{
                         pool_create_tools := mod.widgets.HagencyListTap{enabled:!H.busy on_click:||{H.pool_create=nil A.open_accounts(nil)}}
@@ -10886,7 +10886,7 @@ A.render_page = fn(){
                 }
             }
             if H.page=="provider_accounts" {mod.widgets.HagencySection{
-                mod.widgets.HagencyHint{text:A.t("Codex sign-in is supported here. Other coding tools are not yet available in this connection flow.","此入口支持 Codex 登录，其他编码工具尚未接入这套连接流程。")}
+                mod.widgets.HagencyHint{text:A.t("Sign in to Codex here. Claude Code needs no sign-in on this page: connect it under My Agents, and it is then offered as a coding tool when you create a pool.","这里用于登录 Codex。Claude Code 不需要在此登录：先在「我的 Agent」中接入，之后创建资源池时就可以选择它。")}
                 // This computer's setup lives under Resource Pools; the same row as there leads to it.
                 mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
                     mod.widgets.HagencyRowBody{

@@ -383,6 +383,7 @@ pub(super) async fn run(
                 until,
                 cancel,
                 sender,
+                telemetry,
             )
             .await;
         }

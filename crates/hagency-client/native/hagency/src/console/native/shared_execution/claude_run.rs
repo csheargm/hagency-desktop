@@ -25,6 +25,7 @@ pub(super) async fn run(
     until: Instant,
     mut cancel: watch::Receiver<bool>,
     sender: oneshot::Sender<Result<SharedExecutionProgress, NativeError>>,
+    telemetry: crate::console::native::telemetry::OwnerTelemetry,
 ) -> Result<(), DrainFailure> {
     let mut sender = Some(sender);
     let session = guarded(&mut cancel, until, || claimed.prepare_session(&io, &launch, until)).await;
@@ -170,7 +171,7 @@ pub(super) async fn run(
                 .send(Ok(SharedExecutionProgress::Running {
                     command_id: authority.id().into(),
                 }));
-            work(&mut active, &launch, &mut process, session, &mut cancel).await
+            work(&mut active, &launch, &mut process, session, &mut cancel, &telemetry).await
         }
         Err(error) => Err(error),
     };
@@ -225,6 +226,7 @@ async fn work(
     process: &mut OwnedClaudeSession,
     mut session: SharedClaudeSession,
     cancel: &mut watch::Receiver<bool>,
+    telemetry: &crate::console::native::telemetry::OwnerTelemetry,
 ) -> Result<(), NativeError> {
     let live = active.live.clone();
     let turn_policy = policy::load(&launch.turn_policy_path()?)?;
@@ -571,6 +573,22 @@ async fn work(
             kind,
             detail,
             "Shared Claude stream failed after its final answer; the answer is kept and its usage stays incomplete"
+        );
+    }
+    // The owner's report takes the call's categories only when the durable
+    // receipt holds its usage complete; any other issued call is listed
+    // without counts. This never changes the receipt or the budget.
+    if let Ok(Some(receipt)) = &receipt {
+        let measured = match &result {
+            Ok(outcome) if receipt.usage_complete => Some(&outcome.usage),
+            _ => None,
+        };
+        telemetry.shared_claude_usage(
+            live.authority.root(),
+            &work,
+            &call_id,
+            &launch.profile.model,
+            measured,
         );
     }
     match receipt {
