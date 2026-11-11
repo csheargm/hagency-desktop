@@ -740,6 +740,8 @@ mod tests {
             credential_ref: runtime::local_reference(runtime::Kind::Claude, &folder, None),
             takeover: Takeover::Never,
             host_files: false,
+            shared_workspace: false,
+            shared_workspace_pin: None,
             owner_direct: false,
             recovery_device_id: None,
             recovery_consent_id: None,
