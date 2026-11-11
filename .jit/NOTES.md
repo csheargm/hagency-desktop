@@ -8,7 +8,9 @@ It runs two ways from the same sources:
   0.1 s instead of a 10–37 s cargo rebuild and restart;
 - as a plain `cargo build`, which is what CI and release packaging use.
 
-STATUS 10 Nov 2026: runs signed in, `html_preview` included. The JIT run is checked on an Apple
+STATUS 11 Nov 2026: runs signed in, `html_preview` included. Under the JIT an account with many
+rooms gets an empty room list (a JIT compiler fault, see "Gaps against the fork build"); the
+cargo build is not affected. The JIT run is checked on an Apple
 silicon Mac, where its log lists one body it cannot compile (in typewit, never reached), and it
 starts on Linux x86_64; the cargo build has also been run on Linux x86_64 and arm64, Intel macOS
 and Windows (see "Platforms the build was run on").
@@ -97,6 +99,19 @@ on:
 - `$relax selftest rinx --allow-c --features html_preview`: 26 crates, 1,347,688 fns, 0 failed
   builds, 0 errors (peak resident memory about 20 GB).
 
+With the pin of OctoSense-org/makepad#141 on `main` at fa58b7f8 plus the idle and font changes
+(11 Nov 2026), Apple silicon Mac, `html_preview` on:
+
+- `cargo test --locked --features agent_chat,octosense-module,html_preview --lib`: 872 passed,
+  0 failed, 2 ignored.
+- `$relax test rinx --lib --allow-c --features agent_chat,html_preview -- --test-threads=1`:
+  870 passed, 0 failed, 2 ignored (cold cache, peak resident memory 24 GB).
+- `python3 tools/check-hagency-regressions.py --output <dir>`: 130 checks passed, exit 0.
+- `makepad run` with a hidden window on a stored signed-in session: no compile error with an
+  error code, the window goes idle (`makepad-remote app <pid> settled` answers true), and the
+  room list does not fill (see "Gaps against the fork build"). The cargo build of the same
+  sources on the same stored session lists all 36 rooms and goes idle.
+
 Memory of the test run. A dozen tests (in `matrix_links`, `matrix_context`,
 `verification_modal`, `settings::crypto_settings` and `profile::user_verification_cache`)
 run themselves again in a child process through `current_exe()`. Under the JIT the child is a
@@ -129,6 +144,69 @@ The app signs in only to Hagency servers through browser OAuth. For a headless r
 Checked this way, cold cache and warm: sign-in through the UI, the room list, a timeline with
 state events, plain and HTML messages, a mermaid diagram and a link with its preview card, a
 markdown message sent from the composer, quit, and session restore on the next start.
+
+## Idle CPU and memory against the build before the port
+
+Measured on 10 Nov 2026 on an Apple silicon Mac: release cargo builds, hidden window, the same
+stored signed-in session (33 rooms, one of them with 1,000 messages) on a local homeserver, the
+same scripted steps. "Before the port" is commit 0d8a5923 on the fork makepad (two runs);
+"`main`" is the content of ecc10898 (one run); the last column is that plus the changes below
+(two runs).
+
+| | before the port | `main` | with the changes |
+|---|---|---|---|
+| CPU while idle with a room open, of one core | 4.9 to 5.0% | 17.4% | 4.5 to 4.9% |
+| Resident memory, idle | 618 to 625 MB | 1,462 MB | 534 to 535 MB |
+| Resident memory after the script | 706 MB | 1,553 MB | 625 to 633 MB |
+| CPU time, 20 room switches | 5.3 s | 8.5 s | 6.4 to 6.6 s |
+| CPU time, 60 scroll steps | 1.4 to 1.5 s | 2.7 s | 2.2 s |
+| CPU time, the whole script | 20.8 to 21.2 s | 35.0 s | 22.4 s |
+| Launch to room list | 0.66 s | 0.95 s | 0.58 to 0.65 s |
+
+The same script on the commit that pins makepad#141 (`main` at fa58b7f8 plus the changes), on
+11 Nov on a busier machine, where the build without the changes read 21.9% idle and 47.7 s for
+the whole script: 5.3 to 5.4% idle, 536 to 542 MB, 31 to 34 s for the whole script, and
+`settled` true with either test room open and with the composer focused.
+
+Wall-clock times of single steps are not comparable between the two lines: the fork's remote
+answers over HTTP in about 3 ms and `makepad-remote` takes about 20 ms per call, and a hidden
+window renders at 2x on the fork and at 1x on the JIT line.
+
+**A redraw asked for while drawing.** On the fork, `Cx::redraw_list` returned at once during a
+draw event, so a widget that asked for a redraw from `draw_walk` got none. On the JIT line that
+request is carried to the next frame (`redraw_while_drawing` and `carry_in_draw_redraws` in
+makepad's `platform/src/cx_api.rs`). Code that puts a widget into the state it already has on
+every draw, and redraws it, therefore keeps the window drawing at the display rate, and the
+app never goes idle. Four places did that with a room open; each now acts only on a change:
+
+- `RoomScreen::layout_desktop_chat_info` patched the room information toggle's icon;
+- `RobrixHtmlLink::set_text` and the plain link beside it (`src/shared/html_or_plaintext.rs`)
+  redrew for the label Html hands every custom widget on each draw;
+- `LinkPreviewRef::clear` (`src/home/link_preview.rs`), called for every article and mini-app
+  message, rebuilt an already empty preview;
+- makepad's `TextInput::set_empty_text`, `set_is_password`, `set_is_read_only` and
+  `set_is_numeric_only` (OctoSense-org/makepad#141), which the app calls from draw.
+
+To find the next one:
+
+    makepad-remote app <pid> settled                      # {"settled":true,"reasons":[]} once idle
+    makepad-remote app <pid> trace topics=frame_sources   # the app's log then names who asked for each frame
+
+and, on a debug cargo build under lldb, a breakpoint on the widget's redraw
+(`breakpoint set -r "icon::Icon as .*WidgetNode>::redraw"`), `continue`, `bt`.
+
+After the changes `settled` is true with either test room open and on the tabs that were
+visited. Other screens were not traced.
+
+**Font copies.** The JIT line's text stack keeps its own copy of the bytes of every font it
+opens, in several places (the font pool, the glyph clients, the command buffers). The app
+handed it each PingFang weight as the whole 78 MB collection with the first directory entry
+repointed, and fifteen copies of that were live: 1.1 GB of the 1.46 GB. `face_at_index_zero`
+(`crates/article-makepad/src/apple_fonts.rs`) now hands over the one face as a font of its
+own, 13 MB per weight, with table data and table checksums unchanged.
+
+Under `makepad run` the same sources go idle as well. Resident memory there is mostly the
+JIT's own: 3.5 to 4.5 GB once settled, 8 to 14 GB at the peak of a cold start.
 
 ## HTML/CSS preview (`html_preview`)
 
@@ -218,6 +296,13 @@ In the pin since OctoSense-org/makepad#138, #139 and #140, all in the JIT compil
   crypto store calls, exists in the JIT's std (with `Result::unwrap_err_unchecked` and
   `map_or_default`).
 
+In the pin since OctoSense-org/makepad#141, in the widgets (the cargo build and the JIT run
+both use them):
+
+- `TextInput::set_empty_text`, `set_is_password`, `set_is_read_only` and `set_is_numeric_only`
+  ask for a redraw only when the value changes (see "Idle CPU and memory against the build
+  before the port").
+
 ## What the port changed in the app
 
 Marked `JIT PORT` in the source.
@@ -230,6 +315,7 @@ Marked `JIT PORT` in the source.
 - `octosense-module` builds against the JIT-line module contract (`ModuleWindows`,
   self-confirmed tools) with no change to `src/module.rs`.
 - Apple fonts install over every base-theme build (`apple_fonts::install_over_theme_builds`).
+  PingFang goes to makepad as one standalone face per weight, not as the collection file.
 - Script tasks drain through `cx.handle_script_tasks()`.
 - Shadowed `select` / `form`, tab bar and tooltip signatures, Html `Rc` doc, article-makepad
   text types, `scroll` child renamed `sheet_scroll`.
@@ -255,6 +341,22 @@ Marked `JIT PORT` in the source.
   expansion further down the module and brings it into scope with `use`; rustc resolves the
   earlier call through the `use`, and the JIT's parser expands in source order. The body traps
   if called. No run or test of the app reaches it.
+- Under the JIT the signed-in room list does not fill when the account has many rooms. The test
+  account has 36: three arrive, the sidebar reads "No joined or invited rooms found.", and a
+  room that was open when the session was stored still shows its timeline. The cargo build of
+  the same sources lists all 36 from the same stored session. Cause, found 11 Nov 2026: in
+  `f(&make()).await` the JIT does not keep the temporary `make()` returned alive across a
+  suspension of the future, so the callee reads freed stack through the reference once it
+  resumes. deadpool's `Pool::get` is written that way (`self.timeout_get(&self.timeouts())
+  .await`): when the Matrix SDK's SQLite stores wait for a pooled connection, deadpool reads a
+  timeout that was never set, and a tokio worker panics in `Instant::checked_add` ("invalid
+  timespec nanoseconds"). A 100-line test without dependencies shows it (rustc passes, the JIT
+  fails); it is a JIT compiler fault and not fixed in this pin. A cargo build is not affected.
+  Any other `.await` on a call that borrows a temporary is exposed in the same way under the
+  JIT. On 10 Nov, with the pin of makepad#140, the same run also logged a JIT compile-thread
+  panic, "failed to normalize body for codegen: NoSolution" for
+  `tokio::runtime::task::harness::poll_future` on the future of `account_session::spawn`; the
+  run of 11 Nov did not log it, and it is not diagnosed.
 - Mobile packaging: `.github/actions/setup-cargo-makepad` reads a makepad git revision from
   `Cargo.lock`, and on this line makepad is a path checkout, so the iOS and Android jobs need
   their own port.
