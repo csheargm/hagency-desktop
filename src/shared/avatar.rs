@@ -243,6 +243,7 @@ impl Widget for Avatar {
     }
 
     fn set_text(&mut self, cx: &mut Cx, v: &str) {
+        crate::memory_budget::release_image(cx, &self.image(cx, ids!(img_view.img)));
         self.display_state = AvatarDisplayState::Text;
         self.set_text_label(cx, v);
         self.view(cx, ids!(img_view)).set_visible(cx, false);
@@ -262,6 +263,7 @@ impl Avatar {
     }
 
     fn show_members(&mut self, cx: &mut Cx, members: &[RoomAvatarMember]) {
+        crate::memory_budget::release_image(cx, &self.image(cx, ids!(img_view.img)));
         if members.is_empty() {
             self.show_text(cx, None, None, "?");
             return;
@@ -680,7 +682,9 @@ where
     D: Into<Arc<[u8]>>,
 {
     fn from((uri, data): (U, D)) -> Self {
-        Self { uri: uri.into(), data: data.into() }
+        let data = data.into();
+        let data = if crate::memory_budget::admit_encoded(&data) { data } else { Arc::from([]) };
+        Self { uri: uri.into(), data }
     }
 }
 impl From<AvatarImage> for AvatarState {
@@ -718,6 +722,9 @@ impl AvatarState {
     ///
     /// Returns the fetched avatar if this `AvatarState` is in the `Loaded` state.
     pub fn update_from_cache(&mut self, cx: &mut Cx) -> Option<&AvatarImage> {
+        if let Self::Loaded(image) = self {
+            if image.data.is_empty() { *self = Self::Known(Some(image.uri.clone())); }
+        }
         if let Self::Known(Some(uri)) = self {
             if let AvatarCacheEntry::Loaded(data) = avatar_cache::get_or_fetch_avatar(cx, uri) {
                 *self = Self::Loaded((uri.clone(), data).into());

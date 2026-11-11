@@ -8,7 +8,7 @@ use matrix_sdk::{
 };
 use matrix_sdk::reqwest::StatusCode;
 
-use crate::{home::room_screen::TimelineUpdate, media_cache::{error_to_media_cache_entry, MediaCacheEntry}, shared::image_viewer::ImageViewerError, sliding_sync::{submit_async_request, MatrixRequest}};
+use crate::{media_cache::{error_to_media_cache_entry, MediaCacheEntry}, shared::image_viewer::ImageViewerError, sliding_sync::{submit_async_request, MatrixRequest}};
 
 /// Fetches the full-size image for the image viewer.
 ///
@@ -44,19 +44,26 @@ pub fn get_image_name_and_filesize(event_tl_item: &EventTimelineItem) -> (String
 /// The result of the image viewer's request to fetch a full-size image.
 #[derive(Clone, Debug)]
 pub enum ImageViewerFetchAction {
-    Loaded(Arc<[u8]>),
-    Failed(ImageViewerError),
+    Loaded { source: matrix_sdk::ruma::OwnedMxcUri, scope: crate::media_cache::MediaFetchScope, data: Arc<[u8]> },
+    Failed { source: matrix_sdk::ruma::OwnedMxcUri, scope: crate::media_cache::MediaFetchScope, error: ImageViewerError },
 }
 
 fn show_fetched_image_in_viewer(
     _destination: &Mutex<MediaCacheEntry>,
     request: MediaRequestParameters,
     data: matrix_sdk::Result<Vec<u8>>,
-    _update_sender: Option<crossbeam_channel::Sender<TimelineUpdate>>,
+    _update_sender: Option<crate::timeline_updates::Sender>,
+    scope: crate::media_cache::MediaFetchScope,
 ) {
+    if !scope.is_current() { return; }
+    let source = crate::shared::attachment_download::media_source_mxc(&request.source).clone();
     let action = match data {
-        Ok(data) => ImageViewerFetchAction::Loaded(data.into()),
-        Err(e) => ImageViewerFetchAction::Failed(
+        Ok(data) => {
+            let data: Arc<[u8]> = data.into();
+            if crate::memory_budget::admit_encoded(&data) { ImageViewerFetchAction::Loaded {source: source.clone(), scope, data} }
+            else { ImageViewerFetchAction::Failed {source:source.clone(),scope,error:ImageViewerError::TooLarge} }
+        },
+        Err(e) => ImageViewerFetchAction::Failed {source, scope, error:
             match error_to_media_cache_entry(e, &request) {
                 MediaCacheEntry::Failed(StatusCode::NOT_FOUND) => ImageViewerError::NotFound,
                 MediaCacheEntry::Failed(StatusCode::INTERNAL_SERVER_ERROR) => ImageViewerError::ConnectionFailed,
@@ -64,7 +71,7 @@ fn show_fetched_image_in_viewer(
                 MediaCacheEntry::Failed(StatusCode::UNAUTHORIZED) => ImageViewerError::Unauthorized,
                 _ => ImageViewerError::Unknown,
             }
-        ),
+        },
     };
     Cx::post_action(action);
 }

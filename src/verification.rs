@@ -156,7 +156,7 @@ pub fn handle_user_identities_subscriber(client: Client) -> tokio::task::JoinHan
 
 /// Sends the members of the given room whose identities were reset to that room's timeline,
 /// first right away and then again whenever that list changes.
-pub async fn identity_resets_subscriber_handler(room: Room, sender: crossbeam_channel::Sender<TimelineUpdate>) {
+pub async fn identity_resets_subscriber_handler(room: Room, sender: crate::timeline_updates::Sender) {
     // Identity resets only matter in encrypted rooms, and watching for them means loading every member's identity.
     if !room.latest_encryption_state().await.is_ok_and(|state| state.is_encrypted()) {
         return;

@@ -11,7 +11,7 @@ use crate::{
     temp_storage::get_temp_dir_path,
 };
 
-pub type TimelineUpdateSenderOption = Option<crossbeam_channel::Sender<TimelineUpdate>>;
+pub type TimelineUpdateSenderOption = Option<crate::timeline_updates::Sender>;
 
 /// The result of a download request.
 pub enum MediaDownloadResult {
