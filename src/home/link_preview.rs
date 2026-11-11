@@ -159,6 +159,11 @@ pub struct LinkPreview {
     /// The links that were last populated in this widget, to avoid unnecessary repopulation.
     #[rust]
     last_populated_links: Vec<Url>,
+    /// `clear` has left this widget empty and nothing changed it since. Messages that never
+    /// show previews clear theirs on every draw; a clear that changes nothing must not ask for
+    /// a redraw, because one asked for while drawing is drawn in the next frame.
+    #[rust]
+    cleared: bool,
 }
 
 impl ScriptHook for LinkPreview {
@@ -169,6 +174,8 @@ impl ScriptHook for LinkPreview {
         scope: &mut Scope,
         _value: ScriptValue,
     ) {
+        // An apply can put the children back to their declared look.
+        self.cleared = false;
         if apply.is_script_reapply() {
             self.card_width = 0.0;
             if let Some(template) = self.preview_template {
@@ -356,6 +363,9 @@ impl LinkPreviewRef {
     /// Needed for messages that never show link previews (e.g. redacted messages).
     pub fn clear(&mut self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() {
+            if inner.cleared {
+                return;
+            }
             inner.children.clear();
             inner.sync_children(cx);
             inner.last_populated_links.clear();
@@ -364,6 +374,7 @@ impl LinkPreviewRef {
             inner.card_width = 0.0;
             inner.update_button_and_visibility(cx);
             inner.redraw(cx);
+            inner.cleared = true;
         }
     }
 
@@ -390,6 +401,7 @@ impl LinkPreviewRef {
         if did_links_change {
             if let Some(mut inner) = self.borrow_mut() {
                 let num_links = accepted_links.len();
+                inner.cleared = false;
                 // Reuse as many old link preview child instances as we can.
                 inner.children.truncate(num_links);
                 while inner.children.len() < num_links {
