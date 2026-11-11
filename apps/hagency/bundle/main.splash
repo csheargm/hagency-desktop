@@ -7322,7 +7322,7 @@ A.pool_create_accounts=fn(){
         if !r.is_ok {c.error=A.error_text(r.error) return}
         let {accounts=nil}=r.data
         if accounts==nil {c.error=A.t("The coding tools couldn’t be read. Try again.","暂时无法读取编码工具，请重试。") return}
-        let rows=[] for row in accounts {if row.kind=="managed_namespace" && row.state=="active" {rows.push(row)}}
+        let rows=[] for row in accounts {if (row.kind=="managed_namespace" || row.kind=="local_configuration") && row.state=="active" {rows.push(row)}}
         c.accounts=rows
         if c.account!=nil {for row in rows {if row.id==c.account.id {c.account=row}} return}
         if H.enrollment_draft!=nil {for row in rows {if row.id==H.enrollment_draft.account.accountId {A.pool_create_account(row) return}}}
@@ -7336,16 +7336,16 @@ A.pool_create_account=fn(row){
     c.account=row c.models=nil c.modelsError="" c.loadingModels=true
     A.pool_call("hagency.accounts.get",{id:row.id},fn(r){
         if H.page!="pool_create" || H.pool_create==nil || H.pool_create.epoch!=c.epoch || c.account==nil || c.account.id!=row.id {return}
-        if !r.is_ok {c.loadingModels=false c.modelsError=A.account_models_error(r.error) return}
+        if !r.is_ok {c.loadingModels=false c.modelsError=A.pool_models_error(row,r.error) return}
         let data=r.data
         if data.protocol!="hagency-management-v1" || data.account==nil || data.account.id!=row.id {c.loadingModels=false c.modelsError=A.t("This coding tool changed. Choose it again.","此编码工具已变化，请重新选择。") return}
         H.account_detail=data H.account_id=row.id
         A.pool_call("hagency.accounts.models",{accountId:row.id expectedRevision:row.revision},fn(m){
             if H.page!="pool_create" || H.pool_create==nil || H.pool_create.epoch!=c.epoch || c.account==nil || c.account.id!=row.id {return}
             c.loadingModels=false
-            if !m.is_ok {c.modelsError=A.account_models_error(m.error) return}
+            if !m.is_ok {c.modelsError=A.pool_models_error(row,m.error) return}
             let d=m.data
-            if d.protocol!="hagency-management-v1" || d.accountId!=row.id || d.revision!=row.revision || d.provider.runtime!="codex" || d.provider.connected!=true {c.modelsError=A.t("The model list doesn’t match this tool. Try again.","模型结果与此工具不匹配，请重试。") return}
+            if d.protocol!="hagency-management-v1" || d.accountId!=row.id || d.revision!=row.revision || d.provider.runtime!=row.runtime || d.provider.connected!=true {c.modelsError=A.t("The model list doesn’t match this tool. Try again.","模型结果与此工具不匹配，请重试。") return}
             c.models=d H.account_models=d
             let draft=H.enrollment_draft
             if draft!=nil && draft.account.accountId==row.id {return}
@@ -7361,7 +7361,8 @@ A.pool_create_model=fn(model){
     let row=c.account
     let {resourceCount=0}=H.pool_create.account
     let resources=if H.account_detail==nil {[]} else {H.account_detail.resources}
-    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:"1000000" sourceRequired:resourceCount>0 source:nil name:A.pool_model_label(model) named:false}
+    // Only a Codex sign-in folder makes further pools from an existing one.
+    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:"1000000" sourceRequired:resourceCount>0 && row.kind=="managed_namespace" source:nil name:A.pool_model_label(model) named:false}
     H.enrollment_draft=d A.redraw()
     if d.sourceRequired && resources.len()>0 {
         let id=resources[0].id
@@ -7376,13 +7377,26 @@ A.pool_create_model=fn(model){
 }
 A.pool_account_name=fn(account,many){
     let {runtime="",ordinal=nil}=account
-    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude"} else {runtime}
+    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude Code"} else {runtime}
     return if many && ordinal!=nil {name+" #"+ordinal} else {name}
 }
 A.pool_login_text=fn(account){
-    let {readiness=nil,resourceCount=0}=account
+    let {readiness=nil,resourceCount=0,kind=""}=account
     let login=if readiness=="subscription" {A.t("Signed in · subscription","已登录 · 订阅账号")} else if readiness=="api_key" {A.t("Signed in · API key","已登录 · API 密钥")} else {A.t("Sign-in not checked yet","尚未确认登录")}
+    // The owner's own Claude Code settings on this computer: a pool takes its API key or endpoint token only.
+    if kind=="local_configuration" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点令牌")} else if readiness=="subscription" {A.t("claude.ai sign-in · local Agents only","claude.ai 订阅登录 · 只能用于本地 Agent")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
     return login+if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
+}
+// Why the models of a tool can't be listed; Claude Code has its own reasons.
+A.pool_models_error=fn(row,code){
+    let {runtime=""}=row
+    if runtime!="claude" {return A.account_models_error(code)}
+    if code=="provider_login_method_rejected" {return A.t("A pool needs an API key or an endpoint token in Claude Code’s settings on this computer. A claude.ai sign-in can only run your local Agents.","资源池需要本机 Claude Code 配置里的 API 密钥或端点令牌。claude.ai 订阅登录只能用于你的本地 Agent。")}
+    if code=="provider_connection_required" {return A.t("Claude Code on this computer isn’t signed in. Set an API key or an endpoint token in its settings, then try again.","本机 Claude Code 尚未登录。请在它的配置里设置 API 密钥或端点令牌后重试。")}
+    if code=="provider_identity_unavailable" {return A.t("The API key or endpoint token couldn’t be read from Claude Code’s settings file. It must be in the “env” section of settings.json.","无法从 Claude Code 的配置文件读取 API 密钥或端点令牌。它需要写在 settings.json 的 “env” 部分。")}
+    if code=="provider_profile_mismatch" || code=="management_not_found" {return A.t("Claude Code is no longer connected on this computer. Connect it under My Agents first.","本机的 Claude Code 已不再接入。请先在「我的 Agent」中接入。")}
+    if code=="provider_account_changed" || code=="management_revision_conflict" {return A.t("Claude Code’s settings changed. Choose it again.","Claude Code 的配置已变化，请重新选择。")}
+    return A.account_models_error(code)
 }
 A.pool_lapsed_rows=fn(){
     let rows=[]
@@ -7453,7 +7467,7 @@ A.account_state = fn(row){
     if row.state == "retired" {return A.t("Retired", "已停用")}
     return A.t("Unknown", "未知")
 }
-A.account_kind = fn(row){return if row.kind == "managed_namespace" {A.t("Provider login", "服务商登录")} else {A.t("Resource association", "资源关联")}}
+A.account_kind = fn(row){return if row.kind == "managed_namespace" {A.t("Provider login", "服务商登录")} else if row.kind == "local_configuration" {A.t("This computer’s settings", "本机配置")} else {A.t("Resource association", "资源关联")}}
 A.account_readiness = fn(row){
     if row.readiness == "subscription" {return A.t("Subscription login observed", "已检测到订阅登录")}
     if row.readiness == "api_key" {return A.t("API-key login observed", "已检测到 API 密钥登录")}
@@ -7531,6 +7545,18 @@ A.enrollment_error=fn(code){
     if code=="provider_account_changed" {return A.t("The provider account changed during verification. Refresh the account and review the model again.","验证期间模型服务账号发生变化，请刷新账号并重新选择模型。")}
     if code=="provider_connection_required" {return A.t("Sign in to this account before enrolling a resource.","请先登录此账号，再登记资源。")}
     return A.error_text(code)
+}
+// The owner's Claude Code configuration is refused for reasons a retry of the same request can't change.
+A.enrollment_claude=fn(args){
+    let account=A.recipient_optional(args,"account")
+    if account==nil {return false}
+    return A.recipient_optional(account,"accountId")=="account_claude_code"
+}
+A.enrollment_claude_refused=fn(args,code){return A.enrollment_claude(args) && (code=="provider_login_method_rejected" || code=="provider_connection_required" || code=="provider_profile_mismatch" || code=="provider_model_changed")}
+A.enrollment_error_for=fn(args,code){
+    if !A.enrollment_claude(args) {return A.enrollment_error(code)}
+    if code=="provider_model_changed" {return A.t("Claude Code’s settings no longer name this model. Choose a model again.","Claude Code 的配置里已没有这个模型，请重新选择模型。")}
+    return A.pool_models_error({runtime:"claude"},code)
 }
 A.load_account_models = fn(row){
     if H.busy || H.command!=nil || H.page!="provider_account" || H.account_id!=row.id || row.kind!="managed_namespace" || row.state!="active" {return}
@@ -7954,8 +7980,8 @@ A.retry_command = fn(){
                 host.request("hagency.intent.pending",{},fn(pending){if pending.is_ok {H.saved_commands=pending.data.commands} A.redraw()})
                 A.redraw() return
             }
-            if command.service=="hagency.accounts.enroll" && (r.error=="provider_identity_unavailable" || r.error=="provider_account_changed") {
-                H.command=nil H.notice=A.enrollment_error(r.error)
+            if command.service=="hagency.accounts.enroll" && (r.error=="provider_identity_unavailable" || r.error=="provider_account_changed" || A.enrollment_claude_refused(command.args,r.error)) {
+                H.command=nil H.notice=A.enrollment_error_for(command.args,r.error)
                 if A.save(){A.acknowledge(command.args.commandId)} A.redraw() return
             }
             if r.error == "native_resume_missing" || r.error == "native_resume_revoked" {H.needs_signin=true}
@@ -7967,7 +7993,7 @@ A.retry_command = fn(){
             if command.service == "hagency.agents.control.set" {H.agent_control=nil}
             if command.service == "hagency.agents.settlement.request" {H.settlement=nil}
             if command.service=="hagency.alerts.triage" {H.alert_detail=nil H.alert_draft=nil}
-            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error(r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if command.service == "hagency.personal_agents.observe" && A.observe_closed(r.error) {A.observe_reason(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
+            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error_for(command.args,r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if command.service == "hagency.personal_agents.observe" && A.observe_closed(r.error) {A.observe_reason(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
             if topup_service {H.agent_budget=nil H.budget_topup=nil H.budget_confirmation=nil H.budget_mode=""}
             if name_service {H.resource_detail=nil H.resource_name_mode="" H.resource_name_draft=nil}
             let kept_draft=H.personal_draft

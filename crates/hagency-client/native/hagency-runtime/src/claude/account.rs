@@ -61,6 +61,7 @@ pub struct AccountBinding {
     email: String,
     digest: String,
     expires: Instant,
+    own_endpoint: bool,
 }
 impl AccountBinding {
     /// Trusted native provider adapter only, from the credential the CLI's
@@ -101,11 +102,17 @@ impl AccountBinding {
             email: String::new(),
             digest,
             expires,
+            own_endpoint: !anthropic,
         })
     }
     /// False for a claude.ai sign-in.
     pub fn is_api_credential(&self) -> bool {
         self.source != Source::ClaudeAi
+    }
+    /// The owner's settings name an endpoint that is not Anthropic's. What it
+    /// serves under a model name is the owner's word, not this policy's.
+    pub fn own_endpoint(&self) -> bool {
+        self.own_endpoint
     }
     pub fn provider(&self) -> &'static str {
         self.provider
@@ -151,6 +158,7 @@ impl AccountBinding {
             email: email.into(),
             digest,
             expires,
+            own_endpoint: false,
         })
     }
     pub fn subject(&self) -> &str {
@@ -179,6 +187,7 @@ pub struct SharedCredential {
     token: String,
     endpoint: Option<String>,
     models: Vec<(&'static str, String)>,
+    main: Option<String>,
 }
 /// The owner's model mapping that a shared process keeps: what the aliases and
 /// the CLI's own background and sub-agent calls resolve to at the endpoint.
@@ -189,6 +198,9 @@ pub const MODEL_VARIABLES: [&str; 5] = [
     "ANTHROPIC_SMALL_FAST_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 ];
+/// The owner's own default model. A shared process is started with an
+/// explicit model, so this one is only offered as a choice, never injected.
+pub const MAIN_MODEL_VARIABLE: &str = "ANTHROPIC_MODEL";
 impl SharedCredential {
     pub fn from_authenticated_login(binding: AccountBinding, token: String) -> Result<Self, Error> {
         binding.check()?;
@@ -204,10 +216,12 @@ impl SharedCredential {
             token,
             endpoint: None,
             models: Vec::new(),
+            main: None,
         })
     }
     /// The API credential the binding was made from, with the same endpoint.
-    /// `models` holds values of MODEL_VARIABLES from the same settings.
+    /// `models` holds values of MODEL_VARIABLES, and of MAIN_MODEL_VARIABLE,
+    /// from the same settings.
     pub fn from_api_settings(
         base_url: Option<&str>,
         credential: String,
@@ -221,14 +235,19 @@ impl SharedCredential {
             None => None,
         };
         let mut kept = Vec::new();
+        let mut main = None;
         for (name, value) in models {
+            if !super::model_name(value) {
+                return Err(Error::Identity);
+            }
+            if name == MAIN_MODEL_VARIABLE {
+                main = Some(value.clone());
+                continue;
+            }
             let name = MODEL_VARIABLES
                 .iter()
                 .find(|known| *known == name)
                 .ok_or(Error::Identity)?;
-            if !super::model_name(value) {
-                return Err(Error::Identity);
-            }
             kept.push((*name, value.clone()));
         }
         Ok(Self {
@@ -236,7 +255,24 @@ impl SharedCredential {
             token: credential,
             endpoint: address,
             models: kept,
+            main,
         })
+    }
+    /// Model names the owner's settings give for this endpoint: their default
+    /// model first, then what the three aliases stand for. The names the CLI
+    /// uses only for its own background calls are not choices.
+    pub fn model_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        let aliases = MODEL_VARIABLES[..3]
+            .iter()
+            .filter_map(|known| self.models.iter().find(|(name, _)| name == known))
+            .map(|(_, value)| value.as_str());
+        for name in self.main.as_deref().into_iter().chain(aliases) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
     pub fn binding(&self) -> &AccountBinding {
         &self.binding
@@ -443,6 +479,37 @@ mod tests {
         }
         // A claude.ai binding cannot carry an API credential's fields, and the reverse.
         assert!(SharedCredential::from_authenticated_login(key.binding().clone(), "x".into()).is_err());
+    }
+    #[test]
+    fn owner_model_names_are_offered_but_the_default_model_is_not_injected() {
+        let models = [
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "middle-model"),
+            ("ANTHROPIC_SMALL_FAST_MODEL", "small-model"),
+            ("ANTHROPIC_MODEL", "main-model"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "main-model"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "small-model"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let gateway = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &models, soon()).unwrap();
+        // The default first, then opus, sonnet, haiku; a name is listed once.
+        assert_eq!(gateway.model_names(), ["main-model", "middle-model", "small-model"]);
+        assert!(gateway.binding().own_endpoint());
+        let mut launch = hagency_platform::Launch {
+            executable: "/bin/true".into(),
+            directory: "/".into(),
+            arguments: Vec::new(),
+            environment: Default::default(),
+            require_crash_containment: false,
+        };
+        gateway.inject(&mut launch).unwrap();
+        assert!(!launch.environment.contains_key(std::ffi::OsStr::new("ANTHROPIC_MODEL")));
+        assert!(launch.environment.contains_key(std::ffi::OsStr::new("ANTHROPIC_SMALL_FAST_MODEL")));
+        let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        assert!(key.model_names().is_empty() && !key.binding().own_endpoint());
+        let proxied = SharedCredential::from_api_settings(Some("https://api.anthropic.com/"), "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        assert!(!proxied.binding().own_endpoint());
+        let bad = [("ANTHROPIC_MODEL".to_string(), "two words".to_string())];
+        assert!(SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &bad, soon()).is_err());
     }
     #[test]
     fn injected_api_credential_must_be_the_source_the_process_reports() {

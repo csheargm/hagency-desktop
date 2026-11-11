@@ -602,8 +602,16 @@ impl NativeManagement {
     pub async fn account_inventory(&self, query: service::AccountInventoryQuery) -> Result<service::AccountInventory, NativeError> {
         query.validate().map_err(store_error)?;
         let (context, session) = self.authorized().await?;
+        if query.id.as_deref() == Some(super::claude_account::ACCOUNT) {
+            return self.claude_account_detail(&context, &session).await;
+        }
+        let first = query.id.is_none() && query.after.is_none();
         let result = session.account_inventory(&context, query).await;
-        self.finish(&context, result, false).await
+        let mut page = self.finish(&context, result, false).await?;
+        if first {
+            self.add_claude_account(&context, &session, &mut page).await;
+        }
+        Ok(page)
     }
     pub async fn resource_detail(
         &self,

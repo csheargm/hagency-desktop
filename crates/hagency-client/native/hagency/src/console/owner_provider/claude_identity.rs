@@ -118,7 +118,10 @@ impl ApiSettings {
         })?
         .ok_or_else(unavailable)?;
         let mut models = Vec::new();
-        for name in hagency_runtime::claude::account::MODEL_VARIABLES {
+        for name in hagency_runtime::claude::account::MODEL_VARIABLES
+            .into_iter()
+            .chain([hagency_runtime::claude::account::MAIN_MODEL_VARIABLE])
+        {
             if let Some(model) = text(name)? {
                 models.push((name.to_owned(), model));
             }
@@ -377,6 +380,75 @@ pub(in crate::console) async fn observe_for_launch(
     Ok(proof)
 }
 
+/// The claude.ai credential is not read at all on this path.
+async fn observe_api_settings(
+    paths: &ProviderPaths,
+    executable: &Path,
+    before: &ClaudeAccountStatus,
+    key: bool,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    let observed = api_credential(&paths.codex_home, key, deadline)?;
+    if *before != selected_status(executable, paths).await? {
+        return Err(failure(409, "provider_account_changed"));
+    }
+    // A settings file changed between the two reads is another account.
+    let again = api_credential(&paths.codex_home, key, deadline)?;
+    if again.binding().provider_digest() != observed.binding().provider_digest() {
+        return Err(failure(409, "provider_account_changed"));
+    }
+    Ok(again)
+}
+
+/// What a pool is made from: the API key or endpoint token of the connected
+/// configuration. A claude.ai sign-in is refused before its credential is
+/// looked for, and so is a configuration that is not signed in at all.
+pub(in crate::console) async fn observe_api_credential(
+    paths: &ProviderPaths,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    let executable = super::external::executable(Kind::Claude)?;
+    super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
+    let observed = observe_api_credential_with(paths, &executable, deadline).await?;
+    super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
+    Ok(observed)
+}
+async fn observe_api_credential_with(
+    paths: &ProviderPaths,
+    executable: &Path,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    if Instant::now() >= deadline {
+        return Err(unavailable());
+    }
+    let before = selected_status(executable, paths).await?;
+    let Some(key) = before.api_credential() else {
+        return Err(failure(
+            409,
+            if before.oauth_metadata().is_some() {
+                "provider_login_method_rejected"
+            } else {
+                "provider_connection_required"
+            },
+        ));
+    };
+    observe_api_settings(paths, executable, &before, key, deadline).await
+}
+
+/// For display only, never a proof: whether the connected configuration has
+/// an API credential (true), a claude.ai sign-in (false) or neither.
+pub(in crate::console) async fn sign_in(
+    paths: &ProviderPaths,
+) -> Result<Option<bool>, ProviderError> {
+    let executable = super::external::executable(Kind::Claude)?;
+    let status = selected_status(&executable, paths).await?;
+    Ok(match status.api_credential() {
+        Some(_) => Some(true),
+        None if status.oauth_metadata().is_some() => Some(false),
+        None => None,
+    })
+}
+
 #[cfg(test)]
 async fn observe_selected(
     paths: &ProviderPaths,
@@ -404,17 +476,7 @@ async fn observe_credential(
     }
     let before = selected_status(executable, paths).await?;
     if let Some(key) = before.api_credential() {
-        // The claude.ai credential is not read at all on this path.
-        let observed = api_credential(&paths.codex_home, key, deadline)?;
-        if before != selected_status(executable, paths).await? {
-            return Err(failure(409, "provider_account_changed"));
-        }
-        // A settings file changed between the two reads is another account.
-        let again = api_credential(&paths.codex_home, key, deadline)?;
-        if again.binding().provider_digest() != observed.binding().provider_digest() {
-            return Err(failure(409, "provider_account_changed"));
-        }
-        return Ok(again);
+        return observe_api_settings(paths, executable, &before, key, deadline).await;
     }
     if before.oauth_metadata().is_none() {
         return Err(unavailable());

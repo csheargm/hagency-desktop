@@ -140,9 +140,20 @@ pub fn configuration_choices(
     Ok(choices)
 }
 
+/// Provider of a Claude Code resource that runs on the owner's own endpoint.
+/// The table cannot know what such an endpoint serves under a model name, so
+/// no row of it applies: the name is the owner's word.
+pub const OWNER_ENDPOINT: &str = "owner_endpoint";
+/// What a model on the owner's own endpoint may be shared for: the roles a
+/// coding tool is run for, never the two with a strong floor.
+const OWNER_ENDPOINT_TIER: Tier = Tier::Medium;
+
 pub fn model(profile: &ModelProfile) -> (Option<Tier>, Option<&'static str>) {
     if profile.model.is_empty() {
         return (None, None);
+    }
+    if profile.framework == "claude" && profile.provider.as_deref() == Some(OWNER_ENDPOINT) {
+        return (Some(OWNER_ENDPOINT_TIER), None);
     }
     for tier in &POLICY.tiers {
         if let Some(found) = POLICY

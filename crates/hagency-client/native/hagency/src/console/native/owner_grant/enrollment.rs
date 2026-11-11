@@ -160,6 +160,7 @@ pub(super) fn validate_admission(
     }
     match c.runtime.as_str() {
         "codex" => Ok(ManagementRuntime::Codex),
+        "claude" => Ok(ManagementRuntime::Claude),
         _ => Err(failure(409, "provider_identity_unavailable")),
     }
 }
@@ -354,6 +355,16 @@ impl OwnerGrantIntents {
             .await?;
         io.check().await?;
         let runtime = validate_admission(&before, &io, &contribution_id)?;
+        // The central record must name the tool of the local resource before
+        // any provider is observed on its word.
+        let local = registry
+            .resource(&io.profile, before.admission.contribution.resource_id.clone())
+            .await
+            .map_err(storage)?;
+        io.check().await?;
+        if local.framework != before.admission.contribution.runtime {
+            return Err(failure(409, "management_enrollment_changed"));
+        }
         let provider = observe(runtime,io.profile.clone(),before.admission.contribution.resource_id.clone(),before.admission.contribution.resource_revision.clone()).await?;
         io.check().await?;
         let resource = registry

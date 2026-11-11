@@ -679,9 +679,13 @@ impl DomainRepository {
                 if let Some(selection)=namespace { definition["namespace"]=selection.key(); }
                 let preset = canonical::digest(&definition)?;
                 let preset_id=if namespace.is_some() {format!("owner_ns_{preset}")} else {format!("owner_{preset}")};
-                let r: Resource = serde_json::from_value(
-                    json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}}),
-                )?;
+                let mut configuration = json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}});
+                // What the owner's own endpoint serves under this name is the
+                // owner's word; the capacity table rates no row of it.
+                if proof.claude.as_ref().is_some_and(|binding| binding.own_endpoint()) {
+                    configuration["provider"] = json!(hagency_core::qualification::OWNER_ENDPOINT);
+                }
+                let r: Resource = serde_json::from_value(configuration)?;
                 r.validate()?;
                 let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",

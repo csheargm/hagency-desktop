@@ -159,6 +159,41 @@ async fn claude_identity_binds_an_api_credential_from_the_settings_file() {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn a_pool_takes_an_api_credential_and_never_looks_for_a_claude_ai_sign_in() {
+    let soon = || Instant::now() + Duration::from_secs(20);
+    let settings = json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":"gateway-token",
+        "ANTHROPIC_MODEL":"open-model-main","ANTHROPIC_DEFAULT_HAIKU_MODEL":"open-model-small"}});
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
+    write_settings(&paths, &settings, 0o644);
+    let credential = observe_api_credential_with(&paths, &binary, soon()).await.ok().unwrap();
+    assert!(credential.binding().is_api_credential() && credential.binding().own_endpoint());
+    assert_eq!(credential.model_names(), ["open-model-main", "open-model-small"]);
+
+    // A claude.ai sign-in is refused by name. No credential file, Keychain
+    // item or profile request is involved: the fixture folder has none.
+    let (_root, paths, binary) = fixture(status(), status());
+    write_settings(&paths, &settings, 0o644);
+    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
+    assert_eq!(refused.code, "provider_login_method_rejected");
+
+    let signed_out = json!({"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"});
+    let (_root, paths, binary) = fixture(signed_out.clone(), signed_out);
+    write_settings(&paths, &settings, 0o644);
+    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
+    assert_eq!(refused.code, "provider_connection_required");
+
+    // The sign-in changing during the check is another account.
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), status());
+    write_settings(&paths, &settings, 0o644);
+    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
+    assert_eq!(refused.code, "provider_account_changed");
+    let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
+    write_settings(&paths, &settings, 0o644);
+    assert!(observe_api_credential_with(&paths, &binary, Instant::now()).await.is_err());
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn claude_identity_refuses_an_api_credential_it_cannot_take_from_the_settings_file() {
     let gateway = json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":"gateway-token"}});
     for (mode, method, settings, permissions) in [

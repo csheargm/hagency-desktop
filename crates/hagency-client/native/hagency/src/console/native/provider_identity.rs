@@ -103,7 +103,19 @@ impl NativeManagement {
         revision: String,
     ) -> Result<VerifiedProviderAccount, NativeError> {
         let namespace=registry.resource_namespace(profile,resource,revision).await.map_err(super::management::store_error)?;
-        let Some(namespace)=namespace else {return self.verified_provider_account(runtime).await};
+        let Some(namespace)=namespace else {
+            if runtime!=ManagementRuntime::Claude {return self.verified_provider_account(runtime).await}
+            // A Claude resource has no sign-in folder: it is the owner's
+            // connected configuration, observed as the shared launch does.
+            let _guard=self.owner.0.calls.lock().await;
+            let (context,session)=self.authorized().await?;
+            for p in [Permission::ReadProviders,Permission::ConnectProviders] {session.authorize(&context,p).map_err(super::management::store_error)?;}
+            let result=self.claude_resource_proof(&context,&session).await;
+            let (fresh,live)=self.authorized().await?;
+            if fresh!=context {return Err(failure(401,"management_scope_changed"));}
+            for p in [Permission::ReadProviders,Permission::ConnectProviders] {live.authorize(&context,p).map_err(super::management::store_error)?;}
+            return result;
+        };
         if runtime!=ManagementRuntime::Codex {return Err(failure(409,"provider_identity_unavailable"));}
         let _guard=self.owner.0.calls.lock().await;
         let (context,session)=self.authorized().await?;

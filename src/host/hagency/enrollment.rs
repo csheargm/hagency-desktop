@@ -33,7 +33,14 @@ impl ResourceConsent {
     }
 }
 fn enrollment_details(input: &::hagency::native_owner::NamespaceEnrollment) -> String {
-    format!("Codex · {}\n{} · {}\n{}: {}", input.account.account_id, input.model,
+    // The owner's own Claude Code settings on this computer, not a sign-in
+    // folder: the pool runs on the API key or endpoint token found there.
+    let account = if input.account.account_id == "account_claude_code" {
+        format!("Claude Code · {}", crate::i18n::tr("API key or endpoint token in this computer’s settings"))
+    } else {
+        format!("Codex · {}", input.account.account_id)
+    };
+    format!("{account}\n{} · {}\n{}: {}", input.model,
         input.reasoning.as_deref().unwrap_or("—"), crate::i18n::tr("Declared monthly token limit"),
         crate::utils::format_token_count(input.monthly_tokens))
 }
@@ -51,6 +58,18 @@ mod tests {
         assert!(details.contains("0.123456 M"), "{details}");
         assert!(!details.contains(": 123456"));
         assert_eq!(input.monthly_tokens, 123456);
+    }
+    #[test]
+    fn enrollment_review_names_the_claude_code_settings_not_an_account_folder() {
+        let input: ::hagency::native_owner::NamespaceEnrollment = parse(json!({
+            "commandId":"original", "account":{"accountId":"account_claude_code", "expectedRevision":"a".repeat(64)},
+            "model":"open-model-a", "reasoning":"medium", "monthlyTokens":1000000
+        })).unwrap();
+        input.validate().unwrap();
+        let details = enrollment_details(&input);
+        assert!(details.starts_with("Claude Code · "), "{details}");
+        assert!(!details.contains("account_claude_code") && !details.contains("Codex"), "{details}");
+        assert!(details.contains("open-model-a · medium"), "{details}");
     }
     #[test]
     fn enrollment_input_excludes_identity_paths_and_approval_claims(){
