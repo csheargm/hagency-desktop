@@ -12,6 +12,10 @@ pub(super) struct SessionKey {
     profile: codex::Profile,
     reference: String,
     host_files: bool,
+    /// The identity of the owner's shared project when the Agent runs with
+    /// the shared-workspace opt-in. A session started in one sandbox is never
+    /// continued in the other, nor in another project.
+    shared_workspace: Option<String>,
 }
 impl SessionKey {
     pub fn new(
@@ -27,6 +31,9 @@ impl SessionKey {
             profile: profile.clone(),
             reference: config.credential_ref.clone(),
             host_files: config.host_files,
+            shared_workspace: config
+                .shared_workspace
+                .then(|| config.shared_workspace_pin.clone().unwrap_or_default()),
         }
     }
 }

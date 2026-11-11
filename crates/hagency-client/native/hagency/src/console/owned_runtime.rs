@@ -355,10 +355,13 @@ impl RuntimeStatus {
         let mut status = self.with_host_files(config.host_files || config.shared_workspace);
         status.file_replace = config.shared_workspace;
         if config.shared_workspace { status.capability_version = Some("hagency-shared-files-v1"); }
-        status.native_tools = matches!(
-            runtime::kind(&config.credential_ref),
-            runtime::Kind::Codex | runtime::Kind::Claude
-        );
+        // A shared project is changed only through the host file tools: that
+        // session runs without native execution.
+        status.native_tools = !config.shared_workspace
+            && matches!(
+                runtime::kind(&config.credential_ref),
+                runtime::Kind::Codex | runtime::Kind::Claude
+            );
         status.network_tools = status.native_tools;
         status.web_search = config.profile.web_search
             && runtime::kind(&config.credential_ref) == runtime::Kind::Codex;
