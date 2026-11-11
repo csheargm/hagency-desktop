@@ -159,37 +159,54 @@ async fn claude_identity_binds_an_api_credential_from_the_settings_file() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn a_pool_takes_an_api_credential_and_never_looks_for_a_claude_ai_sign_in() {
+async fn a_pool_takes_either_sign_in_of_the_connected_configuration() {
     let soon = || Instant::now() + Duration::from_secs(20);
     let settings = json!({"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_AUTH_TOKEN":"gateway-token",
         "ANTHROPIC_MODEL":"open-model-main","ANTHROPIC_DEFAULT_HAIKU_MODEL":"open-model-small"}});
+    // An API credential: the claude.ai credential is never asked for.
+    let untouched = || async { panic!("an API credential never touches the claude.ai sign-in") };
     let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
     write_settings(&paths, &settings, 0o644);
-    let credential = observe_api_credential_with(&paths, &binary, soon()).await.ok().unwrap();
+    let credential = observe_for_pool_with(&paths, &binary, soon(), PROFILE, untouched()).await.ok().unwrap();
     assert!(credential.binding().is_api_credential() && credential.binding().own_endpoint());
     assert_eq!(credential.model_names(), ["open-model-main", "open-model-small"]);
 
-    // A claude.ai sign-in is refused by name. No credential file, Keychain
-    // item or profile request is involved: the fixture folder has none.
+    // A claude.ai sign-in: bound to the account the profile request proves,
+    // with no model names of its own.
     let (_root, paths, binary) = fixture(status(), status());
-    write_settings(&paths, &settings, 0o644);
-    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
-    assert_eq!(refused.code, "provider_login_method_rejected");
+    let (url, server) = endpoint("200 OK", "", serde_json::to_vec(&account_profile()).unwrap()).await;
+    let credential = observe_for_pool_with(&paths, &binary, soon(), &url, async {
+        Ok(Token("offline-fixture-only".into()))
+    })
+    .await
+    .ok()
+    .unwrap();
+    server.await.unwrap();
+    assert!(!credential.binding().is_api_credential() && !credential.binding().own_endpoint());
+    assert!(credential.model_names().is_empty());
+    let expected = AccountBinding::from_authenticated_profile(ACCOUNT, ORG, "owner@example.test", soon()).unwrap();
+    assert_eq!(credential.binding().provider_digest(), expected.provider_digest());
 
+    // Not signed in at all has its own answer, and reads no credential.
     let signed_out = json!({"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"});
     let (_root, paths, binary) = fixture(signed_out.clone(), signed_out);
     write_settings(&paths, &settings, 0o644);
-    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
+    let refused = observe_for_pool_with(&paths, &binary, soon(), PROFILE, async {
+        panic!("a signed-out configuration has no credential to read")
+    })
+    .await
+    .err()
+    .unwrap();
     assert_eq!(refused.code, "provider_connection_required");
 
     // The sign-in changing during the check is another account.
     let (_root, paths, binary) = fixture(api_status("oauth_token"), status());
     write_settings(&paths, &settings, 0o644);
-    let refused = observe_api_credential_with(&paths, &binary, soon()).await.err().unwrap();
+    let refused = observe_for_pool_with(&paths, &binary, soon(), PROFILE, untouched()).await.err().unwrap();
     assert_eq!(refused.code, "provider_account_changed");
     let (_root, paths, binary) = fixture(api_status("oauth_token"), api_status("oauth_token"));
     write_settings(&paths, &settings, 0o644);
-    assert!(observe_api_credential_with(&paths, &binary, Instant::now()).await.is_err());
+    assert!(observe_for_pool_with(&paths, &binary, Instant::now(), PROFILE, untouched()).await.is_err());
 }
 
 #[tokio::test]

@@ -36,14 +36,14 @@ impl ResourceConsent {
 /// same whichever source tree the app is started from.
 fn claude_settings_text(language: crate::i18n::Language) -> &'static str {
     if language == crate::i18n::Language::Chinese {
-        "本机设置中的 API 密钥或端点令牌"
+        "本机的 Claude Code 登录"
     } else {
-        "API key or endpoint token in this computer’s settings"
+        "this computer’s own sign-in"
     }
 }
 fn enrollment_details(input: &::hagency::native_owner::NamespaceEnrollment) -> String {
-    // The owner's own Claude Code settings on this computer, not a sign-in
-    // folder: the pool runs on the API key or endpoint token found there.
+    // The owner's own Claude Code on this computer, not a sign-in folder:
+    // the pool runs on whichever sign-in that configuration has.
     let account = if input.account.account_id == "account_claude_code" {
         format!("Claude Code · {}", claude_settings_text(crate::i18n::language()))
     } else {
@@ -81,7 +81,7 @@ mod tests {
         assert!(details.contains("open-model-a · medium"), "{details}");
         // The Chinese UI gets a Chinese line, not the English one.
         let chinese = claude_settings_text(crate::i18n::Language::Chinese);
-        assert!(chinese.contains("API 密钥") && !chinese.contains("settings"), "{chinese}");
+        assert!(chinese.contains("本机") && !chinese.contains("sign-in"), "{chinese}");
         assert!(details.contains(claude_settings_text(crate::i18n::Language::English)), "{details}");
     }
     #[test]

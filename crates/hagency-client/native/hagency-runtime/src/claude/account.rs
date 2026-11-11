@@ -39,10 +39,30 @@ fn endpoint(value: &str) -> Option<(String, String)> {
         .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"))?;
     let authority = rest.split('/').next()?;
-    let host = authority
-        .rsplit_once(':')
-        .filter(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
-        .map_or(authority, |(host, _)| host);
+    // `name`, `name:port` or a bracketed address, written out in full: an
+    // escaped or half-written host must not read as some other host than the
+    // one the CLI will call.
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !authority.ends_with(']') => (host, Some(port)),
+        _ => (authority, None),
+    };
+    if port.is_some_and(|port| port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let name = host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+    let address = host.len() > 2
+        && host.starts_with('[')
+        && host.ends_with(']')
+        && host[1..host.len() - 1]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'));
+    if !(name || address) {
+        return None;
+    }
+    // A fully qualified name with its final dot is the same host.
+    let host = host.trim_end_matches('.');
     if value.len() > 256
         || host.is_empty()
         || !value.bytes().all(|b| b.is_ascii_graphic())
@@ -299,11 +319,13 @@ impl SharedCredential {
                 for (name, value) in &self.models {
                     set(name, value);
                 }
-                // Without this the CLI hands the credential to every command
-                // a tool runs, and a room member could have it printed.
-                set("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
             }
         }
+        // Without this the CLI hands an API credential to every command a
+        // tool runs, and a room member could have it printed. Claude Code
+        // 2.1.322 keeps the claude.ai token from those commands by itself;
+        // every kind of sign-in is still launched the same way.
+        set("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
         Ok(())
     }
 }
@@ -441,6 +463,20 @@ mod tests {
             assert!(AccountBinding::from_api_credential(base, credential, key, soon()).is_err(), "{base:?} {key}");
         }
         assert!(AccountBinding::from_api_credential(gateway, "token-one", false, Instant::now() + Duration::from_secs(61)).is_err());
+        // Anthropic's host written another way is still Anthropic's: a bearer
+        // token for it is refused, and a key for it is not an "own endpoint".
+        for base in ["https://api.anthropic.com.", "https://API.Anthropic.com:443", "https://api.anthropic.com./v1"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).is_err(), "{base}");
+            let key = AccountBinding::from_api_credential(Some(base), "sk-ant-api03-example", true, soon()).unwrap();
+            assert!(!key.own_endpoint(), "{base}");
+        }
+        // A host that is escaped or half-written is not an address at all.
+        for base in ["https://api.anthropic.com:", "https://api%2eanthropic%2ecom", "https://gateway.example:port", "https://[::1", "https://:4000"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).is_err(), "{base}");
+        }
+        for base in ["http://127.0.0.1:4000", "http://[::1]:4000", "https://gateway.example", "http://local_host-1.lan:8080/v1"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).unwrap().own_endpoint(), "{base}");
+        }
     }
     #[test]
     fn api_credential_is_injected_with_its_endpoint_mapping_and_the_subprocess_scrub() {
@@ -472,6 +508,15 @@ mod tests {
         assert_eq!(environment["ANTHROPIC_API_KEY"], "sk-ant-api03-example");
         assert_eq!(environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1");
         assert!(!environment.contains_key("ANTHROPIC_BASE_URL") && !environment.contains_key("ANTHROPIC_AUTH_TOKEN"));
+        // A claude.ai sign-in travels as its own variable, with the same scrub.
+        let binding = AccountBinding::from_authenticated_profile(
+            "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
+            "owner@example.test", soon()).unwrap();
+        let login = SharedCredential::from_authenticated_login(binding, "offline-fixture-only".into()).unwrap();
+        let environment = launch(&login);
+        assert_eq!(environment["CLAUDE_CODE_OAUTH_TOKEN"], "offline-fixture-only");
+        assert_eq!(environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1");
+        assert_eq!(environment.len(), 2, "{:?}", environment.keys());
         // Only the model mapping travels; any other variable is refused.
         for bad in [("ANTHROPIC_CUSTOM_HEADERS", "x: y"), ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "two words")] {
             let models = [(bad.0.to_string(), bad.1.to_string())];

@@ -1,7 +1,7 @@
 //! The owner's own Claude Code configuration as the account a pool is made
 //! from. It has no sign-in folder of its own: the config folder is the one the
-//! owner connected for local Agents, and only an API key or an endpoint token
-//! in its settings file is taken. A claude.ai sign-in stays a local Agent's.
+//! owner connected for local Agents, with whichever sign-in it has: an API
+//! key or an endpoint token in its settings file, or a claude.ai sign-in.
 //! No path, endpoint, credential or model mapping is accepted from a caller.
 use super::{
     AccountInventory, AccountModelQuery, AccountSummary, NamespaceEnrollment, NativeError,
@@ -129,8 +129,8 @@ impl NativeManagement {
         }
     }
 
-    /// The API credential of the connected configuration, observed now. The
-    /// caller holds the command lane and has checked its own permission.
+    /// The sign-in of the connected configuration, observed now. The caller
+    /// holds the command lane and has checked its own permission.
     async fn claude_credential(
         &self,
         context: &HostContext,
@@ -141,7 +141,7 @@ impl NativeManagement {
         if expected_revision.is_some_and(|expected| revision(&paths).ok().as_deref() != Some(expected)) {
             return Err(failure(409, "provider_account_changed"));
         }
-        let observed = owner_provider::claude_identity::observe_api_credential(&paths, deadline)
+        let observed = owner_provider::claude_identity::observe_for_pool(&paths, deadline)
             .await
             .map_err(|error| failure(error.status, error.code))?;
         // The owner connecting another folder meanwhile is another account.
@@ -222,24 +222,38 @@ impl NativeManagement {
     }
 
     /// The first page of the account list also names this configuration. Its
-    /// resources then appear under it, not as a second, unnamed association.
+    /// resources appear under it on every page, not as a second, unnamed
+    /// association.
     pub(super) async fn add_claude_account(
         &self,
         context: &HostContext,
         session: &Session,
         page: &mut AccountInventory,
+        first: bool,
     ) {
-        if let Some(account) = self.claude_account(context, session).await {
+        let listed = if first {
+            let account = self.claude_account(context, session).await;
+            let listed = account.is_some();
+            if let Some(account) = account {
+                page.accounts.insert(0, account);
+            }
+            listed
+        } else {
+            // A later page: the same answer without asking the CLI again.
+            self.account_enrollment_ready() && self.claude_paths(context).await.is_ok()
+        };
+        if listed {
             page.accounts
                 .retain(|row| !(row.kind == "resource_binding" && row.runtime == "claude"));
-            page.accounts.insert(0, account);
         }
     }
 
+    /// `after` continues the list of this account's resources.
     pub(super) async fn claude_account_detail(
         &self,
         context: &HostContext,
         session: &Session,
+        after: Option<String>,
     ) -> Result<AccountInventory, NativeError> {
         session
             .authorize(context, Permission::ReadAccounts)
@@ -249,14 +263,15 @@ impl NativeManagement {
             .await
             .ok_or_else(|| failure(404, "management_not_found"))?;
         let query = ResourceQuery {
+            after: after.unwrap_or_default(),
             framework: Some("claude".into()),
             ..Default::default()
         };
         // A package that may not read resources still sees the account.
-        let resources = session
+        let (resources, next_after) = session
             .resources(context, query)
             .await
-            .map(|page| page.resources)
+            .map(|page| (page.resources, page.next_after))
             .unwrap_or_default();
         let observed_at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -269,7 +284,7 @@ impl NativeManagement {
             accounts: Vec::new(),
             account: Some(account),
             resources,
-            next_after: None,
+            next_after,
         };
         self.finish(context, Ok(page), false).await
     }

@@ -202,7 +202,13 @@ async fn native_owner_enrollment_rejects_malformed_foreign_and_unadmitted_centra
         let mut changed = original.clone();
         changed["admission"]["contribution"][field] = value;
         *f.admission.lock().unwrap() = changed;
-        assert!(f.factory().await.is_err(), "{field}");
+        let refused = f.factory().await.err();
+        assert!(refused.is_some(), "{field}");
+        if field == "runtime" {
+            // The central record names another tool than the local resource:
+            // refused by name, before any provider is observed on its word.
+            assert_eq!(refused.unwrap().code, "management_enrollment_changed");
+        }
         assert!(!f.enrollment_path().await.exists());
     }
     let mut changed = original;

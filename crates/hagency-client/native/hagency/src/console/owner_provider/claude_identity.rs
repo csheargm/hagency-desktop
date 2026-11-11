@@ -400,39 +400,42 @@ async fn observe_api_settings(
     Ok(again)
 }
 
-/// What a pool is made from: the API key or endpoint token of the connected
-/// configuration. A claude.ai sign-in is refused before its credential is
-/// looked for, and so is a configuration that is not signed in at all.
-pub(in crate::console) async fn observe_api_credential(
+/// What a pool is made from: the sign-in of the connected configuration,
+/// whichever kind it is, observed exactly as a shared launch observes it. A
+/// configuration that is not signed in at all gets its own answer, so the
+/// page can say so.
+pub(in crate::console) async fn observe_for_pool(
     paths: &ProviderPaths,
     deadline: Instant,
 ) -> Result<SharedCredential, ProviderError> {
     let executable = super::external::executable(Kind::Claude)?;
     super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
-    let observed = observe_api_credential_with(paths, &executable, deadline).await?;
+    let observed = observe_for_pool_with(
+        paths,
+        &executable,
+        deadline,
+        PROFILE,
+        token(&paths.home, &paths.codex_home),
+    )
+    .await?;
     super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
     Ok(observed)
 }
-async fn observe_api_credential_with(
+async fn observe_for_pool_with(
     paths: &ProviderPaths,
     executable: &Path,
     deadline: Instant,
+    endpoint: &str,
+    credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
 ) -> Result<SharedCredential, ProviderError> {
     if Instant::now() >= deadline {
         return Err(unavailable());
     }
     let before = selected_status(executable, paths).await?;
-    let Some(key) = before.api_credential() else {
-        return Err(failure(
-            409,
-            if before.oauth_metadata().is_some() {
-                "provider_login_method_rejected"
-            } else {
-                "provider_connection_required"
-            },
-        ));
-    };
-    observe_api_settings(paths, executable, &before, key, deadline).await
+    if before.api_credential().is_none() && before.oauth_metadata().is_none() {
+        return Err(failure(409, "provider_connection_required"));
+    }
+    observe_signed_in(paths, executable, before, deadline, endpoint, credential).await
 }
 
 /// For display only, never a proof: whether the connected configuration has
@@ -475,6 +478,17 @@ async fn observe_credential(
         return Err(unavailable());
     }
     let before = selected_status(executable, paths).await?;
+    observe_signed_in(paths, executable, before, deadline, endpoint, credential).await
+}
+/// `before` is the sign-in the CLI reported at the start of this check.
+async fn observe_signed_in(
+    paths: &ProviderPaths,
+    executable: &Path,
+    before: ClaudeAccountStatus,
+    deadline: Instant,
+    endpoint: &str,
+    credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
+) -> Result<SharedCredential, ProviderError> {
     if let Some(key) = before.api_credential() {
         return observe_api_settings(paths, executable, &before, key, deadline).await;
     }
