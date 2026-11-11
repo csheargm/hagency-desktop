@@ -404,6 +404,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         operation.finish(result)
     }
     async fn bind_room_inner(&mut self, tools: RoomTools) -> Result<(), Error> {
+        if self.room_mcp.is_none() {
+            self.pass_buffered_hook_reports()
+                .await
+                .map_err(|_| Error::State)?;
+        }
         if self.room_mcp.is_some() || self.wire.has_buffered_input() {
             return Err(Error::State);
         }
@@ -541,6 +546,15 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     self.reply_room_metadata(&request_id, &server_name, &message, until)
                         .await?;
                 }
+                // A hook from the account's own settings can still be
+                // reporting when the tools are bound: a session-start hook
+                // that outlasts the CLI's start-up, or an asynchronous one.
+                // Metadata only; see `hook_report`.
+                Message::Event {
+                    kind: super::EventKind::System,
+                    payload,
+                    ..
+                } if super::hook_report(&payload) => {}
                 _ => return Err(Error::Identity),
             }
         }

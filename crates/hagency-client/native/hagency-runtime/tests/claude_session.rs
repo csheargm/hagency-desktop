@@ -203,6 +203,27 @@ async fn native_claude_initialize_accepts_reports_of_the_accounts_own_hooks() {
     assert_eq!(driver.last_observation().unwrap().sequence(), 1);
 }
 #[tokio::test]
+async fn native_claude_hook_report_read_with_the_initialize_response_is_passed() {
+    // A session-start hook that ends as the CLI answers `initialize`: its
+    // result is read together with the response and waits in the buffer.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322"}}}));
+        let mut report = native_hook_reports().remove(1);
+        report["session_id"] = json!("session-one");
+        bytes.extend(encoded(report));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+}
+
+#[tokio::test]
 async fn native_claude_hook_reports_hide_no_authority_before_initialize() {
     for invalid in [permission("early"), init()] {
         let (mut driver, mut peer) = pair(4096, limits());
@@ -1010,10 +1031,26 @@ async fn native_claude_protocol_version_is_checked_before_any_prompt() {
         json!("3.0.0"),
         json!("2.01.321"),
         json!("2.1.322-beta"),
+        json!("2.1"),
+        json!("2.1.x"),
         json!("2.1.322"),
         json!("2.2.0"),
+        // A newer build is supported whatever it appends; a build of the
+        // floor itself is too, unless it is a pre-release of it.
+        json!("2.1.400-beta.1"),
+        json!("2.1.322.1"),
+        json!("2.1.322+build7"),
     ] {
-        let supported = version == "2.1.322" || version == "2.2.0" || version == "3.0.0";
+        let supported = [
+            "2.1.322",
+            "2.2.0",
+            "3.0.0",
+            "2.1.400-beta.1",
+            "2.1.322.1",
+            "2.1.322+build7",
+        ]
+        .iter()
+        .any(|v| version == *v);
         let (mut driver, mut peer) = pair(8192, limits());
         let (result, ()) = tokio::join!(driver.initialize(), async {
             let request = read(&mut peer).await;

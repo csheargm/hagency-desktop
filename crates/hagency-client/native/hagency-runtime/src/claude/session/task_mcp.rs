@@ -15,6 +15,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         operation.finish(result)
     }
     async fn bind_task_inner(&mut self, helper: TaskMcp) -> Result<(), Error> {
+        if !self.task_mcp_attempted {
+            self.pass_buffered_hook_reports()
+                .await
+                .map_err(|_| Error::State)?;
+        }
         if self.task_mcp_attempted || self.wire.has_buffered_input() {
             return Err(Error::State);
         }

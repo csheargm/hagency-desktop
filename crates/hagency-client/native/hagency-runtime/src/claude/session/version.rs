@@ -12,18 +12,29 @@ pub(super) fn check(value: &Value) -> Result<(), Error> {
         .as_str()
         .filter(|v| v.len() <= 32)
         .ok_or(Error::UnsupportedVersion)?;
-    let parts: Option<Vec<u32>> = version
-        .split('.')
-        .map(|part| {
-            (!part.is_empty()
-                && part.bytes().all(|b| b.is_ascii_digit())
-                && (part == "0" || !part.starts_with('0')))
-            .then(|| part.parse().ok())
-            .flatten()
-        })
-        .collect();
-    match parts.as_deref() {
-        Some(&[major, minor, patch]) if [major, minor, patch] >= MINIMUM => Ok(()),
-        _ => Err(Error::UnsupportedVersion),
+    // Three numbers, then whatever the build adds: a fourth number, build
+    // metadata, a pre-release tag. Only the tag makes a version older, and
+    // only when the three numbers are the floor itself.
+    let mut numbers = [0u32; 3];
+    let mut rest = version;
+    for (index, number) in numbers.iter_mut().enumerate() {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        let part = &rest[..end];
+        if part.is_empty() || (part != "0" && part.starts_with('0')) {
+            return Err(Error::UnsupportedVersion);
+        }
+        *number = part.parse().map_err(|_| Error::UnsupportedVersion)?;
+        rest = &rest[end..];
+        if index < 2 {
+            rest = rest.strip_prefix('.').ok_or(Error::UnsupportedVersion)?;
+        }
+    }
+    let prerelease = rest.starts_with('-');
+    if numbers > MINIMUM || (numbers == MINIMUM && !prerelease) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedVersion)
     }
 }

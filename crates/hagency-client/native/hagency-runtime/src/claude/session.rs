@@ -469,6 +469,28 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         }
         Err(Error::Capacity)
     }
+    /// Hook reports that were read together with the frame the last operation
+    /// ended on, for example a session-start hook that finished as the CLI
+    /// answered `initialize`. They are metadata (see `hook_report`). The
+    /// callers' rule that no other input may be waiting is unchanged: any
+    /// other buffered frame is still refused.
+    pub(super) async fn pass_buffered_hook_reports(&mut self) -> Result<(), Error> {
+        let until = self.wire.event_deadline();
+        for _ in 0..16 {
+            if !self.wire.has_buffered_input() {
+                return Ok(());
+            }
+            match self.wire.next(until).await?.message {
+                Message::Event {
+                    kind: EventKind::System,
+                    payload,
+                    ..
+                } if hook_report(&payload) => {}
+                _ => return Err(Error::Identity),
+            }
+        }
+        Err(Error::Capacity)
+    }
     /// Flushed stdin only: neither execution acknowledgement nor a task receipt.
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
         let operation = Operation::new(self, Phase::Ready)?;
@@ -476,6 +498,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         operation.finish(result)
     }
     async fn prompt_inner(&mut self, text: &str) -> Result<WriteProgress, Error> {
+        self.pass_buffered_hook_reports().await?;
         if self.wire.has_buffered_input() {
             return Err(Error::Identity);
         }
