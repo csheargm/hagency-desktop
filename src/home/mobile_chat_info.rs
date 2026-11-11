@@ -206,6 +206,7 @@ struct ChatInfoData {
     room: RoomNameId,
     topic: String,
     members: Vec<UserProfile>,
+    banned_members: HashSet<OwnedUserId>,
     mode: Option<RoomNotificationMode>,
 }
 
@@ -488,9 +489,11 @@ impl MobileChatInfo {
                     .get_room(room.room_id())
                     .ok_or(crate::i18n::tr("This chat is no longer available."))?;
                 let members = room
-                    .members(RoomMemberships::JOIN)
+                    .members(RoomMemberships::JOIN | RoomMemberships::BAN)
                     .await
                     .map_err(|e| e.to_string())?;
+                let banned_members = members.iter().filter(|m| *m.membership() == ruma::events::room::member::MembershipState::Ban)
+                    .map(|m| m.user_id().to_owned()).collect();
                 let mut members: Vec<_> = members
                     .into_iter()
                     .map(|member| UserProfile {
@@ -506,6 +509,7 @@ impl MobileChatInfo {
                     room: RoomNameId::from_room(&room).await,
                     topic: room.topic().unwrap_or_default(),
                     members,
+                    banned_members,
                     mode: room.user_defined_notification_mode().await,
                 })
             }
@@ -911,7 +915,7 @@ impl Widget for MobileChatInfo {
         self.view.label(cx, ids!(members_empty)).set_visible(cx, members && self.data.as_ref().is_some_and(|d|d.members.is_empty()));
         let summary_room = self.data.as_ref().map(|data|&data.room).or(self.room.as_ref());
         self.view.label(cx, ids!(summary_name)).set_text(cx, &summary_room.map_or_else(|| crate::i18n::tr("Chat information").to_owned(), |room|room.display().into_owned()));
-        let count = self.data.as_ref().map_or_else(|| crate::i18n::tr("Loading members…").to_owned(), |data| crate::i18n::format("{0} members", &[("0",data.members.len().to_string())]));
+        let count = self.data.as_ref().map_or_else(|| crate::i18n::tr("Loading members…").to_owned(), |data| crate::i18n::format("{0} members", &[("0",data.members.len().saturating_sub(data.banned_members.len()).to_string())]));
         self.view.label(cx, ids!(summary_count)).set_text(cx, &count);
         for (id, selected) in [(ids!(overview_tab), !members), (ids!(members_tab), members)] {
             let mut button = self.view.button(cx, id);
@@ -968,6 +972,7 @@ impl Widget for MobileChatInfo {
                                 || profile.user_id.to_string(),
                                 |framework| format!("{framework} · {}", profile.user_id),
                             );
+                        let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
                         let avatar = widget.avatar(cx, ids!(avatar));
                         let loaded =
@@ -1029,7 +1034,7 @@ impl MobileChatInfoRef {
         panel.room=Some(RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Team room".into()),room.clone()));
         panel.tab=InfoTab::Members;
         if scenario=="members" {
-            panel.data=Some(ChatInfoData {room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),mode:None});
+            panel.data=Some(ChatInfoData {room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),banned_members:HashSet::new(),mode:None});
             panel.select_tab(cx,InfoTab::Members);
             panel.view.redraw(cx);
             return;
@@ -1109,7 +1114,7 @@ mod information_target_tests {
             let value=script_eval!(vm,{mod.widgets.MobileChatInfo {}});
             MobileChatInfo::script_from_value(vm,value)
         });
-        info.data=Some(ChatInfoData {room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,mode:None});
+        info.data=Some(ChatInfoData {room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,banned_members:HashSet::new(),mode:None});
         info.indented_members=indented;
         info.select_tab(&mut cx,InfoTab::Members);draw_information(&mut info,&mut cx);
         let list=info.view.portal_list(&mut cx,ids!(list));
@@ -1245,7 +1250,7 @@ mod information_target_tests {
             let info=MobileChatInfo::script_from_value(vm,value);assert!(vm.take_errors().is_empty());info
         });
         let room=RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Room A".into()),matrix_sdk::ruma::room_id!("!a:server").to_owned());
-        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],mode:None});
+        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],banned_members:HashSet::new(),mode:None});
         info.agent_command=Some(("exact-original-input".into(),"original-key".into()));
         draw_information(&mut info,&mut cx);
         assert_eq!(info.view.label(&mut cx,ids!(summary_name)).text(),"Room A");
@@ -1357,7 +1362,7 @@ mod information_target_tests {
             result: Ok(ChatInfoData {
                 room: RoomNameId::empty(room_a),
                 topic: String::new(),
-                members: vec![],
+                members: vec![], banned_members: HashSet::new(),
                 mode: None,
             }),
         };

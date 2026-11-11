@@ -121,6 +121,7 @@ script_mod! {
                 }
                 new_or_join_button := mod.widgets.NewOrJoinButton {}
             }
+            room_filter_bubbles := RoomFilterBubbles {}
             // No "All Chats | Spaces" switch here: on desktop, spaces live in the
             // navigation rail on the left, and selecting one filters this list.
             conversations := View {
@@ -150,6 +151,7 @@ script_mod! {
                     }
                 }
             }
+            room_filter_bubbles := RoomFilterBubbles {margin: Inset{left: 10, right: 10}}
             ChatViewSwitch {}
             conversations := View {
                 width: Fill height: Fill
@@ -311,6 +313,7 @@ impl Widget for RoomsSideBar {
         // The desktop layout has no spaces tree (the rail lists spaces instead).
         let spaces = cx.global::<ChatsViewState>().spaces
             && !crate::home::home_screen::effective_is_desktop(cx);
+        self.view.widget(cx, ids!(room_filter_bubbles)).set_visible(cx, !spaces);
         self.view.view(cx, ids!(conversations)).set_visible(cx, !spaces);
         self.view.view(cx, ids!(spaces_tree)).set_visible(cx, spaces);
         self.view.navigation_bar_button(cx, ids!(all_chats)).set_selected(cx, !spaces);
@@ -498,12 +501,15 @@ mod tests {
             for label in ["New workspace", "File Transfer"] {
                 assert!(!found.iter().any(|text| text == crate::i18n::tr(label)), "{layout:?}: no {label} entry above the list: {found:?}");
             }
-            // The conversation list starts right under the search field.
+            // Only the bounded filters and existing mobile tab switch separate search and conversations.
+            let filters = rect(&mut cx, &sidebar, ids!(room_filter_bubbles));
             let conversations = rect(&mut cx, &sidebar, ids!(conversations));
             let search = rect(&mut cx, &sidebar, ids!(room_filter_input_bar));
             assert!(conversations.size.y > 400.0, "{layout:?}: the list keeps the column: {conversations:?}");
-            assert!(conversations.pos.y > search.pos.y && conversations.pos.y - (search.pos.y + search.size.y) < 60.0,
-                "{layout:?}: nothing sits between search and list: {search:?} {conversations:?}");
+            assert!((filters.size.y - 32.0).abs() < 0.5 && filters.pos.y >= search.pos.y + search.size.y - 0.5,
+                "{layout:?}: the filter row stays bounded below search: {filters:?}");
+            assert!(conversations.pos.y >= filters.pos.y + filters.size.y - 0.5 && conversations.pos.y - (filters.pos.y + filters.size.y) < 60.0,
+                "{layout:?}: only the mobile tabs separate filters and list: {filters:?} {conversations:?}");
         }
     }
 

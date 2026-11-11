@@ -8,6 +8,8 @@ pub use matrix_state::*;
 pub mod app_state;
 pub use app_state::*;
 
+pub mod space_graph;
+
 /// For persisting state related to TSP wallets and identities.
 #[cfg(feature = "tsp")]
 pub mod tsp_state;

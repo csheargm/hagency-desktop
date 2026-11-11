@@ -3026,6 +3026,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b1514ced566c94991ed9563258ecf61e311fd773bf0a3f20606830386bf66e3"
 dependencies = [
  "phf 0.13.1",
+ "serde",
 ]
 
 [[package]]
@@ -10411,6 +10412,7 @@ dependencies = [
  "dark-light",
  "dispatch2",
  "ed25519-dalek 2.2.0",
+ "emojis",
  "eyeball",
  "eyeball-im",
  "futures",

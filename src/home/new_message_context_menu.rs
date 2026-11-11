@@ -1,5 +1,6 @@
 //! A context menu that appears when the user right-clicks
 //! or long-presses on a message/event in a room timeline.
+use super::{reaction_strip::ReactionStripWidgetExt, reaction_picker::ReactionPickerAction, event_reaction_list::get_typed_reaction};
 
 use bitflags::bitflags;
 use makepad_widgets::*;
@@ -40,7 +41,9 @@ script_mod! {
 
             divider_after_retry := mod.widgets.ContextMenuDivider { }
 
-            // Shows either the "Add Reaction" button or a reaction text input.
+            reaction_strip := mod.widgets.ReactionStrip {}
+
+            // Text reactions remain available alongside the emoji picker.
             react_view := View {
                 flow: Overlay
                 height: #(BUTTON_HEIGHT)
@@ -48,7 +51,7 @@ script_mod! {
 
                 react_button := mod.widgets.ContextMenuButton {
                     draw_icon +: { svg: (ICON_ADD_REACTION) }
-                    text: #(crate::i18n::tr("Add Reaction")) i18n_text: "Add Reaction"
+                    text: #(crate::i18n::tr("Add Text Reaction…")) i18n_text: "Add Text Reaction…"
                 }
 
                 reaction_input_view := View {
@@ -149,15 +152,10 @@ script_mod! {
 
             divider_before_report_delete := mod.widgets.ContextMenuDivider { }
 
-            // report_button = mod.widgets.ContextMenuDangerButton {
-            //     draw_icon.svg: (ICON_TRASH) // TODO: ICON_REPORT/WARNING/FLAG
-            //     text: #(crate::i18n::tr("Report")) i18n_text: "Report"
-            // }
-
-            // Note: we don't yet support deleting others' messages via admin/moderator power levels.
-            //       For now we only consider whether its the user's own message.
-            //       The caller needs to use `can_redact_own()` or `can_redact_other()`:
-            //       https://matrix-org.github.io/matrix-rust-sdk/matrix_sdk_base/struct.RoomMember.html#method.can_redact_own
+            report_button := mod.widgets.ContextMenuDangerButton {
+                draw_icon.svg: ICON_FLAG
+                text: #(crate::i18n::tr("Report")) i18n_text: "Report"
+            }
 
             delete_button := mod.widgets.ContextMenuDangerButton {
                 draw_icon.svg: (ICON_TRASH)
@@ -199,6 +197,7 @@ bitflags! {
         const CanCancelSend = 1 << 9;
         /// Whether this message has a real event ID, i.e., it isn't a local echo.
         const HasEventId = 1 << 10;
+        const CanReport = 1 << 12;
         const CanForward = 1 << 11;
     }
 }
@@ -222,11 +221,13 @@ impl MessageAbilities {
             )
         );
         abilities.set(Self::CanEdit, event_tl_item.is_editable() && !is_unsent_upload);
-        // Currently we only support deleting one's own messages.
-        // But for unsent messages, we show "Cancel Sending" instead of "Delete".
-        if event_tl_item.is_own() && !is_local_echo {
-            abilities.set(Self::CanDelete, user_power_levels.can_redact_own());
+        let is_redacted = matches!(message.kind, MsgLikeKind::Redacted);
+        if !is_local_echo && !is_redacted {
+            abilities.set(Self::CanDelete, if event_tl_item.is_own() {
+                user_power_levels.can_redact_own()
+            } else {user_power_levels.can_redact_others()});
         }
+        abilities.set(Self::CanReport, !event_tl_item.is_own() && !is_local_echo && !is_redacted);
         abilities.set(Self::HasEventId, event_tl_item.event_id().is_some());
         abilities.set(Self::CanForward, event_tl_item.event_id().is_some() && matches!(message.kind, MsgLikeKind::Message(_)));
         match event_tl_item.send_state() {
@@ -251,7 +252,8 @@ impl MessageAbilities {
         abilities.set(
             Self::CanReact,
             // don't let the user react to unsent messages, that doesn't make sense
-            user_power_levels.can_send_reaction() && event_tl_item.event_id().is_some(),
+            user_power_levels.can_send_reaction() && event_tl_item.event_id().is_some()
+                && !matches!(message.kind, MsgLikeKind::Redacted),
         );
         abilities.set(Self::HasHtml, has_html);
         abilities
@@ -297,6 +299,7 @@ pub struct NewMessageContextMenu {
     #[deref] view: View,
     #[source] source: ScriptObjectRef,
     #[rust] details: Option<MessageDetails>,
+    #[rust] own_reactions: Vec<String>,
     #[rust] focus_after_draw: bool,
 }
 
@@ -363,6 +366,19 @@ impl Widget for NewMessageContextMenu {
 impl WidgetMatchEvent for NewMessageContextMenu {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
         let Some(details) = self.details.as_ref() else { return };
+        let strip = self.view.reaction_strip(cx, ids!(reaction_strip));
+        if details.abilities.contains(MessageAbilities::CanReact) {
+            if let Some(emoji) = strip.clicked_emoji(actions) {
+                cx.widget_action(details.room_screen_widget_uid, MessageAction::React { details: details.clone(), reaction: emoji.as_str().to_owned() });
+                self.close(cx);
+                return;
+            }
+            if strip.add_reaction_clicked(actions) {
+                cx.action(ReactionPickerAction::Open { details: details.clone(), own_reactions: self.own_reactions.clone() });
+                self.close(cx);
+                return;
+            }
+        }
         let mut close_menu = false;
 
         let reaction_text_input = self.view.text_input(cx, ids!(reaction_input_view.reaction_text_input));
@@ -373,7 +389,7 @@ impl WidgetMatchEvent for NewMessageContextMenu {
         if reaction_send_button.clicked(actions)
             || reaction_text_input.returned(actions).is_some()
         {
-            let reaction = reaction_text_input.text().trim().to_owned();
+            let reaction = get_typed_reaction(&reaction_text_input.text()).unwrap_or_default();
             if reaction.is_empty() {
                 // TextInput releases focus on Enter; keep this editor usable
                 // when validation rejects the empty submission.
@@ -489,26 +505,14 @@ impl WidgetMatchEvent for NewMessageContextMenu {
             );
             close_menu = true;
         }
-        // else if self.button(cx, ids!(report_button)).clicked(actions) {
-        //     cx.widget_action(
-        //         details.room_screen_widget_uid,
-        //         &scope.path,
-        //         // TODO: display a dialog to confirm the report reason.
-        //         MessageAction::Report {
-        //             event_id: details.event_id.clone(),
-        //             item_id: details.item_id,
-        //         },
-        //     );
-        //    close_menu = true;
-        // }
+        else if self.button(cx, ids!(report_button)).clicked(actions) {
+            cx.widget_action(details.room_screen_widget_uid, MessageAction::Report(details.clone()));
+            close_menu = true;
+        }
         else if self.button(cx, ids!(delete_button)).clicked(actions) {
             cx.widget_action(
                 details.room_screen_widget_uid, 
-                MessageAction::Redact {
-                    details: details.clone(),
-                    // TODO: show a Modal to confirm deletion, and get the reason.
-                    reason: None,
-                },
+                MessageAction::Redact(details.clone()),
             );
             close_menu = true;
         }
@@ -529,7 +533,9 @@ impl NewMessageContextMenu {
     ///
     /// Returns the expected dimensions of the context menu,
     /// which can be used to proactively reposition it such that it fits on screen.
-    pub fn show(&mut self, cx: &mut Cx, details: MessageDetails) -> DVec2 {
+    pub fn show(&mut self, cx: &mut Cx, details: MessageDetails, own_reactions: &[String]) -> DVec2 {
+        self.own_reactions = own_reactions.to_vec();
+        self.view.reaction_strip(cx, ids!(reaction_strip)).populate(cx, own_reactions);
         self.details = Some(details);
         self.visible = true;
         self.focus_after_draw = true;
@@ -555,7 +561,7 @@ impl NewMessageContextMenu {
         let copy_link_button = self.view.button(cx, ids!(copy_link_to_message_button));
         let view_source_button = self.view.button(cx, ids!(view_source_button));
         let jump_to_related_button = self.view.button(cx, ids!(jump_to_related_button));
-        // let report_button = self.view.button(cx, ids!(report_button));
+        let report_button = self.view.button(cx, ids!(report_button));
         let delete_button = self.view.button(cx, ids!(delete_button));
 
         // Determine which buttons should be shown.
@@ -579,16 +585,18 @@ impl NewMessageContextMenu {
         self.button(cx, ids!(forward_button)).set_visible(cx, show_forward);
         self.button(cx, ids!(forward_button)).reset_hover(cx);
         let show_jump_to_related = details.related_event_id.is_some();
-        // let show_report = true;
+        let show_report = details.abilities.contains(MessageAbilities::CanReport);
         let show_cancel_send = details.abilities.contains(MessageAbilities::CanCancelSend);
         let show_delete = show_cancel_send || details.abilities.contains(MessageAbilities::CanDelete);
-        let show_divider_before_report_delete = show_delete; // || show_report;
+        let show_divider_before_report_delete = show_delete || show_report;
 
         // Actually set the buttons' visibility.
         retry_send_button.set_visible(cx, show_retry);
         self.view.view(cx, ids!(divider_after_retry)).set_visible(cx, show_divider_after_retry);
         self.view.view(cx, ids!(react_view)).set_visible(cx, show_react);
         react_button.set_visible(cx, show_react);
+        self.view.widget(cx, ids!(reaction_strip)).set_visible(cx, show_react);
+        self.view.reaction_strip(cx, ids!(reaction_strip)).reset_hover(cx);
         reply_button.set_visible(cx, show_reply_to);
         reply_in_thread_button.set_visible(cx, show_reply_in_thread);
         self.view.view(cx, ids!(divider_after_react_reply)).set_visible(cx, show_divider_after_react_reply);
@@ -608,7 +616,7 @@ impl NewMessageContextMenu {
         view_source_button.set_visible(cx, show_view_source);
         jump_to_related_button.set_visible(cx, show_jump_to_related);
         self.view.view(cx, ids!(divider_before_report_delete)).set_visible(cx, show_divider_before_report_delete);
-        // report_button.set_visible(cx, show_report);
+        report_button.set_visible(cx, show_report);
         delete_button.set_text(cx, if show_cancel_send { "Cancel Sending" } else { crate::i18n::tr("Delete") });
         delete_button.set_visible(cx, show_delete);
 
@@ -624,7 +632,7 @@ impl NewMessageContextMenu {
         copy_link_button.reset_hover(cx);
         view_source_button.reset_hover(cx);
         jump_to_related_button.reset_hover(cx);
-        // report_button.reset_hover(cx);
+        report_button.reset_hover(cx);
         delete_button.reset_hover(cx);
 
         // Reset reaction input view stuff.
@@ -635,7 +643,7 @@ impl NewMessageContextMenu {
 
         let num_visible_buttons =
             show_retry as usize
-            + show_react as usize
+            + 2 * show_react as usize
             + show_reply_to as usize
             + show_reply_in_thread as usize
             + show_edit as usize
@@ -647,7 +655,7 @@ impl NewMessageContextMenu {
             + show_view_source as usize
             + show_forward as usize
             + show_jump_to_related as usize
-            // + show_report as usize
+            + show_report as usize
             + show_delete as usize;
         let num_visible_dividers =
             show_divider_after_retry as usize
@@ -677,8 +685,21 @@ impl NewMessageContextMenuRef {
     }
 
     /// See [`NewMessageContextMenu::show()`].
-    pub fn show(&self, cx: &mut Cx, details: MessageDetails) -> DVec2 {
+    pub fn show(&self, cx: &mut Cx, details: MessageDetails, own_reactions: &[String]) -> DVec2 {
         let Some(mut inner) = self.borrow_mut() else { return DVec2::default()};
-        inner.show(cx, details)
+        inner.show(cx, details, own_reactions)
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    #[test]
+    fn reporting_and_hagency_forwarding_have_independent_permissions() {
+        assert!(!MessageAbilities::CanReport.intersects(MessageAbilities::CanForward));
+        let forward_only = MessageAbilities::CanForward | MessageAbilities::HasEventId;
+        assert!(!forward_only.contains(MessageAbilities::CanReport));
+        let report_only = MessageAbilities::CanReport | MessageAbilities::HasEventId;
+        assert!(!report_only.contains(MessageAbilities::CanForward));
     }
 }

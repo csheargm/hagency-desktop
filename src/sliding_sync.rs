@@ -1,3 +1,4 @@
+use crate::moderation::{self, MemberModeration, ReportTarget};
 use anyhow::{anyhow, bail, Result};
 use bitflags::bitflags;
 use mime::Mime;
@@ -45,7 +46,7 @@ use crate::{
         user_profile_cache::{UserProfileUpdate, enqueue_user_profile_update},
     }, room::{FetchedRoomAvatar, FetchedRoomPreview, RoomAvatarMember, RoomPreviewAction, room_avatar_members}, room_preview_cache::{RoomPreviewUpdate, enqueue_room_preview_update}, settings::account_settings::AccountManagementUrl, shared::{
         attachment_download::{MediaDownloadResult, media_source_mxc}, avatar::AvatarState, file_upload_modal::{AttachmentUpload, FileUploadAttemptId, FileUploadMetadata}, jump_to_bottom_button::UnreadMessageCount, mention_popup::{MentionItem, RoomMentionCandidate}, mentionable_text_input::MentionMatches, popup_list::{PopupKind, enqueue_popup_notification}
-    }, space_service_sync::space_service_loop, utils::{self, AVATAR_THUMBNAIL_FORMAT, MatchQuality, RoomNameId, VecDiff, alias_localpart, avatar_from_room_name}, verification::add_verification_event_handlers_and_sync_client
+    }, space_service_sync::space_service_loop, utils::{self, AVATAR_THUMBNAIL_FORMAT, MatchQuality, RoomNameId, VecDiff, alias_localpart, avatar_from_room_name}, verification::{add_verification_event_handlers_and_sync_client, handle_user_identities_subscriber}
 };
 
 #[derive(Parser, Default)]
@@ -348,6 +349,7 @@ pub(crate) async fn finish_oauth_login(client:Client,client_session:ClientSessio
                 }
             }
             persistence::save_oauth_session(&client, client_session,epoch)?;
+            persistence::space_graph::delete_space_graph(user).await;
         Ok::<(),anyhow::Error>(())
     }.await;
     if let Err(error)=saved {
@@ -763,6 +765,18 @@ pub enum MatrixRequest {
     /// Request to verify this device by sending an outgoing verification request
     /// to the user's other logged-in devices, which'll open the verification modal.
     RequestSelfVerification,
+    AcknowledgeIdentityReset { user_id: OwnedUserId },
+    SubscribeToIdentityResets { room_id: OwnedRoomId, subscribe: bool },
+    /// Request to verify another user by sending them a verification request
+    /// in our DM room with them, which'll open the verification modal.
+    RequestUserVerification {
+        user_id: OwnedUserId,
+    },
+    /// Request to find out whether we've verified the given user.
+    /// The response is delivered via [`crate::profile::user_verification_cache::UserVerificationStatesUpdated`].
+    GetUserVerificationState {
+        user_id: OwnedUserId,
+    },
     /// Request to fetch an Avatar image from the server.
     /// Upon completion of the async media request, the `on_fetched` function
     /// will be invoked with the content of an `AvatarUpdate`.
@@ -896,6 +910,9 @@ pub enum MatrixRequest {
     },
     /// Retries sending the given local echo of a message,
     /// typically one that previously failed to send.
+    Report { target: ReportTarget, reason: Option<String> },
+    ModerateMember { moderation: MemberModeration, reason: Option<String> },
+    GetMemberAbilities {room_id: OwnedRoomId, user_id: OwnedUserId},
     RetrySend {
         timeline_kind: TimelineKind,
         timeline_event_id: TimelineEventItemId,
@@ -1982,6 +1999,66 @@ async fn matrix_worker_task(
                 );
             }
 
+            MatrixRequest::RequestUserVerification { user_id } => {
+                let Some(client) = get_client() else { continue };
+                crate::account_session::spawn(crate::verification::request_user_verification_handler(client, user_id));
+            }
+            MatrixRequest::GetUserVerificationState { user_id } => {
+                let Some(client) = get_client() else { continue };
+                let Some(session) = crate::matrix_context::SessionPin::capture(&client) else { continue };
+                crate::account_session::spawn(async move {
+                    use crate::profile::user_verification_cache::{enqueue_user_verification_update, UserVerificationState, UserVerificationUpdate};
+                    let state = match client.encryption().get_user_identity(&user_id).await {
+                        Ok(Some(identity)) => UserVerificationState::from(&identity),
+                        Ok(None) => UserVerificationState::Unverified,
+                        Err(e) => {
+                            error!("Failed to get the identity of {user_id}: {e:?}");
+                            UserVerificationState::Unverified
+                        }
+                    };
+                    enqueue_user_verification_update(session, UserVerificationUpdate::States(vec![(user_id, state)]));
+                });
+            }
+
+            MatrixRequest::AcknowledgeIdentityReset { user_id } => {
+                let Some(client) = get_client() else { continue };
+                let _acknowledge_task = crate::account_session::spawn(async move {
+                    let result = match client.encryption().get_user_identity(&user_id).await {
+                        Ok(Some(identity)) if identity.has_verification_violation() => identity.withdraw_verification().await,
+                        Ok(Some(identity)) => identity.pin().await,
+                        Ok(None) => return,
+                        Err(e) => Err(e),
+                    };
+                    if let Err(e) = result {
+                        error!("Failed to acknowledge the identity reset of {user_id}: {e:?}");
+                        enqueue_popup_notification(
+                            format!("Couldn't accept {user_id}'s new identity. Error: {e}"),
+                            PopupKind::Error,
+                            None,
+                        );
+                    }
+                });
+            }
+
+            MatrixRequest::SubscribeToIdentityResets { room_id, subscribe } => {
+                let mut all_joined_rooms = ALL_JOINED_ROOMS.lock().unwrap();
+                let Some(jrd) = all_joined_rooms.get_mut(&room_id) else {
+                    log!("BUG: skipping subscribe to identity resets request for unknown room {room_id}");
+                    continue;
+                };
+                if let Some(old) = jrd.identity_resets_subscriber.take() {
+                    old.abort();
+                }
+                if subscribe {
+                    jrd.identity_resets_subscriber = Some(crate::account_session::spawn(
+                        crate::verification::identity_resets_subscriber_handler(
+                            jrd.main_timeline.timeline.room().clone(),
+                            jrd.main_timeline.timeline_update_sender.clone(),
+                        )
+                    ));
+                }
+            }
+
             MatrixRequest::GetRoomDiagnostics { room_id } => {
                 let Some(client) = get_client() else { continue };
                 let _diagnostics_task = crate::account_session::spawn(async move {
@@ -2841,6 +2918,10 @@ async fn matrix_worker_task(
                 let _power_levels_task = crate::account_session::spawn(async move {
                     match timeline.room().power_levels().await {
                         Ok(power_levels) => {
+                            enqueue_rooms_list_update(RoomsListUpdate::UpdatePowerLevels {
+                                room_id: timeline.room().room_id().to_owned(),
+                                power_levels: UserPowerLevels::from(&power_levels, &user_id),
+                            });
                             log!("Successfully fetched power levels for {timeline_kind}.");
                             if sender.send(TimelineUpdate::UserPowerLevels(
                                 UserPowerLevels::from(&power_levels, &user_id),
@@ -2897,6 +2978,18 @@ async fn matrix_worker_task(
                 });
             },
 
+            MatrixRequest::Report {target, reason} => {
+                let Some(client) = get_client() else {continue};
+                let _task = crate::account_session::spawn(moderation::report(client, target, reason));
+            }
+            MatrixRequest::ModerateMember {moderation, reason} => {
+                let Some(client) = get_client() else {continue};
+                let _task = crate::account_session::spawn(moderation::moderate_member(client, moderation, reason));
+            }
+            MatrixRequest::GetMemberAbilities {room_id, user_id} => {
+                let Some(client) = get_client() else {continue};
+                let _task = crate::account_session::spawn(moderation::fetch_member_abilities(client, room_id, user_id));
+            }
             MatrixRequest::RetrySend { timeline_kind, timeline_event_id } => {
                 let Some(timeline) = get_timeline(&timeline_kind) else {
                     log!("BUG: {timeline_kind} not found for retry send request");
@@ -3225,6 +3318,7 @@ struct JoinedRoomDetails {
     typing_notice_subscriber: Option<EventHandlerDropGuard>,
     /// A drop guard for the event handler that represents a subscription to pinned events for this room.
     pinned_events_subscriber: Option<EventHandlerDropGuard>,
+    identity_resets_subscriber: Option<JoinHandle<()>>,
 }
 impl Drop for JoinedRoomDetails {
     fn drop(&mut self) {
@@ -3233,6 +3327,7 @@ impl Drop for JoinedRoomDetails {
         // PerTimelineDetails::Drop, so just tear down the room-level subscriptions here.
         drop(self.typing_notice_subscriber.take());
         drop(self.pinned_events_subscriber.take());
+        if let Some(task) = self.identity_resets_subscriber.take() { task.abort(); }
     }
 }
 impl JoinedRoomDetails {
@@ -3816,6 +3911,7 @@ async fn start_matrix_client_login_and_sync(rt: Handle) {
 
         // Listen for changes to our verification status and incoming verification requests.
         subscriber_task_handles.push(add_verification_event_handlers_and_sync_client(client.clone()));
+        subscriber_task_handles.push(handle_user_identities_subscriber(client.clone()));
         // Questions Agents ask in rooms arrive as room messages of their own type.
         #[cfg(feature = "agent_chat")]
         crate::hagency::pending_questions::attach(&client);
@@ -4589,6 +4685,8 @@ async fn update_room(
             if let Some(nupl) = new_room.user_power_levels
                 && old_room.user_power_levels.is_none_or(|oupl| oupl != nupl)
             {
+                enqueue_rooms_list_update(RoomsListUpdate::UpdatePowerLevels {room_id: new_room_id.clone(), power_levels: nupl});
+                Cx::post_action(moderation::MemberAbilitiesInvalidated {room_id: new_room_id.clone(), epoch: crate::account_session::epoch()});
                 let timeline_update_senders = get_timeline_update_senders(&new_room_id);
                 if !timeline_update_senders.is_empty() {
                     log!("Updating room {new_room_id} user power levels.");
@@ -4733,6 +4831,7 @@ async fn add_new_room(
             pending_thread_timelines: HashSet::new(),
             typing_notice_subscriber: None,
             pinned_events_subscriber: None,
+            identity_resets_subscriber: None,
         },
     );
     // A visible RoomScreen might still have this room's previous channel endpoints,
@@ -4747,6 +4846,7 @@ async fn add_new_room(
     // Start with a basic text avatar; the avatar image will be fetched asynchronously below.
     let room_avatar = avatar_from_room_name(room_name_id.name_for_avatar());
     rooms_list::enqueue_rooms_list_update(RoomsListUpdate::AddJoinedRoom(JoinedRoomInfo {
+        user_power_levels: new_room.user_power_levels,
         notification_mode: new_room.room.user_defined_notification_mode().await,
         latest,
         tags: new_room.tags.clone().unwrap_or_default(),
@@ -6358,7 +6458,7 @@ async fn run_ios_sso_flow(
 
 bitflags! {
     /// The powers that a user has in a given room.
-    #[derive(Copy, Clone, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub struct UserPowerLevels: u64 {
         const Ban = 1 << 0;
         const Invite = 1 << 1;
@@ -6423,12 +6523,14 @@ bitflags! {
         // const BeaconInfo = 1 << 56;
         // const CallMember = 1 << 57;
         // const MemberHints = 1 << 58;
+        const ModOrAdmin = 1 << 59;
     }
 }
 impl UserPowerLevels {
     pub fn from(power_levels: &RoomPowerLevels, user_id: &UserId) -> Self {
         let mut retval = UserPowerLevels::empty();
         let user_power = power_levels.for_user(user_id);
+        retval.set(Self::ModOrAdmin, matrix_sdk::room::RoomMemberRole::suggested_role_for_power_level(user_power) != matrix_sdk::room::RoomMemberRole::User);
         retval.set(UserPowerLevels::Ban, user_power >= power_levels.ban);
         retval.set(UserPowerLevels::Invite, user_power >= power_levels.invite);
         retval.set(UserPowerLevels::Kick, user_power >= power_levels.kick);
@@ -6448,6 +6550,12 @@ impl UserPowerLevels {
         let room_power_levels = room.power_levels().await.ok()?;
         Some(UserPowerLevels::from(&room_power_levels, user_id))
     }
+
+    pub fn assumed_until_fetched() -> Self {
+        Self::all() - (Self::Ban | Self::Kick | Self::Redact | Self::ModOrAdmin)
+    }
+
+    pub fn is_mod_or_admin(self) -> bool { self.contains(Self::ModOrAdmin) }
 
     pub fn can_ban(self) -> bool {
         self.contains(UserPowerLevels::Ban)

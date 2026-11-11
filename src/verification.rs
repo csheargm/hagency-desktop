@@ -1,18 +1,20 @@
+use crate::home::{identity_reset_banner::IdentityReset, room_screen::TimelineUpdate};
+use crate::profile::user_verification_cache::{enqueue_user_verification_update, UserVerificationState, UserVerificationUpdate};
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use futures_util::StreamExt;
-use makepad_widgets::{error, log, Cx};
-use matrix_sdk_base::crypto::{AcceptedProtocols, CancelInfo, EmojiShortAuthString};
+use makepad_widgets::{error, log, Cx, SignalToUI};
+use matrix_sdk_base::crypto::{AcceptedProtocols, CancelInfo, EmojiShortAuthString, IdentityState};
 use matrix_sdk::{
     encryption::{
-        verification::{SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState}, VerificationState}, ruma::{
+        identities::UserIdentity, verification::{SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState}, VerificationState}, ruma::{
         events::{
             key::verification::{request::ToDeviceKeyVerificationRequestEvent, VerificationMethod},
             room::message::{MessageType, OriginalSyncRoomMessageEvent},
         },
-        UserId,
-    }, Client
+        OwnedUserId, UserId,
+    }, Client, Room
 };
 use tokio::{sync::mpsc::{UnboundedReceiver, UnboundedSender}};
 
@@ -69,7 +71,6 @@ fn post_verification(scope: &VerificationScope, action: VerificationAction) {
     if scope.is_current() { Cx::post_action(ScopedVerificationAction {scope:scope.clone(),action}); }
 }
 
-
 pub fn add_verification_event_handlers_and_sync_client(client: Client) -> tokio::task::JoinHandle<()> {
     let pin = crate::matrix_context::SessionPin::capture(&client);
     let mut verification_state_subscriber = client.encryption().verification_state();
@@ -118,6 +119,80 @@ pub fn add_verification_event_handlers_and_sync_client(client: Client) -> tokio:
     );
 
     verification_state_handle
+}
+
+/// Keeps the UI's cache of users' verification states up to date as their identities change.
+pub fn handle_user_identities_subscriber(client: Client) -> tokio::task::JoinHandle<()> {
+    let session = crate::matrix_context::SessionPin::capture(&client);
+    crate::account_session::spawn(async move {
+        let Some(session) = session.filter(|pin| pin.is_current()) else { return };
+        let Some(own_user_id) = client.user_id().map(ToOwned::to_owned) else { return };
+        let identity_updates = match client.encryption().user_identities_stream().await {
+            Ok(stream) => stream,
+            Err(e) => {
+                error!("Failed to subscribe to user identity updates: {e:?}");
+                return;
+            }
+        };
+        let mut identity_updates = std::pin::pin!(identity_updates);
+        while let Some(updates) = identity_updates.next().await {
+            if !session.is_current() { return; }
+            if updates.new.contains_key(&own_user_id) || updates.changed.contains_key(&own_user_id) {
+                enqueue_user_verification_update(session.clone(), UserVerificationUpdate::OwnIdentityChanged);
+                continue;
+            }
+            let states: Vec<_> = updates.new.into_iter()
+                .chain(updates.changed)
+                .map(|(user_id, identity)| (user_id, UserVerificationState::from(&identity)))
+                .collect();
+            if !states.is_empty() {
+                enqueue_user_verification_update(session.clone(), UserVerificationUpdate::States(states));
+            }
+        }
+    })
+}
+
+
+
+/// Sends the members of the given room whose identities were reset to that room's timeline,
+/// first right away and then again whenever that list changes.
+pub async fn identity_resets_subscriber_handler(room: Room, sender: crossbeam_channel::Sender<TimelineUpdate>) {
+    // Identity resets only matter in encrypted rooms, and watching for them means loading every member's identity.
+    if !room.latest_encryption_state().await.is_ok_and(|state| state.is_encrypted()) {
+        return;
+    }
+    let changes = match room.subscribe_to_identity_status_changes().await {
+        Ok(changes) => changes,
+        Err(e) => {
+            error!("Failed to subscribe to identity changes in room {}: {e:?}", room.room_id());
+            return;
+        }
+    };
+    let mut changes = std::pin::pin!(changes);
+    // Each member whose identity was reset, and whether we had verified them before that.
+    let mut resets: Vec<(OwnedUserId, bool)> = Vec::new();
+    loop {
+        let mut identity_resets = Vec::with_capacity(resets.len());
+        for (user_id, was_verified) in &resets {
+            let display_name = room.get_member_no_sync(user_id).await.ok().flatten()
+                .and_then(|member| member.display_name().map(ToOwned::to_owned));
+            identity_resets.push(IdentityReset { user_id: user_id.clone(), display_name, was_verified: *was_verified });
+        }
+        if sender.send(TimelineUpdate::IdentityResets(identity_resets)).is_err() {
+            return;
+        }
+        SignalToUI::set_ui_signal();
+
+        let Some(changes) = changes.next().await else { return };
+        for change in changes {
+            resets.retain(|(user_id, _)| *user_id != change.user_id);
+            match change.changed_to {
+                IdentityState::PinViolation => resets.push((change.user_id, false)),
+                IdentityState::VerificationViolation => resets.push((change.user_id, true)),
+                IdentityState::Pinned | IdentityState::Verified => { }
+            }
+        }
+    }
 }
 
 
@@ -394,7 +469,7 @@ pub async fn request_self_verification_handler(client: Client) {
         }
         Err(e) => {
             error!("Failed to get own user identity for self-verification: {e:?}");
-            enqueue_popup_notification(format!("Couldn't start verification: {e}"), PopupKind::Error, Some(6.0));
+            enqueue_popup_notification(crate::i18n::format("Couldn't start verification: {e}", &[("e", e.to_string())]), PopupKind::Error, Some(6.0));
             return;
         }
     };
@@ -429,6 +504,47 @@ pub async fn request_self_verification_handler(client: Client) {
         Err(e) => error!("Couldn't list our own devices before self-verification: {e:?}"),
     }
 
+    outgoing_verification_request_handler(client, identity).await;
+}
+
+
+/// Sends a verification request to another user in our DM room with them,
+/// which the SDK creates (or re-invites them to) if needed.
+pub async fn request_user_verification_handler(client: Client, user_id: OwnedUserId) {
+    // Only a device with our user-signing key can sign (verify) another user's identity.
+    if !client.encryption().cross_signing_status().await.is_some_and(|status| status.has_user_signing) {
+        enqueue_popup_notification(
+            crate::i18n::tr("You need to verify this device before you can verify other users.\n\nYou can verify it in Settings."),
+            PopupKind::Error,
+            Some(8.0),
+        );
+        return;
+    }
+
+    // Get a fresh copy of their identity, don't rely on a cached one
+    let identity = match client.encryption().request_user_identity(&user_id).await {
+        Ok(Some(identity)) => identity,
+        Ok(None) => {
+            enqueue_popup_notification(
+                crate::i18n::format("Can't verify {user_id} yet, since they haven't set up cross-signing.", &[("user_id", user_id.to_string())]),
+                PopupKind::Error,
+                Some(8.0),
+            );
+            return;
+        }
+        Err(e) => {
+            error!("Failed to get the identity of {user_id} for verification: {e:?}");
+            enqueue_popup_notification(crate::i18n::format("Couldn't start verification: {e}", &[("e", e.to_string())]), PopupKind::Error, Some(6.0));
+            return;
+        }
+    };
+
+    outgoing_verification_request_handler(client, identity).await;
+}
+
+
+/// Sends a verification request to the given identity, then runs that verification flow.
+async fn outgoing_verification_request_handler(client: Client, identity: UserIdentity) {
     // Now we try to start the verification flow.
     let Some(in_progress) = VerificationInProgress::start() else {
         enqueue_popup_notification(
@@ -442,12 +558,12 @@ pub async fn request_self_verification_handler(client: Client) {
     let request = match identity.request_verification_with_methods(vec![VerificationMethod::SasV1]).await {
         Ok(request) => request,
         Err(e) => {
-            error!("Failed to send self-verification request: {e:?}");
+            error!("Failed to send verification request to {}: {e:?}", identity.user_id());
             enqueue_popup_notification(format!("Couldn't send verification request: {e}"), PopupKind::Error, Some(6.0));
             return;
         }
     };
-    log!("Sent self-verification request, flow ID: {}", request.flow_id());
+    log!("Sent verification request to {}, flow ID: {}", identity.user_id(), request.flow_id());
 
     // we use the same verification modal as we do for incoming requests.
     let Some(scope)=VerificationScope::capture(&client,&request) else {return;};

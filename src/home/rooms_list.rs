@@ -16,6 +16,9 @@
 //! so you can use it from other widgets or functions on the main UI thread
 //! that need to query basic info about a particular room or space.
 
+use crate::persistence::space_graph::{SavedSpace, SavedSpaceGraph};
+use super::room_filter_bubbles::{BubbleSelection, BubbleFilters, RoomFilterBubblesAction};
+use crate::sliding_sync::UserPowerLevels;
 use std::{cell::RefCell, collections::{HashMap, HashSet, VecDeque, hash_map::Entry}, rc::Rc, sync::Arc};
 use crossbeam_queue::SegQueue;
 use makepad_widgets::*;
@@ -183,6 +186,7 @@ pub enum RoomsListUpdate {
     AddJoinedRoom(JoinedRoomInfo),
     /// Clear all rooms in the list of all rooms.
     ClearRooms,
+    UpdatePowerLevels { room_id: OwnedRoomId, power_levels: UserPowerLevels },
     /// Update the preview of the latest event for the given room.
     UpdateLatestEvent {
         room_id: OwnedRoomId,
@@ -270,6 +274,7 @@ pub enum RoomsListUpdate {
     /// The background space service is now listening for requests,
     /// and the sender-side channel endpoint is included.
     SpaceRequestSender(UnboundedSender<SpaceRequest>),
+    RestoreSpaceGraph { user_id: OwnedUserId, epoch: u64, graph: SavedSpaceGraph },
     /// Update the ordering of rooms based on the given diff.
     RoomOrderUpdate(VecDiff<OwnedRoomId>),
 }
@@ -357,6 +362,7 @@ impl LatestEventPreview {
 /// and to filter the list of rooms based on the current search filter.
 #[derive(Debug)]
 pub struct JoinedRoomInfo {
+    pub user_power_levels: Option<UserPowerLevels>,
     pub notification_mode: Option<matrix_sdk::notification_settings::RoomNotificationMode>,
     /// The displayable name of this room (includes room ID for fallback).
     pub room_name_id: RoomNameId,
@@ -461,6 +467,10 @@ struct SpaceMapValue {
     /// Note that it *does not* mean that all nested/subspaces within this space
     /// have been fully paginated themselves.
     is_fully_paginated: bool,
+    /// True only when these children were read after the final pagination update.
+    has_all_children: bool,
+    /// Retain the complete saved graph until a fresh complete graph replaces it.
+    cached_children: Option<SavedSpace>,
     /// The set of rooms that are direct children of this space, excluding subspaces.
     direct_child_rooms: Arc<HashSet<OwnedRoomId>>,
     /// The nested subspaces (only spaces) that are direct children of this space.
@@ -516,6 +526,8 @@ pub struct RoomsList {
     ///
     /// This can include both joined and non-joined spaces.
     #[rust] space_map: HashMap<OwnedRoomId, SpaceMapValue>,
+    #[rust] saved_space_graph: SavedSpaceGraph,
+    #[rust] space_graph_owner: Option<(OwnedUserId, u64)>,
 
     /// Rooms that are explicitly hidden and should never be shown in the rooms list.
     #[rust] hidden_rooms: HashSet<OwnedRoomId>,
@@ -526,6 +538,8 @@ pub struct RoomsList {
     /// 1. Do not use this directly. Instead, use the `should_display_room!()` macro.
     /// 2. This does *not* get auto-applied when it changes, for performance reasons.
     #[rust] display_filter: RoomDisplayFilter,
+    #[rust] bubble_selection: BubbleSelection,
+    #[rust(true)] show_invites_in_unread_filters: bool,
 
     /// The currently-active sort function for the list of rooms.
     #[rust] sort_fn: Option<Box<SortFn>>,
@@ -593,6 +607,7 @@ macro_rules! should_display_room {
         !$self.hidden_rooms.contains($room_id)
             && (!$self.display_filter.is_none() || !super::chat_actions::is_hidden($room_id))
             && ($self.display_filter)($room)
+            && $self.bubble_selection.matches($room, $self.show_invites_in_unread_filters)
             && $self.selected_space.as_ref()
                 .is_none_or(|space| $self.is_room_indirectly_in_space(space.room_id(), $room_id))
     };
@@ -740,6 +755,11 @@ impl RoomsList {
         while let Some(update) = PENDING_ROOM_UPDATES.pop() {
             num_updates += 1;
             match update {
+                RoomsListUpdate::UpdatePowerLevels {room_id, power_levels} => {
+                    if let Some(room) = self.all_joined_rooms.get_mut(&room_id) {
+                        room.user_power_levels = Some(power_levels);
+                    }
+                }
                 RoomsListUpdate::UpdateNotificationMode {room_id, mode} => {
                     if let Some(room) = self.all_joined_rooms.get_mut(&room_id) {
                         if room.notification_mode != mode {
@@ -760,6 +780,9 @@ impl RoomsList {
                     SignalToUI::set_ui_signal(); // signal the InviteScreen to update itself
                 }
                 RoomsListUpdate::AddJoinedRoom(joined_room) => {
+                    if self.bubble_selection.active().contains(BubbleFilters::ModAdmin) && joined_room.user_power_levels.is_none() {
+                        submit_async_request(MatrixRequest::GetRoomPowerLevels { timeline_kind: TimelineKind::MainRoom {room_id: joined_room.room_name_id.room_id().clone()} });
+                    }
                     if let Some(latest) = &joined_room.latest {
                         super::chat_actions::observe(joined_room.room_name_id.room_id(), latest.timestamp.0.into());
                     }
@@ -1187,6 +1210,23 @@ impl RoomsList {
                     else { continue };
                     portal_list.smooth_scroll_to(cx, portal_list_index, speed, Some(15), 10.0);
                 }
+                RoomsListUpdate::RestoreSpaceGraph { user_id, epoch, graph } => {
+                    if epoch != crate::account_session::epoch()
+                        || crate::sliding_sync::current_user_id().as_ref() != Some(&user_id)
+                    { continue }
+                    for (id, saved) in &graph {
+                        let value = self.space_map.entry(id.clone()).or_default();
+                        if !value.has_all_children {
+                            value.cached_children = Some(saved.clone());
+                            if value.parent_chain.is_empty() {
+                                value.parent_chain = saved.parent_chain.iter().cloned().collect();
+                            }
+                        }
+                    }
+                    self.saved_space_graph = graph;
+                    self.space_graph_owner = Some((user_id, epoch));
+                    self.update_displayed_rooms(cx, false);
+                }
                 RoomsListUpdate::SpaceRequestSender(sender) => {
                     self.space_request_sender = Some(sender);
                     num_updates -= 1;  // this does not require a redraw.
@@ -1247,6 +1287,7 @@ impl RoomsList {
         }
         if (needs_sort && self.sort_fn.is_none())
             || (searchable_metadata_changed && self.display_filter.is_some())
+            || (num_updates > 0 && !self.bubble_selection.is_empty())
         {
             self.update_displayed_rooms(cx, false);
         }
@@ -1268,7 +1309,7 @@ impl RoomsList {
             + self.displayed_direct_rooms.len()
             + self.displayed_regular_rooms.len();
 
-        let mut text = match (self.display_filter.is_none(), num_rooms) {
+        let mut text = match (self.display_filter.is_none() && self.bubble_selection.is_empty(), num_rooms) {
             (true, 0)  => "No joined or invited rooms found".to_string(),
             (true, 1)  => "Loaded 1 room".to_string(),
             (true, n)  => crate::i18n::format("Loaded {n} rooms", &[("n", (n).to_string())]),
@@ -1531,27 +1572,28 @@ impl RoomsList {
     /// Handle any incoming updates to spaces' room lists and pagination state.
     fn handle_space_room_list_action(&mut self, cx: &mut Cx, action: &SpaceRoomListAction) {
         match action {
-            SpaceRoomListAction::UpdatedChildren { space_id, parent_chain, direct_child_rooms, direct_subspaces } => {
+            SpaceRoomListAction::UpdatedChildren { space_id, parent_chain, direct_child_rooms, direct_subspaces, is_complete, epoch } => {
+                if *epoch != crate::account_session::epoch() { return }
                 match self.space_map.entry(space_id.clone()) {
                     Entry::Occupied(mut occ) => {
                         let occ_mut = occ.get_mut();
                         occ_mut.parent_chain = parent_chain.clone();
-                        occ_mut.direct_child_rooms = Arc::clone(direct_child_rooms);
-                        occ_mut.direct_subspaces   = Arc::clone(direct_subspaces);
+                        occ_mut.set_children(direct_child_rooms, direct_subspaces, *is_complete);
                     }
                     Entry::Vacant(vac) => {
                         vac.insert_entry(SpaceMapValue {
                             is_fully_paginated: false,
+                            has_all_children: *is_complete,
+                            cached_children: None,
                             parent_chain: parent_chain.clone(),
                             direct_child_rooms: Arc::clone(direct_child_rooms),
                             direct_subspaces:   Arc::clone(direct_subspaces),
                         });
                     }
                 }
-                if self.selected_space.as_ref().is_some_and(|sel_space|
-                    sel_space.room_id() == space_id
-                    || parent_chain.contains(sel_space.room_id())
-                ) {
+                // A subspace can have multiple parents; its discovery chain is
+                // not enough to decide whether the selected space changed.
+                if self.selected_space.is_some() {
                     self.update_displayed_rooms(cx, false);
                 }
             }
@@ -1650,17 +1692,7 @@ impl RoomsList {
     ///
     /// This will recursively search all nested spaces within the given `parent_space`.
     fn is_room_indirectly_in_space(&self, parent_space: &OwnedRoomId, target: &OwnedRoomId) -> bool {
-        if let Some(smv) = self.space_map.get(parent_space) {
-            if smv.direct_child_rooms.contains(target) {
-                return true;
-            }
-            for subspace in smv.direct_subspaces.iter() {
-                if self.is_room_indirectly_in_space(subspace, target) {
-                    return true;
-                }
-            }
-        }
-        false
+        room_in_space_graph(&self.space_map, parent_space, target)
     }
 }
 
@@ -1815,7 +1847,10 @@ impl Widget for RoomsList {
                     self.selected_space = None;
                     self.space_request_sender = None;
                     self.space_map.clear();
+                    self.saved_space_graph.clear();
+                    self.space_graph_owner = None;
                     self.hidden_rooms.clear();
+                    self.bubble_selection = BubbleSelection::default();
                     self.displayed_invited_rooms.clear();
                     self.invited_rooms_indexes = Default::default();
                     self.displayed_direct_rooms.clear();
@@ -1835,6 +1870,28 @@ impl Widget for RoomsList {
                     continue;
                 }
 
+                if let Some(filter_action) = action.downcast_ref::<RoomFilterBubblesAction>() {
+                    match *filter_action {
+                        RoomFilterBubblesAction::Changed(selection) => {
+                            self.bubble_selection = selection;
+                            if selection.active().contains(BubbleFilters::ModAdmin) {
+                                for (room_id, room) in &self.all_joined_rooms {
+                                    if room.user_power_levels.is_none() {
+                                        submit_async_request(MatrixRequest::GetRoomPowerLevels {timeline_kind: TimelineKind::MainRoom {room_id: room_id.clone()}});
+                                    }
+                                }
+                            }
+                        }
+                        RoomFilterBubblesAction::InvitesInUnread(value) => self.show_invites_in_unread_filters = value,
+                    }
+                    self.update_displayed_rooms(cx, true);
+                    continue;
+                }
+                if action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsChanged>().is_some()
+                    && !self.bubble_selection.is_empty() {
+                    self.update_displayed_rooms(cx, false);
+                    continue;
+                }
                 // Only handle filter changes from the home screen's filter bar,
                 // not from any other RoomFilterInputBar instance (e.g., SpaceLobbyScreen's).
                 if let Some(MainFilterAction::Changed(keywords)) = action.downcast_ref() {
@@ -1864,10 +1921,11 @@ impl Widget for RoomsList {
                             self.view.space_lobby_entry(cx, ids!(space_lobby_entry)).set_visible(cx, true);
 
                             // If we don't have the full list of children in this newly-selected space, then fetch it.
-                            let (is_fully_paginated, parent_chain) = self.space_map
+                            let is_fully_paginated = self.space_map
                                 .get(space_name_id.room_id())
-                                .map(|smv| (smv.is_fully_paginated, smv.parent_chain.clone()))
+                                .map(|smv| smv.is_fully_paginated)
                                 .unwrap_or_default();
+                            let parent_chain = ParentChain::new();
                             if !is_fully_paginated {
                                 let Some(sender) = self.space_request_sender.as_ref() else {
                                     error!("BUG: RoomsList: no space request sender was available.");
@@ -2132,6 +2190,29 @@ impl Widget for RoomsList {
 }
 
 impl RoomsListRef {
+    /// Persist only complete snapshots, preserving cached spaces not opened this session.
+    pub fn save_space_graph(&self, user_id: &ruma::UserId) {
+        let Some(mut inner) = self.borrow_mut() else { return };
+        if inner.space_graph_owner.as_ref().is_none_or(|(owner, epoch)|
+            owner.as_str() != user_id.as_str() || *epoch != crate::account_session::epoch()
+        ) { return }
+        let mut graph = inner.saved_space_graph.clone();
+        for (id, space) in &inner.space_map {
+            if space.has_all_children {
+                graph.insert(id.clone(), SavedSpace {
+                    parent_chain: space.parent_chain.iter().cloned().collect(),
+                    rooms: (*space.direct_child_rooms).clone(),
+                    subspaces: (*space.direct_subspaces).clone(),
+                });
+            }
+        }
+        if graph == inner.saved_space_graph { return }
+        match crate::persistence::space_graph::save_space_graph(&graph, user_id) {
+            Ok(()) => inner.saved_space_graph = graph,
+            Err(e) => error!("Failed to save space graph: {e}"),
+        }
+    }
+
     /// The Project tree consumes the same SDK update queue even while the
     /// flat list is hidden. Neither a Space child edge nor a Project grant
     /// substitutes for current joined Matrix membership.
@@ -2284,4 +2365,50 @@ struct RoomCategoryIndexes {
     first_room_index: usize,
     /// The index after the last room in this category, which is where the next category should start.
     after_rooms_index: usize,
+}
+
+impl SpaceMapValue {
+    fn set_children(&mut self, rooms: &Arc<HashSet<OwnedRoomId>>, subspaces: &Arc<HashSet<OwnedRoomId>>, complete: bool) {
+        self.has_all_children = complete;
+        if complete { self.cached_children = None; }
+        self.direct_child_rooms = Arc::clone(rooms);
+        self.direct_subspaces = Arc::clone(subspaces);
+    }
+}
+
+fn room_in_space_graph(graph: &HashMap<OwnedRoomId, SpaceMapValue>, parent: &OwnedRoomId, target: &OwnedRoomId) -> bool {
+    let mut visited = HashSet::new();
+    let mut pending = vec![parent];
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {continue;}
+        let Some(space) = graph.get(id) else {continue};
+        if space.direct_child_rooms.contains(target) || space.cached_children.as_ref().is_some_and(|saved| saved.rooms.contains(target)) {return true;}
+        pending.extend(space.direct_subspaces.iter());
+        if let Some(saved) = &space.cached_children {pending.extend(saved.subspaces.iter());}
+    }
+    false
+}
+
+#[cfg(test)]
+mod cached_space_tests {
+    use super::*;
+    #[test]
+    fn partial_refresh_retains_cached_paths_until_complete_and_cycles_terminate() {
+        let a = ruma::room_id!("!a:test").to_owned(); let b = ruma::room_id!("!b:test").to_owned();
+        let old = ruma::room_id!("!old:test").to_owned(); let fresh = ruma::room_id!("!fresh:test").to_owned();
+        let mut graph = HashMap::from([
+            (a.clone(), SpaceMapValue {cached_children: Some(SavedSpace {subspaces: HashSet::from([b.clone()]), ..Default::default()}), ..Default::default()}),
+            (b.clone(), SpaceMapValue {cached_children: Some(SavedSpace {rooms: HashSet::from([old.clone()]), subspaces: HashSet::from([a.clone()]), ..Default::default()}), ..Default::default()}),
+        ]);
+        let fresh_rooms = Arc::new(HashSet::from([fresh.clone()]));
+        let no_subspaces = Arc::new(HashSet::new());
+        graph.get_mut(&b).unwrap().set_children(&fresh_rooms, &no_subspaces, false);
+        assert!(room_in_space_graph(&graph, &a, &old));
+        assert!(room_in_space_graph(&graph, &a, &fresh));
+        assert!(!room_in_space_graph(&graph, &a, &ruma::room_id!("!missing:test").to_owned()));
+        graph.get_mut(&b).unwrap().set_children(&fresh_rooms, &no_subspaces, true);
+        assert!(!room_in_space_graph(&graph, &a, &old));
+        assert!(room_in_space_graph(&graph, &a, &fresh));
+        assert!(graph[&b].has_all_children && graph[&b].cached_children.is_none());
+    }
 }

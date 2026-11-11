@@ -69,6 +69,8 @@ mod verification_modal;
 mod join_leave_room_modal;
 /// A modal/dialog popup for confirming that a user should be blocked or unblocked.
 pub mod block_user_modal;
+pub mod moderation;
+pub mod moderation_modal;
 /// Shared UI components.
 pub mod shared;
 pub mod mini_app;
@@ -166,3 +168,6 @@ pub fn cache_dir() -> &'static Path {
         }
     })
 }
+
+#[cfg(test)]
+mod upstream_port_tests;

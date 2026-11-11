@@ -1,5 +1,8 @@
 //! Widgets and types related to displaying info about a user profile.
+use crate::profile::user_verification_cache::{get_or_fetch_user_verification_state, UserVerificationState, UserVerificationStatesUpdated};
 
+use crate::moderation::{MemberAbilities, MemberAbilitiesFetched, MemberAbilitiesInvalidated, MemberAction, MemberModeration};
+use crate::moderation_modal::{ModerationModalAction, ModerationRequest};
 use std::{borrow::Cow, ops::{Deref, DerefMut}};
 use makepad_widgets::*;
 use matrix_sdk::{room::{RoomMember, RoomMemberRole}, ruma::{events::room::member::MembershipState, OwnedRoomId, OwnedUserId}};
@@ -76,6 +79,19 @@ script_mod! {
         icon_walk: Walk{width: 16 height: 16}
     }
 
+    let ModerationButton = RobrixNegativeIconButton {
+        width: Fill height: 34 margin: 0 padding: 8
+        icon_walk: Walk{width: 16 height: 16}
+    }
+    let ModerationActions = View {
+        width: Fill height: Fit flow: Down spacing: 8 padding: 10 visible: false
+        Label {text: #(crate::i18n::tr("Moderation")) i18n_text: "Moderation"}
+        mute := ModerationButton {text: #(crate::i18n::tr("Mute User")) i18n_text: "Mute User" draw_icon.svg: ICON_MUTE}
+        unmute := ModerationButton {text: #(crate::i18n::tr("Unmute User")) i18n_text: "Unmute User" draw_icon.svg: ICON_CHECKMARK}
+        kick := ModerationButton {text: #(crate::i18n::tr("Kick User")) i18n_text: "Kick User" draw_icon.svg: ICON_LOGOUT}
+        ban := ModerationButton {text: #(crate::i18n::tr("Ban User")) i18n_text: "Ban User" draw_icon.svg: ICON_FORBIDDEN}
+        unban := ModerationButton {text: #(crate::i18n::tr("Unban User")) i18n_text: "Unban User" draw_icon.svg: ICON_CHECKMARK}
+    }
     let UserProfileView = ScrollXYView {
         width: Fill,
         height: Fill,
@@ -92,10 +108,12 @@ script_mod! {
             spacing: 3
             flow: Down
 
+            avatar_box := View {
+                width: 150, height: 150, margin: 10,
+                flow: Overlay, align: Align{x: 1.0, y: 1.0}
             avatar := Avatar {
-                width: 150,
-                height: 150,
-                margin: 10.0,
+                width: Fill,
+                height: Fill,
                 text_view +: {
                     text +: {
                         draw_text +: {
@@ -103,6 +121,9 @@ script_mod! {
                         }
                     }
                 }
+            }
+                verified_badge := mod.widgets.IconYes { width: 36, height: 36, visible: false }
+                identity_reset_badge := mod.widgets.IconNo { width: 36, height: 36, visible: false }
             }
 
             user_name := Label {
@@ -211,6 +232,20 @@ script_mod! {
                 }
             }
 
+            withdraw_verification_button := RobrixNegativeIconButton {
+                padding: 10, margin: 0,
+                draw_icon.svg: VERIFICATION_NO
+                icon_walk: Walk{width: 16, height: 16}
+                text: #(crate::i18n::tr("Withdraw Verification")) i18n_text: "Withdraw Verification"
+            }
+
+            verify_this_user_button := RobrixPositiveIconButton {
+                padding: 10, margin: 0,
+                draw_icon.svg: VERIFICATION_YES
+                icon_walk: Walk{width: 16, height: 16}
+                text: #(crate::i18n::tr("Verify this User")) i18n_text: "Verify this User"
+            }
+
             block_user_button := RobrixNegativeIconButton {
                 padding: Inset{top: 10, bottom: 10, left: 12, right: 15}
                 margin: 0,
@@ -219,6 +254,8 @@ script_mod! {
                 text: #(crate::i18n::tr("Block User")) i18n_text: "Block User"
             }
         }
+
+        desktop_moderation := ModerationActions {}
 
         // A view that allows the user to verify a new DID and associate it
         // with a particular Matrix User ID.
@@ -263,6 +300,9 @@ script_mod! {
                         DetailDivider {}
                         mp_copy := DetailRow {title.text: #(crate::i18n::tr("Copy Profile Link")) title.i18n_text: "Copy Profile Link"}
                         DetailDivider {}
+                        mp_withdraw_verification := DetailRow {title.text: #(crate::i18n::tr("Withdraw Verification")) title.i18n_text: "Withdraw Verification"}
+                        mp_verify := DetailRow {title.text: #(crate::i18n::tr("Verify this User")) title.i18n_text: "Verify this User"}
+                        DetailDivider {}
                         mp_receipt := DetailRow {title.text: #(crate::i18n::tr("Last Read Message")) title.i18n_text: "Last Read Message"}
                     }
                     DetailGap {}
@@ -276,6 +316,7 @@ script_mod! {
                     DetailGap {}
                     DetailSection {mp_message := DetailAction {title.text: #(crate::i18n::tr("Messages")) title.i18n_text: "Messages"}}
                     DetailGap {}
+                    mobile_moderation := ModerationActions {}
                     mp_block_section := DetailSection {mp_block := DetailAction {title +: {text: #(crate::i18n::tr("Block")) i18n_text: "Block" draw_text.color: mod.widgets.RINX_DANGER_FG}}}
                 }
             }
@@ -398,6 +439,8 @@ pub struct UserProfileSlidingPane {
 
     #[rust] info: Option<UserProfilePaneInfo>,
     #[rust] is_animating_out: bool,
+    #[rust] member_abilities: MemberAbilities,
+    #[rust] abilities_epoch: u64,
 }
 
 impl Widget for UserProfileSlidingPane {
@@ -463,6 +506,22 @@ impl Widget for UserProfileSlidingPane {
             return;
         }
 
+        if let Event::Actions(actions) = event
+            && actions.iter().any(|a| a.downcast_ref::<UserVerificationStatesUpdated>().is_some())
+        { self.redraw(cx); }
+
+        if let Event::Actions(actions) = event && let Some(info) = self.info.as_mut() {
+            let invalidated = actions.iter().any(|a| a.downcast_ref::<MemberAbilitiesInvalidated>()
+                .is_some_and(|u| u.room_id == info.room_id && u.epoch == crate::account_session::epoch()));
+            if let Some(fetched) = actions.iter().filter_map(|a| a.downcast_ref::<MemberAbilitiesFetched>())
+                .rfind(|f| f.room_id == info.room_id && f.user_id == info.user_id && f.epoch == crate::account_session::epoch()) {
+                self.member_abilities = fetched.abilities;
+                self.abilities_epoch = fetched.epoch;
+                info.room_member = fetched.room_member.clone();
+                self.redraw(cx);
+            }
+            if invalidated { self.request_member_abilities(); self.redraw(cx); }
+        }
         // A UI Signal indicates that this user profile's info may have been updated by a background task.
         if let Event::Signal = event {
             user_profile_cache::process_user_profile_updates(cx);
@@ -530,6 +589,19 @@ impl Widget for UserProfileSlidingPane {
                 }
             }
 
+            if self.button(cx, ids!(withdraw_verification_button)).clicked(actions)
+                || self.view.navigation_bar_button(cx, ids!(mp_withdraw_verification)).clicked(actions)
+            {
+                submit_async_request(MatrixRequest::AcknowledgeIdentityReset { user_id: info.user_id.clone() });
+            }
+            if self.button(cx, ids!(verify_this_user_button)).clicked(actions)
+                || self.view.navigation_bar_button(cx, ids!(mp_verify)).clicked(actions)
+            {
+                if get_or_fetch_user_verification_state(cx, &info.user_id) != Some(UserVerificationState::Verified) {
+                    submit_async_request(MatrixRequest::RequestUserVerification { user_id: info.user_id.clone() });
+                }
+            }
+
             if self.button(cx, ids!(copy_link_to_user_button)).clicked(actions)
                 || self.view.navigation_bar_button(cx, ids!(mp_copy)).clicked(actions) {
                 let matrix_to_uri = info.user_id.matrix_to_uri().to_string();
@@ -556,6 +628,28 @@ impl Widget for UserProfileSlidingPane {
                 return;
             }
 
+            if !self.is_animating_out {
+                let request = [ids!(desktop_moderation), ids!(mobile_moderation)].into_iter().find_map(|panel| {
+                        let view = self.view.view(cx, panel);
+                        [(ids!(mute), MemberAction::Mute), (ids!(unmute), MemberAction::Unmute),
+                         (ids!(kick), MemberAction::Kick), (ids!(ban), MemberAction::Ban), (ids!(unban), MemberAction::Unban)]
+                        .into_iter().find_map(|(button, action)| {
+                            (self.abilities_epoch == crate::account_session::epoch() && self.member_abilities.permits(action)
+                                && view.button(cx, button).clicked(actions)).then(|| ModerationRequest::Member(MemberModeration {
+                                room_id: info.room_id.clone(), room_name: info.room_name.clone(), user_id: info.user_id.clone(),
+                                user_name: info.displayable_name().to_owned(), action,
+                            }))
+                        })
+                    });
+                if let Some(request) = request {
+                    cx.action(ModerationModalAction::Open(request));
+                    self.is_animating_out = true;
+                    cx.revert_key_focus();
+                    self.animator_play(cx, ids!(panel.hide));
+                    self.redraw(cx);
+                    return;
+                }
+            }
             if !self.is_animating_out && (self.button(cx, ids!(block_user_button)).clicked(actions)
                 || self.view.navigation_bar_button(cx, ids!(mp_block)).clicked(actions)) {
                 let request = BlockUserRequest {
@@ -643,10 +737,30 @@ impl Widget for UserProfileSlidingPane {
         self.button(cx, ids!(direct_message_button)).set_visible(cx, true);
         self.button(cx, ids!(direct_message_button)).set_text(cx, if is_pane_showing_current_account {crate::i18n::tr("File Transfer")} else {crate::i18n::tr("Messages")});
 
+        let verification = get_or_fetch_user_verification_state(cx, &info.user_id);
+        let verified = verification == Some(UserVerificationState::Verified);
+        let reset = verification == Some(UserVerificationState::VerificationViolation);
+        self.view(cx, ids!(verified_badge)).set_visible(cx, verified);
+        self.view(cx, ids!(identity_reset_badge)).set_visible(cx, reset);
+        self.button(cx, ids!(withdraw_verification_button)).set_visible(cx, reset);
+        self.view.widget(cx, ids!(mp_withdraw_verification)).set_visible(cx, reset);
+        self.button(cx, ids!(verify_this_user_button)).set_visible(cx, !is_pane_showing_current_account && !verified);
+        self.view.widget(cx, ids!(mp_verify)).set_visible(cx, !is_pane_showing_current_account);
+        self.label(cx, ids!(mp_verify.title)).set_text(cx, crate::i18n::tr(if verified {"Verified User"} else if reset {"Identity reset — verify again"} else {"Verify this User"}));
+
         let block_user_button = self.button(cx, ids!(block_user_button));
         block_user_button.set_visible(cx, !is_pane_showing_current_account);
         // Unfortunately the Matrix SDK's RoomMember type does not properly track
         // the blocked state of a user, so we have to maintain it separately.
+        let abilities = if self.abilities_epoch == crate::account_session::epoch() { self.member_abilities } else {MemberAbilities::empty()};
+        for panel in [ids!(desktop_moderation), ids!(mobile_moderation)] {
+            let view = self.view.view(cx, panel);
+            view.set_visible(cx, !abilities.is_empty());
+            for (button, action) in [(ids!(mute), MemberAction::Mute), (ids!(unmute), MemberAction::Unmute),
+                (ids!(kick), MemberAction::Kick), (ids!(ban), MemberAction::Ban), (ids!(unban), MemberAction::Unban)] {
+                view.button(cx, button).set_visible(cx, abilities.permits(action));
+            }
+        }
         let is_blocked = is_user_blocked(&info.user_id);
         self.view.widget(cx, ids!(mp_message)).set_visible(cx, true);
         self.label(cx, ids!(mp_message.title)).set_text(cx, if is_pane_showing_current_account {crate::i18n::tr("File Transfer")} else {crate::i18n::tr("Messages")});
@@ -715,6 +829,15 @@ impl UserProfileSlidingPane {
         }
 
         self.info = Some(info);
+        self.request_member_abilities();
+    }
+
+    fn request_member_abilities(&mut self) {
+        self.member_abilities = MemberAbilities::empty();
+        self.abilities_epoch = crate::account_session::epoch();
+        if let Some(info) = &self.info && current_user_id().is_some_and(|user| user != info.user_id) {
+            submit_async_request(MatrixRequest::GetMemberAbilities {room_id: info.room_id.clone(), user_id: info.user_id.clone()});
+        }
     }
 
     pub fn show(&mut self, cx: &mut Cx) {
@@ -726,6 +849,7 @@ impl UserProfileSlidingPane {
 
         self.view.button(cx, ids!(close_button)).reset_hover(cx);
         self.view.button(cx, ids!(direct_message_button)).reset_hover(cx);
+        self.view.button(cx, ids!(verify_this_user_button)).reset_hover(cx);
         self.view.button(cx, ids!(copy_link_to_user_button)).reset_hover(cx);
         self.view.button(cx, ids!(jump_to_read_receipt_button)).reset_hover(cx);
         self.view.button(cx, ids!(block_user_button)).reset_hover(cx);
