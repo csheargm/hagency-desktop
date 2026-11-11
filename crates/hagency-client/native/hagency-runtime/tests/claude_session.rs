@@ -636,6 +636,68 @@ async fn native_claude_owner_command_is_written_as_it_is_and_a_prompt_never_is()
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn native_claude_owner_command_init_may_take_as_long_as_the_command() {
+    // Captured from CLI 2.1.322: a local command's init follows the command.
+    // `/cost` on a subscription sign-in took 27 s before that init.
+    fn prelude(command: &str) -> Vec<u8> {
+        let mut bytes = encoded(json!({"type":"system","subtype":"session_state_changed",
+            "state":"running","session_id":"session-one"}));
+        for state in ["queued", "started"] {
+            bytes.extend(encoded(json!({"type":"command_lifecycle","command_uuid":command,
+                "state":state,"session_id":"session-one"})));
+        }
+        bytes
+    }
+    let frame_wait = Duration::from_millis(limits().event_wait_ms);
+    let lifetime = Duration::from_millis(limits().lifetime_ms);
+
+    // The owner's command: init arrives long after the frame wait.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+        tokio::time::sleep(frame_wait * 5).await;
+        peer.output.write_all(&encoded(init())).await.unwrap();
+    });
+    assert!(matches!(
+        message.unwrap(),
+        Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init"
+    ));
+    assert_eq!(driver.session_id(), Some("session-one"));
+    // After init the command is read like any turn: the frame wait is back.
+    let started = tokio::time::Instant::now();
+    assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+
+    // A prompt keeps the frame wait before init.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    prompt(&mut driver, &mut peer).await;
+    let started = tokio::time::Instant::now();
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+    assert_eq!(driver.phase(), Phase::Closed);
+
+    // A command that never reports ends with the session lifetime.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let opened = tokio::time::Instant::now();
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(opened.elapsed(), lifetime);
+    assert_eq!(driver.phase(), Phase::Closed);
+}
+
 #[tokio::test]
 async fn native_claude_session_identity_and_result() {
     let (mut driver, mut peer) = running().await;
