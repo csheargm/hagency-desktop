@@ -494,10 +494,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     /// Flushed stdin only: neither execution acknowledgement nor a task receipt.
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
         let operation = Operation::new(self, Phase::Ready)?;
-        let result = operation.driver.prompt_inner(text).await;
+        let result = operation.driver.prompt_inner(text, false).await;
         operation.finish(result)
     }
-    async fn prompt_inner(&mut self, text: &str) -> Result<WriteProgress, Error> {
+    /// A slash command of the account's owner, written as it is: no host line
+    /// and no task guidance before it, so the CLI runs it as a command. The
+    /// turn that follows is read like any other.
+    pub async fn owner_command(&mut self, text: &str) -> Result<WriteProgress, Error> {
+        let operation = Operation::new(self, Phase::Ready)?;
+        let result = operation.driver.prompt_inner(text, true).await;
+        operation.finish(result)
+    }
+    async fn prompt_inner(&mut self, text: &str, command: bool) -> Result<WriteProgress, Error> {
         self.pass_buffered_hook_reports().await?;
         if self.wire.has_buffered_input() {
             return Err(Error::Identity);
@@ -505,14 +513,17 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if text.is_empty() || text.len() > super::MAX_TEXT_BYTES {
             return Err(Error::Protocol(super::Error::Input));
         }
-        let guided = self
-            .task_mcp
-            .as_ref()
-            .map(|helper| format!("{}\n\nAssigned task input:\n{}", helper.guidance(), text));
-        let bytes = super::prompt(
-            guided.as_deref().unwrap_or(text),
-            self.session_id.as_deref(),
-        )?;
+        let bytes = if command {
+            super::owner_command(text, self.session_id.as_deref())?
+        } else {
+            let guided = self.task_mcp.as_ref().map(|helper| {
+                format!("{}\n\nAssigned task input:\n{}", helper.guidance(), text)
+            });
+            super::prompt(
+                guided.as_deref().unwrap_or(text),
+                self.session_id.as_deref(),
+            )?
+        };
         let bytes = if self.continuous {
             let id = lifecycle::prompt_id();
             let mut value: serde_json::Value =

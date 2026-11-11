@@ -364,6 +364,15 @@ fn native_claude_stream_host_input() {
         let plain: Value = serde_json::from_slice(&claude::prompt(text, None).unwrap()).unwrap();
         assert_eq!(plain["message"]["content"], text);
     }
+    // The account owner's command is the one text that goes out as written.
+    let command: Value =
+        serde_json::from_slice(&claude::owner_command("/compact now", Some("session-1")).unwrap())
+            .unwrap();
+    assert_eq!(command["message"]["content"], "/compact now");
+    assert_eq!(command["session_id"], "session-1");
+    for text in ["", "cost", " /cost"] {
+        assert_eq!(claude::owner_command(text, None), Err(claude::Error::Input));
+    }
     assert!(claude::prompt(&format!("/{}", "x".repeat(MAX_TEXT_BYTES - 1)), None).is_ok());
     assert!(claude::prompt(&"x".repeat(MAX_TEXT_BYTES), None).is_ok());
     assert!(claude::prompt(&"x".repeat(MAX_TEXT_BYTES + 1), None).is_err());

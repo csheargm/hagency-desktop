@@ -279,6 +279,20 @@ impl OwnedClaudeSession {
         .await;
         operation.finish(result)
     }
+    /// The owner's slash command to their own CLI (see
+    /// `SessionDriver::owner_command`). A shared process serves other people
+    /// and never takes one.
+    pub async fn owner_command(&mut self, text: &str) -> Result<WriteProgress, Error> {
+        let operation = Operation::new(self)?;
+        let result = async {
+            if operation.runner.shared.is_some() {
+                return Err(Error::State);
+            }
+            operation.runner.session.owner_command(text).await
+        }
+        .await;
+        operation.finish(result)
+    }
     pub async fn bind_task_mcp(&mut self, helper: crate::claude::TaskMcp) -> Result<(), Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.bind_task_mcp(helper).await;

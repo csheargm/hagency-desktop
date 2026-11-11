@@ -570,7 +570,7 @@ async fn installed_claude_local_command_uses_the_real_parser_and_completion_path
                 .await
                 .unwrap();
         }
-        driver.prompt("/usage").await.unwrap();
+        driver.owner_command("/usage").await.unwrap();
         let init = driver.next_message().await.unwrap();
         assert!(
             matches!(init, Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init")
@@ -607,6 +607,33 @@ async fn installed_claude_local_command_uses_the_real_parser_and_completion_path
     }
     driver.close();
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_claude_owner_command_is_written_as_it_is_and_a_prompt_never_is() {
+    // The owner's command: the CLI must see the slash first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(frame["type"], "user");
+    assert_eq!(frame["message"]["content"], "/cost");
+    assert_eq!(driver.phase(), Phase::Running);
+
+    // Anything that is not a command is refused here, before a write.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    assert!(driver.owner_command("cost").await.is_err());
+
+    // The same text as a prompt: the host line comes first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.prompt("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(
+        frame["message"]["content"],
+        format!("{}/cost", hagency_runtime::claude::PROMPT_LEAD)
+    );
 }
 
 #[tokio::test]

@@ -2515,9 +2515,13 @@ async fn run_turn<T: Transport>(
         } else { None }
     } else { None };
     let room_tools = room_bridge.is_some();
+    // The owner's slash command to their own Claude Agent reaches the CLI as
+    // written. Wrapped in room context it would be an ordinary prompt.
+    let owner_command = runtime::kind(&config.credential_ref) == runtime::Kind::Claude
+        && hagency_agent_local::runtime::owner_command(owner, &scope, &input);
     let input = match room_bridge.as_mut() {
-        Some((host, _)) => host.prompt(input).await,
-        None => input,
+        Some((host, _)) if !owner_command => host.prompt(input).await,
+        _ => input,
     };
     // Native extensions may execute during startup. Admit the request before
     // opening a provider or disturbing the retained conversation.
