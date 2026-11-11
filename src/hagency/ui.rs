@@ -4056,7 +4056,7 @@ impl Widget for HagencyPanel {
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
             let shared_workspace=self.view.check_box(cx,ids!(shared_workspace)).active(cx);
             if shared_workspace && self.provider_runtime(cx)!="codex" {self.runtime_feedback(cx,"Shared workspace editing currently supports Codex only.");return;}
-            let shared_workspace=shared_workspace.then(||string(&self.policy["modelProfile"],"workspace_root"));
+            let shared_workspace=shared_workspace.then(||string(&self.policy["modelProfile"],"workspace_root").to_owned());
             let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort, shared_workspace);
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
             return;
