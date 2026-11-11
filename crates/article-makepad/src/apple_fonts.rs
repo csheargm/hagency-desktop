@@ -173,32 +173,78 @@ fn system_face_resource(vm: &mut ScriptVm, name: &str) -> Result<ScriptValue, St
     Ok(handle.into())
 }
 
-/// FontMember loads collection index zero. Point that TTC directory entry at
-/// the requested installed face; font tables and their checksums stay intact.
+/// FontMember loads collection index zero, so the requested face is handed over as a font of
+/// its own: the face's table directory with its tables packed behind it. Table data and table
+/// checksums stay intact. Repointing the collection's first directory entry would also work,
+/// but the text stack keeps several private copies of every font it opens, and PingFang's
+/// collection is 78 MB where one face is 13 MB.
 /// This is an in-memory view of a local font, never a shipped or saved asset.
 fn face_at_index_zero(face: &FontDefinition) -> Result<Vec<u8>, String> {
-    let mut data = face.data.as_slice().to_vec();
-    if data.starts_with(b"ttcf") {
-        let count = data.get(8..12).ok_or("truncated font collection")?;
-        let count = u32::from_be_bytes(count.try_into().unwrap());
+    let source = face.data.as_slice();
+    let data = if source.starts_with(b"ttcf") {
+        let count = be_u32(source, 8).ok_or("truncated font collection")?;
         if face.index >= count {
             return Err("font collection index out of range".into());
         }
-        let start = 12 + usize::try_from(face.index).map_err(|_| "font index overflow")? * 4;
-        let offset: [u8; 4] = data
-            .get(start..start + 4)
-            .ok_or("truncated font collection directory")?
-            .try_into()
-            .unwrap();
-        data.get_mut(12..16)
-            .ok_or("truncated font collection directory")?
-            .copy_from_slice(&offset);
+        let entry = 12 + usize::try_from(face.index).map_err(|_| "font index overflow")? * 4;
+        let directory = be_u32(source, entry).ok_or("truncated font collection directory")?;
+        let directory = usize::try_from(directory).map_err(|_| "font directory overflow")?;
+        standalone_face(source, directory)?
     } else if face.index != 0 {
         return Err("non-collection font has a nonzero index".into());
-    }
+    } else {
+        source.to_vec()
+    };
     FontFace::from_data_and_index(SharedBytes::from_vec(data.clone()), 0)
         .ok_or("invalid system font face")?;
     Ok(data)
+}
+
+fn be_u32(data: &[u8], at: usize) -> Option<u32> {
+    let bytes = data.get(at..at.checked_add(4)?)?;
+    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+/// The collection face whose table directory starts at `directory`, as a single font: the
+/// directory, then each table at a new offset, padded to four bytes as the format asks.
+fn standalone_face(collection: &[u8], directory: usize) -> Result<Vec<u8>, String> {
+    const HEADER: usize = 12;
+    const RECORD: usize = 16;
+    let header = collection
+        .get(directory..directory.saturating_add(HEADER))
+        .ok_or("truncated font directory")?;
+    let tables = usize::from(u16::from_be_bytes([header[4], header[5]]));
+    let records_at = directory.saturating_add(HEADER);
+    let records = collection
+        .get(records_at..records_at.saturating_add(tables * RECORD))
+        .ok_or("truncated font table records")?;
+    let mut spans = Vec::with_capacity(tables);
+    let mut size = HEADER + tables * RECORD;
+    for i in 0..tables {
+        let record = i * RECORD;
+        let offset = be_u32(records, record + 8).ok_or("truncated font table records")? as usize;
+        let length = be_u32(records, record + 12).ok_or("truncated font table records")? as usize;
+        let table = collection
+            .get(offset..offset.saturating_add(length))
+            .ok_or("font table out of range")?;
+        size = size.saturating_add((length + 3) & !3);
+        spans.push(table);
+    }
+    if u32::try_from(size).is_err() {
+        return Err("font face too large".into());
+    }
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(header);
+    out.extend_from_slice(records);
+    for (i, table) in spans.into_iter().enumerate() {
+        let offset_field = HEADER + i * RECORD + 8;
+        let at = (out.len() as u32).to_be_bytes();
+        out[offset_field..offset_field + 4].copy_from_slice(&at);
+        out.extend_from_slice(table);
+        let padded = (out.len() + 3) & !3;
+        out.resize(padded, 0);
+    }
+    Ok(out)
 }
 
 fn load_system_face(name: &str) -> Result<FontDefinition, String> {
@@ -430,6 +476,10 @@ mod tests {
             let original =
                 FontFace::from_data_and_index(source.data.clone(), source.index).unwrap();
             let bytes = face_at_index_zero(&source).unwrap();
+            if source.data.as_slice().starts_with(b"ttcf") {
+                // One face of a collection, not a copy of all of it.
+                assert!(bytes.len() < source.data.as_slice().len() / 2);
+            }
             let view = FontFace::from_data_and_index(SharedBytes::from_vec(bytes), 0).unwrap();
             original.with_ttf_parser_face(|a| {
                 view.with_ttf_parser_face(|b| {
