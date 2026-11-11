@@ -70,6 +70,18 @@ fn text(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
 }
 
+/// Text that a person reads in full and that often has several lines: a shell
+/// command, or the reason given for a request. Line breaks and tabs are part
+/// of it. Every other control character stays refused, because it could change
+/// what the owner is shown.
+fn script(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && !value
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
+}
+
 impl From<crate::json::Error> for Error {
     fn from(error: crate::json::Error) -> Self {
         match error {

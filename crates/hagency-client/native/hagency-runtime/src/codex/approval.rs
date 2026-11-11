@@ -1,6 +1,6 @@
 //! Pinned Codex 0.153.4/0.154.0 request shapes. Parsed data is never owner authority.
 mod mcp;
-use super::{RequestId, session::Error, text};
+use super::{RequestId, script, session::Error, text};
 pub(crate) use mcp::McpTracker;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -132,7 +132,7 @@ impl ApprovalRequest {
             return Err(Error::Malformed);
         }
         let shared = ["threadId", "turnId", "itemId", "startedAtMs", "reason"];
-        optional_text(&params, "reason", 8192)?;
+        optional_script(&params, "reason", 8192)?;
         let kind = match method.as_str() {
             "item/commandExecution/requestApproval" => {
                 fields(
@@ -162,9 +162,13 @@ impl ApprovalRequest {
                 if present(&params, "kind").is_some() {
                     optional_text(&params, "kind", 255)?;
                 }
-                for field in ["approvalId", "environmentId", "command", "cwd"] {
+                for field in ["approvalId", "environmentId", "cwd"] {
                     optional_text(&params, field, 8192)?;
                 }
+                // A command of several lines is an ordinary command (two
+                // commands, a here-document). Refused for its line break, it
+                // was declined before the owner saw it (live 2026-11-11).
+                optional_script(&params, "command", 8192)?;
                 // The offered decisions are the requester's menu, not this
                 // adapter's: it answers accept or decline whatever the list says,
                 // as the retained runner does. Never apply amendments.
@@ -196,10 +200,10 @@ impl ApprovalRequest {
                     // owner like any other. The core scopes it as the retained
                     // product does: approving a network request is a decision
                     // about the host (`lib/execution-authorization.js`).
-                    optional_text(&params, "command", 8192)?;
+                    optional_script(&params, "command", 8192)?;
                     optional_text(&params, "cwd", 8192)?;
                 } else {
-                    required_text(&params, "command", 8192)?;
+                    required_script(&params, "command", 8192)?;
                     required_text(&params, "cwd", 8192)?;
                 }
                 Kind::Command
@@ -288,6 +292,16 @@ fn fields(value: &Value, common: &[&str], extra: &[&str]) -> Result<(), Error> {
 fn present<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value.get(key).filter(|v| !v.is_null())
 }
+/// Log line for a request a host declined without showing it to the owner.
+/// The method is a protocol word; the request's content is never logged.
+pub fn declined_unseen(method: &str, cause: &'static str) {
+    tracing::warn!(
+        code = "codex_approval_declined_unseen",
+        cause,
+        method = %method.chars().take(64).collect::<String>(),
+        "A Codex approval request was declined without being shown to the owner"
+    );
+}
 fn required_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
     value
         .get(key)
@@ -299,6 +313,21 @@ fn required_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
 fn optional_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
     if present(value, key).is_some() {
         required_text(value, key, limit)
+    } else {
+        Ok(())
+    }
+}
+fn required_script(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| script(s, limit))
+        .map(|_| ())
+        .ok_or(Error::Malformed)
+}
+fn optional_script(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
+    if present(value, key).is_some() {
+        required_script(value, key, limit)
     } else {
         Ok(())
     }
@@ -413,6 +442,24 @@ mod tests {
                 json!({"decision":"decline"})
             );
         }
+        // A command of several lines, or with a tab, is an ordinary command
+        // and reaches the owner. Other control characters are still refused.
+        for command in ["echo a > a.txt\ncat a.txt", "cat <<EOF\n\tline\nEOF"] {
+            let mut p = params();
+            p["command"] = json!(command);
+            p["reason"] = json!("first line\nsecond line");
+            let request = parse(p).unwrap_or_else(|e| panic!("{command:?}: {e:?}"));
+            assert_eq!(request.params()["command"], command);
+            assert_eq!(request.response(true).result, json!({"decision":"accept"}));
+        }
+        for command in ["echo a\recho b", "echo \u{1b}[2Ka", "echo a\u{0}", "\u{8}"] {
+            let mut p = params();
+            p["command"] = json!(command);
+            assert!(parse(p).is_err(), "{command:?}");
+        }
+        let mut p = params();
+        p["cwd"] = json!("/tmp\n/other");
+        assert!(parse(p).is_err());
         let mut p = params();
         p["networkApprovalContext"] = json!({"host":"example.test","protocol":"https"});
         let network = parse(p).unwrap();

@@ -1756,8 +1756,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let method = frame["method"].as_str().unwrap_or("");
         // Test/host shutdown can disable callbacks without granting anything.
         if !self.callbacks_enabled || approvals.full() {
-            self.decline(id, method).await?;
-            return Ok(());
+            return self.declined(id, method, "approvals_unavailable").await;
         }
         let native_request = if matches!(
             method,
@@ -1772,10 +1771,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 p.clone(),
             ) {
                 Ok(request) => Some(request),
-                Err(_) => {
-                    self.decline(id, method).await?;
-                    return Ok(());
-                }
+                Err(_) => return self.declined(id, method, "request_shape").await,
             }
         } else {
             None
@@ -1803,8 +1799,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                             || v["status"] != "inProgress"
                     })
                 {
-                    self.decline(id, method).await?;
-                    return Ok(());
+                    return self.declined(id, method, "file_change_preview").await;
                 }
                 (
                     "codex.file_change".to_owned(),
@@ -1830,8 +1825,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     || p["_meta"]["codex_approval_kind"] != "mcp_tool_call"
                     || matches.len() != 1
                 {
-                    self.decline(id, method).await?;
-                    return Ok(());
+                    return self.declined(id, method, "elicitation_shape").await;
                 }
                 (
                     format!(
@@ -1842,10 +1836,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     value!({"request":p,"item":matches[0]}),
                 )
             }
-            _ => {
-                self.decline(id, method).await?;
-                return Ok(());
-            }
+            _ => return self.declined(id, method, "method").await,
         };
         let preview_missing =
             method == "item/fileChange/requestApproval" && arguments["item"].is_null();
@@ -1889,6 +1880,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             queue,
         );
         Ok(())
+    }
+    /// A request the owner is never shown is declined, and says so in the log.
+    /// The method is a protocol word; the request's content is not logged.
+    async fn declined(&mut self, id: Value, method: &str, cause: &'static str) -> Result<()> {
+        hagency_runtime::codex::approval::declined_unseen(method, cause);
+        self.decline(id, method).await
     }
     async fn decline(&mut self, id: Value, method: &str) -> Result<()> {
         if method == "item/permissions/requestApproval" {
@@ -2517,7 +2514,7 @@ mod tests {
                                 ),
                                 _ => (
                                     "item/commandExecution/requestApproval",
-                                    value!({"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":"touch forbidden","cwd":cwd,"startedAtMs":1}),
+                                    value!({"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":if kind == "command_lines" {"echo a > a.txt\ncat a.txt"} else {"touch forbidden"},"cwd":cwd,"startedAtMs":1}),
                                 ),
                             };
                             emit(&mut w, value!({"id":900,"method":method,"params":params})).await;
@@ -2902,6 +2899,53 @@ mod tests {
                 .unwrap(),
             (10, 0)
         );
+        drop(session);
+        task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn command_of_several_lines_reaches_the_owner_instead_of_being_declined() {
+        // Live 2026-11-11: `echo X > f` then `cat f` in one command was
+        // declined in 75 ms and the owner saw no request.
+        let (_temp, mut ledger, profile) = setup(false);
+        let (mut session, effects, task) = fake(
+            profile.cwd.to_str().unwrap().into(),
+            true,
+            true,
+            10,
+            "command_lines",
+        );
+        let (queue, mut ui) = approval_queue(2).unwrap();
+        session.initialize().await.unwrap();
+        session
+            .open_context(&mut ledger, &scope(), &profile)
+            .await
+            .unwrap();
+        let host = async {
+            let prompt = ui.recv().await.unwrap();
+            assert_eq!(
+                prompt.proposal.arguments["command"],
+                "echo a > a.txt\ncat a.txt"
+            );
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+            prompt.decide(true);
+        };
+        let result = async {
+            session
+                .run(
+                    &mut ledger,
+                    "@alice:test",
+                    &scope(),
+                    "call",
+                    "dispatch",
+                    "hello",
+                    BudgetMode::Postpaid,
+                    &queue,
+                )
+                .await
+        };
+        let (done, ()) = tokio::join!(result, host);
+        done.unwrap();
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
         drop(session);
         task.await.unwrap();
     }

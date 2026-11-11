@@ -91,7 +91,7 @@ struct CommandEvidence {
 fn command_evidence(item: &Value) -> Option<CommandEvidence> {
     let command = item.get("command")?.as_str()?;
     let cwd = item.get("cwd")?.as_str()?;
-    if !crate::codex::text(command, 8192)
+    if !crate::codex::script(command, 8192)
         || !crate::codex::text(cwd, 8192)
         || !Path::new(cwd).is_absolute()
     {
