@@ -333,6 +333,8 @@ pub struct AccountSettings {
 
     #[rust] own_profile: Option<UserProfile>,
     #[rust] awaiting_profile: bool,
+    #[rust] name_changed_while_loading: bool,
+    #[rust] avatar_changed_while_loading: bool,
     #[rust(VerificationState::Unknown)] verification_state: VerificationState,
     #[rust] own_device: Option<Device>,
     #[rust] account_management_url: AccountManagementUrl,
@@ -458,6 +460,8 @@ impl MatchEvent for AccountSettings {
             if let Some(LogoutAction::ClearAppState { .. }) = action.downcast_ref() {
                 self.own_profile = None;
                 self.awaiting_profile = false;
+                self.name_changed_while_loading = false;
+                self.avatar_changed_while_loading = false;
                 self.own_device = None;
                 self.verification_state = VerificationState::Unknown;
                 self.account_management_url = AccountManagementUrl::Unknown;
@@ -484,7 +488,7 @@ impl MatchEvent for AccountSettings {
             // so here, we only need to update this widget's local profile info.
             match action.downcast_ref() {
                 Some(AccountDataAction::AvatarChanged(new_avatar_url)) => {
-                    self.awaiting_profile = false;
+                    self.avatar_changed_while_loading = self.awaiting_profile;
                     self.view.widget(cx, ids!(upload_avatar_spinner)).set_visible(cx, false);
                     self.view.widget(cx, ids!(delete_avatar_spinner)).set_visible(cx, false);
                     // Update our cached profile with the new avatar URL
@@ -518,7 +522,7 @@ impl MatchEvent for AccountSettings {
                     continue;
                 }
                 Some(AccountDataAction::DisplayNameChanged(new_name)) => {
-                    self.awaiting_profile = false;
+                    self.name_changed_while_loading = self.awaiting_profile;
                     self.view.widget(cx, ids!(save_name_spinner)).set_visible(cx, false);
                     // Update our cached profile with the new display name
                     if let Some(profile) = self.own_profile.as_mut() {
@@ -718,15 +722,20 @@ impl AccountSettings {
             self.awaiting_profile = crate::profile::user_profile_cache::with_user_profile(
                 cx, new_profile.user_id.clone(), None, false, |_, _| (),
             ).is_none();
+            self.name_changed_while_loading = false;
+            self.avatar_changed_while_loading = false;
             self.own_profile = Some(new_profile);
         }
         self.populate_inner(cx, PopulateMode::Initial);
         self.view.crypto_settings(cx, ids!(encryption_recovery)).refresh(cx);
     }
 
-    fn complete_pending_profile(&mut self, cx: &mut Cx, profile: UserProfile) {
+    fn complete_pending_profile(&mut self, cx: &mut Cx, mut profile: UserProfile) {
         let Some(previous) = self.own_profile.as_ref() else { return };
         if !self.awaiting_profile || previous.user_id != profile.user_id { return; }
+        // Keep successful edits, while still loading the other profile fields.
+        if self.name_changed_while_loading { profile.username = previous.username.clone(); }
+        if self.avatar_changed_while_loading { profile.avatar_state = previous.avatar_state.clone(); }
         let input = self.view.text_input(cx, ids!(display_name_input));
         // A profile arriving late must not erase a name the user has already typed.
         if input.text() == previous.username.as_deref().unwrap_or_default() {
@@ -734,6 +743,8 @@ impl AccountSettings {
         }
         self.own_profile = Some(profile);
         self.awaiting_profile = false;
+        self.name_changed_while_loading = false;
+        self.avatar_changed_while_loading = false;
         self.populate_inner(cx, PopulateMode::AfterReapply);
     }
 

@@ -26,7 +26,16 @@ fn late_profile_fills_empty_settings_but_preserves_edits_and_account_identity() 
     }
     settings.awaiting_profile = true;
     settings.handle_actions(&mut cx, &[Box::new(AccountDataAction::DisplayNameChanged(Some("Saved name".into())))]);
-    settings.complete_pending_profile(&mut cx, profile(alice, Some("Older name".into())));
+    settings.complete_pending_profile(&mut cx, profile(alice.clone(), Some("Older name".into())));
     assert_eq!(input.text(), "Saved name");
     assert_eq!(settings.own_profile.as_ref().unwrap().username.as_deref(), Some("Saved name"));
+
+    settings.awaiting_profile = true;
+    settings.handle_actions(&mut cx, &[Box::new(AccountDataAction::AvatarChanged(None))]);
+    let mut late = profile(alice, Some("Fetched name".into()));
+    late.avatar_state = AvatarState::Known(Some("mxc://test/old-avatar".into()));
+    settings.complete_pending_profile(&mut cx, late);
+    assert_eq!(input.text(), "Fetched name", "An avatar edit must not prevent the display name from loading");
+    assert!(matches!(settings.own_profile.as_ref().unwrap().avatar_state, AvatarState::Known(None)),
+        "A late profile must not restore the removed avatar");
 }
