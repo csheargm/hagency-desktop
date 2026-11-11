@@ -811,14 +811,6 @@ fn identity_from(user: &PersistedUserSession, homeserver: &str, db_path: &Path) 
 pub(crate) async fn load(path: PathBuf) -> Result<FullSessionPersisted> {
     load_on(global()?.clone(), path).await
 }
-/// No native access, intended for original blocking history/SDK callback use.
-pub(crate) fn load_unlocked(path: &Path) -> Result<FullSessionPersisted> {
-    let unlocked = global()?.cached(path, crate::account_session::epoch())?;
-    let doc = Document::open(path, MAX_SESSION)?;
-    unlocked.decode(serde_json::from_slice(
-        doc.read()?.ok_or(Error::Missing)?.bytes(),
-    )?)
-}
 pub(crate) fn public_identity(bytes: &[u8]) -> Result<Identity> {
     ensure!(bytes.len() <= MAX_SESSION, "credential_document_too_large");
     let value: serde_json::Value = serde_json::from_slice(bytes)?;

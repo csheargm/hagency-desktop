@@ -100,3 +100,12 @@ UI behavior is changed by that catalog-only correction.
 The combined regression gate is recorded in the pull request after completion.
 Standalone visible-window startup remains the separate existing PR #55; this
 change does not duplicate that entry-point repair or claim release UI acceptance.
+
+Hosted build qualification is blocked by pre-existing warning-as-error failures
+in unchanged dashboard and native executor code. Both Ubuntu jobs of PR #57
+report the same five unused declarations already failing on PR #55
+(`c22a975e`, whose only change from main is the entry-point wrapper). Compare
+[the baseline Ubuntu build](https://github.com/hagency-org/hagency-desktop/actions/runs/43002175755/job/130460721913)
+with [this PR's Ubuntu build](https://github.com/hagency-org/hagency-desktop/actions/runs/43010833409/job/130489722412).
+The warning policy is not relaxed. An unused history-only helper from the Client
+port was removed from both adapters instead of adding another dead-code warning.

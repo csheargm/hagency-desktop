@@ -187,9 +187,6 @@ pub(crate) async fn load(path: PathBuf) -> Result<FullSessionPersisted> {
     tokio::task::spawn_blocking(move || read_session(&path)).await?
 }
 #[cfg(any(target_os = "ios", target_os = "android"))]
-pub(crate) fn load_unlocked(path: &Path) -> Result<FullSessionPersisted> {
-    read_session(path)
-}
 #[cfg(any(target_os = "ios", target_os = "android"))]
 pub(crate) fn public_identity(bytes: &[u8]) -> Result<Identity> {
     ensure!(bytes.len() <= MAX_BYTES, "Credential file too large");
