@@ -40,7 +40,7 @@ use std::io;
 use hashbrown::{HashMap, HashSet};
 use crate::{
     app::AppStateAction, app_data_dir, cache_dir, avatar_cache::AvatarUpdate, event_preview::{BeforeText, TextPreview, text_preview_of_raw_timeline_event, text_preview_of_timeline_item}, home::{
-        add_room::KnockResultAction, invite_screen::{JoinRoomResultAction, LeaveRoomResultAction}, link_preview::LinkPreviewData, room_screen::{InviteResultAction, TimelineUpdate, index_of_event}, rooms_list::{self, InvitedRoomInfo, InviterInfo, JoinedRoomInfo, LatestEventPreview, RoomsListUpdate, enqueue_rooms_list_update}, rooms_list_header::RoomsListHeaderAction, send_status_indicator::stringify_send_error, tombstone_footer::SuccessorRoomDetails
+        add_room::KnockResultAction, invite_screen::{JoinRoomResultAction, LeaveRoomResultAction}, link_preview::LinkPreviewData, room_screen::{InviteResultAction, TimelineUpdate, index_of_event}, rooms_list::{self, InvitedRoomInfo, InviterInfo, JoinedRoomInfo, LatestEventPreview, RoomsListUpdate, enqueue_rooms_list_update}, rooms_list_header::RoomsListHeaderAction, send_status_indicator::{stringify_send_error, upload_percent}, tombstone_footer::SuccessorRoomDetails
     }, login::login_screen::LoginAction, logout::{logout_confirm_modal::LogoutAction, logout_state_machine::{LogoutConfig, is_logout_in_progress, logout_with_state_machine}}, media_cache::{MediaCacheEntry, MediaCacheEntryRef}, persistence::{self, ClientSessionPersisted, load_app_state}, profile::{
         user_profile::UserProfile,
         user_profile_cache::{UserProfileUpdate, enqueue_user_profile_update},
@@ -874,10 +874,9 @@ pub enum MatrixRequest {
     ///
     /// The response is delivered back to the main UI thread via [`TimelineUpdate::UserPowerLevels`].
     ///
-    /// Even though it operates on a room itself, this accepts a `TimelineKind`
-    /// in order to be able to send the fetched room member list to a specific timeline UI.
+    /// Also supports spaces, which have no timeline. All open room UIs are notified.
     GetRoomPowerLevels {
-        timeline_kind: TimelineKind,
+        room_id: OwnedRoomId,
     },
     /// Sends an agent-chat approval verdict (`com.agentchat.approval.verdict.v1`)
     /// in reply to a request shown in the owner's approval room.
@@ -1680,19 +1679,19 @@ async fn matrix_worker_task(
 
                     if !local_only {
                         if update.is_none() {
-                            if let Ok(response) = client.account().fetch_user_profile_of(&user_id).await {
-                                update = Some(UserProfileUpdate::UserProfileOnly(
-                                    UserProfile {
-                                        username: response.get_static::<DisplayName>().ok().flatten(),
-                                        user_id: user_id.clone(),
-                                        avatar_state: response.get_static::<AvatarUrl>()
-                                            .ok()
-                                            .map_or(AvatarState::Unknown, AvatarState::Known),
-                                    }
-                                ));
-                            } else {
-                                log!("User profile request: client could not get user with ID {user_id}");
-                            }
+                            update = Some(match client.account().fetch_user_profile_of(&user_id).await {
+                                Ok(response) => UserProfileUpdate::UserProfileOnly(UserProfile {
+                                    username: response.get_static::<DisplayName>().ok().flatten(),
+                                    user_id: user_id.clone(),
+                                    avatar_state: response.get_static::<AvatarUrl>()
+                                        .ok()
+                                        .map_or(AvatarState::Unknown, AvatarState::Known),
+                                }),
+                                Err(error) => {
+                                    log!("User profile request failed for {user_id}: {error}");
+                                    UserProfileUpdate::from_fetch_error(user_id.clone(), &error)
+                                }
+                            });
                         }
 
                         match update.as_mut() {
@@ -2814,7 +2813,7 @@ async fn matrix_worker_task(
                                 if related_to == txn_id =>
                             {
                                 let percent = (progress.total > 0)
-                                    .then(|| progress.current * 100 / progress.total);
+                                    .then(|| upload_percent(progress.current, progress.total));
                                 if last_percent == percent { continue }
                                 last_percent = percent;
                                 let _ = sender_clone.send(TimelineUpdate::FileUploadProgress {
@@ -2907,32 +2906,17 @@ async fn matrix_worker_task(
                 });
             },
 
-            MatrixRequest::GetRoomPowerLevels { timeline_kind } => {
-                let Some((timeline, sender)) = get_timeline_and_sender(&timeline_kind) else {
-                    log!("BUG: {timeline_kind} not found for room power levels request");
-                    continue;
-                };
-
-                let Some(user_id) = current_user_id() else { continue };
-
-                let _power_levels_task = crate::account_session::spawn(async move {
-                    match timeline.room().power_levels().await {
-                        Ok(power_levels) => {
-                            enqueue_rooms_list_update(RoomsListUpdate::UpdatePowerLevels {
-                                room_id: timeline.room().room_id().to_owned(),
-                                power_levels: UserPowerLevels::from(&power_levels, &user_id),
-                            });
-                            log!("Successfully fetched power levels for {timeline_kind}.");
-                            if sender.send(TimelineUpdate::UserPowerLevels(
-                                UserPowerLevels::from(&power_levels, &user_id),
-                            )).is_err() {
-                                error!("Failed to send room power levels to UI.")
-                            }
-                            SignalToUI::set_ui_signal();
-                        }
-                        Err(e) => {
-                            error!("Failed to fetch power levels for {timeline_kind}: {e:?}");
-                        }
+            MatrixRequest::GetRoomPowerLevels { room_id } => {
+                let Some(client) = get_client() else { continue };
+                let Some(room) = client.get_room(&room_id) else { continue };
+                let Some(user_id) = client.user_id().map(ToOwned::to_owned) else { continue };
+                let epoch = crate::account_session::epoch();
+                crate::account_session::spawn(async move {
+                    match room.power_levels().await {
+                        Ok(levels) => publish_user_power_levels(
+                            room_id, UserPowerLevels::from(&levels, &user_id), epoch,
+                        ),
+                        Err(error) => error!("Failed to fetch room power levels for {room_id}: {error:?}"),
                     }
                 });
             },
@@ -3967,6 +3951,9 @@ async fn start_matrix_client_login_and_sync(rt: Handle) {
         subscriber_task_handles.push(handle_sync_service_state_subscriber(sync_service.state()));
 
         let room_list_service = sync_service.room_list_service();
+        subscriber_task_handles.push(handle_profile_sync_recovery(
+            room_list_service.state(), logged_in_user_id.to_owned(),
+        ));
         let sync_service = Arc::new(sync_service);
 
         if let Some(_existing) = SYNC_SERVICE.lock().unwrap().replace(sync_service) {
@@ -4685,6 +4672,7 @@ async fn update_room(
             if let Some(nupl) = new_room.user_power_levels
                 && old_room.user_power_levels.is_none_or(|oupl| oupl != nupl)
             {
+                Cx::post_action(UserPowerLevelsUpdated {room_id: new_room_id.clone(), power_levels: nupl, epoch: crate::account_session::epoch()});
                 enqueue_rooms_list_update(RoomsListUpdate::UpdatePowerLevels {room_id: new_room_id.clone(), power_levels: nupl});
                 Cx::post_action(moderation::MemberAbilitiesInvalidated {room_id: new_room_id.clone(), epoch: crate::account_session::epoch()});
                 let timeline_update_senders = get_timeline_update_senders(&new_room_id);
@@ -5299,6 +5287,27 @@ fn handle_sync_indicator_subscriber(sync_service: &SyncService) -> JoinHandle<()
                 SyncIndicator::Hide => false,
             };
             Cx::post_action(RoomsListHeaderAction::SetSyncStatus(is_syncing));
+        }
+    })
+}
+
+/// Retry our initial profile lookup once the room list is running, and after recovery.
+/// The pinned SDK calls this state `Running` (upstream Robrix uses `FullySynced`).
+fn handle_profile_sync_recovery(
+    mut states: Subscriber<matrix_sdk_ui::room_list_service::State>,
+    user_id: OwnedUserId,
+) -> JoinHandle<()> {
+    crate::account_session::spawn(async move {
+        let mut was_running = false;
+        loop {
+            let is_running = matches!(states.get(), matrix_sdk_ui::room_list_service::State::Running);
+            if is_running && !was_running {
+                submit_async_request(MatrixRequest::GetUserProfile {
+                    user_id: user_id.clone(), room_id: None, local_only: false,
+                });
+            }
+            was_running = is_running;
+            if states.next().await.is_none() { break; }
         }
     })
 }
@@ -6037,9 +6046,7 @@ async fn timeline_subscriber_handler(
                             && new_event.transaction_id() == Some(old_txn_id)
                             && let Some(EventSendState::NotSentYet { progress: Some(p) }) = new_event.send_state()
                         {
-                            let percent = (p.progress.current * 100)
-                                .checked_div(p.progress.total)
-                                .unwrap_or(0);
+                            let percent = upload_percent(p.progress.current, p.progress.total) as usize;
                             latest_progress_updates = Some((index, percent));
                             num_progress_updates += 1;
                         }
@@ -6456,6 +6463,31 @@ async fn run_ios_sso_flow(
 }
 
 
+/// Room permissions delivered to room menus, spaces and invitation dialogs.
+#[derive(Clone, Debug)]
+pub struct UserPowerLevelsUpdated {
+    pub room_id: OwnedRoomId,
+    pub power_levels: UserPowerLevels,
+    pub epoch: u64,
+}
+impl UserPowerLevelsUpdated {
+    pub fn is_current_for(&self, room_id: &RoomId) -> bool {
+        self.epoch == crate::account_session::epoch() && self.room_id == room_id
+    }
+}
+
+fn publish_user_power_levels(room_id: OwnedRoomId, power_levels: UserPowerLevels, epoch: u64) {
+    if epoch != crate::account_session::epoch() { return; }
+    enqueue_rooms_list_update(RoomsListUpdate::UpdatePowerLevels {room_id: room_id.clone(), power_levels});
+    let senders = ALL_JOINED_ROOMS.lock().unwrap().get(&room_id)
+        .map(JoinedRoomDetails::all_timeline_update_senders).unwrap_or_default();
+    for sender in senders {
+        let _ = sender.send(TimelineUpdate::UserPowerLevels(power_levels));
+    }
+    Cx::post_action(UserPowerLevelsUpdated {room_id, power_levels, epoch});
+    SignalToUI::set_ui_signal();
+}
+
 bitflags! {
     /// The powers that a user has in a given room.
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -6552,7 +6584,7 @@ impl UserPowerLevels {
     }
 
     pub fn assumed_until_fetched() -> Self {
-        Self::all() - (Self::Ban | Self::Kick | Self::Redact | Self::ModOrAdmin)
+        Self::all() - (Self::Ban | Self::Invite | Self::Kick | Self::Redact | Self::ModOrAdmin)
     }
 
     pub fn is_mod_or_admin(self) -> bool { self.contains(Self::ModOrAdmin) }

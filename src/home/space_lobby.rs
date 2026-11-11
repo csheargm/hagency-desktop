@@ -589,6 +589,7 @@ script_mod! {
                     icon_walk: Walk{width: 0 height: 0}
                 }
                 invite_button := RobrixPositiveIconButton {
+                    visible: false
                     width: Fit
                     align: Align{x: 0.5, y: 0.5}
                     margin: Inset{left: 6}
@@ -1058,6 +1059,7 @@ pub struct SpaceLobbyScreen {
 
     /// The space that is currently being displayed.
     #[rust] space_name_id: Option<RoomNameId>,
+    #[rust] can_invite: bool,
     #[rust] space_avatar_state: AvatarState,
 
     /// The sender channel to submit space requests to the background service.
@@ -1115,6 +1117,13 @@ impl Widget for SpaceLobbyScreen {
                     && let Some(space) = self.space_name_id.clone()
                 {
                     self.send_initial_space_requests(cx, &space);
+                }
+                if let Some(update) = action.downcast_ref::<crate::sliding_sync::UserPowerLevelsUpdated>()
+                    && self.space_name_id.as_ref().is_some_and(|space| update.is_current_for(space.room_id()))
+                {
+                    self.can_invite = update.power_levels.can_invite();
+                    self.view.button(cx, ids!(header.parent_space_row.invite_button)).set_visible(cx, self.can_invite);
+                    self.redraw(cx);
                 }
                 // Just like the rooms list header, handle updates to a space's name.
                 if let Some(AppStateAction::RoomNameUpdated(new_room_name)) = action.downcast_ref()
@@ -1220,7 +1229,7 @@ impl Widget for SpaceLobbyScreen {
             {
                 cx.action(super::space_management::SpaceManagementAction::Open {parent: Some(space.clone())});
             }
-            if self.view.button(cx, ids!(header.parent_space_row.invite_button)).clicked(actions) {
+            if self.can_invite && self.view.button(cx, ids!(header.parent_space_row.invite_button)).clicked(actions) {
                 if let Some(space_name_id) = self.space_name_id.as_ref() {
                     cx.action(InviteModalAction::Open(space_name_id.clone()));
                 }
@@ -1861,6 +1870,9 @@ impl SpaceLobbyScreen {
 
     /// Requests details about the given space.
     fn send_initial_space_requests(&mut self, cx: &mut Cx, space_name_id: &RoomNameId) {
+        crate::sliding_sync::submit_async_request(crate::sliding_sync::MatrixRequest::GetRoomPowerLevels {
+            room_id: space_name_id.room_id().clone(),
+        });
         let rooms_list_ref = cx.get_global::<RoomsListRef>();
         let Some(sender) = rooms_list_ref.get_space_request_sender() else { return };
         // Request detailed children for this space so we can start populating it,
@@ -1895,6 +1907,8 @@ impl SpaceLobbyScreen {
         self.save_current_state();
 
         self.space_name_id = Some(space_name_id.clone());
+        self.can_invite = false;
+        self.view.button(cx, ids!(header.parent_space_row.invite_button)).set_visible(cx, false);
         self.send_initial_space_requests(cx, space_name_id);
 
         // Clear the main content until we receive the async space info responses.
@@ -1930,6 +1944,8 @@ impl SpaceLobbyScreen {
     pub fn hide_displayed_space(&mut self, cx: &mut Cx) {
         self.save_current_state();
         self.space_name_id = None;
+        self.can_invite = false;
+        self.view.button(cx, ids!(header.parent_space_row.invite_button)).set_visible(cx, false);
         self.space_avatar_state = AvatarState::Unknown;
         self.space_request_sender = None;
         self.tree_entries.clear();

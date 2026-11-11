@@ -20,6 +20,8 @@ thread_local! {
 enum UserProfileCacheEntry {
     /// A request has been issued and we're waiting for it to complete.
     Requested,
+    /// A completed failure; retry when sync recovers instead of on every draw.
+    Failed,
     /// The profile has been successfully loaded from the server.
     Loaded {
         user_profile: UserProfile,
@@ -49,7 +51,7 @@ impl RoomMemberEntry {
     }
 }
 
-/// Removes all `Requested` entries from the cache, allowing them to be re-fetched.
+/// Removes all `Requested` and `Failed` entries from the cache, allowing them to be re-fetched.
 ///
 /// This should be called when the app transitions from offline back to online,
 /// because any in-flight requests that were submitted while offline have likely
@@ -57,7 +59,7 @@ impl RoomMemberEntry {
 /// permanently block re-fetching.
 pub fn clear_all_pending_requests() {
     USER_PROFILE_CACHE.with_borrow_mut(|cache| {
-        cache.retain(|_, entry| !matches!(entry, UserProfileCacheEntry::Requested));
+        cache.retain(|_, entry| matches!(entry, UserProfileCacheEntry::Loaded { .. }));
         for entry in cache.values_mut() {
             if let UserProfileCacheEntry::Loaded { rooms, .. } = entry {
                 rooms.retain(|_, member| matches!(member, RoomMemberEntry::Loaded(_)));
@@ -91,6 +93,8 @@ pub enum UserProfileUpdate {
     },
     /// An update to the user's profile only, without changes to room membership info.
     UserProfileOnly(UserProfile),
+    /// The global profile request completed without usable profile data.
+    UserProfileFailed { user_id: OwnedUserId },
     /// A room-specific user profile request failed, meaning the user isn't in that room.
     RoomMemberFailed {
         user_id: OwnedUserId,
@@ -98,6 +102,18 @@ pub enum UserProfileUpdate {
     },
 }
 impl UserProfileUpdate {
+    pub fn from_fetch_error(user_id: OwnedUserId, error: &matrix_sdk::Error) -> Self {
+        use matrix_sdk::ruma::api::error::ErrorKind;
+        if matches!(error.client_api_error_kind(), Some(ErrorKind::NotFound)) {
+            // Some homeservers return 404 when no display name or avatar was set.
+            Self::UserProfileOnly(UserProfile {
+                user_id, username: None, avatar_state: AvatarState::Known(None),
+            })
+        } else {
+            Self::UserProfileFailed { user_id }
+        }
+    }
+
     /// Returns the user ID associated with this update.
     #[allow(unused)]
     pub fn user_id(&self) -> &UserId {
@@ -105,7 +121,8 @@ impl UserProfileUpdate {
             UserProfileUpdate::Full { new_profile, .. } => &new_profile.user_id,
             UserProfileUpdate::RoomMemberOnly { room_member, .. } => room_member.user_id(),
             UserProfileUpdate::UserProfileOnly(profile) => &profile.user_id,
-            UserProfileUpdate::RoomMemberFailed { user_id, .. } => user_id,
+            UserProfileUpdate::RoomMemberFailed { user_id, .. }
+            | UserProfileUpdate::UserProfileFailed { user_id } => user_id,
         }
     }
 
@@ -115,7 +132,7 @@ impl UserProfileUpdate {
             UserProfileUpdate::Full { new_profile, room_id, room_member } => {
                 match cache.entry(new_profile.user_id.clone()) {
                     Entry::Occupied(mut entry) => match entry.get_mut() {
-                        e @ UserProfileCacheEntry::Requested => {
+                        e @ (UserProfileCacheEntry::Requested | UserProfileCacheEntry::Failed) => {
                             *e = UserProfileCacheEntry::Loaded {
                                 user_profile: new_profile,
                                 rooms: {
@@ -145,9 +162,8 @@ impl UserProfileUpdate {
             UserProfileUpdate::RoomMemberOnly { room_id, room_member } => {
                 match cache.entry(room_member.user_id().to_owned()) {
                     Entry::Occupied(mut entry) => match entry.get_mut() {
-                        e @ UserProfileCacheEntry::Requested => {
-                            // This shouldn't happen, but we can still technically handle it correctly.
-                            warning!("BUG: User profile cache entry was `Requested` for user {} when handling RoomMemberOnly update", room_member.user_id());
+                        e @ (UserProfileCacheEntry::Requested | UserProfileCacheEntry::Failed) => {
+                            // A member fetch can complete while the global profile is unavailable.
                             *e = UserProfileCacheEntry::Loaded {
                                 user_profile: UserProfile {
                                     user_id: room_member.user_id().to_owned(),
@@ -186,7 +202,7 @@ impl UserProfileUpdate {
             UserProfileUpdate::UserProfileOnly(new_profile) => {
                 match cache.entry(new_profile.user_id.clone()) {
                     Entry::Occupied(mut entry) => match entry.get_mut() {
-                        e @ UserProfileCacheEntry::Requested => {
+                        e @ (UserProfileCacheEntry::Requested | UserProfileCacheEntry::Failed) => {
                             *e = UserProfileCacheEntry::Loaded {
                                 user_profile: new_profile,
                                 rooms: BTreeMap::new(),
@@ -202,6 +218,12 @@ impl UserProfileUpdate {
                             rooms: BTreeMap::new(),
                         });
                     }
+                }
+            }
+            UserProfileUpdate::UserProfileFailed { user_id } => {
+                // An older failed request must not erase a successfully loaded profile.
+                if let Some(entry @ UserProfileCacheEntry::Requested) = cache.get_mut(&user_id) {
+                    *entry = UserProfileCacheEntry::Failed;
                 }
             }
             UserProfileUpdate::RoomMemberFailed { user_id, room_id } => {
@@ -265,7 +287,7 @@ where
                         }
                         Some(f(user_profile, rooms))
                     }
-                    UserProfileCacheEntry::Requested => {
+                    UserProfileCacheEntry::Requested | UserProfileCacheEntry::Failed => {
                         // log!("User {} profile request is already in flight....", entry.key());
                         None
                     }
@@ -369,6 +391,54 @@ mod tests_room_member_entry {
     use super::*;
     use matrix_sdk::ruma::{room_id, user_id};
 
+    #[test]
+    fn global_failure_completes_pending_lookup_without_erasing_loaded_data() {
+        let user = user_id!("@alice:matrix.org").to_owned();
+        let mut cache = BTreeMap::from([(user.clone(), UserProfileCacheEntry::Requested)]);
+        UserProfileUpdate::UserProfileFailed {user_id: user.clone()}.apply_to_cache(&mut cache);
+        assert!(matches!(cache[&user], UserProfileCacheEntry::Failed));
+        UserProfileUpdate::UserProfileOnly(UserProfile {
+            user_id: user.clone(), username: Some("Alice".into()), avatar_state: AvatarState::Known(None),
+        }).apply_to_cache(&mut cache);
+        UserProfileUpdate::UserProfileFailed {user_id: user.clone()}.apply_to_cache(&mut cache);
+        assert!(matches!(&cache[&user], UserProfileCacheEntry::Loaded {user_profile, ..}
+            if user_profile.username.as_deref() == Some("Alice")));
+        cache.clear();
+        UserProfileUpdate::UserProfileFailed {user_id: user}.apply_to_cache(&mut cache);
+        assert!(cache.is_empty(), "A late failure after logout must not repopulate the cache");
+    }
+
+    #[test]
+    fn reconnect_allows_failed_and_pending_profiles_to_be_requested_again() {
+        USER_PROFILE_CACHE.with_borrow_mut(|cache| {
+            cache.clear();
+            cache.insert(user_id!("@pending:test").to_owned(), UserProfileCacheEntry::Requested);
+            cache.insert(user_id!("@failed:test").to_owned(), UserProfileCacheEntry::Failed);
+            cache.insert(user_id!("@loaded:test").to_owned(), loaded_entry(BTreeMap::new()));
+        });
+        clear_all_pending_requests();
+        USER_PROFILE_CACHE.with_borrow_mut(|cache| {
+            assert_eq!(cache.len(), 1);
+            assert!(matches!(cache.get(user_id!("@loaded:test")), Some(UserProfileCacheEntry::Loaded {..})));
+            cache.clear();
+        });
+    }
+
+    #[test]
+    fn profile_not_found_is_an_empty_profile_but_server_errors_are_failures() {
+        use ruma::api::{client::uiaa::UiaaResponse, error::{Error, ErrorBody, ErrorKind, FromHttpResponseError, StandardErrorBody}};
+        let user = user_id!("@alice:matrix.org").to_owned();
+        let missing = Error::new(matrix_sdk::reqwest::StatusCode::NOT_FOUND,
+            ErrorBody::Standard(StandardErrorBody::new(ErrorKind::NotFound, "No profile".into())));
+        let error: matrix_sdk::Error = matrix_sdk::HttpError::Api(Box::new(
+            FromHttpResponseError::Server(UiaaResponse::MatrixError(missing)),
+        )).into();
+        assert!(matches!(UserProfileUpdate::from_fetch_error(user.clone(), &error),
+            UserProfileUpdate::UserProfileOnly(UserProfile {username: None, avatar_state: AvatarState::Known(None), ..})));
+        let error = matrix_sdk::Error::UnknownError("connection interrupted".into());
+        assert!(matches!(UserProfileUpdate::from_fetch_error(user, &error), UserProfileUpdate::UserProfileFailed {..}));
+    }
+
     fn loaded_entry(rooms: BTreeMap<OwnedRoomId, RoomMemberEntry>) -> UserProfileCacheEntry {
         UserProfileCacheEntry::Loaded {
             user_profile: UserProfile {
@@ -390,7 +460,7 @@ mod tests_room_member_entry {
     fn room_entry(cache: &BTreeMap<OwnedUserId, UserProfileCacheEntry>) -> Option<&RoomMemberEntry> {
         match cache.get(user_id!("@alice:matrix.org"))? {
             UserProfileCacheEntry::Loaded { rooms, .. } => rooms.get(room_id!("!room:matrix.org")),
-            UserProfileCacheEntry::Requested => None,
+            UserProfileCacheEntry::Requested | UserProfileCacheEntry::Failed => None,
         }
     }
 

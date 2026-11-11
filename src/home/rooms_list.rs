@@ -591,6 +591,10 @@ pub struct RoomsList {
 impl ScriptHook for RoomsList {
     fn on_after_new(&mut self, _vm: &mut ScriptVm) {
         self.invited_rooms = ALL_INVITED_ROOMS.with(Rc::clone);
+        // Updates queued before this list existed missed their signal, so we raise another one.
+        if !PENDING_ROOM_UPDATES.is_empty() {
+            SignalToUI::set_ui_signal();
+        }
     }
 }
 
@@ -781,7 +785,7 @@ impl RoomsList {
                 }
                 RoomsListUpdate::AddJoinedRoom(joined_room) => {
                     if self.bubble_selection.active().contains(BubbleFilters::ModAdmin) && joined_room.user_power_levels.is_none() {
-                        submit_async_request(MatrixRequest::GetRoomPowerLevels { timeline_kind: TimelineKind::MainRoom {room_id: joined_room.room_name_id.room_id().clone()} });
+                        submit_async_request(MatrixRequest::GetRoomPowerLevels {room_id: joined_room.room_name_id.room_id().clone()});
                     }
                     if let Some(latest) = &joined_room.latest {
                         super::chat_actions::observe(joined_room.room_name_id.room_id(), latest.timestamp.0.into());
@@ -1739,6 +1743,7 @@ impl Widget for RoomsList {
                 };
                 let details = RoomContextMenuDetails {
                     notification_mode: jr.notification_mode,
+                    can_invite: jr.user_power_levels.is_some_and(UserPowerLevels::can_invite),
                     room_name_id: jr.room_name_id.clone(),
                     is_favorite: jr.tags.contains_key(&TagName::Favorite),
                     is_low_priority: jr.tags.contains_key(&TagName::LowPriority),
@@ -1877,7 +1882,7 @@ impl Widget for RoomsList {
                             if selection.active().contains(BubbleFilters::ModAdmin) {
                                 for (room_id, room) in &self.all_joined_rooms {
                                     if room.user_power_levels.is_none() {
-                                        submit_async_request(MatrixRequest::GetRoomPowerLevels {timeline_kind: TimelineKind::MainRoom {room_id: room_id.clone()}});
+                                        submit_async_request(MatrixRequest::GetRoomPowerLevels {room_id: room_id.clone()});
                                     }
                                 }
                             }
@@ -2254,6 +2259,7 @@ impl RoomsListRef {
         let room = inner.all_joined_rooms.get(room_id)?;
         Some(RoomContextMenuDetails {
             notification_mode: room.notification_mode,
+            can_invite: room.user_power_levels.is_some_and(UserPowerLevels::can_invite),
             room_name_id: room.room_name_id.clone(),
             is_favorite: room.tags.contains_key(&TagName::Favorite),
             is_low_priority: room.tags.contains_key(&TagName::LowPriority),

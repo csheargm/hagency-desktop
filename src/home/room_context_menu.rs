@@ -98,6 +98,7 @@ script_mod! {
 /// Details needed to populate the room context menu.
 #[derive(Clone, Debug)]
 pub struct RoomContextMenuDetails {
+    pub can_invite: bool,
     pub notification_mode: Option<RoomNotificationMode>,
     pub room_name_id: RoomNameId,
     pub is_favorite: bool,
@@ -123,6 +124,7 @@ pub struct RoomContextMenu {
     #[source] source: ScriptObjectRef,
     #[rust] details: Option<RoomContextMenuDetails>,
     #[rust] focus_after_draw: bool,
+    #[rust] showing_notification_choices: bool,
 }
 
 impl Widget for RoomContextMenu {
@@ -171,6 +173,14 @@ impl Widget for RoomContextMenu {
 impl WidgetMatchEvent for RoomContextMenu {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
         for action in actions {
+            if let Some(update) = action.downcast_ref::<crate::sliding_sync::UserPowerLevelsUpdated>() {
+                if let Some(details) = self.details.as_mut()
+                    && update.is_current_for(details.room_name_id.room_id())
+                {
+                    details.can_invite = update.power_levels.can_invite();
+                    self.update_invite_visibility(cx);
+                }
+            }
             if let Some(update) = action.downcast_ref::<RoomNotificationModeUpdated>() {
                 if let Some(details) = self.details.as_mut() {
                     if details.room_name_id.room_id() == &update.room_id {
@@ -273,7 +283,7 @@ impl WidgetMatchEvent for RoomContextMenu {
             self.show_notification_choices(cx, true);
             return;
         }
-        else if self.button(cx, ids!(invite_button)).clicked(actions) {
+        else if details.can_invite && self.button(cx, ids!(invite_button)).clicked(actions) {
             cx.action(InviteModalAction::Open(details.room_name_id.clone()));
             close_menu = true;
         }
@@ -306,15 +316,17 @@ impl RoomContextMenu {
     }
 
     pub fn show(&mut self, cx: &mut Cx, details: RoomContextMenuDetails) -> DVec2 {
-        self.show_notification_choices(cx, false);
         self.update_buttons(cx, &details);
+        submit_async_request(MatrixRequest::GetRoomPowerLevels {room_id: details.room_name_id.room_id().clone()});
         self.details = Some(details);
+        self.show_notification_choices(cx, false);
         self.visible = true;
         self.focus_after_draw = true;
         expected_menu_size(NUM_BUTTONS, NUM_DIVIDERS)
     }
 
     fn show_notification_choices(&mut self, cx: &mut Cx, shown: bool) {
+        self.showing_notification_choices = shown;
         self.focus_after_draw = true;
         for id in [ids!(hide_chat_button), ids!(delete_chat_button)] { self.button(cx, id).set_visible(cx, !shown); }
         for id in [ids!(mark_unread_button), ids!(favorite_button), ids!(priority_button), ids!(copy_link_button),
@@ -326,6 +338,13 @@ impl RoomContextMenu {
             self.view.button(cx, id).set_visible(cx, shown);
             self.view.button(cx, id).reset_hover(cx);
         }
+        self.update_invite_visibility(cx);
+        self.redraw(cx);
+    }
+
+    fn update_invite_visibility(&mut self, cx: &mut Cx) {
+        let allowed = self.details.as_ref().is_some_and(|details| details.can_invite);
+        self.button(cx, ids!(invite_button)).set_visible(cx, allowed && !self.showing_notification_choices);
         self.redraw(cx);
     }
 
@@ -383,6 +402,45 @@ impl RoomContextMenu {
         cx.action(ContextMenuClosed);
         cx.clear_all_hovers();
         self.redraw(cx);
+    }
+}
+
+#[cfg(test)]
+mod invite_permission_tests {
+    use super::*;
+    use crate::sliding_sync::{UserPowerLevels, UserPowerLevelsUpdated};
+
+    #[test]
+    fn denied_and_revoked_invites_stay_hidden_after_notification_submenus() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut menu = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomContextMenu {}});
+            RoomContextMenu::script_from_value(vm, value)
+        });
+        let room = ruma::room_id!("!room:test").to_owned();
+        menu.show(&mut cx, RoomContextMenuDetails {
+            room_name_id: RoomNameId::empty(room.clone()), can_invite: false,
+            notification_mode: None, is_favorite: false, is_low_priority: false, has_unreads: false,
+        });
+        for shown in [true, false] {
+            menu.show_notification_choices(&mut cx, shown);
+            assert!(!menu.button(&cx, ids!(invite_button)).visible());
+        }
+        let epoch = crate::account_session::epoch();
+        for (room_id, event_epoch, powers, visible) in [
+            (ruma::room_id!("!other:test").to_owned(), epoch, UserPowerLevels::Invite, false),
+            (room.clone(), epoch.wrapping_add(1), UserPowerLevels::Invite, false),
+            (room.clone(), epoch, UserPowerLevels::Invite, true),
+            (room.clone(), epoch, UserPowerLevels::empty(), false),
+        ] {
+            let actions = cx.capture_actions(|cx| cx.action(UserPowerLevelsUpdated {room_id, epoch: event_epoch, power_levels: powers}));
+            menu.handle_actions(&mut cx, &actions, &mut Scope::empty());
+            menu.show_notification_choices(&mut cx, true);
+            menu.show_notification_choices(&mut cx, false);
+            assert_eq!(menu.button(&cx, ids!(invite_button)).visible(), visible);
+        }
     }
 }
 

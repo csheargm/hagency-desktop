@@ -528,8 +528,24 @@ impl SendStatusIndicatorRef {
     }
 }
 
-fn upload_percent(current_bytes: usize, total_bytes: usize) -> u8 {
-    (current_bytes * 100).checked_div(total_bytes).unwrap_or(0).min(100) as u8
+pub fn upload_percent(current_bytes: usize, total_bytes: usize) -> u8 {
+    // Widen before multiplying: usize overflows above about 43 MB on 32-bit targets.
+    (current_bytes as u128 * 100).checked_div(total_bytes as u128).unwrap_or(0).min(100) as u8
+}
+
+#[cfg(test)]
+mod upload_progress_tests {
+    use super::upload_percent;
+
+    #[test]
+    fn large_uploads_zero_totals_and_excess_progress_are_bounded() {
+        assert_eq!(upload_percent(45_000_000, 50_000_000), 90);
+        assert_eq!(upload_percent(usize::MAX / 2, usize::MAX), 49);
+        assert_eq!(upload_percent(usize::MAX, usize::MAX), 100);
+        assert_eq!(upload_percent(usize::MAX, 1), 100);
+        assert_eq!(upload_percent(1, 0), 0);
+        assert_eq!(upload_percent(0, 10), 0);
+    }
 }
 
 /// Stringifies an upload's progress, e.g. "Uploading... 40% (2 MB / 5 MB)".
