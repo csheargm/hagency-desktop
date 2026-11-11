@@ -175,14 +175,21 @@ async fn proof(
     sink: &Arc<SharedAttemptProcessSink>,
     a: &Activity,
 ) -> Result<(Bound, VerifiedSharedActivity), NativeError> {
-    let b = io.bound().await?;
-    let e = b
-        .enrollment(r, &sink.command().original_runtime_command, true)
-        .await?;
-    let verified = sink
-        .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
-        .map_err(store)?;
-    Ok((b, verified))
+    // Read-only until it answers: a scope, the enrollment under it and a local
+    // comparison. Around a credential refresh the boundary refuses for a
+    // moment; that is waited out while the lease lasts instead of ending the
+    // turn, as the Claude driver does. A real revocation is not retried.
+    io.settled(a.until, || async {
+        let b = io.bound().await?;
+        let e = b
+            .enrollment(r, &sink.command().original_runtime_command, true)
+            .await?;
+        let verified = sink
+            .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
+            .map_err(store)?;
+        Ok((b, verified))
+    })
+    .await
 }
 async fn renew(
     io: &Io,
@@ -470,7 +477,7 @@ async fn work_loop(
             .await?;
             continue;
         };
-        let (b, verified) = proof(io, r, sink, a).await?;
+        let (b, verified) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
         let reply: Timed<WorkReply> = guarded(cancel, a.until, || {
             b.upload(Action::WorkPoll(a.lease.authority.clone()), a.until)
         })
@@ -487,7 +494,7 @@ async fn work_loop(
                     a.until,
                 )
                 .await?;
-                let (_, fresh) = proof(io, r, sink, a).await?;
+                let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
                 r.receive_shared_work(fresh, w.clone())
                     .await
                     .map_err(store)?;
@@ -518,17 +525,17 @@ async fn work_loop(
         .await?;
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     // Pin the exact V3 plaintext input before selecting the retained native session.
     let plaintext_input = if !work.encrypted {
         Some(guarded(cancel, a.until, || super::context_io::prepare(
             io, &b, r, p, &work, a.lease.authority.clone(), a.until)).await?)
     } else { None };
-    let (_, p) = proof(io, r, sink, a).await?;
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let mut native_session = prepare_while_active(io, r, sink, control, a, cancel, async {
         r.prepare_shared_native_session(p, work.clone(), process).await.map_err(store)
     }).await?;
-    let (b, _) = proof(io, r, sink, a).await?;
+    let (b, _) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let mut history = prepare_while_active(
         io,
         r,
@@ -592,7 +599,7 @@ async fn work_loop(
         } else {
             text
         };
-        let (_, fresh) = proof(io, r, sink, a).await?;
+        let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
         r.prepare_shared_decrypted_input(fresh, work.clone(), text).await.map_err(store)?
     } else {
         plaintext_input.ok_or_else(|| failure(409, "native_context_protocol_required"))?
@@ -608,12 +615,12 @@ async fn work_loop(
         super::files::Files::new(io, &b, &work, process, Some(&input)),
     )
     .await?;
-    let (_, p) = proof(io, r, sink, a).await?;
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let call = r.prepare_shared_input_call(p, work.clone(), input.clone())
         .await.map_err(store)?;
     let call_id = call.call_id.clone();
     let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let attempt = r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
         .await.map_err(store)?;
     let issued = guarded(cancel, a.until, || {
@@ -752,7 +759,7 @@ async fn work_loop(
             }
             if !approvals_enabled { continue; }
             guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await?;
-            let b=io.bound().await?;
+            let b=guarded(cancel,a.until,|| io.bound_running()).await?;
             let receipt=guarded(cancel,a.until,|| approvals.poll(io,&b,&work,&a.lease.authority,a.until,process,&mut capture,&mut usage,history.as_mut())).await?;
             // Question updates that arrived while a decision was being sent.
             let updates=approvals.take_questions();
@@ -838,7 +845,7 @@ async fn work_loop(
             guarded(cancel,a.until,||async{ process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed")) }).await?;
         }
         if let Some(request)=approval {
-            let b=io.bound().await?;
+            let b=guarded(cancel,a.until,|| io.bound_running()).await?;
             guarded(cancel,a.until,|| approvals.register(io,&b,&work,&a.lease.authority,a.until,process,request)).await?;
         }
         if let Some(id)=withdrawn { questions.withdrawn(&id); }

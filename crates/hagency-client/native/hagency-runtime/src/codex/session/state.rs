@@ -374,25 +374,16 @@ impl State {
         let value = object(params, "item")?;
         let item_id = id(value, "id")?;
         let kind = string(value, "type")?;
-        if !matches!(
-            kind,
-            "userMessage"
-                | "agentMessage"
-                | "plan"
-                | "reasoning"
-                | "commandExecution"
-                | "fileChange"
-                | "mcpToolCall"
-                | "dynamicToolCall"
-                | "collabAgentToolCall"
-                | "webSearch"
-                | "imageView"
-                | "imageGeneration"
-                | "enteredReviewMode"
-                | "exitedReviewMode"
-                | "contextCompaction"
-                | "sleep"
-        ) {
+        if passive_item(kind) {
+            // Defined by the app-server schema but not modelled here: a hook's
+            // prompt, the output of a function call whose call is its own
+            // item, and the notice that a sub-agent started (its work arrives
+            // under its own thread). None carries answer text or runs a tool,
+            // so each is left untracked instead of failing the turn.
+            tracing::debug!(kind = kind, "ignoring passive Codex item");
+            return Ok(Update::Notice);
+        }
+        if !modelled_item(kind) {
             return Err(Error::UnsupportedEvent);
         }
         if !complete && (self.items.contains_key(item_id) || self.items.len() >= self.max_items) {
@@ -507,8 +498,16 @@ impl State {
             if !seen.insert(observed) {
                 return Err(Error::Scope);
             }
-            let item = self.items.get(observed).ok_or(Error::Scope)?;
-            if string(value, "type")? != item.kind {
+            let kind = string(value, "type")?;
+            let Some(item) = self.items.get(observed) else {
+                // A passive item was never tracked. Any other item the stream
+                // did not announce contradicts the completion.
+                if passive_item(kind) {
+                    continue;
+                }
+                return Err(Error::Scope);
+            };
+            if kind != item.kind {
                 return Err(Error::Scope);
             }
             if item.kind == "agentMessage" && string(value, "text")? != item.text {
@@ -570,6 +569,35 @@ impl State {
         self.phase = Phase::Ended;
         Ok(Update::TurnEnded)
     }
+}
+
+/// Item types of the app-server schema that the turn state leaves untracked.
+fn passive_item(kind: &str) -> bool {
+    matches!(kind, "hookPrompt" | "functionCallOutput" | "subAgentActivity")
+}
+
+/// The item types the turn state tracks. A type that is neither tracked nor
+/// passive is refused: a known method with an unknown value stays strict.
+fn modelled_item(kind: &str) -> bool {
+    matches!(
+        kind,
+        "userMessage"
+            | "agentMessage"
+            | "plan"
+            | "reasoning"
+            | "commandExecution"
+            | "fileChange"
+            | "mcpToolCall"
+            | "dynamicToolCall"
+            | "collabAgentToolCall"
+            | "webSearch"
+            | "imageView"
+            | "imageGeneration"
+            | "enteredReviewMode"
+            | "exitedReviewMode"
+            | "contextCompaction"
+            | "sleep"
+    )
 }
 
 /// Optional expected identities are absent only during the corresponding RPC;
