@@ -29,6 +29,61 @@ assert(!H.busy && H.dpol.yolo && !H.dpol.waiting)
 assert(A.pool_default_yolo(H.resource_detail)==true)
 assert(!H.resource_detail.executionPolicy.yolo)
 ''',
+"claude_pool_defaults_to_full_trust_and_other_tools_cannot": r'''
+H.entry_role="owner" H.page="default_policy"
+H.dpol.resource="pool" H.dpol.detail={resource:{id:"pool" framework:"octos"}}
+H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=false H.dpol.web=false H.dpol.catalog={resourceId:"pool" revision:"before"}
+A.web_can_edit=fn(){return true}
+assert(A.full_trust_tool("codex") && A.full_trust_tool("claude") && !A.full_trust_tool("octos"))
+assert(A.full_trust_hint("codex","original")=="original" && A.full_trust_hint("claude","original")!="original")
+assert(A.full_trust_hint("octos","original")!="original" && A.full_trust_hint("octos","original")!=A.full_trust_hint("claude","original"))
+A.dpol_choose(true)
+assert(H.dpol.ask!=true)
+H.dpol.detail={resource:{id:"pool" framework:"claude"}}
+A.dpol_choose(true)
+assert(H.dpol.ask==true)
+let prepared=nil
+host.request=fn(service,args,done){H.calls.push(service) H.callbacks.push(done) if service=="hagency.web_catalog.prepare"{prepared=args}}
+A.dpol_commit()
+assert(prepared.change.operation=="default_policy" && prepared.change.yolo && !prepared.change.webSearch && H.busy)
+''',
+"claude_agent_takes_full_trust_and_other_tools_cannot": r'''
+H.page="execution_policy" H.policy_mode="detail" H.policy_resource="pool" H.policy_engagement="agent"
+let revision="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+let row={resourceId:"pool" engagementId:"agent" agent:"Reviewer" projectId:"project" framework:"octos" executionPolicy:{yolo:false} appliesTo:"next_dispatch" revision:revision}
+H.policy_detail=row H.policy_draft=nil
+A.choose_policy(true)
+assert(H.policy_draft==nil && H.policy_mode=="detail")
+let trusted={resourceId:"pool" engagementId:"agent" agent:"Reviewer" projectId:"project" framework:"octos" executionPolicy:{yolo:true} appliesTo:"next_dispatch" revision:revision}
+assert(!A.policy_valid(trusted,"pool","agent"))
+trusted.framework="claude"
+assert(A.policy_valid(trusted,"pool","agent"))
+row.framework="claude"
+A.choose_policy(true)
+assert(H.policy_mode=="edit" && H.policy_draft.executionPolicy.yolo && H.policy_draft.engagementId=="agent")
+A.review_policy()
+let sent=nil
+A.submit=fn(service,args){sent={service:service args:args}}
+A.submit_policy()
+assert(sent.service=="hagency.execution_policy.edit" && sent.args.executionPolicy.yolo && sent.args.expectedRevision==revision)
+''',
+"pooled_claude_agent_keeps_its_web_search_switch": r'''
+H.page="execution_policy" H.policy_mode="detail" H.policy_resource="pool" H.policy_engagement="agent"
+let revision="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+let row={sharedMode:"standard" webSearch:false resourceId:"pool" engagementId:"agent" agent:"Reviewer" projectId:"" framework:"claude" executionPolicy:{yolo:false} appliesTo:"next_dispatch" revision:revision}
+assert(A.policy_valid(row,"pool","agent"))
+assert(A.standard_hint("claude")!=A.standard_hint("codex") && A.standard_hint("octos")!=A.standard_hint("claude"))
+H.policy_detail=row
+let sent=nil
+A.submit=fn(service,args){sent={service:service args:args}}
+A.toggle_policy_web()
+assert(sent.service=="hagency.execution_policy.edit" && sent.args.webSearch==true && !sent.args.executionPolicy.yolo && sent.args.expectedRevision==revision)
+let other={sharedMode:"standard" webSearch:false resourceId:"pool" engagementId:"agent" agent:"Reviewer" projectId:"" framework:"octos" executionPolicy:{yolo:false} appliesTo:"next_dispatch" revision:revision}
+assert(!A.policy_valid(other,"pool","agent"))
+sent=nil H.policy_detail=other
+A.toggle_policy_web()
+assert(sent==nil)
+''',
 "resource_web_search_preserves_permission_and_waits_for_matching_readback": r'''
 H.entry_role="owner" H.page="default_policy"
 H.dpol.resource="pool" H.dpol.detail={resource:{id:"pool" framework:"codex"}}

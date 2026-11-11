@@ -18,11 +18,17 @@ pub struct ExecutionPolicy {
 }
 impl ExecutionPolicy {
     pub fn validate_for(self, framework: &str) -> Result<(), InvalidInput> {
-        if self.yolo && framework != "codex" {
+        if self.yolo && !full_trust_supported(framework) {
             return Err(InvalidInput("invalid execution policy"));
         }
         Ok(())
     }
+}
+/// The coding tools whose runs implement full trust. Codex runs unrestricted.
+/// A shared Claude Code run has its tool requests allowed without asking the
+/// owner, inside the same OS sandbox as every other shared Claude run.
+pub fn full_trust_supported(framework: &str) -> bool {
+    matches!(framework, "codex" | "claude")
 }
 pub fn normalize_policy(
     value: Option<&Value>,
@@ -34,7 +40,7 @@ pub fn normalize_policy(
     let yolo = value.get("yolo").and_then(Value::as_bool);
     if !keys_within(value, &["yolo"])
         || yolo.is_none()
-        || (yolo == Some(true) && framework != "codex")
+        || (yolo == Some(true) && !full_trust_supported(framework))
     {
         return Err(InvalidInput("invalid execution policy"));
     }

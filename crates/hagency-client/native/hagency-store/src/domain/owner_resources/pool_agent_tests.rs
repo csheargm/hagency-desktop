@@ -594,6 +594,38 @@ async fn shared_agent_execution_policy_is_per_agent_and_retains_original_reserva
     f.registry.shutdown().await.unwrap();
 }
 
+/// A pooled Agent's permission page names the pool's own coding tool, and a
+/// Claude Code pool's Agent takes full trust like a Codex pool's.
+#[tokio::test]
+async fn shared_agent_execution_policy_names_the_pools_tool_and_claude_takes_full_trust() {
+    use crate::management::*;
+    let f=pool_fixture().await;
+    let a=pool_command(&f,"policy_claude",100);
+    assert_eq!(pool_reserve(&f,a.clone()).await.state,"reserved");
+    let owner=f.profile.account.clone();
+    f.registry.0.store.call(64*1024,move|db|{
+        let query=ExecutionPolicyQuery{resource_id:a.resource_id.clone(),engagement_id:a.proposed_agent_id.clone()};
+        assert_eq!(db.management_execution_policy(&query,|_|Ok(()))?.framework,"codex");
+        assert_eq!(db.db.execute("UPDATE resources SET config=json_set(config,'$.framework','claude') WHERE id=?1",[&a.resource_id])?,1);
+        let original=db.management_execution_policy(&query,|_|Ok(()))?;
+        assert_eq!((original.framework.as_str(),original.shared_mode.as_deref()),("claude",Some("standard")));
+        let input=EditExecutionPolicy{web_search:None,command_id:"claude_yolo".into(),resource_id:a.resource_id.clone(),engagement_id:a.proposed_agent_id.clone(),expected_revision:original.revision.clone(),execution_policy:ExecutionPolicyValue{yolo:true}};
+        let ctx=HostContext::new(owner,1,"a".repeat(64),1,"policy_device".into(),1)?;
+        let enabled=db.management_edit_execution_policy(&input,CommandReceipt::new(&ctx,"edit_execution_policy",&input.command_id,&input)?,|_|Ok(()))?;
+        assert_eq!((enabled.framework.as_str(),enabled.shared_mode.as_deref(),enabled.execution_policy.yolo),("claude",Some("yolo"),true));
+        // A tool without a full-trust mode is still refused.
+        let mut standard=input.clone();standard.command_id="claude_standard".into();standard.execution_policy.yolo=false;standard.expected_revision=enabled.revision;
+        db.management_edit_execution_policy(&standard,CommandReceipt::new(&ctx,"edit_execution_policy",&standard.command_id,&standard)?,|_|Ok(()))?;
+        assert_eq!(db.db.execute("UPDATE resources SET config=json_set(config,'$.framework','octos') WHERE id=?1",[&a.resource_id])?,1);
+        let other=db.management_execution_policy(&query,|_|Ok(()))?;
+        assert_eq!((other.framework.as_str(),other.shared_mode.as_deref()),("octos",Some("standard")));
+        let mut refused=input.clone();refused.command_id="octos_yolo".into();refused.expected_revision=other.revision;
+        assert!(matches!(db.management_edit_execution_policy(&refused,CommandReceipt::new(&ctx,"edit_execution_policy",&refused.command_id,&refused)?,|_|Ok(())),Err(Error::Invalid(_))));
+        Ok(())
+    }).await.unwrap();
+    f.registry.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn shared_agent_execution_policy_web_switch_is_independent_durable_and_owner_scoped() {
     use crate::management::*;

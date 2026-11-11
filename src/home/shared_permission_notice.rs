@@ -113,6 +113,7 @@ impl SharedPermissionNotice {
         let hint=if !pending {"Decision sent; waiting for Agent / 决定已发送，等待 Agent".to_owned()}
         else if row["encryptedPending"]==true {"Approval becomes available after the encrypted details arrive. / 收到加密详情后才能批准。".into()}
         else if row["canDecide"]!=true {format!("Waiting for resource owner {} / 等待资源所有者批准",a["ownerMxid"].as_str().unwrap_or(""))}
+        else if a["request"]["method"]=="claude/can_use_tool" {"Each approval covers this one tool call. / 每次批准只对这一次工具调用有效。".into()}
         else {"Session approval covers this Codex session only. It ends when this run stops. / 会话批准仅限当前 Codex 会话，运行结束即失效。".into()};
         self.view.label(cx,ids!(hint)).set_text(cx,if self.error.is_empty(){&hint}else{&self.error});
         self.view.button(cx,ids!(once)).set_enabled(cx,can);

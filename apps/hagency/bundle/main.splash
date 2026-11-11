@@ -466,7 +466,7 @@ A.resource_draft_yolo = fn(d,detail){
 }
 A.choose_resource_default = fn(kind,yolo){
     if H.busy || H.command!=nil || H.resource_detail==nil || (kind!="edit" && kind!="create") || H.page!="resource_"+kind {return}
-    if (yolo!=false && yolo!=true) || (yolo && H.resource_detail.resource.framework!="codex") {return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(H.resource_detail.resource.framework)) {return}
     let d=if kind=="edit" {H.resource_edit_draft}else{H.resource_create_draft}
     if d==nil {return}
     // Full trust always asks first, with the same alert as everywhere else.
@@ -523,7 +523,7 @@ A.submit_resource_configuration = fn(){
     let qualified=false for choice in detail.choices {if choice.model==d.model && choice.reasoning==d.reasoning {qualified=true}}
     if !qualified {H.notice=A.resource_edit_error("management_model_unqualified") A.redraw() return}
     let yolo=A.resource_draft_yolo(d,detail)
-    if (yolo!=false && yolo!=true) || (yolo && row.framework!="codex") {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(row.framework)) {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
     let policy_changed=yolo!=A.resource_default_yolo(detail)
     let profile={kind:"preserve"}
     if d.model!=row.model || d.reasoning!=row.reasoning {profile={kind:"select" model:d.model reasoning:d.reasoning}}
@@ -576,7 +576,7 @@ A.submit_resource_creation = fn(){
     let qualified=false for choice in detail.choices {if choice.model==d.model && choice.reasoning==d.reasoning {qualified=true}}
     if !qualified {H.notice=A.resource_create_error("management_model_unqualified") A.redraw() return}
     let yolo=A.resource_draft_yolo(d,detail)
-    if (yolo!=false && yolo!=true) || (yolo && row.framework!="codex") {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(row.framework)) {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
     let policy_changed=yolo!=A.resource_default_yolo(detail)
     let profile={kind:"preserve"}
     if d.model!=row.model || d.reasoning!=row.reasoning {profile={kind:"select" model:d.model reasoning:d.reasoning}}
@@ -1151,11 +1151,27 @@ H.shared_approvals=[]
 A.shared_mode = fn(row){let {sharedMode=nil}=row return sharedMode}
 A.policy_mode_label = fn(row){return if A.shared_mode(row)=="chat" {A.t("Chat only","仅聊天")}else{A.policy_label(row.executionPolicy.yolo)}}
 A.policy_label = fn(yolo){return if yolo {A.t("Full trust (unrestricted)","完全信任（不受限）")}else{A.t("Standard permissions","标准权限")}}
+// Full trust exists for the two tools whose shared runs implement it, and means something
+// different for each: Codex leaves its workspace sandbox; Claude Code stops asking before it
+// uses a tool but stays inside its own work folder.
+A.full_trust_tool = fn(framework){return framework=="codex" || framework=="claude"}
+// A pooled Agent of either tool has its own web search switch.
+A.shared_web_tool = fn(framework){return framework=="codex" || framework=="claude"}
+A.standard_hint = fn(framework){
+    if framework=="codex" {return A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
+    if framework=="claude" {return A.t("Works in its own work folder; asks you before it runs a command or changes a file","在自己的工作文件夹内工作；运行命令或修改文件前会先请求你批准")}
+    return A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")
+}
+A.full_trust_hint = fn(framework,codex_text){
+    if framework=="codex" {return codex_text}
+    if framework=="claude" {return A.t("Uses its tools without asking you; still limited to its own work folder","使用工具时不再请求你批准；仍只能读写自己的工作文件夹")}
+    return A.t("Not available for this coding tool","此编码工具不支持")
+}
 A.policy_web = fn(row){let {webSearch=nil}=row return webSearch}
 A.toggle_policy_web = fn(){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_detail==nil || (H.policy_mode!="detail" && H.policy_mode!="result") {return}
     let row=H.policy_detail let web=A.policy_web(row)
-    if (web!=true && web!=false) || A.shared_mode(row)==nil || row.framework!="codex" || row.resourceId!=H.policy_resource || row.engagementId!=H.policy_engagement {return}
+    if (web!=true && web!=false) || A.shared_mode(row)==nil || !A.shared_web_tool(row.framework) || row.resourceId!=H.policy_resource || row.engagementId!=H.policy_engagement {return}
     A.submit("hagency.execution_policy.edit",{resourceId:row.resourceId engagementId:row.engagementId expectedRevision:row.revision executionPolicy:{yolo:row.executionPolicy.yolo} webSearch:!web})
 }
 A.policy_valid = fn(data,resource,engagement){
@@ -1164,7 +1180,7 @@ A.policy_valid = fn(data,resource,engagement){
     if resourceId!=resource || engagementId!=engagement || !agent.is_string() || !projectId.is_string() || !framework.is_string() || !revision.is_string() || revision.len()!=64 || appliesTo!="next_dispatch" || !executionPolicy.is_object() {return false}
     let {yolo=nil}=executionPolicy
     let {webSearch=nil}=data
-    return (yolo==true || yolo==false) && (!yolo || framework=="codex") && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && framework=="codex"))
+    return (yolo==true || yolo==false) && (!yolo || A.full_trust_tool(framework)) && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && A.shared_web_tool(framework)))
 }
 // Permission requests are part of the Tools & Permissions hub's Pending tab.
 A.open_shared_approvals = fn(){
@@ -1218,7 +1234,7 @@ A.open_policy_grants = fn(){
 A.choose_policy = fn(yolo){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_detail==nil || (H.policy_mode!="detail" && H.policy_mode!="result") {return}
     let row=H.policy_detail
-    if yolo && row.framework!="codex" {return}
+    if yolo && !A.full_trust_tool(row.framework) {return}
     H.policy_draft={resourceId:row.resourceId engagementId:row.engagementId expectedRevision:row.revision executionPolicy:{yolo:yolo}}
     H.policy_mode="edit" H.notice="" A.redraw()
 }
@@ -1231,7 +1247,7 @@ A.review_policy = fn(){
 A.submit_policy = fn(){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_mode!="review" || H.policy_draft==nil || H.policy_detail==nil {return}
     let d=H.policy_draft let row=H.policy_detail
-    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && row.framework!="codex") {return}
+    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && !A.full_trust_tool(row.framework)) {return}
     A.submit("hagency.execution_policy.edit",d.to_json().parse_json())
 }
 A.valid_policy_result = fn(data,args){
@@ -2150,6 +2166,7 @@ A.dpol_catalog=fn(epoch){
     if !started {A.dpol_failed("management_busy")}
 }
 A.dpol_codex=fn(){let d=H.dpol return d.detail!=nil && d.detail.resource.framework=="codex"}
+A.dpol_framework=fn(){let d=H.dpol return if d.detail!=nil {d.detail.resource.framework} else {""}}
 // "Use defaults" for one Agent: the listing's change flow, against the record this page read.
 A.dpol_assign=fn(id){
     let d=H.dpol
@@ -2161,7 +2178,7 @@ A.dpol_assign=fn(id){
 A.dpol_can=fn(){let d=H.dpol return !H.busy && H.command==nil && d.state=="ready" && d.phase=="" && d.error=="" && A.recipient_optional(d,"refreshing")!=true && (d.mode=="resource" || A.web_can_edit())}
 A.dpol_choose=fn(yolo){
     let d=H.dpol
-    if !A.dpol_can() || yolo==d.yolo || (yolo && !A.dpol_codex()) {return}
+    if !A.dpol_can() || yolo==d.yolo || (yolo && !A.full_trust_tool(A.dpol_framework())) {return}
     d.ask=yolo d.saved=nil d.savedWeb=nil d.error="" A.redraw()
 }
 A.dpol_commit=fn(){
@@ -11614,7 +11631,6 @@ A.render_page = fn(){
                 let row=H.policy_detail
                 let full=row.executionPolicy.yolo
                 let chat=A.shared_mode(row)=="chat"
-                let codex=row.framework=="codex"
                 let project=A.tool_project_name(row)
                 let can=!H.busy && H.command==nil && (H.policy_mode=="detail" || H.policy_mode=="result")
                 let key="policy:"+row.engagementId
@@ -11639,7 +11655,7 @@ A.render_page = fn(){
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.shield draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Standard permissions","标准权限")}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")} else {A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.standard_hint(row.framework)}
                             }
                             if !full && !chat {mod.widgets.HagencyCheck{}}
                         }
@@ -11650,12 +11666,12 @@ A.render_page = fn(){
                         mod.widgets.HagencyListFitBody{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                             mod.widgets.HagencyListText{
-                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if codex {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置")} else {A.t("Only available for Codex Agents","仅 Codex Agent 可以使用")}}
+                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if A.full_trust_tool(row.framework) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.full_trust_hint(row.framework,A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置"))}
                             }
                             if full {mod.widgets.HagencyCheck{draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                         }
-                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && codex && !full on_click: || A.choose_policy(true)}
+                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.full_trust_tool(row.framework) && !full on_click: || A.choose_policy(true)}
                     }
                 }
                 mod.widgets.HagencyListNote{text:A.t("Changes apply when its next task starts; a task that is already running isn’t affected.","修改在下一个任务开始时生效，正在运行的任务不受影响。")}
@@ -12872,7 +12888,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.shield draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Standard permissions","标准权限")}
-                                mod.widgets.HagencyWrapSubtitle{text:A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
+                                mod.widgets.HagencyWrapSubtitle{text:A.standard_hint(A.dpol_framework())}
                             }
                             View{width:18 height:18 if !full {mod.widgets.HagencyCheck{}}}
                         }
@@ -12883,12 +12899,12 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         mod.widgets.HagencyListFitBody{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                             mod.widgets.HagencyListText{
-                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if codex {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Can use files outside its workspace and the network without asking","可使用工作区以外的文件和网络，且不再请求批准")} else {A.t("Only available for Codex pools","仅 Codex 资源池可以使用")}}
+                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if A.full_trust_tool(A.dpol_framework()) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.full_trust_hint(A.dpol_framework(),A.t("Can use files outside its workspace and the network without asking","可使用工作区以外的文件和网络，且不再请求批准"))}
                             }
                             View{width:18 height:18 if full {mod.widgets.HagencyCheck{draw_icon.color:mod.widgets.RINX_WARNING_FG}}}
                         }
-                        default_policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && codex && !full on_click: || A.dpol_choose(true)}
+                        default_policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.full_trust_tool(A.dpol_framework()) && !full on_click: || A.dpol_choose(true)}
                     }
                 }
                 if codex {View{width:Fill height:Fit flow:Down spacing:6
@@ -14755,13 +14771,13 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         if !yolo {resource_create_standard := mod.widgets.HagencyTallSegmentOn{text:A.t("Standard","标准权限") enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",false)}}
                         if yolo {resource_create_standard := mod.widgets.HagencyTallSegment{text:A.t("Standard","标准权限") enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",false)}}
                     }
-                    if detail.resource.framework=="codex" {View{width:Fill height:Fit
+                    if A.full_trust_tool(detail.resource.framework) {View{width:Fill height:Fit
                         if yolo {resource_create_unrestricted := mod.widgets.HagencyTallSegmentOn{text:A.pool_yolo_segment() enabled:!H.busy && H.command==nil draw_text +: {color:mod.widgets.RINX_WARNING_FG color_hover:mod.widgets.RINX_WARNING_FG color_focus:mod.widgets.RINX_WARNING_FG} on_click:||A.choose_resource_default("create",true)}}
                         if !yolo {resource_create_unrestricted := mod.widgets.HagencyTallSegment{text:A.pool_yolo_segment() enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",true)}}
                     }}
                 }
             }}
-            mod.widgets.HagencyListNote{text:if yolo {A.t("Full trust: new Codex Agents run without the workspace sandbox and never ask before using tools.","完全信任：新的 Codex Agent 不使用工作区沙箱，使用工具前也不会询问。")} else {A.t("Agents created in the new pool start with standard permissions.","新资源池里创建的 Agent 默认使用标准权限。")} draw_text.color:if yolo {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+            mod.widgets.HagencyListNote{text:if yolo && detail.resource.framework=="claude" {A.t("Full trust: new Claude Code Agents never ask before using tools; they stay inside their own work folders.","完全信任：新的 Claude Code Agent 使用工具前不会询问；仍只能读写各自的工作文件夹。")} else if yolo {A.t("Full trust: new Codex Agents run without the workspace sandbox and never ask before using tools.","完全信任：新的 Codex Agent 不使用工作区沙箱，使用工具前也不会询问。")} else {A.t("Agents created in the new pool start with standard permissions.","新资源池里创建的 Agent 默认使用标准权限。")} draw_text.color:if yolo {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
             mod.widgets.HagencyListLabel{text:A.t("MONTHLY MAXIMUM","每月上限")}
             mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:10 padding:Inset{left:12 right:12 top:12 bottom:12}
                 mod.widgets.HagencySegments{
@@ -17277,7 +17293,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
             let name=H.policy_detail.agent
             let full=H.policy_draft.executionPolicy.yolo
             mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust “"+name+"”?","要完全信任「"+name+"」吗？")} else {A.t("Use Standard Permissions?","改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking you first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求你批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this for an Agent you trust. It applies to its next task.","请只对你信任的 Agent 开启。下一个任务开始时生效。")} else {A.t("It applies to its next task.","下一个任务开始时生效。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17329,7 +17345,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         }}
         if kind=="create_trust" {View{width:Fill height:Fit flow:Down
             mod.widgets.HagencyAlertTitle{text:A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking you first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if H.resource_detail!=nil && H.resource_detail.resource.framework=="claude" {A.t("Agents created in this pool use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","这个资源池里新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else {A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking you first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")}}
             mod.widgets.HagencyAlertMessage{text:A.t("Only do this if you trust everyone who can request this pool. You can change it later.","请只在你信任所有申请者时开启。以后可以再改。")}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17341,7 +17357,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         if kind=="default_policy" {View{width:Fill height:Fit flow:Down
             let full=H.dpol.ask==true
             mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")} else {A.t("Use Standard Permissions?","新 Agent 改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking you first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Agents created from now on work inside their workspace and ask before doing more.","以后新建的 Agent 会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && A.dpol_framework()=="claude" {A.t("Agents created from now on use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","以后新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking you first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Agents created from now on work inside their workspace and ask before doing more.","以后新建的 Agent 会在工作区内运行，超出范围前会先请求批准。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this if you trust everyone who can request this pool. Existing Agents keep their own permissions.","请只在你信任所有申请者时开启。现有 Agent 保持各自的权限。")} else {A.t("Existing Agents keep their own permissions.","现有 Agent 保持各自的权限。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
