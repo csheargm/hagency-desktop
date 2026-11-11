@@ -16,6 +16,48 @@ use crate::{
 
 use super::rooms_list::{InvitedRoomInfo, InviterInfo, JoinedRoomInfo};
 use super::back_swipe::BackSwipe;
+
+#[cfg(test)]
+mod avatar_reuse_tests {
+    use super::*;
+
+    #[test]
+    fn recycled_and_renamed_rooms_do_not_reuse_another_initial_or_hide_mosaics() {
+        use crate::{room::RoomAvatarMember, shared::avatar::AvatarImage};
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut row = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.MobileRoomsListEntry {}});
+            RoomsListEntryContent::script_from_value(vm, value)
+        });
+        let name = |id, name: &str| utils::RoomNameId::new(
+            matrix_sdk::RoomDisplayName::Named(name.into()), id,
+        );
+        let a = name(ruma::room_id!("!a:test").to_owned(), "Alpha");
+        let b = name(ruma::room_id!("!b:test").to_owned(), "Beta");
+        let bad_image = FetchedRoomAvatar::Image(AvatarImage {
+            uri: "mxc://test/invalid-avatar".into(), data: std::sync::Arc::from(&b"invalid image"[..]),
+        });
+        row.draw_common(&mut cx, &FetchedRoomAvatar::Text("Alpha".into()), &a, false);
+        for room in [&b, &name(b.room_id().clone(), "Gamma")] {
+            row.draw_common(&mut cx, &bad_image, room, false);
+            let avatar = row.view.avatar(&cx, ids!(avatar));
+            assert_eq!(avatar.label(&cx, ids!(text_view.text)).text(), &room.to_string()[..1]);
+            assert!(avatar.view(&cx, ids!(text_view)).visible());
+            assert!(!avatar.view(&cx, ids!(members_view)).visible());
+        }
+        let mosaic = FetchedRoomAvatar::Members(vec![RoomAvatarMember {
+            user_id: ruma::user_id!("@alice:test").to_owned(), display_name: Some("Alice".into()), avatar_url: None,
+        }]);
+        row.draw_common(&mut cx, &mosaic, &a, false);
+        assert!(row.view.avatar(&cx, ids!(avatar)).view(&cx, ids!(members_view)).visible());
+        row.draw_common(&mut cx, &bad_image, &b, false);
+        assert_eq!(row.view.avatar(&cx, ids!(avatar)).label(&cx, ids!(text_view.text)).text(), "B");
+        assert!(!row.view.avatar(&cx, ids!(avatar)).view(&cx, ids!(members_view)).visible());
+    }
+}
+
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
@@ -439,6 +481,7 @@ pub struct RoomsListEntryContent {
 
     /// The avatar content that was last drawn for this room.
     #[rust] last_avatar: Option<FetchedRoomAvatar>,
+    #[rust] last_avatar_room_name: Option<(ruma::OwnedRoomId, String)>,
     /// Widgets updated for every room-list draw.
     #[rust] child_refs: Option<EntryChildRefs>,
 }
@@ -725,7 +768,7 @@ impl RoomsListEntryContent {
             let text = if count > 99 { "99+".into() } else if count == 0 { "•".into() } else { count.to_string() };
             self.view.label(cx, ids!(count)).set_text(cx, &text);
         }
-        self.draw_common(cx, &room_info.room_avatar, room_info.is_selected);
+        self.draw_common(cx, &room_info.room_avatar, &room_info.room_name_id, room_info.is_selected);
         // Show tombstone icon if the room is tombstoned
         refs.tombstone_icon.set_visible(cx, room_info.is_tombstoned);
     }
@@ -760,7 +803,7 @@ impl RoomsListEntryContent {
             self.view.label(cx, ids!(count)).set_text(cx, "!");
         }
 
-        self.draw_common(cx, &room_info.room_avatar, room_info.is_selected);
+        self.draw_common(cx, &room_info.room_avatar, &room_info.room_name_id, room_info.is_selected);
     }
 
     /// Populates the widgets common to both invited and joined rooms list entries.
@@ -768,26 +811,19 @@ impl RoomsListEntryContent {
         &mut self,
         cx: &mut Cx,
         room_avatar: &FetchedRoomAvatar,
+        room_name_id: &utils::RoomNameId,
         is_selected: bool,
     ) {
-        // Only redraw the avatar if it changed
-        if self.last_avatar.as_ref() != Some(room_avatar) {
-            match room_avatar {
-                FetchedRoomAvatar::Text(text) => {
-                    self.view.avatar(cx, ids!(avatar)).show_text(cx, None, None, text);
-                }
-                FetchedRoomAvatar::Members(_) => {
-                    self.view.avatar(cx, ids!(avatar)).show_room_avatar(cx, room_avatar);
-                }
-                FetchedRoomAvatar::Image(avatar_image) => {
-                    let _ = self.view.avatar(cx, ids!(avatar)).show_image(
-                        cx,
-                        None, // Avatars in a RoomsListEntry shouldn't be clickable.
-                        |cx, img| utils::load_avatar_image(&img, cx, avatar_image),
-                    );
-                }
-            }
+        if self.last_avatar.as_ref() != Some(room_avatar)
+            || self.last_avatar_room_name.as_ref().is_none_or(|(id, name)| id != room_name_id.room_id() || name != room_name_id.display().as_ref())
+        {
+            // A recycled row must show this room's initial while its photo decodes,
+            // including when two rooms share a photo or a room was renamed.
+            let avatar = self.view.avatar(cx, ids!(avatar));
+            avatar.show_text(cx, None, None, room_name_id.to_string());
+            avatar.show_room_avatar(cx, room_avatar);
             self.last_avatar = Some(room_avatar.clone());
+            self.last_avatar_room_name = Some((room_name_id.room_id().clone(), room_name_id.to_string()));
         }
 
         self.update_latest_event_colors(cx, is_selected);

@@ -390,6 +390,12 @@ impl Widget for SpacesBarWrapper {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        // don't draw anything if we're hidden (and also not animating in)
+        if self.animator_in_state(cx, ids!(spaces_bar_animator.hide))
+            && !self.animator.is_track_animating(live_id!(spaces_bar_animator))
+        {
+            return DrawStep::done();
+        }
         self.view.draw_walk(cx, scope, walk)
     }
 }
@@ -403,7 +409,14 @@ impl SpacesBarWrapperRef {
         } else {
             inner.animator_play(cx, ids!(spaces_bar_animator.hide));
         }
-        inner.redraw(cx);
+        if show && inner.area().is_empty() {
+            // We don't draw anything while the spaces bar is hidden.
+            // Thus, before we show anything for the first time, we have to redraw
+            // the whole spaces bar and everything within it.
+            cx.redraw_all();
+        } else {
+            inner.redraw(cx);
+        }
     }
 }
 
@@ -1196,6 +1209,42 @@ impl HomeScreen {
 pub(crate) mod responsive_layout_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    #[test]
+    fn settled_hidden_spaces_bar_does_not_draw_and_first_show_restores_it() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let bar = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.SpacesBarWrapper {}});
+            let bar = WidgetRef::script_from_value(vm, value);
+            bar.register_as_ui_root(vm);
+            bar
+        });
+        for shown in [false, true] {
+            if shown {
+                let mut inner = bar.borrow_mut::<SpacesBarWrapper>().unwrap();
+                inner.animator_cut(&mut cx, ids!(spaces_bar_animator.show));
+            }
+            cx.redraw_all();
+            let pass = DrawPass::new(&mut cx);
+            pass.set_size(&mut cx, dvec2(400.0, 200.0));
+            let mut list = DrawList2d::new(&mut cx);
+            let event = DrawEvent::default();
+            let mut draw = CxDraw::new(&mut cx, &event);
+            let mut cx2d = Cx2d::new(&mut draw);
+            cx2d.begin_pass(&pass, None);
+            list.begin_always(&mut cx2d);
+            cx2d.begin_root_turtle(dvec2(400.0, 200.0), Layout::flow_overlay());
+            bar.draw_all(&mut cx2d, &mut Scope::empty());
+            cx2d.end_pass_sized_turtle();
+            list.end(&mut cx2d);
+            cx2d.end_pass(&pass);
+            drop(cx2d); drop(draw);
+            assert_eq!(bar.area().is_empty(), !shown);
+            if shown { assert!(bar.area().rect(&cx).size.y > 0.0); }
+        }
+    }
 
     pub(crate) fn matrix_link_delivery(navigation: crate::matrix_links::Navigation, width: f64) {
         use crate::home::main_desktop_ui::MainDesktopUIWidgetExt;

@@ -811,6 +811,16 @@ pub fn trim_start_html_whitespace(mut text: &str) -> &str {
     text
 }
 
+/// Escapes plaintext for HTML without collapsing its line breaks.
+pub fn escape_text_and_line_breaks(text: &str) -> Cow<'_, str> {
+    let escaped = htmlize::escape_text(text);
+    if escaped.contains('\n') {
+        Cow::Owned(escaped.replace('\n', "<br>"))
+    } else {
+        escaped
+    }
+}
+
 /// Looks for bare links in the given `text` and converts them into proper HTML links.
 ///
 /// If `links_found` is provided, it will be populated with the list of URLs found in the text.
@@ -837,7 +847,7 @@ pub fn linkify_get_urls<'t>(
         } else {
             // Once a plain message is promoted to HTML for a URL, literal
             // newlines would otherwise collapse into spaces in the Html widget.
-            Cow::Owned(htmlize::escape_text(text).replace('\n', "<br>"))
+            escape_text_and_line_breaks(text)
         }
     };
     // Closure to escape attributes if it's not HTML.

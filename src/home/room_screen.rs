@@ -151,13 +151,15 @@ script_mod! {
     // A download button or loading spinner shown beneath a message.
     mod.widgets.MessageDownloadSection = View {
         visible: false,
-        width: Fit, height: Fit,
-        flow: Right,
+        width: Fill, height: Fit,
+        flow: Flow.Right{wrap: true},
+        spacing: 8,
+        wrap_spacing: 8,
         margin: Inset{top: 8, bottom: 2}
 
         open_markdown_button := RobrixIconButton {
             visible: false height: mod.widgets.SETTINGS_BUTTON_HEIGHT
-            padding: Inset{left: 12 right: 12} margin: Inset{right: 8}
+            padding: Inset{left: 12 right: 12} margin: 0
             draw_icon.svg: crate_resource("self://resources/icons/eye_open.svg")
             icon_walk: Walk{width: 16 height: 16}
             text: #(crate::i18n::tr("Open")) i18n_text: "Open"
@@ -175,7 +177,7 @@ script_mod! {
         share_button := RobrixIconButton {
             height: mod.widgets.SETTINGS_BUTTON_HEIGHT,
             padding: Inset{left: 12, right: 12}
-            margin: Inset{left: 8}
+            margin: 0
             draw_icon.svg: (ICON_SHARE)
             icon_walk: Walk{width: 16, height: 16}
             text: #(crate::i18n::tr("Share")) i18n_text: "Share"
@@ -1544,6 +1546,7 @@ impl Widget for RoomScreen {
                 // Handle the invite_user_button (in a SmallStateEvent) being clicked.
                 if wr.button(cx, ids!(invite_user_button)).clicked(actions) {
                     let Some(tl) = self.tl_state.as_ref() else { continue };
+                    if !tl.user_power.can_invite() { continue; }
                     if let Some(event_tl_item) = tl.items.get(index).and_then(|item| item.as_event()) {
                         let user_id = event_tl_item.sender().to_owned();
                         let username = if let TimelineDetails::Ready(profile) = event_tl_item.sender_profile() {
@@ -2076,6 +2079,7 @@ impl Widget for RoomScreen {
                                             poll_state,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::UnableToDecrypt(utd) => populate_small_state_event(
                                             cx,
@@ -2086,6 +2090,7 @@ impl Widget for RoomScreen {
                                             utd,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::LiveLocation(live_loc) => populate_small_state_event(
                                             cx,
@@ -2096,6 +2101,7 @@ impl Widget for RoomScreen {
                                             live_loc,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::Other(other) => populate_small_state_event(
                                             cx,
@@ -2106,6 +2112,7 @@ impl Widget for RoomScreen {
                                             other,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                     }
                                 }
@@ -2132,6 +2139,7 @@ impl Widget for RoomScreen {
                                         membership_change,
                                         item_drawn_status,
                                         group_header,
+                                        tl_state.user_power.can_invite(),
                                     )
                                 }
                             }
@@ -2144,6 +2152,7 @@ impl Widget for RoomScreen {
                                 profile_change,
                                 item_drawn_status,
                                 group_header,
+                                tl_state.user_power.can_invite(),
                             ),
                             TimelineItemContent::OtherState(other) => {
                                 // Don't shown noisy updates like policy rules, server ACLs, space links, custom state events, etc.
@@ -2170,6 +2179,7 @@ impl Widget for RoomScreen {
                                         other,
                                         item_drawn_status,
                                         group_header,
+                                        tl_state.user_power.can_invite(),
                                     )
                                 }
                             }
@@ -3792,7 +3802,7 @@ impl RoomScreen {
         // 4. Subscribe to typing notices again, now that the room is being shown.
         if self.is_loaded {
             submit_async_request(MatrixRequest::GetRoomPowerLevels {
-                timeline_kind: tl_state.kind.clone(),
+                room_id: tl_state.kind.room_id().clone(),
             });
             submit_async_request(MatrixRequest::GetRoomMembers {
                 timeline_kind: tl_state.kind.clone(),
@@ -5433,14 +5443,14 @@ fn populate_message_view(
                             }
                         });
                         let formatted = format!(
-                            "<b>Server notice:</b> {}\n\n<i>Notice type:</i>: {}{}{}",
-                            sn.body,
-                            sn.server_notice_type.as_str(),
+                            "<b>Server notice:</b> {}<br><br><i>Notice type:</i>: {}{}{}",
+                            utils::escape_text_and_line_breaks(&sn.body),
+                            htmlize::escape_text(sn.server_notice_type.as_str()),
                             sn.limit_type.as_ref()
-                                .map(|l| format!("\n<i>Limit type:</i> {}", l.as_str()))
+                                .map(|l| format!("<br><i>Limit type:</i> {}", htmlize::escape_text(l.as_str())))
                                 .unwrap_or_default(),
                             sn.admin_contact.as_ref()
-                                .map(|c| format!("\n<i>Admin contact:</i> {}", c))
+                                .map(|c| format!("<br><i>Admin contact:</i> {}", utils::escape_text_and_line_breaks(c)))
                                 .unwrap_or_default(),
                         );
                         let mut link_preview_ref =
@@ -6363,7 +6373,14 @@ pub(crate) fn populate_text_message_content(
     }
     // The message was non-HTML plaintext.
     else {
-        let linkified_html = utils::linkify_get_urls(body, false, Some(&mut links));
+        let linkified_html = match utils::linkify_get_urls(body, false, Some(&mut links)) {
+            // Without a URL the linkifier returns raw text. A room mention will
+            // promote it to HTML, so first escape literal markup and line breaks.
+            Cow::Borrowed(text) if room_mention_room_id.is_some() && text.contains("@room") => {
+                utils::escape_text_and_line_breaks(text)
+            }
+            html => html,
+        };
         let html = apply_room_mention(linkified_html, room_mention_room_id);
         match html {
             Cow::Owned(linkified_html) => message_content_widget.show_html(cx, &linkified_html),
@@ -6614,7 +6631,7 @@ fn populate_file_message_content(
     let caption = file_content.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| file_content.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| file_content.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     message_content_widget.show_html(
@@ -6652,7 +6669,7 @@ fn populate_audio_message_content(
     let caption = audio.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| audio.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| audio.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     // TODO: add an audio to play the audio file
@@ -6696,7 +6713,7 @@ fn populate_video_message_content(
     let caption = video.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| video.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| video.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     // TODO: populate a video widget here, once makepad supports that
@@ -6739,7 +6756,7 @@ fn populate_location_message_content(
     } else {
         message_content_widget.show_html(
             cx,
-            crate::i18n::format("<i>[Location invalid]</i> {0}", &[("0", (htmlize::escape_text(&location.body)).to_string())])
+            crate::i18n::format("<i>[Location invalid]</i> {0}", &[("0", (utils::escape_text_and_line_breaks(&location.body)).to_string())])
         );
     }
 
@@ -6784,7 +6801,7 @@ fn populate_redacted_message_content(
         if redactor == event_tl_item.sender() {
             fully_drawn = true;
             match reason {
-                Some(r) => crate::i18n::format("⛔ <i>Deleted their own message. Reason: \"{0}\".</i>", &[("0", (htmlize::escape_text(r)).to_string())]),
+                Some(r) => crate::i18n::format("⛔ <i>Deleted their own message. Reason: \"{0}\".</i>", &[("0", (utils::escape_text_and_line_breaks(&r)).to_string())]),
                 None => String::from("⛔ <i>Deleted their own message.</i>"),
             }
         } else {
@@ -6798,7 +6815,7 @@ fn populate_redacted_message_content(
             fully_drawn = redactor_name.was_found();
             let redactor_name_esc = htmlize::escape_text(redactor_name.as_deref().unwrap_or(redactor.as_str()));
             match reason {
-                Some(r) => crate::i18n::format("⛔ <i>{0} deleted this message. Reason: \"{1}\".</i>", &[("0", (redactor_name_esc).to_string()), ("1", (htmlize::escape_text(r)).to_string())]),
+                Some(r) => crate::i18n::format("⛔ <i>{0} deleted this message. Reason: \"{1}\".</i>", &[("0", (redactor_name_esc).to_string()), ("1", (utils::escape_text_and_line_breaks(&r)).to_string())]),
                 None => crate::i18n::format("⛔ <i>{0} deleted this message.</i>", &[("0", (redactor_name_esc).to_string())]),
             }
         }
@@ -7244,6 +7261,7 @@ fn populate_small_state_event(
     event_content: &impl SmallStateEventContent,
     item_drawn_status: ItemDrawnStatus,
     group_header: Option<(usize, bool)>,
+    can_invite: bool,
 ) -> (WidgetRef, ItemDrawnStatus) {
     let mut new_drawn_status = item_drawn_status;
     let template = if super::home_screen::effective_is_desktop(cx) { id!(SmallStateEvent) } else { id!(MobileStateEvent) };
@@ -7285,7 +7303,7 @@ fn populate_small_state_event(
     });
 
     // Proceed to draw the actual event content.
-    event_content.populate_item_content(
+    let (item, status) = event_content.populate_item_content(
         cx,
         list,
         item_id,
@@ -7294,7 +7312,9 @@ fn populate_small_state_event(
         &username,
         item_drawn_status,
         new_drawn_status,
-    )
+    );
+    if !can_invite { item.button(cx, ids!(invite_user_button)).set_visible(cx, false); }
+    (item, status)
 }
 
 
@@ -8087,6 +8107,10 @@ mod input_bar_focus {
 #[cfg(test)]
 #[path = "room_screen/agent_status_tests.rs"]
 mod agent_chat_status_tests;
+
+#[cfg(test)]
+#[path = "room_screen/upstream_fix_tests.rs"]
+mod upstream_fix_tests;
 
 #[cfg(all(test, feature = "agent_chat"))]
 #[path = "room_screen/agent_selection_tests.rs"]
