@@ -933,11 +933,12 @@ fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
     Some(delta)
 }
 
+/// The protocol error of a Claude Code installation below the floor. The host
+/// matches it to tell the owner to update the CLI.
+pub const CLAUDE_VERSION_REQUIRED: &str = "Claude Code 2.1.322 or newer is required";
 fn claude_initialize_error(error: claude::session::Error) -> Error {
     match error {
-        claude::session::Error::UnsupportedVersion => {
-            Error::Protocol("Claude Code 2.1.322 or newer is required")
-        }
+        claude::session::Error::UnsupportedVersion => Error::Protocol(CLAUDE_VERSION_REQUIRED),
         _ => Error::Protocol("Claude initialize"),
     }
 }

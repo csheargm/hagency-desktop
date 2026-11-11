@@ -1342,7 +1342,22 @@ fn startup_check_failure(error: &codex::Error) -> RuntimeError {
         event = error.diagnostic_event(),
         "Local provider start-up check failed"
     );
-    RuntimeError::Provider
+    // An installation below the floor is not an account problem: the owner
+    // is told to update the CLI, as on the pooled path.
+    version_failure(error).unwrap_or(RuntimeError::Provider)
+}
+/// The owner-facing code of a CLI below the minimum version, if that is what
+/// failed.
+fn version_failure(error: &codex::Error) -> Option<RuntimeError> {
+    match error {
+        codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
+            Some(RuntimeError::Execution("codex_version_unsupported"))
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            Some(RuntimeError::Execution("claude_version_unsupported"))
+        }
+        _ => None,
+    }
 }
 fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
     let (kind, detail) = error.diagnostic();
@@ -1359,6 +1374,9 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
         codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
             RuntimeError::Execution("codex_version_unsupported")
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            RuntimeError::Execution("claude_version_unsupported")
         }
         codex::Error::Protocol(_) | codex::Error::EventScope { .. } | codex::Error::Json(_) => {
             RuntimeError::Execution("codex_protocol_mismatch")
@@ -2152,9 +2170,23 @@ async fn fresh_running<T: Transport>(
     execution: &str,
     cancel: &mut watch::Receiver<bool>,
 ) -> bool {
-    check_running(transport, lease, expected, execution, cancel)
-        .await
-        .is_ok()
+    // An answer decides at once. No answer says nothing about the run: one
+    // failed request here dropped a message that had been accepted and
+    // prepared, or an approval the owner had just given. It is asked again
+    // for the grace of the running check.
+    let give_up = tokio::time::Instant::now() + RUNNING_CHECK_GRACE;
+    loop {
+        match check_running(transport, lease, expected, execution, cancel).await {
+            Ok(()) => return true,
+            Err(RuntimeError::Transport) if tokio::time::Instant::now() < give_up => {}
+            Err(_) => return false,
+        }
+        tracing::warn!(
+            stage = "fresh_running_check",
+            "Running check got no answer before a step; asking again"
+        );
+        tokio::select! {biased; _=canceled(cancel)=>return false, _=tokio::time::sleep(Duration::from_secs(2))=>{}}
+    }
 }
 struct LiveToolGate {
     console: PinnedConsole,
@@ -5522,6 +5554,65 @@ for raw in sys.stdin:
         assert!(matches!(result, RuntimeError::Authorization));
         assert!(started.elapsed() < RUNNING_CHECK_GRACE);
         assert!(fake.answers.lock().unwrap().is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn check_before_a_step_asks_again_when_it_gets_no_answer() {
+        let (_stop, mut cancel) = watch::channel(false);
+        // Two failed requests, then the server's refusal: all three are asked.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        assert!(!fresh_running(&fake, &lease(), &event(), "execution-a", &mut cancel).await);
+        assert!(fake.answers.lock().unwrap().is_empty());
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+
+        // No answer for the whole grace: given up, and not much later.
+        let started = tokio::time::Instant::now();
+        assert!(
+            !fresh_running(
+                &RunningFailureFake {
+                    authorization: false
+                },
+                &lease(),
+                &event(),
+                "execution-a",
+                &mut cancel
+            )
+            .await
+        );
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(5), "{waited:?}");
+    }
+    #[test]
+    fn a_cli_below_the_floor_is_reported_as_such_at_start_up() {
+        let codex = codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED);
+        let claude =
+            codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED);
+        assert!(matches!(
+            startup_check_failure(&codex),
+            RuntimeError::Execution("codex_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            provider_failure("turn", &claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&codex::Error::Protocol("Claude initialize")),
+            RuntimeError::Provider
+        ));
     }
     struct RestartLeaseFake {
         history_calls: std::sync::atomic::AtomicUsize,
