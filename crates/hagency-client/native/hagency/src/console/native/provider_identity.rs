@@ -3,24 +3,28 @@ use super::{ManagementRuntime, NativeError, NativeManagement, failure};
 use hagency_store::{management::Permission, owner_resources::VerifiedProviderAccount};
 
 impl NativeManagement {
+    /// The credential one shared Claude launch runs on. The caller is the
+    /// shared executor, whose session holds `ExecuteManagedAgents` and nothing
+    /// else, so that is the permission asked for here: asking for the two
+    /// provider permissions refused every real launch with
+    /// `management_access_required`.
     pub(super) async fn shared_claude_credential(
         &self, paths: &crate::console::owner_provider::ProviderPaths,
         until: std::time::Instant,
     ) -> Result<hagency_runtime::claude::account::SharedCredential, NativeError> {
         let _guard = self.owner.0.calls.lock().await;
         let (context, session) = self.authorized().await?;
-        for permission in [Permission::ReadProviders, Permission::ConnectProviders] {
-            session.authorize(&context, permission).map_err(super::management::store_error)?;
-        }
+        session
+            .authorize(&context, Permission::ExecuteManagedAgents)
+            .map_err(super::management::store_error)?;
         let deadline = until.min(session.valid_until())
             .min(std::time::Instant::now() + std::time::Duration::from_secs(30));
         let credential = crate::console::owner_provider::claude_identity::observe_for_launch(paths, deadline)
             .await.map_err(|e| failure(e.status, e.code))?;
         let (fresh, live) = self.authorized().await?;
         if fresh != context { return Err(failure(401, "management_scope_changed")); }
-        for permission in [Permission::ReadProviders, Permission::ConnectProviders] {
-            live.authorize(&context, permission).map_err(super::management::store_error)?;
-        }
+        live.authorize(&context, Permission::ExecuteManagedAgents)
+            .map_err(super::management::store_error)?;
         Ok(credential)
     }
     /// Obtain a short-lived, non-deserializable identity from an already

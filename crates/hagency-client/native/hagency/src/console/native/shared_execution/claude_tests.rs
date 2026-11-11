@@ -6,6 +6,40 @@ mod stop_tests;
 #[path = "claude_archive_tests.rs"]
 mod archive_tests;
 
+/// The shared executor's session holds `ExecuteManagedAgents` and nothing
+/// else (`current_profile/shared_executor.rs`). The fixtures below hand the
+/// launch a ready credential, so only this test reads it the way a real
+/// launch does: with that one permission the read must get past the
+/// permission check and reach the provider, and without it stop there.
+#[tokio::test]
+async fn native_shared_claude_credential_read_needs_only_the_executor_permission() {
+    let f = Fixture::with_provider(PROVIDER, "fixture_account").await;
+    let package = |digest: &str, instance, permissions| ManagementPackage {
+        digest: digest.repeat(64), instance, account_epoch: 1, permissions,
+    };
+    let home = f._root.path().join("claude-credential-home");
+    hagency_store::private::directory(&home).unwrap();
+    // Not a connected configuration: the provider refuses it before any
+    // executable or credential is touched.
+    let paths = crate::console::owner_provider::ProviderPaths {
+        home: home.clone(), codex_home: home.join(".claude"),
+        credential_ref: "fixture-only".into(), shared: true,
+    };
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    let executor = f.owner
+        .management(package("d", 91, vec![Permission::ExecuteManagedAgents]))
+        .await.unwrap();
+    let error = executor.shared_claude_credential(&paths, until).await.err().unwrap();
+    assert_ne!(error.code, "management_access_required", "the executor's own permission is enough");
+    assert_ne!(error.status, 401, "{}", error.code);
+    let provider_only = f.owner
+        .management(package("e", 92, vec![Permission::ReadProviders, Permission::ConnectProviders]))
+        .await.unwrap();
+    let error = provider_only.shared_claude_credential(&paths, until).await.err().unwrap();
+    assert_eq!(error.code, "management_access_required");
+    f.stop().await;
+}
+
 fn native_marker(root: &std::path::Path, name: &str) -> std::path::PathBuf {
     fn collect(root: &std::path::Path, name: &str, found: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(root).unwrap() {
