@@ -7325,6 +7325,8 @@ A.pool_create_accounts=fn(){
         if accounts==nil {c.error=A.t("The coding tools couldn’t be read. Try again.","暂时无法读取编码工具，请重试。") return}
         let rows=[] for row in accounts {if (row.kind=="managed_namespace" || row.kind=="local_configuration") && row.state=="active" {rows.push(row)}}
         c.accounts=rows
+        let {want=nil}=c
+        if want!=nil {c.want=nil for row in rows {if row.id==want {A.pool_create_account(row) return}}}
         if c.account!=nil {for row in rows {if row.id==c.account.id {c.account=row}} return}
         if H.enrollment_draft!=nil {for row in rows {if row.id==H.enrollment_draft.account.accountId {A.pool_create_account(row) return}}}
         if rows.len()==1 {A.pool_create_account(rows[0])}
@@ -7616,11 +7618,13 @@ A.account_prepared = fn(data){
     H.page="provider_account" H.account_id=data.accountId H.account_resource_after=nil H.account_detail=nil H.ux.accountId=data.accountId A.save()
 }
 A.account_groups = fn(){
-    let result={known:[] unconfirmed:[]}
+    let result={known:[] unconfirmed:[] local:[]}
     if H.account_inventory==nil {return result}
     for row in H.account_inventory.accounts {
-        let {identityKey=nil}=row
-        if identityKey==nil || identityKey=="" {result.unconfirmed.push(row)} else {
+        let {identityKey=nil,kind=""}=row
+        // Claude Code as this computer has it set up: a coding tool of its own, not a sign-in record to confirm.
+        if kind=="local_configuration" {result.local.push(row)}
+        else if identityKey==nil || identityKey=="" {result.unconfirmed.push(row)} else {
             let found=false
             for group in result.known {if group.key==identityKey && group.runtime==row.runtime {
                 group.members.push(row) group.resources+=row.resourceCount found=true
@@ -7629,6 +7633,13 @@ A.account_groups = fn(){
         }
     }
     return result
+}
+// Coding Tools lists Claude Code too. It has no sign-in to manage there; its row leads to a new pool on it.
+A.account_pool_create=fn(row){
+    if H.busy || H.command!=nil {return}
+    A.pool_create_open()
+    // The sheet is reading the tools now; it picks this one when they arrive.
+    if H.pool_create!=nil {H.pool_create.want=row.id}
 }
 A.read_account_page = fn(after,epoch,rows,pages){
     let args={} if after!=nil {args.after=after}
@@ -10864,6 +10875,14 @@ A.render_page = fn(){
                     if H.account_inventory.accounts.len()==0 {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:A.t("No recorded accounts in this profile","当前身份暂无账号记录")} mod.widgets.HagencyHint{text:A.t("Add a Codex account to begin. You’ll sign in on the provider’s page; Hagency keeps the login private to this Matrix profile.","添加 Codex 账号即可开始。你将在服务商页面登录，Hagency 会将登录信息独立保存在当前 Matrix 身份下。")}}}
                     let groups=A.account_groups()
                     View{width:Fill height:Fit flow:Down spacing:16
+                    for row in groups.local {mod.widgets.HagencySection{
+                        mod.widgets.HagencySectionTitle{text:A.pool_account_name(row,false)}
+                        account_local_login := mod.widgets.HagencyCopy{text:A.pool_login_text(row)}
+                        mod.widgets.HagencyHint{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}
+                        mod.widgets.HagencyActions{
+                            account_local_pool := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("New Pool","新建资源池") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.account_pool_create(row)}
+                        }
+                    }}
                     for index, group in groups.known {mod.widgets.HagencySection{
                         mod.widgets.HagencySectionTitle{text:if group.runtime=="codex" {A.t("Codex account ","Codex 账号 ")+(index+1)}else{group.runtime+A.t(" account "," 账号 ")+(index+1)}}
                         mod.widgets.HagencyCopy{text:A.t("Resource pools: ","资源池：")+group.resources}
@@ -10889,7 +10908,7 @@ A.render_page = fn(){
                 }
             }
             if H.page=="provider_accounts" {mod.widgets.HagencySection{
-                mod.widgets.HagencyHint{text:A.t("Sign in to Codex here. Claude Code needs no sign-in on this page: connect it under My Agents, and it is then offered as a coding tool when you create a pool.","这里用于登录 Codex。Claude Code 不需要在此登录：先在「我的 Agent」中接入，之后创建资源池时就可以选择它。")}
+                mod.widgets.HagencyHint{text:A.t("Sign in to Codex here. Claude Code needs no sign-in on this page: connect it under My Agents, and it is then listed here and offered as a coding tool when you create a pool.","这里用于登录 Codex。Claude Code 不需要在此登录：先在「我的 Agent」中接入，之后它会列在这里，创建资源池时也可以选择它。")}
                 // This computer's setup lives under Resource Pools; the same row as there leads to it.
                 mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
                     mod.widgets.HagencyRowBody{

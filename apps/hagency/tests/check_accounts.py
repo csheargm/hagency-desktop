@@ -38,6 +38,8 @@ A.open_resource=fn(id){H.page="resource_detail" H.resource_id=id}
 let row={id:"account_original" identityKey:"identity_one" kind:"managed_namespace" runtime:"codex" state:"active" ordinal:1 revision:"revision" profile:"codex-default-namespace-v1" readiness:"unknown" resourceCount:1}
 let inventory={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[row] account:nil resources:[] nextAfter:nil}
 let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] account:row resources:[{id:"resource_original" model:"Coding model"}] nextAfter:nil}
+let claude={id:"account_claude_code" kind:"local_configuration" runtime:"claude" state:"active" revision:"revision_claude" readiness:"subscription" resourceCount:1}
+H.pool_create=nil H.pool_create_seq=0
 '''
     cases={
       'fresh_setup_entry':('', 'A.begin_setup()\nassert(H.page=="provider_accounts" && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")'),
@@ -63,6 +65,10 @@ let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] accou
       'failed':('','assert(has(A.t("Account list unavailable","账号列表暂不可用")))\nassert(!has(A.t("No recorded accounts in this profile","当前身份暂无账号记录")))'),
       'empty':('H.account_inventory=inventory inventory.accounts=[]','assert(has(A.t("No recorded accounts in this profile","当前身份暂无账号记录")))'),
       'managed':('H.account_inventory=inventory','assert(has(A.t("Codex account ","Codex 账号 ")+"1"))\nassert(has(A.t("Login status not verified","登录状态未验证")))\nbutton("account_open").on_click()\nassert(H.calls[0].service=="hagency.accounts.get" && H.calls[0].args.id=="account_original")'),
+      # Claude Code as this computer has it set up is a coding tool of its own on this page, not a record to confirm.
+      'claude_code_listed':('H.account_inventory=inventory inventory.accounts=[row,claude]','let g=A.account_groups()\nassert(g.local.len()==1 && g.unconfirmed.len()==0 && g.known.len()==1)\nassert(has("Claude Code"))\nassert(has(A.pool_login_text(claude)))\nassert(button("account_local_pool").enabled)'),
+      'claude_code_new_pool':('H.account_inventory=inventory inventory.accounts=[row,claude]','button("account_local_pool").on_click()\nassert(H.page=="pool_create" && H.pool_create.account==nil && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")\nH.host_callback({is_ok:true data:{accounts:[row,claude]}})\nassert(H.pool_create.account.id=="account_claude_code" && H.pool_create.accounts.len()==2)\nassert(H.calls.len()==2 && H.calls[1].service=="hagency.accounts.get" && H.calls[1].args.id=="account_claude_code")'),
+      'claude_code_pending':('H.account_inventory=inventory inventory.accounts=[row,claude] H.command={service:"original"}','assert(!button("account_local_pool").enabled)\nbutton("account_local_pool").on_click()\nassert(H.page=="provider_accounts" && H.calls.len()==0)'),
       'uncertain':('H.account_inventory=inventory row.identityKey=nil row.state="uncertain"','assert(has(A.t("Preparation outcome unknown","准备结果未确认")+" · "+A.account_readiness(row)))'),
       'retired':('H.account_inventory=inventory row.identityKey=nil row.state="retired"','assert(has(A.t("Retired","已停用")+" · "+A.account_readiness(row)))'),
       'linked':('H.account_inventory=inventory row.identityKey=nil row.kind="resource_binding" row.state="linked"','assert(has(A.t("Recorded resource association","已记录资源关联")+" · "+A.account_readiness(row)))'),
