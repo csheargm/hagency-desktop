@@ -17,6 +17,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Fixtures inject SecretStore; CI must never access a runner's native vault.
+  HAGENCY_NATIVE_CREDENTIAL_IO: deny
 
 jobs:
   libraries:

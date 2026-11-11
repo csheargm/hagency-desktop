@@ -3101,5 +3101,16 @@
   "We just sent a verification request to {user}.\n\nWaiting for them to accept it…": "已向 {user} 发送验证请求。\n\n等待对方接受…",
   "Do you wish to verify {user}?": "是否验证 {user}？",
   "The verified identity of {name} was reset.": "{name} 的已验证身份已重置。",
-  "The identity of {name} was reset.": "{name} 的身份已重置。"
+  "The identity of {name} was reset.": "{name} 的身份已重置。",
+  "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.": "会话已刷新，但凭据保存失败。请保持当前会话打开，并检查本地存储。",
+  "Signed out locally. Remote token revocation remains pending.": "已在本机退出登录，服务器端令牌仍待撤销。",
+  "Signed out locally. Remote token revocation is pending and will be retried.": "已在本机退出登录，将继续重试撤销服务器端令牌。",
+  "Signed out locally.": "已在本机退出登录。",
+  "Local sign-out is durable. Local session cleanup failed; restart before signing in again. Any pending remote revocation will be retried.": "本机退出状态已保存，但本地会话清理失败。请重启后再登录；待完成的服务器端令牌撤销将继续重试。",
+  "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.": "本机退出状态尚未确认保存。同步和发送仍已停止；请保留此账号的本地数据，待凭据存储恢复可用后重试。",
+  "Continue in your browser": "在浏览器中继续",
+  "Finish signing in with Pasion in your browser, then return to Hagency.": "请在浏览器中完成 Pasion 登录，然后返回 Hagency。",
+  "Logout cancelled by user": "已取消退出登录",
+  "Local session cleanup remains incomplete": "本地会话尚未清理完成",
+  "You do not have permission to invite people to this room.": "你没有邀请他人加入此聊天室的权限。"
 }

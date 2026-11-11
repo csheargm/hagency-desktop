@@ -30,6 +30,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 getrandom.workspace = true
+zeroize = "1"
+matrix-sdk-store-encryption.workspace = true
 rusqlite = { workspace = true, features = ["bundled", "trace", "fallible_uint", "hooks"] }
 # Board #113: a skipped `!` line must say WHY it was skipped. The live
 # regression left no trace at all, so the operator could not tell a dropped
@@ -52,3 +54,17 @@ unsafe_code = "deny"
 
 [lints.clippy]
 all = "warn"
+
+# Explicit native backends; absence or denial must never select a mock store.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+security-framework = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
+secret-service = { version = "4", default-features = false, features = ["rt-async-io-crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies.keyring]
+version = "=3.6.3"
+default-features = false
+features = ["windows-native"]

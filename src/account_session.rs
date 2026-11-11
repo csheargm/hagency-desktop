@@ -70,6 +70,8 @@ pub(crate) async fn close() {
     // service between synchronous retirement and the epoch transition.
     CLOSING.store(true, Ordering::Release);
     crate::hagency::backend::Service::retire_current();
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    crate::persistence::credential_state::retire();
     {
         // Serialize the epoch boundary against an OAuth session commit/refresh.
         // Persistence never takes TASKS while holding this lock.

@@ -6,7 +6,7 @@ use std::{
     sync::Mutex,
 };
 use matrix_sdk::ruma::{OwnedUserId, UserId};
-use crate::persistence::FullSessionPersisted;
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedAccount {
@@ -46,15 +46,22 @@ pub(crate) fn scan(root: &Path) -> anyhow::Result<Vec<SavedAccount>> {
         }
         let path = entry.path();
         let session_path = path.join("persistent_state/session");
-        let bytes = match std::fs::read(&session_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+        let bytes = match hagency_store::private::open(&session_path, false) {
+            Ok(file) => {
+                use std::io::Read;
+                if file.metadata()?.len() > 1024 * 1024 { continue; }
+                let mut bytes = zeroize::Zeroizing::new(Vec::new());
+                file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 1024 * 1024 { continue; }
+                bytes
+            },
+            Err(hagency_store::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.into()),
         };
-        let Ok(session) = serde_json::from_slice::<FullSessionPersisted>(&bytes) else {
+        let Ok(session) = crate::persistence::credential_state::public_identity(&bytes) else {
             continue;
         };
-        let user = session.user_session.meta().user_id.clone();
+        let user = session.owner;
         let legacy = root.join(user.as_str().replace(':', "_").replace('@', ""));
         let canonical = account_dir(root, &user);
         // A manually misplaced session must never grant authority to its path.
@@ -86,7 +93,7 @@ pub(crate) fn scan(root: &Path) -> anyhow::Result<Vec<SavedAccount>> {
         {
             accounts.push(SavedAccount {
                 user_id: user,
-                homeserver: session.client_session.homeserver,
+                homeserver: session.homeserver,
             });
         }
     }
@@ -100,17 +107,7 @@ pub(crate) fn refresh() -> anyhow::Result<()> {
 
 pub(crate) async fn remove_session(root: &Path, user: &UserId) -> anyhow::Result<()> {
     let path = account_dir(root, user).join("persistent_state/session");
-    if let Ok(bytes) = tokio::fs::read(&path).await {
-        if let Ok(session) = serde_json::from_slice::<FullSessionPersisted>(&bytes) {
-            retain_database(root, user, session.client_session).await?;
-        }
-    }
-    let _guard = crate::persistence::SESSION_IO.lock().map_err(|_| std::io::Error::other("Session storage unavailable"))?;
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    crate::persistence::credential_state::remove_account(path, user.to_owned()).await
 }
 
 /// Preserve encrypted stores across logout or SSO reauthentication without
@@ -121,17 +118,7 @@ pub(crate) async fn retain_database(
     session: crate::persistence::ClientSessionPersisted,
 ) -> anyhow::Result<()> {
     let path = account_dir(root, user).join("persistent_state/retained_db.json");
-    let mut retained: Vec<crate::persistence::ClientSessionPersisted> =
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-    if !retained.iter().any(|old| old.db_path == session.db_path) {
-        retained.push(session);
-    }
-    crate::persistence::matrix_state::write_private_session(&path, &serde_json::to_vec(&retained)?)
-        .await
+    crate::persistence::credential_state::retain(path, user.to_owned(), session).await
 }
 
 #[cfg(test)]
@@ -154,12 +141,13 @@ mod tests {
                 account_dir(&self.0, &user)
             };
             let state = dir.join("persistent_state");
-            std::fs::create_dir_all(&state).unwrap();
+            hagency_store::private::directory(&dir).unwrap();
+            hagency_store::private::directory(&state).unwrap();
             let value = json!({
                 "client_session": {"homeserver":"http://localhost", "db_path":"db_fixture", "passphrase":"fixture-only"},
                 "user_session": {"user_id":user, "device_id":"FIXTURE", "access_token":"fixture-only"}
             });
-            std::fs::write(state.join("session"), serde_json::to_vec(&value).unwrap()).unwrap();
+            hagency_store::private::write_new(&state.join("session"), &serde_json::to_vec(&value).unwrap()).unwrap();
             std::fs::write(state.join("latest_app_state.json"), "private fixture state").unwrap();
             dir
         }
@@ -230,13 +218,23 @@ mod tests {
     }
     #[tokio::test]
     async fn logout_removes_only_selected_tokens_and_preserves_other_accounts() {
+        // This real credential worker uses the process-wide account epoch.
+        // Other tests intentionally close their own App session; those are
+        // different application lifetimes, not a logout of this fixture.
+        const NAME: &str = "accounts::tests::logout_removes_only_selected_tokens_and_preserves_other_accounts";
+        if crate::persistence::credential_state::tests::isolated_case(
+            NAME,
+            "HAGENCY_ACCOUNT_REMOVAL_CHILD",
+        ) {
+            return;
+        }
         let f = Fixture::new();
         let a = f.session("@alice:fixture.test", false);
         let b = f.session("@bob:fixture.test", false);
         let before = std::fs::read(b.join("persistent_state/session")).unwrap();
-        remove_session(&f.0, &"@alice:fixture.test".parse::<OwnedUserId>().unwrap())
-            .await
-            .unwrap();
+        let credentials = crate::persistence::credential_state::tests::fake_service(&f.0);
+        crate::persistence::credential_state::remove_account_on(credentials.clone(), a.join("persistent_state/session"), "@alice:fixture.test".parse::<OwnedUserId>().unwrap()).await.unwrap();
+        assert!(crate::persistence::credential_state::test_shutdown(&credentials));
         assert!(!a.join("persistent_state/session").exists());
         let recovery =
             std::fs::read_to_string(a.join("persistent_state/retained_db.json")).unwrap();
