@@ -400,6 +400,11 @@ pub(super) struct Controller {
     sender: native::Sender,
     card: CardHost,
 }
+/// Pauses between attempts to open the Agent device for a run card: 20 s,
+/// 60 s, 180 s, then every 6 minutes, which stays under the homeserver's
+/// refill of about one login per 5.5 minutes.
+pub(in crate::console) const DEVICE_RETRY_FIRST: Duration = Duration::from_secs(20);
+pub(in crate::console) const DEVICE_RETRY_MAX: Duration = Duration::from_secs(360);
 pub(super) fn optional_card(
     dispatch: &inbox::Dispatch,
     execution: &str,
@@ -440,14 +445,24 @@ impl Controller {
         while !self.sender.is_active() {
             tokio::select! { _ = canceled(&mut cancel) => return, _ = tick.tick() => {} }
         }
-        let device = match tokio::time::timeout(
-            Duration::from_secs(20),
-            e2ee::device(transport, lease, config, &mut cancel),
-        )
-        .await
-        {
-            Ok(Ok(device)) => device,
-            _ => return,
+        // The card needs the Agent's device. One that is not ready yet is
+        // asked for again while the turn runs, so a long turn still gets its
+        // Stop. A new grant is a Matrix login and the homeserver limits
+        // those, so the pauses grow.
+        let mut pause = DEVICE_RETRY_FIRST;
+        let device = loop {
+            match tokio::time::timeout(
+                Duration::from_secs(20),
+                e2ee::device(transport, lease, config, &mut cancel),
+            )
+            .await
+            {
+                Ok(Ok(device)) => break device,
+                Ok(Err(RuntimeError::Stopped)) => return,
+                _ => {}
+            }
+            tokio::select! { _ = canceled(&mut cancel) => return, _ = tokio::time::sleep(pause) => {} }
+            pause = (pause * 3).min(DEVICE_RETRY_MAX);
         };
         if self.card.open(device).is_err() {
             return;

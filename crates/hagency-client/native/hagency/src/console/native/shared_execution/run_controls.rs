@@ -18,6 +18,7 @@ struct Request {
     action: Option<RunAction>,
     reply: Option<oneshot::Sender<RunOutcome>>,
     begun: bool,
+    stop: bool,
 }
 impl Request {
     fn finish(mut self, value: RunOutcome) {
@@ -126,6 +127,8 @@ impl Controls {
         result: &Result<SharedWorkReceipt, NativeError>,
     ) {
         self.receipts(process);
+        // A Stop that reached the native process and got no answer.
+        let stop_unanswered = self.pending.values().any(|request| request.stop);
         // Close intake before draining. Queued, unwritten requests settle as
         // unavailable; a native write without a receipt remains unknown.
         self.stop.close();
@@ -152,6 +155,9 @@ impl Controls {
             }
             Ok(receipt) if receipt.state == "completed" => State::Completed,
             Ok(receipt) if receipt.state == "failed" => State::Failed,
+            // The run ended after a Stop that Codex never answered. Its
+            // process is not used again, so for the room it is stopped.
+            Err(_) if stop_unanswered => State::Interrupted,
             _ => State::Unknown,
         };
         self.card.finish(state);
@@ -175,16 +181,27 @@ async fn serve(
 ) {
     // Optional presentation must not delay admission, native start or reads.
     // Resolve the original assignment's device only in this background task.
-    let opened = tokio::time::timeout(Duration::from_secs(10), async {
-        io.check_running(&command).await?;
-        let bound = io.bound().await?;
-        let device = super::e2ee::device(&io, &bound, &command.assignment_id).await?;
-        io.check_running(&command).await?;
-        Ok::<_, NativeError>(device)
-    })
-    .await;
-    let Ok(Ok(device)) = opened else {
-        return;
+    // A device that is not ready yet is asked for again while the run lasts,
+    // so a long run still gets its Stop. A new grant is a Matrix login and the
+    // homeserver limits those, so the pauses grow.
+    let mut pause = crate::console::owned_runtime::run_controls::DEVICE_RETRY_FIRST;
+    let device = loop {
+        let opened = tokio::time::timeout(Duration::from_secs(10), async {
+            io.check_running(&command).await?;
+            let bound = io.bound().await?;
+            let device = super::e2ee::device(&io, &bound, &command.assignment_id).await?;
+            io.check_running(&command).await?;
+            Ok::<_, NativeError>(device)
+        })
+        .await;
+        if let Ok(Ok(device)) = opened {
+            break device;
+        }
+        tokio::time::sleep(pause).await;
+        if stop_tx.is_closed() || steer_tx.is_closed() {
+            return;
+        }
+        pause = (pause * 3).min(crate::console::owned_runtime::run_controls::DEVICE_RETRY_MAX);
     };
     if card.open(device).is_err() {
         return;
@@ -226,6 +243,7 @@ async fn serve(
                 action: Some(action),
                 reply: Some(reply),
                 begun: false,
+                stop,
             };
             match (if stop { &stop_tx } else { &steer_tx }).try_send(request) {
                 Ok(()) => card.track(received.event_id, received.sender, stop, receipt, name),

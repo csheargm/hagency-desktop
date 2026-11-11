@@ -29,6 +29,10 @@ pub(super) async fn exchange(
     kind: &str,
     count: &AtomicUsize,
 ) {
+    let child_ends = matches!(kind, "control_stop_child_ended" | "control_stop_child_ending");
+    if child_ends {
+        emit(writer, value!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-a","status":"inProgress"}}})).await;
+    }
     if kind.starts_with("control_stop") {
         approval(writer, cwd).await;
     }
@@ -43,6 +47,13 @@ pub(super) async fn exchange(
                 tokio::time::sleep(Duration::from_secs(20)).await;
                 return;
             }
+            "control_stop_no_ack_ended" => {
+                // The turn finishes by itself; the stop is never answered.
+                emit(writer, value!({"method":"serverRequest/resolved","params":{"threadId":"thread-a","requestId":900}})).await;
+                terminal(writer, "thread-a", "turn-a", "completed").await;
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                return;
+            }
             "control_stop_refused" => {
                 emit(
                     writer,
@@ -53,6 +64,29 @@ pub(super) async fn exchange(
                 assert_eq!(decision["id"], 900);
                 assert_eq!(decision["result"]["decision"], "accept");
                 terminal(writer, "thread-a", "turn-a", "completed").await;
+                return;
+            }
+            "control_stop_child_ended" | "control_stop_child_ending" => {
+                // A sub-agent finishes while the interrupt for it is on its
+                // way. Codex refuses that one interrupt; its reply can come
+                // before or after the sub-agent's own completion.
+                emit(writer, value!({"id":control["id"],"result":{}})).await;
+                let child = read(reader).await;
+                assert_eq!(child["method"], "turn/interrupt");
+                assert_eq!(
+                    child["params"],
+                    value!({"threadId":"child","turnId":"child-turn"})
+                );
+                count.fetch_add(1, Ordering::SeqCst);
+                let refusal = value!({"id":child["id"],"error":{"code":-32600,"message":"no active turn to interrupt"}});
+                if kind == "control_stop_child_ended" {
+                    terminal(writer, "child", "child-turn", "completed").await;
+                    emit(writer, refusal).await;
+                } else {
+                    emit(writer, refusal).await;
+                    terminal(writer, "child", "child-turn", "completed").await;
+                }
+                terminal(writer, "thread-a", "turn-a", "interrupted").await;
                 return;
             }
             "control_stop_children" => {
@@ -200,8 +234,11 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
     for kind in [
         "control_stop_owner",
         "control_stop_children",
+        "control_stop_child_ended",
+        "control_stop_child_ending",
         "control_stop_refused",
         "control_stop_no_ack",
+        "control_stop_no_ack_ended",
     ] {
         let (_temp, mut ledger, profile) = setup(false);
         let (mut session, count, peer) =
@@ -219,10 +256,10 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
             let stop = sender.submit(Action::Interrupt).unwrap();
             let expected = match kind {
                 "control_stop_refused" => Outcome::Rejected,
-                "control_stop_no_ack" => Outcome::Unknown,
+                "control_stop_no_ack" | "control_stop_no_ack_ended" => Outcome::Unknown,
                 _ => Outcome::Accepted,
             };
-            assert_eq!(stop.receipt.await.unwrap(), expected);
+            assert_eq!(stop.receipt.await.unwrap(), expected, "{kind}");
             if kind == "control_stop_refused" {
                 assert!(!pending.is_closed());
                 pending.decide(true);
@@ -249,13 +286,30 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
                 .await
                 .unwrap();
         if kind == "control_stop_no_ack" {
-            assert!(matches!(done, Err(Error::Timeout)));
+            // The stop was asked for and never answered: the turn ends as
+            // stopped, its process is not used again, its usage is unreported.
+            let done = done.unwrap();
+            assert_eq!(done.status, TurnStatus::Interrupted);
+            assert!(!done.usage.is_reported());
             assert!(!session.can_continue());
             assert_eq!(
                 ledger
                     .account(&scope(), Layer::Room, Period::Lifetime, now())
                     .unwrap(),
                 (0, 0)
+            );
+        } else if kind == "control_stop_no_ack_ended" {
+            // The turn ended by itself: its result and usage stand, but a
+            // process with an unanswered request is not used again.
+            let done = done.unwrap();
+            assert_eq!(done.status, TurnStatus::Completed);
+            assert_eq!(done.usage.input, 10);
+            assert!(!session.can_continue());
+            assert_eq!(
+                ledger
+                    .account(&scope(), Layer::Room, Period::Lifetime, now())
+                    .unwrap(),
+                (10, 0)
             );
         } else {
             let done = done.unwrap();
@@ -268,10 +322,10 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
                 }
             );
             assert!(session.can_continue());
-            let total = if kind == "control_stop_children" {
-                20
-            } else {
+            let total = if kind == "control_stop_refused" || kind == "control_stop_owner" {
                 10
+            } else {
+                20
             };
             assert_eq!(done.usage.input, total);
             assert_eq!(
@@ -283,10 +337,16 @@ async fn native_stop_withdraws_owner_wait_and_follows_children_after_root_comple
         }
         assert_eq!(
             count.load(Ordering::SeqCst),
-            if kind == "control_stop_children" {
-                2
-            } else {
+            if matches!(
+                kind,
+                "control_stop_owner"
+                    | "control_stop_refused"
+                    | "control_stop_no_ack"
+                    | "control_stop_no_ack_ended"
+            ) {
                 1
+            } else {
+                2
             }
         );
         assert!(matches!(

@@ -1396,7 +1396,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // event bound well before it is a runaway. The turn's time limit is
         // the real bound; this one only stops an endless stream.
         for _ in 0..16 * hagency_runtime::codex::session::MAX_EVENTS {
-            controls.expire()?;
+            controls.expire();
             if controls.can_receive()
                 && let Some(pending) = stream
                     .as_mut()
@@ -1415,7 +1415,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 room_turn.take();
                 callbacks_stopped = true;
             }
-            if tree.is_complete() && controls.settled() {
+            // The host asked for a stop and Codex has not answered it in
+            // time. A turn that has ended meanwhile keeps its own result; its
+            // unanswered request keeps the process from being used again.
+            let overdue = controls.stop_overdue();
+            if tree.is_complete() && (controls.settled() || overdue) {
                 self.recover_native_usage(&mut tree).await;
                 let mut status = root_status
                     .take()
@@ -1471,6 +1475,22 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     counters,
                 ));
             }
+            if overdue {
+                // Still running. No turn is retained, so the caller discards
+                // this process, which is the stop. Its usage stays unreported.
+                return Ok((
+                    Completed {
+                        text: collected.finish(),
+                        usage: crate::unreported_usage(),
+                        status: TurnStatus::Interrupted,
+                        elapsed_seconds: started.elapsed().as_secs(),
+                        tool_requests: tools.requested.len(),
+                        tool_returns: tools.returned.len(),
+                        late_failure: None,
+                    },
+                    None,
+                ));
+            }
             if let Some(frame) = controls.prepare(&tree, thread, &turn, &mut self.next_id)? {
                 self.write(frame).await?;
             }
@@ -1479,7 +1499,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 frame
             } else {
                 let read = tokio::select! { biased;
-                    _ = control_deadline.wait() => { controls.expire()?; continue; }
+                    _ = control_deadline.wait() => { controls.expire(); continue; }
                     frame = self.read_until(Deadline::UNBOUNDED) => frame,
                     next = crate::run_controls::next(&mut stream), if controls.can_receive() => {
                         controls.offer(next);

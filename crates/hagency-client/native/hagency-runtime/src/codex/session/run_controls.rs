@@ -29,9 +29,17 @@ struct Request {
     deadline: Instant,
     timed_out: bool,
 }
+/// The native reply to one interrupt. `Ended` is a refusal for a turn that
+/// was already over: a sub-agent can finish while its interrupt is on the way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    Accepted,
+    Refused,
+    Ended,
+}
 struct Stop {
     command: String,
-    targets: BTreeMap<(String, String), Option<bool>>,
+    targets: BTreeMap<(String, String), Option<Reply>>,
     reported: bool,
 }
 #[derive(Default)]
@@ -60,7 +68,7 @@ impl RunControls {
     pub fn accepted_stop(&self) -> bool {
         self.stop
             .as_ref()
-            .is_some_and(|s| s.targets.values().any(|v| *v == Some(true)))
+            .is_some_and(|s| s.targets.values().any(|v| *v == Some(Reply::Accepted)))
     }
     fn expire(&mut self) {
         for pending in self.pending.values_mut() {
@@ -271,6 +279,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     });
                 }
             } else {
+                // Codex 0.167 words a refusal for a finished turn this way;
+                // the turn's completion can come before or after the reply.
+                let ended = matches!(&result, Err(error) if error.message == "no active turn to interrupt")
+                    || !self.tree.as_ref().is_some_and(|tree| {
+                        tree.graph
+                            .is_active(pending.scope.thread_id(), pending.scope.turn_id())
+                    });
+                let reply = match (accepted, ended) {
+                    (true, _) => Reply::Accepted,
+                    (false, true) => Reply::Ended,
+                    (false, false) => Reply::Refused,
+                };
                 let stop = self.run_controls.stop.as_mut().ok_or(Error::Scope)?;
                 if stop.command != pending.command {
                     return Err(Error::Scope);
@@ -281,20 +301,24 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         pending.scope.thread_id().into(),
                         pending.scope.turn_id().into(),
                     ))
-                    .ok_or(Error::Scope)? = Some(accepted);
+                    .ok_or(Error::Scope)? = Some(reply);
                 if stop.targets.values().all(Option::is_some) {
-                    let any = stop.targets.values().any(|value| *value == Some(true));
-                    let all = stop.targets.values().all(|value| *value == Some(true));
-                    if any && !all {
+                    let count = |reply| stop.targets.values().filter(|v| **v == Some(reply)).count();
+                    let any = count(Reply::Accepted) > 0;
+                    let refused = count(Reply::Refused) > 0;
+                    if any && refused {
                         return Err(Error::Scope);
                     }
                     if !stop.reported {
                         self.run_controls.receipts.push_back(RunReceipt {
                             command_id: stop.command.clone(),
-                            outcome: if all {
+                            outcome: if any {
                                 RunOutcome::Accepted
-                            } else {
+                            } else if refused {
                                 RunOutcome::Rejected
+                            } else {
+                                // Every turn had ended before its interrupt.
+                                RunOutcome::Unavailable
                             },
                         });
                         stop.reported = true;
@@ -315,7 +339,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .run_controls
             .stop
             .as_ref()
-            .is_some_and(|s| s.targets.values().any(|v| *v == Some(true)))
+            .is_some_and(|s| s.targets.values().any(|v| *v == Some(Reply::Accepted)))
             && let Event::ServerRequest { id, .. } = event
         {
             self.wire

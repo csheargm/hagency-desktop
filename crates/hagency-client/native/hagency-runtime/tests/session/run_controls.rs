@@ -220,3 +220,69 @@ async fn lost_stop_ack_and_wrong_turn_ack_never_prove_success() {
     assert_eq!(s.phase(), Phase::Ended);
     assert!(s.run_control_receipts().is_empty());
 }
+
+#[tokio::test]
+async fn stop_holds_when_a_sub_agent_ends_before_its_interrupt() {
+    // Codex refuses the interrupt for a turn that is already over. Its reply
+    // can come before or after that turn's own completion.
+    for reply_first in [false, true] {
+        let (mut s, mut p) = running().await;
+        update(&mut s, &mut p, note("turn/started", json!({"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-one","status":"inProgress","items":[]}}))).await.unwrap();
+        let first = control(&mut s, &mut p, "stop", RunAction::Interrupt).await;
+        let second = read(&mut p.stdin).await;
+        let (root, child) = if first["params"]["threadId"] == "child" {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        assert_eq!(
+            child["params"],
+            json!({"threadId":"child","turnId":"child-turn"})
+        );
+        let done = note("turn/completed", json!({"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-one","status":"completed","items":[]}}));
+        let refusal = json!({"id":child["id"],"error":{"code":-32600,"message":"no active turn to interrupt"}});
+        if reply_first {
+            update(&mut s, &mut p, refusal).await.unwrap();
+            update(&mut s, &mut p, done).await.unwrap();
+        } else {
+            update(&mut s, &mut p, done).await.unwrap();
+            update(&mut s, &mut p, refusal).await.unwrap();
+        }
+        assert!(s.run_control_receipts().is_empty());
+        update(&mut s, &mut p, json!({"id":root["id"],"result":{}}))
+            .await
+            .unwrap();
+        assert_eq!(s.run_control_receipts()[0].outcome, RunOutcome::Accepted);
+        assert!(s.run_stop_accepted());
+        assert!(matches!(
+            update(&mut s, &mut p, end("interrupted")).await.unwrap(),
+            Update::TurnEnded
+        ));
+        assert!(matches!(s.outcome(), Some(Outcome::Interrupted)));
+    }
+}
+
+#[tokio::test]
+async fn a_real_refusal_beside_an_accepted_stop_is_still_an_error() {
+    let (mut s, mut p) = running().await;
+    update(&mut s, &mut p, note("turn/started", json!({"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-one","status":"inProgress","items":[]}}))).await.unwrap();
+    let first = control(&mut s, &mut p, "stop", RunAction::Interrupt).await;
+    let second = read(&mut p.stdin).await;
+    let (root, child) = if first["params"]["threadId"] == "child" {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    update(&mut s, &mut p, json!({"id":root["id"],"result":{}}))
+        .await
+        .unwrap();
+    assert!(
+        update(
+            &mut s,
+            &mut p,
+            json!({"id":child["id"],"error":{"code":-32000,"message":"refused"}})
+        )
+        .await
+        .is_err()
+    );
+}
