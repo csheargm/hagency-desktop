@@ -982,6 +982,11 @@ impl HtmlOrPlaintext {
         self.with_flow(cx, |flow, _| flow.selected_text()).unwrap_or_default()
     }
 
+    /// Whether the reader is selecting text here now, or has text selected.
+    pub fn selection_active(&self, cx: &mut Cx) -> bool {
+        self.selectable && (self.mouse_selection.is_some() || !self.selected_text(cx).is_empty())
+    }
+
     pub fn clear_selection(&mut self, cx: &mut Cx) {
         self.mouse_selection = None;
         self.with_flow(cx, |flow, cx| { flow.clear_selection(); flow.redraw(cx); });
@@ -1011,6 +1016,11 @@ impl HtmlOrPlaintext {
 impl HtmlOrPlaintextRef {
     pub fn selected_text(&self, cx: &mut Cx) -> String {
         self.borrow().map(|inner| inner.selected_text(cx)).unwrap_or_default()
+    }
+
+    /// See [`HtmlOrPlaintext::selection_active()`].
+    pub fn selection_active(&self, cx: &mut Cx) -> bool {
+        self.borrow().is_some_and(|inner| inner.selection_active(cx))
     }
 
     pub fn clear_selection(&self, cx: &mut Cx) {
