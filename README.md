@@ -68,6 +68,11 @@ older versions are refused. Conversational controls accept authenticated Matrix 
 without requiring cross-signing, and still check the card's responder and current
 Room membership. They do not grant tool-approval authority.
 
+Matrix room, alias and event links open inside the app. Links to rooms you have
+not joined show a confirmation first; message links select their original Room
+or thread. User links in conversations retain the profile pane. See
+[Matrix link navigation](docs/matrix-links.md).
+
 The renderer remains experimental; arbitrary WeChat HTML import and complete
 WeChat compatibility are not claimed. See the [article integration evidence](lab/article-html-integration/README.md).
 
@@ -92,6 +97,10 @@ Moving execution to another device does not transfer ownership. This native CLI
 cutover requires matching current Desktop, daemon and server builds; it does not
 restore previous-release runtime options or approval protocols. Old runtime
 intentions are discarded, and each Room must be explicitly started again.
+
+Device verification and key recovery are available under **Settings → Account → Encryption and recovery**.
+Verified devices still need their room keys to read encrypted history. See
+[device verification and recovery](docs/device-verification-recovery.md).
 
 ## Build and check
 

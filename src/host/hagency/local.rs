@@ -84,6 +84,11 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     let attention = !text(service, "lastError").is_empty()
         || (service["enabled"] == true && service["watcherRunning"] == false)
         || service["problems"].as_array().is_some_and(|p| !p.is_empty())
+        // The watcher can be healthy with no connected Rooms. Its completed
+        // discovery is not an Agent startup still making progress.
+        || (service["enabled"] == true && service["phase"] == "serving"
+            && service["rooms"].as_array().is_some_and(|rooms| rooms.is_empty())
+            && !ours)
         || (ours && !text(runtime, "lastError").is_empty());
     if any(&["executing", "executing_chat_only", "executing_host_files"]) {
         "processing"
@@ -250,6 +255,11 @@ mod tests {
         assert_eq!(service_state(&runtime("starting"), agent), "starting");
         assert_eq!(service_state(&json!({"service": {"enabled": false}, "runtime": null}), agent), "stopped");
         assert_eq!(service_state(&json!({"service": {"enabled": true, "lastError": "provider"}, "runtime": null}), agent), "attention");
+        let no_rooms = json!({"service":{"enabled":true,"watcherRunning":true,"phase":"serving","rooms":[]},"runtime":null});
+        assert_eq!(service_state(&no_rooms, agent), "attention");
+        let mut discovering = no_rooms.clone();
+        discovering["service"]["phase"] = "starting".into();
+        assert_eq!(service_state(&discovering, agent), "starting");
         // Another Agent's runtime never reports this Agent as running.
         let other = json!({"service": {"enabled": false}, "runtime": {"agentId": "agt_2", "phase": "online"}});
         assert_eq!(service_state(&other, agent), "stopped");

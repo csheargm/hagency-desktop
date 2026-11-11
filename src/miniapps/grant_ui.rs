@@ -2251,7 +2251,7 @@ impl MiniAppsPanel {
             add_people: flow.choose_people() && flow.requested_succession() == Some(Succession::Amendment),
             people_search: PeopleSearch::default(),
         });
-        self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name)).set_text(cx, "");
+        self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name)).set_text(cx, "");
         self.grant_job(async move { flow.open().await });
         self.grant_add_person(cx);
         self.present_grant_confirmation(cx);
@@ -2304,38 +2304,38 @@ impl MiniAppsPanel {
     /// refills the native amount field; the draft is always read back from it.
     fn apply_grant_view(&mut self, cx: &mut Cx, view: &GrantView, inputs: Option<&GrantInputs>) {
         self.apply_sheet(cx, id!(grant_confirmation), view);
-        self.view.view(cx, ids!(grant_confirmation.scroll.request_quota)).set_visible(cx, view.choosing);
-        self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.label)).set_text(cx, crate::i18n::tr("Maximum per Agent per period"));
-        self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.hint)).set_text(cx, crate::i18n::tr("Each Agent can request up to this amount. All Agents share the pool total above."));
+        self.view.view(cx, ids!(grant_confirmation.sheet_scroll.request_quota)).set_visible(cx, view.choosing);
+        self.view.label(cx, ids!(grant_confirmation.sheet_scroll.request_quota.label)).set_text(cx, crate::i18n::tr("Maximum per Agent per period"));
+        self.view.label(cx, ids!(grant_confirmation.sheet_scroll.request_quota.hint)).set_text(cx, crate::i18n::tr("Each Agent can request up to this amount. All Agents share the pool total above."));
         self.apply_sheet_disclosure(cx, id!(grant_confirmation), view.more_open);
-        self.view.view(cx, ids!(grant_confirmation.scroll.pool_renewal)).set_visible(cx, view.renewal_mode.is_some());
+        self.view.view(cx, ids!(grant_confirmation.sheet_scroll.pool_renewal)).set_visible(cx, view.renewal_mode.is_some());
         if let Some(mode) = view.renewal_mode {
-            self.view.label(cx, ids!(grant_confirmation.scroll.pool_renewal.title)).set_text(cx, crate::i18n::tr("Pool renewal"));
+            self.view.label(cx, ids!(grant_confirmation.sheet_scroll.pool_renewal.title)).set_text(cx, crate::i18n::tr("Pool renewal"));
             for (path, value, label) in [
-                (ids!(grant_confirmation.scroll.pool_renewal.choices.automatic), RenewalMode::Automatic, "Automatic"),
-                (ids!(grant_confirmation.scroll.pool_renewal.choices.manual), RenewalMode::Owner, "Manual"),
+                (ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.automatic), RenewalMode::Automatic, "Automatic"),
+                (ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.manual), RenewalMode::Owner, "Manual"),
             ] {self.view.widget(cx,path).set_text(cx,&format!("{}{}",crate::i18n::tr(label),if value==mode {" ✓"} else {""}));}
-            self.view.label(cx, ids!(grant_confirmation.scroll.pool_renewal.note)).set_text(cx,crate::i18n::tr(if mode==RenewalMode::Automatic {"At each new period, the pool renews and approved Agents receive their allowance. Unused tokens do not carry over."} else {"The pool pauses at period end. Publish the next period to renew all approved Agents together."}));
+            self.view.label(cx, ids!(grant_confirmation.sheet_scroll.pool_renewal.note)).set_text(cx,crate::i18n::tr(if mode==RenewalMode::Automatic {"At each new period, the pool renews and approved Agents receive their allowance. Unused tokens do not carry over."} else {"The pool pauses at period end. Publish the next period to renew all approved Agents together."}));
         }
-        self.view.view(cx, ids!(grant_confirmation.scroll.calendar)).set_visible(cx, view.calendar.is_some());
+        self.view.view(cx, ids!(grant_confirmation.sheet_scroll.calendar)).set_visible(cx, view.calendar.is_some());
         if let Some(calendar) = &view.calendar {
             let tr = crate::i18n::tr;
-            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.title)).set_text(cx, tr("Authorization calendar"));
-            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.zone_label)).set_text(cx, tr("Owner time zone"));
+            self.view.label(cx, ids!(grant_confirmation.sheet_scroll.calendar.title)).set_text(cx, tr("Authorization calendar"));
+            self.view.label(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone_label)).set_text(cx, tr("Owner time zone"));
             for (path, cadence, label) in [
-                (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily, "Daily"),
-                (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly, "Weekly"),
-                (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly, "Monthly"),
+                (ids!(grant_confirmation.sheet_scroll.calendar.cadence.daily), Cadence::Daily, "Daily"),
+                (ids!(grant_confirmation.sheet_scroll.calendar.cadence.weekly), Cadence::Weekly, "Weekly"),
+                (ids!(grant_confirmation.sheet_scroll.calendar.cadence.monthly), Cadence::Monthly, "Monthly"),
             ] {
                 self.view.widget(cx, path).set_text(cx, &format!("{}{}", tr(label), if cadence == calendar.cadence {" ✓"} else {""}));
             }
-            if inputs.is_some() {self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).set_text(cx, &calendar.time_zone);}
-            let zones = self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones));
+            if inputs.is_some() {self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone)).set_text(cx, &calendar.time_zone);}
+            let zones = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.calendar.zones));
             zones.set_labels(cx, std::iter::once(tr("Choose a time zone").to_owned()).chain(CALENDAR_ZONES.iter().map(|zone| (*zone).to_owned())).collect());
             zones.set_selected_item(cx, CALENDAR_ZONES.iter().position(|zone| *zone == calendar.time_zone).map_or(0, |i| i + 1));
             let note = calendar_note(calendar, now_ms());
-            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.note)).set_text(cx, &note);
-            let mut note_widget=self.view.widget(cx, ids!(grant_confirmation.scroll.calendar.note));
+            self.view.label(cx, ids!(grant_confirmation.sheet_scroll.calendar.note)).set_text(cx, &note);
+            let mut note_widget=self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.calendar.note));
             if calendar.period_at(now_ms()).is_ok() {script_apply_eval!(cx, note_widget, {draw_text +: {color: mod.widgets.RINX_MUTED}});}
             else {script_apply_eval!(cx, note_widget, {draw_text +: {color: mod.widgets.RINX_DANGER_FG}});}
 
@@ -2343,9 +2343,9 @@ impl MiniAppsPanel {
 
         if let Some(inputs) = inputs.filter(|_| view.choosing) {
             for (index, (id, on)) in [
-                (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day_on)),
-                (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.week), ids!(grant_confirmation.scroll.sharing.period.expiry_presets.week_on)),
-                (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month), ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month_on)),
+                (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day), ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day_on)),
+                (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.week), ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.week_on)),
+                (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month), ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month_on)),
             ]
             .into_iter()
             .enumerate()
@@ -2355,13 +2355,13 @@ impl MiniAppsPanel {
                 self.view.widget(cx, id).set_visible(cx, !inputs.selected[index]);
                 self.view.widget(cx, on).set_visible(cx, inputs.selected[index]);
             }
-            let limit = self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit));
+            let limit = self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.request_quota.limit));
             if let Some(mut editor) = limit.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
                 editor.set_minimum(cx, 1);
                 editor.set_maximum(cx, inputs.tokens.parse().unwrap_or(0));
             }
-            self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).set_text(cx, &inputs.per_request);
-            let widget = self.view.widget(cx, ids!(grant_confirmation.scroll.quota.tokens));
+            self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.request_quota.limit)).set_text(cx, &inputs.per_request);
+            let widget = self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens));
             if let Some(mut editor) = widget.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
                 editor.set_minimum(cx, inputs.minimum);
                 if let Some(maximum) = inputs.maximum {
@@ -2369,26 +2369,26 @@ impl MiniAppsPanel {
                 }
             }
             self.view
-                .widget(cx, ids!(grant_confirmation.scroll.quota.tokens))
+                .widget(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens))
                 .set_text(cx, &inputs.tokens);
         }
     }
     fn calendar_input(&self, cx: &Cx, actions: &Actions, original: &Calendar) -> Option<Calendar> {
         let mut calendar = original.clone();
         for (path, cadence) in [
-            (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily),
-            (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly),
-            (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly),
+            (ids!(grant_confirmation.sheet_scroll.calendar.cadence.daily), Cadence::Daily),
+            (ids!(grant_confirmation.sheet_scroll.calendar.cadence.weekly), Cadence::Weekly),
+            (ids!(grant_confirmation.sheet_scroll.calendar.cadence.monthly), Cadence::Monthly),
         ] { if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, path), actions) {calendar.cadence = cadence;} }
-        if let Some(zone) = self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions) {calendar.time_zone = zone.trim().into();}
-        if let Some(index) = self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones)).selected(actions) {
+        if let Some(zone) = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone)).changed(actions) {calendar.time_zone = zone.trim().into();}
+        if let Some(index) = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.calendar.zones)).selected(actions) {
             if let Some(zone) = index.checked_sub(1).and_then(|i| CALENDAR_ZONES.get(i)) {calendar.time_zone = (*zone).into();}
         }
         (calendar != *original).then_some(calendar)
     }
     pub(super) fn grant_renewal_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
         if !self.grant_confirmation.as_ref().is_some_and(|p|matches!(p.phase,Phase::Choose) && p.draft.calendar.is_some()) {return false;}
-        for (path, mode) in [(ids!(grant_confirmation.scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
+        for (path, mode) in [(ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
             if crate::miniapps::design::key_button_clicked(&self.view.widget(cx,path),actions) {
                 self.capture_grant_choices(cx);
                 if let Some(p)=self.grant_confirmation.as_mut(){p.draft.renewal_mode=Some(mode);}
@@ -2401,7 +2401,7 @@ impl MiniAppsPanel {
     pub(super) fn grant_calendar_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
         let Some(calendar) = self.grant_confirmation.as_ref().filter(|p| matches!(p.phase, Phase::Choose) && p.successor.is_none() && p.form.as_ref().is_none_or(|form| form.calendar.is_none())).and_then(|p| p.draft.calendar.as_ref()) else {return false};
         let Some(calendar) = self.calendar_input(cx, actions, calendar) else {return false};
-        let typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
+        let typing=self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone)).changed(actions).is_some();
         if let Some(prompt) = &mut self.grant_confirmation {prompt.draft.calendar = Some(calendar);}
         if typing {
             if let Some(prompt)=&self.grant_confirmation {let view=grant_view(&prompt.state(),now_ms());self.apply_grant_view(cx,&view,None);}
@@ -2472,7 +2472,7 @@ impl MiniAppsPanel {
     /// the whitelist; the owner selects a returned account instead.
     pub(super) fn grant_add_person(&mut self, cx: &mut Cx) {
         self.capture_grant_choices(cx);
-        let input = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name));
+        let input = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name));
         let query = input.text().trim().to_owned();
         let Some(prompt) = &mut self.grant_confirmation else {
             return;
@@ -2492,7 +2492,7 @@ impl MiniAppsPanel {
     }
     pub(super) fn grant_select_person(&mut self, cx: &mut Cx, index: usize) {
         self.capture_grant_choices(cx);
-        let query = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name)).text();
+        let query = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name)).text();
         let Some(prompt) = &mut self.grant_confirmation else { return };
         if !matches!(prompt.phase, Phase::Choose) || !prompt.actionable()
             || prompt.people_search.query != query.trim() || prompt.people_search.receiver.is_some() {
@@ -2506,7 +2506,7 @@ impl MiniAppsPanel {
     }
     pub(super) fn grant_add_selected_person(&mut self, cx: &mut Cx) {
         self.capture_grant_choices(cx);
-        let query = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name)).text();
+        let query = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name)).text();
         let Some(prompt) = &mut self.grant_confirmation else { return };
         if !matches!(prompt.phase, Phase::Choose) || !prompt.actionable()
             || prompt.people_search.query != query.trim() || prompt.people_search.receiver.is_some() {
@@ -2543,20 +2543,20 @@ impl MiniAppsPanel {
     }
     fn apply_grant_people(&mut self, cx: &mut Cx, candidates: &[crate::host::hagency::grant_people::Person], selected: usize, status: &str, searching: bool) {
         let tr = crate::i18n::tr;
-        let dropdown = self.view.drop_down(cx, ids!(grant_confirmation.scroll.people.list.add.directory.candidates));
+        let dropdown = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.candidates));
         dropdown.set_labels(cx, std::iter::once(tr("Select a person to add").to_owned())
             .chain(candidates.iter().map(|p| p.label())).collect());
         dropdown.set_selected_item(cx, selected);
         dropdown.set_visible(cx, !candidates.is_empty());
-        let add = self.view.button(cx, ids!(grant_confirmation.scroll.people.list.add.directory.add_selected));
+        let add = self.view.button(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.add_selected));
         add.set_visible(cx, !candidates.is_empty());
         add.set_enabled(cx, selected > 0 && !searching);
         let identity = selected.checked_sub(1).and_then(|i| candidates.get(i)).map(|p| p.label());
-        self.view.label(cx, ids!(grant_confirmation.scroll.people.list.add.directory.status)).set_text(cx, identity.as_deref().unwrap_or(status));
-        self.view.view(cx, ids!(grant_confirmation.scroll.people.list.add.directory)).set_visible(cx, true);
-        self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name))
+        self.view.label(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.status)).set_text(cx, identity.as_deref().unwrap_or(status));
+        self.view.view(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory)).set_visible(cx, true);
+        self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name))
             .set_empty_text(cx, tr("Search by name or username").to_owned());
-        self.view.button(cx, ids!(grant_confirmation.scroll.people.list.add.add_button))
+        self.view.button(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_button))
             .set_enabled(cx, !searching);
     }
     /// Take someone this window added off the list again. People already on
@@ -2711,7 +2711,7 @@ impl MiniAppsPanel {
             self.continue_grant_publication();
             self.present_grant_confirmation(cx);
             if focus_add {
-                let field = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name)).area();
+                let field = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name)).area();
                 cx.set_key_focus(field);
             }
         }
@@ -2741,9 +2741,9 @@ impl MiniAppsPanel {
     /// found by widget uid; `ButtonRef::clicked` never sees them.
     pub(super) fn grant_preset_clicked(&self, cx: &Cx, actions: &Actions) -> Option<Option<i64>> {
         let presets: [(&[LiveId], Option<i64>); 3] = [
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), Some(1)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.week), Some(7)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month), None),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day), Some(1)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.week), Some(7)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month), None),
         ];
         presets
             .into_iter()
@@ -2773,12 +2773,12 @@ impl MiniAppsPanel {
         // The amount is the one typed field. The list and the expiry are
         // native state changed only by this sheet's add, remove and preset
         // controls, so they are kept as they are.
-        let draft = GrantChoices { per_request: self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).text(),
+        let draft = GrantChoices { per_request: self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.request_quota.limit)).text(),
             coordinator: prompt.flow.account().to_owned(),
             managers: prompt.draft.managers.clone(),
             tokens: self
                 .view
-                .widget(cx, ids!(grant_confirmation.scroll.quota.tokens))
+                .widget(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens))
                 .text(),
             expires_utc: prompt.draft.expires_utc.clone(),
             self_approval: false,
@@ -2846,7 +2846,7 @@ impl MiniAppsPanel {
                     }
                     self.present_grant_confirmation(cx);
                     self.view
-                        .label(cx, ids!(grant_confirmation.scroll.status))
+                        .label(cx, ids!(grant_confirmation.sheet_scroll.status))
                         .set_text(cx, crate::i18n::tr(failure_message(&code)));
                     return;
                 }
@@ -2990,19 +2990,19 @@ impl MiniAppsPanel {
         let area = |this: &Self, cx: &mut Cx, path: &[LiveId]| this.view.button(cx, path).area();
         let cancel = area(self, cx, ids!(grant_confirmation.buttons.cancel));
         let primary = area(self, cx, ids!(grant_confirmation.buttons.primary));
-        let recover = area(self, cx, ids!(grant_confirmation.scroll.actions.recover));
-        let cancel_intent = area(self, cx, ids!(grant_confirmation.scroll.actions.cancel_intent));
-        let more = area(self, cx, ids!(grant_confirmation.scroll.more.more_row.more_toggle));
-        let sharing = area(self, cx, ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle));
-        let open_add = area(self, cx, ids!(grant_confirmation.scroll.people.list.open_add.open_add_button));
-        let add = area(self, cx, ids!(grant_confirmation.scroll.people.list.add.add_button));
-        let add_selected = area(self, cx, ids!(grant_confirmation.scroll.people.list.add.directory.add_selected));
-        let people_toggle = area(self, cx, ids!(grant_confirmation.scroll.people.list.people_toggle_row.people_toggle));
+        let recover = area(self, cx, ids!(grant_confirmation.sheet_scroll.actions.recover));
+        let cancel_intent = area(self, cx, ids!(grant_confirmation.sheet_scroll.actions.cancel_intent));
+        let more = area(self, cx, ids!(grant_confirmation.sheet_scroll.more.more_row.more_toggle));
+        let sharing = area(self, cx, ids!(grant_confirmation.sheet_scroll.sharing.sharing_row.sharing_toggle));
+        let open_add = area(self, cx, ids!(grant_confirmation.sheet_scroll.people.list.open_add.open_add_button));
+        let add = area(self, cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_button));
+        let add_selected = area(self, cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.add_selected));
+        let people_toggle = area(self, cx, ids!(grant_confirmation.sheet_scroll.people.list.people_toggle_row.people_toggle));
         let folded = view.people_collapsible && !view.people_open;
         let presets = [
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), Some(1)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.week), Some(7)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month), None),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day), Some(1)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.week), Some(7)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month), None),
         ];
         let shown = super::sheet_ui::people_shown(view.people.len());
         let removes: Vec<(usize, Area)> = view
@@ -3013,7 +3013,7 @@ impl MiniAppsPanel {
             .map(|(index, _)| {
                 let path = super::sheet_ui::sheet_path(
                     id!(grant_confirmation),
-                    &[id!(scroll), id!(people), id!(list), super::sheet_ui::PEOPLE[index], id!(body), id!(remove)],
+                    &[id!(sheet_scroll), id!(people), id!(list), super::sheet_ui::PEOPLE[index], id!(body), id!(remove)],
                 );
                 (index, self.view.button(cx, &path).area())
             })
@@ -3028,35 +3028,35 @@ impl MiniAppsPanel {
         if view.choosing {
             targets.extend(removes.iter().map(|(_, area)| *area));
             if view.people_editable && !folded {
-                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name)).area());
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name)).area());
                 targets.push(add);
-                let candidates = self.view.drop_down(cx, ids!(grant_confirmation.scroll.people.list.add.directory.candidates)).area();
+                let candidates = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.candidates)).area();
                 if !prompt.people_search.candidates(&managers_of(&prompt.draft.managers)).is_empty() {
                     targets.push(candidates);
                     if prompt.people_search.selected.is_some() { targets.push(add_selected); }
                 }
             }
             if view.renewal_mode.is_some() {
-                targets.push(self.view.widget(cx,ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)).area());
-                targets.push(self.view.widget(cx,ids!(grant_confirmation.scroll.pool_renewal.choices.manual)).area());
+                targets.push(self.view.widget(cx,ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.automatic)).area());
+                targets.push(self.view.widget(cx,ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.manual)).area());
             }
             if view.calendar.is_some() {
-                for path in [ids!(grant_confirmation.scroll.calendar.cadence.daily), ids!(grant_confirmation.scroll.calendar.cadence.weekly), ids!(grant_confirmation.scroll.calendar.cadence.monthly)] {
+                for path in [ids!(grant_confirmation.sheet_scroll.calendar.cadence.daily), ids!(grant_confirmation.sheet_scroll.calendar.cadence.weekly), ids!(grant_confirmation.sheet_scroll.calendar.cadence.monthly)] {
                     targets.push(self.view.widget(cx, path).area());
                 }
-                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).area());
-                targets.push(self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones)).area());
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone)).area());
+                targets.push(self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.calendar.zones)).area());
             }
             if view.quota_visible {
                 if let Some(slider) = self
                     .view
-                    .widget(cx, ids!(grant_confirmation.scroll.quota.tokens.slider_wrap.amount_slider))
+                    .widget(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens.slider_wrap.amount_slider))
                     .borrow::<crate::miniapps::design::MiniAppAmountSlider>()
                 {
                     targets.push(slider.focus_area());
                 }
-                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.quota.tokens.input)).area());
-                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.request_quota.limit.input)).area());
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens.input)).area());
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.request_quota.limit.input)).area());
             }
         }
         if view.sharing_visible {
@@ -3106,7 +3106,7 @@ impl MiniAppsPanel {
                 return true;
             }
             if view.renewal_mode.is_some() {
-                for (path, mode) in [(ids!(grant_confirmation.scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
+                for (path, mode) in [(ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
                     if cx.has_key_focus(self.view.widget(cx,path).area()) {
                         self.capture_grant_choices(cx);
                         if let Some(p)=self.grant_confirmation.as_mut(){p.draft.renewal_mode=Some(mode);}
@@ -3117,9 +3117,9 @@ impl MiniAppsPanel {
             }
             if view.calendar.is_some() {
                 for (path, cadence) in [
-                    (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily),
-                    (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly),
-                    (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly),
+                    (ids!(grant_confirmation.sheet_scroll.calendar.cadence.daily), Cadence::Daily),
+                    (ids!(grant_confirmation.sheet_scroll.calendar.cadence.weekly), Cadence::Weekly),
+                    (ids!(grant_confirmation.sheet_scroll.calendar.cadence.monthly), Cadence::Monthly),
                 ] {
                     if cx.has_key_focus(self.view.widget(cx, path).area()) {
                         if let Some(calendar) = self.grant_confirmation.as_mut().and_then(|p| p.draft.calendar.as_mut()) {calendar.cadence = cadence;}
@@ -3450,7 +3450,7 @@ impl MiniAppsPanel {
         self.apply_grant_view(cx, &view, Some(&inputs));
         // What the owner typed into the add field, beside its inline reason.
         self.view
-            .text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name))
+            .text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name))
             .set_text(cx, fixture["typed"].as_str().unwrap_or_default());
         let candidates: Vec<_> = fixture["directory"].as_array().into_iter().flatten()
             .filter_map(|person| Some(crate::host::hagency::grant_people::Person {
@@ -3466,15 +3466,15 @@ impl MiniAppsPanel {
     /// in the real window. Returns whether the preview changed.
     pub(super) fn preview_grant_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
         let preset = self.grant_preset_clicked(cx, actions);
-        let toggle = self.view.button(cx, ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions);
-        let typed = self.view.widget(cx, ids!(grant_confirmation.scroll.quota.tokens)).text();
-        let per_request = self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).text();
+        let toggle = self.view.button(cx, ids!(grant_confirmation.sheet_scroll.sharing.sharing_row.sharing_toggle)).clicked(actions);
+        let typed = self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.quota.tokens)).text();
+        let per_request = self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.request_quota.limit)).text();
         let now = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().map(|p| p.now)).unwrap_or_else(now_ms);
         let calendar = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().and_then(|p| p.draft.calendar.as_ref().and_then(|c| self.calendar_input(cx, actions, c))));
-        let calendar_typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
-        let renewal = if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)), actions) {
+        let calendar_typing=self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.calendar.zone)).changed(actions).is_some();
+        let renewal = if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.automatic)), actions) {
             Some(RenewalMode::Automatic)
-        } else if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.manual)), actions) {
+        } else if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.sheet_scroll.pool_renewal.choices.manual)), actions) {
             Some(RenewalMode::Owner)
         } else { None };
         let (changed, refill) = GRANT_PREVIEW.with(|cell| {
@@ -4892,9 +4892,9 @@ mod layout_tests {
         let inputs = GrantInputs { per_request: "200000".into(), tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, true, true], selected: [false, false, true] };
         let (mut cx, panel) = draw_sheet(840.0, 700.0, &view, Some(&inputs), id!(grant_confirmation));
         for (path, days) in [
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), Some(1)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.week), Some(7)),
-            (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month), None),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day), Some(1)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.week), Some(7)),
+            (ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month), None),
         ] {
             let uid = panel.view.widget(&cx, path).widget_uid();
             let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(KeyModifiers::default())));
@@ -4909,10 +4909,10 @@ mod layout_tests {
         let selected = GrantInputs { selected: [true, false, false], ..inputs };
         let (cx, panel) = draw_sheet(840.0, 700.0, &view, Some(&selected), id!(grant_confirmation));
         let shown = |name: &[LiveId]| panel.view.widget(&cx, name).visible();
-        assert!(!shown(ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day)));
-        assert!(shown(ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day_on)));
-        assert!(shown(ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month)));
-        assert!(!shown(ids!(grant_confirmation.scroll.sharing.period.expiry_presets.month_on)));
+        assert!(!shown(ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day)));
+        assert!(shown(ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.day_on)));
+        assert!(shown(ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month)));
+        assert!(!shown(ids!(grant_confirmation.sheet_scroll.sharing.period.expiry_presets.month_on)));
     }
     #[test]
     fn native_sheets_keep_a_full_width_footer_in_view_with_long_text() {
@@ -4942,8 +4942,8 @@ mod layout_tests {
                         let short = GrantView { facts: Vec::new(), caution: String::new(), lead: String::new(), people: Vec::new(), ..long_view(cn, true) };
                         let inputs = GrantInputs { per_request: "200000".into(), tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, false, true], selected: [false, false, true] };
                         let (cx, panel) = draw_sheet(width, height, &short, Some(&inputs), id!(grant_confirmation));
-                        let slider = panel.view.widget(&cx, ids!(grant_confirmation.scroll.quota.tokens.slider_wrap.amount_slider)).area().rect(&cx);
-                        let input = panel.view.widget(&cx, ids!(grant_confirmation.scroll.quota.tokens.input)).area().rect(&cx);
+                        let slider = panel.view.widget(&cx, ids!(grant_confirmation.sheet_scroll.quota.tokens.slider_wrap.amount_slider)).area().rect(&cx);
+                        let input = panel.view.widget(&cx, ids!(grant_confirmation.sheet_scroll.quota.tokens.input)).area().rect(&cx);
                         assert!(slider.size.x >= 120.0 && slider.size.y >= 44.0, "{slider:?}");
                         assert!(input.size.x <= 100.0 && input.pos.x > slider.pos.x && (input.pos.y - slider.pos.y).abs() < 1.0, "{input:?} {slider:?}");
                     }

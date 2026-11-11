@@ -79,6 +79,7 @@ fn setup_progress(progress: &Progress) -> SetupProgress {
     match progress {
         Progress::Preparing => SetupProgress::Preparing,
         Progress::SigningIn => SetupProgress::SigningIn,
+        Progress::Registering => SetupProgress::Registering,
         Progress::Cancelling => SetupProgress::Cancelling,
         Progress::Enabling | Progress::Removing => SetupProgress::Enabling,
         Progress::Confirming | Progress::Done => SetupProgress::Confirming,
@@ -514,6 +515,12 @@ mod tests {
         host.fixture_hosting(&mut cx, &state(Some(Ok(Execution::Setup(SetupReason::NotEnrolled))), Some((JobKind::Setup, Progress::SigningIn)), 2), true);
         assert!(widget.button(&cx, ids!(od_setup_cancel)).visible() && !widget.button(&cx, ids!(od_setup_start)).visible());
         assert_eq!(widget.label(&cx, ids!(od_setup_progress_text)).text(), "Complete sign-in in your browser…");
+        // OAuth is complete: native registration has its own status and cannot
+        // be mistaken for another browser prompt or a cancellable OAuth flow.
+        host.fixture_hosting(&mut cx, &state(Some(Ok(Execution::Setup(SetupReason::NotEnrolled))), Some((JobKind::Setup, Progress::Registering)), 3), true);
+        assert!(!widget.button(&cx, ids!(od_setup_cancel)).visible());
+        assert!(!widget.button(&cx, ids!(od_setup_start)).visible());
+        assert_eq!(widget.label(&cx, ids!(od_setup_progress_text)).text(), "Signed in. Registering this Mac’s executor…");
         // Another account hosts this Mac: an explanation without a setup button.
         host.fixture_hosting(&mut cx, &state(Some(Ok(Execution::Setup(SetupReason::OtherOwner))), None, 3), true);
         assert!(!widget.button(&cx, ids!(od_setup_start)).visible());

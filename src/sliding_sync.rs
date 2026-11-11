@@ -112,6 +112,12 @@ pub fn build_sqlite_store_config(
         .passphrase(Some(passphrase))
 }
 
+/// Desktop timelines and embedded Matrix tools require the event cache, which
+/// `base_client_builder` explicitly enables for login and session restoration.
+pub(crate) fn event_cache(client: &Client) -> &matrix_sdk::event_cache::EventCache {
+    client.event_cache().expect("Desktop enables the event cache")
+}
+
 /// Fix the SDK to use standard webpki TLS root certificates, only relevant on Android.
 ///
 /// This is necessary because of: <https://github.com/matrix-org/matrix-rust-sdk/pull/6645>.
@@ -133,6 +139,7 @@ pub(crate) fn base_client_builder(db_path: &Path, passphrase: &str) -> matrix_sd
 
     let builder = Client::builder()
         .sqlite_store_with_config_and_cache_path(store_config, cache_path)
+        .with_event_cache(true)
         .with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
             with_subscriptions: true,
         })
@@ -141,7 +148,7 @@ pub(crate) fn base_client_builder(db_path: &Path, passphrase: &str) -> matrix_sd
         })
         .with_encryption_settings(EncryptionSettings {
             auto_enable_cross_signing: true,
-            backup_download_strategy: matrix_sdk::encryption::BackupDownloadStrategy::OneShot,
+            backup_download_strategy: matrix_sdk::encryption::BackupDownloadStrategy::AfterDecryptionFailure,
             auto_enable_backups: true,
         })
         .with_enable_share_history_on_invite(true)
@@ -1208,7 +1215,7 @@ async fn matrix_worker_task(
                         .timeline_builder()
                         .event_filter(robrix_timeline_event_filter)
                         .with_focus(TimelineFocus::Thread {
-                            root_event_id: thread_root_event_id.clone(),
+                            thread_id: thread_root_event_id.clone(),
                         })
                         .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
                         .build()
@@ -2051,7 +2058,7 @@ async fn matrix_worker_task(
                     }
 
                     let _ = writeln!(text, "\n## Event cache");
-                    match client.event_cache().room(&room_id).await {
+                    match crate::sliding_sync::event_cache(&client).room(&room_id).await {
                         Ok((room_cache, _drop_handles)) => {
                             match room_cache.events().await {
                                 Ok(events) => { let _ = writeln!(text, "loaded events: {}", events.len()); }
@@ -2070,7 +2077,7 @@ async fn matrix_worker_task(
             MatrixRequest::ClearEventCache => {
                 let Some(client) = get_client() else { continue };
                 let _clear_cache_task = crate::account_session::spawn(async move {
-                    match client.event_cache().clear_all_rooms().await {
+                    match crate::sliding_sync::event_cache(&client).clear_all_rooms().await {
                         Ok(()) => enqueue_popup_notification(
                             "Cleared all rooms' cached events.\n\n\
                             Timelines will now be re-fetched from your homeserver.",
@@ -5347,7 +5354,7 @@ async fn fetch_thread_summary_details(
     let mut latest_reply_event = None;
 
     if let Ok(thread_root_event) = room.load_or_fetch_event(thread_root_event_id, None).await
-        && let Some(thread_summary) = thread_root_event.thread_summary.summary()
+        && let Some(thread_summary) = thread_root_event.thread_summary()
     {
         num_replies = thread_summary.num_replies;
         if let Some(latest_reply_event_id) = thread_summary.latest_reply.as_ref()
@@ -5743,7 +5750,7 @@ async fn timeline_subscriber_handler(
     // we send the UI a full refresh of this timeline (after a short delay),
     // so that the UI cannot keep showing a stale UTD placeholder or a pre-edit body.
     let client = timeline.room().client();
-    let event_cache = client.event_cache();
+    let event_cache = crate::sliding_sync::event_cache(&client);
     let decryption_reports = event_cache.subscribe_to_decryption_reports();
     pin_mut!(decryption_reports);
     // When to send the pending late-decryption refresh, if one is pending.
@@ -6590,4 +6597,16 @@ async fn change_account_ui() -> Result<()> {
     Cx::post_action(crate::home::navigation_tab_bar::NavigationBarAction::CloseSettings);
     Cx::post_action(LoginAction::AccountPickerReady);
     Ok(())
+}
+
+/// Test-only SDK installation without owner, daemon or synchronization startup.
+#[cfg(test)]
+pub(crate) fn install_crypto_test_client(client: Option<Client>) {
+    CLIENT.replace(client, || {});
+}
+
+/// Isolated Matrix link tests install no sync service, owner or daemon.
+#[cfg(test)]
+pub(crate) fn install_link_test_client(client: Option<Client>) {
+    CLIENT.replace(client, || {});
 }

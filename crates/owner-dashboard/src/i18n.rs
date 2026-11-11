@@ -228,6 +228,7 @@ messages! {
     SetupOtherOwnerBody => "The hosting service on this Mac hosts another account's resource pool. One Mac user can host one account's resource pool at a time. To host this account here, sign the other account out of Hagency on this Mac first.", "这台 Mac 上的托管服务正在托管另一个账号的资源池。一个 Mac 用户同一时间只能托管一个账号的资源池。如需在这里托管当前账号，请先在这台 Mac 的 Hagency 中退出另一个账号。";
     SetupPreparing => "Preparing hosting setup…", "正在准备托管设置…";
     SetupSigningIn => "Complete sign-in in your browser…", "请在浏览器中完成登录…";
+    SetupRegistering => "Signed in. Registering this Mac’s executor…", "已登录，正在登记这台 Mac 的执行端…";
     SetupCancelling => "Cancelling sign-in safely…", "正在安全取消登录…";
     SetupEnabling => "Starting the background service…", "正在启动后台服务…";
     SetupConfirming => "Waiting for hosting to start…", "正在等待托管启动…";

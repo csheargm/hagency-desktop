@@ -24,3 +24,4 @@ packaging/aur/.SRCINFO
 # paths, hosts and conversations.
 /docs/progress.md
 /docs/agent-knowledge.md
+/.sources

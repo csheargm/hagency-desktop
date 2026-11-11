@@ -1847,7 +1847,7 @@ impl SpaceLobbyScreen {
         let url = match action.as_widget_action().cast() {
             HtmlLinkAction::Clicked { url, .. } => url,
             // A matrix.to link is drawn as a pill, which emits its own action instead.
-            // TODO: navigate to the room/user in-app, like `RoomScreen` does.
+            // The common URL entry routes Room, alias and event links natively.
             _ => match action.as_widget_action().cast() {
                 RobrixHtmlLinkAction::ClickedMatrixLink { url, .. } => url,
                 _ => return false,

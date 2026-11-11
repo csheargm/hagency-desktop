@@ -29,7 +29,7 @@ pub const SCENARIOS: &[&str] = &[
     "connecting", "daemon-absent", "incompatible", "auth-expired", "failed", "unconfigured", "starting",
     "running", "paused", "draining", "stopped", "offline", "hosting-failed", "empty", "large", "long-names",
     "shared-account", "unknown", "stale", "rejected", "uncertain", "awaiting", "stop-confirm", "disconnected",
-    "setup", "setup-replace", "setup-other-owner", "setup-signing-in", "setup-confirming", "setup-failed",
+    "setup", "setup-replace", "setup-other-owner", "setup-signing-in", "setup-registering", "setup-confirming", "setup-failed",
     "hosted", "hosted-off", "hosted-stopped", "uninstall-confirm", "foreign-service",
 ];
 
@@ -313,6 +313,7 @@ pub fn scenario(name: &str) -> Option<DashboardState> {
         "setup-replace" => { state.set_setup(setup(SetupNeed::Replace, SetupProgress::Idle)); }
         "setup-other-owner" => { state.set_setup(setup(SetupNeed::OtherOwner, SetupProgress::Idle)); }
         "setup-signing-in" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::SigningIn)); }
+        "setup-registering" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Registering)); }
         "setup-confirming" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Confirming)); }
         "setup-failed" => {
             state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Failed { code: "daemon_sign_in_cancelled".into() }));

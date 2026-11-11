@@ -39,6 +39,12 @@ pub(crate) async fn invite_room_member(
 
 /// Opens the given URL or shows an error popup.
 pub fn open_url(url: &str) {
+    if crate::matrix_links::open(url) { return; }
+    open_url_external(url);
+}
+
+/// Explicit browser action; do not route back into native navigation.
+pub fn open_url_external(url: &str) {
     if let Some(id) = crate::miniapps::palpo::route(url) {
         Cx::post_action(crate::miniapps::MiniAppsAction::OpenPalpo(id));
         return;
@@ -557,9 +563,9 @@ pub fn stringify_join_leave_error(
         // We get the string representation of the error and then search for the "got" state.
         matrix_sdk::Error::WrongRoomState(wrs) => {
             if was_join && wrs.to_string().contains(", got: Joined") {
-                Some(format!("Failed to join {room_name_id}: it has already been joined."))
+                Some(crate::i18n::format("Failed to join {room}: it has already been joined.", &[("room", room_name_id.to_string())]))
             } else if !was_join && wrs.to_string().contains(", got: Left") {
-                Some(format!("Failed to leave {room_name_id}: it has already been left."))
+                Some(crate::i18n::format("Failed to leave {room}: it has already been left.", &[("room", room_name_id.to_string())]))
             } else {
                 None
             }
@@ -570,25 +576,23 @@ pub fn stringify_join_leave_error(
         matrix_sdk::Error::Http(error)
             if error.as_client_api_error().is_some_and(|e| e.status_code.as_u16() == 404) =>
         {
-            Some(format!(
-                "Failed to {} {room_name_id}: the room no longer exists on the server.{}",
-                if was_join { "join" } else { "leave" },
-                if was_join && was_invite { "\n\nYou may safely reject this invite." } else { "" },
-            ))
+            let key = if was_join {"Failed to join {room}: the room no longer exists on the server."}
+                else {"Failed to leave {room}: the room no longer exists on the server."};
+            let mut message = crate::i18n::format(key, &[("room", room_name_id.to_string())]);
+            if was_join && was_invite {message.push_str(crate::i18n::tr("\n\nYou may safely reject this invite."));}
+            Some(message)
         }
         _ => None,
     };
-    msg_opt.unwrap_or_else(|| format!(
-        "Failed to {} {}: {}",
-        match (was_join, was_invite) {
-            (true, true) => "accept invite to",
-            (true, false) => "join",
-            (false, true) => "reject invite to",
-            (false, false) => "leave",
-        },
-        room_name_id,
-        error
-    ))
+    msg_opt.unwrap_or_else(|| {
+        let key = match (was_join, was_invite) {
+            (true, true) => "Failed to accept invite to {room}: {error}",
+            (true, false) => "Failed to join {room}: {error}",
+            (false, true) => "Failed to reject invite to {room}: {error}",
+            (false, false) => "Failed to leave {room}: {error}",
+        };
+        crate::i18n::format(key, &[("room", room_name_id.to_string()), ("error", error.to_string())])
+    })
 }
 
 /// Returns a string error message for pagination errors,

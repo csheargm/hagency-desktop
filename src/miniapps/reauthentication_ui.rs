@@ -37,7 +37,7 @@ impl MiniAppsPanel {
             .set_visible(cx, visible);
         if let Some(prompt) = &self.reauthentication {
             self.view
-                .label(cx, ids!(account_confirmation.scroll.account))
+                .label(cx, ids!(account_confirmation.sheet_scroll.account))
                 .set_text(cx, prompt.consent.account());
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             self.view.view(cx, ids!(approval)).set_visible(cx, false);
@@ -165,7 +165,7 @@ mod tests {
             }
             panel
                 .view
-                .label(&cx, ids!(account_confirmation.scroll.account))
+                .label(&cx, ids!(account_confirmation.sheet_scroll.account))
                 .set_text(&mut cx, "@original-owner:matrix.example");
             panel
                 .view

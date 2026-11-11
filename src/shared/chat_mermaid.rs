@@ -9,6 +9,21 @@ use makepad_widgets::{
 const MAX_SOURCE: usize = 16 * 1024;
 const MAX_DIAGRAMS: usize = 8;
 
+/// JIT PORT: whether `doc` still has a `<code class="language-mermaid">`
+/// block, the only thing [`promote`] rewrites. A promoted block's `<code>`
+/// becomes `<chatdiagram>`, so a fully promoted document answers false and a
+/// shared one is not copied again.
+pub(super) fn has_mermaid_block(doc: &HtmlDoc) -> bool {
+    (0..doc.nodes.len()).any(|index| {
+        matches!(doc.nodes[index], HtmlNode::OpenTag { lc, .. } if lc == live_id!(code)) && {
+            let walker = doc.new_walker_with_index(index);
+            walker.find_attr_lc(live_id!(class)).is_some_and(|class| {
+                class.split_ascii_whitespace().any(|c| c.eq_ignore_ascii_case("language-mermaid"))
+            })
+        }
+    })
+}
+
 /// Preserve node indices and the parser's resolved element boundaries. Changing
 /// only the two tag pairs and their text keeps surrounding links, lists, quotes
 /// and Matrix-specific spans on the existing chat rendering path.
@@ -174,6 +189,21 @@ mod tests {
         assert!(original.contains("language-mermaid"));
         let image = article_makepad::diagram::render("mermaid", GRAPHENE_OS).unwrap();
         assert!(image.width > 100 && image.height > 100 && image.png.len() > 1000);
+    }
+
+    /// JIT PORT: the Html widget's document can be shared (its text flow
+    /// keeps a handle between draws); the copy made to promote leaves the
+    /// other handle as it was, and a promoted document is not copied again.
+    #[test]
+    fn a_shared_document_is_copied_once_to_promote() {
+        let mut doc = std::rc::Rc::new(parse(&html(GRAPHENE_OS.trim_end())));
+        let other = doc.clone();
+        assert!(std::rc::Rc::get_mut(&mut doc).is_none());
+        assert!(has_mermaid_block(&doc));
+        assert_eq!(promote(std::rc::Rc::make_mut(&mut doc)), 1);
+        assert!(!has_mermaid_block(&doc), "promoted: nothing left to copy for");
+        assert!(has_mermaid_block(&other), "the other handle keeps its document");
+        assert!(!has_mermaid_block(&parse("<pre><code class=\"language-rust\">x</code></pre>")));
     }
 
     #[test]

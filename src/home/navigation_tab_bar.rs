@@ -494,7 +494,7 @@ impl Widget for ProfileIcon {
                     ..Default::default()
                 };
                 if let Some(c) = bg_color {
-                    options.bg_color = c;
+                    options.bg_color = Some(c);
                 }
                 cx.widget_action(
                     self.widget_uid(),
@@ -578,6 +578,7 @@ impl ScriptHook for NavigationTabBar {
     fn on_after_apply(&mut self, vm: &mut ScriptVm, _: &Apply, _: &mut Scope, _: ScriptValue) {
         self.appearance = crate::theme::snapshot_for_vm(vm);
         self.mobile_palette = None;
+        self.approval_alert = None;
     }
     fn on_after_new(&mut self, vm: &mut ScriptVm) {
         vm.with_cx_mut(|cx| {
@@ -648,16 +649,24 @@ impl NavigationTabBar {
     /// A permission request that waits for this account turns the Agent tab
     /// red, with a dot after its label, until the request is decided or gone.
     fn apply_approval_alert(&mut self, cx: &mut Cx) {
-        let pending = crate::hagency::pending_approvals::total();
-        let alert = pending > 0;
+        self.apply_approval_alert_state(cx, crate::hagency::pending_approvals::total() > 0);
+    }
+
+    fn apply_approval_alert_state(&mut self, cx: &mut Cx, alert: bool) {
         let label = self.view.label(cx, ids!(agent_button.label));
+        let mut icon = self.view.icon(cx, ids!(agent_button.icon));
+        // AdaptiveView creates its desktop variant lazily; there is no Agent
+        // icon in the mobile variant. Retry after the desktop widgets exist.
+        if label.is_empty() || icon.is_empty() {
+            self.approval_alert = None;
+            return;
+        }
         let text = if alert { format!("{} ●", crate::i18n::tr("Agent")) } else { crate::i18n::tr("Agent").to_owned() };
         if self.approval_alert == Some(alert) && label.text() == text {
             return;
         }
         self.approval_alert = Some(alert);
-        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.ink };
-        let mut icon = self.view.icon(cx, ids!(agent_button.icon));
+        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.nav_ink() };
         script_apply_eval!(cx, icon, {draw_icon +: {color: #(color)}});
         label.set_text(cx, &text);
         label.set_text_color(cx, color);
@@ -1070,6 +1079,46 @@ mod rail_tests {
 
     fn rect(cx: &mut Cx, bar: &NavigationTabBar, path: &[LiveId; 1]) -> Rect {
         bar.view.widget(cx, path).area().rect(cx)
+    }
+
+    #[test]
+    fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_changes() {
+        let (mut cx, mut bar) = rail();
+        cx.with_vm(|vm| vm.bx.captured_errors = Some(Vec::new()));
+        bar.apply_view_mode(ViewModeOverride::ForceNarrow);
+        draw(&mut cx, &mut bar);
+        assert_eq!(bar.view.active_variant(), Some(id!(Mobile)));
+        assert!(bar.view.icon(&mut cx, ids!(agent_button.icon)).is_empty());
+        bar.apply_approval_alert_state(&mut cx, true);
+        assert_eq!(bar.approval_alert, None, "defer until the desktop rail exists");
+        assert!(cx.with_vm(|vm| vm.take_errors()).is_empty(), "missing icon must not invoke script evaluation");
+
+        bar.apply_view_mode(ViewModeOverride::ForceWide);
+        draw(&mut cx, &mut bar);
+        let label = bar.view.label(&mut cx, ids!(agent_button.label));
+        assert!(!bar.view.icon(&mut cx, ids!(agent_button.icon)).is_empty());
+        cx.with_vm(|vm| vm.bx.captured_errors = Some(Vec::new()));
+        bar.apply_approval_alert_state(&mut cx, true);
+        assert!(label.text().ends_with('●'));
+        assert_eq!(label.borrow().unwrap().draw_text.color, bar.appearance.role("color.status.danger.foreground"));
+        assert!(cx.with_vm(|vm| vm.take_errors()).is_empty(), "the real icon must receive the alert color");
+
+        // Reapplying a theme must restore the color even when the text did not change.
+        label.set_text_color(&mut cx, vec4(0.0, 0.0, 0.0, 0.0));
+        cx.with_vm(|vm| bar.on_after_apply(vm, &Apply::ScriptReapply, &mut Scope::empty(), ScriptValue::default()));
+        bar.apply_approval_alert_state(&mut cx, true);
+        assert_eq!(label.borrow().unwrap().draw_text.color, bar.appearance.role("color.status.danger.foreground"));
+
+        bar.apply_view_mode(ViewModeOverride::ForceNarrow);
+        draw(&mut cx, &mut bar);
+        bar.apply_approval_alert_state(&mut cx, true);
+        assert_eq!(bar.approval_alert, None, "mobile has no Agent rail icon");
+        bar.apply_view_mode(ViewModeOverride::ForceWide);
+        draw(&mut cx, &mut bar);
+        bar.apply_approval_alert_state(&mut cx, true);
+        assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
+        bar.apply_approval_alert_state(&mut cx, false);
+        assert!(!bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
     }
 
     #[test]

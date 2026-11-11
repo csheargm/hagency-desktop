@@ -63,6 +63,10 @@ Codex 和 Claude 原生 session 会在轮次间保留上下文。macOS 的共享
 对话控制允许发送者身份已认证但未交叉签名的 Matrix 设备，仍校验卡片允许的
 答复者和当前 Room 成员资格；这不授予工具审批权限。
 
+Matrix Room、别名和消息链接在应用内打开；未加入的 Room 先显示加入确认。
+消息链接定位到原 Room 或线程，聊天中的用户链接仍打开资料面板。详见
+[Matrix 链接导航](docs/matrix-links.md)。
+
 ## 账号、设置与本地数据
 
 通过 **Settings → Account** 的账号列表添加或切换账号；左下角账号菜单可打开
@@ -78,6 +82,9 @@ Codex 和 Claude 原生 session 会在轮次间保留上下文。macOS 的共享
 账本、工作目录及提供方关联按完整授权身份隔离。换执行设备不会转让所有权。
 本次原生 CLI 切换要求配套的当前 Desktop、daemon 和服务器，不恢复旧版本运行
 选项或审批协议。旧的运行意图会被丢弃，需要重新明确启动各个 Room。
+
+设备验证、恢复密钥设置及恢复入口位于 **Settings → Account → Encryption and recovery**。
+已验证的设备读取加密历史仍需房间密钥。见[设备验证与密钥恢复](docs/device-verification-recovery.md)。
 
 ## 构建与开发
 

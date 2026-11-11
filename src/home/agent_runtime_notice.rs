@@ -44,7 +44,7 @@ script_mod! {
         status := Label {width: Fill height: Fit draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}}
         View {
             width: 18 height: 18
-            loading_status := LoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
+            loading_status := PacedLoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
         }
         open := RobrixNeutralIconButton {
             text: #(crate::i18n::tr("Open Service")) i18n_text: "Open Service"

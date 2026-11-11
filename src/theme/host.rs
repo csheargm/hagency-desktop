@@ -27,7 +27,7 @@ pub fn receive(cx: &mut Cx, bytes: &[u8]) -> Result<bool, String> {
             .as_ref()
             .and_then(|s| DesktopStyle::parse(&s.name))
             .unwrap_or_else(|| platform_family(vm));
-        let mut sheet = StyleSheet::load_with_appearance(family, snapshot.dark);
+        let mut sheet = StyleSheet::load(family.sheet(snapshot.dark));
         // Preserve host widget rules/icons. Always compile from a fresh base so
         // repeated delivery never multiplies font/spacing scales again.
         if let Some(existing) = existing {

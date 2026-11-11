@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "bytemuck"
+version = "1.25.0"
+
+[[package]]
 name = "hagency-script-review"
 version = "0.1.0"
 dependencies = [
@@ -10,9 +14,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "makepad-alloc-phase"
+version = "1.0.0"
+
+[[package]]
 name = "makepad-error-log"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-micro-serde",
 ]
@@ -20,23 +27,35 @@ dependencies = [
 [[package]]
 name = "makepad-html"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id",
 ]
 
 [[package]]
+name = "makepad-key-code"
+version = "0.1.0"
+dependencies = [
+ "makepad-micro-serde",
+]
+
+[[package]]
 name = "makepad-live-id"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id-macros",
+ "makepad-relax-api",
 ]
 
 [[package]]
 name = "makepad-live-id-macros"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-live-id-macros-impl",
+]
+
+[[package]]
+name = "makepad-live-id-macros-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -44,20 +63,18 @@ dependencies = [
 [[package]]
 name = "makepad-math"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "bytemuck",
  "makepad-micro-serde",
 ]
 
 [[package]]
 name = "makepad-micro-proc-macro"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-micro-serde"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id",
  "makepad-micro-serde-derive",
@@ -66,7 +83,14 @@ dependencies = [
 [[package]]
 name = "makepad-micro-serde-derive"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-micro-proc-macro",
+ "makepad-micro-serde-derive-impl",
+]
+
+[[package]]
+name = "makepad-micro-serde-derive-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -74,37 +98,68 @@ dependencies = [
 [[package]]
 name = "makepad-regex"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
-name = "makepad-script"
+name = "makepad-relax"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+
+[[package]]
+name = "makepad-relax-api"
+version = "1.0.0"
 dependencies = [
- "makepad-error-log",
- "makepad-html",
- "makepad-live-id",
- "makepad-math",
- "makepad-regex",
- "makepad-script-derive",
- "makepad-stitch",
- "smallvec",
+ "makepad-alloc-phase",
+ "makepad-relax-api-macro",
 ]
 
 [[package]]
-name = "makepad-script-derive"
+name = "makepad-relax-api-macro"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-relax-api-macro-impl",
+]
+
+[[package]]
+name = "makepad-relax-api-macro-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
 
 [[package]]
-name = "makepad-stitch"
-version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+name = "makepad-script"
+version = "1.0.0"
+dependencies = [
+ "makepad-error-log",
+ "makepad-html",
+ "makepad-key-code",
+ "makepad-live-id",
+ "makepad-math",
+ "makepad-regex",
+ "makepad-relax",
+ "makepad-relax-api",
+ "makepad-script-derive",
+ "makepad-shader",
+]
 
 [[package]]
-name = "smallvec"
-version = "1.15.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+name = "makepad-script-derive"
+version = "1.0.0"
+dependencies = [
+ "makepad-micro-proc-macro",
+ "makepad-script-derive-impl",
+]
+
+[[package]]
+name = "makepad-script-derive-impl"
+version = "1.0.0"
+dependencies = [
+ "makepad-micro-proc-macro",
+]
+
+[[package]]
+name = "makepad-shader"
+version = "1.0.0"
+dependencies = [
+ "makepad-live-id",
+ "makepad-relax-api",
+]

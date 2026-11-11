@@ -158,9 +158,7 @@ async fn pick_configuration(
 
 #[cfg(target_os = "macos")]
 fn choose_configuration_path() -> Result<Option<std::path::PathBuf>, String> {
-    use makepad_widgets::makepad_platform::os::{
-        apple::apple_sys::*, apple_util::nsstring_to_string,
-    };
+    use makepad_apple_sys::*;
     unsafe {
         let panel: ObjcId = msg_send![class!(NSOpenPanel), openPanel];
         if panel == nil {

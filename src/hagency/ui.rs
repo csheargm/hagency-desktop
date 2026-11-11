@@ -6,9 +6,15 @@ use super::{backend::Service, model::*, approvals::Notices};
 use std::{collections::HashSet, time::Instant};
 use crate::sliding_sync::spawn_async_task;
 
-fn runtime_start_input(takeover: bool, effort: String) -> Value {
+/// `shared_workspace` is the project directory shown to the owner when the
+/// shared-workspace opt-in is selected; the service refuses the start when the
+/// saved directory is no longer that one.
+fn runtime_start_input(takeover: bool, effort: String, shared_workspace: Option<String>) -> Value {
     serde_json::to_value(::hagency::native_owner::RuntimeStartRequest {
-        takeover, effort: Some(effort), ..Default::default()
+        takeover, effort: Some(effort),
+        shared_workspace: shared_workspace.is_some(),
+        expected_workspace: shared_workspace,
+        ..Default::default()
     }).expect("runtime start request contains only JSON values")
 }
 
@@ -378,6 +384,7 @@ fn agent_empty_message(loaded: bool, loading: bool) -> &'static str {
 fn user_error(error: &str) -> &str {
     if let Some(message) = provider_error_message(error) { return message; }
     match error {
+        "shared_workspace_changed" => "The workspace changed. Refresh its settings and confirm the directory again.",
         "configuration_unsupported" | "unsupported_hagency_capabilities" => "This server does not support execution device configuration. Upgrade the server and execution device client, then refresh.",
         "server_unavailable" | "configuration_local_state_unavailable" => "Could not reach execution device configuration. Check your connection and refresh.",
         "configuration_authority_changed" | "configuration_authority_invalidated" => "Account or device authorization changed. Sign in again and reopen this Agent.",
@@ -516,7 +523,7 @@ script_mod! {
         View {width: Fill height: 40 margin: Inset{right: 20} spacing: 10 align: Align{y: 0.5}
             back := RinxBackButton {visible: false}
             heading := Text {text: #(crate::i18n::tr("Agent spaces")) i18n_text: "Agent spaces" draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
-            loading_status := LoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
+            loading_status := PacedLoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
             new_item := Primary {text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…"}
             refresh := Action {text: #(crate::i18n::tr("Refresh")) i18n_text: "Refresh"}
         }
@@ -790,6 +797,9 @@ script_mod! {
                         service_advanced := View {visible: false width: Fill height: Fit flow: Down spacing: 8
                         takeover := CheckBox {text: #(crate::i18n::tr("Explicitly take over this Agent's device lease")) i18n_text: "Explicitly take over this Agent's device lease"}
                         host_files := CheckBox {visible: false text: #(crate::i18n::tr("Enable this Room's scoped host files (list/read/create)")) i18n_text: "Enable this Room's scoped host files (list/read/create)"}
+                        shared_workspace_path := Text {draw_text.color: mod.widgets.RINX_MUTED}
+                        shared_workspace := CheckBox {text: #(crate::i18n::tr("Allow this Agent to edit the selected workspace in all current and future connected Rooms")) i18n_text: "Allow this Agent to edit the selected workspace in all current and future connected Rooms"}
+                        Text {text: #(crate::i18n::tr("Codex only; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten.")) i18n_text: "Codex only; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten." draw_text.color: mod.widgets.RINX_MUTED}
                         }
                         }
                         runtime_model_settings := Text {draw_text.color: mod.widgets.RINX_MUTED}
@@ -1403,6 +1413,7 @@ impl HagencyPanel {
             ids!(found_room),
             ids!(takeover),
             ids!(host_files),
+            ids!(shared_workspace),
         ] {
             self.view.widget(cx, id).set_disabled(cx, busy);
         }
@@ -1517,6 +1528,7 @@ impl HagencyPanel {
             ids!(leave_confirm),
             ids!(takeover),
             ids!(host_files),
+            ids!(shared_workspace),
         ] {
             self.view
                 .check_box(cx, id)
@@ -1728,6 +1740,7 @@ impl HagencyPanel {
             _=>"Codex uses its local sign-in or a separate account.",
         }}));
         let profile=&self.policy["modelProfile"];
+        self.view.label(cx,ids!(shared_workspace_path)).set_text(cx,&format!("{}: {}",crate::i18n::tr("Workspace"),string(profile,"workspace_root")));
         let current_model=self.selected(cx,ids!(model),&self.provider_models);
         let model_ready=profile["model"].as_str().is_some_and(|m|!m.is_empty())
             && current_model.as_ref().is_some_and(|m|m["model"] == profile["model"])
@@ -4041,7 +4054,10 @@ impl Widget for HagencyPanel {
             let Some(effort)=effort else {self.runtime_feedback(cx,"Load local resources and select a supported reasoning effort before starting.");return;};
             let saved_effort=string(&self.policy["modelProfile"],"reasoning_effort");
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
-            let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort);
+            let shared_workspace=self.view.check_box(cx,ids!(shared_workspace)).active(cx);
+            if shared_workspace && self.provider_runtime(cx)!="codex" {self.runtime_feedback(cx,"Shared workspace editing currently supports Codex only.");return;}
+            let shared_workspace=shared_workspace.then(||string(&self.policy["modelProfile"],"workspace_root"));
+            let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort, shared_workspace);
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
             return;
         }
@@ -4399,13 +4415,21 @@ mod tests {
     #[test]
     fn runtime_start_button_body_matches_the_native_request_parser() {
         for takeover in [false, true] {
-            let body = runtime_start_input(takeover, "high".into());
+            let body = runtime_start_input(takeover, "high".into(), None);
             let parsed: ::hagency::native_owner::RuntimeStartRequest = serde_json::from_value(body.clone()).unwrap();
             assert_eq!(parsed.takeover, takeover);
             assert_eq!(parsed.effort.as_deref(), Some("high"));
             assert!(parsed.recovery_device_id.is_none() && parsed.recovery_consent_id.is_none());
             assert!(body.get("mode").is_none() && body.get("reservation").is_none());
+            // A start without the opt-in sends the same body as before it existed.
+            assert!(!parsed.shared_workspace && parsed.expected_workspace.is_none());
+            assert!(body.get("sharedWorkspace").is_none() && body.get("expectedWorkspace").is_none());
         }
+        let body = runtime_start_input(false, "high".into(), Some("/project".into()));
+        assert_eq!(body["sharedWorkspace"], true);
+        assert_eq!(body["expectedWorkspace"], "/project");
+        let parsed: ::hagency::native_owner::RuntimeStartRequest = serde_json::from_value(body).unwrap();
+        assert!(parsed.shared_workspace && parsed.expected_workspace.as_deref() == Some("/project"));
     }
     #[test]
     fn web_search_default_toggle_save_and_reload_use_the_agent_profile() {

@@ -12,7 +12,8 @@ use std::{
 };
 use makepad_widgets::{
     *,
-    makepad_draw::text::{font_face::FontFace, loader::FontDefinition},
+    // JIT PORT: upstream renamed the fork's SharedBytes to HostBuf (FontData).
+    makepad_draw::text::{font_face::FontFace, loader::{FontData as SharedBytes, FontDefinition}},
     makepad_platform::script::res::{CxScriptResource, CxScriptResourceData, CxScriptResourceGc},
 };
 

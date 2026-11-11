@@ -61,6 +61,9 @@ pub use ui::{MiniAppsAction, MiniAppsPanelWidgetRefExt};
 pub fn script_mod(vm: &mut makepad_widgets::ScriptVm) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // JIT PORT: the fork's script VM ends an evaluation at an uncaught error; upstream's
+        // reports it and runs on unless the host asks. Mini-app script is not ours: ask.
+        makepad_widgets::widget_async::set_splash_bail_on_uncaught_error(true);
         makepad_widgets::widget_async::register_splash_isolate_mod(crate::theme::script_mod);
         makepad_widgets::widget_async::register_splash_isolate_mod(crate::i18n::script_mod);
         makepad_widgets::widget_async::register_splash_isolate_mod(|vm| {

@@ -38,6 +38,15 @@ struct WorkList {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkIndex {
+    project_id: Option<String>,
+    after: Option<String>,
+    limit: Option<u16>,
+    #[serde(default)]
+    include_pool_agents: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Work {
     id: String,
     after: Option<String>,
@@ -147,11 +156,12 @@ pub(super) fn command(service: &str, args: Value) -> Result<Option<ManagementCom
             }
         }
         WORK_LIST => {
-            let a: WorkList = parse(args)?;
+            let a: WorkIndex = parse(args)?;
             if a.limit.is_some_and(|n| !(1..=16).contains(&n)) {
                 return Err("invalid_management_arguments".into());
             }
             ManagementCommand::AgentWorkList {
+                include_pool_agents: a.include_pool_agents,
                 project_id: a.project_id,
                 after: a.after,
                 limit: a.limit,

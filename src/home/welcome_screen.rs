@@ -14,16 +14,17 @@ script_mod! {
         draw_bg.color: (COLOR_PRIMARY)
         title := Label {
             width: Fill height: Fit
-            text: #(crate::i18n::tr("Your Hagency chats")) i18n_text: "Your Hagency chats"
+            text: #(crate::i18n::tr("Welcome to Hagency")) i18n_text: "Welcome to Hagency"
             draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_bold {font_size: (22.0 * mod.widgets.RINX_TEXT_SCALE)}}
         }
         description := Label {
             width: Fill height: Fit flow: Flow.Right{wrap: true}
-            text: #(crate::i18n::tr("Choose a chat in the sidebar, start a conversation with a contact, or explore rooms on your server."))
-            i18n_text: "Choose a chat in the sidebar, start a conversation with a contact, or explore rooms on your server."
+            text: #(crate::i18n::tr("Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server."))
+            i18n_text: "Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server."
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (14.0 * mod.widgets.RINX_TEXT_SCALE)}}
         }
         View {width: Fill height: Fit flow: Right spacing: 12
+            open_agent := Button {text: #(crate::i18n::tr("Open Agent")) i18n_text: "Open Agent"}
             new_chat := Button {text: #(crate::i18n::tr("New chat")) i18n_text: "New chat"}
             explore := Button {text: #(crate::i18n::tr("Explore rooms")) i18n_text: "Explore rooms"}
         }
@@ -39,6 +40,9 @@ impl Widget for WelcomeScreen {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
         if let Event::Actions(actions) = event {
+            if self.view.button(cx, ids!(open_agent)).clicked(actions) {
+                cx.action(crate::miniapps::MiniAppsAction::OpenAgent);
+            }
             if self.view.button(cx, ids!(new_chat)).clicked(actions) {
                 cx.action(NavigationBarAction::NewChat);
             }
@@ -65,7 +69,11 @@ mod tests {
             let screen = WelcomeScreen::script_from_value(vm, value);
             assert!(vm.take_errors().is_empty()); screen
         });
-        assert_eq!(screen.view.label(&mut cx, ids!(title)).text(), crate::i18n::tr("Your Hagency chats"));
+        assert_eq!(screen.view.label(&mut cx, ids!(title)).text(), crate::i18n::tr("Welcome to Hagency"));
+        let uid = screen.view.button(&mut cx, ids!(open_agent)).widget_uid();
+        let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(KeyModifiers::default())));
+        let emitted = cx.capture_actions(|cx| screen.handle_event(cx, &Event::Actions(actions), &mut Scope::empty()));
+        assert!(emitted.iter().any(|a| matches!(a.downcast_ref::<crate::miniapps::MiniAppsAction>(), Some(crate::miniapps::MiniAppsAction::OpenAgent))));
         for (button, contacts) in [(id!(new_chat), true), (id!(explore), false)] {
             let uid = screen.view.button(&mut cx, &[button]).widget_uid();
             let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(KeyModifiers::default())));

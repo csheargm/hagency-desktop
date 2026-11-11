@@ -86,12 +86,13 @@ def main():
             raise SystemExit(f"Inspect {log}; no release until this check passes")
         return text
 
+    run("native-minimal-agent-chat", ["cargo", "check", "--locked", "--no-default-features", "--features", "agent_chat"])
     run("owner-source-pins", ["python3", "tools/check-owner-source-pins.py"])
     run("owner-source-boundary", ["python3", "tools/test-owner-source-pins.py"])
     run("package", ["bash", "tools/package-system-apps/check.sh"])
     run("script-vm", ["cargo", "build", "--locked", "--manifest-path", "tools/hagency-script-review/Cargo.toml"])
     vm = ROOT / "tools/hagency-script-review/target/debug/hagency-script-review"
-    for name in ["check_full_bundle", "check_agent_budget", "check_agent_control", "check_pool_application", "check_entry_workspaces", "check_account_identity", "check_accounts", "check_owner_tasks", "check_encrypted_approvals", "check_pool_fixes", "check_shared_web", "check_settings_stability", "check_background_observations", "check_publication_first", "check_owner_dashboard_approvals", "check_interrupted_calls"]:
+    for name in ["check_full_bundle", "check_agent_budget", "check_agent_control", "check_agent_work", "check_pool_application", "check_entry_workspaces", "check_account_identity", "check_accounts", "check_owner_tasks", "check_encrypted_approvals", "check_pool_fixes", "check_shared_web", "check_settings_stability", "check_background_observations", "check_publication_first", "check_owner_dashboard_approvals", "check_interrupted_calls"]:
         run(name, ["python3", f"apps/hagency/tests/{name}.py", str(vm), "--output", str(output / name)])
     # Keep these together: a budget fix must not erase rendering, activity or answer actions.
     for name, pattern in [
@@ -114,6 +115,13 @@ def main():
         ("agent-run-cards", "hagency::run_controls::tests"),
         ("shared-worker", "hagency::backend::shared_worker::tests"),
         ("chat-mermaid", "shared::chat_mermaid::tests"),
+        ("send-session-expiry", "expired_send_queue_token_prompts_for_session_recovery"),
+        ("device-key-recovery", "settings::crypto_settings"),
+        ("device-verification-scopes", "verification_modal::tests"),
+        ("device-recovery-session", "matrix_context::tests::recovery_session_pin"),
+        ("recovery-room-resume", "crypto_recovery_resume_tests"),
+        ("recovery-settings-resume", "recovery_closing_settings"),
+        ("matrix-link-navigation", "matrix_links::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
         ("activity", "shared_permission_notice"),
@@ -125,6 +133,9 @@ def main():
         ("upload-preview", "shared::file_upload_modal::tests"),
         ("compact-mentions", "shared::mention"),
         ("chat-information-layout", "desktop_information_columns_tests"),
+        ("system-update-disclosures", "home::room_screen::system_updates::"),
+        ("typing-expiry", "room::typing_notice::"),
+        ("typing-broadcast", "room::room_input_bar::typing_broadcast_tests"),
         ("chat-layout", "home::main_desktop_ui::chat_layout_tests"),
         ("miniapp-dock", "mini_apps_side_tests"),
         ("owner-approval-navigation", "owner_approvals::tests"),

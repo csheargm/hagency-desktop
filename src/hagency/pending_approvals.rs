@@ -163,7 +163,7 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
             Some(20.0),
         );
         // A no-op on backends without system notifications; iOS shows it.
-        cx.show_notification(&title, &summary);
+        crate::jit_compat::show_notification(cx, &title, &summary);
     }
     changed
 }

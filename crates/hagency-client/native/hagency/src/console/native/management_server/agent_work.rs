@@ -45,8 +45,12 @@ struct Reply {
 #[serde(rename_all = "camelCase")]
 struct RequestItem {
     request_id: String,
-    project_id: String,
-    project_name: String,
+    project_id: Option<String>,
+    project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_name: Option<String>,
     agent_name: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +82,7 @@ pub(super) fn prepare(command: &ManagementCommand) -> Result<ServerOperation, Na
         project_id,
         after,
         limit,
+        include_pool_agents,
     } = command
     {
         for id in [project_id, after].into_iter().flatten() {
@@ -86,10 +91,13 @@ pub(super) fn prepare(command: &ManagementCommand) -> Result<ServerOperation, Na
         if limit.is_some_and(|v| !(1..=16).contains(&v)) {
             return Err(failure(400, "invalid_management_arguments"));
         }
+        let mut input = json!({"projectId":project_id,"after":after,"limit":limit.unwrap_or(16)});
+        // Omit the extension entirely for older servers with closed query DTOs.
+        if *include_pool_agents { input["includePoolAgents"] = json!(true); }
         return Ok(ServerOperation {
             method: Method::POST,
             suffix: "agent-work/list".into(),
-            input: Some(json!({"projectId":project_id,"after":after,"limit":limit.unwrap_or(16)})),
+            input: Some(input),
         });
     }
     let ManagementCommand::AgentWork { id, after, limit } = command else {
@@ -116,6 +124,7 @@ pub(super) fn project_reply(
         project_id,
         after,
         limit,
+        include_pool_agents,
     } = command
     {
         if value["requests"]["items"]
@@ -130,12 +139,16 @@ pub(super) fn project_reply(
         }
         let mut previous = after.as_deref();
         for row in &reply.requests.items {
+            let source_valid = match (&row.project_id, &row.project_name, &row.pool_id, &row.pool_name) {
+                (Some(id), Some(name), None, None) => key(id) && bounded(name, 160),
+                (None, None, Some(id), Some(name)) => *include_pool_agents && project_id.is_none() && key(id) && bounded(name, 160),
+                _ => false,
+            };
             if !key(&row.request_id)
-                || !key(&row.project_id)
-                || !bounded(&row.project_name, 160)
+                || !source_valid
                 || !bounded(&row.agent_name, 160)
                 || previous.is_some_and(|last| row.request_id.as_str() <= last)
-                || project_id.as_ref().is_some_and(|id| id != &row.project_id)
+                || project_id.as_ref().is_some_and(|id| Some(id) != row.project_id.as_ref())
             {
                 return Err(invalid());
             }

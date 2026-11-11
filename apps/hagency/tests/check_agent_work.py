@@ -22,6 +22,8 @@ def main():
     pages = src[start:src.index('        if H.page == "project_wizard"', start)]
     fixture = '''
 mod.rinx_icons.inbox=5
+mod.rinx_icons.activity=6
+A.tokens=fn(value){return value+""}
 H.session={features:["shared-work-history-v1"]}
 H.page="agent_work" H.agent_id="request" H.agent_selected=agent
 H.agent_work=nil H.work_after=nil H.work_page=1
@@ -68,7 +70,15 @@ assert(H.page == "agent_work" && H.work_from_list)
 assert(H.calls[0].service == "hagency.agents.work" && H.calls[0].args.id == "request")
 H.callback(history)
 A.work_back()
-assert(H.page == "agent_work_list" && H.calls[1].service == "hagency.agents.work.list")'''),
+assert(H.page == "agent_work_list" && H.calls[1].service == "hagency.agents.work.list")
+assert(H.calls[1].args.includePoolAgents == false)'''),
+        'index_pool': ('H.page="agent_work_list" H.session={features:["shared-work-history-v1","pool-work-history-v1"]} entry.projectId=nil entry.projectName=nil entry.poolId="pool" entry.poolName="Resource pool" H.work_list=index', '''assert(has("Resource pool") && has("Writer"))
+button("work_list_open").on_click()
+assert(H.calls[0].args.id == "request")
+assert(A.work_name() == "Writer · Resource pool")
+H.callback(history)
+A.work_back()
+assert(H.calls[1].args.includePoolAgents == true)'''),
         'index_filter_paging': ('H.page="agent_work_list" H.work_list=index H.work_list_project="project" index.requests.nextAfter="request"', '''H.command={commandId:"original"}
 button("work_list_next").on_click()
 assert(H.calls[0].service == "hagency.agents.work.list" && H.calls[0].args.projectId == "project" && H.calls[0].args.after == "request" && H.calls[0].args.limit == 16)
@@ -96,14 +106,14 @@ true
             results.append({'case': f'{name}-{language}', 'passed': result.returncode == 0})
     # The shipped Overview entry must remain reachable after a clean restart
     # with history discovery alone; no saved agent ID or admission feature.
-    start = src.index('            if A.work_enabled() {mod.widgets.HagencyCard{', src.index('        if H.page == "overview" {'))
-    overview = src[start:src.index('            mod.widgets.HagencyCard{', start + 1)]
+    start = src.index('            if A.work_enabled() {mod.widgets.HagencyCard{')
+    overview = src[start:src.index('            manager_work_tools :=', start)]
     for language in ['en', 'zh']:
         for enabled in [False, True]:
             script = PREFIX + helpers + fixture
             if language == 'zh':
                 script += 'A.t=fn(en,zh){return zh}\n'
-            script += 'H.agent_id="" H.agent_selected=nil H.page="overview"\n'
+            script += 'H.agent_id="" H.agent_selected=nil H.page="tools" H.entry_role="manager"\n'
             if not enabled:
                 script += 'H.session={}\n'
             script += 'let root=View{' + overview + '}\ncollect(root)\n'

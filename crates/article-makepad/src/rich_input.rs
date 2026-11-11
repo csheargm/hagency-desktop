@@ -174,7 +174,7 @@ impl ArticleRichInputRef {
 }
 use {
     makepad_widgets::{
-        animator::{Animate, Animator, AnimatorAction, AnimatorImpl, Play},
+        animator::{Animate, Animator, AnimatorImpl}, // JIT PORT: the derive names AnimatorAction and Play itself
         makepad_derive_widget::*,
         makepad_draw::{
             event::finger::TouchState,

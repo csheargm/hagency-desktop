@@ -2,6 +2,7 @@ use super::*;
 
 fn index(project: Option<&str>, after: Option<&str>, limit: Option<u16>) -> ManagementCommand {
     ManagementCommand::AgentWorkList {
+        include_pool_agents: false,
         project_id: project.map(str::to_owned),
         after: after.map(str::to_owned),
         limit,
@@ -48,6 +49,31 @@ async fn native_agent_work_index_remains_read_only_and_drops_nonpublic_fields() 
     m.retire();
     drop(m);
     f.stop().await;
+}
+
+#[tokio::test]
+async fn native_agent_work_pool_index_requires_opt_in_and_unambiguous_source() {
+    let f = Fixture::new().await;
+    let m = manager(&f, 66, &[Permission::ReadAgentWork, Permission::ReadIntents]).await;
+    let entry = json!({"requestId":"request_pool","poolId":"pool_fixture","poolName":"Resource pool","agentName":"Pool helper","token":"private"});
+    let reply = |entry| json!({"requests":{"items":[entry],"nextAfter":null},"observedAtMs":1000});
+    f.state.lock().unwrap().admission.stage_replies.insert("index".into(), reply(entry.clone()));
+    assert_eq!(m.central(index(None, None, None)).await.unwrap_err().code, "management_agent_work_invalid");
+    let command = || ManagementCommand::AgentWorkList {project_id:None,after:None,limit:Some(16),include_pool_agents:true};
+    let result = m.central(command()).await.unwrap();
+    assert_eq!(result["requests"]["items"][0]["poolName"], "Resource pool");
+    assert_eq!(result["requests"]["items"][0]["projectId"], Value::Null);
+    assert!(!result.to_string().contains("private"));
+    assert_eq!(f.state.lock().unwrap().admission.work_queries.last().unwrap()["includePoolAgents"], true);
+    for (field, value) in [("projectId", json!("project")), ("poolName", json!("")), ("poolId", Value::Null)] {
+        let mut entry = entry.clone();
+        entry[field] = value;
+        f.state.lock().unwrap().admission.stage_replies.insert("index".into(), reply(entry));
+        assert_eq!(m.central(command()).await.unwrap_err().code, "management_agent_work_invalid");
+    }
+    assert!(m.saved_commands().await.unwrap().is_empty());
+    assert_eq!(f.state.lock().unwrap().admission.writes, 0);
+    m.retire(); drop(m); f.stop().await;
 }
 
 fn query(after: Option<&str>, limit: Option<u16>) -> ManagementCommand {

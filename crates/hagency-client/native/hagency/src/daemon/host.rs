@@ -244,7 +244,7 @@ where
     match probe(home).await {
         Presence::Running(_) => {
             return tokio::select! {
-                result=super::enrollment_rpc::remote_enroll(home,origin,owner,display_name,open_url)=>result,
+                result=super::enrollment_rpc::remote_enroll(home,origin,owner,display_name,control.clone(),open_url)=>result,
                 _=control.cancelled()=>Err(HostError::Code("daemon_enrollment_detached")),
             };
         }

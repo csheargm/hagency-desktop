@@ -1,4 +1,5 @@
 use makepad_widgets::*;
+use crate::miniapps::side::MiniAppsSideRegionWidgetExt;
 use super::back_swipe::BackSwipe;
 
 use crate::{
@@ -177,7 +178,7 @@ script_mod! {
                         width: Fill, height: Fill
                         flow: Down
 
-                        mod.widgets.MainDesktopUI {}
+                        desktop_ui := mod.widgets.MainDesktopUI {}
                     }
 
                     contacts_page := MobileHub {kind: 0}
@@ -429,6 +430,7 @@ pub fn effective_is_desktop(cx: &mut Cx) -> bool {
 
 #[derive(Script, Widget)]
 pub struct HomeScreen {
+    #[rust] pending_matrix_link: Option<crate::matrix_links::Navigation>,
     #[rust] back_swipe: BackSwipe,
     #[rust] mobile_detail_open: bool,
     /// Chat Info temporarily covers the selected room, whose state is saved normally.
@@ -474,6 +476,9 @@ impl ScriptHook for HomeScreen {
 
 impl Widget for HomeScreen {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if let Event::MouseDown(mouse) = event && mouse.button == MouseButton::PRIMARY {
+            self.clear_stale_splitter_hover(cx, mouse, scope);
+        }
         if let Event::Scroll(scroll) = event
             && cx.is_scrolling_allowed_within(&self.view.area())
         {
@@ -505,6 +510,27 @@ impl Widget for HomeScreen {
                 }
             }
             for action in actions {
+                if let Some(crate::matrix_links::LinkAction::EnterHome(navigation)) = action.downcast_ref() {
+                    if navigation.is_current() {
+                        self.switch_to_tab(cx, app_state, SelectedTab::Home);
+                        self.view.mini_apps_side_region(cx, ids!(mini_apps_side)).reveal_chat(cx);
+                        self.pending_matrix_link = Some(navigation.clone());
+                        self.view.redraw(cx);
+                    }
+                }
+                if let Some(crate::matrix_links::LinkAction::Navigate(navigation)) = action.downcast_ref()
+                    && navigation.is_current() && !effective_is_desktop(cx) {
+                    if app_state.selected_room.as_ref() != Some(&navigation.selected) {
+                        self.push_selected_screen_view(cx, app_state, navigation.selected.clone());
+                    }
+                    let stack = self.view.stack_navigation(cx, ids!(view_stack));
+                    if let Some(view) = stack.destination_view().or_else(|| stack.current_view()) {
+                        let screen = stack.view_by_id(cx, view).room_screen(cx, ids!(room_screen));
+                        if let Some(event) = &navigation.event {
+                            screen.jump_to_matrix_event(cx, event.clone(), navigation.ticket.clone());
+                        }
+                    }
+                }
                 if effective_is_desktop(cx) && (
                     matches!(action.downcast_ref::<crate::home::main_desktop_ui::MainDesktopUiAction>(), Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))
                     || matches!(action.downcast_ref::<RoomsListAction>(), Some(RoomsListAction::Selected(_)))
@@ -586,7 +612,10 @@ impl Widget for HomeScreen {
                                 self.explore_return_tab.clone()
                             } else { self.previous_selection.clone() };
                             cx.action(NavigationBarAction::TabSelected(app_state.selected_tab.clone()));
-                            self.update_active_page_from_selection(cx, app_state);
+                            if let Some(page) = self.update_active_page_from_selection(cx, app_state) {
+                                page.handle_event(cx, &Event::Signal, &mut Scope::with_data(app_state));
+                                page.redraw(cx);
+                            }
                             self.view.redraw(cx);
                         }
                     }
@@ -751,7 +780,12 @@ impl Widget for HomeScreen {
             self.prepare_mini_apps_side(cx, walk, saved_width);
         }
 
-        self.view.draw_walk(cx, scope, walk)
+        let result = self.view.draw_walk(cx, scope, walk);
+        if result.is_done() && let Some(navigation) = self.pending_matrix_link.take()
+            && navigation.is_current() {
+            cx.action(crate::matrix_links::LinkAction::Navigate(navigation));
+        }
+        result
     }
 }
 
@@ -790,6 +824,44 @@ impl HomeScreen {
 }
 
 impl HomeScreen {
+    /// A native webview or overlay can consume the move between two splitters.
+    /// Deliver the missing hover-out before the next splitter press, otherwise
+    /// the old grip can remain highlighted after hover ownership changes.
+    fn clear_stale_splitter_hover(&self, cx: &mut Cx, mouse: &MouseDownEvent, scope: &mut Scope) {
+        let handle = self.view.widget(cx, ids!(mini_apps_side.handle));
+        let handle_rect = handle.area().rect(cx);
+        if !handle.visible() || handle_rect.size.x <= 0.0 || handle_rect.size.y <= 0.0 {
+            return;
+        }
+        let margin = crate::shared::pane_splitter::HIT_MARGIN;
+        let on_side = mouse.abs.y >= handle_rect.pos.y
+            && mouse.abs.y <= handle_rect.pos.y + handle_rect.size.y
+            && mouse.abs.x >= handle_rect.pos.x - margin
+            && mouse.abs.x <= handle_rect.pos.x + handle_rect.size.x + margin;
+        let dock = self.view.dock(cx, ids!(dock));
+        let dock_rect = self.view.widget(cx, ids!(dock)).area().rect(cx);
+        let on_rooms = dock.splitter_position(id!(root)).is_some_and(|position| {
+            let x = dock_rect.pos.x + position;
+            mouse.abs.y >= dock_rect.pos.y && mouse.abs.y <= dock_rect.pos.y + dock_rect.size.y
+                && mouse.abs.x >= x - margin
+                && mouse.abs.x <= x + crate::shared::pane_splitter::WIDTH + margin
+        });
+        if !on_side && !on_rooms {
+            return;
+        }
+        let leave = Event::MouseLeave(makepad_widgets::makepad_platform::event::MouseLeaveEvent {
+            abs: mouse.abs,
+            window_id: mouse.window_id,
+            modifiers: mouse.modifiers,
+            time: mouse.time,
+            handled: std::cell::Cell::new(Area::Empty),
+        });
+        if let Some(mut inner) = dock.borrow_mut() {
+            inner.handle_event_with_bodies(cx, &leave, scope, makepad_widgets::dock::BodyDispatch::Skip);
+        }
+        handle.handle_event(cx, &leave, scope);
+    }
+
     fn dismiss_mobile_profile(&mut self, cx: &mut Cx) -> bool {
         if effective_is_desktop(cx) || self.mobile_chat_info.is_some() { return false; }
         let stack = self.view.stack_navigation(cx, ids!(view_stack));
@@ -1121,9 +1193,34 @@ impl HomeScreen {
 }
 
 #[cfg(test)]
-mod responsive_layout_tests {
+pub(crate) mod responsive_layout_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    pub(crate) fn matrix_link_delivery(navigation: crate::matrix_links::Navigation, width: f64) {
+        use crate::home::main_desktop_ui::MainDesktopUIWidgetExt;
+        let (mut cx, mut home, mut state) = home();
+        state.selected_tab = SelectedTab::Me;
+        draw_pane(&mut cx, &mut home, &mut state, width);
+        let actions = cx.capture_actions(|cx|crate::matrix_links::publish_navigation(cx, navigation.clone()));
+        home.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab, SelectedTab::Home);
+        for _ in 0..3 {
+            let actions = cx.capture_actions(|cx|draw_pane(cx, &mut home, &mut state, width));
+            home.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::with_data(&mut state));
+        }
+        let screen = if effective_is_desktop(&mut cx) {
+            home.view.main_desktop_ui(&cx, ids!(desktop_ui)).matrix_link_screen(&cx, &navigation)
+        } else {
+            let stack = home.view.stack_navigation(&cx, ids!(view_stack));
+            let target = stack.destination_view().or_else(||stack.current_view()).unwrap();
+            stack.view_by_id(&mut cx, target).room_screen(&cx, ids!(room_screen))
+        };
+        screen.assert_matrix_link_target(&cx, &navigation);
+        navigation.ticket.cancel();
+        screen.handle_event(&mut cx, &Event::Signal, &mut Scope::with_data(&mut state));
+        screen.assert_matrix_link_cancelled();
+    }
 
     fn home() -> (Cx, HomeScreen, AppState) {
         let mut cx = Cx::new(Box::new(|_, _| {}));
@@ -1168,6 +1265,27 @@ mod responsive_layout_tests {
             Some(if desktop { id!(Desktop) } else { id!(Mobile) }));
         assert_eq!(effective_is_desktop(cx), desktop);
         assert_eq!(crate::home::account_menu::is_desktop_layout(cx), desktop);
+    }
+
+    #[test]
+    fn recovery_closing_settings_catches_up_the_covered_room() {
+        let (mut cx, mut home, mut state)=home();state.selected_tab=SelectedTab::Home;
+        let page=home.update_active_page_from_selection(&mut cx,&mut state).unwrap();
+        let widget=cx.with_vm(|vm| {
+            let value=script_eval!(vm,{mod.widgets.RoomScreen {}});WidgetRef::script_from_value(vm,value)
+        });
+        page.as_view().borrow_mut().unwrap().children.push((id!(recovery_probe),widget.clone()));
+        let room=widget.as_room_screen();
+        let sender=super::super::room_screen::crypto_recovery_resume_tests::prepare(&mut cx,&room);
+        draw_pane(&mut cx,&mut home,&mut state,1280.0);
+        let actions=cx.capture_actions(|cx|cx.action(NavigationBarAction::OpenSettings));
+        home.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab,SelectedTab::Settings);
+        super::super::room_screen::crypto_recovery_resume_tests::queue(&sender);
+        let actions=cx.capture_actions(|cx|cx.action(NavigationBarAction::CloseSettings));
+        home.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab,SelectedTab::Home);
+        super::super::room_screen::crypto_recovery_resume_tests::assert_updated(&room);
     }
 
     #[test]

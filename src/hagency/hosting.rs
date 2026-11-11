@@ -262,16 +262,29 @@ mod helper {
         "setup_failed"
     }
 
-    fn capture(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    fn capture(pipe: Option<impl Read + Send + 'static>, registration: Option<mpsc::SyncSender<()>>) -> mpsc::Receiver<String> {
         let (send, receive) = mpsc::channel();
         std::thread::spawn(move || {
             let mut captured = Vec::new();
             if let Some(mut pipe) = pipe {
                 let mut buffer = [0u8; 1024];
+                let marker = ::hagency::daemon::cli::ENROLLMENT_REGISTERING_LINE.as_bytes();
+                let mut line = Vec::with_capacity(marker.len());
+                let mut overflow = false;
                 while let Ok(count) = pipe.read(&mut buffer) {
                     if count == 0 { break; }
                     let retain = count.min(16_384usize.saturating_sub(captured.len()));
                     captured.extend_from_slice(&buffer[..retain]);
+                    for byte in &buffer[..count] {
+                        if *byte == b'\n' {
+                            if !overflow && line == marker {
+                                if let Some(send) = &registration { let _ = send.try_send(()); }
+                            }
+                            line.clear(); overflow = false;
+                        } else if line.len() < marker.len() {
+                            line.push(*byte);
+                        } else { overflow = true; }
+                    }
                 }
             }
             let _ = send.send(String::from_utf8_lossy(&captured).into_owned());
@@ -283,16 +296,26 @@ mod helper {
     /// enrollment helper owns accepted native custody: after cancellation or
     /// its timeout it receives EOF and is waited for, never killed. Other
     /// helpers are killed at their timeout or three seconds after cancellation.
-    pub fn run(mut command: Command, timeout: Duration, cancel: &Cancellation, enrollment: bool, on_stop: impl Fn()) -> Result<String, Failure> {
+    pub fn run(command: Command, timeout: Duration, cancel: &Cancellation, enrollment: bool, on_stop: impl Fn()) -> Result<String, Failure> {
+        run_observed(command, timeout, cancel, enrollment, on_stop, || {})
+    }
+
+    pub fn run_observed(mut command: Command, timeout: Duration, cancel: &Cancellation, enrollment: bool, on_stop: impl Fn(), on_registration: impl Fn()) -> Result<String, Failure> {
         if cancel.cancelled() { return Err(Failure::Cancelled); }
         let mut child = command.stdin(if enrollment { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|_| Failure::Unavailable)?;
-        let stdout = capture(child.stdout.take());
-        let stderr = capture(child.stderr.take());
+        let (phase_send, phase_receive) = mpsc::sync_channel(1);
+        let stdout = capture(child.stdout.take(), enrollment.then_some(phase_send));
+        let stderr = capture(child.stderr.take(), None);
+        let mut registration_reported = false;
         if enrollment { *cancel.stdin.lock().unwrap_or_else(|e| e.into_inner()) = child.stdin.take(); }
         let start = Instant::now();
         let mut stopping: Option<Instant> = None;
         let result = loop {
+            if !registration_reported && phase_receive.try_recv().is_ok() {
+                registration_reported = true;
+                if stopping.is_none() { on_registration(); }
+            }
             if stopping.is_none() && (cancel.cancelled() || start.elapsed() >= timeout) {
                 cancel.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
                 stopping = Some(Instant::now());
@@ -360,6 +383,7 @@ pub enum JobKind {
 pub enum Progress {
     Preparing,
     SigningIn,
+    Registering,
     Cancelling,
     Enabling,
     Confirming,
@@ -473,6 +497,7 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
             return Progress::Failed("daemon_service_stop_pending");
         }
     }
+    let mut registration_pending = None;
     if kind == JobKind::Setup {
         let before = match execution(&locations, origin, owner) {
             Ok(Execution::Setup(SetupReason::OtherOwner)) => return Progress::Failed("daemon_other_owner_enrolled"),
@@ -505,8 +530,10 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
                 OsStr::new("enroll"), OsStr::new("--home"), home, OsStr::new("--server"), OsStr::new(origin),
                 OsStr::new("--owner"), OsStr::new(owner), OsStr::new("--cancel-on-stdin-close"),
             ]);
-            match run(enrollment, Duration::from_secs(300), cancel, true, || report(Progress::Cancelling)) {
+            match helper::run_observed(enrollment, Duration::from_secs(300), cancel, true,
+                || report(Progress::Cancelling), || report(Progress::Registering)) {
                 Ok(stdout) => if let Some(code) = helper::pending_registration(&stdout) {
+                    registration_pending = Some(code);
                     makepad_widgets::warning!("Hosting enrollment finished with a pending registration: {code}");
                 },
                 Err(failure) => return failed(failure),
@@ -521,7 +548,11 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
         Err(failure) => return failed(failure),
     }
     report(Progress::Confirming);
-    confirm(locations.daemon_home(), owner, Duration::from_secs(45), cancel)
+    let result = confirm(locations.daemon_home(), owner, Duration::from_secs(45), cancel);
+    match (result, registration_pending) {
+        (Progress::Unconfirmed, Some(code)) => Progress::Failed(code),
+        (result, _) => result,
+    }
 }
 
 // ----- the daemon socket: pause at quit, resume at start --------------------
@@ -974,6 +1005,37 @@ mod tests {
         assert_eq!(pending_registration("Enrolled @o:s with the existing executor"), None);
         assert_eq!(static_code("owner_root_record_invalid"), "owner_root_record_invalid");
         assert_eq!(static_code("/private/path"), "setup_failed");
+    }
+
+    #[test]
+    fn enrollment_progress_is_streamed_bounded_and_contains_no_helper_text() {
+        use helper::{Cancellation, run_observed};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let count = AtomicUsize::new(0);
+        let directory = Temp::new();
+        let acknowledgement = directory.0.join("registration-observed");
+        let mut command = std::process::Command::new("python3");
+        command.env("HAGENCY_PROGRESS_ACK", &acknowledgement).args(["-c", r#"
+import os, sys, time
+from pathlib import Path
+sys.stdout.write('https://test/authorize?secret=private\nHAGENCY_ENROLLMENT_NATIVE_')
+sys.stdout.flush()
+time.sleep(0.02)
+sys.stdout.write('REGISTRATION_V1\n')
+sys.stdout.flush()
+deadline = time.monotonic() + 5
+while not Path(os.environ['HAGENCY_PROGRESS_ACK']).exists():
+    if time.monotonic() > deadline: sys.exit(1)
+    time.sleep(0.01)
+"#]);
+        let output = run_observed(command, Duration::from_secs(10), &Cancellation::default(), true, || {}, || {
+            // The helper cannot exit successfully until this callback runs.
+            std::fs::write(&acknowledgement, b"observed").unwrap();
+            count.fetch_add(1, Ordering::AcqRel);
+        }).unwrap();
+        assert!(output.contains("secret=private"));
+        assert_eq!(count.load(Ordering::Acquire), 1);
     }
 
     #[test]

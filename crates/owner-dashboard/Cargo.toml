@@ -32,3 +32,9 @@ unicode-segmentation = { version = "1", optional = true }
 fixtures = []
 # Requires the tracked Makepad accessibility patch prepared by tooling.
 native-accessibility = ["dep:unicode-segmentation"]
+
+# The JIT line: the same pinned makepad checkout as the Desktop root
+# (`.jit/sources.sh` puts it at .sources/makepad; see .jit/NOTES.md), so this
+# crate is one makepad whether it is built alone or inside Desktop.
+[patch."https://www.github.com/OctoSense-org/makepad.git"]
+makepad-widgets = { path = "../../.sources/makepad/widgets" }

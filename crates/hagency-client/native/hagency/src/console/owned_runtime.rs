@@ -43,6 +43,8 @@ pub(super) struct StartConfig {
     pub credential_ref: String,
     pub takeover: Takeover,
     pub host_files: bool,
+    pub shared_workspace: bool,
+    pub shared_workspace_pin: Option<String>,
     // Overwritten from authenticated server binding metadata, never a UI option.
     pub owner_direct: bool,
     pub recovery_device_id: Option<String>,
@@ -59,12 +61,18 @@ pub(super) struct RuntimeIntent {
     pub consent_id: String,
     pub effort: String,
     pub host_files: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_workspace: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_workspace_pin: Option<String>,
 }
 impl RuntimeIntent {
     pub(super) fn start_input(&self) -> serde_json::Value {
-        serde_json::json!({"bindingId":self.binding_id,
+        let mut input = serde_json::json!({"bindingId":self.binding_id,
             "effort":self.effort,"hostFiles":self.host_files,
-            "takeover":false,"recoveryDeviceId":self.device_id,"recoveryConsentId":self.consent_id})
+            "takeover":false,"recoveryDeviceId":self.device_id,"recoveryConsentId":self.consent_id});
+        if self.shared_workspace { input["sharedWorkspace"] = true.into(); }
+        input
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -146,6 +154,11 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
             v.agent_id.is_empty()
                 || v.binding_id.is_empty()
                 || v.device_id.is_empty()
+                || match (v.shared_workspace, &v.shared_workspace_pin) {
+                    (true, Some(pin)) => pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()),
+                    (false, None) => false,
+                    _ => true,
+                }
                 || (v.consent_id.len() != 64
                     || !v.consent_id.bytes().all(|b| b.is_ascii_hexdigit()))
                 || ![
@@ -235,6 +248,8 @@ fn verify_recovery_intent(
                     && v.consent_id == *consent
                     && v.effort == config.profile.effort
                     && v.host_files == config.host_files
+                    && v.shared_workspace == config.shared_workspace
+                    && v.shared_workspace_pin == config.shared_workspace_pin
             });
             if valid {
                 Ok(())
@@ -244,6 +259,20 @@ fn verify_recovery_intent(
         }
         _ => Err(RuntimeError::Authorization),
     }
+}
+fn shared_workspace_pin(path: &std::path::Path) -> Result<String, RuntimeError> {
+    #[cfg(unix)]
+    {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::MetadataExt;
+        if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) { return Err(RuntimeError::Profile); }
+        let metadata = std::fs::metadata(path).map_err(|_| RuntimeError::Profile)?;
+        if !metadata.is_dir() { return Err(RuntimeError::Profile); }
+        let value = serde_json::json!({"path":path,"device":metadata.dev(),"inode":metadata.ino()});
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value).map_err(|_| RuntimeError::Profile)?)))
+    }
+    #[cfg(not(unix))]
+    { let _ = path; Err(RuntimeError::Profile) }
 }
 fn new_consent_id() -> Result<String, RuntimeError> {
     let mut bytes = [0u8; 32];
@@ -272,6 +301,8 @@ fn save_intent(
             },
             effort: config.profile.effort.clone(),
             host_files: config.host_files,
+            shared_workspace: config.shared_workspace,
+            shared_workspace_pin: config.shared_workspace_pin.clone(),
         }),
         config.recovery_consent_id.as_deref(),
     )
@@ -321,7 +352,9 @@ pub(super) struct RuntimeStatus {
 }
 impl RuntimeStatus {
     fn with_capabilities(self, config: &StartConfig) -> Self {
-        let mut status = self.with_host_files(config.host_files);
+        let mut status = self.with_host_files(config.host_files || config.shared_workspace);
+        status.file_replace = config.shared_workspace;
+        if config.shared_workspace { status.capability_version = Some("hagency-shared-files-v1"); }
         status.native_tools = matches!(
             runtime::kind(&config.credential_ref),
             runtime::Kind::Codex | runtime::Kind::Claude
@@ -1603,7 +1636,7 @@ async fn run_host(
                     let checked=tokio::select! {biased;_=canceled(&mut work.receiver)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|error|startup_check_failure(&error))};
                     provider.stop().await.map_err(|_|RuntimeError::Provider)?;checked?;
                     let mut ledger=local(Ledger::open_scoped(&path,&owner,&profile_id))?;
-                    let mut ready=RuntimeStatus::new(&work.config.agent_id,if models_allowed{"online_chat_only"}else{"ledger_recovery_required"},if models_allowed{None}else{Some("ledger_recovery_required")}).with_capabilities(&work.config);ready.binding_id=Some(work.config.binding_id.clone());work.status.send_replace(ready);
+                    let mut ready=RuntimeStatus::new(&work.config.agent_id,if models_allowed {if work.config.shared_workspace {"online"} else {"online_chat_only"}} else {"ledger_recovery_required"},if models_allowed{None}else{Some("ledger_recovery_required")}).with_capabilities(&work.config);ready.binding_id=Some(work.config.binding_id.clone());work.status.send_replace(ready);
                     if models_allowed && (work.config.owner_direct || transport.supports_group_crypto()) {e2ee::prepare(&transport,&reference,&work.config,&mut work.receiver).await;}
                     execution_loop_with_gate(&transport,&owner,&mut ledger,&work.config,&reference,&mut work.receiver,&work.status,models_allowed).await
                 }.await;
@@ -2072,7 +2105,7 @@ async fn execution_loop_with_gate<T: Transport>(
                 let record = local(ledger.inbox_record(owner, &prepared.dispatch.id))?;
                 retry_reply(console, owner, ledger, lease, cancel, config, &record).await?;
             }
-            let mut ready = RuntimeStatus::new(&config.agent_id, "online_chat_only", turn_error)
+            let mut ready = RuntimeStatus::new(&config.agent_id, if config.shared_workspace {"online"} else {"online_chat_only"}, turn_error)
                 .with_capabilities(config);
             ready.binding_id = Some(config.binding_id.clone());
             status.send_replace(ready);
@@ -2319,6 +2352,10 @@ async fn run_turn<T: Transport>(
     sessions: &mut provider_custody::Sessions,
 ) -> Result<Option<Finish>, RuntimeError> {
     let scope = prepared.dispatch.scope();
+    if config.shared_workspace && config.shared_workspace_pin.as_deref() != Some(shared_workspace_pin(&config.profile.cwd)?.as_str()) {
+        return Err(RuntimeError::Profile);
+    }
+
     // An empty body marks an encrypted owner-direct request. Only the Agent's
     // own device reads it, before any provider work starts.
     let device = if prepared.dispatch.body.is_empty() {
@@ -2339,8 +2376,14 @@ async fn run_turn<T: Transport>(
     #[cfg(not(unix))]
     let profile = config.profile.clone();
     #[cfg(unix)]
-    let (profile, workspace) =
-        working_directory::for_turn(&config.profile, owner, &scope, config.host_files)?;
+    let (profile, workspace) = working_directory::for_turn(
+        &config.profile,
+        owner,
+        &scope,
+        config.host_files,
+        config.shared_workspace,
+        config.shared_workspace_pin.as_deref(),
+    )?;
     let (queue, mut receiver) = codex::approval_queue(1).map_err(|_| RuntimeError::Profile)?;
     let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
     let mut queue = queue.with_questions(question_queue);
@@ -2481,7 +2524,7 @@ async fn run_turn<T: Transport>(
             provider
         }
     };
-    if config.host_files {
+    if config.host_files || config.shared_workspace {
         #[cfg(unix)]
         {
             let console = host.as_ref().ok_or(RuntimeError::Profile)?;
@@ -2504,7 +2547,7 @@ async fn run_turn<T: Transport>(
     }
     let mut executing = RuntimeStatus::new(
         &config.agent_id,
-        if config.host_files {
+        if config.host_files || config.shared_workspace {
             "executing_host_files"
         } else {
             "executing_chat_only"
@@ -2879,6 +2922,18 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn shared_workspace_pin_changes_when_directory_is_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        let first = shared_workspace_pin(&project).unwrap();
+        std::fs::rename(&project, temp.path().join("old-project")).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        assert_ne!(first, shared_workspace_pin(&project).unwrap());
+    }
     #[test]
     fn heartbeat_schedule_precedes_short_proof_deadline() {
         let now = std::time::Instant::now();
@@ -2904,6 +2959,8 @@ mod tests {
             consent_id: new_consent_id().unwrap(),
             effort: "low".into(),
             host_files: false,
+            shared_workspace: false,
+            shared_workspace_pin: None,
         }
     }
     #[tokio::test]
@@ -3236,6 +3293,8 @@ mod tests {
             credential_ref: "keychain:test".into(),
             takeover: Takeover::Never,
             host_files: false,
+            shared_workspace: false,
+            shared_workspace_pin: None,
             owner_direct: false,
             recovery_device_id: None,
             recovery_consent_id: None,

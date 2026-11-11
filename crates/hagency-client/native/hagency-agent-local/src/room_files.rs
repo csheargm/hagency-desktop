@@ -1,6 +1,7 @@
 //! Host-executed file capabilities. No shell, network, provider credential or ambient
 //! model-selected root. Host must supply a verified owner directory and fresh server
-//! scope before opening. Only macOS/Linux atomic no-replace publication is supported.
+//! scope before opening. Private creation uses atomic no-replace publication;
+//! shared updates use an explicitly authorized root and content-version checks.
 use crate::{Ledger, Scope, ToolPolicy, ToolProposal};
 use rustix::fs::{self, Mode, OFlags};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,15 @@ pub enum Operation {
     Replace {
         path: String,
     },
+    MakeDirectory {
+        path: String,
+    },
+    Update {
+        path: String,
+        content: String,
+        expected_sha256: String,
+        nonce: String,
+    },
 }
 impl Operation {
     fn path(&self) -> &str {
@@ -62,7 +72,9 @@ impl Operation {
             Self::List { path }
             | Self::Read { path }
             | Self::Create { path, .. }
-            | Self::Replace { path } => path,
+            | Self::Replace { path }
+            | Self::Update { path, .. }
+            | Self::MakeDirectory { path } => path,
         }
     }
     fn tool(&self) -> &'static str {
@@ -71,6 +83,8 @@ impl Operation {
             Self::Read { .. } => "room.read",
             Self::Create { .. } => "room.create",
             Self::Replace { .. } => "room.replace",
+            Self::Update { .. } => "room.update",
+            Self::MakeDirectory { .. } => "room.mkdir",
         }
     }
 }
@@ -96,6 +110,13 @@ pub enum FileResult {
     },
     Read {
         content: String,
+        sha256: String,
+    },
+    DirectoryCreated {
+        path: String,
+    },
+    Updated {
+        path: String,
         sha256: String,
     },
     Created {
@@ -126,6 +147,8 @@ pub struct Workspace {
     canonical: PathBuf,
     owner: String,
     binding: (String, String, String),
+    shared: bool,
+    shared_lock: Option<File>,
 }
 
 /// A chat-only provider's stable room directory beneath the owner's configured
@@ -213,12 +236,63 @@ impl Workspace {
             _lock: lock,
             canonical,
             owner: owner.into(),
+            shared: false,
+            shared_lock: None,
             binding: (
                 scope.agent.clone(),
                 scope.binding.clone(),
                 scope.room.clone(),
             ),
         })
+    }
+    /// Open a separately authorized existing project without following symlinks.
+    pub fn open_shared(owner_directory: &Path, project: &Path, owner: &str, scope: &Scope) -> Result<Self> {
+        if !project.is_absolute() || project.canonicalize().ok().as_deref() != Some(project) {
+            return Err(FileError::Boundary);
+        }
+        let mut root = File::from(fs::open("/", directory_flags(), Mode::empty()).map_err(|_| FileError::Io)?);
+        for part in project.components() {
+            match part {
+                Component::RootDir => {},
+                Component::Normal(name) => root = directory(&root, name)?,
+                _ => return Err(FileError::Boundary),
+            }
+        }
+        shared_directory(&root)?;
+        let mut owner_fd = File::from(fs::open("/", directory_flags(), Mode::empty()).map_err(|_| FileError::Io)?);
+        for part in owner_directory.components() {
+            match part {
+                Component::RootDir => {},
+                Component::Normal(name) => owner_fd = directory(&owner_fd, name)?,
+                _ => return Err(FileError::Boundary),
+            }
+        }
+        private_directory(&owner_fd)?;
+        let locks = child_directory(&owner_fd, "shared-workspace-locks")?;
+        let name = digest(project.to_str().ok_or(FileError::Boundary)?.as_bytes());
+        let lock = File::from(fs::openat(&locks, name.as_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::RUSR | Mode::WUSR).map_err(|_| FileError::Boundary)?);
+        regular(&lock)?;
+        let mut workspace = Self::open(owner_directory, owner, scope)?;
+        workspace.shared_lock = Some(lock);
+        workspace.root = root;
+        workspace.canonical = project.to_path_buf();
+        workspace.shared = true;
+        Ok(workspace)
+    }
+    pub fn is_shared(&self) -> bool {
+        self.shared
+    }
+    pub fn shared_pin(&self) -> Result<String> {
+        use std::os::unix::fs::MetadataExt;
+        if !self.shared { return Err(FileError::Boundary); }
+        let metadata = self.root.metadata().map_err(|_| FileError::Boundary)?;
+        if self.canonical.canonicalize().ok().as_ref() != Some(&self.canonical) { return Err(FileError::Boundary); }
+        let current = std::fs::metadata(&self.canonical).map_err(|_| FileError::Boundary)?;
+        if (metadata.dev(), metadata.ino()) != (current.dev(), current.ino()) { return Err(FileError::Boundary); }
+        let value = serde_json::json!({"path":self.canonical,"device":metadata.dev(),"inode":metadata.ino()});
+        Ok(digest(&serde_json::to_vec(&value).map_err(|_| FileError::Invalid)?))
     }
     pub fn canonical_directory(&self) -> &Path {
         &self.canonical
@@ -236,7 +310,7 @@ impl Workspace {
         now: i64,
     ) -> Result<PreparedCall> {
         self.check_scope(scope)?;
-        if matches!(operation, Operation::Replace { .. }) {
+        if matches!(operation, Operation::Replace { .. }) || (!self.shared && matches!(operation, Operation::Update { .. } | Operation::MakeDirectory { .. })) {
             return Err(FileError::UnsupportedReplace);
         }
         relative(
@@ -256,6 +330,10 @@ impl Workspace {
             if !hex64(nonce) {
                 return Err(FileError::Invalid);
             }
+        }
+        if let Operation::Update { content, expected_sha256, nonce, .. } = &operation {
+            if content.len() > BYTES { return Err(FileError::Capacity); }
+            if !hex64(expected_sha256) || !hex64(nonce) { return Err(FileError::Invalid); }
         }
         let proposal = ToolProposal {
             scope: scope.clone(),
@@ -291,7 +369,7 @@ impl Workspace {
         {
             return Err(FileError::Boundary);
         }
-        private_directory(&self.root)?;
+        if self.shared { shared_directory(&self.root)?; self.shared_pin()?; } else { private_directory(&self.root)?; }
         private_directory(&self.control)?;
         regular(&self._lock)?;
         let disposition = ledger
@@ -343,7 +421,7 @@ impl Workspace {
                         || ty == fs::FileType::Directory
                     {
                         entries.push(name.to_owned());
-                    } else {
+                    } else if !self.shared {
                         return Err(FileError::Boundary);
                     }
                     if entries.len() > LIST {
@@ -355,7 +433,7 @@ impl Workspace {
             }
             Operation::Read { path } => {
                 let (parent, name) = self.parent(path)?;
-                let file = read_file(&parent, &name)?;
+                let file = if self.shared { read_shared_file(&parent, &name)? } else { read_file(&parent, &name)? };
                 let bytes = read_bounded(file, BYTES)?;
                 let sha256 = digest(&bytes);
                 let content = String::from_utf8(bytes).map_err(|_| FileError::Invalid)?;
@@ -367,6 +445,19 @@ impl Workspace {
                 nonce,
             } => self.create(prepared, path, content, nonce),
             Operation::Replace { .. } => Err(FileError::UnsupportedReplace),
+            Operation::MakeDirectory { path } => {
+                let (parent, name) = self.parent(path)?;
+                fs::mkdirat(&parent, name.as_str(), Mode::RUSR | Mode::WUSR | Mode::XUSR).map_err(|_| FileError::Conflict)?;
+                parent.sync_all().map_err(|_| FileError::Unknown)?;
+                Ok(FileResult::DirectoryCreated { path: path.clone() })
+            },
+            Operation::Update { path, content, expected_sha256, nonce } => {
+                let lock = self.shared_lock.as_ref().ok_or(FileError::Boundary)?;
+                lock.try_lock().map_err(|_| FileError::Conflict)?;
+                let result = self.update(prepared, path, content, expected_sha256, nonce);
+                lock.unlock().map_err(|_| FileError::Unknown)?;
+                result
+            },
         }
     }
     fn check_scope(&self, scope: &Scope) -> Result<()> {
@@ -386,7 +477,7 @@ impl Workspace {
         let mut dir = self.root.try_clone().map_err(|_| FileError::Io)?;
         for part in parts {
             dir = directory(&dir, part.as_ref())?;
-            private_directory(&dir)?;
+            if self.shared { shared_directory(&dir)?; } else { private_directory(&dir)?; }
         }
         Ok(dir)
     }
@@ -396,9 +487,50 @@ impl Workspace {
         let mut dir = self.root.try_clone().map_err(|_| FileError::Io)?;
         for part in parents {
             dir = directory(&dir, part.as_ref())?;
-            private_directory(&dir)?;
+            if self.shared { shared_directory(&dir)?; } else { private_directory(&dir)?; }
         }
         Ok((dir, (*name).to_owned()))
+    }
+    fn update(&self, prepared: &PreparedCall, path: &str, content: &str, expected_sha256: &str, nonce: &str) -> Result<FileResult> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if !self.shared { return Err(FileError::UnsupportedReplace); }
+        let (parent, name) = self.parent(path)?;
+        let receipt_name = format!("update-{}", prepared.digest);
+        match read_file(&self.control, &receipt_name) {
+            Ok(_) => return Err(FileError::Unknown),
+            Err(FileError::Io) => {},
+            Err(_) => return Err(FileError::Unknown),
+        }
+        let existing = read_shared_file(&parent, &name)?;
+        let before = existing.metadata().map_err(|_| FileError::Boundary)?;
+        if digest(&read_bounded(existing, BYTES)?) != expected_sha256 { return Err(FileError::Conflict); }
+        let mut receipt = File::from(fs::openat(&self.control, receipt_name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR).map_err(|_| FileError::Unknown)?);
+        receipt.write_all(b"pending").map_err(|_| FileError::Unknown)?;
+        receipt.sync_all().map_err(|_| FileError::Unknown)?;
+        self.control.sync_all().map_err(|_| FileError::Unknown)?;
+        let temporary = format!(".hagency-stage-{nonce}");
+        let mut file = File::from(fs::openat(&parent, &temporary,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR).map_err(|_| FileError::Unknown)?);
+        file.set_permissions(std::fs::Permissions::from_mode(before.mode() & 0o777)).map_err(|_| FileError::Unknown)?;
+        file.write_all(content.as_bytes()).map_err(|_| FileError::Unknown)?;
+        file.sync_all().map_err(|_| FileError::Unknown)?;
+        let current = read_shared_file(&parent, &name)?;
+        let metadata = current.metadata().map_err(|_| FileError::Unknown)?;
+        if (metadata.dev(), metadata.ino(), metadata.mtime(), metadata.mtime_nsec(), metadata.ctime(), metadata.ctime_nsec())
+            != (before.dev(), before.ino(), before.mtime(), before.mtime_nsec(), before.ctime(), before.ctime_nsec())
+            || digest(&read_bounded(current, BYTES)?) != expected_sha256 { return Err(FileError::Conflict); }
+        fs::renameat(&parent, &temporary, &parent, &name).map_err(|_| FileError::Unknown)?;
+        parent.sync_all().map_err(|_| FileError::Unknown)?;
+        let published = read_shared_file(&parent, &name).map_err(|_| FileError::Unknown)?;
+        let actual = published.metadata().map_err(|_| FileError::Unknown)?;
+        let written = file.metadata().map_err(|_| FileError::Unknown)?;
+        let sha256 = digest(content.as_bytes());
+        if (actual.dev(), actual.ino()) != (written.dev(), written.ino())
+            || digest(&read_bounded(published, BYTES)?) != sha256 { return Err(FileError::Unknown); }
+        Ok(FileResult::Updated { path: path.into(), sha256 })
     }
     fn known_create(
         &self,
@@ -550,6 +682,23 @@ fn private_directory(file: &File) -> Result<()> {
         return Err(FileError::Boundary);
     }
     Ok(())
+}
+fn shared_directory(file: &File) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata().map_err(|_| FileError::Boundary)?;
+    if !m.is_dir() || m.mode() & 0o022 != 0 || m.uid() != rustix::process::geteuid().as_raw() {
+        return Err(FileError::Boundary);
+    }
+    Ok(())
+}
+fn read_shared_file(parent: &File, name: &str) -> Result<File> {
+    use std::os::unix::fs::MetadataExt;
+    let file = File::from(fs::openat(parent, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty()).map_err(|_| FileError::Boundary)?);
+    let m = file.metadata().map_err(|_| FileError::Boundary)?;
+    if !m.is_file() || m.nlink() != 1 || m.mode() & 0o022 != 0 || m.uid() != rustix::process::geteuid().as_raw() {
+        return Err(FileError::Boundary);
+    }
+    Ok(file)
 }
 fn regular(file: &File) -> Result<()> {
     use std::os::unix::fs::MetadataExt;

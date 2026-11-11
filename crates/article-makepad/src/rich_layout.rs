@@ -6,6 +6,7 @@ use makepad_widgets::{
         layouter::{LaidoutText, LaidoutRow},
         substr::Substr,
         geom::{Point, Size as TextSize},
+        line_break::PrecedingContext,
     },
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -131,10 +132,17 @@ pub fn layout(
         &mut y,
     );
     let max = rows.iter().map(|r| r.width_in_lpxs).fold(0.0, f32::max);
+    // JIT PORT: upstream's LaidoutText also carries run-joining state. This
+    // layout is a whole paragraph, so the next run starts after all of it.
+    let mut line_break_before_next_run = PrecedingContext::PARAGRAPH_START;
+    line_break_before_next_run.append(text);
     Rc::new(LaidoutText {
         text: parent,
         size_in_lpxs: TextSize::new(max, y),
         rows,
+        has_missing_glyph: false,
         is_truncated: false,
+        line_break_before_next_run,
+        is_trailing_glue_reserved: false,
     })
 }

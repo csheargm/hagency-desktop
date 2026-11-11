@@ -4,7 +4,8 @@ use crossbeam_queue::SegQueue;
 use makepad_widgets::*;
 use crate::{LivePtr, view_from_live_ptr};
 
-static PENDING_POPUP_NOTIFICATIONS: SegQueue<PopupItem> = SegQueue::new();
+static PENDING_POPUP_NOTIFICATIONS: SegQueue<(Option<u64>, PopupItem)> = SegQueue::new();
+const PROGRESS_UPDATE_SECONDS: f64 = 1.0 / 30.0;
 
 /// Displays a new popup notification with a popup item.
 ///
@@ -26,7 +27,12 @@ pub fn enqueue_popup_notification(
     popup_item.auto_dismissal_duration = popup_item
         .auto_dismissal_duration
         .map(|duration| duration.min(3. * 60.));
-    PENDING_POPUP_NOTIFICATIONS.push(popup_item);
+    PENDING_POPUP_NOTIFICATIONS.push((None, popup_item));
+    SignalToUI::set_ui_signal();
+}
+
+pub(crate) fn enqueue_scoped_popup_notification(epoch: u64, message: String, kind: PopupKind, duration: Option<f64>) {
+    PENDING_POPUP_NOTIFICATIONS.push((Some(epoch), PopupItem {message: message.into(), kind, auto_dismissal_duration: duration}));
     SignalToUI::set_ui_signal();
 }
 
@@ -88,6 +94,8 @@ script_mod! {
     mod.widgets.ProgressBar = View {
         width: Fill,
         height: 10,
+        // Each popup has an independent progress uniform.
+        new_batch: true,
         show_bg: true,
         margin: Inset{ bottom: 0 },
         padding: 0,
@@ -98,15 +106,12 @@ script_mod! {
             progress_bar_color: uniform(#00000080), //Black with 50% opacity.
             // Display progress bar when there is auto_dismissal_duration.
             display_progress_bar: instance(1.0)
-            // Display progress bar even when progress.on is off.
-            // 0.0 animate according to anim_time, 1.0 displays an oscillating progress bar.
-            debug_progress_bar: uniform(0.0),
-            anim_time: instance(0.0),
+            anim_time: uniform(0.0),
             pixel: fn() {
                 let sdf = Sdf2d.viewport(self.pos * self.rect_size);
                 let rect_size = self.rect_size;
-                let is_debug = step(0.5, self.debug_progress_bar);
-                let time = (1.0 - is_debug) * self.anim_time + is_debug * (0.5 + 0.5 * sin(self.draw_pass.time * PI));
+                // The host updates progress only while a timed popup is open.
+                let time = self.anim_time;
                 if self.display_progress_bar > 0.5 {
                     if self.direction > 0.5 {
                         // Top to bottom
@@ -357,6 +362,13 @@ struct PopupEntry {
     kind: PopupKind,
     view: View,
     close_timer: Timer,
+    progress: Option<PopupProgress>,
+    manages_progress: bool,
+}
+
+struct PopupProgress {
+    started_at: f64,
+    duration: f64,
 }
 
 /// A widget that displays a vertical list of popups.
@@ -382,8 +394,9 @@ pub struct RobrixPopupNotification {
     layout: Layout,
     #[walk]
     walk: Walk,
-    // A list of tuples containing individual widgets, its content and the close timer in the order they were added.
+    // Individual popup widgets and their timers, in display order.
     #[rust] popups: Vec<PopupEntry>,
+    #[rust] progress_timer: Timer,
 }
 
 impl ScriptHook for RobrixPopupNotification {
@@ -425,12 +438,40 @@ impl Widget for RobrixPopupNotification {
         if std::mem::take(&mut self.restyle) {
             for popup in &mut self.popups {
                 style_popup(cx, &mut popup.view, popup.kind, &self.appearance);
+                if popup.manages_progress {
+                    // A theme reapply restores the template's default; keep a
+                    // persistent notification's progress bar hidden.
+                    let display = if popup.progress.is_some() { 1.0 } else { 0.0 };
+                    let mut bar = popup.view.view(cx, ids!(popup_content.progress_bar));
+                    script_apply_eval!(cx, bar, {draw_bg +: {display_progress_bar: #(display)}});
+                }
             }
         }
         if matches!(event, Event::Signal) {
-            while let Some(popup_item) = PENDING_POPUP_NOTIFICATIONS.pop() {
+            while let Some((epoch, popup_item)) = PENDING_POPUP_NOTIFICATIONS.pop() {
+                if epoch.is_some_and(|epoch| epoch != crate::account_session::epoch()) { continue; }
                 self.push(cx, popup_item);
             }
+        }
+        if !self.progress_timer.is_empty() && self.progress_timer.is_event(event).is_some() {
+            self.progress_timer = Timer::empty();
+            let now = Cx::monotonic_now();
+            for popup in &mut self.popups {
+                if let Some(progress) = &popup.progress {
+                    let fraction = if progress.duration > 0.0 {
+                        ((now - progress.started_at) / progress.duration).clamp(0.0, 1.0) as f32
+                    } else {
+                        1.0
+                    };
+                    let bar = popup.view.view(cx, ids!(popup_content.progress_bar));
+                    if let Some(mut bar) = bar.borrow_mut() {
+                        // Keep the overlay's layout and text; repaint only the
+                        // retained draw call with the new progress value.
+                        bar.draw_bg.draw_vars.set_uniform_on_area(cx, id!(anim_time), &[fraction]);
+                    }
+                }
+            }
+            self.sync_progress_timer(cx);
         }
         if self.popups.is_empty() {
             return;
@@ -448,6 +489,7 @@ impl Widget for RobrixPopupNotification {
 
         if let Some(index) = remove_index {
             self.popups.remove(index);
+            self.sync_progress_timer(cx);
             self.redraw_overlay(cx);
         }
 
@@ -473,6 +515,17 @@ impl Widget for RobrixPopupNotification {
 }
 
 impl RobrixPopupNotification {
+    fn sync_progress_timer(&mut self, cx: &mut Cx) {
+        if self.popups.iter().any(|popup| popup.progress.is_some()) {
+            if self.progress_timer.is_empty() {
+                self.progress_timer = cx.start_timeout(PROGRESS_UPDATE_SECONDS);
+            }
+        } else {
+            cx.stop_timer(self.progress_timer);
+            self.progress_timer = Timer::empty();
+        }
+    }
+
     fn redraw_overlay(&self, cx: &mut Cx) {
         if let Some(draw_list) = &self.draw_list {
             draw_list.redraw(cx);
@@ -490,27 +543,29 @@ impl RobrixPopupNotification {
             .set_text(cx, &popup_item.message);
         style_popup(cx, &mut view, popup_item.kind, &self.appearance);
 
-        let close_timer = if let Some(duration) = popup_item.auto_dismissal_duration {
+        let (close_timer, progress) = if let Some(duration) = popup_item.auto_dismissal_duration {
             let mut progress_bar = view.view(cx, ids!(popup_content.progress_bar));
             script_apply_eval!(cx, progress_bar, {
                 draw_bg +: { display_progress_bar: 1.0 }
             });
             progress_bar.animator_cut(cx, ids!(progress.off));
-            progress_bar.animator_play_with(cx, ids!(progress.on), Play::Forward { duration });
-            cx.start_timeout(duration)
+            (cx.start_timeout(duration), Some(PopupProgress { started_at: Cx::monotonic_now(), duration }))
         } else {
             let mut progress_bar = view.view(cx, ids!(popup_content.progress_bar));
             script_apply_eval!(cx, progress_bar, {
                 draw_bg +: { display_progress_bar: 0.0 }
             });
             progress_bar.animator_cut(cx, ids!(progress.off));
-            Timer::empty()
+            (Timer::empty(), None)
         };
         self.popups.push(PopupEntry {
             kind: popup_item.kind,
             view,
             close_timer,
+            progress,
+            manages_progress: true,
         });
+        self.sync_progress_timer(cx);
         self.redraw_overlay(cx);
     }
 
@@ -540,6 +595,8 @@ impl RobrixPopupNotification {
             kind: popup_item.kind,
             view,
             close_timer,
+            progress: None,
+            manages_progress: false,
         });
     }
 
@@ -556,6 +613,7 @@ impl WidgetMatchEvent for RobrixPopupNotification {
         if actions.iter().any(|a| matches!(a.downcast_ref(), Some(crate::logout::logout_confirm_modal::LogoutAction::ClearAppState { .. }))) {
             while PENDING_POPUP_NOTIFICATIONS.pop().is_some() {}
             for popup in self.popups.drain(..) { cx.stop_timer(popup.close_timer); }
+            self.sync_progress_timer(cx);
             self.redraw_overlay(cx);
             return;
         }
@@ -563,6 +621,7 @@ impl WidgetMatchEvent for RobrixPopupNotification {
             if popup.view.button(cx, ids!(close_button)).clicked(actions) {
                 cx.stop_timer(popup.close_timer);
                 self.popups.remove(i);
+                self.sync_progress_timer(cx);
                 self.redraw_overlay(cx);
                 break;
             }

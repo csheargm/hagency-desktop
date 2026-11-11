@@ -29,6 +29,8 @@ use matrix_sdk_ui::timeline::{EmbeddedEvent, EventTimelineItem, TimelineEventIte
 use ruma::{events::room::message::{LocationMessageEventContent, MessageType, ReplyWithinThread, RoomMessageEventContent}, OwnedEventId, OwnedRoomId, OwnedTransactionId};
 use crate::{block_user_modal::{BlockUserModalAction, BlockUserRequest}, home::{editing_pane::{EditingPaneState, EditingPaneWidgetExt, EditingPaneWidgetRefExt}, location_preview::{LocationPreviewWidgetExt, LocationPreviewWidgetRefExt}, room_screen::{MessageAction, populate_preview_of_timeline_item}, rooms_list::RoomsListRef, tombstone_footer::{SuccessorRoomDetails, TombstoneFooterWidgetExt}, upload_progress::{UploadProgressViewWidgetRefExt, UploadState}}, join_leave_room_modal::{JoinLeaveModalKind, JoinLeaveRoomModalAction}, location::init_location_subscriber, profile::user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId}, room::BasicRoomDetails, settings::app_preferences::{AppPreferencesAction, AppPreferencesGlobal}, shared::{avatar::{AvatarState, AvatarWidgetRefExt}, file_upload_modal::{AttachmentUpload, FileUploadAttemptId, PendingUpload, handle_picked_file, handle_picker_launch_errors}, html_or_plaintext::HtmlOrPlaintextWidgetRefExt, mentionable_text_input::{MentionableTextInputWidgetExt, MentionableTextInputWidgetRefExt, MentionableTextInputState}, popup_list::{PopupKind, enqueue_popup_notification}, room_input_popup_menu::RoomInputPopupMenuAction, slash_commands::{SlashCommandAction, SlashCommandOutcome}}, sliding_sync::{MatrixRequest, TimelineKind, UserPowerLevels, submit_async_request}, utils};
 use crate::room::reply_preview::CollapsiblePreviewWidgetRefExt;
+use crate::home::editing_pane::EditingPaneRef;
+use crate::shared::mentionable_text_input::MentionableTextInputRef;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -436,6 +438,7 @@ pub struct RoomInputBar {
     #[rust] is_encrypted: bool,
     /// Whether the send button is currently enabled (the message input is non-empty).
     #[rust] is_send_enabled: bool,
+    #[rust] typing_broadcast: TypingBroadcast,
     /// The room or thread that this RoomInputBar is currently within.
     #[rust] timeline_kind: Option<TimelineKind>,
     /// The widget UID of the RoomScreen containing this RoomInputBar.
@@ -446,6 +449,20 @@ pub struct RoomInputBar {
     #[rust] speech_controls: SpeechControls,
     /// Whether the quick emoji row above the text input is currently shown.
     #[rust] is_emoji_picker_expanded: bool,
+    /// Children used on each input event or draw.
+    #[rust] child_refs: Option<InputBarChildRefs>,
+}
+
+#[derive(Clone)]
+struct InputBarChildRefs {
+    reply_preview_content: WidgetRef,
+    input_bar: ViewRef,
+    mentionable_text_input: MentionableTextInputRef,
+    open_popup_menu_button: ButtonRef,
+    send_message_button: ButtonRef,
+    cancel_reply_button: ButtonRef,
+    send_location_button: ButtonRef,
+    editing_pane: EditingPaneRef,
 }
 
 /// The microphone buttons current display state.
@@ -473,9 +490,15 @@ impl ScriptHook for RoomInputBar {
         _value: ScriptValue,
     ) {
         self.appearance = crate::theme::snapshot_for_vm(vm);
+        if apply.is_reload() {
+            self.child_refs = None;
+        }
         if apply.is_script_reapply() {
             vm.with_cx_mut(|cx| self.enable_send_message_button(cx, self.is_send_enabled));
         }
+    }
+    fn on_after_reload(&mut self, _vm: &mut ScriptVm) {
+        self.child_refs = None;
     }
     fn on_after_new(&mut self, vm: &mut ScriptVm) {
         vm.with_cx_mut(|cx| {
@@ -510,7 +533,8 @@ impl Widget for RoomInputBar {
         self.handle_speech_event(cx, event);
         self.take_assistant_draft(cx);
 
-        match event.hits(cx, self.view.widget(cx, ids!(replying_preview.reply_preview_content)).area()) {
+        let reply_preview_area = self.child_refs(cx).reply_preview_content.area();
+        match event.hits(cx, reply_preview_area) {
             // If the hit occurred on the replying message preview, jump to it.
             Hit::FingerUp(fe) if fe.is_over && fe.is_primary_hit() && fe.was_tap() => {
                 if let Some(event_id) = self.replying_to.as_ref()
@@ -569,8 +593,9 @@ impl Widget for RoomInputBar {
         // and grow it back as the editing pane slides out.
         // slide=1.0 → editing pane hidden → input_bar at full Fit height.
         // slide=0.0 → editing pane shown → input_bar at zero height.
-        let slide = self.editing_pane(cx, ids!(editing_pane)).slide();
-        let input_bar = self.view.view(cx, ids!(input_bar));
+        let refs = self.child_refs(cx).clone();
+        let slide = refs.editing_pane.slide();
+        let input_bar = refs.input_bar;
 
         // Remap slide through a steeper curve so the input_bar reaches
         // its full target height before the ExpDecay tail.
@@ -593,9 +618,7 @@ impl Widget for RoomInputBar {
             }
         }
 
-        self.view.view(cx, ids!(replying_preview))
-            .widget(cx, ids!(reply_preview_content))
-            .set_visible(cx, true);
+        refs.reply_preview_content.set_visible(cx, true);
 
         self.view.draw_walk(cx, scope, walk)
     }
@@ -608,7 +631,38 @@ impl Widget for RoomInputBar {
     }
 }
 
+#[derive(Default)]
+struct TypingBroadcast { active: bool }
+impl TypingBroadcast {
+    fn observe(&mut self, changed: bool, empty: bool) -> Option<bool> {
+        if empty && self.active { self.active=false; Some(false) }
+        else if !empty && changed { self.active=true; Some(true) }
+        else { None }
+    }
+}
+
 impl RoomInputBar {
+    fn stop_typing(&mut self) {
+        if let Some(typing) = self.typing_broadcast.observe(false,true) {
+            if let Some(kind) = &self.timeline_kind {
+                submit_async_request(MatrixRequest::SendTypingNotice {room_id:kind.room_id().clone(),typing});
+            }
+        }
+    }
+
+    fn child_refs(&mut self, cx: &mut Cx) -> &InputBarChildRefs {
+        self.child_refs.get_or_insert_with(|| InputBarChildRefs {
+            reply_preview_content: self.view.widget(cx, ids!(replying_preview.reply_preview_content)),
+            input_bar: self.view.view(cx, ids!(input_bar)),
+            mentionable_text_input: self.view.mentionable_text_input(cx, ids!(mentionable_text_input)),
+            open_popup_menu_button: self.view.button(cx, ids!(open_popup_menu_button)),
+            send_message_button: self.view.button(cx, ids!(send_message_button)),
+            cancel_reply_button: self.view.button(cx, ids!(cancel_reply_button)),
+            send_location_button: self.view.button(cx, ids!(location_preview.send_location_button)),
+            editing_pane: self.view.editing_pane(cx, ids!(editing_pane)),
+        })
+    }
+
     fn initialize_speech_controls(&mut self, cx: &mut Cx) {
         static IS_SPEECH_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let is_speech_supported = *IS_SPEECH_SUPPORTED.get_or_init(|| {
@@ -720,6 +774,7 @@ impl RoomInputBar {
         let switched_tab = if let Event::Actions(actions) = event {
             actions.iter().any(|action| matches!(action.as_widget_action().cast(), DockAction::TabWasPressed(_)))
         } else { false };
+        if switched_tab || matches!(event, Event::Background | Event::Shutdown) { self.stop_typing(); }
         if self.speech.is_some() {
             if switched_tab || matches!(event, Event::Background | Event::Shutdown) {
                 self.cancel_dictation(cx);
@@ -789,13 +844,14 @@ impl RoomInputBar {
         cx: &mut Cx,
         actions: &Actions,
     ) {
-        let mentionable_text_input = self.mentionable_text_input(cx, ids!(mentionable_text_input));
+        let refs = self.child_refs(cx).clone();
+        let mentionable_text_input = refs.mentionable_text_input;
         let text_input = mentionable_text_input.text_input_ref();
 
         // Handle a click on the microphone button, which starts or stops speech-to-text dictation.
         if self.button(cx, ids!(speech_button)).clicked(actions)
-            && self.view(cx, ids!(input_bar)).visible()
-            && !self.editing_pane(cx, ids!(editing_pane)).is_currently_shown(cx)
+            && refs.input_bar.visible()
+            && !refs.editing_pane.is_currently_shown(cx)
             && self.timeline_kind.is_some()
         {
             match self.speech_phase() {
@@ -822,7 +878,7 @@ impl RoomInputBar {
 
         // Clear the replying-to preview pane if the "cancel reply" button was clicked
         // or if the `Escape` key was pressed within the message input box.
-        if self.button(cx, ids!(cancel_reply_button)).clicked(actions)
+        if refs.cancel_reply_button.clicked(actions)
             || text_input.escaped(actions)
         {
             self.clear_replying_to(cx);
@@ -836,7 +892,7 @@ impl RoomInputBar {
             return;
         };
 
-        let open_popup_menu_button = self.button(cx, ids!(open_popup_menu_button));
+        let open_popup_menu_button = refs.open_popup_menu_button;
         if open_popup_menu_button.clicked(actions) || self.button(cx, ids!(mobile_more_button)).clicked(actions) {
             let button_rect = if self.mobile {
                 self.button(cx, ids!(mobile_more_button)).area().rect(cx)
@@ -890,7 +946,7 @@ impl RoomInputBar {
         }
 
         // Handle the send location button being clicked.
-        if self.button(cx, ids!(location_preview.send_location_button)).clicked(actions) {
+        if refs.send_location_button.clicked(actions) {
             let location_preview = self.location_preview(cx, ids!(location_preview));
             if let Some((coords, _system_time_opt)) = location_preview.get_current_data() {
                 let geo_uri = format!("{}{},{}", utils::GEO_URI_SCHEME, coords.latitude, coords.longitude);
@@ -938,12 +994,12 @@ impl RoomInputBar {
 
         // Keyboard events still reach a hidden input bar (like the send msg shortcut),
         // so we have to ignore them unless the user is allowed to send a message.
-        let can_post = self.view.view(cx, ids!(input_bar)).visible();
+        let can_post = refs.input_bar.visible();
 
         // Handle the send message button being clicked, or a `Returned` action
         // from the message text input, which already respects the user's app setting.
         if can_post && (
-            self.button(cx, ids!(send_message_button)).clicked(actions)
+            refs.send_message_button.clicked(actions)
             || text_input.returned(actions).is_some()
         ) {
             self.cancel_dictation(cx);
@@ -1006,18 +1062,12 @@ impl RoomInputBar {
 
         // If the user starts/stops typing in the message input box,
         // send a typing notice to the room and update the send_message_button state.
-        let is_text_input_empty = if let Some(new_text) = text_input.changed(actions) {
-            let is_empty = new_text.is_empty();
-            if can_post {
-                submit_async_request(MatrixRequest::SendTypingNotice {
-                    room_id: timeline_kind.room_id().clone(),
-                    typing: !is_empty,
-                });
-            }
-            is_empty
-        } else {
-            text_input.text().is_empty()
-        };
+        // Read the final composer after sending/slash commands have cleared it.
+        // Programmatic clears do not emit TextInput::Changed.
+        let is_text_input_empty = text_input.text().is_empty();
+        if let Some(typing) = self.typing_broadcast.observe(can_post && text_input.changed(actions).is_some(), is_text_input_empty || !can_post) {
+            submit_async_request(MatrixRequest::SendTypingNotice {room_id: timeline_kind.room_id().clone(), typing});
+        }
         // Only restyle the button when its enabled state actually changes,
         // not on every actions pass.
         let should_enable = !is_text_input_empty;
@@ -1041,7 +1091,7 @@ impl RoomInputBar {
         }
 
         // When the hide animation fully completes, restore the replying preview.
-        if self.view.editing_pane(cx, ids!(editing_pane)).was_hidden(actions) {
+        if refs.editing_pane.was_hidden(actions) {
             self.on_editing_pane_hidden(cx);
         }
     }
@@ -1476,6 +1526,11 @@ impl RoomInputBar {
 }
 
 impl RoomInputBarRef {
+    #[cfg(test)]
+    pub(crate) fn matrix_link_context(&self) -> Option<TimelineKind> {
+        self.borrow().and_then(|inner|inner.timeline_kind.clone())
+    }
+
     /// Shows a preview of the given event that the user is currently replying to
     /// above the message input bar.
     pub fn show_replying_to(
@@ -1583,6 +1638,7 @@ impl RoomInputBarRef {
         let Some(mut inner) = self.borrow_mut() else { return };
         let room_id = timeline_kind.room_id().to_owned();
         if inner.timeline_kind.as_ref() != Some(&timeline_kind) {
+            inner.stop_typing();
             inner.cancel_dictation(cx);
         }
         inner.room_screen_widget_uid = Some(room_screen_widget_uid);
@@ -1597,7 +1653,8 @@ impl RoomInputBarRef {
     ///
     /// If speech recognition is running, this will stop it and release the microphone.
     pub fn save_state(&self) -> RoomInputBarState {
-        let Some(inner) = self.borrow() else { return Default::default() };
+        let Some(mut inner) = self.borrow_mut() else { return Default::default() };
+        inner.stop_typing();
         let saved = RoomInputBarState {
             was_replying_preview_visible: inner.was_replying_preview_visible,
             replying_to: inner.replying_to.clone(),
@@ -1794,4 +1851,19 @@ enum ShowEditingPaneBehavior {
     RestoreExisting {
         editing_pane_state: EditingPaneState,
     },
+}
+
+#[cfg(test)]
+mod typing_broadcast_tests {
+    use super::TypingBroadcast;
+    #[test]
+    fn programmatic_send_clear_stops_typing_without_a_changed_action() {
+        let mut state=TypingBroadcast::default();
+        assert_eq!(state.observe(true,false),Some(true));
+        assert_eq!(state.observe(false,false),None);
+        assert_eq!(state.observe(false,true),Some(false));
+        assert_eq!(state.observe(false,true),None);
+        assert_eq!(state.observe(true,false),Some(true));
+        assert_eq!(state.observe(true,true),Some(false));
+    }
 }

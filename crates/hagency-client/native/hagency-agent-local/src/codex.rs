@@ -741,7 +741,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
     fn accounting_context_key(&self, scope: &Scope, owner: &str) -> Result<String> {
         let key = scope.context_key(owner)?;
         #[cfg(unix)]
-        if self.host_files.is_some() {
+        if let Some(files) = &self.host_files {
+            if files.workspace.is_shared() {
+                let pin = files.workspace.shared_pin().map_err(|_| Error::Profile("workspace identity"))?;
+                return Ok(format!("hagency-shared-files-v1:{pin}:{key}"));
+            }
             return Ok(format!("{}:{key}", FILE_CAPABILITY_VERSION));
         }
         Ok(key)
@@ -974,7 +978,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             params["allowProviderModelFallback"] = false.into();
             #[cfg(unix)]
             if self.host_files.is_some() {
-                params["dynamicTools"] = host_files::specifications();
+                params["dynamicTools"] = host_files::specifications(self.host_files.as_ref().is_some_and(|files| files.workspace.is_shared()));
             }
             "thread/start"
         };
@@ -994,7 +998,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 params["allowProviderModelFallback"] = false.into();
                 #[cfg(unix)]
                 if self.host_files.is_some() {
-                    params["dynamicTools"] = host_files::specifications();
+                    params["dynamicTools"] = host_files::specifications(self.host_files.as_ref().is_some_and(|files| files.workspace.is_shared()));
                 }
                 self.rpc("thread/start", params).await?
             }

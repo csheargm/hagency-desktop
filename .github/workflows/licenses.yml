@@ -56,6 +56,10 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.LICENSES_PUSH_TOKEN }}
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - uses: dtolnay/rust-toolchain@stable
 

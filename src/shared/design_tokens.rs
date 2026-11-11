@@ -413,7 +413,7 @@ mod tests {
                     else {vm.with_reload(|vm| crate::theme::tests::install(vm,Selection{appearance,accent}));}
                     super::script_mod(vm);
                     for (fg,bg,usage) in SEMANTIC_PAIRS {
-                        let ratio = contrast(token_hex(vm,fg),token_hex(vm,bg));
+                        let ratio = self::contrast(token_hex(vm,fg),token_hex(vm,bg));
                         if ratio < 4.5 { failures.push(format!("{appearance:?}/{accent:?}: {fg} on {bg} = {ratio:.2}:1 ({usage})")); }
                     }
                 });
@@ -442,8 +442,8 @@ mod tests {
                     else {vm.with_reload(|vm| crate::theme::tests::install(vm,Selection{appearance,accent}));}
                     super::script_mod(vm);
                     let page = token_hex(vm,"RBX_BG_CANVAS");
-                    let row = contrast(token_hex(vm,"RBX_BG_ROW_SELECTED"),page);
-                    let hover = contrast(token_hex(vm,"RBX_BG_ROW_SELECTED_HOVER"),page);
+                    let row = self::contrast(token_hex(vm,"RBX_BG_ROW_SELECTED"),page);
+                    let hover = self::contrast(token_hex(vm,"RBX_BG_ROW_SELECTED_HOVER"),page);
                     if row < 1.3 { failures.push(format!("{appearance:?}/{accent:?}: selected row {row:.2}:1 against the page")); }
                     if hover <= row { failures.push(format!("{appearance:?}/{accent:?}: hovered selected row {hover:.2}:1 isn't deeper than {row:.2}:1")); }
                 });

@@ -294,7 +294,7 @@ const REPLY_PREVIEW_BODY_BOTTOM_PADDING: f64 = 10.0;
 /// The width of the left bar alongside a reply preview.
 const REPLY_PREVIEW_BAR_WIDTH: f64 = 2.0;
 
-#[derive(Script, ScriptHook, Widget)]
+#[derive(Script, Widget)]
 pub struct CollapsiblePreview {
     #[deref] view: View,
     #[walk] walk: Walk,
@@ -313,6 +313,40 @@ pub struct CollapsiblePreview {
     #[rust] last_drawn_height: f64,
     #[rust] toggle_button_rect: Rect,
     #[rust] next_frame: NextFrame,
+    #[rust] child_refs: Option<PreviewChildRefs>,
+}
+
+#[derive(Clone)]
+struct PreviewChildRefs {
+    content: ViewRef,
+    body: WidgetRef,
+    left_bar: WidgetRef,
+    expand_button: WidgetRef,
+    collapse_button: WidgetRef,
+}
+
+impl ScriptHook for CollapsiblePreview {
+    fn on_after_apply(&mut self, _vm: &mut ScriptVm, apply: &Apply, _scope: &mut Scope, _value: ScriptValue) {
+        if apply.is_reload() {
+            self.child_refs = None;
+        }
+    }
+
+    fn on_after_reload(&mut self, _vm: &mut ScriptVm) {
+        self.child_refs = None;
+    }
+}
+
+impl CollapsiblePreview {
+    fn child_refs(&mut self, cx: &mut Cx) -> &PreviewChildRefs {
+        self.child_refs.get_or_insert_with(|| PreviewChildRefs {
+            content: self.view.view(cx, ids!(preview_content)),
+            body: self.view.widget(cx, ids!(preview_content.reply_preview_body)),
+            left_bar: self.view.widget(cx, ids!(reply_left_bar)),
+            expand_button: self.view.widget(cx, ids!(reply_expand_button)),
+            collapse_button: self.view.widget(cx, ids!(reply_collapse_button)),
+        })
+    }
 }
 
 impl Widget for CollapsiblePreview {
@@ -325,8 +359,13 @@ impl Widget for CollapsiblePreview {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        let preview_content = self.view.view(cx, ids!(preview_content));
-        let left_bar = self.view.widget(cx, ids!(reply_left_bar));
+        let PreviewChildRefs {
+            content: preview_content,
+            body: reply_body,
+            left_bar,
+            expand_button,
+            collapse_button,
+        } = self.child_refs(cx).clone();
 
         // We only use the off-screen cachedview for too-tall reply previews that should be collapsed,
         // as they need the fade effect. Normal small reply previews just draw directly.
@@ -348,7 +387,7 @@ impl Widget for CollapsiblePreview {
         );
         preview_content.draw_all(cx, scope);
         let content_rect = preview_content.area().rect(cx);
-        let body_rect = self.view.widget(cx, ids!(preview_content.reply_preview_body)).area().rect(cx);
+        let body_rect = reply_body.area().rect(cx);
         let used = cx.turtle().used();
         // Obtain the true height of the reply body to determine if it needs to be collapsed.
         if body_rect.pos.y > content_rect.pos.y {
@@ -389,8 +428,6 @@ impl Widget for CollapsiblePreview {
         // The "Show more"/"Show less" button is drawn below the content,
         // with a left indent indented to align with the text.
         self.toggle_button_rect = Rect::default();
-        let expand_button = self.view.widget(cx, ids!(reply_expand_button));
-        let collapse_button = self.view.widget(cx, ids!(reply_collapse_button));
         if self.collapsible && self.expandable {
             let (shown, hidden) = if self.is_expanded {
                 (&collapse_button, &expand_button)
@@ -460,7 +497,7 @@ impl CollapsiblePreviewRef {
 
     /// Area of the inner reply preview content: avatar, username, and body.
     pub fn content_area(&self, cx: &mut Cx) -> Area {
-        let Some(inner) = self.borrow() else { return Area::Empty };
-        inner.view.widget(cx, ids!(preview_content)).area()
+        let Some(mut inner) = self.borrow_mut() else { return Area::Empty };
+        inner.child_refs(cx).content.area()
     }
 }

@@ -1,6 +1,8 @@
 //! Offline selection fixture using the production chat timeline and message bodies.
 use makepad_widgets::*;
 use rinx::shared::html_or_plaintext::HtmlOrPlaintextWidgetRefExt;
+#[cfg(feature = "palpo-instrument")]
+use rinx::room::typing_notice::TypingNoticeWidgetRefExt;
 
 app_main!(App);
 
@@ -18,6 +20,13 @@ script_mod! {
                         width: Fill height: Fit flow: Right
                         inspect := Button {text: "Inspect" grab_key_focus: false}
                         reset := Button {text: "Reset position" grab_key_focus: false}
+                        spinner_container := View {
+                            width: 24 height: 24 flow: Right align: Align{x: 0.5 y: 0.5}
+                            activity_spinner := PacedLoadingSpinner {
+                                width: 20 height: 20 visible: false
+                                draw_bg +: {color: mod.widgets.RINX_ACCENT stroke_width: 2.0}
+                            }
+                        }
                     }
                     result := Label {width: Fill height: 65 text: "Ready"}
                     timeline := Timeline {
@@ -30,6 +39,10 @@ script_mod! {
                             }
                         }
                     }
+                    typing_container := View {
+                        width: Fill height: Fit flow: Down
+                        typing_notice := TypingNotice {}
+                    }
                 }
             }
         }
@@ -40,6 +53,12 @@ script_mod! {
 struct App {
     #[live] ui: WidgetRef,
     #[rust] link_clicks: usize,
+    #[cfg(feature = "palpo-instrument")]
+    #[rust] measured_draws: u64,
+    #[cfg(feature = "palpo-instrument")]
+    #[rust] measured_timers: u64,
+    #[cfg(feature = "palpo-instrument")]
+    #[rust] block_timers: bool,
 }
 
 impl MatchEvent for App {
@@ -50,6 +69,8 @@ impl MatchEvent for App {
     }
 
     fn handle_draw(&mut self, cx: &mut Cx, event: &DrawEvent) {
+        #[cfg(feature = "palpo-instrument")]
+        { self.measured_draws += 1; }
         let mut draw = CxDraw::new(cx, event);
         let mut cx = Cx2d::new(&mut draw);
         while let Some(widget) = self.ui.draw(&mut cx, &mut Scope::empty()).step() {
@@ -110,8 +131,59 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        #[cfg(feature = "palpo-instrument")]
+        if matches!(event, Event::Timer(_)) { self.measured_timers += 1; }
+        #[cfg(feature = "palpo-instrument")]
+        if let Event::Custom(command) = event {
+            match command.as_str() {
+                "perf:typing-show" => self.ui.typing_notice(cx, ids!(typing_notice))
+                    .show_or_hide(cx, &["Alice".to_owned()]),
+                "perf:typing-hide" => self.ui.typing_notice(cx, ids!(typing_notice))
+                    .show_or_hide(cx, &[]),
+                "perf:typing-switch" => self.ui.typing_notice(cx, ids!(typing_notice)).reset(cx),
+                "perf:typing-reapply" => cx.request_style_reload(),
+                "perf:typing-obscure" | "perf:typing-obscure-blocked" => {
+                    self.ui.view(cx, ids!(typing_container)).set_visible(cx, false);
+                    self.block_timers = command == "perf:typing-obscure-blocked";
+                }
+                "perf:typing-reveal" => {
+                    self.block_timers = false;
+                    self.ui.view(cx, ids!(typing_container)).set_visible(cx, true);
+                }
+                "perf:spinner-show" => self.ui.widget(cx, ids!(activity_spinner)).set_visible(cx, true),
+                "perf:spinner-hide" => self.ui.widget(cx, ids!(activity_spinner)).set_visible(cx, false),
+                "perf:spinner-obscure" | "perf:spinner-obscure-blocked" => {
+                    self.ui.view(cx, ids!(spinner_container)).set_visible(cx, false);
+                    self.block_timers = command == "perf:spinner-obscure-blocked";
+                }
+                "perf:spinner-reveal" => {
+                    self.block_timers = false;
+                    self.ui.view(cx, ids!(spinner_container)).set_visible(cx, true);
+                }
+                "perf:spinner-reapply" => cx.request_style_reload(),
+                "perf:start" => {
+                    self.measured_draws = 0;
+                    self.measured_timers = 0;
+                    cx.perf_monitor = Default::default();
+                    cx.perf_monitor.set_enabled(true);
+                }
+                "perf:stop" => {
+                    let frames = cx.perf_monitor.frames_painted();
+                    cx.perf_monitor.set_enabled(false);
+                    if let Some(path) = std::env::var_os("HAGENCY_PERF_OUTPUT") {
+                        std::fs::write(path, serde_json::json!({
+                            "frames_painted": frames, "draw_events": self.measured_draws,
+                            "timer_events": self.measured_timers,
+                        }).to_string()).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
         self.match_event(cx, event);
         if !matches!(event, Event::Draw(_)) {
+            #[cfg(feature = "palpo-instrument")]
+            if self.block_timers && matches!(event, Event::Timer(_)) { return; }
             self.ui.handle_event(cx, event, &mut Scope::empty());
         }
     }

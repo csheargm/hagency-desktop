@@ -111,17 +111,17 @@ impl MiniAppsPanel {
         self.view.view(cx, ids!(app_content)).set_visible(cx, false);
         self.view.view(cx, ids!(approval)).set_visible(cx, false);
         self.view
-            .label(cx, ids!(account_login_panel.scroll.account))
+            .label(cx, ids!(account_login_panel.sheet_scroll.account))
             .set_text(cx, p.flow.account());
         let (title, body) = words(&p.state);
         self.view
-            .label(cx, ids!(account_login_panel.scroll.status))
+            .label(cx, ids!(account_login_panel.sheet_scroll.status))
             .set_text(cx, crate::i18n::tr(title));
         self.view
-            .label(cx, ids!(account_login_panel.scroll.explanation))
+            .label(cx, ids!(account_login_panel.sheet_scroll.explanation))
             .set_text(cx, crate::i18n::tr(body));
         self.view
-            .label(cx, ids!(account_login_panel.scroll.namespace))
+            .label(cx, ids!(account_login_panel.sheet_scroll.namespace))
             .set_text(cx, p.flow.namespace());
         let review = p.state == "review";
         let open = p.state == "awaiting_authorization";
@@ -353,11 +353,11 @@ mod tests {
                 .set_visible(&mut cx, true);
             panel
                 .view
-                .label(&cx, ids!(account_login_panel.scroll.account))
+                .label(&cx, ids!(account_login_panel.sheet_scroll.account))
                 .set_text(&mut cx, "@original-owner:matrix.example");
             panel
                 .view
-                .label(&cx, ids!(account_login_panel.scroll.namespace))
+                .label(&cx, ids!(account_login_panel.sheet_scroll.namespace))
                 .set_text(&mut cx, "account_0123456789abcdef0123456789abcdef");
             let pass = DrawPass::new(&mut cx);
             pass.set_size(&mut cx, dvec2(width, height));
@@ -373,11 +373,11 @@ mod tests {
                 let (title, body) = words(state);
                 panel
                     .view
-                    .label(&cx, ids!(account_login_panel.scroll.status))
+                    .label(&cx, ids!(account_login_panel.sheet_scroll.status))
                     .set_text(&mut cx, crate::i18n::text_for(language, title));
                 panel
                     .view
-                    .label(&cx, ids!(account_login_panel.scroll.explanation))
+                    .label(&cx, ids!(account_login_panel.sheet_scroll.explanation))
                     .set_text(&mut cx, crate::i18n::text_for(language, body));
                 let primary = state == "review" || state == "awaiting_authorization";
                 panel

@@ -4428,11 +4428,23 @@ A.work_enabled = fn(){
     for feature in features {if feature == "shared-work-history-v1" {return true}}
     return false
 }
+A.pool_work_enabled = fn(){
+    if H.session == nil {return false}
+    let {features=nil}=H.session
+    if !features.is_object() && !features.is_array() {return false}
+    for feature in features {if feature == "pool-work-history-v1" {return true}}
+    return false
+}
+A.work_source = fn(row){
+    let {poolName=nil,projectName=nil}=row
+    if poolName != nil {return poolName}
+    return projectName
+}
 A.open_work_list = fn(project,after,page){
     if H.busy {return}
     H.work_list=nil H.work_list_project=project H.work_list_after=after H.work_list_page=page H.page="agent_work_list"
     if !A.work_enabled() {A.redraw() return}
-    A.request("hagency.agents.work.list",{projectId:project after:after limit:16},fn(data){
+    A.request("hagency.agents.work.list",{projectId:project after:after limit:16 includePoolAgents:A.pool_work_enabled()},fn(data){
         if data.protocol != "hagency-management-v1" {H.notice=A.agent_reason("management_agent_work_invalid") return}
         H.work_list=data
     })
@@ -4472,7 +4484,7 @@ A.work_reply = fn(state){
 }
 A.work_time = fn(value){if value == nil {return A.t("Not recorded", "尚未记录")} return value}
 A.work_name = fn(){
-    if H.work_from_list && H.work_context != nil && H.work_context.requestId == H.agent_id {return H.work_context.agentName+" · "+H.work_context.projectName}
+    if H.work_from_list && H.work_context != nil && H.work_context.requestId == H.agent_id {return H.work_context.agentName+" · "+A.work_source(H.work_context)}
     if H.agent_selected != nil && H.agent_selected.id == H.agent_id {return H.agent_selected.definition.name}
     return H.agent_id
 }
@@ -9840,9 +9852,9 @@ A.render_page = fn(){
                 mod.widgets.HagencyCopy{text:A.t("Cancel or revoke requests within your project role and follow recorded cleanup progress.", "按你的项目角色取消或撤销申请，并查看已记录的清理进度。")}
                 mod.widgets.HagencyActions{overview_cleanup := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View removal status", "查看移除状态") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.inbox on_click: || A.open_removals(nil,nil,1)}}
             }}
-            if H.entry_role=="manager" && A.work_enabled() {mod.widgets.HagencyCard{
+            if A.work_enabled() {mod.widgets.HagencyCard{
                 mod.widgets.HagencyCardHeading{mod.widgets.HagencyBadge{mod.widgets.HagencyGlyph{draw_icon.svg:mod.rinx_icons.activity}} mod.widgets.HagencyTitle{text:A.t("Agent work history","Agent 任务历史")}}
-                mod.widgets.HagencyCopy{text:A.t("Read recorded work and per-call usage for projects you manage or administer.", "查看你管理或负责审批的项目任务记录与每次调用的用量。")}
+                mod.widgets.HagencyCopy{text:A.t("Read recorded work and per-call usage for project and resource-pool Agents you can access.", "查看你有权访问的项目与资源池 Agent 任务记录及每次调用的用量。")}
                 mod.widgets.HagencyActions{overview_work := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View work history", "查看任务历史") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.inbox on_click: || A.open_work_list(nil,nil,1)}}
             }}
             manager_work_tools := mod.widgets.HagencyCard{visible:H.entry_role=="manager"
@@ -15536,7 +15548,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                 work_list_refresh := mod.widgets.HagencyButton{enabled:!H.busy && A.work_enabled() text:A.t("Refresh page", "刷新此页") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.refresh on_click: || A.open_work_list(H.work_list_project,H.work_list_after,H.work_list_page)}
             }
             mod.widgets.HagencyTitle{text:A.t("Agent work history", "Agent 任务历史")}
-            mod.widgets.HagencyCopy{text:A.t("Recorded work for projects you manage or administer. History remains readable when new agent requests are disabled.", "查看你管理或负责审批的项目任务记录。即使暂停新的 Agent 申请，历史仍可查看。")}
+            mod.widgets.HagencyCopy{text:A.t("Recorded work for your project Agents and resource-pool Agents. History remains readable when new agent requests are disabled.", "查看你有权访问的项目与资源池 Agent 任务记录。即使暂停新的 Agent 申请，历史仍可查看。")}
             if !A.work_enabled() {mod.widgets.HagencyCopy{text:A.t("Not enabled on this server", "此服务器尚未启用")}} else {mod.widgets.HagencySection{
                 if H.work_list == nil {mod.widgets.HagencyCopy{text:if H.busy {A.t("Reading work records…", "正在读取任务记录…")} else {A.t("History could not be read. Refresh this page to try again.", "未能读取历史，请刷新此页重试。")}}}
                 if H.work_list != nil {mod.widgets.HagencySection{
@@ -15549,7 +15561,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                     for row in H.work_list.requests.items {mod.widgets.HagencySection{
                         mod.widgets.HagencyDivider{}
                         mod.widgets.HagencySectionTitle{text:row.agentName}
-                        mod.widgets.HagencyDetailRow{mod.widgets.HagencyFieldLabel{text:A.t("Project", "项目")} mod.widgets.HagencyCopy{text:row.projectName}}
+                        mod.widgets.HagencyDetailRow{mod.widgets.HagencyFieldLabel{text:A.t("Source", "来源")} mod.widgets.HagencyCopy{text:A.work_source(row)}}
                         mod.widgets.HagencyHint{text:row.requestId}
                         mod.widgets.HagencyActions{work_list_open := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View work history", "查看任务历史") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.inbox on_click: || A.open_work_entry(row)}}
                     }}

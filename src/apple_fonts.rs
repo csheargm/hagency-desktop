@@ -1,9 +1,19 @@
 //! Shared Apple font setup; Rinx selects it before registering widgets.
 pub(crate) use article_makepad::apple_fonts::install;
 
+/// Lays PingFang over the base themes now and over every later build of them.
+/// JIT PORT: upstream builds the base themes again inside `widgets_mod` when a
+/// style sheet is worn, which drops faces set on them before it; the fork built
+/// them once per module run, so one `install` between `theme_mod` and
+/// `widgets_mod` was enough.
+pub(crate) fn install_over_theme_builds(vm: &mut makepad_widgets::ScriptVm) {
+    makepad_widgets::set_app_theme_fonts(vm, Some(install));
+    install(vm);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::install;
+    use super::install_over_theme_builds;
     use makepad_widgets::*;
     use makepad_widgets::makepad_draw::{
         cx_draw::CxDraw,
@@ -14,7 +24,7 @@ mod tests {
     fn register(vm: &mut ScriptVm) {
         makepad_widgets::theme_mod(vm);
         script_eval!(vm, { mod.theme = mod.themes.light });
-        install(vm);
+        install_over_theme_builds(vm);
         makepad_widgets::widgets_mod(vm);
         desktop_style::apply_widgets(vm);
         crate::app::register_widgets(vm);

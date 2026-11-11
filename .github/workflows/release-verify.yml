@@ -47,6 +47,10 @@ jobs:
         with:
           ref: ${{ inputs.source_commit }}
           persist-credentials: false
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - name: Validate binary source
         env:
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}

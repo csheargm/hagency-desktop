@@ -275,9 +275,9 @@ impl OwnedRuntime {
             return Err(RuntimeError::Authorization);
         }
         config.binding_id = ALL_ROOMS.into();
-        // An Agent-wide start grants only chat execution. Room-scoped host file
-        // access remains an explicit separate permission and is never inherited.
-        if config.host_files {
+        // Agent-wide starts do not inherit private Room file access. Shared
+        // workspace access is separately selected and applies only to Codex.
+        if config.host_files || (config.shared_workspace && runtime::kind(&config.credential_ref) != runtime::Kind::Codex) {
             return Err(RuntimeError::Profile);
         }
         let root = console
@@ -293,6 +293,7 @@ impl OwnedRuntime {
             device.owner_mxid(),
             &config,
         )?;
+        config.shared_workspace_pin = if config.shared_workspace { Some(shared_workspace_pin(&config.profile.cwd)?) } else { None };
         let (path, profile_id) = intent_location(&console, &device)?;
 
         let key = identity(&device, &config.agent_id);
@@ -317,6 +318,8 @@ impl OwnedRuntime {
 
             effort: config.profile.effort.clone(),
             host_files: false,
+            shared_workspace: config.shared_workspace,
+            shared_workspace_pin: config.shared_workspace_pin.clone(),
         };
         save_options(
             &path.with_file_name("agent-service-options.json"),
@@ -380,7 +383,7 @@ impl OwnedRuntime {
                                 manager.stop(&host, &intent.agent_id, binding).await?;
                             } else if child.phase == "stopped" && attempted.remove(binding) {
                                 schedule_retry(&mut retries,binding,child.last_error.unwrap_or("room_worker_stopped"),Instant::now());
-                            } else if child.phase == "online_chat_only" {
+                            } else if matches!(child.phase, "online_chat_only" | "online") {
                                 retries.remove(binding);
                             }
                         }
@@ -508,7 +511,7 @@ impl OwnedRuntime {
         let running = runtime.as_ref().is_some_and(|status| {
             status.phase != "stopped"
                 && status.bindings.iter().any(|child| {
-                    child.phase == "online_chat_only" || child.phase.starts_with("executing_")
+                    matches!(child.phase, "online_chat_only" | "online") || child.phase.starts_with("executing_")
                 })
         });
         let native_tools = runtime.as_ref().is_some_and(|status| status.native_tools);
@@ -867,6 +870,8 @@ mod tests {
 
             effort: "low".into(),
             host_files: false,
+            shared_workspace: false,
+            shared_workspace_pin: None,
         };
         let global = intended("a", ALL_ROOMS);
         for intent in [
@@ -909,6 +914,8 @@ mod tests {
 
             effort: "low".into(),
             host_files: false,
+            shared_workspace: false,
+            shared_workspace_pin: None,
         };
         let values = RuntimeIntents {
             version: RUNTIME_STATE_VERSION,

@@ -37,6 +37,11 @@ impl AppMain for App {
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if matches!(event, Event::Startup)
+            && let Ok(scenario) = std::env::var("HAGENCY_PICKER_REVIEW") {
+            self.ui.mobile_chat_info(cx, ids!(picker)).review_agent_picker(cx, &scenario);
+            self.ui.drop_down(cx, ids!(picker.my_agents)).set_selected_item(cx, 0);
+        }
         if let Event::Custom(command) = event {
             if matches!(command.as_str(), "theme:dark" | "theme:light") {
                 rinx::theme::select(cx, rinx::theme::Selection {

@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 use makepad_widgets::*;
+use crate::matrix_links::Controller as MatrixLinkController;
 use matrix_sdk::{RoomState, ruma::{OwnedEventId, OwnedRoomId, OwnedUserId, RoomId}};
 use serde::{Deserialize, Serialize};
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
         event_source_modal::{EventSourceModalAction, EventSourceModalWidgetRefExt}, invite_modal::{InviteModalAction, InviteModalWidgetRefExt}, main_desktop_ui::MainDesktopUiAction, navigation_tab_bar::{NavigationBarAction, SelectedTab}, new_message_context_menu::NewMessageContextMenuWidgetRefExt, room_context_menu::RoomContextMenuWidgetRefExt, room_screen::{InviteAction, MessageAction, clear_timeline_states, invalidate_single_timeline_state}, rooms_list::{RoomsListAction, RoomsListRef, RoomsListUpdate, clear_all_invited_rooms, enqueue_rooms_list_update}
     }, join_leave_room_modal::{
         JoinLeaveModalKind, JoinLeaveRoomModalAction, JoinLeaveRoomModalWidgetRefExt
-    }, login::login_screen::LoginAction, logout::logout_confirm_modal::{LogoutAction, LogoutConfirmModalAction, LogoutConfirmModalWidgetRefExt}, persistence, profile::user_profile_cache::clear_user_profile_cache, room::BasicRoomDetails, settings::app_preferences::{AppPreferences, UiZoom}, shared::{confirmation_modal::{ConfirmationModalContent, ConfirmationModalWidgetRefExt}, context_menu::{ContextMenuClosed, menu_position_margin}, image_viewer::{ImageViewerAction, ImageViewerWidgetRefExt, LoadState}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{DirectMessageRoomAction, MatrixRequest, TimelineKind, current_user_id, submit_async_request}, utils::RoomNameId, verification::VerificationAction, verification_modal::{
+    }, login::login_screen::LoginAction, logout::logout_confirm_modal::{LogoutAction, LogoutConfirmModalAction, LogoutConfirmModalWidgetRefExt}, persistence, profile::user_profile_cache::clear_user_profile_cache, room::BasicRoomDetails, settings::app_preferences::{AppPreferences, UiZoom}, shared::{confirmation_modal::{ConfirmationModalContent, ConfirmationModalWidgetRefExt}, context_menu::{ContextMenuClosed, menu_position_margin}, image_viewer::{ImageViewerAction, ImageViewerWidgetRefExt, LoadState}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{DirectMessageRoomAction, MatrixRequest, TimelineKind, current_user_id, submit_async_request}, utils::RoomNameId, verification::{VerificationAction, ScopedVerificationAction}, verification_modal::{
         VerificationModalAction,
         VerificationModalWidgetRefExt,
     }
@@ -238,6 +239,7 @@ app_main!(App);
 
 #[derive(Script)]
 pub struct App {
+    #[rust] matrix_link_navigation: MatrixLinkController,
     #[live] ui: WidgetRef,
     /// Hosted inside OctoSense: `ui` is the window-less `RinxContent`, and the host
     /// owns the window, its geometry and menus.
@@ -379,6 +381,12 @@ impl MatchEvent for App {
         }
 
         for action in actions {
+            let effects = self.matrix_link_navigation.observe_navigation(action);
+            self.apply_matrix_link_effects(cx, effects);
+            if let Some(link) = action.downcast_ref::<crate::matrix_links::LinkAction>() {
+                let effects = self.matrix_link_navigation.action(link);
+                self.apply_matrix_link_effects(cx, effects);
+            }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
                 if crate::hagency::pending_approvals::apply(cx, update) {
                     cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
@@ -422,7 +430,7 @@ impl MatchEvent for App {
                     let text = crate::hagency::pending_questions::announcement(&agent_name);
                     enqueue_popup_notification(text.clone(), PopupKind::Info, Some(20.0));
                     // A no-op on backends without system notifications.
-                    cx.show_notification(&agent_name, &text);
+                    crate::jit_compat::show_notification(cx, &agent_name, &text);
                 }
                 self.ui.redraw(cx);
             }
@@ -996,7 +1004,9 @@ impl MatchEvent for App {
             // Therefore, we cannot use `as_widget_action().cast()` to match them.
             //
             // Note: other verification actions are handled by the verification modal itself.
-            if let Some(VerificationAction::RequestReceived(state)) = action.downcast_ref() {
+            if let Some(scoped) = action.downcast_ref::<ScopedVerificationAction>()
+                && scoped.scope.is_current()
+                && let VerificationAction::RequestReceived(state) = &scoped.action {
                 self.ui.verification_modal(cx, ids!(verification_modal.content))
                     .initialize_with_data(cx, state.clone());
                 self.ui.modal(cx, ids!(verification_modal)).open(cx);
@@ -1233,18 +1243,10 @@ impl App {
         let Some(workspace) = host.take_for_dock(cx, window) else { return };
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).restore_workspace(cx, workspace);
         self.ui.redraw(cx);
+        // JIT PORT: upstream queues ShowWindow, which brings the window in front
+        // and activates the app without re-entering AppKit from this handler.
         #[cfg(target_os = "macos")]
-        if let Some(main) = self.ui.window(cx, ids!(main_window)).window_id() {
-            // Activate outside the UI borrow: AppKit may re-enter the event handler.
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                use makepad_widgets::makepad_platform::os::apple::macos::macos_app::{
-                    activate_cocoa_window_on_pointer_down, try_with_macos_app,
-                };
-                if let Some(native) = try_with_macos_app(|app| app.cocoa_window_for_id(main)).flatten() {
-                    activate_cocoa_window_on_pointer_down(native);
-                }
-            });
-        }
+        self.ui.window(cx, ids!(main_window)).set_visible(cx, true);
     }
 
     fn sync_native_browser_overlays(&self, cx: &mut Cx) {
@@ -1258,7 +1260,32 @@ impl App {
             .set_overlay_occluded(cx, occluded);
     }
 
+    fn apply_matrix_link_effects(&mut self, cx: &mut Cx, effects: Vec<crate::matrix_links::Effect>) {
+        use crate::matrix_links::Effect;
+        for effect in effects {
+            match effect {
+                Effect::CloseJoin => self.ui.modal(cx, ids!(join_leave_modal)).close(cx),
+                Effect::Join {ticket, details, is_space} if ticket.is_current() => {
+                    self.ui.join_leave_room_modal(cx, ids!(join_leave_modal.content)).set_kind(cx,
+                        JoinLeaveModalKind::JoinMatrixLink {details: *details, is_space, ticket}, false);
+                    self.ui.modal(cx, ids!(join_leave_modal)).open(cx);
+                }
+                Effect::Navigate(navigation) if navigation.is_current() => {
+                    crate::matrix_links::publish_navigation(cx, navigation);
+                }
+                Effect::Error(epoch, error) => crate::matrix_links::publish_error(epoch, error),
+                _ => (),
+            }
+        }
+    }
+
     fn clear_session_ui(&mut self, cx: &mut Cx) {
+        self.matrix_link_navigation.cancel();
+        {
+            use crate::settings::crypto_settings::CryptoSettingsWidgetRefExt;
+            self.ui.crypto_settings(cx, ids!(encryption_recovery)).clear(cx);
+        }
+        self.ui.verification_modal(cx, ids!(verification_modal.content)).clear(cx);
         self.lifecycle.last_app_state_save = None;
         self.pending_signup_navigation = None;
         self.ui.image_viewer(cx, ids!(image_viewer_modal.content)).reset(cx);
@@ -1413,7 +1440,7 @@ impl AppMain for App {
         });
         crate::theme::init_standalone(vm);
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        crate::apple_fonts::install(vm);
+        crate::apple_fonts::install_over_theme_builds(vm); // JIT PORT: see the fn
         makepad_widgets::widgets_mod(vm);
         makepad_widgets::desktop_style::apply_widgets(vm);
         register_widgets(vm);
@@ -1421,6 +1448,17 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        crate::shared::system_browser::handle_event(cx, event);
+        if let Event::AppOpen(open) = event {
+            crate::matrix_links::handle_app_open(cx, open);
+        }
+        let effects = self.matrix_link_navigation.poll();
+        self.apply_matrix_link_effects(cx, effects);
+        if matches!(event, Event::BackPressed {..} | Event::KeyDown(KeyEvent {key_code: KeyCode::Escape, ..}))
+            && self.matrix_link_navigation.cancel_loading() {
+            event.back_pressed();
+            return;
+        }
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
@@ -1782,7 +1820,7 @@ impl App {
                         key: KeyCode::KeyQ,
                         shift: false,
                         enabled: true,
-                    }],
+                    dock: false,}],
                 },
                 MacosMenu::Sub {
                     name: "View".into(),
@@ -1793,14 +1831,14 @@ impl App {
                             key: KeyCode::Equals,
                             shift: true,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Item {
                             name: "Zoom Out".into(),
                             command: live_id!(zoom_out),
                             key: KeyCode::Minus,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Line,
                         MacosMenu::Item {
                             name: "Reset Zoom".into(),
@@ -1808,7 +1846,7 @@ impl App {
                             key: KeyCode::Key0,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                     ],
                 },
             ],
@@ -2203,6 +2241,27 @@ impl AppState {
     }
 }
 
+/// Navigation intents that replace an in-flight permalink.
+pub(crate) fn workspace_navigation(action: &Action) -> bool {
+    matches!(action.downcast_ref::<NavigationBarAction>(), Some(
+        NavigationBarAction::GoToTab(_) | NavigationBarAction::GoToHome
+        | NavigationBarAction::GoToAddRoom | NavigationBarAction::GoToSpace {..}
+        | NavigationBarAction::OpenSettings | NavigationBarAction::OpenOwnProfile
+        | NavigationBarAction::NewChat))
+        || matches!(action.downcast_ref::<AppStateAction>(), Some(AppStateAction::NavigateToRoom {..}))
+        || action.downcast_ref::<crate::home::room_history::RoomHistoryAction>().is_some()
+        || action.downcast_ref::<HagencyAction>().is_some()
+        || matches!(action.downcast_ref::<crate::home::main_desktop_ui::MainDesktopUiAction>(),
+            Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))
+        || matches!(action.downcast_ref::<WebBrowserAction>(),
+            Some(WebBrowserAction::Open(_) | WebBrowserAction::OpenMarkdown {..} | WebBrowserAction::ReadArticle {..}))
+        || matches!(action.downcast_ref::<MiniAppsAction>(), Some(MiniAppsAction::Open | MiniAppsAction::OpenAgent | MiniAppsAction::OpenReviewed))
+        || matches!(action.downcast_ref::<ThemeStudioAction>(), Some(ThemeStudioAction::Open))
+        || matches!(action.downcast_ref::<AgentAccessAction>(), Some(AgentAccessAction::Open))
+        || matches!(action.downcast_ref::<SpaceManagementAction>(), Some(SpaceManagementAction::Open {..}))
+}
+
+
 #[cfg(test)]
 mod session_state_tests {
     use super::*;
@@ -2282,8 +2341,10 @@ mod restore_owner_tests {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct SavedDockState {
     /// All items contained in the dock, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::dock_items")]
     pub dock_items: HashMap<LiveId, DockItem>,
     /// The rooms that are currently open, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::live_id_map")]
     pub open_rooms: HashMap<LiveId, SelectedRoom>,
     /// The order in which room/thread tabs were last viewed,
     /// from oldest at the front to most recent at the end.

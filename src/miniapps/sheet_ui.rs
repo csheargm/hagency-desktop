@@ -211,76 +211,76 @@ impl MiniAppsPanel {
             id!(glyph_publish), id!(glyph_change), id!(glyph_people), id!(glyph_renew), id!(glyph_maximum),
             id!(glyph_working), id!(glyph_done), id!(glyph_failed), id!(glyph_unsure),
         ] {
-            show(self, cx, &[id!(scroll), id!(heading), id!(icons), badge], badge == icon);
+            show(self, cx, &[id!(sheet_scroll), id!(heading), id!(icons), badge], badge == icon);
         }
-        self.view.label(cx, &at(&[id!(scroll), id!(heading), id!(title)])).set_text(cx, &v.title);
-        text(self, cx, &[id!(scroll), id!(heading), id!(pool)], &v.pool);
+        self.view.label(cx, &at(&[id!(sheet_scroll), id!(heading), id!(title)])).set_text(cx, &v.title);
+        text(self, cx, &[id!(sheet_scroll), id!(heading), id!(pool)], &v.pool);
         // The hero: before → after in big numbers, then one sentence.
-        show(self, cx, &[id!(scroll), id!(hero)], v.hero_visible());
-        text(self, cx, &[id!(scroll), id!(hero), id!(caption)], &v.caption);
+        show(self, cx, &[id!(sheet_scroll), id!(hero)], v.hero_visible());
+        text(self, cx, &[id!(sheet_scroll), id!(hero), id!(caption)], &v.caption);
         for (slot, figure) in [(id!(before), &v.before), (id!(after), &v.after)] {
-            show(self, cx, &[id!(scroll), id!(hero), id!(figures), slot], figure.is_some());
+            show(self, cx, &[id!(sheet_scroll), id!(hero), id!(figures), slot], figure.is_some());
             let figure = figure.clone().unwrap_or_default();
-            text(self, cx, &[id!(scroll), id!(hero), id!(figures), slot, id!(value)], &figure.value);
-            text(self, cx, &[id!(scroll), id!(hero), id!(figures), slot, id!(tag)], &figure.tag);
+            text(self, cx, &[id!(sheet_scroll), id!(hero), id!(figures), slot, id!(value)], &figure.value);
+            text(self, cx, &[id!(sheet_scroll), id!(hero), id!(figures), slot, id!(tag)], &figure.tag);
         }
-        show(self, cx, &[id!(scroll), id!(hero), id!(figures)], v.after.is_some());
-        show(self, cx, &[id!(scroll), id!(hero), id!(figures), id!(arrow)], v.before.is_some() && v.after.is_some());
-        text(self, cx, &[id!(scroll), id!(hero), id!(lead)], &v.lead);
-        text(self, cx, &[id!(scroll), id!(status)], &v.status);
-        let mut status = self.view.label(cx, &at(&[id!(scroll), id!(status)]));
+        show(self, cx, &[id!(sheet_scroll), id!(hero), id!(figures)], v.after.is_some());
+        show(self, cx, &[id!(sheet_scroll), id!(hero), id!(figures), id!(arrow)], v.before.is_some() && v.after.is_some());
+        text(self, cx, &[id!(sheet_scroll), id!(hero), id!(lead)], &v.lead);
+        text(self, cx, &[id!(sheet_scroll), id!(status)], &v.status);
+        let mut status = self.view.label(cx, &at(&[id!(sheet_scroll), id!(status)]));
         match v.tone {
             SheetTone::Failed => script_apply_eval!(cx, status, {draw_text +: {color: mod.widgets.RINX_DANGER_FG}}),
             SheetTone::Unsure => script_apply_eval!(cx, status, {draw_text +: {color: mod.widgets.RINX_WARNING_FG}}),
             SheetTone::Done => script_apply_eval!(cx, status, {draw_text +: {color: mod.widgets.RINX_SUCCESS_FG}}),
             _ => script_apply_eval!(cx, status, {draw_text +: {color: mod.widgets.RINX_INK}}),
         }
-        show(self, cx, &[id!(scroll), id!(problem_banner)], !v.problem.is_empty());
-        text(self, cx, &[id!(scroll), id!(problem_banner), id!(problem)], &v.problem);
-        show(self, cx, &[id!(scroll), id!(caution)], !v.caution.is_empty());
-        self.view.label(cx, &at(&[id!(scroll), id!(caution), id!(caution_text)])).set_text(cx, &v.caution);
-        text(self, cx, &[id!(scroll), id!(change)], v.notice.as_deref().unwrap_or_default());
+        show(self, cx, &[id!(sheet_scroll), id!(problem_banner)], !v.problem.is_empty());
+        text(self, cx, &[id!(sheet_scroll), id!(problem_banner), id!(problem)], &v.problem);
+        show(self, cx, &[id!(sheet_scroll), id!(caution)], !v.caution.is_empty());
+        self.view.label(cx, &at(&[id!(sheet_scroll), id!(caution), id!(caution_text)])).set_text(cx, &v.caution);
+        text(self, cx, &[id!(sheet_scroll), id!(change)], v.notice.as_deref().unwrap_or_default());
         // Grouped facts; the first visible row has no line above it.
-        show(self, cx, &[id!(scroll), id!(facts)], !v.facts.is_empty());
-        text(self, cx, &[id!(scroll), id!(facts), id!(facts_label)], &v.facts_label);
+        show(self, cx, &[id!(sheet_scroll), id!(facts)], !v.facts.is_empty());
+        text(self, cx, &[id!(sheet_scroll), id!(facts), id!(facts_label)], &v.facts_label);
         for (index, slot) in FACTS.iter().enumerate() {
             let fact = v.facts.get(index);
-            show(self, cx, &[id!(scroll), id!(facts), *slot], fact.is_some());
+            show(self, cx, &[id!(sheet_scroll), id!(facts), *slot], fact.is_some());
             let fact = fact.cloned().unwrap_or_default();
-            show(self, cx, &[id!(scroll), id!(facts), *slot, id!(line)], index > 0);
-            self.view.label(cx, &at(&[id!(scroll), id!(facts), *slot, id!(body), id!(label)])).set_text(cx, &fact.label);
-            text(self, cx, &[id!(scroll), id!(facts), *slot, id!(body), id!(value)], &fact.value);
-            text(self, cx, &[id!(scroll), id!(facts), *slot, id!(note)], &fact.note);
+            show(self, cx, &[id!(sheet_scroll), id!(facts), *slot, id!(line)], index > 0);
+            self.view.label(cx, &at(&[id!(sheet_scroll), id!(facts), *slot, id!(body), id!(label)])).set_text(cx, &fact.label);
+            text(self, cx, &[id!(sheet_scroll), id!(facts), *slot, id!(body), id!(value)], &fact.value);
+            text(self, cx, &[id!(sheet_scroll), id!(facts), *slot, id!(note)], &fact.note);
         }
         // People: listed people locked, people added here removable. A list
         // this window doesn't change starts folded into one row.
-        show(self, cx, &[id!(scroll), id!(people)], v.people_visible);
+        show(self, cx, &[id!(sheet_scroll), id!(people)], v.people_visible);
         let folded = v.people_collapsible && !v.people_open;
-        text(self, cx, &[id!(scroll), id!(people), id!(people_label)], if v.people_collapsible { "" } else { &v.people_label });
-        let toggle = [id!(scroll), id!(people), id!(list), id!(people_toggle_row)];
+        text(self, cx, &[id!(sheet_scroll), id!(people), id!(people_label)], if v.people_collapsible { "" } else { &v.people_label });
+        let toggle = [id!(sheet_scroll), id!(people), id!(list), id!(people_toggle_row)];
         show(self, cx, &toggle, v.people_collapsible);
         self.view
-            .label(cx, &at(&[id!(scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_toggle_label)]))
+            .label(cx, &at(&[id!(sheet_scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_toggle_label)]))
             .set_text(cx, tr("People who can request"));
         self.view
-            .label(cx, &at(&[id!(scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_toggle_value)]))
+            .label(cx, &at(&[id!(sheet_scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_toggle_value)]))
             .set_text(cx, &v.people_summary);
-        show(self, cx, &[id!(scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_closed)], !v.people_open);
-        show(self, cx, &[id!(scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_opened)], v.people_open);
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_closed)], !v.people_open);
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(people_toggle_row), id!(people_toggle_body), id!(people_opened)], v.people_open);
         let shown = if folded { 0 } else { people_shown(v.people.len()) };
         for (index, slot) in PEOPLE.iter().enumerate() {
             let person = v.people.get(index).filter(|_| index < shown);
-            let row = [id!(scroll), id!(people), id!(list), *slot];
+            let row = [id!(sheet_scroll), id!(people), id!(list), *slot];
             show(self, cx, &row, person.is_some());
             let person = person.cloned().unwrap_or_default();
-            show(self, cx, &[id!(scroll), id!(people), id!(list), *slot, id!(line)], index > 0 || v.people_collapsible);
-            self.view.label(cx, &at(&[id!(scroll), id!(people), id!(list), *slot, id!(body), id!(name)])).set_text(cx, &person.name);
-            show(self, cx, &[id!(scroll), id!(people), id!(list), *slot, id!(body), id!(tag)], person.added);
+            show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), *slot, id!(line)], index > 0 || v.people_collapsible);
+            self.view.label(cx, &at(&[id!(sheet_scroll), id!(people), id!(list), *slot, id!(body), id!(name)])).set_text(cx, &person.name);
+            show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), *slot, id!(body), id!(tag)], person.added);
             self.view
-                .label(cx, &at(&[id!(scroll), id!(people), id!(list), *slot, id!(body), id!(tag), id!(tag_text)]))
+                .label(cx, &at(&[id!(sheet_scroll), id!(people), id!(list), *slot, id!(body), id!(tag), id!(tag_text)]))
                 .set_text(cx, tr("New"));
-            show(self, cx, &[id!(scroll), id!(people), id!(list), *slot, id!(body), id!(locked)], !person.removable && !person.added);
-            show(self, cx, &[id!(scroll), id!(people), id!(list), *slot, id!(body), id!(remove)], person.removable);
+            show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), *slot, id!(body), id!(locked)], !person.removable && !person.added);
+            show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), *slot, id!(body), id!(remove)], person.removable);
         }
         let more = if folded { 0 } else { v.people.len().saturating_sub(shown) };
         let more_text = if more > 0 {
@@ -288,52 +288,52 @@ impl MiniAppsPanel {
         } else {
             String::new()
         };
-        text(self, cx, &[id!(scroll), id!(people), id!(list), id!(more_people)], &more_text);
-        show(self, cx, &[id!(scroll), id!(people), id!(list), id!(add)], v.people_editable && !folded);
-        show(self, cx, &[id!(scroll), id!(people), id!(list), id!(open_add)], v.people_add_visible && !folded);
-        show(self, cx, &[id!(scroll), id!(people), id!(list), id!(add), id!(add_line)], !v.people.is_empty() || v.people_collapsible);
+        text(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(more_people)], &more_text);
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(add)], v.people_editable && !folded);
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(open_add)], v.people_add_visible && !folded);
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(add), id!(add_line)], !v.people.is_empty() || v.people_collapsible);
         self.view
-            .text_input(cx, &at(&[id!(scroll), id!(people), id!(list), id!(add), id!(add_name)]))
+            .text_input(cx, &at(&[id!(sheet_scroll), id!(people), id!(list), id!(add), id!(add_name)]))
             .set_empty_text(cx, v.add_placeholder.clone());
-        text(self, cx, &[id!(scroll), id!(people), id!(list), id!(add), id!(add_error)], &v.add_error);
-        text(self, cx, &[id!(scroll), id!(people), id!(list), id!(add), id!(add_hint)], if v.add_error.is_empty() { &v.add_hint } else { "" });
-        show(self, cx, &[id!(scroll), id!(people), id!(list)], !v.people.is_empty() || v.people_editable || v.people_collapsible || v.people_add_visible);
-        text(self, cx, &[id!(scroll), id!(people), id!(people_note)], if folded { "" } else { &v.people_note });
+        text(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(add), id!(add_error)], &v.add_error);
+        text(self, cx, &[id!(sheet_scroll), id!(people), id!(list), id!(add), id!(add_hint)], if v.add_error.is_empty() { &v.add_hint } else { "" });
+        show(self, cx, &[id!(sheet_scroll), id!(people), id!(list)], !v.people.is_empty() || v.people_editable || v.people_collapsible || v.people_add_visible);
+        text(self, cx, &[id!(sheet_scroll), id!(people), id!(people_note)], if folded { "" } else { &v.people_note });
         // The per-request limit (or the monthly maximum), chosen with a slider and a value beside it.
-        show(self, cx, &[id!(scroll), id!(quota)], v.choosing && v.quota_visible);
+        show(self, cx, &[id!(sheet_scroll), id!(quota)], v.choosing && v.quota_visible);
         self.view
-            .label(cx, &at(&[id!(scroll), id!(quota), id!(quota_label)]))
+            .label(cx, &at(&[id!(sheet_scroll), id!(quota), id!(quota_label)]))
             .set_text(cx, if v.quota_label.is_empty() { tr("Per-request limit") } else { &v.quota_label });
-        text(self, cx, &[id!(scroll), id!(quota), id!(quota_hint)], &v.quota_hint);
+        text(self, cx, &[id!(sheet_scroll), id!(quota), id!(quota_hint)], &v.quota_hint);
         // Recovery steps for a saved record.
         let recover = v.recover_row();
-        show(self, cx, &[id!(scroll), id!(actions)], recover || v.cancel_intent_visible);
-        show(self, cx, &[id!(scroll), id!(actions), id!(recover)], recover);
-        self.view.button(cx, &at(&[id!(scroll), id!(actions), id!(recover)])).set_text(cx, &v.recover);
-        show(self, cx, &[id!(scroll), id!(actions), id!(actions_line)], recover && v.cancel_intent_visible);
-        show(self, cx, &[id!(scroll), id!(actions), id!(cancel_intent)], v.cancel_intent_visible);
+        show(self, cx, &[id!(sheet_scroll), id!(actions)], recover || v.cancel_intent_visible);
+        show(self, cx, &[id!(sheet_scroll), id!(actions), id!(recover)], recover);
+        self.view.button(cx, &at(&[id!(sheet_scroll), id!(actions), id!(recover)])).set_text(cx, &v.recover);
+        show(self, cx, &[id!(sheet_scroll), id!(actions), id!(actions_line)], recover && v.cancel_intent_visible);
+        show(self, cx, &[id!(sheet_scroll), id!(actions), id!(cancel_intent)], v.cancel_intent_visible);
         // When sharing ends: its own row, which opens the period choice in place.
-        show(self, cx, &[id!(scroll), id!(sharing)], v.sharing_visible);
-        self.view.label(cx, &at(&[id!(scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_label)])).set_text(cx, tr("Shared until"));
+        show(self, cx, &[id!(sheet_scroll), id!(sharing)], v.sharing_visible);
+        self.view.label(cx, &at(&[id!(sheet_scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_label)])).set_text(cx, tr("Shared until"));
         // With large text, or a time too long to sit beside the row's name on a
         // narrow window, the time goes under the name, where it can wrap.
         let large = text_scale(cx) > 1.2;
         let below = large || v.expiry.chars().count() > 30;
-        text(self, cx, &[id!(scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_value)], if below { "" } else { &v.expiry });
-        text(self, cx, &[id!(scroll), id!(sharing), id!(sharing_value_below)], if below { &v.expiry } else { "" });
-        show(self, cx, &[id!(scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_closed)], !v.sharing_open);
-        show(self, cx, &[id!(scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_opened)], v.sharing_open);
-        show(self, cx, &[id!(scroll), id!(sharing), id!(period)], v.sharing_visible && v.sharing_open);
-        text(self, cx, &[id!(scroll), id!(sharing), id!(period), id!(expiry_note)], &v.expiry_note);
+        text(self, cx, &[id!(sheet_scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_value)], if below { "" } else { &v.expiry });
+        text(self, cx, &[id!(sheet_scroll), id!(sharing), id!(sharing_value_below)], if below { &v.expiry } else { "" });
+        show(self, cx, &[id!(sheet_scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_closed)], !v.sharing_open);
+        show(self, cx, &[id!(sheet_scroll), id!(sharing), id!(sharing_row), id!(sharing_body), id!(sharing_opened)], v.sharing_open);
+        show(self, cx, &[id!(sheet_scroll), id!(sharing), id!(period)], v.sharing_visible && v.sharing_open);
+        text(self, cx, &[id!(sheet_scroll), id!(sharing), id!(period), id!(expiry_note)], &v.expiry_note);
         // Technical details, behind a row of their own.
-        show(self, cx, &[id!(scroll), id!(more)], v.more_visible());
-        self.view.label(cx, &at(&[id!(scroll), id!(more), id!(more_row), id!(more_body), id!(more_label)])).set_text(cx, &v.more_label);
-        show(self, cx, &[id!(scroll), id!(more), id!(details)], v.more_open && !v.technical.is_empty());
-        self.view.label(cx, &at(&[id!(scroll), id!(more), id!(details), id!(copy)])).set_text(cx, &v.technical);
+        show(self, cx, &[id!(sheet_scroll), id!(more)], v.more_visible());
+        self.view.label(cx, &at(&[id!(sheet_scroll), id!(more), id!(more_row), id!(more_body), id!(more_label)])).set_text(cx, &v.more_label);
+        show(self, cx, &[id!(sheet_scroll), id!(more), id!(details)], v.more_open && !v.technical.is_empty());
+        self.view.label(cx, &at(&[id!(sheet_scroll), id!(more), id!(details), id!(copy)])).set_text(cx, &v.technical);
         // A short sheet keeps its buttons right under its last card; a long one keeps them at the foot.
         // With large text even a short sheet can outgrow the window: it scrolls, so its buttons stay reachable.
         let short = !large && !v.choosing && !v.people_visible && !v.more_open && !v.sharing_visible && v.facts.len() <= 3;
-        let scroll = self.view.view(cx, &at(&[id!(scroll)]));
+        let scroll = self.view.view(cx, &at(&[id!(sheet_scroll)]));
         let height = if short { Size::fit() } else { Size::fill() };
         if let Some(mut walk) = scroll.borrow().map(|view| view.walk.clone()).filter(|walk| walk.height != height) {
             walk.height = height;
@@ -351,10 +351,10 @@ impl MiniAppsPanel {
     pub(super) fn apply_sheet_disclosure(&mut self, cx: &mut Cx, root: LiveId, open: bool) {
         let at = |rest: &[LiveId]| sheet_path(root, rest);
         self.view
-            .widget(cx, &at(&[id!(scroll), id!(more), id!(more_row), id!(more_body), id!(more_closed)]))
+            .widget(cx, &at(&[id!(sheet_scroll), id!(more), id!(more_row), id!(more_body), id!(more_closed)]))
             .set_visible(cx, !open);
         self.view
-            .widget(cx, &at(&[id!(scroll), id!(more), id!(more_row), id!(more_body), id!(more_opened)]))
+            .widget(cx, &at(&[id!(sheet_scroll), id!(more), id!(more_row), id!(more_body), id!(more_opened)]))
             .set_visible(cx, open);
     }
 }

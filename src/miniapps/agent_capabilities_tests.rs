@@ -28,6 +28,8 @@ fn count_capabilities(widget: &WidgetRef, values: &mut Vec<String>) {
 fn fixture(source: &str) -> (Cx, SplashRef) {
     // Test workers are distinct threads; the framework's isolate registrations
     // are thread-local, unlike the app's process-wide startup Once.
+    // JIT PORT: as the app does at startup (miniapps/mod.rs).
+    makepad_widgets::widget_async::set_splash_bail_on_uncaught_error(true);
     makepad_widgets::widget_async::register_splash_isolate_mod(crate::theme::script_mod);
     makepad_widgets::widget_async::register_splash_isolate_mod(crate::i18n::script_mod);
     makepad_widgets::widget_async::register_splash_isolate_mod(|vm| {
@@ -61,7 +63,7 @@ fn fixture(source: &str) -> (Cx, SplashRef) {
     assert!(card.call_script_fn(&mut cx, id!(capability_fixture_open), &[]));
     // Script widget callbacks enqueue render work; drain the same public task
     // pump used by the native event loop before inspecting widget instances.
-    makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+    cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
     (cx, card)
 }
 #[test]

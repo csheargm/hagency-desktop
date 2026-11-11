@@ -431,7 +431,7 @@ mod tests {
         for dark in [false, true] {
             let mut cx = Cx::new(Box::new(|_, _| {}));
             let widget = cx.with_vm(|vm| {
-                desktop_style::install(vm, StyleSheet::load_with_appearance(DesktopStyle::Macos, dark));
+                desktop_style::install(vm, StyleSheet::load(DesktopStyle::Macos.sheet(dark)) /* JIT PORT: sheets load by entry */);
                 vm.bx.captured_errors = Some(Vec::new());
                 makepad_widgets::script_mod(vm);
                 crate::script_mod(vm);

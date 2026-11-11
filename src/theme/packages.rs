@@ -402,7 +402,7 @@ pub fn resolve(
     // Evaluate the trusted base in a disposable VM on the existing UI context.
     let icons = cx.with_vm(|vm| desktop_style::current(vm).map(|sheet| sheet.icons));
     let isolate = cx.alloc_splash_vm();
-    let result = cx.with_script_vm_id_trusted(isolate, |vm| {
+    let result = cx.with_script_vm_id(isolate, |vm| {
         makepad_widgets::makepad_draw::makepad_platform::script::script_mod(vm);
         let mut sheet = selection.stylesheet(family);
         if let Some(icons) = icons { sheet.icons = icons; }

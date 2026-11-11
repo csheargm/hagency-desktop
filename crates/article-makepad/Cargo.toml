@@ -10,10 +10,17 @@ description = "Reusable native Makepad article editing and viewing widgets"
 [dependencies]
 makepad-markdown-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48", features = ["full", "editormd"] }
 article-core = { path = "../article-core" }
-makepad-widgets = { git = "https://github.com/kevinaboos/makepad", branch = "button-grab-key-focus", features = ["serde"] }
+makepad-widgets = { git = "https://github.com/kevinaboos/makepad", branch = "button-grab-key-focus" }
 unicode-segmentation = "1.11.0"
 libc = "0.2"
 
-# Keep all Makepad widgets on the same compatibility revision as the renderer.
+# The JIT line: this workspace builds against the same pinned makepad checkout as the
+# Desktop root (`.jit/sources.sh` puts it at .sources/makepad; see .jit/NOTES.md), so the
+# widgets and the renderer are one makepad whichever manifest is built.
 [patch."https://github.com/kevinaboos/makepad"]
-makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48" }
+makepad-widgets = { path = "../../.sources/makepad/widgets" }
+
+[patch."https://www.github.com/OctoSense-org/makepad.git"]
+makepad-widgets = { path = "../../.sources/makepad/widgets" }
+makepad-markdown = { path = "../../.sources/makepad/compat/makepad-markdown" }
+makepad-markdown-widgets = { path = "../../.sources/makepad/compat/makepad-markdown-widgets" }

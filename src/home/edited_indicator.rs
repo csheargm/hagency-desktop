@@ -1,11 +1,7 @@
 //! An indicator that is shown nearby a message that has been edited.
 //!
-//! This widget is basically just a clickable label that shows the text "(edited)"
-//! with an underline to indicate that it is clickable.
-//! Upon hover, it shows a tooltip with the date and time when the message was edited.
-//!
-//! On click, this widget opens a scrollable modal dialog that shows the full edit history
-//! of the message, including all previous content versions and their timestamps.
+//! The muted metadata label shows an edit timestamp tooltip on hover.
+//! Edit history is not implemented, so the label has no link styling.
 
 use chrono::{DateTime, Local};
 use makepad_widgets::*;
@@ -18,7 +14,7 @@ script_mod! {
     use mod.widgets.*
 
 
-    mod.widgets.EDITED_INDICATOR_FONT_SIZE = 9.5
+    mod.widgets.EDITED_INDICATOR_FONT_SIZE = (9.5 * mod.widgets.RINX_TEXT_SCALE)
     mod.widgets.EDITED_INDICATOR_FONT_COLOR = mod.widgets.RINX_MUTED
 
     mod.widgets.EditedIndicator = #(EditedIndicator::register_widget(vm)) {
@@ -28,23 +24,19 @@ script_mod! {
         padding: 0,
         margin: Inset{ top: 5 }
 
-        // TODO: re-enable this once we have implemented the edit history modal
-        // cursor: MouseCursor.Hand,
-
-        edit_html := Html {
+        edit_label := Label {
             width: Fit, height: Fit
-            flow: Flow.Right { wrap: false },
-            padding: 0,
-            margin: 0,
-
-            font_size: (mod.widgets.EDITED_INDICATOR_FONT_SIZE),
-            font_color: (COLOR_ROBRIX_PURPLE),
-            body: #(crate::i18n::tr("(<u>edited</u>)")) i18n_body: "(<u>edited</u>)",
+            padding: 0, margin: 0,
+            draw_text +: {
+                color: mod.widgets.EDITED_INDICATOR_FONT_COLOR
+                text_style: theme.font_regular {font_size: mod.widgets.EDITED_INDICATOR_FONT_SIZE}
+            }
+            text: #(crate::i18n::tr("edited")) i18n_text: "edited"
         }
     }
 }
 
-/// A interactive label that indicates a message has been edited.
+/// A metadata label indicating a message has been edited.
 #[derive(Script, ScriptHook, Widget)]
 pub struct EditedIndicator {
     #[deref] view: View,

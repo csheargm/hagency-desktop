@@ -39,18 +39,45 @@ impl Drop for VerificationInProgress {
 }
 
 #[derive(Clone, Debug)]
-pub enum VerificationStateAction {
-    Update(VerificationState),
+pub(crate) struct VerificationStateAction {
+    pub pin: crate::matrix_context::SessionPin,
+    pub state: VerificationState,
+}
+
+/// Both a session and an exact peer/transaction identify a verification UI.
+/// A queued completion from an earlier request cannot complete a new modal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerificationScope {
+    pub session: crate::matrix_context::SessionPin,
+    pub peer: matrix_sdk::ruma::OwnedUserId,
+    pub flow_id: String,
+}
+impl VerificationScope {
+    fn capture(client: &Client, request: &VerificationRequest) -> Option<Self> {
+        let session = crate::matrix_context::SessionPin::capture(client)?;
+        if !session.is_current() { return None; }
+        Some(Self {session, peer: request.other_user_id().to_owned(), flow_id: request.flow_id().to_owned()})
+    }
+    pub(crate) fn is_current(&self) -> bool { self.session.is_current() }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct ScopedVerificationAction {
+    pub scope: VerificationScope,
+    pub action: VerificationAction,
+}
+fn post_verification(scope: &VerificationScope, action: VerificationAction) {
+    if scope.is_current() { Cx::post_action(ScopedVerificationAction {scope:scope.clone(),action}); }
 }
 
 
 pub fn add_verification_event_handlers_and_sync_client(client: Client) -> tokio::task::JoinHandle<()> {
+    let pin = crate::matrix_context::SessionPin::capture(&client);
     let mut verification_state_subscriber = client.encryption().verification_state();
     log!("Initial verification state is {:?}", verification_state_subscriber.get());
     let verification_state_handle = crate::account_session::spawn(async move {
         while let Some(state) = verification_state_subscriber.next().await {
             log!("Received a verification state update: {state:?}");
-            Cx::post_action(VerificationStateAction::Update(state));
+            if let Some(pin)=&pin && pin.is_current() {Cx::post_action(VerificationStateAction {pin:pin.clone(),state});}
         }
     });
 
@@ -121,6 +148,7 @@ async fn sas_verification_handler(
     sas: SasVerification,
     mut response_receiver: UnboundedReceiver<VerificationUserResponse>,
     _in_progress: VerificationInProgress,
+    scope: VerificationScope,
 ) {
     log!(
         "Starting verification with {} {}",
@@ -133,7 +161,7 @@ async fn sas_verification_handler(
     // Accept the SAS verification with both default methods: emoji and decimal.
     if let Err(e) = sas.accept().await {
         log!("Error accepting SAS verification request: {:?}", e);
-        Cx::post_action(VerificationAction::RequestAcceptError(Arc::new(e)));
+        post_verification(&scope, VerificationAction::RequestAcceptError(Arc::new(e)));
         return;
     }
 
@@ -156,10 +184,11 @@ async fn sas_verification_handler(
                         key_confirmation = KeyConfirmation::UserAnswered;
                         log!("User confirmed SAS verification keys");
                         let sas2 = sas.clone();
+                        let scope=scope.clone();
                         crate::account_session::spawn(async move {
                             if let Err(e) = sas2.confirm().await {
                                 log!("Failed to confirm SAS verification keys; error: {:?}", e);
-                                Cx::post_action(VerificationAction::SasConfirmationError(Arc::new(e)));
+                                post_verification(&scope, VerificationAction::SasConfirmationError(Arc::new(e)));
                             }
                         });
                     }
@@ -194,13 +223,13 @@ async fn sas_verification_handler(
             SasState::Created { .. }
             | SasState::Started { .. } => { } // we've already passed these states
 
-            SasState::Accepted { accepted_protocols } => Cx::post_action(
+            SasState::Accepted { accepted_protocols } => post_verification(&scope,
                 VerificationAction::SasAccepted(accepted_protocols)
             ),
 
             SasState::KeysExchanged { emojis, decimals } => match key_confirmation {
                 KeyConfirmation::NotYetAsked => {
-                    Cx::post_action(VerificationAction::KeysExchanged { emojis, decimals });
+                    post_verification(&scope, VerificationAction::KeysExchanged { emojis, decimals });
                     log!("Waiting for user to confirm SAS verification keys...");
                     key_confirmation = KeyConfirmation::WaitingOnUser;
                 }
@@ -209,7 +238,7 @@ async fn sas_verification_handler(
                 }
             }
 
-            SasState::Confirmed => Cx::post_action(VerificationAction::SasConfirmed),
+            SasState::Confirmed => post_verification(&scope, VerificationAction::SasConfirmed),
 
             SasState::Done { verified_devices, verified_identities } => {
                 let device = sas.other_device();
@@ -227,7 +256,7 @@ async fn sas_verification_handler(
                 // We go ahead and send the RequestCompleted action here,
                 // because it is not guaranteed that the VerificationRequestState stream loop
                 // will receive an update an enter the `Done` state.
-                Cx::post_action(VerificationAction::RequestCompleted);
+                post_verification(&scope, VerificationAction::RequestCompleted);
                 break;
             }
             SasState::Cancelled(cancel_info) => {
@@ -235,7 +264,7 @@ async fn sas_verification_handler(
                 // We go ahead and send the RequestCancelled action here,
                 // because it is not guaranteed that the VerificationRequestState stream loop
                 // will receive an update an enter the `Cancelled` state.
-                Cx::post_action(VerificationAction::RequestCancelled(cancel_info));
+                post_verification(&scope, VerificationAction::RequestCancelled(cancel_info));
                 break;
             }
         }
@@ -259,10 +288,12 @@ async fn request_verification_handler(client: Client, request: VerificationReque
         let _ = request.cancel().await;
         return;
     };
+    let Some(scope)=VerificationScope::capture(&client,&request) else {return;};
     let (sender, mut response_receiver) = tokio::sync::mpsc::unbounded_channel::<VerificationUserResponse>();
-    Cx::post_action(
+    post_verification(&scope,
         VerificationAction::RequestReceived(
             VerificationRequestActionState {
+                scope: scope.clone(),
                 request: request.clone(),
                 // Don't clone this sender, as we rely on it being dropped to wake up the recv side
                 response_sender: sender,
@@ -282,13 +313,13 @@ async fn request_verification_handler(client: Client, request: VerificationReque
                     match request.accept_with_methods(vec![VerificationMethod::SasV1]).await {
                         Ok(()) => {
                             accepted = true;
-                            Cx::post_action(VerificationAction::RequestAccepted);
+                            post_verification(&scope, VerificationAction::RequestAccepted);
                             if let Some(sas) = early_sas.take() {
                                 break sas;
                             }
                         }
                         Err(e) => {
-                            Cx::post_action(VerificationAction::RequestAcceptError(Arc::new(e)));
+                            post_verification(&scope, VerificationAction::RequestAcceptError(Arc::new(e)));
                             return;
                         }
                     }
@@ -298,7 +329,7 @@ async fn request_verification_handler(client: Client, request: VerificationReque
                 Some(VerificationUserResponse::Cancel | VerificationUserResponse::Mismatch) | None => {
                     log!("User cancelled the verification request.");
                     if let Err(e) = request.cancel().await {
-                        Cx::post_action(VerificationAction::RequestCancelError(Arc::new(e)));
+                        post_verification(&scope, VerificationAction::RequestCancelError(Arc::new(e)));
                     }
                     return;
                 }
@@ -320,18 +351,18 @@ async fn request_verification_handler(client: Client, request: VerificationReque
                         }
                         unsupported => {
                             log!("Verification request transitioned to unsupported method: {:?}", unsupported);
-                            Cx::post_action(VerificationAction::RequestTransitionedToUnsupportedMethod(unsupported));
+                            post_verification(&scope, VerificationAction::RequestTransitionedToUnsupportedMethod(unsupported));
                             return;
                         }
                     }
                     VerificationRequestState::Cancelled(info) => {
                         log!("Verification request was cancelled, reason: {}", info.reason());
-                        Cx::post_action(VerificationAction::RequestCancelled(info));
+                        post_verification(&scope, VerificationAction::RequestCancelled(info));
                         return;
                     }
                     VerificationRequestState::Done => {
                         log!("Verification request is done!");
-                        Cx::post_action(VerificationAction::RequestCompleted);
+                        post_verification(&scope, VerificationAction::RequestCompleted);
                         return;
                     }
                 }
@@ -339,7 +370,7 @@ async fn request_verification_handler(client: Client, request: VerificationReque
         }
     };
 
-    sas_verification_handler(client, sas, response_receiver, in_progress).await;
+    sas_verification_handler(client, sas, response_receiver, in_progress, scope).await;
 }
 
 
@@ -355,8 +386,7 @@ pub async fn request_self_verification_handler(client: Client) {
         Ok(Some(identity)) => identity,
         Ok(None) => {
             enqueue_popup_notification(
-                "Can't verify this device yet: no cross-signing identity exists. \
-                Verify from another client first, or reset your identity.",
+                "No cross-signing identity exists yet. Open Settings → Account → Encryption and recovery to set up recovery protection on this device.",
                 PopupKind::Error,
                 Some(8.0),
             );
@@ -420,9 +450,11 @@ pub async fn request_self_verification_handler(client: Client) {
     log!("Sent self-verification request, flow ID: {}", request.flow_id());
 
     // we use the same verification modal as we do for incoming requests.
+    let Some(scope)=VerificationScope::capture(&client,&request) else {return;};
     let (sender, mut response_receiver) = tokio::sync::mpsc::unbounded_channel::<VerificationUserResponse>();
-    Cx::post_action(VerificationAction::RequestReceived(
+    post_verification(&scope, VerificationAction::RequestReceived(
         VerificationRequestActionState {
+            scope: scope.clone(),
             request: request.clone(),
             response_sender: sender,
         }
@@ -451,23 +483,23 @@ pub async fn request_self_verification_handler(client: Client) {
                         // If the other side already started SAS, handle it in the `Transitioned` state below.
                         Ok(None) => { }
                         Err(e) => {
-                            Cx::post_action(VerificationAction::RequestAcceptError(Arc::new(e)));
+                            post_verification(&scope, VerificationAction::RequestAcceptError(Arc::new(e)));
                             return;
                         }
                     }
                     VerificationRequestState::Transitioned { verification } => match verification {
                         Verification::SasV1(sas) => break sas,
                         unsupported => {
-                            Cx::post_action(VerificationAction::RequestTransitionedToUnsupportedMethod(unsupported));
+                            post_verification(&scope, VerificationAction::RequestTransitionedToUnsupportedMethod(unsupported));
                             return;
                         }
                     }
                     VerificationRequestState::Cancelled(info) => {
-                        Cx::post_action(VerificationAction::RequestCancelled(info));
+                        post_verification(&scope, VerificationAction::RequestCancelled(info));
                         return;
                     }
                     VerificationRequestState::Done => {
-                        Cx::post_action(VerificationAction::RequestCompleted);
+                        post_verification(&scope, VerificationAction::RequestCompleted);
                         return;
                     }
                 }
@@ -475,7 +507,7 @@ pub async fn request_self_verification_handler(client: Client) {
         }
     };
 
-    sas_verification_handler(client, sas, response_receiver, in_progress).await;
+    sas_verification_handler(client, sas, response_receiver, in_progress, scope).await;
 }
 
 
@@ -525,6 +557,7 @@ pub enum VerificationAction {
 /// in the `VerificationModal`` widget.
 #[derive(Clone, Debug)]
 pub struct VerificationRequestActionState {
+    pub(crate) scope: VerificationScope,
     pub request: VerificationRequest,
     pub response_sender: UnboundedSender<VerificationUserResponse>,
 }

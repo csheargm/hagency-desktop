@@ -209,7 +209,7 @@ impl ActionRoomBoardRef {
         }
     }
     pub fn select(&self, cx: &mut Cx, room: Option<ruma::OwnedRoomId>) {
-        if let Some(mut inner) = self.borrow_mut() { inner.select(cx, room); }
+        if let Some(mut inner) = self.borrow_mut() { ActionRoomBoard::select(&mut inner, cx, room); }
     }
     pub fn active(&self) -> bool { self.borrow().is_some_and(|inner| inner.active) }
 }
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(room_lookup_digest(Some(&asking)), Some(shipped.manifest.integrity.bundle_blake3.as_str()));
         // So selecting a room stops before any account, consent record or bundle.
         let (mut cx, mut board) = board();
-        board.select(&mut cx, Some(ruma::RoomId::parse("!room:example.test").unwrap()));
+        ActionRoomBoard::select(&mut board, &mut cx, Some(ruma::RoomId::parse("!room:example.test").unwrap())); // JIT PORT: a widget trait's `select` shadows it
         assert!(board.room.is_none() && board.account.is_none() && board.consent.is_none());
         assert!(board.lease.is_none() && board.host.is_none() && board.pending.is_none());
         assert!(!board.view.visible());
@@ -361,7 +361,7 @@ mod tests {
         assert!(board.consent.is_none() && board.room.is_none() && board.lease.is_none());
         // Selecting again drops the old answer before it arrives.
         let answer = pending(&mut board);
-        board.select(&mut cx, None);
+        ActionRoomBoard::select(&mut board, &mut cx, None);
         assert!(answer.send(true).is_err());
         assert!(board.consent.is_none() && board.room.is_none() && board.account.is_none());
     }

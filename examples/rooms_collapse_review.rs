@@ -56,6 +56,26 @@ impl AppMain for App {
             if command=="rooms:open-apps" {
                 self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).open(cx, &rinx::miniapps::MiniAppsAction::Open);
             }
+            if let Some(value) = command.strip_prefix("rooms:open-web:") {
+                let url: url::Url = value.parse().expect("fixture URL");
+                assert_eq!(url.host_str(), Some("127.0.0.1"));
+                self.ui.mini_apps_side_region(cx, ids!(mini_apps_side))
+                    .web_action(cx, &rinx::shared::web_browser::WebBrowserAction::Open(url));
+            }
+            if let Some(value) = command.strip_prefix("rooms:down-without-move:") {
+                let (x, y) = value.split_once(':').expect("fixture coordinates");
+                let window_id = self.ui.window(cx, ids!(main_window)).window_id().unwrap();
+                cx.fingers.first_mouse_button = Some((MouseButton::PRIMARY, window_id));
+                let event = Event::MouseDown(MouseDownEvent {
+                    abs: dvec2(x.parse().unwrap(), y.parse().unwrap()),
+                    button: MouseButton::PRIMARY,
+                    window_id,
+                    modifiers: KeyModifiers::default(),
+                    handled: std::cell::Cell::new(Area::Empty),
+                    time: Cx::monotonic_now(),
+                });
+                self.ui.handle_event(cx, &event, &mut Scope::with_data(&mut self.state));
+            }
             if command=="rooms:reload" {
                 assert_eq!(self.state.saved_dock_state_home.selected_room.as_ref().map(|room|room.room_id().as_str()),Some("!review:example.invalid"));
                 cx.action(rinx::home::main_desktop_ui::MainDesktopUiAction::LoadDockFromAppState);

@@ -46,7 +46,7 @@ use crate::{
         user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId, UserProfilePaneAction, UserProfilePaneInfo, UserProfileSlidingPaneRef, UserProfileSlidingPaneWidgetExt},
         user_profile_cache,
     },
-    room::{BasicRoomDetails, reply_preview::{CollapsiblePreviewRef, CollapsiblePreviewWidgetRefExt}, room_input_bar::{RoomInputBarState, RoomInputBarWidgetRefExt}, typing_notice::TypingNoticeWidgetExt},
+    room::{reply_preview::{CollapsiblePreviewRef, CollapsiblePreviewWidgetRefExt}, room_input_bar::{RoomInputBarState, RoomInputBarWidgetRefExt}, typing_notice::TypingNoticeWidgetExt},
     shared::{
         attachment_download::{
             enqueue_already_downloading_notification, DownloadDisplayState, DownloadKind,
@@ -65,7 +65,7 @@ use crate::{
         },
         image_viewer::{ImageViewerAction, ImageViewerMetaData, LoadState},
         jump_to_bottom_button::{
-            JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
+            JumpToBottomButtonRef, JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
         },
         popup_list::{PopupKind, enqueue_popup_notification},
         restore_status_view::RestoreStatusViewWidgetExt,
@@ -389,7 +389,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{ top: 5.9 }
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
 
@@ -436,6 +435,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -452,10 +452,6 @@ script_mod! {
     let MobileMessageProfile = View {
         width: 40 height: Fit flow: Down spacing: 3
         avatar := MobileAvatar {width: 40 height: 40}
-        edited_indicator := EditedIndicator {
-            width: Fill
-            edit_html +: {width: Fill font_size: (8 * mod.widgets.RINX_TEXT_SCALE) font_color: mod.widgets.RINX_MUTED body: #(crate::i18n::tr("edited")) i18n_body: "edited"}
-        }
         tsp_sign_indicator := TspSignIndicator {}
     }
     let MobileMessageContent = View {
@@ -491,6 +487,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
             link_preview_view := mod.widgets.LinkPreview {font_size: mod.widgets.MOBILE_MESSAGE_FONT_SIZE}
             download_section := mod.widgets.MessageDownloadSection {}
+            edited_indicator := EditedIndicator {}
         }
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
@@ -553,6 +550,7 @@ script_mod! {
             }
         }
         download_section := mod.widgets.MessageDownloadSection {}
+        edited_indicator := EditedIndicator {}
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
             width: Fill height: Fit flow: Right
@@ -605,7 +603,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{top: 2.5}
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
             content := View {
@@ -635,6 +632,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -675,6 +673,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -711,6 +710,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -730,11 +730,13 @@ script_mod! {
     mod.widgets.SmallStateEvent = View {
         width: Fill,
         height: Fit,
-        flow: Right,
+        flow: Down,
         margin: Inset{ top: 4.0, bottom: 4.0}
         padding: Inset{ top: 1.0, bottom: 1.0, right: 10.0 }
         spacing: 0.0
         cursor: MouseCursor.Default
+
+        system_updates := RinxButton {visible: false width: Fill height: 36 margin: Inset{left: 12 right: 12}}
 
         body := View {
             width: Fill,
@@ -1132,6 +1134,17 @@ struct ReadReceiptState {
     last_user_scroll_travel: f64,
 }
 
+/// Whether this batch contains only the scroll notification already handled
+/// by this RoomScreen. Other actions must still reach its child widgets.
+fn only_timeline_scroll_actions(actions: &Actions, timeline_uid: WidgetUid) -> bool {
+    !actions.is_empty() && actions.iter().all(|action| {
+        action.as_widget_action().is_some_and(|action| {
+            action.widget_uid == timeline_uid
+                && matches!(action.action.downcast_ref::<PortalListAction>(), Some(PortalListAction::Scroll))
+        })
+    })
+}
+
 impl ReadReceiptState {
     /// Starts the read receipt timer for a direct user interaction.
     ///
@@ -1232,7 +1245,7 @@ pub(crate) fn index_of_event(
 /// The main widget that displays a single Matrix room.
 #[derive(Script, Widget)]
 pub struct RoomScreen {
-    #[deref] view: View,
+    #[find] #[deref] view: View,
     #[find] #[live] agent_status: WidgetRef,
     #[rust] agent_status_drawn: bool,
 
@@ -1263,6 +1276,7 @@ pub struct RoomScreen {
     /// This lets us ignore a response that arrives after the user gave up on it.
     #[rust] pending_read_receipt_jump: Option<OwnedUserId>,
     #[rust] pending_history_jump: Option<OwnedEventId>,
+    #[rust] matrix_link_ticket: Option<crate::matrix_links::Ticket>,
     #[rust] history_jump_started: bool,
     /// Fires when a background search for a jumped-to event has gone quiet.
     #[rust] jump_search_timer: Timer,
@@ -1275,6 +1289,7 @@ struct RoomScreenWidgetRefs {
     user_profile_sliding_pane: UserProfileSlidingPaneRef,
     loading_pane: LoadingPaneRef,
     room_input_popup_menu: RoomInputPopupMenuRef,
+    jump_to_bottom_button: JumpToBottomButtonRef,
 }
 
 impl Drop for RoomScreen {
@@ -1374,8 +1389,15 @@ impl Widget for RoomScreen {
             user_profile_sliding_pane,
             loading_pane,
             room_input_popup_menu,
+            jump_to_bottom_button,
         } = self.cached_widget_refs(cx);
 
+        if self.matrix_link_ticket.as_ref().is_some_and(|ticket| !ticket.is_current()) {
+            self.matrix_link_ticket = None;
+            self.pending_history_jump = None;
+            self.history_jump_started = false;
+            loading_pane.hide(cx);
+        }
         let is_pane_shown = loading_pane.is_currently_shown(cx)
             || user_profile_sliding_pane.is_currently_shown(cx);
         let is_popup_menu_open = room_input_popup_menu.is_open();
@@ -1698,7 +1720,7 @@ impl Widget for RoomScreen {
             }
 
             // Handle the jump to bottom button: update its visibility, and handle clicks.
-            self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)).update_from_actions(
+            jump_to_bottom_button.update_from_actions(
                 cx,
                 &portal_list,
                 actions,
@@ -1765,6 +1787,15 @@ impl Widget for RoomScreen {
             }
         }
 
+        // Read receipts and the jump button already consumed this list's scroll
+        // notification above. Do not revisit every retained message for that
+        // action alone; mixed action batches still reach the whole subtree.
+        if let Event::Actions(actions) = event
+            && only_timeline_scroll_actions(actions, portal_list.widget_uid())
+        {
+            return;
+        }
+
         // Forward the event to the inner timeline view, but capture any actions it produces
         // such that we can handle the ones relevant to only THIS RoomScreen widget right here and now,
         // ensuring they are not mistakenly handled by other RoomScreen widget instances.
@@ -1790,6 +1821,24 @@ impl Widget for RoomScreen {
                 self.view.view(cx, ids!(room_screen_wrapper)).handle_event(cx, event, &mut Scope::empty());
             }
         });
+        // Handle disclosures in the room-local capture. Native pointer actions
+        // are consumed here before the app routes higher-level room actions.
+        let disclosure_rows = portal_list.items_with_actions(&actions_generated_within_this_room_screen);
+        let mut handled_disclosures = HashSet::new();
+        for (index, wr) in disclosure_rows {
+            if !handled_disclosures.insert(index) { continue; }
+            if wr.button(cx, ids!(system_updates)).clicked(&actions_generated_within_this_room_screen) {
+                if let Some(tl) = self.tl_state.as_mut() {
+                    if let Some(event) = tl.items.get(index).and_then(|item| item.as_event()) {
+                        let id = event.identifier();
+                        if !tl.expanded_system_updates.remove(&id) { tl.expanded_system_updates.insert(id); }
+                    }
+                }
+                self.relayout_redraws_left = 12;
+                self.relayout_last_first_id = usize::MAX;
+                cx.redraw_all();
+            }
+        }
         // Here, we handle and remove any general actions that are relevant to only this RoomScreen.
         // Removing the handled actions ensures they are not mistakenly handled by other RoomScreen widget instances.
         actions_generated_within_this_room_screen.retain(|action| {
@@ -1905,6 +1954,10 @@ impl Widget for RoomScreen {
         }
 
 
+        // Recovery can finish while Settings covers this cached page.
+        let list = self.view.portal_list(cx, ids!(timeline.list));
+        self.process_timeline_updates(cx, &list);
+
         let room_screen_widget_uid = self.widget_uid();
         let has_agent_status = self.has_agent_status(cx);
         while let Some(subview) = self.view.draw_walk(cx, scope, walk).step() {
@@ -1922,9 +1975,19 @@ impl Widget for RoomScreen {
             let tl_items = &tl_state.items;
             let last_item_id = tl_items.len();
             let cleared_through = super::chat_actions::cleared_through(tl_state.kind.room_id());
+            let system_groups = system_update_ranges(tl_items.iter().map(|item| {
+                item.as_event().is_some_and(|event| {
+                    cleared_through.is_none_or(|cutoff| u64::from(event.timestamp().0) > cutoff)
+                        && is_groupable_system_update(event.content())
+                })
+            }));
 
             let list = list_ref.deref_mut();
             list.set_item_range(cx, 0, last_item_id + usize::from(has_agent_status));
+            let skipped_system_updates = system_groups.iter().filter(|range| tl_items[range.start].as_event()
+                .is_some_and(|event| !tl_state.expanded_system_updates.contains(&event.identifier())))
+                .map(|range| range.start + 1..range.end).collect::<Vec<_>>();
+            list.set_skipped_ranges(&skipped_system_updates);
             self.agent_status_drawn = false;
 
             while let Some(item_id) = list.next_visible_item(cx) {
@@ -1949,6 +2012,16 @@ impl Widget for RoomScreen {
                         list.item(cx, item_id, id!(Empty)).draw_all(cx, scope);
                         continue;
                     }
+
+                    let system_group = system_groups.iter().find(|range| range.contains(&tl_idx));
+                    let group_open = system_group.is_some_and(|range| tl_items[range.start].as_event()
+                        .is_some_and(|event| tl_state.expanded_system_updates.contains(&event.identifier())));
+                    if system_group.is_some_and(|range| range.start != tl_idx) && !group_open {
+                        list.item(cx, item_id, id!(Empty)).draw_all(cx, scope);
+                        continue;
+                    }
+                    let group_header = system_group.filter(|range| range.start == tl_idx)
+                        .map(|range| (range.len(), group_open));
 
                     // Determine whether this item's content and profile have been drawn since the last update.
                     // Pass this state to each of the `populate_*` functions so they can attempt to re-use
@@ -2007,6 +2080,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             poll_state,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::UnableToDecrypt(utd) => populate_small_state_event(
                                             cx,
@@ -2016,6 +2090,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             utd,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::LiveLocation(live_loc) => populate_small_state_event(
                                             cx,
@@ -2025,6 +2100,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             live_loc,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::Other(other) => populate_small_state_event(
                                             cx,
@@ -2034,6 +2110,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             other,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                     }
                                 }
@@ -2059,6 +2136,7 @@ impl Widget for RoomScreen {
                                         event_tl_item,
                                         membership_change,
                                         item_drawn_status,
+                                        group_header,
                                     )
                                 }
                             }
@@ -2070,6 +2148,7 @@ impl Widget for RoomScreen {
                                 event_tl_item,
                                 profile_change,
                                 item_drawn_status,
+                                group_header,
                             ),
                             TimelineItemContent::OtherState(other) => {
                                 // Don't shown noisy updates like policy rules, server ACLs, space links, custom state events, etc.
@@ -2095,6 +2174,7 @@ impl Widget for RoomScreen {
                                         event_tl_item,
                                         other,
                                         item_drawn_status,
+                                        group_header,
                                     )
                                 }
                             }
@@ -2898,46 +2978,12 @@ impl RoomScreen {
                     );
                     true
                 }
-                MatrixId::Room(room_id) => {
-                    if self.room_name_id.as_ref().is_some_and(|r| r.room_id() == room_id) {
-                        enqueue_popup_notification(
-                            "You are already viewing that room.",
-                            PopupKind::Info,
-                            Some(4.0),
-                        );
-                        return true;
-                    }
-                    if let Some(room_name_id) = cx.get_global::<RoomsListRef>().get_room_name(room_id) {
-                        cx.action(AppStateAction::NavigateToRoom {
-                            room_to_close: None,
-                            destination_room: BasicRoomDetails::Name(room_name_id),
-                        });
-                        return true;
-                    } else {
-                        log!("TODO: fetch and display room preview for room {}", room_id);
-                    }
-                    false
-                }
-                MatrixId::RoomAlias(room_alias) => {
-                    log!("TODO: open room alias {}", room_alias);
-                    // TODO: open a room loading screen that shows a spinner
-                    //       while our background async task calls Client::resolve_room_alias()
-                    //       and then either jumps to the room if known, or fetches and displays
-                    //       a room preview for that room.
-                    false
-                }
-                MatrixId::Event(room_id, event_id) => {
-                    log!("TODO: open event {} in room {}", event_id, room_id);
-                    // TODO: this requires the same first step as the `MatrixId::Room` case above,
-                    //       but then we need to call Room::event_with_context() to get the event
-                    //       and its context (surrounding events ?).
-                    false
-                }
                 _ => false,
             }
         };
 
         if let HtmlLinkAction::Clicked { url, .. } = action.as_widget_action().cast() {
+            if !crate::matrix_links::is_user_profile_link(&url) && crate::matrix_links::open(&url) { return true; }
             let mut link_was_handled = false;
             if let Ok(matrix_to_uri) = MatrixToUri::parse(&url) {
                 link_was_handled |= handle_matrix_link(matrix_to_uri.id(), matrix_to_uri.via());
@@ -2960,6 +3006,7 @@ impl RoomScreen {
             true
         }
         else if let RobrixHtmlLinkAction::ClickedMatrixLink { url, matrix_id, via, .. } = action.as_widget_action().cast() {
+            if !crate::matrix_links::is_user_profile_link(&url) && crate::matrix_links::open(&url) { return true; }
             let link_was_handled = handle_matrix_link(&matrix_id, &via);
             if !link_was_handled {
                 log!("Opening URL \"{}\"", url);
@@ -3543,6 +3590,12 @@ impl RoomScreen {
         let related_msg_tl_index = index_of_event(&tl.items, target_event_id, max_tl_idx, MAX_ITEMS_TO_SEARCH_THROUGH);
 
         if let Some(index) = related_msg_tl_index {
+            // A search, receipt or reply jump must reveal a target inside a folded run.
+            if let Some(range) = system_update_ranges(tl.items.iter().map(|item| item.as_event()
+                .is_some_and(|event| is_groupable_system_update(event.content())))).into_iter().find(|r| r.contains(&index)) {
+                if let Some(event) = tl.items[range.start].as_event() { tl.expanded_system_updates.insert(event.identifier()); }
+                cx.redraw_all();
+            }
             // log!("The related message {replied_to_event} was immediately found in room {}, scrolling to from index {reply_message_item_id} --> {index} (first ID {}).", tl.kind.room_id(), portal_list.first_id());
             let speed = 50.0;
             portal_list.smooth_scroll_to(cx, index, speed, None, 10.0);
@@ -3681,6 +3734,7 @@ impl RoomScreen {
                     tombstone_info,
                     pending_downloads: SmallVec::new(),
                     expanded_reply_previews: HashSet::new(),
+                    expanded_system_updates: HashSet::new(),
                     #[cfg(feature = "agent_chat")]
                     agent_chat_approvals: ApprovalUiState::default(),
                     #[cfg(feature = "agent_chat")]
@@ -3737,8 +3791,8 @@ impl RoomScreen {
             });
         }
 
-        // Hide the typing notice view initially.
-        self.view(cx, ids!(typing_notice)).set_visible(cx, false);
+        // Clear the previous room's typing notice and stop its animation.
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         // If the room is loaded, we need to get a few key states:
         // 1. Get the current user's power levels for this room so that we can
         //    show/hide UI elements based on the user's permissions.
@@ -3894,6 +3948,7 @@ impl RoomScreen {
         self.read_receipt_state.clear();
         // Closing/hiding the room should cancel any pending jump/search.
         self.pending_read_receipt_jump = None;
+        self.matrix_link_ticket = None;
         self.pending_history_jump = None;
         self.history_jump_started = false;
         self.jump_search_timer = Timer::empty();
@@ -4113,6 +4168,7 @@ impl RoomScreen {
             return;
         }
 
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.hide_timeline();
         // Opening or restoring a conversation gives the timeline the full width.
         // Information is shown only after an explicit click on its header icon.
@@ -4141,6 +4197,7 @@ impl RoomScreen {
     }
 
     pub fn hide_displayed_room(&mut self, cx: &mut Cx) {
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.view.action_room_board(cx, ids!(actions_board)).select(cx, None);
         if self.tl_state.is_some() {
             self.hide_timeline();
@@ -4261,13 +4318,19 @@ impl RoomScreen {
     /// Returns the widget refs used on every event, caching them if None.
     fn cached_widget_refs(&mut self, cx: &mut Cx) -> RoomScreenWidgetRefs {
         if let Some(refs) = &self.cached_refs {
-            return refs.clone();
+            // The adaptive room view may not have materialized on the first
+            // event. Never retain an empty reference for all later interactions.
+            if !refs.portal_list.is_empty() && !refs.user_profile_sliding_pane.is_empty()
+                && !refs.loading_pane.is_empty() && !refs.room_input_popup_menu.is_empty() {
+                return refs.clone();
+            }
         }
         let refs = RoomScreenWidgetRefs {
             portal_list: self.portal_list(cx, ids!(timeline.list)),
             user_profile_sliding_pane: self.user_profile_sliding_pane(cx, ids!(user_profile_sliding_pane)),
             loading_pane: self.loading_pane(cx, ids!(loading_pane)),
             room_input_popup_menu: self.room_input_popup_menu(cx, ids!(room_input_popup_menu)),
+            jump_to_bottom_button: self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)),
         };
         self.cached_refs = Some(refs.clone());
         refs
@@ -4434,10 +4497,36 @@ impl RoomScreen {
 }
 
 impl RoomScreenRef {
+    #[cfg(test)]
+    pub(crate) fn assert_matrix_link_target(&self, cx: &Cx, navigation: &crate::matrix_links::Navigation) {
+        let inner=self.borrow().expect("linked native RoomScreen");
+        let expected=match &navigation.selected {
+            crate::app::SelectedRoom::Thread {room_name_id,thread_root_event_id} => TimelineKind::Thread {
+                room_id:room_name_id.room_id().clone(),thread_root_event_id:thread_root_event_id.clone()},
+            selected => TimelineKind::MainRoom {room_id:selected.room_id().clone()},
+        };
+        assert_eq!(inner.timeline_kind.as_ref(),Some(&expected));
+        assert_eq!(inner.pending_history_jump,navigation.event);
+        assert_eq!(inner.view.room_input_bar(cx,ids!(room_input_bar)).matrix_link_context(),Some(expected));
+        assert!(inner.matrix_link_ticket.as_ref().is_some_and(|ticket|ticket.is_current()));
+    }
+    #[cfg(test)]
+    pub(crate) fn assert_matrix_link_cancelled(&self) {
+        let inner=self.borrow().unwrap();
+        assert!(inner.pending_history_jump.is_none());
+        assert!(inner.matrix_link_ticket.is_none());
+    }
+
+    pub(crate) fn jump_to_matrix_event(&self, cx: &mut Cx, event: OwnedEventId, ticket: crate::matrix_links::Ticket) {
+        if !ticket.is_current() { return; }
+        self.jump_to_history_event(cx, event);
+        if let Some(mut inner) = self.borrow_mut() { inner.matrix_link_ticket = Some(ticket); }
+    }
     pub fn jump_to_history_event(&self, cx: &mut Cx, event: OwnedEventId) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.view.action_room_board(cx, ids!(actions_board)).show_history(cx);
             inner.view.view(cx, ids!(room_screen_wrapper)).set_visible(cx, true);
+            inner.matrix_link_ticket = None;
             inner.pending_history_jump = Some(event);
             inner.history_jump_started = false;
             inner.redraw(cx);
@@ -4958,6 +5047,8 @@ struct TimelineUiState {
     /// Reply previews the user has eaxpanded that should be shown in full.
     /// Collapsed reply previews (their default state) are absent from this set.
     expanded_reply_previews: HashSet<TimelineEventItemId>,
+    /// Track disclosures by event ID rather than transient timeline indices.
+    expanded_system_updates: HashSet<TimelineEventItemId>,
 
     /// Local decision/expiry state of the agent-chat approval cards in this timeline.
     #[cfg(feature = "agent_chat")]
@@ -5826,8 +5917,7 @@ fn populate_message_view(
     if !used_cached_item {
         // Redacted messages must never show reactions, even if the SDK still reports some.
         let reactions = (!matches!(msg_like_content.kind, MsgLikeKind::Redacted))
-            .then(|| event_tl_item.content().reactions())
-            .flatten();
+            .then(|| event_tl_item.reactions());
         item.reaction_list(cx, ids!(content.reaction_list)).set_list(
             cx,
             reactions,
@@ -6062,7 +6152,7 @@ fn populate_message_view(
 
     // Set the "edited" indicator if this message was edited, otherwise hide it
     // (this widget may be reused for a non-edited message at the same row).
-    let edited_indicator = item.edited_indicator(cx, ids!(profile.edited_indicator));
+    let edited_indicator = item.edited_indicator(cx, ids!(edited_indicator));
     if msg_like_content.as_message().is_some_and(|m| m.is_edited()) {
         #[cfg(feature = "agent_chat")]
         let streaming = crate::agent_chat::reply::event_is_live(event_tl_item)
@@ -7192,10 +7282,12 @@ fn populate_small_state_event(
     event_tl_item: &EventTimelineItem,
     event_content: &impl SmallStateEventContent,
     item_drawn_status: ItemDrawnStatus,
+    group_header: Option<(usize, bool)>,
 ) -> (WidgetRef, ItemDrawnStatus) {
     let mut new_drawn_status = item_drawn_status;
     let template = if super::home_screen::effective_is_desktop(cx) { id!(SmallStateEvent) } else { id!(MobileStateEvent) };
     let (item, existed) = list.item_with_existed(cx, item_id, template);
+    present_system_update_group(cx, &item, group_header);
     // The content of a small state event view may depend on the profile info,
     // so we can only mark the content as drawn after the profile has been fully drawn and cached.
     let skip_redrawing_profile = existed && item_drawn_status.profile_drawn;
@@ -7458,6 +7550,12 @@ impl Widget for Message {
         }
 
         let Some(d) = self.details.as_ref() else { return };
+        // Frame ticks still reach child animations, but do not need reply,
+        // context-menu or message hit tests on every scrolling frame.
+        if matches!(event, Event::NextFrame(_)) {
+            self.view.handle_event(cx, event, scope);
+            return;
+        }
         let room_screen_widget_uid = d.room_screen_widget_uid;
         let thread_root_event_id = d.thread_root_event_id.clone();
 
@@ -8053,9 +8151,114 @@ mod agent_chat_status_tests;
 mod agent_chat_selection_tests;
 
 #[cfg(test)]
+mod scroll_action_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_current_timeline_scroll_batch_can_skip_child_dispatch() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let timeline = WidgetUid(1);
+        let other = WidgetUid(2);
+        assert!(!only_timeline_scroll_actions(&[], timeline));
+        let scroll = cx.capture_actions(|cx| cx.widget_action(timeline, PortalListAction::Scroll));
+        assert!(only_timeline_scroll_actions(&scroll, timeline));
+        let other_scroll = cx.capture_actions(|cx| cx.widget_action(other, PortalListAction::Scroll));
+        assert!(!only_timeline_scroll_actions(&other_scroll, timeline));
+        let mixed = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.widget_action(timeline, PortalListAction::ReachedStart);
+        });
+        assert!(!only_timeline_scroll_actions(&mixed, timeline));
+        let general = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.action("other action");
+        });
+        assert!(!only_timeline_scroll_actions(&general, timeline));
+    }
+}
+
+#[cfg(test)]
 mod desktop_information_columns_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    #[cfg(feature = "onboarding-test-support")]
+    #[test]
+    fn agent_picker_receives_input_outside_its_sidebar() {
+        use std::cell::Cell;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let root = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomScreen {desktop_chat_header.visible: true}});
+            let root = WidgetRef::script_from_value(vm, value);
+            root.register_as_ui_root(vm);
+            root
+        });
+        let mut screen = root.borrow_mut::<RoomScreen>().unwrap();
+        screen.room_name_id = Some(RoomNameId::empty("!review:example.invalid".try_into().unwrap()));
+        screen.chat_info_requested = true;
+        draw(&mut cx, &mut screen, 1280.0);
+        screen.view.mobile_chat_info(&mut cx, ids!(desktop_chat_info)).review_agent_picker(&mut cx, "ready");
+        let dropdown = screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).drop_down(&mut cx, ids!(my_agents));
+        dropdown.set_selected_item(&mut cx, 0);
+        let pass = DrawPass::new(&mut cx);pass.set_size(&mut cx, dvec2(1280.0, 900.0));
+        let mut list = DrawList2d::new(&mut cx);
+        let overlay = Overlay {draw_list: DrawList::new(&mut cx)};
+        let mut render = |cx: &mut Cx, screen: &mut RoomScreen| {
+            cx.redraw_all();
+            let event = DrawEvent::default();let mut draw = CxDraw::new(cx, &event);let mut cx = Cx2d::new(&mut draw);
+            cx.begin_pass(&pass, None);list.begin_always(&mut cx);overlay.begin(&mut cx);
+            cx.begin_root_turtle(dvec2(1280.0,900.0), Layout::flow_overlay());
+            screen.view.draw_walk_all(&mut cx, &mut Scope::empty(), Walk {
+                width: Size::Fixed(1280.0), height: Size::Fixed(760.0), ..Walk::default()
+            });
+            overlay.end(&mut cx);cx.end_pass_sized_turtle();list.end(&mut cx);cx.end_pass(&pass);
+        };
+        let click = |cx: &mut Cx, screen: &mut RoomScreen, point: Vec2d| {
+            for event in [
+                Event::MouseDown(MouseDownEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(),
+                    handled: Cell::new(Area::Empty), time: 1.0}),
+                Event::MouseUp(MouseUpEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(), time: 1.1}),
+            ] {
+                let actions = cx.capture_actions(|cx| screen.handle_event(cx, &event, &mut Scope::empty()));
+                screen.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+            }
+        };
+        render(&mut cx, &mut screen);
+        let rect = dropdown.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the real picker must be open");
+        let point = rect.pos + rect.size * 0.5;
+        assert!(!screen.is_over_desktop_chat_info(&mut cx, &Event::MouseDown(MouseDownEvent {
+            abs: point, button: MouseButton::PRIMARY, window_id: WindowId(0,0),
+            modifiers: KeyModifiers::default(), handled: Cell::new(Area::Empty), time: 1.0,
+        })), "the full-window modal must extend outside the sidebar");
+        click(&mut cx, &mut screen, point);
+        render(&mut cx, &mut screen);
+        let mut agent_item = WidgetRef::empty();
+        dropdown.borrow().unwrap().children(&mut |id, item| {if id == LiveId(1) {agent_item = item;}});
+        let rect = agent_item.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the eligible Agent must appear in the popup");
+        click(&mut cx, &mut screen, rect.pos + rect.size * 0.5);
+        assert_eq!(dropdown.selected_item(), 1, "the timeline must not consume the Agent selection");
+        // Escape dismisses the modal even when its dropdown is still open.
+        // The dropdown must retire its popup and sweep lock along with it.
+        dropdown.borrow_mut().unwrap().set_active(&mut cx);
+        render(&mut cx, &mut screen);
+        let panel = screen.view.view(&mut cx, ids!(desktop_chat_info_panel));
+        let modal = panel.modal(&mut cx, ids!(agent_picker_modal));
+        // Modal closes itself before emitting its tagged dismissal action.
+        // Deliver that framework boundary without depending on an OS key loop.
+        modal.close(&mut cx);
+        let actions = cx.capture_actions(|cx| cx.widget_action(modal.widget_uid(), ModalAction::Dismissed));
+        screen.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(!modal.is_open());
+        let mut hidden_menu_items = 0;
+        dropdown.borrow().unwrap().children(&mut |_, _| hidden_menu_items += 1);
+        assert_eq!(hidden_menu_items, 0, "dismissing the picker must also retire its dropdown's input capture");
+    }
 
     #[cfg(feature = "agent_chat")]
     #[test]
@@ -8280,4 +8483,110 @@ mod desktop_information_columns_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+pub(crate) mod crypto_recovery_resume_tests {
+    use super::*;
+    use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    pub(crate) fn prepare(cx: &mut Cx, screen: &RoomScreenRef) -> crossbeam_channel::Sender<TimelineUpdate> {
+        let id = matrix_sdk::ruma::room_id!("!recovery-resume:example.org").to_owned();
+        let (sender, update_receiver) = crossbeam_channel::unbounded();
+        let (request_sender, _requests) = tokio::sync::watch::channel(crate::sliding_sync::TimelineRequest {
+            backwards_paginate: Vec::new(), is_timeline_open: true,
+        });
+        let update_sender = sender.clone();
+        let mut state = TimelineUiState {
+                    kind: TimelineKind::MainRoom {room_id: id.clone()},
+                    // Initially, we assume the user has all power levels by default.
+                    // This avoids unexpectedly hiding any UI elements that should be visible to the user.
+                    // This doesn't mean that the user can actually perform all actions;
+                    // the power levels will be updated from the homeserver once the room is opened.
+                    user_power: UserPowerLevels::all(),
+                    is_encrypted: false,
+                    // Room members start as None and get populated when fetched from the server
+                    room_members: None,
+                    // We assume timelines being viewed for the first time haven't been fully paginated.
+                    fully_paginated: false,
+                    is_paginating: false,
+                    items: Vector::new(),
+                    index_of_last_own_sent: None,
+                    index_of_first_own_failed: None,
+                    content_drawn_since_last_update: RangeSet::new(),
+                    profile_drawn_since_last_update: RangeSet::new(),
+                    update_receiver,
+                    request_sender,
+                    media_cache: MediaCache::new(Some(update_sender.clone())),
+                    link_preview_cache: LinkPreviewCache::new(Some(update_sender)),
+                    fetched_thread_summaries: HashMap::new(),
+                    pending_thread_summary_fetches: HashSet::new(),
+                    saved_state: SavedState::default(),
+                    message_highlight_animation_state: MessageHighlightAnimationState::default(),
+                    pending_reached_start: false,
+                    num_backwards_pagination_rounds_without_progress: 0,
+                    last_sent_read_receipt: None,
+                    last_sent_fully_read: None,
+                    tombstone_info: None,
+                    pending_downloads: SmallVec::new(),
+                    expanded_reply_previews: HashSet::new(),
+                    expanded_system_updates: HashSet::new(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_approvals: ApprovalUiState::default(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_expiry_timer: Timer::empty(),
+                    #[cfg(feature = "agent_chat")]
+                    agent_chat_expiry_deadline_millis: None,
+        };
+        state.content_drawn_since_last_update.insert(0..3);
+        state.profile_drawn_since_last_update.insert(0..3);
+        let mut inner = screen.borrow_mut().unwrap();
+        inner.is_loaded = true;
+        inner.timeline_kind = Some(TimelineKind::MainRoom {room_id: id.clone()});
+        inner.room_name_id = Some(RoomNameId::empty(id));
+        inner.tl_state = Some(state);
+        inner.redraw(cx);
+        sender
+    }
+    pub(crate) fn assert_updated(screen: &RoomScreenRef) {
+        let inner=screen.borrow().unwrap();let state=inner.tl_state.as_ref().unwrap();
+        assert!(state.is_encrypted, "returning from recovery must apply queued Room state");
+        assert!(!state.content_drawn_since_last_update.contains(&0), "stale encrypted rows must be repainted");
+        assert!(!state.profile_drawn_since_last_update.contains(&0));
+    }
+    pub(crate) fn queue(sender: &crossbeam_channel::Sender<TimelineUpdate>) {
+        sender.send(TimelineUpdate::RoomEncrypted).unwrap();
+        sender.send(TimelineUpdate::NewItems {
+            new_items: Vector::new(), changed_indices: 0..3, clear_cache: true, is_append: false,
+        }).unwrap();
+    }
+    #[test]
+    fn recovery_resumed_draw_applies_queued_updates_without_signal() {
+        let mut cx=Cx::new(Box::new(|_,_|{}));
+        let screen=cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);
+            vm.bx.captured_errors=Some(Vec::new());
+            let value=script_eval!(vm,{mod.widgets.RoomScreen {}});
+            let widget=WidgetRef::script_from_value(vm,value);assert!(vm.take_errors().is_empty());widget.as_room_screen()
+        });
+        let sender=prepare(&mut cx,&screen);queue(&sender);
+        let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(560.0,700.0));
+        let mut list=DrawList2d::new(&mut cx);let event=DrawEvent::default();
+        let mut draw=CxDraw::new(&mut cx,&event);let mut cx2d=Cx2d::new(&mut draw);
+        cx2d.begin_pass(&pass,None);list.begin_always(&mut cx2d);
+        cx2d.begin_root_turtle(dvec2(560.0,700.0),Layout::flow_overlay());
+        screen.draw_walk_all(&mut cx2d,&mut Scope::empty(),Walk::fill());
+        cx2d.end_pass_sized_turtle();list.end(&mut cx2d);cx2d.end_pass(&pass);
+        drop(cx2d);drop(draw);assert_updated(&screen);
+    }
+}
+
+#[path = "room_screen/system_updates.rs"]
+mod system_updates;
+use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
+
+/// Offline layout fixture using the production disclosure presentation.
+#[cfg(feature = "onboarding-test-support")]
+pub fn review_system_update_group(cx: &mut Cx, item: &WidgetRef, group: Option<(usize, bool)>) {
+    present_system_update_group(cx, item, group);
 }

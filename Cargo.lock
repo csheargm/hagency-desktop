@@ -5,7 +5,6 @@ version = 4
 [[package]]
 name = "ab_glyph_rasterizer"
 version = "0.1.8"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "accessory"
@@ -69,7 +68,7 @@ version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cipher 0.4.4",
  "cpufeatures 0.2.17",
 ]
@@ -112,7 +111,7 @@ dependencies = [
  "blocking",
  "futures",
  "futures-concurrency",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "rustix",
  "schemars 1.2.2",
  "serde",
@@ -210,12 +209,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8396b473aa0bceed68fb32462505387ea39fa47c7029417e0a49f10592b036"
 dependencies = [
  "anyhow",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpu-time",
  "env_logger",
  "lazy_static",
  "log",
- "num-traits 0.2.19",
+ "num-traits",
  "num_cpus",
  "rayon",
 ]
@@ -277,10 +276,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
-name = "anymap2"
-version = "0.13.0"
+name = "anymap3"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d301b3b94cb4b2f23d7917810addbbaff90738e0ca2be692bd027e70d7e0330c"
+checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
 
 [[package]]
 name = "anyrender"
@@ -317,7 +316,7 @@ version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "467b60e4ee6761cd6fd4e03ea58acefc8eec0d1b1def995c1b3b783fa7be8a60"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
  "serde",
 ]
 
@@ -387,7 +386,7 @@ dependencies = [
  "askar-storage",
  "async-lock",
  "ciborium",
- "once_cell 1.21.4",
+ "once_cell",
  "serde",
  "serde_json",
  "zeroize",
@@ -398,11 +397,6 @@ name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
-
-[[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "arrayvec"
@@ -451,14 +445,6 @@ name = "ascii"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
-
-[[package]]
-name = "ash"
-version = "0.38.0+1.3.281"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "libloading 0.8.9",
-]
 
 [[package]]
 name = "ashpd"
@@ -555,7 +541,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "itertools 0.14.0",
- "once_cell 1.21.4",
+ "once_cell",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -658,7 +644,7 @@ dependencies = [
  "async-lock",
  "blocking",
  "futures-lite",
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -668,7 +654,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
 dependencies = [
  "autocfg",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "concurrent-queue",
  "futures-io",
  "futures-lite",
@@ -713,7 +699,7 @@ dependencies = [
  "async-signal",
  "async-task",
  "blocking",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "event-listener 5.4.2",
  "futures-lite",
  "rustix",
@@ -749,7 +735,7 @@ dependencies = [
  "async-io",
  "async-lock",
  "atomic-waker",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "futures-core",
  "futures-io",
  "rustix",
@@ -777,7 +763,7 @@ dependencies = [
  "kv-log-macro",
  "log",
  "memchr 2.8.3",
- "once_cell 1.21.4",
+ "once_cell",
  "pin-project-lite",
  "pin-utils",
  "slab",
@@ -855,7 +841,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f28d99ec8bfea296261ca1af174f24225171fea9664ba9003cbebee704810528"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -991,12 +977,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
 dependencies = [
  "addr2line",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "libc",
  "miniz_oxide",
  "object",
  "rustc-demangle",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -1058,9 +1044,9 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "shlex 2.0.1",
- "syn 3.0.3",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1069,15 +1055,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "bit-set"
-version = "0.8.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "bit-vec 0.8.0 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "bit-vec",
 ]
 
 [[package]]
@@ -1085,11 +1063,6 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
-
-[[package]]
-name = "bit-vec"
-version = "0.8.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "bitflags"
@@ -1100,7 +1073,6 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bitflags"
 version = "2.10.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "bitflags"
@@ -1135,9 +1107,9 @@ version = "1.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
  "cc",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "constant_time_eq 0.4.2",
  "cpufeatures 0.3.0",
 ]
@@ -1145,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1154,7 +1126,7 @@ dependencies = [
  "color",
  "cssparser 0.37.0",
  "cursor-icon",
- "debug_timer 0.1.3 (git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b)",
+ "debug_timer 0.1.3 (git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702)",
  "euclid 0.22.14",
  "html-escape",
  "image",
@@ -1163,7 +1135,7 @@ dependencies = [
  "linebender_resource_handle",
  "markup5ever 0.39.0",
  "objc2 0.6.4",
- "parley 0.11.1 (git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b)",
+ "parley 0.11.1 (git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702)",
  "percent-encoding",
  "rayon",
  "selectors 0.40.0",
@@ -1185,7 +1157,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -1196,7 +1168,7 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "anyrender",
  "blitz-dom",
@@ -1204,7 +1176,7 @@ dependencies = [
  "color",
  "euclid 0.22.14",
  "kurbo",
- "parley 0.11.1 (git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b)",
+ "parley 0.11.1 (git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702)",
  "peniko",
  "skrifa 0.44.0",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1215,7 +1187,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.2",
@@ -1327,7 +1299,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
 dependencies = [
  "bytes",
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg_aliases",
 ]
 
 [[package]]
@@ -1386,7 +1358,6 @@ checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 [[package]]
 name = "bytemuck"
 version = "1.25.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "bytemuck"
@@ -1411,13 +1382,12 @@ dependencies = [
 [[package]]
 name = "byteorder"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "byteorder"
 version = "1.5.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "byteorder-lite"
@@ -1568,20 +1538,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "cfg-if"
-version = "1.0.4"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
-
-[[package]]
-name = "cfg_aliases"
-version = "0.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "chacha20"
@@ -1589,7 +1549,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cipher 0.4.4",
  "cpufeatures 0.2.17",
 ]
@@ -1600,7 +1560,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cipher 0.5.2",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
@@ -1637,7 +1597,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13de944a44b5064ee5d3a5ceccc49a41bfec50f2580e66f82e87703acdb88b53"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "encoding_rs",
  "memchr 2.8.3",
 ]
@@ -1690,7 +1650,7 @@ dependencies = [
  "chromiumoxide_types",
  "either",
  "heck",
- "once_cell 1.21.4",
+ "once_cell",
  "proc-macro2",
  "quote",
  "regex",
@@ -1715,10 +1675,10 @@ checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
  "js-sys",
- "num-traits 0.2.19",
+ "num-traits",
  "serde",
  "wasm-bindgen",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -1794,7 +1754,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
- "libloading 0.8.8",
+ "libloading",
 ]
 
 [[package]]
@@ -1864,7 +1824,7 @@ version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "197fd99cb113a8d5d9b6376f3aa817f32c1078f2343b714fff7d2ca44fdf67d5"
 dependencies = [
- "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -1901,7 +1861,7 @@ dependencies = [
  "color-spantrace",
  "eyre",
  "indenter",
- "once_cell 1.21.4",
+ "once_cell",
  "owo-colors",
  "tracing-error",
 ]
@@ -1912,7 +1872,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8b88ea9df13354b55bc7234ebcce36e6ef896aca2e42a15de9e10edce01b427"
 dependencies = [
- "once_cell 1.21.4",
+ "once_cell",
  "owo-colors",
  "tracing-core",
  "tracing-error",
@@ -1979,7 +1939,7 @@ dependencies = [
  "jetscii",
  "phf 0.13.1",
  "phf_codegen 0.13.1",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "typed-arena",
 ]
@@ -2143,7 +2103,7 @@ version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
 ]
 
 [[package]]
@@ -2153,7 +2113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5877d3fbf742507b66bc2a1945106bd30dd8504019d596901ddd012a4dd01740"
 dependencies = [
  "chrono",
- "once_cell 1.21.4",
+ "once_cell",
  "winnow 0.6.26",
 ]
 
@@ -2205,11 +2165,6 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
-
-[[package]]
-name = "crunchy"
-version = "0.2.4"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "crypto-bigint"
@@ -2320,7 +2275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.3",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2372,7 +2327,7 @@ version = "4.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.10.7",
@@ -2388,7 +2343,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.3.0",
  "curve25519-dalek-derive",
  "digest 0.11.3",
@@ -2533,11 +2488,11 @@ version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "crossbeam-utils",
  "hashbrown 0.14.5",
  "lock_api",
- "once_cell 1.21.4",
+ "once_cell",
  "parking_lot_core",
 ]
 
@@ -2597,7 +2552,7 @@ checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 
 [[package]]
 name = "decancer"
@@ -2664,6 +2619,16 @@ checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
  "pem-rfc7468",
+ "zeroize",
+]
+
+[[package]]
+name = "der"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
+dependencies = [
+ "const-oid 0.10.1",
  "zeroize",
 ]
 
@@ -2856,7 +2821,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.8",
+ "libloading",
 ]
 
 [[package]]
@@ -2865,7 +2830,7 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fac5fca71e65e94cc718a6e2af65d6e0f9c6027751c2aa562fbb5087fda639bc"
 dependencies = [
- "bit-set 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bit-set",
  "cssparser 0.37.0",
  "foldhash 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "html5ever 0.39.0",
@@ -2886,7 +2851,7 @@ dependencies = [
  "foldhash 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "gjson",
  "html-escape",
- "once_cell 1.21.4",
+ "once_cell",
  "phf 0.13.1",
  "tendril 0.5.0",
  "thiserror 2.0.20",
@@ -2902,7 +2867,6 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 [[package]]
 name = "downcast-rs"
 version = "1.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "dtoa"
@@ -2946,7 +2910,7 @@ version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
 dependencies = [
- "der",
+ "der 0.7.10",
  "digest 0.10.7",
  "elliptic-curve",
  "rfc6979",
@@ -2959,7 +2923,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
- "pkcs8",
+ "pkcs8 0.10.2",
  "signature 2.2.0",
 ]
 
@@ -2969,6 +2933,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
 dependencies = [
+ "pkcs8 0.11.0",
  "serdect",
  "signature 3.0.0",
 ]
@@ -3069,7 +3034,7 @@ version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
 ]
 
 [[package]]
@@ -3159,11 +3124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3185,7 +3145,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "136d1b5283a1ab77bd9257427ffd09d8667ced0570b6f938942bc7568ed5b943"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "home",
  "windows-sys 0.48.0",
 ]
@@ -3196,7 +3156,7 @@ version = "0.20.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bb7ef65b3777a325d1eeefefab5b6d4959da54747e33bd6258e789640f307ad"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -3205,7 +3165,7 @@ version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
  "serde",
 ]
 
@@ -3267,7 +3227,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdcd038306bd720751aaf9881dfe952379413f463535ff6ee7c6e7e96067169d"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
  "eyeball-im",
  "futures-core",
  "imbl",
@@ -3283,7 +3243,7 @@ checksum = "c08309dbcc659c5549a24ddb9b27027640641b282ef5768267c7e675558986a3"
 dependencies = [
  "autocfg",
  "indenter",
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -3304,7 +3264,7 @@ version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
 dependencies = [
- "bit-set 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bit-set",
  "regex-automata",
  "regex-syntax",
 ]
@@ -3349,7 +3309,7 @@ version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "rustix",
  "windows-sys 0.59.0",
 ]
@@ -3397,7 +3357,7 @@ version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "libc",
 ]
 
@@ -3441,7 +3401,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -3470,13 +3430,12 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "foldhash"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "foldhash"
 version = "0.2.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
@@ -3536,8 +3495,8 @@ dependencies = [
  "read-fonts 0.41.0",
  "roxmltree 0.21.1",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "yeslogic-fontconfig-sys",
 ]
 
@@ -3754,47 +3713,18 @@ dependencies = [
 [[package]]
 name = "fxhash"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
- "byteorder 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "byteorder 1.5.0",
 ]
 
 [[package]]
 name = "fxhash"
 version = "0.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "byteorder 1.5.0 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
-]
-
-[[package]]
-name = "g2gen"
-version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
- "g2poly",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "byteorder 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
-
-[[package]]
-name = "g2p"
-version = "1.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
-dependencies = [
- "g2gen",
- "g2poly",
-]
-
-[[package]]
-name = "g2poly"
-version = "1.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
 
 [[package]]
 name = "generator"
@@ -3803,12 +3733,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54ade96dc9003043bce7c035c85a9df5a858bfb2039c5a2e6fdf00f324f6c551"
 dependencies = [
  "cc",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-result 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -3829,7 +3759,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
 dependencies = [
  "rustix",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -3847,7 +3777,7 @@ version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "335ff9f135e4384c8150d6f27c6daed433577f86b4750418338c01a1a2528592"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "js-sys",
  "libc",
  "wasi",
@@ -3860,7 +3790,7 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "js-sys",
  "libc",
  "r-efi 5.3.0",
@@ -3874,7 +3804,7 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "js-sys",
  "libc",
  "r-efi 6.0.0",
@@ -4132,7 +4062,7 @@ dependencies = [
  "gix-trace",
  "gix-utils",
  "libc",
- "once_cell 1.21.4",
+ "once_cell",
  "parking_lot",
  "prodash",
  "thiserror 2.0.20",
@@ -4206,7 +4136,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f1eecdd006390cbed81f105417dbf82a6fe40842022006550f2e32484101da"
 dependencies = [
  "gix-hash",
- "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
  "parking_lot",
 ]
 
@@ -4242,7 +4172,7 @@ dependencies = [
  "gix-traverse",
  "gix-utils",
  "gix-validate",
- "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
  "itoa",
  "libc",
  "memmap2",
@@ -5027,9 +4957,9 @@ version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "crunchy 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "zerocopy 0.8.27",
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5072,7 +5002,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "allocator-api2",
- "equivalent 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -5083,16 +5013,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
- "equivalent 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "equivalent",
  "foldhash 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "hashbrown"
-version = "0.16.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "foldhash 0.2.0 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
 ]
 
 [[package]]
@@ -5175,17 +5097,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hexf-parse"
-version = "0.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
-name = "hilog-sys"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f715f263b6e73aa2322b59057134b4daf56a765cbebc2f6b35e640ffded3361b"
-
-[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5230,7 +5141,7 @@ dependencies = [
  "anndists",
  "anyhow",
  "bincode",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpu-time",
  "env_logger",
  "hashbrown 0.15.5",
@@ -5238,7 +5149,7 @@ dependencies = [
  "lazy_static",
  "log",
  "mmap-rs",
- "num-traits 0.2.19",
+ "num-traits",
  "num_cpus",
  "parking_lot",
  "rand 0.9.2",
@@ -5384,6 +5295,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-auth"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "150fa4a9462ef926824cf4519c84ed652ca8f4fbae34cb8af045b5cbcaf98822"
+dependencies = [
+ "memchr 2.8.3",
+]
+
+[[package]]
 name = "http-body"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5520,7 +5440,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.56.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5723,7 +5643,7 @@ dependencies = [
  "bytemuck 1.25.2",
  "byteorder-lite",
  "moxcms",
- "num-traits 0.2.19",
+ "num-traits",
  "png 0.18.1",
  "tiff",
  "zune-core",
@@ -5762,7 +5682,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46bad832b9b463ed9398b8506488cc2e3b897a9d44f13af115f382aac71f4fec"
 dependencies = [
  "archery",
- "equivalent 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "equivalent",
  "imbl-sized-chunks",
  "rand_core 0.9.3",
  "rand_xoshiro",
@@ -5807,20 +5727,11 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.13.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "equivalent 1.0.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "hashbrown 0.16.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
-]
-
-[[package]]
-name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
- "equivalent 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "equivalent",
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
@@ -5890,7 +5801,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
 dependencies = [
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -5900,7 +5811,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
 dependencies = [
  "is-docker",
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -5962,7 +5873,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -6009,7 +5920,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a87aa2bb7d2af34197c04845522473242e1aa17c12f4935d5856491a7fb8c97"
 dependencies = [
  "cesu8",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "combine",
  "jni-sys 0.3.1",
  "log",
@@ -6024,7 +5935,7 @@ version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "combine",
  "jni-macros",
  "jni-sys 0.4.1",
@@ -6032,7 +5943,7 @@ dependencies = [
  "simd_cesu8",
  "thiserror 2.0.20",
  "walkdir",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -6092,7 +6003,7 @@ version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "futures-util",
  "wasm-bindgen",
 ]
@@ -6146,7 +6057,7 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "ecdsa",
  "elliptic-curve",
  "sha2 0.10.9",
@@ -6204,7 +6115,7 @@ dependencies = [
  "indexmap 2.14.2",
  "pdf-writer",
  "png 0.18.1",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "siphasher",
  "skrifa 0.42.1",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -6230,7 +6141,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
  "euclid 0.22.14",
  "polycool",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -6321,17 +6232,8 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "windows-targets 0.53.5",
-]
-
-[[package]]
-name = "libloading"
-version = "0.8.9"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "cfg-if 1.0.4 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-link 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
 ]
 
 [[package]]
@@ -6435,7 +6337,7 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "generator",
  "scoped-tls 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
@@ -6474,7 +6376,7 @@ version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
- "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -6568,13 +6470,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "makepad-a11y"
+version = "0.1.0"
+
+[[package]]
 name = "makepad-ai-services"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "makepad-base64",
  "makepad-micro-serde",
  "makepad-platform",
+ "makepad-remote",
  "makepad-strict-json",
+]
+
+[[package]]
+name = "makepad-alloc-epoch"
+version = "1.0.0"
+
+[[package]]
+name = "makepad-alloc-phase"
+version = "1.0.0"
+
+[[package]]
+name = "makepad-android-state"
+version = "0.1.0"
+dependencies = [
+ "makepad-jni-sys 0.4.0",
 ]
 
 [[package]]
@@ -6583,44 +6505,78 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd004cda8be459fd76954218b76a1249a079fb9360bbca4e724cb7ddb2962857"
 dependencies = [
- "makepad-jni-sys",
+ "makepad-jni-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "makepad-app-icons"
+version = "0.1.0"
 
 [[package]]
 name = "makepad-app-module"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-ai-services",
  "makepad-strict-json",
- "makepad-widgets",
+ "makepad-widgets-core",
 ]
 
 [[package]]
 name = "makepad-apple-sys"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-objc-sys",
 ]
 
 [[package]]
+name = "makepad-atspi"
+version = "0.1.0"
+dependencies = [
+ "makepad-dbus-wire",
+]
+
+[[package]]
+name = "makepad-base64"
+version = "1.0.0"
+
+[[package]]
 name = "makepad-byteorder-lite"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+
+[[package]]
+name = "makepad-cell-width"
+version = "0.1.0"
 
 [[package]]
 name = "makepad-code-editor"
 version = "2.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
- "makepad-widgets",
+ "makepad-cell-width",
+ "makepad-code-language",
+ "makepad-widgets-core",
 ]
+
+[[package]]
+name = "makepad-code-language"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark 0.12.2",
+]
+
+[[package]]
+name = "makepad-cpu-budget"
+version = "1.0.0"
+dependencies = [
+ "makepad-relax-api",
+]
+
+[[package]]
+name = "makepad-dbus-wire"
+version = "0.1.0"
 
 [[package]]
 name = "makepad-derive-wasm-bridge"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -6628,19 +6584,25 @@ dependencies = [
 [[package]]
 name = "makepad-derive-widget"
 version = "2.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "makepad-derive-widget-impl",
  "makepad-live-id",
+ "makepad-micro-proc-macro",
+]
+
+[[package]]
+name = "makepad-derive-widget-impl"
+version = "1.0.0"
+dependencies = [
  "makepad-micro-proc-macro",
 ]
 
 [[package]]
 name = "makepad-draw"
 version = "2.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
- "ab_glyph_rasterizer",
- "fxhash 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "fxhash 0.2.1",
+ "makepad-font-core",
  "makepad-gif",
  "makepad-live-id",
  "makepad-math",
@@ -6652,18 +6614,15 @@ dependencies = [
  "makepad-zune-png",
  "makepad-zune-qoi",
  "rustybuzz 0.18.0",
- "sdfer",
- "serde",
  "ttf-parser 0.24.1",
- "unicode-bidi 0.3.18 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "unicode-linebreak",
+ "unicode-bidi 0.3.18",
+ "unicode-script 0.5.8",
  "unicode-segmentation 1.12.0",
 ]
 
 [[package]]
 name = "makepad-error-log"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-micro-serde",
 ]
@@ -6671,57 +6630,89 @@ dependencies = [
 [[package]]
 name = "makepad-fast-inflate"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-filesystem-watcher"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-git",
+ "makepad-windows-sys",
+]
+
+[[package]]
+name = "makepad-font-core"
+version = "1.0.0"
+dependencies = [
+ "ab_glyph_rasterizer",
+ "fxhash 0.2.1",
+ "makepad-shared-bytes",
+ "makepad-zune-png",
+ "rustybuzz 0.18.0",
+ "sdfer",
+ "ttf-parser 0.24.1",
+ "unicode-script 0.5.8",
 ]
 
 [[package]]
 name = "makepad-futures"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
-name = "makepad-futures-legacy"
-version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-gif"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
- "weezl 0.1.12 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "weezl 0.1.12",
 ]
 
 [[package]]
 name = "makepad-git"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-fast-inflate",
 ]
 
 [[package]]
-name = "makepad-half"
-version = "2.7.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+name = "makepad-gizmo"
+version = "0.1.0"
 dependencies = [
- "cfg-if 1.0.4 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "crunchy 0.2.4 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "num-traits 0.2.20",
- "zerocopy 0.8.39",
+ "makepad-math",
+]
+
+[[package]]
+name = "makepad-gpu-trace"
+version = "1.0.0"
+
+[[package]]
+name = "makepad-hal"
+version = "1.0.0"
+dependencies = [
+ "fxhash 0.2.1",
+ "makepad-a11y",
+ "makepad-apple-sys",
+ "makepad-atspi",
+ "makepad-cpu-budget",
+ "makepad-dbus-wire",
+ "makepad-font-core",
+ "makepad-gpu-trace",
+ "makepad-jni-sys 0.4.0",
+ "makepad-key-code",
+ "makepad-math",
+ "makepad-micro-serde",
+ "makepad-objc-sys",
+ "makepad-relax-api",
+ "makepad-remote",
+ "makepad-studio-protocol",
+ "makepad-vulkan",
+ "makepad-windows-sys",
+ "makepad-zune-jpeg",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]
 name = "makepad-html"
 version = "0.1.0"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -6739,10 +6730,13 @@ dependencies = [
 [[package]]
 name = "makepad-html"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id",
 ]
+
+[[package]]
+name = "makepad-jni-sys"
+version = "0.4.0"
 
 [[package]]
 name = "makepad-jni-sys"
@@ -6751,9 +6745,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9775cbec5fa0647500c3e5de7c850280a88335d1d2d770e5aa2332b801ba7064"
 
 [[package]]
+name = "makepad-jobs"
+version = "1.0.0"
+
+[[package]]
+name = "makepad-key-code"
+version = "0.1.0"
+dependencies = [
+ "makepad-micro-serde",
+]
+
+[[package]]
 name = "makepad-latex-math"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "ttf-parser 0.24.1",
 ]
@@ -6761,16 +6765,21 @@ dependencies = [
 [[package]]
 name = "makepad-live-id"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id-macros",
- "serde",
+ "makepad-relax-api",
 ]
 
 [[package]]
 name = "makepad-live-id-macros"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-live-id-macros-impl",
+]
+
+[[package]]
+name = "makepad-live-id-macros-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -6778,7 +6787,6 @@ dependencies = [
 [[package]]
 name = "makepad-live-reload-core"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-filesystem-watcher",
 ]
@@ -6786,7 +6794,6 @@ dependencies = [
 [[package]]
 name = "makepad-markdown"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "blake3",
  "comrak",
@@ -6800,7 +6807,6 @@ dependencies = [
 [[package]]
 name = "makepad-markdown-widgets"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "blake3",
  "core-foundation 0.10.1",
@@ -6820,20 +6826,18 @@ dependencies = [
 [[package]]
 name = "makepad-math"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "bytemuck 1.25.0",
  "makepad-micro-serde",
 ]
 
 [[package]]
 name = "makepad-micro-proc-macro"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-micro-serde"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-live-id",
  "makepad-micro-serde-derive",
@@ -6842,7 +6846,14 @@ dependencies = [
 [[package]]
 name = "makepad-micro-serde-derive"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-micro-proc-macro",
+ "makepad-micro-serde-derive-impl",
+]
+
+[[package]]
+name = "makepad-micro-serde-derive-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -6850,102 +6861,150 @@ dependencies = [
 [[package]]
 name = "makepad-network"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-apple-sys",
  "makepad-error-log",
- "makepad-futures-legacy",
  "makepad-live-id",
  "makepad-micro-serde",
- "makepad-script",
- "rustls",
- "webpki-roots",
- "windows 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "makepad-windows-sys",
 ]
 
 [[package]]
 name = "makepad-objc-sys"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-platform"
 version = "2.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
- "ash",
  "bitflags 2.10.0",
- "foldhash 0.2.0 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "hilog-sys",
- "makepad-android-state",
+ "foldhash 0.2.0",
+ "makepad-a11y",
+ "makepad-alloc-epoch",
+ "makepad-android-state 0.1.0",
  "makepad-apple-sys",
+ "makepad-cpu-budget",
  "makepad-futures",
- "makepad-futures-legacy",
- "makepad-jni-sys",
+ "makepad-gpu-trace",
+ "makepad-hal",
+ "makepad-jni-sys 0.4.0",
+ "makepad-key-code",
  "makepad-live-reload-core",
  "makepad-network",
  "makepad-objc-sys",
  "makepad-platform-video",
+ "makepad-prof-stream",
+ "makepad-relax",
+ "makepad-remote",
  "makepad-script",
+ "makepad-script-census",
  "makepad-script-std",
  "makepad-shared-bytes",
+ "makepad-stack",
  "makepad-studio-protocol",
  "makepad-tsdf",
+ "makepad-vulkan",
  "makepad-wasm-bridge",
+ "makepad-web-manifest",
+ "makepad-windows-sys",
+ "makepad-zune-jpeg",
  "makepad-zune-png",
- "naga",
- "napi-derive-ohos",
- "napi-ohos",
- "ohos-sys",
- "rqrr",
- "serde_json",
- "smallvec 1.15.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "url",
- "uuid",
- "wayland-client",
- "wayland-egl",
- "wayland-protocols",
- "webview2-com",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-core 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-targets 0.52.6",
+ "smallvec 1.15.1",
 ]
 
 [[package]]
 name = "makepad-platform-video"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-apple-sys",
+ "makepad-hal",
  "makepad-objc-sys",
- "windows 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "makepad-windows-sys",
+]
+
+[[package]]
+name = "makepad-prof-stream"
+version = "1.0.0"
+dependencies = [
+ "makepad-gpu-trace",
+ "makepad-strict-json",
 ]
 
 [[package]]
 name = "makepad-regex"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+
+[[package]]
+name = "makepad-relax"
+version = "1.0.0"
+
+[[package]]
+name = "makepad-relax-api"
+version = "1.0.0"
+dependencies = [
+ "makepad-alloc-phase",
+ "makepad-relax-api-macro",
+]
+
+[[package]]
+name = "makepad-relax-api-macro"
+version = "1.0.0"
+dependencies = [
+ "makepad-relax-api-macro-impl",
+]
+
+[[package]]
+name = "makepad-relax-api-macro-impl"
+version = "1.0.0"
+dependencies = [
+ "makepad-micro-proc-macro",
+]
+
+[[package]]
+name = "makepad-remote"
+version = "0.1.0"
+dependencies = [
+ "makepad-network",
+ "makepad-strict-json",
+ "makepad-toml-parser",
+ "makepad-windows-sys",
+]
 
 [[package]]
 name = "makepad-script"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-error-log",
  "makepad-html 1.0.0",
+ "makepad-key-code",
  "makepad-live-id",
  "makepad-math",
  "makepad-regex",
+ "makepad-relax",
+ "makepad-relax-api",
  "makepad-script-derive",
- "makepad-stitch",
- "smallvec 1.15.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "makepad-shader",
+]
+
+[[package]]
+name = "makepad-script-census"
+version = "1.0.0"
+dependencies = [
+ "makepad-relax-api",
+ "makepad-script",
 ]
 
 [[package]]
 name = "makepad-script-derive"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+dependencies = [
+ "makepad-micro-proc-macro",
+ "makepad-script-derive-impl",
+]
+
+[[package]]
+name = "makepad-script-derive-impl"
+version = "1.0.0"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -6953,70 +7012,87 @@ dependencies = [
 [[package]]
 name = "makepad-script-std"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "makepad-live-id",
  "makepad-network",
+ "makepad-relax-api",
  "makepad-script",
+]
+
+[[package]]
+name = "makepad-shader"
+version = "1.0.0"
+dependencies = [
+ "makepad-live-id",
+ "makepad-relax-api",
 ]
 
 [[package]]
 name = "makepad-shared-bytes"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
-name = "makepad-stitch"
-version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+name = "makepad-stack"
+version = "1.0.0"
 
 [[package]]
 name = "makepad-strict-json"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "makepad-studio-protocol"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "bitflags 2.10.0",
  "makepad-error-log",
+ "makepad-key-code",
  "makepad-live-id",
  "makepad-micro-serde",
- "makepad-script",
 ]
 
 [[package]]
 name = "makepad-svg"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-html 1.0.0",
  "makepad-live-id",
 ]
 
 [[package]]
+name = "makepad-toml-parser"
+version = "1.0.0"
+
+[[package]]
 name = "makepad-tsdf"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-math",
  "makepad-micro-serde",
 ]
 
 [[package]]
+name = "makepad-tween"
+version = "0.1.0"
+
+[[package]]
+name = "makepad-vulkan"
+version = "0.1.0"
+
+[[package]]
 name = "makepad-wasm-bridge"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-derive-wasm-bridge",
  "makepad-live-id",
 ]
 
 [[package]]
+name = "makepad-web-manifest"
+version = "0.1.0"
+
+[[package]]
 name = "makepad-webp"
 version = "0.2.4"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-byteorder-lite",
 ]
@@ -7024,24 +7100,125 @@ dependencies = [
 [[package]]
 name = "makepad-widgets"
 version = "2.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
+ "makepad-widgets-catalog",
+ "makepad-widgets-collections",
+ "makepad-widgets-core",
+ "makepad-widgets-data",
+ "makepad-widgets-editors",
+ "makepad-widgets-extras",
+ "makepad-widgets-fab",
+ "makepad-widgets-hotkeys",
+ "makepad-widgets-media",
+ "makepad-widgets-menus",
+ "makepad-widgets-pickers",
+ "makepad-widgets-rich-text",
+]
+
+[[package]]
+name = "makepad-widgets-catalog"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-collections"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-core"
+version = "2.0.0"
+dependencies = [
+ "makepad-app-icons",
  "makepad-derive-widget",
  "makepad-draw",
- "makepad-html 1.0.0",
- "makepad-latex-math",
- "octoscript-node",
- "pulldown-cmark 0.12.2",
- "serde",
+ "makepad-jobs",
+ "makepad-tween",
  "serde_json",
  "ttf-parser 0.24.1",
  "unicode-segmentation 1.12.0",
 ]
 
 [[package]]
+name = "makepad-widgets-data"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-editors"
+version = "2.0.0"
+dependencies = [
+ "makepad-gizmo",
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-extras"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-fab"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-hotkeys"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-media"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-menus"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-pickers"
+version = "2.0.0"
+dependencies = [
+ "makepad-widgets-core",
+]
+
+[[package]]
+name = "makepad-widgets-rich-text"
+version = "2.0.0"
+dependencies = [
+ "makepad-base64",
+ "makepad-html 1.0.0",
+ "makepad-latex-math",
+ "makepad-widgets-core",
+ "pulldown-cmark 0.12.2",
+ "unicode-segmentation 1.12.0",
+]
+
+[[package]]
+name = "makepad-windows-sys"
+version = "0.1.0"
+
+[[package]]
 name = "makepad-zune-bmp"
 version = "0.5.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-error-log",
  "makepad-zune-core",
@@ -7050,15 +7227,10 @@ dependencies = [
 [[package]]
 name = "makepad-zune-core"
 version = "0.5.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "makepad-error-log",
-]
 
 [[package]]
 name = "makepad-zune-inflate"
 version = "0.2.54"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "simd-adler32 0.3.9",
 ]
@@ -7066,7 +7238,6 @@ dependencies = [
 [[package]]
 name = "makepad-zune-jpeg"
 version = "0.5.15"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-zune-core",
 ]
@@ -7074,7 +7245,6 @@ dependencies = [
 [[package]]
 name = "makepad-zune-png"
 version = "0.5.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-fast-inflate",
  "makepad-zune-core",
@@ -7084,7 +7254,6 @@ dependencies = [
 [[package]]
 name = "makepad-zune-qoi"
 version = "0.5.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-zune-core",
 ]
@@ -7248,10 +7417,9 @@ dependencies = [
 [[package]]
 name = "matrix-sdk"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2afc652a144822f6fbe24084e08bc59cb483fd0b504396d492131dec0749396e"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
- "anymap2",
+ "anymap3",
  "as_variant",
  "async-stream",
  "async-trait",
@@ -7259,7 +7427,6 @@ dependencies = [
  "backon",
  "bytes",
  "bytesize",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "event-listener 5.4.2",
  "eyeball",
  "eyeball-im",
@@ -7305,8 +7472,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-base"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02d98114e35b09143eb0db0c1679176d56d9bcddd141546d7de272a87e6dc94e"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -7326,6 +7492,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tracing",
  "unicode-normalization",
 ]
@@ -7333,8 +7500,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-common"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "457c2b3c8995cb0f20b882ece41f5a31f07e4e556bafbe37c2c8f3f2d02f638f"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "eyeball-im",
  "futures-core",
@@ -7357,15 +7523,13 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-crypto"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6851a6f102574c52430bd3617f86fb0def62f912fd2aed5356dcb8ff06a9fbc3"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "aes 0.9.3",
  "as_variant",
  "async-trait",
  "bs58",
  "byteorder 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "ctr 0.10.1",
  "eyeball",
  "futures-core",
@@ -7397,8 +7561,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-indexeddb"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d24e5bf2450df25451596d62b8af6e016bc6b47be78ae1e30a72985c1e4b6001"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7430,8 +7593,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-sqlite"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d4271e06d52a17bc6ec39b5a2985b65dcced737969fac3678967783656edb34"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -7459,8 +7621,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-store-encryption"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "295c10317b47b20f0381743b16634be95fdcf244f0c0b85005cd53beb0797906"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -7482,8 +7643,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-ui"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e43a190b56df060b5a901d0e783e04002612981d1fef9562a44bf69330bb5257"
+source = "git+https://github.com/matrix-org/matrix-rust-sdk.git?rev=61905c3e46496340fad7faa6c5f77b8f363d88e7#61905c3e46496340fad7faa6c5f77b8f363d88e7"
 dependencies = [
  "as_variant",
  "async-rx",
@@ -7525,7 +7685,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245ff6a224b4df7b0c90dda2dd5a6eb46112708d49e8bdd8b007fccb09fea8e4"
 dependencies = [
  "accessory",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "delegate-display",
  "derive_more 2.0.1",
  "fancy_constructor",
@@ -7580,7 +7740,7 @@ version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "digest 0.10.7",
 ]
 
@@ -7591,14 +7751,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5736ba45bbac8f7ccc99a897f88ce85e508a18baec973a040f2514e6cdbff0d2"
 dependencies = [
  "idna 0.3.0",
- "once_cell 1.21.4",
+ "once_cell",
  "regex",
 ]
 
 [[package]]
 name = "memchr"
 version = "2.7.6"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "memchr"
@@ -7633,7 +7792,7 @@ dependencies = [
  "anyhow",
  "fontdb",
  "json5",
- "once_cell 1.21.4",
+ "once_cell",
  "regex",
  "serde",
  "serde_json",
@@ -7770,7 +7929,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
  "pxfm",
 ]
 
@@ -7826,36 +7985,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "naga"
-version = "27.0.3"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "arrayvec 0.7.6",
- "bit-set 0.8.0 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "bitflags 2.10.0",
- "cfg-if 1.0.4 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "cfg_aliases 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "hashbrown 0.16.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "hexf-parse",
- "indexmap 2.13.0",
- "makepad-error-log",
- "makepad-half",
- "num-traits 0.2.20",
- "once_cell 1.21.3",
- "rustc-hash 1.1.0",
- "spirv",
- "thiserror 2.0.18",
- "unicode-ident 1.0.22",
-]
-
-[[package]]
 name = "napi-derive-backend-ohos"
 version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b18d697bedddd2d4c9f8f76b49fe65bd81ed1c55a7eec21ba40c176c236ddc"
 dependencies = [
  "convert_case",
- "once_cell 1.21.4",
+ "once_cell",
  "proc-macro2",
  "quote",
  "regex",
@@ -7868,7 +8004,7 @@ version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8462d74a2d6c7a671bd610f99f9ba34c739aadd2da4d8dd9f109a7e666cc2ad2"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "convert_case",
  "napi-derive-backend-ohos",
  "proc-macro2",
@@ -7885,7 +8021,7 @@ dependencies = [
  "bitflags 2.13.2",
  "ctor",
  "napi-sys-ohos",
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -7894,7 +8030,7 @@ version = "0.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f101404db01422d034db5afa63eefff6d9c8f66c0894278bc456b4c30954e166"
 dependencies = [
- "libloading 0.8.8",
+ "libloading",
 ]
 
 [[package]]
@@ -7941,8 +8077,8 @@ version = "0.29.0"
 source = "git+https://github.com/octos-org/octos.git?rev=deb433e9a452c03d8fe7f4f6a26b42785c47ced7#deb433e9a452c03d8fe7f4f6a26b42785c47ced7"
 dependencies = [
  "bitflags 2.13.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -7953,8 +8089,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags 2.13.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -7965,8 +8101,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags 2.13.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -8025,7 +8161,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -8038,7 +8174,7 @@ dependencies = [
  "libm",
  "num-integer",
  "num-iter",
- "num-traits 0.2.19",
+ "num-traits",
  "rand 0.8.5",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zeroize",
@@ -8067,7 +8203,7 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
 dependencies = [
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -8078,7 +8214,7 @@ checksum = "1429034a0490724d0075ebb2bc9e875d6503c3cf69e235a8941aa757d83ef5bf"
 dependencies = [
  "autocfg",
  "num-integer",
- "num-traits 0.2.19",
+ "num-traits",
 ]
 
 [[package]]
@@ -8090,11 +8226,6 @@ dependencies = [
  "autocfg",
  "libm",
 ]
-
-[[package]]
-name = "num-traits"
-version = "0.2.20"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "num_cpus"
@@ -8662,7 +8793,7 @@ dependencies = [
  "libc",
  "rappct",
  "seccompiler",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8755,7 +8886,7 @@ dependencies = [
 [[package]]
 name = "octoscript-makepad"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=cb66de073469063abeb2a5ab2a2bbf3cdb365745#cb66de073469063abeb2a5ab2a2bbf3cdb365745"
+source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=bc6deaa686f3da1549b531461a24e0c41598785a#bc6deaa686f3da1549b531461a24e0c41598785a"
 dependencies = [
  "octoscript-render",
  "octoscript-ui-l0",
@@ -8765,12 +8896,12 @@ dependencies = [
 [[package]]
 name = "octoscript-node"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=cb66de073469063abeb2a5ab2a2bbf3cdb365745#cb66de073469063abeb2a5ab2a2bbf3cdb365745"
+source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=bc6deaa686f3da1549b531461a24e0c41598785a#bc6deaa686f3da1549b531461a24e0c41598785a"
 
 [[package]]
 name = "octoscript-render"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=cb66de073469063abeb2a5ab2a2bbf3cdb365745#cb66de073469063abeb2a5ab2a2bbf3cdb365745"
+source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=bc6deaa686f3da1549b531461a24e0c41598785a#bc6deaa686f3da1549b531461a24e0c41598785a"
 dependencies = [
  "makepad-script",
  "octoscript-node",
@@ -8790,7 +8921,7 @@ dependencies = [
 [[package]]
 name = "octoscript-widgets"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=cb66de073469063abeb2a5ab2a2bbf3cdb365745#cb66de073469063abeb2a5ab2a2bbf3cdb365745"
+source = "git+https://www.github.com/OctoSense-org/Octoscript-Makepad.git?rev=bc6deaa686f3da1549b531461a24e0c41598785a#bc6deaa686f3da1549b531461a24e0c41598785a"
 dependencies = [
  "makepad-widgets",
  "serde_json",
@@ -8865,17 +8996,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohos-sys"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d380ab6c951261a0e44306245bc960b3b3367f099a7da7156bd1a3cacaf783c"
-
-[[package]]
-name = "once_cell"
-version = "1.21.3"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8910,7 +9030,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77823a27f0babb03091cb9ed9ef80af3b39dbc82f97e8fa530374b7dafd87a45"
 dependencies = [
  "bitflags 2.13.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "foreign-types",
  "libc",
  "openssl-macros",
@@ -9035,7 +9155,7 @@ version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "libc",
  "redox_syscall 0.5.18",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -9069,7 +9189,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.11.1"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "fontique",
  "harfrust",
@@ -9385,9 +9505,9 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
 dependencies = [
- "der",
- "pkcs8",
- "spki",
+ "der 0.7.10",
+ "pkcs8 0.10.2",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -9396,20 +9516,29 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
- "der",
- "spki",
+ "der 0.7.10",
+ "spki 0.7.3",
 ]
+
+[[package]]
+name = "pkcs8"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7"
+dependencies = [
+ "der 0.8.3",
+ "spki 0.8.1",
+]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.32"
 
 [[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
-
-[[package]]
-name = "pkg-config"
-version = "0.3.32"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "plain"
@@ -9449,7 +9578,7 @@ version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
@@ -9490,7 +9619,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
 ]
 
 [[package]]
@@ -9499,7 +9628,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash 0.5.1",
@@ -9554,7 +9683,7 @@ version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
- "zerocopy 0.8.27",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9597,7 +9726,7 @@ version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
- "unicode-ident 1.0.19",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -9611,7 +9740,7 @@ dependencies = [
  "nix 0.31.3",
  "tokio",
  "tracing",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -9649,7 +9778,6 @@ dependencies = [
 [[package]]
 name = "pulldown-cmark"
 version = "0.12.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "bitflags 2.10.0",
  "memchr 2.7.6",
@@ -9695,7 +9823,7 @@ checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
 dependencies = [
  "crossbeam-utils",
  "libc",
- "once_cell 1.21.4",
+ "once_cell",
  "raw-cpuid",
  "wasi",
  "web-sys",
@@ -9724,11 +9852,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
 dependencies = [
  "bytes",
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg_aliases",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "rustls",
  "socket2",
  "thiserror 2.0.20",
@@ -9750,7 +9878,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_pcg",
  "ring",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "slab",
@@ -9766,9 +9894,9 @@ version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
 dependencies = [
- "cfg_aliases 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg_aliases",
  "libc",
- "once_cell 1.21.4",
+ "once_cell",
  "socket2",
  "tracing",
  "windows-sys 0.60.2",
@@ -9927,7 +10055,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11762a6aea3b0a87a51b21cb2085d252f10c01cd0f3f505e1da002cf6e2427da"
 dependencies = [
  "thiserror 2.0.20",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -9983,7 +10111,7 @@ checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck 1.25.2",
  "font-types 0.12.5",
- "once_cell 1.21.4",
+ "once_cell",
 ]
 
 [[package]]
@@ -10257,7 +10385,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "getrandom 0.2.16",
  "libc",
  "untrusted 0.9.0",
@@ -10278,6 +10406,8 @@ dependencies = [
  "blake3",
  "blurhash",
  "bytesize",
+ "cap-fs-ext",
+ "cap-std",
  "chrono",
  "chrono-tz",
  "clap",
@@ -10293,6 +10423,7 @@ dependencies = [
  "hagency",
  "hagency-core",
  "hagency-owner-dashboard",
+ "hagency-store",
  "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "htmlize",
  "iana-time-zone",
@@ -10302,6 +10433,7 @@ dependencies = [
  "libc",
  "linkify",
  "makepad-app-module",
+ "makepad-apple-sys",
  "makepad-code-editor",
  "makepad-html 0.1.0",
  "makepad-widgets",
@@ -10344,6 +10476,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.5+spec-1.1.0",
@@ -10354,6 +10487,7 @@ dependencies = [
  "uuid",
  "webpki-root-certs",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]
@@ -10452,7 +10586,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "228ed7c16fa39782c3b3468e974aec2795e9089153cd08ee2e9aefb3613334c4"
 dependencies = [
  "byteorder 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "num-traits 0.2.19",
+ "num-traits",
  "paste",
 ]
 
@@ -10473,7 +10607,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "087fcb3061ccc432658a605cb868edd44e0efb08e7a159b486f02804a7616bef"
 dependencies = [
  "jni 0.21.1",
- "makepad-android-state",
+ "makepad-android-state 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "ndk-context",
 ]
 
@@ -10498,7 +10632,7 @@ version = "0.3.1"
 dependencies = [
  "android-build",
  "block2 0.6.1",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "dispatch2",
  "jni 0.21.1",
  "mime_guess",
@@ -10519,7 +10653,7 @@ version = "0.3.1"
 source = "git+https://github.com/project-robius/robius#cca3cc3dc99d8fcb6c69a127cd28d47ba8f3e3eb"
 dependencies = [
  "android-build",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "jni 0.21.1",
  "objc2 0.6.4",
  "objc2-core-location",
@@ -10535,7 +10669,7 @@ version = "0.3.1"
 source = "git+https://github.com/project-robius/robius#cca3cc3dc99d8fcb6c69a127cd28d47ba8f3e3eb"
 dependencies = [
  "block2 0.6.1",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "dispatch2",
  "jni 0.21.1",
  "objc2 0.6.4",
@@ -10552,7 +10686,7 @@ version = "0.3.1"
 source = "git+https://github.com/project-robius/robius#cca3cc3dc99d8fcb6c69a127cd28d47ba8f3e3eb"
 dependencies = [
  "android-build",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "dispatch2",
  "jni 0.21.1",
  "libc",
@@ -10590,7 +10724,7 @@ version = "0.3.1"
 source = "git+https://github.com/project-robius/robius#cca3cc3dc99d8fcb6c69a127cd28d47ba8f3e3eb"
 dependencies = [
  "block2 0.6.1",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "dispatch2",
  "objc2 0.6.4",
  "objc2-authentication-services",
@@ -10625,17 +10759,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rqrr"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffbe87d9e8db95652c25ded2418150e00b08c2fde09e23ec15896d2c470c6631"
-dependencies = [
- "g2p",
- "image",
- "lru",
-]
-
-[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10645,12 +10768,12 @@ dependencies = [
  "digest 0.10.7",
  "num-bigint-dig",
  "num-integer",
- "num-traits 0.2.19",
+ "num-traits",
  "pkcs1",
- "pkcs8",
+ "pkcs8 0.10.2",
  "rand_core 0.6.4",
  "signature 2.2.0",
- "spki",
+ "spki 0.7.3",
  "subtle",
  "zeroize",
 ]
@@ -10661,7 +10784,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
- "hashbrown 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
  "thiserror 2.0.20",
 ]
 
@@ -10678,8 +10801,7 @@ dependencies = [
 [[package]]
 name = "ruma"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc484e2676b31e677a3e3646078c01d41529eed3360226804a857db8428cc978"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "assign",
  "js_int",
@@ -10687,6 +10809,7 @@ dependencies = [
  "ruma-client-api",
  "ruma-common",
  "ruma-events",
+ "ruma-federation-api",
  "ruma-html",
  "web-time",
 ]
@@ -10694,8 +10817,7 @@ dependencies = [
 [[package]]
 name = "ruma-client-api"
 version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a6187ddda33fefafe3a738f40075ce2e8a7ecd3606998d2a885cf6dac73629d"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "as_variant",
  "assign",
@@ -10717,8 +10839,7 @@ dependencies = [
 [[package]]
 name = "ruma-common"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfbfb1235d65ebd89e169c67cc120a6608530b3445babb8689baba7ef2e72a12"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "as_variant",
  "base64 0.23.1",
@@ -10751,8 +10872,7 @@ dependencies = [
 [[package]]
 name = "ruma-events"
 version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "140e7848282c33721f4bc4f1e5922fa5eb92d3a7b497ec4b71086b047ee7cd0d"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "as_variant",
  "indexmap 2.14.2",
@@ -10772,10 +10892,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruma-federation-api"
+version = "0.16.0"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
+dependencies = [
+ "http",
+ "http-auth",
+ "js_int",
+ "mime",
+ "ruma-common",
+ "ruma-events",
+ "ruma-signatures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "ruma-html"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e27e35e6c36fa1abc4def766e474a0f2f709e87f1602d57ec34d41b09253da4"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "as_variant",
  "html5ever 0.39.0",
@@ -10787,8 +10924,7 @@ dependencies = [
 [[package]]
 name = "ruma-identifiers-validation"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d6cff00317675f487c4e7ccfb18875a14c5a14867b51d13f2a826053f03c432"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "js_int",
  "thiserror 2.0.20",
@@ -10797,11 +10933,10 @@ dependencies = [
 [[package]]
 name = "ruma-macros"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4b8571408bf1aefd0f06ea49e9d19551bcf4ba7388e19848adcd9291547c6cb"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
 dependencies = [
  "as_variant",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -10809,6 +10944,22 @@ dependencies = [
  "serde",
  "syn 3.0.3",
  "toml 1.1.5+spec-1.1.0",
+]
+
+[[package]]
+name = "ruma-signatures"
+version = "0.22.0"
+source = "git+https://github.com/ruma/ruma?rev=caf1ac05a9fd347158b60505ef8546a2ff18ae7c#caf1ac05a9fd347158b60505ef8546a2ff18ae7c"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "pkcs8 0.11.0",
+ "rand 0.10.2",
+ "ruma-common",
+ "ruma-events",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -10869,11 +11020,6 @@ checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"
-version = "1.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
-name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
@@ -10906,7 +11052,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc84bf7e9aa16c4f2c758f27412dc9841341e16aa682d9c7ac308fe3ee12056"
 dependencies = [
- "once_cell 1.21.4",
+ "once_cell",
  "rustix",
 ]
 
@@ -10918,7 +11064,7 @@ checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
- "once_cell 1.21.4",
+ "once_cell",
  "ring",
  "rustls-pki-types",
  "rustls-webpki",
@@ -10967,7 +11113,7 @@ dependencies = [
  "core-foundation-sys",
  "jni 0.21.1",
  "log",
- "once_cell 1.21.4",
+ "once_cell",
  "rustls",
  "rustls-native-certs",
  "rustls-platform-verifier-android",
@@ -11005,17 +11151,16 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "rustybuzz"
 version = "0.18.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck 1.25.0",
  "makepad-error-log",
- "smallvec 1.15.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "smallvec 1.15.1",
  "ttf-parser 0.24.1",
  "unicode-bidi-mirroring 0.3.0",
  "unicode-ccc 0.3.0",
  "unicode-properties 0.1.4",
- "unicode-script 0.5.8 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "unicode-script 0.5.8",
 ]
 
 [[package]]
@@ -11043,7 +11188,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee1e066dc922e513bda599c6ccb5f3bb2b0ea5870a579448f2622993f0a9a2f"
 dependencies = [
  "bitflags 2.13.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "clipboard-win",
  "fd-lock",
  "home",
@@ -11237,13 +11382,12 @@ dependencies = [
 [[package]]
 name = "scoped-tls"
 version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "scoped-tls"
 version = "1.0.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "scopeguard"
@@ -11289,7 +11433,6 @@ dependencies = [
 [[package]]
 name = "sdfer"
 version = "0.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "sealed"
@@ -11309,7 +11452,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
  "base16ct 0.2.0",
- "der",
+ "der 0.7.10",
  "generic-array",
  "subtle",
  "zeroize",
@@ -11403,7 +11546,7 @@ dependencies = [
  "phf 0.13.1",
  "phf_codegen 0.13.1",
  "precomputed-hash",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "servo_arc",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -11422,7 +11565,7 @@ dependencies = [
  "phf 0.13.1",
  "phf_codegen 0.13.1",
  "precomputed-hash",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "servo_arc",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "to_shmem",
@@ -11683,7 +11826,7 @@ version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
@@ -11704,7 +11847,7 @@ version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
@@ -11715,7 +11858,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
 ]
@@ -11778,7 +11921,6 @@ dependencies = [
 [[package]]
 name = "simd-adler32"
 version = "0.3.9"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "simd-adler32"
@@ -11815,7 +11957,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
 dependencies = [
  "num-bigint",
- "num-traits 0.2.19",
+ "num-traits",
  "thiserror 2.0.20",
  "time",
 ]
@@ -11885,16 +12027,15 @@ checksum = "9b0e903ee191d8f7a8fbf0d712c3a1699d19e04ceba5ad1eb673053c7d938a09"
 [[package]]
 name = "smallvec"
 version = "1.15.1"
+
+[[package]]
+name = "smallvec"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "smallvec"
-version = "1.15.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "smol_str"
@@ -11926,21 +12067,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "spirv"
-version = "0.3.0+sdk-1.3.268.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "bitflags 2.10.0",
-]
-
-[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
+]
+
+[[package]]
+name = "spki"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
+dependencies = [
+ "base64ct",
+ "der 0.8.3",
 ]
 
 [[package]]
@@ -11988,7 +12131,7 @@ dependencies = [
  "indexmap 2.14.2",
  "log",
  "memchr 2.8.3",
- "once_cell 1.21.4",
+ "once_cell",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -12022,7 +12165,7 @@ dependencies = [
  "either",
  "heck",
  "hex",
- "once_cell 1.21.4",
+ "once_cell",
  "proc-macro2",
  "quote",
  "serde",
@@ -12064,7 +12207,7 @@ dependencies = [
  "log",
  "md-5",
  "memchr 2.8.3",
- "once_cell 1.21.4",
+ "once_cell",
  "percent-encoding",
  "rand 0.8.5",
  "rsa",
@@ -12103,7 +12246,7 @@ dependencies = [
  "log",
  "md-5",
  "memchr 2.8.3",
- "once_cell 1.21.4",
+ "once_cell",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -12275,7 +12418,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "631d138475c566e37168f8394380e8ec89a6089dc806c7a76d355d73e9006553"
 dependencies = [
  "app_units",
- "arrayvec 0.7.8",
+ "arrayvec",
  "atomic_refcell",
  "bitflags 2.13.2",
  "byteorder 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -12293,13 +12436,13 @@ dependencies = [
  "new_debug_unreachable",
  "num-derive",
  "num-integer",
- "num-traits 0.2.19",
+ "num-traits",
  "num_cpus",
  "parking_lot",
  "precomputed-hash",
  "rayon",
  "rayon-core",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "selectors 0.40.0",
  "serde",
  "servo_arc",
@@ -12388,7 +12531,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/OctoSense-org/makepad-html?rev=b16565ae1e56dd7c3a87f00455ae327df599ca3b#b16565ae1e56dd7c3a87f00455ae327df599ca3b"
+source = "git+https://github.com/OctoSense-org/makepad-html?rev=d5172d37e83cd7883fe7493b7beccb6c6ad3f702#d5172d37e83cd7883fe7493b7beccb6c6ad3f702"
 dependencies = [
  "bitflags 2.13.2",
  "stylo",
@@ -12425,7 +12568,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38803281d1c23166c5ebcb455439a5d2afe711cc909cf88af72448c297756ad6"
 dependencies = [
  "kurbo",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "skrifa 0.42.1",
  "write-fonts",
 ]
@@ -12460,7 +12603,7 @@ checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
  "quote",
- "unicode-ident 1.0.19",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -12471,7 +12614,7 @@ checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
 dependencies = [
  "proc-macro2",
  "quote",
- "unicode-ident 1.0.19",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -12482,7 +12625,7 @@ checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
 dependencies = [
  "proc-macro2",
  "quote",
- "unicode-ident 1.0.19",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -12526,7 +12669,7 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "fnv",
- "once_cell 1.21.4",
+ "once_cell",
  "regex-syntax",
  "serde",
  "serde_derive",
@@ -12611,7 +12754,7 @@ checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
  "getrandom 0.4.3",
- "once_cell 1.21.4",
+ "once_cell",
  "rustix",
  "windows-sys 0.61.2",
 ]
@@ -12654,14 +12797,6 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.18"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "thiserror-impl 2.0.18",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
@@ -12682,14 +12817,6 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.18"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "makepad-micro-proc-macro",
-]
-
-[[package]]
-name = "thiserror-impl"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
@@ -12705,7 +12832,7 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
 ]
 
 [[package]]
@@ -12759,9 +12886,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab"
 dependencies = [
  "arrayref",
- "arrayvec 0.7.8",
+ "arrayvec",
  "bytemuck 1.25.2",
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "log",
  "png 0.17.16",
  "tiny-skia-path 0.11.4",
@@ -13168,7 +13295,7 @@ version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
- "once_cell 1.21.4",
+ "once_cell",
  "valuable",
 ]
 
@@ -13189,7 +13316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
 dependencies = [
  "log",
- "once_cell 1.21.4",
+ "once_cell",
  "tracing-core",
 ]
 
@@ -13211,7 +13338,7 @@ checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
  "matchers",
  "nu-ansi-term",
- "once_cell 1.21.4",
+ "once_cell",
  "regex-automata",
  "serde",
  "serde_json",
@@ -13307,7 +13434,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.16",
  "hpke 0.12.0",
- "once_cell 1.21.4",
+ "once_cell",
  "quinn",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -13334,7 +13461,6 @@ dependencies = [
 [[package]]
 name = "ttf-parser"
 version = "0.24.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "ttf-parser"
@@ -13477,7 +13603,7 @@ version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
 ]
 
 [[package]]
@@ -13489,7 +13615,10 @@ checksum = "75b844d17643ee918803943289730bec8aac480150456169e647ed0b576ba539"
 [[package]]
 name = "unicase"
 version = "2.9.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+
+[[package]]
+name = "unicode-bidi"
+version = "0.3.18"
 
 [[package]]
 name = "unicode-bidi"
@@ -13498,14 +13627,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
-name = "unicode-bidi"
-version = "0.3.18"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "unicode-bidi-mirroring"
 version = "0.3.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "unicode-bidi-mirroring"
@@ -13522,7 +13645,6 @@ checksum = "7eec5d1121208364f6793f7d2e222bf75a915c19557537745b195b253dd64217"
 [[package]]
 name = "unicode-ccc"
 version = "0.3.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "unicode-ccc"
@@ -13549,16 +13671,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f63a545481291138910575129486daeaf8ac54aee4387fe7906919f7830c7d9d"
 
 [[package]]
-name = "unicode-ident"
-version = "1.0.22"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
-name = "unicode-linebreak"
-version = "0.1.5"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "unicode-normalization"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13576,7 +13688,10 @@ checksum = "e70f2a8b45122e719eb623c01822704c4e0907e7e426a05927e1a1cfff5b75d0"
 [[package]]
 name = "unicode-properties"
 version = "0.1.4"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
+
+[[package]]
+name = "unicode-script"
+version = "0.5.8"
 
 [[package]]
 name = "unicode-script"
@@ -13585,14 +13700,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 
 [[package]]
-name = "unicode-script"
-version = "0.5.8"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "unicode-segmentation"
 version = "1.12.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "unicode-segmentation"
@@ -13820,7 +13929,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e322119358132f5fa8e529de9ed9af4cd67ae71ffc6f12c133f75d5c4ec9637"
 dependencies = [
  "aes 0.9.3",
- "arrayvec 0.7.8",
+ "arrayvec",
  "base64 0.23.1",
  "base64ct",
  "cbc 0.2.1",
@@ -13897,8 +14006,8 @@ version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "once_cell 1.21.4",
+ "cfg-if",
+ "once_cell",
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
@@ -13943,7 +14052,7 @@ version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
- "unicode-ident 1.0.19",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -13993,10 +14102,9 @@ dependencies = [
 [[package]]
 name = "wayland-backend"
 version = "0.3.12"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "downcast-rs",
- "scoped-tls 1.0.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "scoped-tls 1.0.1",
  "smallvec 1.15.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "wayland-sys",
 ]
@@ -14004,7 +14112,6 @@ dependencies = [
 [[package]]
 name = "wayland-client"
 version = "0.31.12"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
@@ -14012,18 +14119,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "wayland-egl"
-version = "0.32.9"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "wayland-backend",
- "wayland-sys",
-]
-
-[[package]]
 name = "wayland-protocols"
 version = "0.32.10"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
@@ -14033,10 +14130,9 @@ dependencies = [
 [[package]]
 name = "wayland-sys"
 version = "0.31.8"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 dependencies = [
  "makepad-error-log",
- "pkg-config 0.3.32 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "pkg-config 0.3.32",
 ]
 
 [[package]]
@@ -14119,49 +14215,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "webview2-com"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6"
-dependencies = [
- "webview2-com-macros",
- "webview2-com-sys",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "webview2-com-macros"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "webview2-com-sys"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb"
-dependencies = [
- "thiserror 2.0.20",
- "windows 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
+name = "weezl"
+version = "0.1.12"
 
 [[package]]
 name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "weezl"
-version = "0.1.12"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "which"
@@ -14285,20 +14346,10 @@ version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
 dependencies = [
- "windows-collections 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-future 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-collections 0.3.2",
+ "windows-core 0.62.2",
+ "windows-future 0.3.2",
  "windows-numerics 0.3.1",
-]
-
-[[package]]
-name = "windows"
-version = "0.62.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-collections 0.3.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-core 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-future 0.3.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
 ]
 
 [[package]]
@@ -14316,15 +14367,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
 dependencies = [
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "windows-collections"
-version = "0.3.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-core 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -14360,19 +14403,9 @@ checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
 dependencies = [
  "windows-implement 0.60.2",
  "windows-interface 0.59.3",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-result 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-strings 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-link 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-result 0.4.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
- "windows-strings 0.5.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
 ]
 
 [[package]]
@@ -14392,17 +14425,9 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
 dependencies = [
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-core 0.62.2",
+ "windows-link 0.2.1",
  "windows-threading 0.2.1",
-]
-
-[[package]]
-name = "windows-future"
-version = "0.3.2"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-core 0.62.2 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
 ]
 
 [[package]]
@@ -14462,11 +14487,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
-name = "windows-link"
-version = "0.2.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[package]]
 name = "windows-numerics"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14482,8 +14502,8 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
- "windows-core 0.62.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-core 0.62.2",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -14492,9 +14512,9 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-result 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-strings 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
 ]
 
 [[package]]
@@ -14521,15 +14541,7 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "windows-result"
-version = "0.4.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-link 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -14547,15 +14559,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.5.1"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-dependencies = [
- "windows-link 0.2.1 (git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -14609,7 +14613,7 @@ version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -14664,7 +14668,7 @@ version = "0.53.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4945f9f551b88e0d65f3db0bc25c33b8acea4d9e41163edf90dcd0b19f9069f3"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
  "windows_aarch64_gnullvm 0.53.1",
  "windows_aarch64_msvc 0.53.1",
  "windows_i686_gnu 0.53.1",
@@ -14690,7 +14694,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
- "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -14906,7 +14910,7 @@ version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a277a57398d4bfa075df44f501a17cfdf8542d224f0d36095a2adc7aee4ef0a5"
 dependencies = [
- "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cfg-if",
  "windows-sys 0.48.0",
 ]
 
@@ -15081,7 +15085,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8b8abf912b9a29ff112e1671c97c33636903d13a69712037190e6805af4f76"
 dependencies = [
  "dlib",
- "once_cell 1.21.4",
+ "once_cell",
  "pkg-config 0.3.32 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -15186,11 +15190,6 @@ checksum = "0894878a5fa3edfd6da3f88c4805f4c8558e2b996227a3d864f47fe11e38282c"
 dependencies = [
  "zerocopy-derive",
 ]
-
-[[package]]
-name = "zerocopy"
-version = "0.8.39"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[package]]
 name = "zerocopy-derive"
@@ -15437,31 +15436,17 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "makepad-ai"
+name = "makepad-script-compute"
 version = "1.0.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[patch.unused]]
-name = "makepad-aichat"
-version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[patch.unused]]
-name = "makepad-photos"
-version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
-
-[[patch.unused]]
-name = "makepad-sheets"
-version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[patch.unused]]
 name = "makepad-wm-api"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 
 [[patch.unused]]
-name = "makepad-wm-theme"
+name = "makepad-script-compute"
+version = "1.0.0"
+
+[[patch.unused]]
+name = "makepad-wm-api"
 version = "0.1.0"
-source = "git+https://www.github.com/OctoSense-org/makepad.git?rev=a0ad1839c61cecbd7e83251cfb7d50d7a725ee48#a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"

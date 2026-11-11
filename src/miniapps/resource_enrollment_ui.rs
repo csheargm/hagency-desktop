@@ -50,10 +50,10 @@ mod tests {
             });
             for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
             panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Enroll this account’s resource"));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"The monthly limit is your declaration, not a provider balance. Resources using the same provider account share one limit. Enrollment does not publish capacity or start an agent."));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Enroll this account’s resource"));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"The monthly limit is your declaration, not a provider balance. Resources using the same provider account share one limit. Enrollment does not publish capacity or start an agent."));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,"Enroll resource"));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
             let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);
@@ -79,10 +79,10 @@ mod tests {
             });
             for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
             panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Retire this account space"));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"This cannot be undone here. Provider sign-out is not performed, and credentials are not deleted. Existing resources and agents are not removed."));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Retire this account space"));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"This cannot be undone here. Provider sign-out is not performed, and credentials are not deleted. Existing resources and agents are not removed."));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,"Retire account space"));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
             let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);
@@ -109,10 +109,10 @@ mod tests {
             });
             for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
             panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Review resource configuration"));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"This changes the pool on this computer for every profile that uses it. Clearing its monthly maximum pauses new requests."));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Review resource configuration"));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"This changes the pool on this computer for every profile that uses it. Clearing its monthly maximum pauses new requests."));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,"Save configuration"));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
             let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);
@@ -139,10 +139,10 @@ mod tests {
             for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
             panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
             let (title,_,warning,confirm)=resource_edit_ui::AMENDMENT_WORDS;
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,title));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&crate::host::hagency::resource_edit::amendment_details(language,&::hagency::native_owner::CeilingAmendmentReview{resource_id:"resource_0123456789abcdef01234567".into(),name:Some("A long owner-chosen pool name that wraps across lines".repeat(3)),revision:"a".repeat(64),sequence:7,previous_tokens:123_456_789,tokens:987_654_321,per_request_tokens:Some(12_345_678),calendar:None}).repeat(3));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,warning));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,title));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&crate::host::hagency::resource_edit::amendment_details(language,&::hagency::native_owner::CeilingAmendmentReview{resource_id:"resource_0123456789abcdef01234567".into(),name:Some("A long owner-chosen pool name that wraps across lines".repeat(3)),revision:"a".repeat(64),sequence:7,previous_tokens:123_456_789,tokens:987_654_321,per_request_tokens:Some(12_345_678),calendar:None}).repeat(3));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,warning));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,confirm));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
             let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);
@@ -168,10 +168,10 @@ mod tests {
             });
             for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
             panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Create an additional configuration"));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"The new pool is saved on this computer. Connecting it to a server and publishing capacity remain separate steps."));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Create an additional configuration"));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&"account_0123456789abcdef0123456789abcdef\nModel and declared capacity\n".repeat(12));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,"The new pool is saved on this computer. Connecting it to a server and publishing capacity remain separate steps."));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,"Create configuration"));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
             let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);

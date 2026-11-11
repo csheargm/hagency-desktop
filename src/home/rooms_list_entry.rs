@@ -8,8 +8,8 @@ use crate::{
     room::FetchedRoomAvatar,
     shared::{
         avatar::AvatarWidgetExt, context_menu::ContextMenuClosed,
-        hover_highlight::handle_hover_hit, html_or_plaintext::HtmlOrPlaintextWidgetExt,
-        unread_badge::UnreadBadgeWidgetExt as _,
+        hover_highlight::handle_hover_hit, html_or_plaintext::{HtmlOrPlaintextRef, HtmlOrPlaintextWidgetExt},
+        unread_badge::{UnreadBadgeRef, UnreadBadgeWidgetExt as _},
     },
     utils::{self, relative_format}
 };
@@ -437,6 +437,17 @@ pub struct RoomsListEntryContent {
 
     /// The avatar content that was last drawn for this room.
     #[rust] last_avatar: Option<FetchedRoomAvatar>,
+    /// Widgets updated for every room-list draw.
+    #[rust] child_refs: Option<EntryChildRefs>,
+}
+
+#[derive(Clone)]
+struct EntryChildRefs {
+    room_name: LabelRef,
+    timestamp: LabelRef,
+    latest_message: HtmlOrPlaintextRef,
+    unread_badge: UnreadBadgeRef,
+    tombstone_icon: ViewRef,
 }
 
 impl ScriptHook for RoomsListEntryContent {
@@ -449,6 +460,13 @@ impl ScriptHook for RoomsListEntryContent {
         }
         self.appearance = crate::theme::snapshot_for_vm(vm);
         self.last_selection_drawn = None;
+        if apply.is_reload() {
+            self.child_refs = None;
+        }
+    }
+
+    fn on_after_reload(&mut self, _vm: &mut ScriptVm) {
+        self.child_refs = None;
     }
 }
 
@@ -581,6 +599,16 @@ impl Widget for RoomsListEntryContent {
 }
 
 impl RoomsListEntryContent {
+    fn child_refs(&mut self, cx: &mut Cx) -> &EntryChildRefs {
+        self.child_refs.get_or_insert_with(|| EntryChildRefs {
+            room_name: self.view.label(cx, ids!(room_name)),
+            timestamp: self.view.label(cx, ids!(timestamp)),
+            latest_message: self.view.html_or_plaintext(cx, ids!(latest_message)),
+            unread_badge: self.view.unread_badge(cx, ids!(unread_badge)),
+            tombstone_icon: self.view.view(cx, ids!(tombstone_icon)),
+        })
+    }
+
     fn set_swipe_open(&mut self, cx: &mut Cx, open: bool) {
         if open && !self.swipe_open {
             if let Some(room) = &self.room_id { cx.action(super::chat_actions::ChatSwipeOpened(room.clone())); }
@@ -616,9 +644,8 @@ impl RoomsListEntryContent {
         self.button(cx, ids!(swipe_unread)).set_text(cx, if self.has_unreads {"Read"} else {crate::i18n::tr("Unread")});
         // Note: in general, we must always set all fields in case a rooms list entry widget
         // was re-used by the portal list, to avoid showing any old content for a different entry.
-        self.view.label(cx, ids!(room_name)).set_text(cx, &room_info.room_name_id.display());
-        let timestamp = self.view.label(cx, ids!(timestamp));
-        let latest_message = self.view.html_or_plaintext(cx, ids!(latest_message));
+        let refs = self.child_refs(cx).clone();
+        refs.room_name.set_text(cx, &room_info.room_name_id.display());
         if let Some(latest) = room_info.latest.as_ref().filter(|e| super::chat_actions::cleared_through(room_info.room_name_id.room_id()).is_none_or(|t| u64::from(e.timestamp.0) > t)) {
             let time = if self.mobile {
                 utils::unix_time_millis_to_datetime(latest.timestamp).map(|dt| {
@@ -630,21 +657,21 @@ impl RoomsListEntryContent {
                     else { dt.format("%m/%d/%y").to_string() }
                 }).map(Cow::Owned)
             } else { relative_format(latest.timestamp) };
-            timestamp.set_text(cx, time.as_deref().unwrap_or(""));
+            refs.timestamp.set_text(cx, time.as_deref().unwrap_or(""));
             let preview = if self.mobile && room_info.is_direct {
                 latest.direct_text.as_deref().unwrap_or(&latest.text)
             } else { &latest.text };
-            latest_message.show_html(cx, preview);
+            refs.latest_message.show_html(cx, preview);
         } else {
-            timestamp.set_text(cx, "");
-            latest_message.show_plaintext(cx, crate::i18n::tr("[No recent messages]"));
+            refs.timestamp.set_text(cx, "");
+            refs.latest_message.show_plaintext(cx, crate::i18n::tr("[No recent messages]"));
         }
 
         // A permission request waiting for this account counts like a mention:
         // the Agent is blocked until someone decides, usually within two minutes.
         let pending_approvals = crate::hagency::pending_approvals::count_for_room(room_info.room_name_id.room_id());
         let mentions = room_info.num_unread_mentions.saturating_add(pending_approvals);
-        self.view.unread_badge(cx, ids!(unread_badge)).update_counts(
+        refs.unread_badge.update_counts(
             room_info.is_marked_unread || pending_approvals > 0,
             mentions,
             room_info.num_unread_messages,
@@ -658,7 +685,7 @@ impl RoomsListEntryContent {
         }
         self.draw_common(cx, &room_info.room_avatar, room_info.is_selected);
         // Show tombstone icon if the room is tombstoned
-        self.view.view(cx, ids!(tombstone_icon)).set_visible(cx, room_info.is_tombstoned);
+        refs.tombstone_icon.set_visible(cx, room_info.is_tombstoned);
     }
 
     /// Populates this RoomsListEntry with info about an invited room.
@@ -673,20 +700,19 @@ impl RoomsListEntryContent {
             true => Cow::Owned(crate::i18n::format("[Space] {name}", &[("name", (name).to_string())])),
             false => name,
         };
-        self.view.label(cx, ids!(room_name)).set_text(cx, &name);
+        let refs = self.child_refs(cx).clone();
+        refs.room_name.set_text(cx, &name);
         // Hide the timestamp field, and use the latest message field to show the inviter.
-        self.view.label(cx, ids!(timestamp)).set_text(cx, "");
+        refs.timestamp.set_text(cx, "");
         let inviter_string = match &room_info.inviter_info {
             Some(InviterInfo { user_id, display_name: Some(dn), .. }) => crate::i18n::format("Invited by <b>{0}</b> ({1})", &[("0", (htmlize::escape_text(dn)).to_string()), ("1", (htmlize::escape_text(user_id.as_str())).to_string())]),
             Some(InviterInfo { user_id, .. }) => crate::i18n::format("Invited by {0}", &[("0", (htmlize::escape_text(user_id.as_str())).to_string())]),
             None => String::from("You were invited"),
         };
-        self.view.html_or_plaintext(cx, ids!(latest_message)).show_html(cx, &inviter_string);
+        refs.latest_message.show_html(cx, &inviter_string);
         // an invite cannot ever be tombstoned
-        self.view.view(cx, ids!(tombstone_icon)).set_visible(cx, false);
-        self.view
-            .unread_badge(cx, ids!(unread_badge))
-            .update_counts(false, 1, 0);
+        refs.tombstone_icon.set_visible(cx, false);
+        refs.unread_badge.update_counts(false, 1, 0);
         if self.mobile {
             self.view.view(cx, ids!(mobile_badge)).set_visible(cx, true);
             self.view.label(cx, ids!(count)).set_text(cx, "!");
@@ -732,9 +758,7 @@ impl RoomsListEntryContent {
         // wash takes a deeper link color, which keeps its contrast there.
         let row = self.appearance.row_selected();
         let link_color = if is_selected { row.link } else { self.appearance.accent };
-        self.view
-            .html_or_plaintext(cx, ids!(latest_message))
-            .set_link_color(cx, Some(link_color));
+        self.child_refs(cx).latest_message.set_link_color(cx, Some(link_color));
 
         // Skip redrawing if nothing changed.
         if self.last_selection_drawn == Some(is_selected) {
@@ -755,8 +779,9 @@ impl RoomsListEntryContent {
         self.animator_toggle(cx, is_selected, Animate::No, ids!(selected.on), ids!(selected.off));
 
         // Update the text colors for the room name and timestamp.
-        self.view.label(cx, ids!(room_name)).set_text_color(cx, room_name_color);
-        self.view.label(cx, ids!(timestamp)).set_text_color(cx, timestamp_color);
+        let refs = self.child_refs(cx);
+        refs.room_name.set_text_color(cx, room_name_color);
+        refs.timestamp.set_text_color(cx, timestamp_color);
 
         // Update text colors for the latest message preview (both HTML and plaintext variants).
         if let Some(mut html) = self.view.html(cx, ids!(latest_message.html_view.html)).borrow_mut() {

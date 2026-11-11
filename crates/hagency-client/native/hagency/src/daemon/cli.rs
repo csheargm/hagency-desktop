@@ -17,10 +17,36 @@
 //! --home <home>`, so it works for every executable that calls this entry.
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
+use super::host;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 /// The argument that selects the daemon command line.
 pub const SUBCOMMAND: &str = "daemon";
+/// A bounded, versioned display event; never an authorization receipt.
+pub const ENROLLMENT_REGISTERING_LINE: &str = "HAGENCY_ENROLLMENT_NATIVE_REGISTRATION_V1";
+
+#[cfg(unix)]
+async fn observe_enrollment<T>(
+    future: impl std::future::Future<Output = T>,
+    control: std::sync::Arc<host::EnrollmentControl>,
+    on_registration: impl Fn(),
+) -> T {
+    tokio::pin!(future);
+    let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut reported = false;
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = timer.tick() => {
+                if !reported && control.native_registration_started() {
+                    reported = true;
+                    on_registration();
+                }
+            }
+        }
+    }
+}
 /// Development builds only: an explicitly isolated installation, which the
 /// LaunchAgent of such a build repeats before [`SUBCOMMAND`].
 #[cfg(all(feature = "test-support", feature = "resource-adoption"))]
@@ -337,6 +363,11 @@ pub async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                     Ok(())
                 },
             );
+            let enrollment = observe_enrollment(enrollment, control.clone(), || {
+                use std::io::Write;
+                println!("{ENROLLMENT_REGISTERING_LINE}");
+                let _ = std::io::stdout().flush();
+            });
             let report = if cancel_on_stdin_close {
                 let (cancel, cancelled) = tokio::sync::oneshot::channel();
                 // A detached OS reader must not keep the Tokio runtime alive
@@ -424,6 +455,23 @@ pub async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn enrollment_progress_is_reported_before_the_original_future_finishes() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let control = Arc::new(super::host::EnrollmentControl::default());
+        control.accept_native().unwrap();
+        let count = AtomicUsize::new(0);
+        super::observe_enrollment(async {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert_eq!(count.load(Ordering::Acquire), 1);
+        }, control, || { count.fetch_add(1, Ordering::AcqRel); }).await;
+        let cancelled = Arc::new(super::host::EnrollmentControl::default());
+        cancelled.cancel();
+        super::observe_enrollment(async {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }, cancelled, || { panic!("cancelled OAuth is not native registration"); }).await;
+    }
     use super::*;
     use clap::Parser;
 

@@ -572,9 +572,9 @@ impl Widget for SpacesBar {
                         item.label(cx, ids!(label)).set_text(
                             cx,
                             if self.is_filtered {
-                                "No spaces\nmatch."
+                                crate::i18n::tr("No spaces\nmatch.")
                             } else {
-                                "Found no\njoined spaces."
+                                crate::i18n::tr("Found no\njoined spaces.")
                             }
                         );
                         item
@@ -617,12 +617,12 @@ impl Widget for SpacesBar {
                         let num_joined = self.displayed_joined_spaces.len();
                         let text: Cow<'static, str> = if self.is_filtered {
                             let total = self.all_joined_spaces.len();
-                            format!("{num_joined} of {total} spaces").into()
+                            crate::i18n::format("{count} of {total} spaces", &[("count",num_joined.to_string()),("total",total.to_string())]).into()
                         } else {
                             match num_joined {
-                                0   => "Found no joined spaces.".into(),
-                                1   => "Found 1 joined space.".into(),
-                                2.. => format!("Found {num_joined} joined spaces.").into(),
+                                0   => crate::i18n::tr("Found no joined spaces.").into(),
+                                1   => crate::i18n::tr("Found 1 joined space.").into(),
+                                2.. => crate::i18n::format("Found {count} joined spaces.", &[("count",num_joined.to_string())]).into(),
                             }
                         };
                         item.label(cx, ids!(label)).set_text(cx, &text);

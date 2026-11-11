@@ -894,7 +894,19 @@ impl Widget for HtmlOrPlaintext {
             if let Some(mut html) = self.html(cx, ids!(html_view.html)).borrow_mut() {
                 // Html can reparse after style updates as well as message edits.
                 // Promote its view document just before drawing; body stays exact.
-                if super::chat_mermaid::promote(&mut html.doc) > 0 {
+                // JIT PORT: upstream Html keeps its document in an `Rc`, and
+                // its text flow holds a second handle between draws when the
+                // message ends in a max-lines ellipsis. Edit in place when this
+                // is the only handle; otherwise copy it, but only while a
+                // Mermaid block is still waiting to be promoted.
+                let unique = std::rc::Rc::get_mut(&mut html.doc).is_some();
+                let promoted = if unique || super::chat_mermaid::has_mermaid_block(&html.doc) {
+                    // `make_mut` copies only a shared document.
+                    super::chat_mermaid::promote(std::rc::Rc::make_mut(&mut html.doc))
+                } else {
+                    0
+                };
+                if promoted > 0 {
                     html.text_flow.clear_items();
                 }
             }

@@ -151,7 +151,7 @@ host.request("fixture.pending", {}, fn(result){ ui.content.reply.set_text("origi
         let heap = card.isolate_heap_key(&mut cx).unwrap();
         let original = take_splash_host_requests_for(&[heap]);
         assert_eq!(original.len(), 1);
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         let content = card.borrow().unwrap().view.children.iter()
             .find(|(id, _)| *id == id!(content)).unwrap().1.clone();
         let mut draft = WidgetRef::empty();
@@ -180,17 +180,17 @@ host.request("fixture.pending", {}, fn(result){ ui.content.reply.set_text("origi
         }
         panel.refresh_script_language(&mut cx, crate::i18n::Language::Chinese);
         panel.refresh_script_language(&mut cx, crate::i18n::Language::Chinese);
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         assert_eq!(card.borrow().unwrap().view.label(&cx, ids!(content.status)).text(), "zh-CN:1");
         assert_eq!(card.isolate_heap_key(&mut cx), Some(heap));
         assert_eq!(draft.widget_uid(), draft_uid);
         assert_eq!(draft.text(), "User draft 中文 {count}");
         assert!(take_splash_host_requests_for(&[heap]).is_empty());
         splash_host_respond(&mut cx, heap, original[0].req_id, Ok("{}"));
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         assert_eq!(card.borrow().unwrap().view.label(&cx, ids!(content.reply)).text(), "original reply");
         panel.refresh_script_language(&mut cx, crate::i18n::Language::English);
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         assert_eq!(card.borrow().unwrap().view.label(&cx, ids!(content.status)).text(), "en:2");
         assert_eq!(draft.text(), "User draft 中文 {count}");
         assert!(take_splash_host_requests_for(&[heap]).is_empty());
@@ -223,7 +223,7 @@ host.request("fixture.pending",{},fn(result){ui.content.reply.set_text("original
         let heap=card.isolate_heap_key(&mut cx).unwrap();
         let pending=take_splash_host_requests_for(&[heap]);
         assert_eq!(pending.len(),1);
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         let content=card.borrow().unwrap().view.children.iter()
             .find(|(id,_)| *id==id!(content)).unwrap().1.clone();
         let mut draft=WidgetRef::empty();
@@ -236,14 +236,14 @@ host.request("fixture.pending",{},fn(result){ui.content.reply.set_text("original
         assert_eq!(draft.text(),"retained typed 中文");
         panel.notify_script_visibility(&mut cx,false);
         panel.notify_script_visibility(&mut cx,true);
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         assert_eq!(card.borrow().unwrap().view.label(&cx,ids!(content.status)).text(),"visible:2");
         assert_eq!(card.isolate_heap_key(&mut cx),Some(heap));
         assert_eq!(draft.widget_uid(),uid);
         assert_eq!(draft.text(),"retained typed 中文");
         assert!(take_splash_host_requests_for(&[heap]).is_empty(),"visibility cannot replay startup");
         splash_host_respond(&mut cx,heap,pending[0].req_id,Ok("{}"));
-        makepad_widgets::makepad_platform::makepad_script_std::handle_script_tasks(&mut cx);
+        cx.handle_script_tasks(); // JIT PORT: upstream drains script tasks through Cx
         assert_eq!(card.borrow().unwrap().view.label(&cx,ids!(content.reply)).text(),"original reply");
         card.set_text(&mut cx,"");
     }

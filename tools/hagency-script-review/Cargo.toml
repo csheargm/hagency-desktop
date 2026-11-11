@@ -9,3 +9,8 @@ publish = false
 [dependencies]
 # Match the Makepad script VM pinned by the Desktop host.
 makepad-script = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48" }
+
+# The JIT line: the same pinned makepad checkout as the Desktop root
+# (`.jit/sources.sh` puts it at .sources/makepad; see .jit/NOTES.md).
+[patch."https://www.github.com/OctoSense-org/makepad.git"]
+makepad-script = { path = "../../.sources/makepad/platform/script" }

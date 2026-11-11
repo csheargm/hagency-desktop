@@ -20,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "permission_review.rs"]
+mod permission_review;
+
 #[path = "execution_ui.rs"]
 mod execution_ui;
 #[path = "sheet_ui.rs"]
@@ -161,7 +164,7 @@ script_mod! {
         tag := RinxHint {width: Fit}
     }
     let NativeSheet = View {visible: false width: Fill height: Fill flow: Down spacing: 12 align: Align{x: 0.5}
-        scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 18 align: Align{x: 0.5} padding: Inset{left: 4 right: 14 top: 6 bottom: 10}
+        sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 18 align: Align{x: 0.5} padding: Inset{left: 4 right: 14 top: 6 bottom: 10}
             heading := View {width: Fill{max: 640} height: Fit flow: Down spacing: 8 align: Align{x: 0.5}
                 icons := View {width: Fill height: Fit align: Align{x: 0.5}
                     glyph_publish := SheetBadge {SheetGlyph {draw_icon +: {svg: mod.widgets.ICON_SHARE}}}
@@ -246,8 +249,8 @@ script_mod! {
                 title := SheetCaption {}
                 SheetGroup {padding: 12 spacing: 10
                     choices := View {width: Fill height: Fit flow: Right spacing: 6
-                        automatic := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Automatic"}
-                        manual := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Manual"}
+                        automatic := RinxKeyButton {width: Fill height: 44 margin: 0 text: #(crate::i18n::tr("Automatic"))}
+                        manual := RinxKeyButton {width: Fill height: 44 margin: 0 text: #(crate::i18n::tr("Manual"))}
                     }
                     note := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 }
@@ -366,6 +369,14 @@ script_mod! {
             primary := RinxPrimaryButton {width: Fill height: 50 margin: 0 grab_key_focus: false text: #(crate::i18n::tr("Publish")) i18n_text: "Publish" draw_bg +: {border_radius: 12.0}}
         }
     }
+    let PermissionReviewGroup = View {
+        width: Fill height: Fit flow: Down spacing: 4
+        header := RinxKeyButton {width: Fill height: 30 margin: 0}
+        summary := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
+        details_view := View {visible: false width: Fill height: Fit flow: Down padding: Inset{left: 8 top: 4}
+            details := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
+        }
+    }
     mod.widgets.MiniAppsPanel = #(MiniAppsPanel::register_widget(vm)) {
         width: Fill height: Fill flow: Down padding: 20 spacing: 16
         show_bg: true
@@ -423,14 +434,23 @@ script_mod! {
                 run := RinxButton {text: #(crate::i18n::tr("Run")) i18n_text: "Run"}
             }
         }
-        hagency_review := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            permissions_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+        hagency_review := View {visible: false width: Fill height: Fill flow: Down spacing: 12
+            permissions_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Hagency permissions")) i18n_text: "Hagency permissions"}
                 account := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true}
-                    text: #(crate::i18n::tr("Hagency uses your current Matrix account.")) i18n_text: "Hagency uses your current Matrix account."
+                    text: #(crate::i18n::tr("Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose."))
+                    i18n_text: "Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose."
                 }
-                permissions := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
+                RinxHint {width: Fill flow: Flow.Right{wrap: true}
+                    text: #(crate::i18n::tr("Expand a group to review its complete permissions.")) i18n_text: "Expand a group to review its complete permissions."
+                }
+                permission_accounts := PermissionReviewGroup {}
+                permission_resources := PermissionReviewGroup {}
+                permission_agents := PermissionReviewGroup {}
+                permission_approvals := PermissionReviewGroup {}
+                permission_files := PermissionReviewGroup {}
+                permission_other := PermissionReviewGroup {}
                 RinxHint {width: Fill flow: Flow.Right{wrap: true}
                     text: #(crate::i18n::tr("Approval remains limited to your assigned server role. Provider credentials stay in the native host."))
                     i18n_text: "Approval remains limited to your assigned server role. Provider credentials stay in the native host."
@@ -454,7 +474,7 @@ script_mod! {
             }
         }
         account_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Sign in again")) i18n_text: "Sign in again"}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true} text: #(crate::i18n::tr("Continue with this Matrix account")) i18n_text: "Continue with this Matrix account"}
                 account := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
@@ -469,7 +489,7 @@ script_mod! {
             }
         }
         account_login_panel := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
                 RinxPageTitle {text: #(crate::i18n::tr("Sign in to Codex")) i18n_text: "Sign in to Codex"}
                 account := RinxLabel {width: Fill text: ""}
                 status := RinxLabel {width: Fill text: "" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
@@ -482,7 +502,7 @@ script_mod! {
             }
         }
         provider_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 20
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 20
                 heading := View {width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
                     Icon {width: 24 height: 24 draw_icon +: {svg: ICON_SHIELD color: RINX_ACCENT}}
                     title := RinxPageTitle {width: Fill flow: Flow.Right{wrap: true}}
@@ -514,7 +534,7 @@ script_mod! {
             }
         }
         adoption_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 heading := View {width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
                     Icon {width: 24 height: 24 draw_icon +: {svg: ICON_SHIELD color: RINX_ACCENT}}
                     title := RinxPageTitle {width: Fill text: #(crate::i18n::tr("Review device setup")) i18n_text: "Review device setup"}
@@ -533,7 +553,7 @@ script_mod! {
             }
         }
         execution_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Start approved agent")) i18n_text: "Start approved agent"}
                 owner := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
                 status := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
@@ -618,6 +638,8 @@ pub struct MiniAppsPanel {
     reviewed_room: String,
     #[rust]
     review_notice: String,
+    #[rust]
+    permission_groups_open: [bool; permission_review::COUNT],
     #[rust]
     package: Option<Package>,
     #[rust]
@@ -748,6 +770,12 @@ impl Drop for MiniAppsPanel {
         }
     }
 }
+fn permission_group_paths() -> [&'static [LiveId]; permission_review::COUNT] {
+    [ids!(hagency_review.permission_accounts), ids!(hagency_review.permission_resources),
+     ids!(hagency_review.permission_agents), ids!(hagency_review.permission_approvals),
+     ids!(hagency_review.permission_files), ids!(hagency_review.permission_other)]
+}
+
 impl MiniAppsPanel {
     fn show_catalog(&mut self, cx: &mut Cx) {
         self.direct_agent = false;
@@ -947,10 +975,10 @@ impl MiniAppsPanel {
     /// Write one native consent's words into its window. Empty purpose or
     /// consequence lines are hidden rather than left as blank gaps.
     fn apply_provider_view(&mut self, cx: &mut Cx, (title, body, warning, action): (&str, &str, &str, &str), details: &str, account: &str, ready: bool) {
-        self.view.label(cx, ids!(provider_confirmation.scroll.identity.runtime)).set_text(cx, details);
-        self.view.label(cx, ids!(provider_confirmation.scroll.identity.account)).set_text(cx, account);
-        self.view.label(cx,ids!(provider_confirmation.scroll.heading.title)).set_text(cx,crate::i18n::tr(title));
-        for (path, english) in [(ids!(provider_confirmation.scroll.explanation), body), (ids!(provider_confirmation.scroll.warning), warning)] {
+        self.view.label(cx, ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(cx, details);
+        self.view.label(cx, ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(cx, account);
+        self.view.label(cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(cx,crate::i18n::tr(title));
+        for (path, english) in [(ids!(provider_confirmation.sheet_scroll.explanation), body), (ids!(provider_confirmation.sheet_scroll.warning), warning)] {
             self.view.label(cx, path).set_text(cx, crate::i18n::tr(english));
             self.view.widget(cx, path).set_visible(cx, !english.is_empty());
         }
@@ -1066,7 +1094,7 @@ impl MiniAppsPanel {
     /// The monthly-maximum slider: its bounds and the value the sheet stands for.
     fn apply_ceiling_inputs(&mut self, cx: &mut Cx, inputs: Option<(u64, u64, u64)>) {
         let Some((minimum, maximum, value)) = inputs else { return; };
-        let widget = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens));
+        let widget = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens));
         if let Some(mut editor) = widget.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
             editor.set_minimum(cx, minimum);
             editor.set_maximum(cx, maximum);
@@ -1079,7 +1107,7 @@ impl MiniAppsPanel {
     fn capture_ceiling_choice(&mut self, cx: &mut Cx) {
         let choosing = self.provider_confirmation.as_ref().and_then(|pending| pending.consent.ceiling()).is_some_and(|prompt| prompt.sheet().choosing);
         if !choosing { return; }
-        let text = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens)).text();
+        let text = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens)).text();
         let tokens = text.trim().parse::<u64>().ok();
         let Some(prompt) = self.provider_confirmation.as_mut().and_then(|pending| pending.consent.ceiling_mut()) else { return; };
         if !prompt.choose(tokens) { return; }
@@ -1096,15 +1124,15 @@ impl MiniAppsPanel {
             self.finish_provider_confirmation(cx, false);
             return true;
         }
-        let more = self.view.button(cx, ids!(ceiling_confirmation.scroll.more.more_row.more_toggle)).area();
+        let more = self.view.button(cx, ids!(ceiling_confirmation.sheet_scroll.more.more_row.more_toggle)).area();
         let cancel = self.view.button(cx, ids!(ceiling_confirmation.buttons.cancel)).area();
         let primary = self.view.button(cx, ids!(ceiling_confirmation.buttons.primary)).area();
         let mut targets = Vec::new();
         if sheet.choosing && sheet.quota_visible {
-            if let Some(slider) = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens.slider_wrap.amount_slider)).borrow::<crate::miniapps::design::MiniAppAmountSlider>() {
+            if let Some(slider) = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens.slider_wrap.amount_slider)).borrow::<crate::miniapps::design::MiniAppAmountSlider>() {
                 targets.push(slider.focus_area());
             }
-            targets.push(self.view.text_input(cx, ids!(ceiling_confirmation.scroll.quota.tokens.input)).area());
+            targets.push(self.view.text_input(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens.input)).area());
         }
         if sheet.more_visible() {targets.push(more);}
         if !sheet.cancel.is_empty() {targets.push(cancel);}
@@ -1173,10 +1201,20 @@ impl MiniAppsPanel {
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             let account = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
             self.view.label(cx, ids!(hagency_review.account)).set_text(cx, &account);
-            let permissions = self.package.as_ref().map(|package| package.manifest.capabilities.iter()
-                .filter_map(|cap| octosense_app_contract::hagency::words(cap))
-                .map(crate::i18n::tr).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-            self.view.label(cx, ids!(hagency_review.permissions)).set_text(cx, &permissions);
+            if let Some(package) = &self.package {
+                let groups = permission_review::groups(&package.manifest.capabilities);
+                for (index, path) in permission_group_paths().into_iter().enumerate() {
+                    let group = &groups[index];
+                    let view = self.view.view(cx, path);
+                    view.set_visible(cx, !group.capabilities.is_empty());
+                    let open = self.permission_groups_open[index];
+                    view.button(cx, ids!(header)).set_text(cx, &format!("{} {} · {}",
+                        if open {"−"} else {"+"}, crate::i18n::tr(group.title), group.capabilities.len()));
+                    view.label(cx, ids!(summary)).set_text(cx, crate::i18n::tr(group.summary));
+                    view.view(cx, ids!(details_view)).set_visible(cx, open);
+                    view.label(cx, ids!(details_view.details)).set_text(cx, &permission_review::details(group));
+                }
+            }
             self.view.widget(cx, ids!(notice)).set_visible(cx, !self.notice_text.is_empty() && self.notice_text != self.review_notice);
         }
         // TextInput has no visibility property. Hide its containing View so
@@ -1250,6 +1288,7 @@ impl MiniAppsPanel {
         self.review_package(cx, package)
     }
     fn review_package(&mut self, cx: &mut Cx, package: Package) -> Result<(), String> {
+        self.permission_groups_open = [false; permission_review::COUNT];
         let room = self.view.text_input(cx, ids!(import_form.room)).text();
         if !room.trim().is_empty() {
             ruma::RoomId::parse(room.trim()).map_err(|_| "Invalid Matrix room ID")?;
@@ -1260,7 +1299,10 @@ impl MiniAppsPanel {
         self.view.view(cx, ids!(bundle_path)).set_visible(cx, imported);
         self.review_notice = format!("{} {} · {}\nServices: {}\nAllowed room: {}\nRun grants these services for this session. Octos turns may use the connected core's tools.",package.manifest.name,package.manifest.version,origin,services,if room.trim().is_empty(){"None"}else{room.trim()});
         if package.builtin_id() == Some(super::palpo::APP_ID) {
-            let permissions = package.manifest.capabilities.iter().filter_map(|cap| octosense_app_contract::hagency::words(cap)).map(crate::i18n::tr).collect::<Vec<_>>().join("\n");
+            let permissions = permission_review::groups(&package.manifest.capabilities).iter()
+                .filter(|group| !group.capabilities.is_empty())
+                .map(|group| format!("{}\n{}", crate::i18n::tr(group.title), permission_review::details(group)))
+                .collect::<Vec<_>>().join("\n\n");
             self.review_notice = format!("{}\n{permissions}\n{}\n{}", crate::i18n::tr("Hagency uses your current Matrix account."), crate::i18n::tr("Approval remains limited to your assigned server role. Provider credentials stay in the native host."), crate::i18n::tr("Run remembers consent for this account and this exact bundled version."));
         }
         let notice = self.review_notice.clone();
@@ -1883,7 +1925,7 @@ impl Widget for MiniAppsPanel {
                 if self.view.button(cx,ids!(execution_confirmation.buttons.cancel)).clicked(actions){self.close_execution_confirmation(cx);}
                 else if self.view.button(cx,ids!(execution_confirmation.buttons.primary)).clicked(actions){self.execution_primary(cx);}
                 else if self.view.button(cx,ids!(execution_confirmation.buttons.recover)).clicked(actions){self.execution_recover(cx);}
-                else if self.view.button(cx,ids!(execution_confirmation.scroll.toggle_details)).clicked(actions){self.execution_details(cx);}
+                else if self.view.button(cx,ids!(execution_confirmation.sheet_scroll.toggle_details)).clicked(actions){self.execution_details(cx);}
                 return;
             }
             if self.adoption_confirmation.is_some() {
@@ -1899,26 +1941,26 @@ impl Widget for MiniAppsPanel {
             }
             if self.grant_confirmation.is_some() {
                 self.capture_grant_choices(cx);
-                let add_field = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name));
-                let selected_person = self.view.drop_down(cx, ids!(grant_confirmation.scroll.people.list.add.directory.candidates)).selected(actions);
+                let add_field = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name));
+                let selected_person = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.candidates)).selected(actions);
                 if self.view.button(cx,ids!(grant_confirmation.buttons.cancel)).clicked(actions) {self.close_grant_confirmation(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.buttons.primary)).clicked(actions) {self.grant_primary(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
                 else if self.grant_calendar_actions(cx, actions) {}
                 else if self.grant_renewal_actions(cx, actions) {}
                 else if let Some(days) = self.grant_preset_clicked(cx,actions) {self.grant_expiry_preset(cx,days);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.more.more_row.more_toggle)).clicked(actions) {self.grant_disclose(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.people_toggle_row.people_toggle)).clicked(actions) {self.grant_people_toggle(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.add.add_button)).clicked(actions) || add_field.returned(actions).is_some() {self.grant_add_person(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.more.more_row.more_toggle)).clicked(actions) {self.grant_disclose(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.people_toggle_row.people_toggle)).clicked(actions) {self.grant_people_toggle(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.add.add_button)).clicked(actions) || add_field.returned(actions).is_some() {self.grant_add_person(cx);}
                 else if let Some(index) = selected_person {self.grant_select_person(cx, index);}
-                else if self.view.button(cx, ids!(grant_confirmation.scroll.people.list.add.directory.add_selected)).clicked(actions) {self.grant_add_selected_person(cx);}
+                else if self.view.button(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.add_selected)).clicked(actions) {self.grant_add_selected_person(cx);}
                 else if add_field.changed(actions).is_some() {self.grant_add_typing(cx);}
                 else {
                     for (index, row) in sheet_ui::PEOPLE.iter().enumerate() {
-                        let path = sheet_ui::sheet_path(id!(grant_confirmation), &[id!(scroll), id!(people), id!(list), *row, id!(body), id!(remove)]);
+                        let path = sheet_ui::sheet_path(id!(grant_confirmation), &[id!(sheet_scroll), id!(people), id!(list), *row, id!(body), id!(remove)]);
                         if self.view.button(cx, &path).clicked(actions) {self.grant_remove_person(cx, index); break;}
                     }
                 }
@@ -1932,7 +1974,7 @@ impl Widget for MiniAppsPanel {
                     self.finish_provider_confirmation(cx, true);
                 } else if self.view.button(cx, ids!(ceiling_confirmation.buttons.cancel)).clicked(actions) {
                     self.finish_provider_confirmation(cx, false);
-                } else if self.view.button(cx, ids!(ceiling_confirmation.scroll.more.more_row.more_toggle)).clicked(actions) {
+                } else if self.view.button(cx, ids!(ceiling_confirmation.sheet_scroll.more.more_row.more_toggle)).clicked(actions) {
                     if let Some(prompt) = self.provider_confirmation.as_mut().and_then(|pending| pending.consent.ceiling_mut()) {prompt.toggle_more();}
                     self.present_provider_confirmation(cx);
                     self.request_confirmation_redraw(cx);
@@ -2031,6 +2073,13 @@ impl Widget for MiniAppsPanel {
                         Err(e) => self.notice(cx, &e),
                     }
                     self.show_approval(cx);
+                }
+            }
+            for (index, path) in permission_group_paths().into_iter().enumerate() {
+                if super::design::key_button_clicked(&self.view.view(cx, path).widget(cx, ids!(header)), actions) {
+                    self.permission_groups_open[index] = !self.permission_groups_open[index];
+                    self.present_review_controls(cx);
+                    cx.redraw_all();
                 }
             }
             let result = if self

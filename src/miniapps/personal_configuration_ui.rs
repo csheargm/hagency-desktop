@@ -176,32 +176,32 @@ impl MiniAppsPanel {
                 _ => None,
             });
         self.view
-            .widget(cx, ids!(provider_confirmation.scroll.personal))
+            .widget(cx, ids!(provider_confirmation.sheet_scroll.personal))
             .set_visible(cx, prompt.is_some());
         let Some(prompt) = prompt else {
             return;
         };
         self.view
-            .widget(cx, ids!(provider_confirmation.scroll.personal.rules))
+            .widget(cx, ids!(provider_confirmation.sheet_scroll.personal.rules))
             .set_visible(cx, prompt.is_rules());
         self.view
-            .widget(cx, ids!(provider_confirmation.scroll.personal.workspace))
+            .widget(cx, ids!(provider_confirmation.sheet_scroll.personal.workspace))
             .set_visible(cx, prompt.is_model());
         self.view
             .button(
                 cx,
-                ids!(provider_confirmation.scroll.personal.choose_directory),
+                ids!(provider_confirmation.sheet_scroll.personal.choose_directory),
             )
             .set_enabled(cx, prompt.can_pick());
         self.view
             .widget(
                 cx,
-                ids!(provider_confirmation.scroll.personal.choose_directory),
+                ids!(provider_confirmation.sheet_scroll.personal.choose_directory),
             )
             .set_visible(cx, prompt.is_model() || prompt.is_rules());
         let input = self
             .view
-            .text_input(cx, ids!(provider_confirmation.scroll.personal.rules.tools));
+            .text_input(cx, ids!(provider_confirmation.sheet_scroll.personal.rules.tools));
         if input.text() != prompt.tools_text {
             input.set_text(cx, &prompt.tools_text);
         }
@@ -221,13 +221,13 @@ impl MiniAppsPanel {
         self.view
             .drop_down(
                 cx,
-                ids!(provider_confirmation.scroll.personal.rules.directories),
+                ids!(provider_confirmation.sheet_scroll.personal.rules.directories),
             )
             .set_labels(cx, labels);
         self.view
             .drop_down(
                 cx,
-                ids!(provider_confirmation.scroll.personal.rules.directories),
+                ids!(provider_confirmation.sheet_scroll.personal.rules.directories),
             )
             .set_selected_item(
                 cx,
@@ -238,7 +238,7 @@ impl MiniAppsPanel {
         self.view
             .button(
                 cx,
-                ids!(provider_confirmation.scroll.personal.rules.remove_directory),
+                ids!(provider_confirmation.sheet_scroll.personal.rules.remove_directory),
             )
             .set_enabled(
                 cx,
@@ -255,7 +255,7 @@ impl MiniAppsPanel {
         let mut changed = false;
         if let Some(text) = self
             .view
-            .text_input(cx, ids!(provider_confirmation.scroll.personal.rules.tools))
+            .text_input(cx, ids!(provider_confirmation.sheet_scroll.personal.rules.tools))
             .changed(actions)
         {
             if prompt.is_rules() && prompt.receiver.is_none() && !prompt.expired() {
@@ -270,7 +270,7 @@ impl MiniAppsPanel {
             .view
             .drop_down(
                 cx,
-                ids!(provider_confirmation.scroll.personal.rules.directories),
+                ids!(provider_confirmation.sheet_scroll.personal.rules.directories),
             )
             .changed(actions)
         {
@@ -280,7 +280,7 @@ impl MiniAppsPanel {
             .view
             .button(
                 cx,
-                ids!(provider_confirmation.scroll.personal.rules.remove_directory),
+                ids!(provider_confirmation.sheet_scroll.personal.rules.remove_directory),
             )
             .clicked(actions)
         {
@@ -296,7 +296,7 @@ impl MiniAppsPanel {
             .view
             .button(
                 cx,
-                ids!(provider_confirmation.scroll.personal.choose_directory),
+                ids!(provider_confirmation.sheet_scroll.personal.choose_directory),
             )
             .clicked(actions)
         {
@@ -307,7 +307,7 @@ impl MiniAppsPanel {
             .view
             .button(
                 cx,
-                ids!(provider_confirmation.scroll.personal.workspace.restore),
+                ids!(provider_confirmation.sheet_scroll.personal.workspace.restore),
             )
             .clicked(actions)
         {
@@ -364,33 +364,33 @@ mod tests {
                 .set_visible(&mut cx, true);
             panel
                 .view
-                .widget(&cx, ids!(provider_confirmation.scroll.personal))
+                .widget(&cx, ids!(provider_confirmation.sheet_scroll.personal))
                 .set_visible(&mut cx, true);
             panel
                 .view
-                .widget(&cx, ids!(provider_confirmation.scroll.personal.workspace))
+                .widget(&cx, ids!(provider_confirmation.sheet_scroll.personal.workspace))
                 .set_visible(&mut cx, false);
             panel
                 .view
-                .label(&cx, ids!(provider_confirmation.scroll.heading.title))
+                .label(&cx, ids!(provider_confirmation.sheet_scroll.heading.title))
                 .set_text(
                     &mut cx,
                     crate::i18n::text_for(language, "Edit personal-agent tool rules"),
                 );
             panel
                 .view
-                .label(&cx, ids!(provider_confirmation.scroll.identity.runtime))
+                .label(&cx, ids!(provider_confirmation.sheet_scroll.identity.runtime))
                 .set_text(&mut cx, "agent_original\nPolicy revision: 3");
             let tools = panel
                 .view
-                .text_input(&cx, ids!(provider_confirmation.scroll.personal.rules.tools));
+                .text_input(&cx, ids!(provider_confirmation.sheet_scroll.personal.rules.tools));
             tools.set_text(&mut cx, "read_file\nwrite_file");
             assert_eq!(tools.text(), "read_file\nwrite_file");
             panel
                 .view
                 .drop_down(
                     &cx,
-                    ids!(provider_confirmation.scroll.personal.rules.directories),
+                    ids!(provider_confirmation.sheet_scroll.personal.rules.directories),
                 )
                 .set_labels(&mut cx, vec!["/native-only/example".into()]);
             panel

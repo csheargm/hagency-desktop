@@ -1314,8 +1314,9 @@ mod reauthentication_tests {
                         Some("original_public_client")
                     );
                     assert!(pairs["scope"].split(' ').any(
-                        |s| s == "urn:matrix:org.matrix.msc2967.client:device:ORIGINAL_DEVICE"
+                        |s| s == "urn:matrix:client:device:ORIGINAL_DEVICE"
                     ));
+                    assert_eq!(requested_device(&url).unwrap(), "ORIGINAL_DEVICE");
                     seen.store(true, Ordering::Release);
                     Err(())
                 },

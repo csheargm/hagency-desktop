@@ -15,8 +15,24 @@ pub struct RuntimeStartRequest {
     pub takeover: bool,
     #[serde(default)]
     pub host_files: bool,
+    /// The owner's opt-in to let this Agent change files in its saved project
+    /// directory. Left out of the body when not selected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_workspace: bool,
+    /// The project directory the owner was shown when selecting the opt-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+}
+impl RuntimeStartRequest {
+    /// A shared-workspace start names the directory the owner confirmed. A
+    /// recovery start repeats an earlier confirmed one instead.
+    pub(crate) fn accepts_shared_workspace(&self, workspace: &str) -> bool {
+        !self.shared_workspace
+            || self.recovery_consent_id.is_some()
+            || self.expected_workspace.as_deref() == Some(workspace)
+    }
 }
 
 /// The body of a local model save as the endpoint reads it: the new profile

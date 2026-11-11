@@ -16,12 +16,17 @@ fn mode_labels(translated: bool) -> Vec<String> {
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
+    let AppearanceSelect = RobrixSettingsDropDown {
+        width: 150 height: RINX_CONTROL_HEIGHT margin: 0
+        popup_menu_position: PopupMenuPosition.BelowInput
+        popup_menu: RobrixSettingsPopupMenu {width: 150}
+    }
     mod.widgets.AppearanceSettings = #(AppearanceSettings::register_widget(vm)) {
         width: Fill height: Fit flow: Down spacing: 8 padding: Inset{top: 12 bottom: 16}
         RinxLabel {text: #(crate::i18n::tr("App appearance")) i18n_text: "App appearance" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
         choices := View {width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 12
-            mode := DropDown {width: 150 height: RINX_CONTROL_HEIGHT labels: #(mode_labels(true)) i18n_labels: #(mode_labels(false))}
-            accent := DropDown {width: 150 height: RINX_CONTROL_HEIGHT labels: [#(crate::i18n::tr("Teal")), #(crate::i18n::tr("Violet"))] i18n_labels: ["Teal", "Violet"]}
+            mode := AppearanceSelect {labels: #(mode_labels(true)) i18n_labels: #(mode_labels(false))}
+            accent := AppearanceSelect {labels: [#(crate::i18n::tr("Teal")), #(crate::i18n::tr("Violet"))] i18n_labels: ["Teal", "Violet"]}
         }
         customize := RinxButton {text: #(crate::i18n::tr("Customize appearance")) i18n_text: "Customize appearance"}
         host_note := RinxHint {visible: false width: Fill text: #(crate::i18n::tr("Appearance is managed by OctoSense")) i18n_text: "Appearance is managed by OctoSense"}

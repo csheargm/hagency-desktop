@@ -132,6 +132,9 @@ pub trait HostToolGate: Send + Sync {
 pub(super) struct HostFiles {
     workspace: Option<Workspace>,
     directory: PathBuf,
+    /// Identity of an owner-selected shared project, fixed when the
+    /// capability is attached. `None` for a private Room folder.
+    shared: Option<String>,
     gate: Option<Arc<dyn HostToolGate>>,
     calls: cache::Cache,
 }
@@ -147,12 +150,25 @@ struct CreateInput {
     content: String,
 }
 
-pub(super) fn specifications() -> Value {
-    value!([
-        {"type":"function","name":"hagency_file_list","description":"List this Room binding's private workspace. Use an empty path for the root.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
-        {"type":"function","name":"hagency_file_read","description":"Read a UTF-8 file in this Room binding's private workspace.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
-        {"type":"function","name":"hagency_file_create","description":"Create a new UTF-8 file in this Room binding's private workspace. Existing files cannot be replaced.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}
-    ])
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateInput {
+    path: String,
+    content: String,
+    expected_sha256: String,
+}
+
+pub(super) fn specifications(shared: bool) -> Value {
+    let mut tools = value!([
+        {"type":"function","name":"hagency_file_list","description":"List the authorized workspace. Use an empty path for the root.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+        {"type":"function","name":"hagency_file_read","description":"Read a UTF-8 file in the authorized workspace.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+        {"type":"function","name":"hagency_file_create","description":"Create a new UTF-8 file in the authorized workspace. Existing files cannot be replaced.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}
+    ]);
+    if shared {
+        tools.as_array_mut().unwrap().push(value!({"type":"function","name":"hagency_directory_create","description":"Create a new directory inside the authorized shared workspace.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}));
+        tools.as_array_mut().unwrap().push(value!({"type":"function","name":"hagency_file_update","description":"Replace an existing UTF-8 file in the authorized shared workspace only if its SHA-256 is unchanged since hagency_file_read.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","content","expected_sha256"],"additionalProperties":false}}));
+    }
+    tools
 }
 fn failure(code: &str) -> Value {
     value!({"success":false,"contentItems":[{"type":"inputText","text":code}]})
@@ -170,6 +186,16 @@ fn operation(params: &Value, owner: &str, scope: &Scope, dispatch: &str) -> Resu
         Some("hagency_file_read") => {
             let i: PathInput = serde_json::from_value(args)?;
             Ok(Operation::Read { path: i.path })
+        }
+        Some("hagency_directory_create") => {
+            let i: PathInput = serde_json::from_value(args)?;
+            Ok(Operation::MakeDirectory { path: i.path })
+        }
+        Some("hagency_file_update") => {
+            let i: UpdateInput = serde_json::from_value(args)?;
+            use sha2::{Digest, Sha256};
+            let nonce = format!("{:x}", Sha256::digest(serde_json::to_vec(&(owner, scope, dispatch, params))?));
+            Ok(Operation::Update { path: i.path, content: i.content, expected_sha256: i.expected_sha256, nonce })
         }
         Some("hagency_file_create") => {
             let i: CreateInput = serde_json::from_value(args)?;
@@ -192,6 +218,25 @@ impl HostFiles {
     pub(super) fn workspace_directory(&self) -> &std::path::Path {
         &self.directory
     }
+    /// Whether this capability serves an owner-selected shared project.
+    pub(super) fn is_shared(&self) -> bool {
+        self.shared.is_some()
+    }
+    /// The shared project's identity as it was when the capability was attached.
+    pub(super) fn shared_pin(&self) -> Option<&str> {
+        self.shared.as_deref()
+    }
+}
+/// A shared project is identified by its path, device and inode; a private
+/// Room folder has no such identity.
+fn shared_identity(workspace: &Workspace) -> Result<Option<String>> {
+    if !workspace.is_shared() {
+        return Ok(None);
+    }
+    workspace
+        .shared_pin()
+        .map(Some)
+        .map_err(|_| Error::Profile("workspace identity"))
 }
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
     /// Host-only capability attachment before context creation. The working
@@ -204,8 +249,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         if self.thread.is_some() || self.host_files.is_some() {
             return Err(Error::Protocol("host capability already configured"));
         }
+        let shared = shared_identity(&workspace)?;
         self.host_files = Some(HostFiles {
             directory: workspace.canonical_directory().to_path_buf(),
+            shared,
             workspace: Some(workspace),
             gate: Some(gate),
             calls: Default::default(),
@@ -232,6 +279,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 "host capability requires completed prior turn",
             ));
         }
+        // A retained session keeps the kind of workspace it started with: a
+        // shared project is never swapped for another one or for a Room folder.
+        let shared = shared_identity(&workspace)?;
         let files = self
             .host_files
             .as_mut()
@@ -239,6 +289,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         if files.gate.is_some()
             || files.workspace.is_some()
             || files.workspace_directory() != workspace.canonical_directory()
+            || files.shared != shared
         {
             return Err(Error::Protocol(
                 "host capability still active or workspace changed",
@@ -616,6 +667,38 @@ mod tests {
                 );
             }
         }
+    }
+    #[tokio::test]
+    async fn shared_update_uses_exact_approval_and_requires_live_gate() {
+        use sha2::{Digest, Sha256};
+        let (temp, mut ledger, scope, mut session, mut peer, root, live) = fixture(ToolPolicy::AskOwner);
+        let owner = root.parent().unwrap().parent().unwrap().to_path_buf();
+        let project = temp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        std::fs::write(project.join("file.txt"), "old").unwrap();
+        session.host_files = None;
+        session.enable_host_files(Workspace::open_shared(&owner, &project, "@alice:test", &scope).unwrap(), Arc::new(Gate(live.clone()))).unwrap();
+        let private = specifications(false).to_string();
+        let shared = specifications(true).to_string();
+        assert!(!private.contains("hagency_file_update"));
+        assert!(shared.contains("hagency_file_update") && shared.contains("hagency_directory_create"));
+        let request = value!({"id":1,"method":"item/tool/call","params":{"threadId":"codex-thread","turnId":"turn","callId":"update","tool":"hagency_file_update","arguments":{"path":"file.txt","content":"new","expected_sha256":format!("{:x}",Sha256::digest(b"old"))}}});
+        let (queue, mut pending) = approval_queue(1).unwrap();
+        let approval = tokio::spawn(async move {
+            let proposed = pending.recv().await.unwrap();
+            assert_eq!(proposed.proposal.tool, "room.update");
+            assert_eq!(proposed.proposal.arguments["file"]["content"], "new");
+            proposed.decide(true);
+        });
+        session.host_file_call(&mut ledger, "@alice:test", &scope, "dispatch", "execution", &request, "codex-thread", "turn", &queue).await.unwrap();
+        assert_eq!(response(&mut peer).await["result"]["success"], true);
+        approval.await.unwrap();
+        assert_eq!(std::fs::read_to_string(project.join("file.txt")).unwrap(), "new");
+        live.store(false, Ordering::Release);
+        let mut replay = request.clone(); replay["id"] = 2.into();
+        session.host_file_call(&mut ledger, "@alice:test", &scope, "dispatch", "execution", &replay, "codex-thread", "turn", &queue).await.unwrap();
+        assert_eq!(response(&mut peer).await["result"]["success"], false);
     }
     #[tokio::test]
     async fn exact_owner_confirmation_executes_host_file_and_repeated_call_does_not_execute_again()

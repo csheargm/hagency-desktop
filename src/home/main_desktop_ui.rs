@@ -661,6 +661,16 @@ impl WidgetMatchEvent for MainDesktopUI {
                 continue;
             }
             let widget_action = action.as_widget_action();
+            if let Some(crate::matrix_links::LinkAction::Navigate(navigation)) = action.downcast_ref()
+                && navigation.is_current() {
+                let tab = navigation.selected.tab_id();
+                self.reveal_rooms(cx);
+                self.focus_or_create_tab(cx, navigation.selected.clone());
+                if let Some(event) = &navigation.event {
+                    self.view.dock(cx, ids!(dock)).item(tab).as_room_screen()
+                        .jump_to_matrix_event(cx, event.clone(), navigation.ticket.clone());
+                }
+            }
             if let Some(super::room_history::RoomHistoryAction::Jump {room, event}) = action.downcast_ref() {
                 let selected = SelectedRoom::JoinedRoom {room_name_id: room.clone()};
                 let tab = selected.tab_id();
@@ -1455,4 +1465,13 @@ mod dock_state_repair {
         replaced
     }
 
+}
+
+#[cfg(test)]
+impl MainDesktopUIRef {
+    pub(crate) fn matrix_link_screen(&self, cx: &Cx, navigation: &crate::matrix_links::Navigation) -> super::room_screen::RoomScreenRef {
+        let inner=self.borrow().expect("native desktop dock");
+        assert_eq!(inner.most_recently_selected_room.as_ref(), Some(&navigation.selected));
+        inner.view.dock(cx, ids!(dock)).item(navigation.selected.tab_id()).as_room_screen()
+    }
 }

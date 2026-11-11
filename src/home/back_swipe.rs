@@ -53,7 +53,7 @@ impl BackSwipe {
 
 #[cfg(target_os = "macos")]
 fn natural_scroll_enabled() -> bool {
-    use makepad_widgets::makepad_platform::os::apple::apple_sys::*;
+    use makepad_apple_sys::*;
     // Read on gesture start so changing the system setting needs no app restart.
     // Cocoa gives Makepad content-scroll deltas, not physical finger direction.
     unsafe {

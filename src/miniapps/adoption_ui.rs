@@ -181,7 +181,7 @@ mod enabled {
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             self.view.view(cx, ids!(approval)).set_visible(cx, false);
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.owner))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.owner))
                 .set_text(cx, prompt.flow.account());
             let tr = crate::i18n::tr;
             let heading = if matches!(&prompt.phase, Phase::Progress(p) if p.state == "active") {
@@ -189,7 +189,7 @@ mod enabled {
             } else {
                 "Review device setup"
             };
-            self.view.label(cx, ids!(adoption_confirmation.scroll.heading.title)).set_text(cx, tr(heading));
+            self.view.label(cx, ids!(adoption_confirmation.sheet_scroll.heading.title)).set_text(cx, tr(heading));
             let (mut status, details, primary) = match &prompt.phase {
                 Phase::Loading => (tr("Checking device setup…").to_owned(), String::new(), "Set up this device"),
                 Phase::Review(review) => (
@@ -211,13 +211,13 @@ mod enabled {
                 status = tr(message("management_scope_changed")).into();
             }
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.status))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.status))
                 .set_text(cx, &status);
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.details.copy))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.details.copy))
                 .set_text(cx, &details);
             self.view
-                .view(cx, ids!(adoption_confirmation.scroll.details))
+                .view(cx, ids!(adoption_confirmation.sheet_scroll.details))
                 .set_visible(cx, !details.is_empty());
             self.view
                 .button(cx, ids!(adoption_confirmation.buttons.primary))
@@ -478,7 +478,7 @@ mod tests {
             .repeat(80);
             panel
                 .view
-                .label(&cx, ids!(adoption_confirmation.scroll.details.copy))
+                .label(&cx, ids!(adoption_confirmation.sheet_scroll.details.copy))
                 .set_text(&mut cx, &long);
             if cn {
                 for (id, text) in [

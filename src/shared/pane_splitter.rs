@@ -2,6 +2,7 @@
 use makepad_widgets::*;
 
 pub const WIDTH: f64 = 4.0;
+pub const HIT_MARGIN: f64 = 6.0;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -11,7 +12,7 @@ script_mod! {
         // The short grip sits on the boundary, not beside it. The strip and
         // native hit margins keep it easy to drag without a second long bar.
         size: #(WIDTH)
-        hit_margin: 6.0
+        hit_margin: #(HIT_MARGIN)
 
         draw_bg +: {
             bar_size: 32.0

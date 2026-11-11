@@ -107,7 +107,7 @@ async fn protected_event_with_relations(
     event_id: &matrix_sdk::ruma::EventId,
     filter: Option<Vec<matrix_sdk::ruma::events::relation::RelationType>>,
 ) -> Result<(TimelineEvent, Vec<TimelineEvent>), String> {
-    if let Ok((cache, _guard)) = room.event_cache().await
+    if let Ok((cache, _guard)) = crate::sliding_sync::event_cache(&room.client()).room(room.room_id()).await
         && let Ok(Some(cached)) = cache
             .find_event_with_relations(event_id, filter.clone())
             .await
@@ -169,7 +169,7 @@ pub(crate) async fn older_messages(
     let caller_selected_anchor = before.is_some();
     let mut anchor = before;
     if anchor.is_none()
-        && let Ok((cache, _guard)) = client.event_cache().room(&room_id).await
+        && let Ok((cache, _guard)) = crate::sliding_sync::event_cache(&client).room(&room_id).await
         && let Ok(events) = cache.events().await
     {
         anchor = events
@@ -544,7 +544,7 @@ pub(crate) async fn read_messages(
     let mut edits = HashMap::new();
     // The event cache already holds the recent timeline in
     // memory; only hit the network when it can't fill the request.
-    if let Ok((cache, _guard)) = client.event_cache().room(&room_id).await {
+    if let Ok((cache, _guard)) = crate::sliding_sync::event_cache(&client).room(&room_id).await {
         if let Ok(events) = cache.events().await {
             for event in events.iter().rev() {
                 let Ok(AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(

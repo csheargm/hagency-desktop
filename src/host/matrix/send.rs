@@ -202,7 +202,7 @@ pub(super) async fn read_receipt(
         _ => None,
     };
     if latest.is_none()
-        && let Ok((cache, _guard)) = client.event_cache().room(&room_id).await
+        && let Ok((cache, _guard)) = crate::sliding_sync::event_cache(&client).room(&room_id).await
         && let Ok(events) = cache.events().await
     {
         latest = events

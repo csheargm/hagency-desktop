@@ -23,9 +23,7 @@ pub(super) async fn choose(lease: Lease, account: String) -> Result<Option<PathB
         };
         #[cfg(target_os = "macos")]
         {
-            use makepad_widgets::makepad_platform::{
-                makepad_objc_sys::objc_block, os::apple::apple_sys::*,
-            };
+            use makepad_apple_sys::*;
             let select = std::sync::Mutex::new(Some(select));
             unsafe {
                 let block = objc_block!(move || {
@@ -54,7 +52,7 @@ pub(super) async fn choose(lease: Lease, account: String) -> Result<Option<PathB
 
 #[cfg(target_os = "macos")]
 fn select_directory() -> Result<Option<PathBuf>, String> {
-    use makepad_widgets::makepad_platform::os::{apple::apple_sys::*, apple_util::nsstring_to_string};
+    use makepad_apple_sys::*;
     unsafe {
         let panel: ObjcId = msg_send![class!(NSOpenPanel), openPanel];
         if panel == nil {

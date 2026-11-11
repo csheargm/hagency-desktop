@@ -18,7 +18,7 @@ impl MiniAppsPanel {
             .and_then(|id| cx.draw_lists.checked_index(id))
             .and_then(|list| list.draw_pass_id);
         if let Some(pass) = pass {
-            cx.redraw_pass_and_parent_passes(pass);
+            crate::jit_compat::redraw_pass_and_parent_passes(cx, pass);
         } else {
             // Before the first native layout there is no owning area yet.
             cx.redraw_all();
@@ -101,7 +101,7 @@ mod tests {
                 // and a recovery step in a grouped row above it.
                 let sheet = root == id!(grant_confirmation) || root == id!(ceiling_confirmation);
                 let recover: Vec<LiveId> = if sheet {
-                    vec![root, id!(scroll), id!(actions), id!(recover)]
+                    vec![root, id!(sheet_scroll), id!(actions), id!(recover)]
                 } else {
                     vec![root, id!(buttons), id!(recover)]
                 };
@@ -122,19 +122,19 @@ mod tests {
                     let primary = phase == "choose" || phase == "review";
                     panel
                         .view
-                        .view(&cx, &[root, id!(scroll), id!(choices)])
+                        .view(&cx, &[root, id!(sheet_scroll), id!(choices)])
                         .set_visible(&mut cx, phase == "choose");
                     panel
                         .view
-                        .label(&cx, &[root, id!(scroll), id!(status)])
+                        .label(&cx, &[root, id!(sheet_scroll), id!(status)])
                         .set_text(&mut cx, phase);
                     panel
                         .view
-                        .label(&cx, &[root, id!(scroll), id!(details), id!(copy)])
+                        .label(&cx, &[root, id!(sheet_scroll), id!(details), id!(copy)])
                         .set_text(&mut cx, &details);
                     panel
                         .view
-                        .view(&cx, &[root, id!(scroll), id!(details)])
+                        .view(&cx, &[root, id!(sheet_scroll), id!(details)])
                         .set_visible(&mut cx, !details.is_empty());
                     panel
                         .view
@@ -143,11 +143,11 @@ mod tests {
                     if sheet {
                         panel
                             .view
-                            .widget(&cx, &[root, id!(scroll), id!(more)])
+                            .widget(&cx, &[root, id!(sheet_scroll), id!(more)])
                             .set_visible(&mut cx, !details.is_empty());
                         panel
                             .view
-                            .widget(&cx, &[root, id!(scroll), id!(actions)])
+                            .widget(&cx, &[root, id!(sheet_scroll), id!(actions)])
                             .set_visible(&mut cx, phase == "failed" || phase == "progress");
                     }
                     panel
@@ -159,11 +159,11 @@ mod tests {
                     assert_eq!(
                         panel
                             .view
-                            .label(&cx, &[root, id!(scroll), id!(status)])
+                            .label(&cx, &[root, id!(sheet_scroll), id!(status)])
                             .text(),
                         phase
                     );
-                    let details_widget = panel.view.widget(&cx, &[root, id!(scroll), id!(details)]);
+                    let details_widget = panel.view.widget(&cx, &[root, id!(sheet_scroll), id!(details)]);
                     assert_eq!(details_widget.visible(), !details.is_empty());
                     if !details.is_empty() {
                         assert!(details_widget.area().is_valid(&cx));

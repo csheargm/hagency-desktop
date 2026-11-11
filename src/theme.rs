@@ -95,7 +95,7 @@ impl Selection {
     /// Keep the platform family. Only palette roles change between selections.
     pub fn stylesheet(self, family: DesktopStyle) -> StyleSheet {
         let dark = self.appearance == Appearance::Dark;
-        let mut sheet = StyleSheet::load_with_appearance(family, dark);
+        let mut sheet = StyleSheet::load(family.sheet(dark));
         // Platform control geometry stays native. App surfaces need separate
         // roles: macOS's stock page and container both resolve to #ececec.
         let (page, panel, field, ink, border) = if dark {
@@ -140,7 +140,8 @@ impl Selection {
 
 fn platform_family(vm: &mut ScriptVm) -> DesktopStyle {
     match vm.cx().os_type() {
-        OsType::Android(_) | OsType::OpenHarmony(_) => DesktopStyle::Android,
+        // JIT PORT: upstream makepad dropped OpenHarmony.
+        OsType::Android(_) => DesktopStyle::Android,
         OsType::Ios(_) => DesktopStyle::Ios,
         OsType::Windows => DesktopStyle::Windows,
         _ => DesktopStyle::Macos,
@@ -357,6 +358,12 @@ impl Snapshot {
             muted: mix(self.ink, hover, 0.20),
             link: mix(self.accent, self.ink, if dark { 0.50 } else { 0.40 }),
         }
+    }
+
+    /// Foreground that reads on the navigation rail, which is navy in light
+    /// themes and the page color in dark ones (see `nav_ink` in `script_mod`).
+    pub fn nav_ink(&self) -> Vec4f {
+        if luminance(self.page) < 0.5 { self.ink } else { self.surface }
     }
 
     pub fn role(&self, name: &str) -> Vec4f {

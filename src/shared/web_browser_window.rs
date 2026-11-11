@@ -168,24 +168,10 @@ impl WebBrowserWindowHost {
             cx.widget_tree_mark_dirty(self.uid);
         } else {
             // Reusing the reader should bring it back in front of the chat.
-            #[cfg(target_os = "macos")]
-            if let Some(window_id) = self
-                .window
-                .as_ref()
-                .and_then(|window| window.as_window().window_id())
-            {
-                // AppKit can synchronously re-enter Makepad's event callback.
-                // Activate after this widget and Cx have released their borrows.
-                dispatch2::DispatchQueue::main().exec_async(move || {
-                    use makepad_widgets::makepad_platform::os::apple::macos::macos_app::{
-                        activate_cocoa_window_on_pointer_down, try_with_macos_app,
-                    };
-                    let native =
-                        try_with_macos_app(|app| app.cocoa_window_for_id(window_id)).flatten();
-                    if let Some(native) = native {
-                        activate_cocoa_window_on_pointer_down(native);
-                    }
-                });
+            // JIT PORT: upstream queues ShowWindow, which brings the window in front
+            // and activates the app without re-entering AppKit from this handler.
+            if let Some(window) = self.window.as_ref() {
+                window.as_window().set_visible(cx, true);
             }
         }
         let window = self.window.clone().unwrap();

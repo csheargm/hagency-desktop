@@ -495,11 +495,23 @@ struct Finished {
     parent: Option<OwnedRoomId>,
     result: Result<(String, Option<RoomNameId>, bool), String>,
 }
+/// Visual state travels with the result, independently of its translated text.
+#[derive(Clone, Copy, Debug)]
+enum StatusTone { Info, Success, Warning, Error }
+impl StatusTone {
+    fn role(self) -> &'static str {
+        match self {
+            Self::Info => "info", Self::Success => "success",
+            Self::Warning => "warning", Self::Error => "danger",
+        }
+    }
+}
 #[derive(Debug)]
 struct LinkFinished {
     owner: OwnedUserId,
     parent: OwnedRoomId,
     message: String,
+    tone: StatusTone,
 }
 
 script_mod! {
@@ -528,7 +540,7 @@ script_mod! {
         label_walk: Walk{width: 0 height: 0 margin: Inset{}}
         draw_bg +: {
             color: mod.widgets.RINX_BORDER color_active: mod.widgets.RINX_ACCENT
-            knob_color: uniform(#fff)
+            knob_color: uniform(mod.widgets.RINX_ON_ACCENT)
             pixel: fn() {
                 let sdf = Sdf2d.viewport(self.pos * self.rect_size)
                 let p = (self.rect_size - vec2(44.0, 26.0)) * 0.5
@@ -778,16 +790,13 @@ impl SpaceManagementPanel {
             && current_user_id().as_ref() == Some(owner)
             && self.request == request
     }
-    fn status(&self, cx: &mut Cx, status: &str) {
+    fn status(&self, cx: &mut Cx, tone: StatusTone, status: &str) {
         self.view.view(cx, ids!(status_card)).set_visible(cx, !status.is_empty());
         self.view
             .label(cx, ids!(status))
             .set_text(cx, crate::i18n::tr(status));
         let theme = crate::theme::snapshot(cx);
-        let state = if status == "Saving…" { "info" }
-            else if status.starts_with("Created, but") || status.starts_with(crate::i18n::tr(ROOM_SETUP_INCOMPLETE)) || status == crate::i18n::tr(ROOM_SETUP_INACTIVE) { "warning" }
-            else if status == "Created. Continue with the next step below." || status.ends_with("saved.") || status == crate::i18n::tr(ROOM_SETUP_COMPLETE) || status == "Room added to space." { "success" }
-            else { "danger" };
+        let state = tone.role();
         let bg = theme.role(&format!("color.status.{state}.background"));
         let fg = theme.role(&format!("color.status.{state}.foreground"));
         let mut card = self.view.view(cx, ids!(status_card));
@@ -976,7 +985,7 @@ impl SpaceManagementPanel {
         let request = self.request;
         let parent = self.parent.clone();
         self.busy = true;
-        self.status(cx, "Saving…");
+        self.status(cx, StatusTone::Info, "Saving…");
         self.sync(cx);
         spawn_async_task(async move {
             let result = operation.await.map_err(|e| e.to_string());
@@ -1032,7 +1041,7 @@ impl Widget for SpaceManagementPanel {
                 && self.owner.as_ref() == Some(&done.owner)
                 && self.parent.as_ref() == Some(&done.parent)
             {
-                self.status(cx, &done.message);
+                self.status(cx, done.tone, &done.message);
             }
             if let Some(loaded) = action.downcast_ref::<Loaded>()
                 && self.current(&loaded.owner, loaded.request)
@@ -1078,7 +1087,7 @@ impl Widget for SpaceManagementPanel {
                                 .set_text(cx, &space.topic);
                         }
                     }
-                    Err(error) => self.status(cx, error),
+                    Err(error) => self.status(cx, StatusTone::Error, error),
                 }
                 self.sync(cx);
             }
@@ -1094,14 +1103,14 @@ impl Widget for SpaceManagementPanel {
                             self.view.view(cx, ids!(create_form)).set_scroll_pos(cx, dvec2(0.0, 0.0));
                             self.setup_pending = *pending;
                         }
-                        self.status(cx, message);
+                        self.status(cx, if *pending { StatusTone::Warning } else { StatusTone::Success }, message);
                         cx.action(SpaceManagementChanged {
                             owner: done.owner.clone(),
                             parent: done.parent.clone(),
                         });
                         self.load(cx);
                     }
-                    Err(error) => self.status(cx, error),
+                    Err(error) => self.status(cx, StatusTone::Error, error),
                 }
                 self.sync(cx);
             }
@@ -1237,7 +1246,7 @@ impl Widget for SpaceManagementPanel {
                     if (finish || add) && self.data.projects_known && self.choice().is_some_and(|space| space.can_link) {
                         log!("space-registration-review {}", serde_json::json!({"parent":self.parent,"room":room.room_id(),"project":self.choice().and_then(|space|space.project_id.as_deref()),"retry":finish}));
                         self.busy = true;
-                        self.status(cx, "Saving…");
+                        self.status(cx, StatusTone::Info, "Saving…");
                         self.sync(cx);
                         break;
                     }
@@ -1261,7 +1270,7 @@ impl Widget for SpaceManagementPanel {
             };
             if !config.space && (config.parent.is_none() || !self.data.projects_known) {
                 self.status(
-                    cx,
+                    cx, StatusTone::Warning,
                     "Choose a space and refresh its type before creating the room.",
                 );
                 return;
@@ -1342,7 +1351,7 @@ impl Widget for SpaceManagementPanel {
                     if add || finish {
                         if !self.data.projects_known || !self.choice().is_some_and(|space| space.can_link)
                             || (finish && !self.needs_room_registration(&child)) {
-                            self.status(cx, "Space types could not be checked. Refresh before adding a room.");
+                            self.status(cx, StatusTone::Warning, "Space types could not be checked. Refresh before adding a room.");
                             return;
                         }
                         self.run(cx, async move {
@@ -1378,15 +1387,19 @@ impl Widget for SpaceManagementPanel {
                                         if !matrix_context::is_current(&client) {
                                             return;
                                         }
-                                        let message = result.unwrap_or_else(|e| e.to_string());
+                                        let (message, tone, popup) = match result {
+                                            Ok(message) => (message, StatusTone::Success, crate::shared::popup_list::PopupKind::Success),
+                                            Err(error) => (error.to_string(), StatusTone::Error, crate::shared::popup_list::PopupKind::Error),
+                                        };
                                         Cx::post_action(LinkFinished {
                                             owner: owner.clone(),
                                             parent: parent.clone(),
                                             message: message.clone(),
+                                            tone,
                                         });
                                         crate::shared::popup_list::enqueue_popup_notification(
                                             crate::i18n::tr(&message).to_owned(),
-                                            crate::shared::popup_list::PopupKind::Info,
+                                            popup,
                                             Some(6.0),
                                         );
                                         Cx::post_action(SpaceManagementChanged {
@@ -1507,12 +1520,12 @@ impl SpaceManagementPanelRef {
             .check_box(cx, ids!(encrypted))
             .set_active(cx, true, Animate::No);
         panel.status(
-            cx,
+            cx, if pending { StatusTone::Warning } else { StatusTone::Success },
             if pending {
                 "Created, but setup is incomplete. Use Finish setup to retry."
-            } else {
-                ""
-            },
+            } else if step >= 2 {
+                crate::i18n::tr("Created. Continue with the next step below.")
+            } else { "" },
         );
         panel.sync(cx);
     }
@@ -1539,7 +1552,7 @@ impl SpaceManagementPanelRef {
         if !matches!(scenario, "unlinked" | "unknown") { panel.data.children.insert(room.clone()); }
         panel.data.registered_rooms = Some(HashMap::new());
         if matches!(scenario, "success" | "inactive") { panel.data.registered_rooms.as_mut().unwrap().insert(room, scenario == "success"); }
-        panel.status(cx, match scenario { "failure" => ROOM_SETUP_INCOMPLETE, "success" => ROOM_SETUP_COMPLETE, "inactive" => ROOM_SETUP_INACTIVE, _ => "" });
+        panel.status(cx, match scenario { "success" => StatusTone::Success, "failure" | "inactive" => StatusTone::Warning, _ => StatusTone::Info }, match scenario { "failure" => ROOM_SETUP_INCOMPLETE, "success" => ROOM_SETUP_COMPLETE, "inactive" => ROOM_SETUP_INACTIVE, _ => "" });
         panel.sync(cx);
     }
 
@@ -1583,7 +1596,7 @@ impl SpaceManagementPanelRef {
                 inner.view.text_input(cx, ids!(name)).set_text(cx, "");
                 inner.view.text_input(cx, ids!(topic)).set_text(cx, "");
                 inner.view.text_input(cx, ids!(search)).set_text(cx, "");
-                inner.status(cx, "");
+                inner.status(cx, StatusTone::Info, "");
                 inner.load(cx);
                 modal.open(cx);
             }

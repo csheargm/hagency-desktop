@@ -19,7 +19,7 @@ fn main() {
         "eval" | "root" => {
             let mut host = ScriptVmHost::new((), ());
             let mut vm = ScriptVm {
-                host: &mut host,
+                host: host.host_context(), // JIT PORT: the VM borrows a host context, not the host
                 bx: Box::new(ScriptVmBase::new()),
             };
             vm.bx.captured_errors = Some(Vec::new());

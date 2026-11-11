@@ -45,6 +45,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install system dependencies
         run: |
@@ -93,6 +97,10 @@ jobs:
             arch: x86_64
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -117,6 +125,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -143,6 +155,10 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust stable and nightly
         uses: dtolnay/rust-toolchain@stable
@@ -194,6 +210,10 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -230,6 +250,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -269,6 +293,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

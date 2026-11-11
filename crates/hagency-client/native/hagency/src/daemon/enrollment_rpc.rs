@@ -48,6 +48,11 @@ pub struct EnrollmentControl {
     custody: Mutex<Option<Arc<super::auth::SdkCustody>>>,
 }
 impl EnrollmentControl {
+    /// Display-only observation: OAuth finished and native custody was accepted.
+    /// It grants no authority and stays true while an accepted write drains.
+    pub fn native_registration_started(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == 1
+    }
     pub fn cancel(&self) {
         let _ = self
             .phase
@@ -211,7 +216,13 @@ impl Flow {
         if status.id != id {
             return Err("daemon_enrollment_unknown");
         }
-        Ok(status.clone())
+        let mut status = status.clone();
+        // The browser link is actionable only before native admission. Keeping
+        // the wire shape unchanged also lets older clients keep polling.
+        if workflow.control.native_registration_started() {
+            status.authorization_url = None;
+        }
+        Ok(status)
     }
 }
 async fn request(home: &Path, id: &str, call: Call) -> Result<Status, HostError> {
@@ -235,6 +246,7 @@ pub(super) async fn remote_enroll<F, Fut>(
     origin: &str,
     owner: &str,
     display_name: Option<String>,
+    control: Arc<EnrollmentControl>,
     open: F,
 ) -> Result<EnrollReport, HostError>
 where
@@ -255,12 +267,16 @@ where
     .await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(360);
     loop {
+        let browser_pending = status.authorization_url.is_some();
         if let Some(url) = status.authorization_url.take() {
             if let Some(open) = open.take() {
                 open(url)
                     .await
                     .map_err(|_| HostError::Code("daemon_enrollment_detached"))?;
             }
+        }
+        if !browser_pending && open.is_none() && status.result.is_none() && status.error.is_none() {
+            let _ = control.accept_native();
         }
         if let Some(result) = status.result {
             return Ok(result);
@@ -286,6 +302,23 @@ mod tests {
             owner: "@owner:test".into(),
             display_name: None,
         }
+    }
+    #[test]
+    fn browser_url_is_retired_after_native_admission_without_changing_rpc_shape() {
+        let mut flow = Flow::default();
+        let (work, _) = flow.begin("original", &call()).unwrap();
+        work.status.lock().unwrap().authorization_url = Some("https://test/authorize".into());
+        assert!(!work.control.native_registration_started());
+        assert!(flow.get("original").unwrap().authorization_url.is_some());
+        work.control.accept_native().unwrap();
+        assert!(work.control.native_registration_started());
+        assert!(flow.get("original").unwrap().authorization_url.is_none());
+        // Losing the controller never rolls accepted native work back to OAuth.
+        work.control.cancel();
+        assert!(work.control.native_registration_started());
+        let cancelled = EnrollmentControl::default();
+        cancelled.cancel();
+        assert!(!cancelled.native_registration_started());
     }
     #[tokio::test]
     async fn shutdown_cancels_authorization_before_any_native_registration_can_be_admitted() {

@@ -308,7 +308,7 @@ mod enabled {
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             self.view.view(cx, ids!(approval)).set_visible(cx, false);
             self.view
-                .label(cx, ids!(execution_confirmation.scroll.owner))
+                .label(cx, ids!(execution_confirmation.sheet_scroll.owner))
                 .set_text(cx, p.flow.account());
             let (status, details) = match &p.phase {
                 Phase::Loading => (
@@ -337,13 +337,13 @@ mod enabled {
                 ),
             };
             self.view
-                .label(cx, ids!(execution_confirmation.scroll.status))
+                .label(cx, ids!(execution_confirmation.sheet_scroll.status))
                 .set_text(cx, &status);
             self.view
-                .label(cx, ids!(execution_confirmation.scroll.details.copy))
+                .label(cx, ids!(execution_confirmation.sheet_scroll.details.copy))
                 .set_text(cx, &details);
             self.view
-                .view(cx, ids!(execution_confirmation.scroll.details))
+                .view(cx, ids!(execution_confirmation.sheet_scroll.details))
                 .set_visible(cx, !details.is_empty());
             let technical = match &p.phase {
                 Phase::Review(review) => {
@@ -371,10 +371,10 @@ mod enabled {
                 _ => String::new(),
             };
             self.view
-                .widget(cx, ids!(execution_confirmation.scroll.toggle_details))
+                .widget(cx, ids!(execution_confirmation.sheet_scroll.toggle_details))
                 .set_visible(cx, !technical.is_empty());
             self.view
-                .button(cx, ids!(execution_confirmation.scroll.toggle_details))
+                .button(cx, ids!(execution_confirmation.sheet_scroll.toggle_details))
                 .set_text(
                     cx,
                     tr(if p.expanded {
@@ -384,10 +384,10 @@ mod enabled {
                     }),
                 );
             self.view
-                .label(cx, ids!(execution_confirmation.scroll.technical))
+                .label(cx, ids!(execution_confirmation.sheet_scroll.technical))
                 .set_text(cx, &technical);
             self.view
-                .widget(cx, ids!(execution_confirmation.scroll.technical))
+                .widget(cx, ids!(execution_confirmation.sheet_scroll.technical))
                 .set_visible(cx, p.expanded && !technical.is_empty());
             self.view
                 .widget(cx, ids!(execution_confirmation.buttons.primary))
@@ -530,7 +530,7 @@ mod enabled {
             if has_details(&p.phase) {
                 targets.push(
                     self.view
-                        .button(cx, ids!(execution_confirmation.scroll.toggle_details))
+                        .button(cx, ids!(execution_confirmation.sheet_scroll.toggle_details))
                         .area(),
                 );
             }
@@ -543,7 +543,7 @@ mod enabled {
                 if has_details(&p.phase)
                     && cx.has_key_focus(
                         self.view
-                            .button(cx, ids!(execution_confirmation.scroll.toggle_details))
+                            .button(cx, ids!(execution_confirmation.sheet_scroll.toggle_details))
                             .area(),
                     )
                 {

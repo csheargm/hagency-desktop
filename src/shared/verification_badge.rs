@@ -153,8 +153,9 @@ impl Widget for VerificationBadge {
 
         if let Event::Actions(actions) = event {
             for action in actions {
-                if let Some(VerificationStateAction::Update(state)) = action.downcast_ref() {
-                    self.verification_state = *state;
+                if let Some(update) = action.downcast_ref::<VerificationStateAction>()
+                    && update.pin.is_current() {
+                    self.verification_state = update.state;
                     self.update_icon_visibility(cx);
                 }
             }

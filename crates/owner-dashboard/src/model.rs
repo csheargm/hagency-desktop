@@ -66,6 +66,8 @@ pub enum SetupProgress {
     Preparing,
     /// The owner signs this computer in through the browser. Cancellable.
     SigningIn,
+    /// Browser sign-in completed; accepted native registration is in progress.
+    Registering,
     /// Cancellation was requested; the helper finishes it safely first.
     Cancelling,
     /// Installing and starting the background service.
@@ -86,7 +88,7 @@ pub struct SetupView {
 
 impl SetupView {
     pub fn running(&self) -> bool {
-        matches!(self.progress, SetupProgress::Preparing | SetupProgress::SigningIn | SetupProgress::Cancelling
+        matches!(self.progress, SetupProgress::Preparing | SetupProgress::SigningIn | SetupProgress::Registering | SetupProgress::Cancelling
             | SetupProgress::Enabling | SetupProgress::Confirming)
     }
 }
@@ -1472,6 +1474,7 @@ fn setup_page(state: &DashboardState, locale: Locale) -> Option<SetupPage> {
         SetupProgress::Idle => None,
         SetupProgress::Preparing => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupPreparing))),
         SetupProgress::SigningIn => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupSigningIn))),
+        SetupProgress::Registering => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupRegistering))),
         SetupProgress::Cancelling => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupCancelling))),
         SetupProgress::Enabling => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupEnabling))),
         SetupProgress::Confirming => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupConfirming))),

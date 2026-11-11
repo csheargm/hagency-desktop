@@ -471,3 +471,106 @@ fn list_capacity_directory_permissions_and_fifo_are_closed() {
         Err(FileError::Capacity)
     ));
 }
+
+#[test]
+fn shared_workspace_updates_existing_files_without_following_links() {
+    let (temp, mut ledger, _) = setup();
+    let owner = temp.path().join(format!("owner_{}", "a".repeat(64))).canonicalize().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(project.join("example.py"), "old\n").unwrap();
+    let mut workspace = Workspace::open_shared(&owner, &project.canonicalize().unwrap(), OWNER, &scope()).unwrap();
+    let allowed = policy(&workspace, ToolPolicy::AllowWithRules {
+        tools: vec!["room.list".into(), "room.read".into(), "room.update".into()],
+        directories: vec![workspace.canonical_directory().to_str().unwrap().into()],
+    });
+    for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
+        ledger.set_policy(OWNER, &scope(), layer, 1, &allowed).unwrap();
+    }
+    ledger.reserve(&scope(), "shared-call", "shared-dispatch", 10, 10).unwrap();
+    let original = digest(b"old\n");
+    let update = workspace.prepare(&ledger, &scope(), "shared-dispatch", "codex-thread-a", "turn-a", "tool-a", Operation::Update {
+        path: "example.py".into(), content: "new\n".into(), expected_sha256: original, nonce: "d".repeat(64),
+    }, 11).unwrap();
+    let outcome = workspace.execute(&mut ledger, &update, 12);
+    assert!(matches!(outcome, Ok(FileResult::Updated { .. })), "{outcome:?}");
+    assert_eq!(std::fs::read_to_string(project.join("example.py")).unwrap(), "new\n");
+    assert!(matches!(workspace.execute(&mut ledger, &update, 12), Err(FileError::Unknown)));
+    let stale = workspace.prepare(&ledger, &scope(), "shared-dispatch", "codex-thread-a", "turn-a", "tool-c", Operation::Update {
+        path: "example.py".into(), content: "lost update\n".into(), expected_sha256: digest(b"old\n"), nonce: "e".repeat(64),
+    }, 11).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &stale, 12), Err(FileError::Conflict)));
+    assert_eq!(std::fs::read_to_string(project.join("example.py")).unwrap(), "new\n");
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, "safe").unwrap();
+    symlink(&outside, project.join("link")).unwrap();
+    let listing = workspace.prepare(&ledger, &scope(), "shared-dispatch", "codex-thread-a", "turn-a", "tool-list", Operation::List { path: "".into() }, 11).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &listing, 12), Ok(FileResult::List { entries }) if entries == vec!["example.py"]));
+    let read = workspace.prepare(&ledger, &scope(), "shared-dispatch", "codex-thread-a", "turn-a", "tool-b", Operation::Read { path: "link".into() }, 11).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &read, 12), Err(FileError::Boundary)));
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "safe");
+    assert!(workspace.prepare(&ledger, &scope(), "shared-dispatch", "codex-thread-a", "turn-a", "tool-d", Operation::Read { path: "../outside".into() }, 11).is_err());
+    let mut foreign = scope(); foreign.binding = "another-binding".into();
+    assert!(matches!(workspace.prepare(&ledger, &foreign, "shared-dispatch", "codex-thread-a", "turn-a", "tool-e", Operation::Read { path: "example.py".into() }, 11), Err(FileError::Boundary)));
+    let ask = policy(&workspace, ToolPolicy::AskOwner);
+    for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
+        ledger.set_policy(OWNER, &scope(), layer, 2, &ask).unwrap();
+    }
+    ledger.reserve(&scope(), "approval-call", "approval-dispatch", 10, 10).unwrap();
+    let change = workspace.prepare(&ledger, &scope(), "approval-dispatch", "codex-thread-a", "turn-a", "tool-f", Operation::Update {
+        path: "example.py".into(), content: "approved\n".into(), expected_sha256: digest(b"new\n"), nonce: "f".repeat(64),
+    }, 11).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &change, 12), Err(FileError::NeedsOwner)));
+    assert_eq!(std::fs::read_to_string(project.join("example.py")).unwrap(), "new\n");
+    ledger.approve_tool(OWNER, change.proposal(), 12).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &change, 12), Ok(FileResult::Updated { .. })));
+    assert_eq!(std::fs::read_to_string(project.join("example.py")).unwrap(), "approved\n");
+    std::fs::rename(&project, temp.path().join("moved-project")).unwrap();
+    std::fs::create_dir(&project).unwrap();
+    let changed = workspace.prepare(&ledger, &scope(), "approval-dispatch", "codex-thread-a", "turn-a", "tool-g", Operation::Read { path: "example.py".into() }, 11).unwrap();
+    assert!(matches!(workspace.execute(&mut ledger, &changed, 12), Err(FileError::Boundary)));
+}
+
+#[test]
+fn shared_workspace_supports_three_agent_handoff() {
+    let (temp, mut ledger, _) = setup();
+    let owner = temp.path().join(format!("owner_{}", "a".repeat(64))).canonicalize().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    let mut scopes = Vec::new();
+    let mut workspaces = Vec::new();
+    for agent in ["architect", "tester", "coder"] {
+        let mut current = scope();
+        current.agent = agent.into(); current.binding = format!("binding-{agent}");
+        ledger.register_binding(OWNER, &current).unwrap();
+        let workspace = Workspace::open_shared(&owner, &project, OWNER, &current).unwrap();
+        let allowed = policy(&workspace, ToolPolicy::AllowWithRules {
+            tools: vec!["room.list".into(), "room.read".into(), "room.create".into(), "room.mkdir".into(), "room.update".into()],
+            directories: vec![project.to_str().unwrap().into()],
+        });
+        for layer in [Layer::Agent, Layer::Room, Layer::Requester] { ledger.set_policy(OWNER, &current, layer, 0, &allowed).unwrap(); }
+        ledger.reserve(&current, &format!("call-{agent}"), &format!("dispatch-{agent}"), 10, 10).unwrap();
+        scopes.push(current); workspaces.push(workspace);
+    }
+    let prepare = |workspace: &Workspace, ledger: &Ledger, i: usize, id: &str, operation| {
+        workspace.prepare(ledger, &scopes[i], &format!("dispatch-{}", ["architect", "tester", "coder"][i]), "thread", "turn", id, operation, 11).unwrap()
+    };
+    let lock = workspaces[0].shared_lock.as_ref().unwrap();
+    lock.try_lock().unwrap();
+    assert!(workspaces[1].shared_lock.as_ref().unwrap().try_lock().is_err());
+    lock.unlock().unwrap();
+    let mkdir = prepare(&workspaces[0], &ledger, 0, "mkdir", Operation::MakeDirectory { path: "role-e2e".into() });
+    assert!(matches!(workspaces[0].execute(&mut ledger, &mkdir, 12), Ok(FileResult::DirectoryCreated { .. })));
+    let adr = prepare(&workspaces[0], &ledger, 0, "adr", Operation::Create { path: "role-e2e/ADR.md".into(), content: "Implement count\n".into(), nonce: "a".repeat(64) });
+    assert!(matches!(workspaces[0].execute(&mut ledger, &adr, 12), Ok(FileResult::Created { .. })));
+    let read = prepare(&workspaces[1], &ledger, 1, "read", Operation::Read { path: "role-e2e/ADR.md".into() });
+    assert!(matches!(workspaces[1].execute(&mut ledger, &read, 12), Ok(FileResult::Read { content, .. }) if content == "Implement count\n"));
+    let test = prepare(&workspaces[1], &ledger, 1, "test", Operation::Create { path: "role-e2e/test_count.py".into(), content: "assert count('a') == 1\n".into(), nonce: "b".repeat(64) });
+    assert!(matches!(workspaces[1].execute(&mut ledger, &test, 12), Ok(FileResult::Created { .. })));
+    std::fs::write(project.join("role-e2e/count.py"), "old\n").unwrap();
+    let update = prepare(&workspaces[2], &ledger, 2, "implementation", Operation::Update { path: "role-e2e/count.py".into(), content: "def count(text): return len(text.split())\n".into(), expected_sha256: digest(b"old\n"), nonce: "c".repeat(64) });
+    assert!(matches!(workspaces[2].execute(&mut ledger, &update, 12), Ok(FileResult::Updated { .. })));
+    assert_eq!(std::fs::read_to_string(project.join("role-e2e/count.py")).unwrap(), "def count(text): return len(text.split())\n");
+}

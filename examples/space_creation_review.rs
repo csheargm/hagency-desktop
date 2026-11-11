@@ -37,6 +37,9 @@ impl AppMain for App {
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if matches!(event, Event::Startup) && std::env::var("SPACE_CREATION_REVIEW").as_deref() == Ok("created") {
+            self.ui.space_management_panel(cx, ids!(wizard)).review(cx, 2, 2, false);
+        }
         if let Event::Custom(command) = event {
             if matches!(command.as_str(), "theme:dark" | "theme:light") {
                 rinx::theme::select(cx, rinx::theme::Selection {

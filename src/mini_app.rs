@@ -1,7 +1,7 @@
 //! Matrix mini-app cards: native article packages and separate WebKit link apps.
 
 use makepad_widgets::*;
-use makepad_widgets::makepad_platform::event::NativeSystemBrowserNavigation;
+use crate::shared::system_browser::{NativeSystemBrowserNavigation, SystemBrowserCx, SystemBrowserCx2d};
 use ruma::{
     OwnedTransactionId, OwnedUserId, TransactionId,
     events::room::message::{MessageType, RoomMessageEventContent},
@@ -746,7 +746,7 @@ impl MiniAppPanelRef {
                 inner.current = None;
                 inner.text_input(cx, ids!(mini_url)).set_text(cx, "");
                 inner.text_input(cx, ids!(mini_title)).set_text(cx, "");
-                inner.form(cx);
+                MiniAppPanel::form(&mut inner, cx);
             }
             MiniAppAction::Open { app, timeline } => {
                 inner.timeline = Some(timeline.clone());

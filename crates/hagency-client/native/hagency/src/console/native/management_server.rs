@@ -115,7 +115,7 @@ pub enum ManagementCommand {
     AgentRuntime { id: String },
     AgentExecution { id: String },
     AgentWork { id: String, after: Option<String>, limit: Option<u16> },
-    AgentWorkList { project_id: Option<String>, after: Option<String>, limit: Option<u16> },
+    AgentWorkList { project_id: Option<String>, after: Option<String>, limit: Option<u16>, include_pool_agents: bool },
     AgentSettlement { id: String },
     AgentSettlementRequest { command_id: String, request_id: String, expected_request_revision: i64, expected_fence_receipt_digest: String },
     AgentRemoval { id: String },

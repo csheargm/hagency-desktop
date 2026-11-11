@@ -364,7 +364,7 @@ impl Widget for MiniAppsSideHandle {
         // Match Makepad Splitter's native pointer behavior; only the owning
         // pane's resize calculation differs (the right pane grows leftward).
         match event.hits_with_options(cx, self.draw_bg.area(), HitOptions::new()
-            .with_margin(Inset {left: 6.0, right: 6.0, top: 0.0, bottom: 0.0})
+            .with_margin(Inset {left: crate::shared::pane_splitter::HIT_MARGIN, right: crate::shared::pane_splitter::HIT_MARGIN, top: 0.0, bottom: 0.0})
             .with_touch_margin(Inset {left: 8.0, right: 8.0, top: 0.0, bottom: 0.0})) {
             Hit::FingerHoverIn(_) => {
                 cx.set_cursor(MouseCursor::ColResize);

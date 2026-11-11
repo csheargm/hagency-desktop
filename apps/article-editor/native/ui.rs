@@ -1,6 +1,8 @@
 use crate::theme::Snapshot as ThemeSnapshot;
 use std::collections::BTreeMap;
 use article_core::editing::EditHistory;
+// Explicit: makepad widgets (rich_text) export their own `BlockKind` through `makepad_widgets::*`.
+use article_core::document::{Block, BlockKind};
 use article_makepad::body_selection::{ArticleSelection, SelectionUpdate};
 use makepad_widgets::{makepad_draw::text::selection::{Cursor, Selection}, text_input::UndoGroup};
 use super::table_picker::TableSizePickerWidgetRefExt;
@@ -1465,7 +1467,7 @@ impl ArticlePanel {
         if let Some((uid, text, rect)) = hint {
             if self.icon_hint != Some(uid) {
                 self.icon_tooltip.show_with_options(cx, &text, rect,
-                    CalloutTooltipOptions {position: TooltipPosition::Top, ..Default::default()}, false);
+                    CalloutTooltipOptions {position: TooltipPosition::Top, ..Default::default()});
                 self.icon_hint = Some(uid);
             }
         } else {

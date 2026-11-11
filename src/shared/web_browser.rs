@@ -1,6 +1,6 @@
 //! In-app reader for ordinary chat links, backed by the platform browser.
 use makepad_widgets::*;
-use makepad_widgets::makepad_platform::event::NativeSystemBrowserNavigation;
+use crate::shared::system_browser::{NativeSystemBrowserNavigation, SystemBrowserCx, SystemBrowserCx2d, SystemBrowserId};
 use url::Url;
 use std::sync::Arc;
 use ruma::{OwnedEventId, OwnedRoomId, OwnedUserId};
@@ -736,7 +736,7 @@ impl Widget for WebBrowser {
             {
                 if let Some(tab) = self.active() {
                     if let Some(url) = &tab.original_url {
-                        crate::utils::open_url(url.as_str());
+                        crate::utils::open_url_external(url.as_str());
                     }
                 }
             }
@@ -758,7 +758,7 @@ impl Widget for WebBrowser {
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut bar) = item.as_tab_bar().borrow_mut() {
                 let walk = bar.walk(cx);
-                bar.begin(cx, self.active_tab, walk);
+                bar.begin(cx, self.active_tab, true, walk);
                 for tab in &self.tabs {
                     let title = tab.title();
                     let label = shorten_title(&title);

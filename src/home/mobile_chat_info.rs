@@ -442,7 +442,9 @@ impl MobileChatInfo {
         self.choosing_notifications = false;
         self.services_open = false;
         self.view.portal_list(cx, ids!(list)).set_first_id_and_scroll(0, 0.0);
-        self.view.redraw(cx);
+        // Tabs change layout and controls in draw_walk, outside the cached
+        // children that a partial View redraw would update.
+        cx.redraw_all();
     }
     fn load(&mut self, cx: &mut Cx, room: RoomNameId) {
         self.clear();
@@ -560,8 +562,13 @@ impl MobileChatInfo {
         let modal = self.view.modal(cx, ids!(agent_picker_modal));
         if self.agent_picker_open || modal.is_open() {
             self.agent_picker_open = false;
+            // Modal dismissal does not close a dropdown's separate popup.
+            // Release its sweep lock before hiding the containing modal.
+            if let Some(mut dropdown) = self.view.drop_down(cx, ids!(my_agents)).borrow_mut() {
+                dropdown.set_closed(cx);
+            }
             modal.close(cx);
-            self.view.redraw(cx);
+            cx.redraw_all();
         }
     }
     fn show_agent_slow(&mut self, cx: &mut Cx, binding: bool) {
@@ -612,7 +619,7 @@ impl MobileChatInfo {
         else if self.agent_added {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_SUCCESS_FG}});}
         else {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_MUTED}});}
         self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,error==Some("agent_command_recovery_required"));
-        self.view.redraw(cx);
+        cx.redraw_all();
     }
     fn request_agents(&mut self, cx: &mut Cx, binding: bool) {
         if self.agent_busy || !self.pin_is_current() {return;}
@@ -665,7 +672,7 @@ impl MobileChatInfo {
             };
             Cx::post_action(RoomAgentsLoaded {owner,origin,epoch,room_id:room_id.clone(),request,binding,result});
         });}
-        self.view.redraw(cx);
+        cx.redraw_all();
     }
     fn clear(&mut self) {
         self.owner = None;
@@ -706,7 +713,7 @@ impl Widget for MobileChatInfo {
             self.view.redraw(cx);
         }
         if !self.agent_picker_open {
-            self.view.modal(cx, ids!(agent_picker_modal)).close(cx);
+            self.close_agent_picker(cx);
         }
         // Let the overlay consume input before the underlying members panel.
         if self.agent_picker_open && !matches!(event, Event::Actions(_) | Event::Signal) {
@@ -829,7 +836,7 @@ impl Widget for MobileChatInfo {
             if self.view.drop_down(cx,ids!(my_agents)).changed(actions).is_some() && !self.agent_busy {
                 self.agent_added=false;self.agent_pending=false;
                 self.view.label(cx,ids!(agent_status)).set_text(cx,crate::i18n::tr("Choose an Agent you own to bind to this Room."));
-                self.view.redraw(cx);
+                cx.redraw_all();
             }
             if self.tab == InfoTab::Members && self.view.button(cx,ids!(invite_my_agent)).clicked(actions) {
                 if self.agent_busy {self.agent_picker_open=true;self.view.modal(cx,ids!(agent_picker_modal)).open(cx);self.view.redraw(cx);}

@@ -1,11 +1,13 @@
 //! Owner's private Matrix DM. Unknown creation is recovered by its stable alias,
-//! never by repeating createRoom. No messages or provider calls occur here.
+//! or an exact, unique joined Room, never by repeating createRoom.
+//! No messages or provider calls occur here.
 use super::*;
 use crate::console::server_login::matrix_creations::MatrixOperation;
 use std::io::Read;
 use tokio::sync::Mutex;
 static COMMANDS: Mutex<()> = Mutex::const_new(());
 const MARKER: &str = "im.hagency.agent.owner_direct";
+mod recovery;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Record {
@@ -378,6 +380,21 @@ async fn advance(
                 record.phase = "created".into();
                 save(path, record)?;
             }
+            Err(e) if e.status == 404 && record.phase == "creating" => {
+                // createRoom can persist state before its alias or response.
+                // Recover the same Room only after a complete, fenced scan;
+                // never repeat an uncertain POST or guess from its name.
+                let room = tokio::time::timeout(
+                    std::time::Duration::from_secs(45),
+                    recovery::joined_room(depot, expected, cookie, record),
+                )
+                .await
+                .map_err(|_| error(503, "owner_direct_recovery_unavailable"))??
+                .ok_or(e)?;
+                record.room = Some(room);
+                record.phase = "created".into();
+                save(path, record)?;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -453,7 +470,7 @@ async fn advance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn state() -> Value {
+    pub(super) fn state() -> Value {
         json!([
             {"type":"m.room.create","state_key":"","sender":"@owner:test","content":{}},
             {"type":MARKER,"state_key":"","sender":"@owner:test","content":{"version":1,"agentId":"a","ownerMxid":"@owner:test"}},

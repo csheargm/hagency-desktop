@@ -42,7 +42,11 @@ fn setup_replaces_the_dashboard_and_only_offers_what_applies() {
     let page = state.present(clock()).setup_page.unwrap();
     assert!(page.busy && page.can_cancel && page.start.is_none());
     assert_eq!(page.progress.unwrap().text, "Complete sign-in in your browser…");
-    for progress in [SetupProgress::Preparing, SetupProgress::Cancelling, SetupProgress::Enabling, SetupProgress::Confirming] {
+    state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress: SetupProgress::Registering }));
+    let page = state.present(clock()).setup_page.unwrap();
+    assert!(page.busy && !page.can_cancel && page.start.is_none());
+    assert_eq!(page.progress.unwrap().text, "Signed in. Registering this Mac’s executor…");
+    for progress in [SetupProgress::Preparing, SetupProgress::Registering, SetupProgress::Cancelling, SetupProgress::Enabling, SetupProgress::Confirming] {
         state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress }));
         let page = state.present(clock()).setup_page.unwrap();
         assert!(page.busy && !page.can_cancel && page.start.is_none());

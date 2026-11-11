@@ -273,8 +273,8 @@ impl Widget for RoomsListHeader {
                             text: text.to_string(),
                             widget_rect: view.area().rect(cx),
                             options: CalloutTooltipOptions {
-                                text_color,
-                                bg_color,
+                                text_color: Some(text_color),
+                                bg_color: Some(bg_color),
                                 position: TooltipPosition::Left,
                                 ..Default::default()
                             },

@@ -72,10 +72,7 @@ pub(super) async fn save_named(
 
 #[cfg(target_os = "macos")]
 fn choose_path(filename: &str) -> Result<Option<std::path::PathBuf>, String> {
-    use makepad_widgets::makepad_platform::os::{
-        apple::apple_sys::*,
-        apple_util::{str_to_nsstring, nsstring_to_string},
-    };
+    use makepad_apple_sys::*;
     unsafe {
         let panel: ObjcId = msg_send![class!(NSSavePanel), savePanel];
         if panel == nil {
@@ -112,7 +109,7 @@ fn choose_path(filename: &str) -> Result<Option<std::path::PathBuf>, String> {
 
 #[cfg(target_os = "macos")]
 pub(super) fn on_main_run_loop(choose: impl FnOnce() + Send + 'static) {
-    use makepad_widgets::makepad_platform::{makepad_objc_sys::objc_block, os::apple::apple_sys::*};
+    use makepad_apple_sys::*;
     // Match Makepad's native document dialogs: NSOperationQueue schedules the
     // modal run loop outside the dispatch callback processing a UI event.
     let callback = std::sync::Mutex::new(Some(choose));

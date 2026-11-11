@@ -300,19 +300,19 @@ impl Widget for SendStatusIndicator {
             Hit::FingerHoverIn(..) | Hit::FingerLongPress(_) => {
                 let mut options = CalloutTooltipOptions {
                     position: TooltipPosition::Left,
-                    bg_color: self.appearance.surface,
-                    text_color: self.appearance.ink,
+                    bg_color: Some(self.appearance.surface),
+                    text_color: Some(self.appearance.ink),
                     ..Default::default()
                 };
                 match self.info.as_ref().map(|d| d.icon) {
                     Some(SendStatusIcon::Sent) => {
-                        options.bg_color = self.appearance.role("color.status.success.background");
+                        options.bg_color = Some(self.appearance.role("color.status.success.background"));
                         options.text_color =
-                            self.appearance.role("color.status.success.foreground");
+                            Some(self.appearance.role("color.status.success.foreground"));
                     }
                     Some(SendStatusIcon::Retry | SendStatusIcon::Failed) => {
-                        options.bg_color = self.appearance.role("color.status.danger.background");
-                        options.text_color = self.appearance.role("color.status.danger.foreground");
+                        options.bg_color = Some(self.appearance.role("color.status.danger.background"));
+                        options.text_color = Some(self.appearance.role("color.status.danger.foreground"));
                     }
                     _ => {}
                 }
@@ -587,6 +587,7 @@ pub fn stringify_send_error(error: &matrix_sdk::Error) -> &'static str {
                 QueueWedgeError::CrossVerificationRequired => OWN_VERIFICATION_TEXT,
                 QueueWedgeError::MissingMediaContent => "the attached file is missing.",
                 QueueWedgeError::InvalidMimeType { .. } => "that file type isn't supported.",
+                QueueWedgeError::ExpiredAccessToken => "your session has expired.",
                 QueueWedgeError::GenericApiError { .. } => SERVER_REJECTED_TEXT,
             },
             matrix_sdk::Error::Http(http) => match &**http {
@@ -618,3 +619,17 @@ const SERVER_PROBLEM_TEXT: &str = "the server encountered a problem.";
 const SERVER_SLOW_TEXT: &str = "the server took too long.";
 /// Shown when we can't tell what went wrong, and when there's no error to describe.
 pub const UNKNOWN_ERROR_TEXT: &str = "something went wrong.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_send_queue_token_prompts_for_session_recovery() {
+        let error = matrix_sdk::Error::SendQueueWedgeError(
+            Box::new(QueueWedgeError::ExpiredAccessToken),
+        );
+        assert_eq!(stringify_send_error(&error), "your session has expired.");
+        assert!(is_send_error_retryable(&error));
+    }
+}

@@ -321,6 +321,42 @@ impl AppMain for App {
                     rinx::shared::popup_list::PopupKind::Info,
                     Some(180.),
                 ),
+                "theme:popup-static" => rinx::shared::popup_list::enqueue_popup_notification(
+                    "Persistent theme notification",
+                    rinx::shared::popup_list::PopupKind::Info,
+                    None,
+                ),
+                #[cfg(feature = "palpo-instrument")]
+                "theme:popup-first" => rinx::shared::popup_list::enqueue_popup_notification(
+                    "First timed notification",
+                    rinx::shared::popup_list::PopupKind::Info,
+                    Some(8.),
+                ),
+                #[cfg(feature = "palpo-instrument")]
+                "theme:popup-second" => rinx::shared::popup_list::enqueue_popup_notification(
+                    "Second timed notification",
+                    rinx::shared::popup_list::PopupKind::Warning,
+                    Some(16.),
+                ),
+                #[cfg(feature = "palpo-instrument")]
+                "theme:clear-popups" => cx.action(
+                    rinx::logout::logout_confirm_modal::LogoutAction::ClearAppState {
+                        on_clear_appstate: std::sync::Arc::new(tokio::sync::Notify::new()),
+                    },
+                ),
+                #[cfg(feature = "palpo-instrument")]
+                "perf:start" => {
+                    cx.perf_monitor = Default::default();
+                    cx.perf_monitor.set_enabled(true);
+                }
+                #[cfg(feature = "palpo-instrument")]
+                "perf:stop" => {
+                    let frames = cx.perf_monitor.frames_painted();
+                    cx.perf_monitor.set_enabled(false);
+                    if let Some(path) = std::env::var_os("HAGENCY_PERF_OUTPUT") {
+                        std::fs::write(path, json!({"frames_painted": frames}).to_string()).unwrap();
+                    }
+                }
                 _ => {}
             }
         }
