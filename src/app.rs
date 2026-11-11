@@ -1962,6 +1962,7 @@ impl App {
                 crate::sliding_sync::set_sync_service_desired_running(true, "app foreground");
             }
             Event::Shutdown => {
+                crate::attachment_transport::shutdown();
                 #[cfg(not(any(target_os = "ios", target_os = "android")))]
                 if !crate::persistence::credential_state::shutdown() { makepad_widgets::warning!("Credential worker shutdown remains unconfirmed"); }
                 robius_speech::cancel_all();

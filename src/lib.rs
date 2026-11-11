@@ -171,3 +171,9 @@ pub fn cache_dir() -> &'static Path {
 
 #[cfg(test)]
 mod upstream_port_tests;
+
+/// File-backed, integrity-checked attachment results.
+pub mod attachment_transport;
+mod transfer_budget;
+mod media_cache_reader;
+mod media_transport;
