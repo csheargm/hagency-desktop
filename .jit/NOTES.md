@@ -8,9 +8,9 @@ It runs two ways from the same sources:
   0.1 s instead of a 10–37 s cargo rebuild and restart;
 - as a plain `cargo build`, which is what CI and release packaging use.
 
-STATUS 11 Nov 2026: runs signed in, `html_preview` included. Under the JIT an account with many
-rooms gets an empty room list (a JIT compiler fault, see "Gaps against the fork build"); the
-cargo build is not affected. The JIT run is checked on an Apple
+STATUS 11 Nov 2026: runs signed in, `html_preview` included. Since the pin of makepad#142 the
+JIT run lists the same rooms as the cargo build; before it, an account with many rooms got an
+empty room list under the JIT (a JIT compiler fault). The JIT run is checked on an Apple
 silicon Mac, where its log lists one body it cannot compile (in typewit, never reached), and it
 starts on Linux x86_64; the cargo build has also been run on Linux x86_64 and arm64, Intel macOS
 and Windows (see "Platforms the build was run on").
@@ -99,18 +99,24 @@ on:
 - `$relax selftest rinx --allow-c --features html_preview`: 26 crates, 1,347,688 fns, 0 failed
   builds, 0 errors (peak resident memory about 20 GB).
 
-With the pin of OctoSense-org/makepad#141 on `main` at fa58b7f8 plus the idle and font changes
-(11 Nov 2026), Apple silicon Mac, `html_preview` on:
+With the pin of OctoSense-org/makepad#142 (makepad#141 plus a JIT compiler fix) on `main` at
+fa58b7f8 plus the idle and font changes (11 Nov 2026), Apple silicon Mac, `html_preview` on:
 
 - `cargo test --locked --features agent_chat,octosense-module,html_preview --lib`: 872 passed,
-  0 failed, 2 ignored.
+  0 failed, 2 ignored. Run on the pin of makepad#141; #142 changes only the JIT compiler, which
+  a cargo build does not compile.
 - `$relax test rinx --lib --allow-c --features agent_chat,html_preview -- --test-threads=1`:
   870 passed, 0 failed, 2 ignored (cold cache, peak resident memory 24 GB).
+- `$relax selftest rinx --allow-c --features html_preview`: 26 crates, 1,348,283 fns, 0 failed
+  builds, 0 errors.
 - `python3 tools/check-hagency-regressions.py --output <dir>`: 130 checks passed, exit 0.
-- `makepad run` with a hidden window on a stored signed-in session: no compile error with an
-  error code, the window goes idle (`makepad-remote app <pid> settled` answers true), and the
-  room list does not fill (see "Gaps against the fork build"). The cargo build of the same
-  sources on the same stored session lists all 36 rooms and goes idle.
+- `makepad run` with a hidden window on a stored signed-in session, three runs. In all three:
+  no compile error with an error code, and the room list fills with the same 34 joined rooms
+  the cargo build lists from that session. In the two scripted runs the 1,000-message room
+  opens and scrolls, and switching rooms and typing in the composer answer; the one with a warm
+  cache ends 2.4 s after a quit through the remote. In the third the window goes idle
+  (`makepad-remote app <pid> settled` answers true), and its log has the compile-thread panic
+  listed under "Gaps against the fork build".
 
 Memory of the test run. A dozen tests (in `matrix_links`, `matrix_context`,
 `verification_modal`, `settings::crypto_settings` and `profile::user_verification_cache`)
@@ -148,7 +154,7 @@ markdown message sent from the composer, quit, and session restore on the next s
 ## Idle CPU and memory against the build before the port
 
 Measured on 10 Nov 2026 on an Apple silicon Mac: release cargo builds, hidden window, the same
-stored signed-in session (33 rooms, one of them with 1,000 messages) on a local homeserver, the
+stored signed-in session (34 rooms, one of them with 1,000 messages) on a local homeserver, the
 same scripted steps. "Before the port" is commit 0d8a5923 on the fork makepad (two runs);
 "`main`" is the content of ecc10898 (one run); the last column is that plus the changes below
 (two runs).
@@ -303,6 +309,20 @@ both use them):
   ask for a redraw only when the value changes (see "Idle CPU and memory against the build
   before the port").
 
+In the pin since OctoSense-org/makepad#142, in the JIT compiler (a cargo build does not use it):
+
+- In an `async` body, a call result that a later call borrows stays alive until its statement
+  ends, or until the scope of the local that holds it ends, as in rustc. Before, a result
+  without a destructor was not kept across an `.await` its borrower lived through
+  (`f(&make()).await`, `let t = make(); f(&t).await`, `for x in make().iter() { g().await }`),
+  and the borrower read freed stack once it resumed. deadpool's `Pool::get` is written that way
+  (`self.timeout_get(&self.timeouts()).await`): when the Matrix SDK's SQLite stores waited for
+  a pooled connection, deadpool read a timeout that was never set, a tokio worker panicked in
+  `Instant::checked_add` ("invalid timespec nanoseconds"), and the signed-in room list stayed
+  empty (3 of the test account's 34 rooms arrived, the sidebar read "No joined or invited rooms
+  found."). The fix adds 0.10% to the summed state size of the app's 10,027 futures
+  (215,067,224 to 215,283,384 bytes).
+
 ## What the port changed in the app
 
 Marked `JIT PORT` in the source.
@@ -341,22 +361,16 @@ Marked `JIT PORT` in the source.
   expansion further down the module and brings it into scope with `use`; rustc resolves the
   earlier call through the `use`, and the JIT's parser expands in source order. The body traps
   if called. No run or test of the app reaches it.
-- Under the JIT the signed-in room list does not fill when the account has many rooms. The test
-  account has 36: three arrive, the sidebar reads "No joined or invited rooms found.", and a
-  room that was open when the session was stored still shows its timeline. The cargo build of
-  the same sources lists all 36 from the same stored session. Cause, found 11 Nov 2026: in
-  `f(&make()).await` the JIT does not keep the temporary `make()` returned alive across a
-  suspension of the future, so the callee reads freed stack through the reference once it
-  resumes. deadpool's `Pool::get` is written that way (`self.timeout_get(&self.timeouts())
-  .await`): when the Matrix SDK's SQLite stores wait for a pooled connection, deadpool reads a
-  timeout that was never set, and a tokio worker panics in `Instant::checked_add` ("invalid
-  timespec nanoseconds"). A 100-line test without dependencies shows it (rustc passes, the JIT
-  fails); it is a JIT compiler fault and not fixed in this pin. A cargo build is not affected.
-  Any other `.await` on a call that borrows a temporary is exposed in the same way under the
-  JIT. On 10 Nov, with the pin of makepad#140, the same run also logged a JIT compile-thread
-  panic, "failed to normalize body for codegen: NoSolution" for
-  `tokio::runtime::task::harness::poll_future` on the future of `account_session::spawn`; the
-  run of 11 Nov did not log it, and it is not diagnosed.
+- A panic on a JIT compile thread that is not diagnosed: "failed to normalize body for
+  codegen: NoSolution". It names a tokio task harness function for one of the app's futures:
+  `poll_future` on the future of `account_session::spawn` (10 Nov with the pin of makepad#140,
+  and one of three signed-in runs on 11 Nov with the pin of makepad#142), and in one other run
+  of 11 Nov `cancel_task` on the Matrix SDK's backwards pagination future when a room opened,
+  then the drop glue of an event handler closure in `hagency::encrypted_approvals::Inbox::drop`
+  at quit. The app kept running in each of those runs. In the `cancel_task` run the runner
+  parked the tokio worker that reached the body ("panic parked on thread tokio-rt-worker ...
+  for 600 s"), and the process did not exit on quit. Other runs of the same build did not log
+  the panic. A cargo build is not affected.
 - Mobile packaging: `.github/actions/setup-cargo-makepad` reads a makepad git revision from
   `Cargo.lock`, and on this line makepad is a path checkout, so the iOS and Android jobs need
   their own port.
