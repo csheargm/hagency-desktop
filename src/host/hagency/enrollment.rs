@@ -32,11 +32,20 @@ impl ResourceConsent {
         rinx_miniapp_core::bounded_reply(result?)
     }
 }
+/// Both languages are here, not in the catalog files, so the line reads the
+/// same whichever source tree the app is started from.
+fn claude_settings_text(language: crate::i18n::Language) -> &'static str {
+    if language == crate::i18n::Language::Chinese {
+        "本机设置中的 API 密钥或端点令牌"
+    } else {
+        "API key or endpoint token in this computer’s settings"
+    }
+}
 fn enrollment_details(input: &::hagency::native_owner::NamespaceEnrollment) -> String {
     // The owner's own Claude Code settings on this computer, not a sign-in
     // folder: the pool runs on the API key or endpoint token found there.
     let account = if input.account.account_id == "account_claude_code" {
-        format!("Claude Code · {}", crate::i18n::tr("API key or endpoint token in this computer’s settings"))
+        format!("Claude Code · {}", claude_settings_text(crate::i18n::language()))
     } else {
         format!("Codex · {}", input.account.account_id)
     };
@@ -70,6 +79,10 @@ mod tests {
         assert!(details.starts_with("Claude Code · "), "{details}");
         assert!(!details.contains("account_claude_code") && !details.contains("Codex"), "{details}");
         assert!(details.contains("open-model-a · medium"), "{details}");
+        // The Chinese UI gets a Chinese line, not the English one.
+        let chinese = claude_settings_text(crate::i18n::Language::Chinese);
+        assert!(chinese.contains("API 密钥") && !chinese.contains("settings"), "{chinese}");
+        assert!(details.contains(claude_settings_text(crate::i18n::Language::English)), "{details}");
     }
     #[test]
     fn enrollment_input_excludes_identity_paths_and_approval_claims(){
