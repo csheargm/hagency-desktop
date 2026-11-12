@@ -24,6 +24,7 @@ pub mod popup_list;
 pub mod progress_bar;
 pub mod room_filter_input_bar;
 pub mod room_input_popup_menu;
+pub mod scroll_blocks;
 pub mod slash_commands;
 pub mod styles;
 pub mod text_or_image;

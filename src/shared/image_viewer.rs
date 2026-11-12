@@ -456,8 +456,16 @@ impl Widget for ImageViewer {
             cx.action(ImageViewerAction::Hide);
             return;
         }
-        // Block all scrolling, as the image viewer modal is full-screen.
-        cx.block_scrolling_except_within(Area::Empty);
+        // Block all scrolling, as the image viewer modal is full-screen. The modal releases
+        // only the block it holds for its content, so this one is released here when the
+        // modal says it is closing; left in place it would stop every scroll in the app.
+        let closing = matches!(event, Event::Actions(actions)
+            if actions.iter().any(|action| matches!(action.downcast_ref(), Some(ModalAction::Dismissed))));
+        if closing {
+            cx.unblock_scrolling_within_area(Area::Empty);
+        } else {
+            cx.block_scrolling_except_within(Area::Empty);
+        }
         self.view.handle_event(cx, event, scope);
         self.match_event(cx, event);
 

@@ -1487,6 +1487,8 @@ impl AppMain for App {
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         crate::memory_budget::collect_images(cx);
+        // Before anything is asked whether it may scroll.
+        if matches!(event, Event::Scroll(_)) { crate::shared::scroll_blocks::release_undrawn(cx); }
         if matches!(event, Event::Timer(_)) { crate::sliding_sync::collect_unclaimed_timelines(); }
         if matches!(event, Event::Signal) {
             crate::profile::user_verification_cache::process_user_verification_updates(cx);
