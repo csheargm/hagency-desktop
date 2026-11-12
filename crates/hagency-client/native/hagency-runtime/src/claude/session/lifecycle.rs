@@ -19,13 +19,39 @@ pub(super) struct Completion {
     answer_joined: bool,
     pub(super) steers: super::steer::State,
     task_runs: BTreeMap<String, String>,
+    /// Runs the native CLI listed in its live background set or flagged as
+    /// backgrounded. Only such a run gets a notification turn once it ends.
+    background_runs: BTreeSet<String>,
     notified_runs: BTreeSet<String>,
     consumed_runs: BTreeSet<String>,
     background_response: bool,
     stop_result: Option<String>,
     answer_stop: Option<String>,
+    /// The open turn was logged once; see `report_open`.
+    reported_open: bool,
 }
 impl Completion {
+    /// A turn that has its result and native idle and still stays open waits
+    /// for background work. Say once what it waits for: a turn that waits
+    /// for something that never comes is otherwise silent.
+    fn report_open(&mut self) {
+        if !self.enabled || !self.result || !self.idle || self.reported_open || self.complete() {
+            return;
+        }
+        self.reported_open = true;
+        tracing::info!(
+            code = "claude_turn_open_after_result",
+            live_background_tasks = self.background.len(),
+            awaited_notification_turns = self
+                .notified_runs
+                .iter()
+                .filter(|run| self.background_runs.contains(*run))
+                .count(),
+            notification_turn_running = self.background_response,
+            steers_settled = self.steers.settled(),
+            "Claude turn has its result and is idle; it stays open for background work"
+        );
+    }
     fn remember_run(&mut self, task: &Value) -> Result<(), Error> {
         let Some(run) = task.get("run_id") else {
             return Ok(());
@@ -49,6 +75,14 @@ impl Completion {
             self.task_runs.insert(run.into(), task.into());
         }
         Ok(())
+    }
+    /// Call after `remember_run`: an unknown or mismatched run is not marked.
+    fn mark_background(&mut self, task: &Value) {
+        if let Some(run) = task["run_id"].as_str()
+            && self.task_runs.get(run).map(String::as_str) == task["task_id"].as_str()
+        {
+            self.background_runs.insert(run.to_owned());
+        }
     }
     pub(super) fn begin_background_response(&mut self, payload: &Value) -> Result<(), Error> {
         if !self.enabled
@@ -144,6 +178,7 @@ impl Completion {
                         }
                         if task["ambient"] != true {
                             self.remember_run(task)?;
+                            self.mark_background(task);
                         }
                     }
                     if background != self.background && self.result {
@@ -158,6 +193,14 @@ impl Completion {
                 {
                     if payload["subtype"] == "task_started" {
                         self.remember_run(payload)?;
+                        if payload["is_backgrounded"] == true {
+                            self.mark_background(payload);
+                        }
+                    } else if payload["subtype"] == "task_updated" {
+                        // A foreground command can be moved to the background.
+                        if payload["patch"]["is_backgrounded"] == true {
+                            self.mark_background(payload);
+                        }
                     } else if payload["subtype"] == "task_notification"
                         && let Some(run) = payload.get("run_id")
                     {
@@ -241,6 +284,7 @@ impl Completion {
             }
             _ => {}
         }
+        self.report_open();
         Ok(())
     }
     pub(super) fn complete(&self) -> bool {
@@ -249,7 +293,14 @@ impl Completion {
             && self.idle
             && self.background.is_empty()
             && !self.background_response
-            && self.notified_runs.is_empty()
+            // Claude Code reports a foreground command that runs for a few
+            // seconds as a task too, and its end as a notification. Its
+            // output went back as the tool result, so no notification turn
+            // follows and the turn must not wait for one.
+            && !self
+                .notified_runs
+                .iter()
+                .any(|run| self.background_runs.contains(run))
             && self.steers.settled()
     }
     /// `request` is the stop that was in flight or accepted when this result
