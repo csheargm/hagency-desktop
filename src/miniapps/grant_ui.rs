@@ -2282,8 +2282,28 @@ impl MiniAppsPanel {
             SignalToUI::set_ui_signal();
         });
     }
+    /// A dropdown that is open holds the window's pointer lock and gives it
+    /// back when it closes. Once its sheet is hidden it receives no event, so
+    /// it never closes: every later click in the window went nowhere until
+    /// the app was restarted (Escape with the account list open did this).
+    /// Close them whenever a sheet goes away; closing a closed one is a no-op.
+    pub(super) fn close_sheet_dropdowns(&mut self, cx: &mut Cx) {
+        let paths: [&[LiveId]; 3] = [
+            ids!(grant_confirmation.scroll.people.list.add.directory.candidates),
+            ids!(grant_confirmation.scroll.calendar.zones),
+            ids!(project_room_picker.rooms),
+        ];
+        for path in paths {
+            if let Some(mut dropdown) = self.view.drop_down(cx, path).borrow_mut() {
+                dropdown.set_closed(cx);
+            }
+        }
+    }
     pub(super) fn present_grant_confirmation(&mut self, cx: &mut Cx) {
         let visible = self.grant_confirmation.is_some();
+        if !visible {
+            self.close_sheet_dropdowns(cx);
+        }
         self.view
             .view(cx, ids!(grant_confirmation))
             .set_visible(cx, visible);

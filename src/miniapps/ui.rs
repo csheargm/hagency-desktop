@@ -902,6 +902,7 @@ impl MiniAppsPanel {
         self.adoption_confirmation = None;
         self.view.view(cx, ids!(adoption_confirmation)).set_visible(cx, false);
         self.grant_confirmation = None;
+        self.close_sheet_dropdowns(cx);
         self.view.view(cx, ids!(grant_confirmation)).set_visible(cx, false);
         self.provider_confirmation = None;
         self.view.view(cx, ids!(provider_confirmation)).set_visible(cx, false);
@@ -1520,6 +1521,7 @@ impl MiniAppsPanel {
         } else { json!({"cancelled":true}) };
         self.project_room_reply = None;
         self.project_rooms.clear();
+        self.close_sheet_dropdowns(cx);
         self.view.view(cx, ids!(project_room_picker)).set_visible(cx, false);
         self.view.view(cx, ids!(app_content)).set_visible(cx, true);
         splash_host_respond(cx, heap, id, Ok(&value.to_string()));

@@ -118,6 +118,11 @@ pub(crate) fn daemon_arguments(exe: &Path, home_dir: &Path, installation: Option
     args
 }
 
+// The daemon answers people who are waiting in a room and renews a 30 second
+// lease for every run. As a `Background` job macOS scheduled it, and the
+// coding tools it starts, below all other work on the computer: a busy
+// computer left it without processor time and running Agents were ended as
+// expired. `Standard` applies no such limit.
 fn daemon_launchd_plist_with_installation(exe: &Path, home_dir: &Path, path: &str, log: &Path, installation: Option<&Path>) -> String {
     let args = daemon_arguments(exe, home_dir, installation);
     let args: String = args
@@ -147,7 +152,7 @@ fn daemon_launchd_plist_with_installation(exe: &Path, home_dir: &Path, path: &st
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <key>SoftResourceLimits</key>
   <dict>
     <key>NumberOfFiles</key>
@@ -309,6 +314,9 @@ mod tests {
         assert!(plist.contains("<string>daemon</string>\n    <string>run</string>"));
         assert!(plist.contains("<string>/Users/a/Library/Application Support/Hagency/owner-daemon</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key>"));
+        // A Background job is starved on a busy computer and its runs expire.
+        assert!(plist.contains("<key>ProcessType</key>\n  <string>Standard</string>"));
+        assert!(!plist.contains("Background"));
         // launchd's default of 256 open files ran the daemon out within the hour.
         assert!(plist.contains("<key>NumberOfFiles</key>\n    <integer>10240</integer>"));
         let unit = daemon_systemd_unit(

@@ -31,6 +31,8 @@ mod answer_kept;
 mod future_frames;
 #[path = "runtime/resume_kept.rs"]
 mod resume_kept;
+#[path = "runtime/owner_command.rs"]
+mod owner_command;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -41,6 +43,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(kind: Kind, mode: &str, policy: ToolPolicy) -> Self {
+        Self::called_by(kind, mode, policy, "@member:test")
+    }
+    fn called_by(kind: Kind, mode: &str, policy: ToolPolicy, requester: &str) -> Self {
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let directory = root.path().canonicalize().unwrap();
         for name in ["home", "provider", "work", "outside"] {
@@ -83,7 +88,7 @@ impl Fixture {
             agent: "agent".into(),
             binding: "binding".into(),
             room: "!room:test".into(),
-            requester: "@member:test".into(),
+            requester: requester.into(),
             thread: "thread".into(),
         };
         let mut ledger = Ledger::open(directory.join("ledger"), "@owner:test").unwrap();

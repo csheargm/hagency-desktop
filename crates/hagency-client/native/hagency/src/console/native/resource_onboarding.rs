@@ -23,6 +23,10 @@ impl ManagementRuntime {
     }
 }
 pub(super) fn projection(runtime: &str, status: &Value) -> Value {
+    projection_for(runtime, None, status)
+}
+/// `provider` is the resource provider the models would be enrolled under.
+pub(super) fn projection_for(runtime: &str, provider: Option<&str>, status: &Value) -> Value {
     let models = status["models"].as_array().map(|rows| rows.iter().take(100).map(|row| {
         let reasoning = row["supportedReasoningEfforts"].as_array().map(|efforts| efforts.iter()
             .take(16).filter_map(|v| v["reasoningEffort"].as_str().map(str::to_owned))
@@ -32,7 +36,7 @@ pub(super) fn projection(runtime: &str, status: &Value) -> Value {
         let shared_reasoning: Vec<_> = candidates.into_iter().filter(|effort| {
             let profile = hagency_core::qualification::ModelProfile {
                 framework: runtime.into(), model: row["model"].as_str().unwrap_or("").into(),
-                provider: None, reasoning: effort.clone(),
+                provider: provider.map(str::to_owned), reasoning: effort.clone(),
             };
             hagency_core::qualification::roles().any(|role| hagency_core::qualification::qualifies(&profile, role, None))
         }).collect();
@@ -73,6 +77,13 @@ impl NativeManagement {
             session
                 .authorize(context, permission)
                 .map_err(|_| failure(403, "management_permission_required"))?;
+            if resource.framework == "claude" {
+                // No sign-in folder: the owner's connected configuration.
+                let proof = self.claude_resource_proof(context, session).await?;
+                return self
+                    .verify_canonical_connection(context, resource, resume, proof)
+                    .await;
+            }
             if resource.framework != "codex" {
                 return Err(failure(409, "provider_identity_unavailable"));
             }

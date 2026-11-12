@@ -17,6 +17,8 @@ impl Host {
 }
 impl ResourceConsent {
     pub fn account(&self)->&str {&self.lease.identity().account}
+    /// The owner's own Claude Code on this computer, not a Codex account folder.
+    pub fn claude(&self)->bool {self.input.account.account_id == CLAUDE_ACCOUNT}
     pub fn details(&self)->String {
         enrollment_details(&self.input)
     }
@@ -32,8 +34,34 @@ impl ResourceConsent {
         rinx_miniapp_core::bounded_reply(result?)
     }
 }
+const CLAUDE_ACCOUNT: &str = "account_claude_code";
+/// What the review says it will do for a Claude Code resource. The Codex
+/// wording ends "Credentials stay with Codex", which is not who keeps this one.
+pub(crate) fn claude_review_text(language: crate::i18n::Language) -> &'static str {
+    if language == crate::i18n::Language::Chinese {
+        "Hagency 将再次验证本机的 Claude Code 登录与模型，然后在此设备保存未发布的资源。登录凭据由 Claude Code 保管。"
+    } else {
+        "Hagency will check this computer’s Claude Code sign-in and the model again, then save an unpublished resource on this device. The sign-in stays with Claude Code."
+    }
+}
+/// Both languages are here, not in the catalog files, so the line reads the
+/// same whichever source tree the app is started from.
+fn claude_settings_text(language: crate::i18n::Language) -> &'static str {
+    if language == crate::i18n::Language::Chinese {
+        "本机的 Claude Code 登录"
+    } else {
+        "this computer’s own sign-in"
+    }
+}
 fn enrollment_details(input: &::hagency::native_owner::NamespaceEnrollment) -> String {
-    format!("Codex · {}\n{} · {}\n{}: {}", input.account.account_id, input.model,
+    // The owner's own Claude Code on this computer, not a sign-in folder:
+    // the pool runs on whichever sign-in that configuration has.
+    let account = if input.account.account_id == CLAUDE_ACCOUNT {
+        format!("Claude Code · {}", claude_settings_text(crate::i18n::language()))
+    } else {
+        format!("Codex · {}", input.account.account_id)
+    };
+    format!("{account}\n{} · {}\n{}: {}", input.model,
         input.reasoning.as_deref().unwrap_or("—"), crate::i18n::tr("Declared monthly token limit"),
         crate::utils::format_token_count(input.monthly_tokens))
 }
@@ -51,6 +79,28 @@ mod tests {
         assert!(details.contains("0.123456 M"), "{details}");
         assert!(!details.contains(": 123456"));
         assert_eq!(input.monthly_tokens, 123456);
+    }
+    #[test]
+    fn enrollment_review_names_the_claude_code_settings_not_an_account_folder() {
+        let input: ::hagency::native_owner::NamespaceEnrollment = parse(json!({
+            "commandId":"original", "account":{"accountId":"account_claude_code", "expectedRevision":"a".repeat(64)},
+            "model":"open-model-a", "reasoning":"medium", "monthlyTokens":1000000
+        })).unwrap();
+        input.validate().unwrap();
+        let details = enrollment_details(&input);
+        assert!(details.starts_with("Claude Code · "), "{details}");
+        assert!(!details.contains("account_claude_code") && !details.contains("Codex"), "{details}");
+        assert!(details.contains("open-model-a · medium"), "{details}");
+        // The Chinese UI gets a Chinese line, not the English one.
+        let chinese = claude_settings_text(crate::i18n::Language::Chinese);
+        assert!(chinese.contains("本机") && !chinese.contains("sign-in"), "{chinese}");
+        // Neither language of the sheet's body says Codex keeps this sign-in.
+        for language in [crate::i18n::Language::Chinese, crate::i18n::Language::English] {
+            let body = claude_review_text(language);
+            assert!(body.contains("Claude Code") && !body.contains("Codex"), "{body}");
+        }
+        assert!(claude_review_text(crate::i18n::Language::Chinese).contains("保管"));
+        assert!(details.contains(claude_settings_text(crate::i18n::Language::English)), "{details}");
     }
     #[test]
     fn enrollment_input_excludes_identity_paths_and_approval_claims(){

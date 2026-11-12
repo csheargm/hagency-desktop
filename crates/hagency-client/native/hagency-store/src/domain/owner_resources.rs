@@ -195,7 +195,7 @@ impl VerifiedProviderAccount {
     }
     pub fn from_claude_binding(binding: hagency_runtime::claude::account::AccountBinding) -> Result<Self, Error> {
         binding.check().map_err(|_| Error::LocalAuthority)?;
-        let mut proof = Self::new("claude", hagency_runtime::claude::account::PROVIDER, binding.subject(), binding.expires())?;
+        let mut proof = Self::new("claude", binding.provider(), binding.subject(), binding.expires())?;
         if proof.digest != binding.provider_digest() { return Err(Error::LocalAuthority); }
         proof.claude = Some(binding);
         Ok(proof)
@@ -679,23 +679,51 @@ impl DomainRepository {
                 if let Some(selection)=namespace { definition["namespace"]=selection.key(); }
                 let preset = canonical::digest(&definition)?;
                 let preset_id=if namespace.is_some() {format!("owner_ns_{preset}")} else {format!("owner_{preset}")};
-                let r: Resource = serde_json::from_value(
-                    json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}}),
-                )?;
-                r.validate()?;
-                let exists: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
-                    [r.id()],
-                    |r| r.get(0),
-                )?;
-                if !exists {
-                    let r = prepare_resource_write(&tx, &r, Some(false), true)?;
-                    write_resource_configuration(&tx, &r, true)?;
-                    created_resource = true;
-                } else if canonical::digest(&serde_json::to_value(read_resource(&tx, &r.id())?)?)?
-                    != canonical::digest(&serde_json::to_value(&r)?)?
-                {
-                    return Err(Error::Conflict);
+                let configured = |preset_id: String| -> Result<Resource, Error> {
+                    let mut configuration = json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}});
+                    // What the owner's own endpoint serves under this name is the
+                    // owner's word; the capacity table rates no row of it.
+                    if proof.claude.as_ref().is_some_and(|binding| binding.own_endpoint()) {
+                        configuration["provider"] = json!(hagency_core::qualification::OWNER_ENDPOINT);
+                    }
+                    let r: Resource = serde_json::from_value(configuration)?;
+                    r.validate()?;
+                    Ok(r)
+                };
+                let taken = |tx: &Connection, r: &Resource| -> Result<Option<bool>, Error> {
+                    let exists: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
+                        [r.id()],
+                        |r| r.get(0),
+                    )?;
+                    if !exists {
+                        return Ok(None);
+                    }
+                    Ok(Some(
+                        canonical::digest(&serde_json::to_value(read_resource(tx, &r.id())?)?)?
+                            == canonical::digest(&serde_json::to_value(r)?)?,
+                    ))
+                };
+                let mut r = configured(preset_id)?;
+                let mut same = taken(&tx, &r)?;
+                // The owner's Claude Code configuration has no sign-in folder
+                // to tell its pools apart: the account, model and reasoning
+                // name the first pool only. One that differs from it (another
+                // maximum, or the first was published, changed or deleted) is
+                // a pool of its own, named by the command that asks for it.
+                if same == Some(false) && namespace.is_none() && proof.claude.is_some() {
+                    definition["command"] = json!(consent.command);
+                    r = configured(format!("owner_{}", canonical::digest(&definition)?))?;
+                    same = taken(&tx, &r)?;
+                }
+                match same {
+                    None => {
+                        let r = prepare_resource_write(&tx, &r, Some(false), true)?;
+                        write_resource_configuration(&tx, &r, true)?;
+                        created_resource = true;
+                    }
+                    Some(true) => {}
+                    Some(false) => return Err(Error::Conflict),
                 }
                 if let Some(selection)=namespace {
                     namespace::bind(&tx, &r.id(), selection)?;

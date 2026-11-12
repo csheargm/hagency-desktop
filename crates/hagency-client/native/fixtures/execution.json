@@ -654,6 +654,16 @@
       "input": {
         "yolo": true
       },
+      "expected": {
+        "yolo": true
+      }
+    },
+    {
+      "name": "policy",
+      "framework": "octos",
+      "input": {
+        "yolo": true
+      },
       "expected": null
     },
     {
@@ -1323,6 +1333,16 @@
     {
       "name": "policy",
       "framework": "claude",
+      "input": {
+        "yolo": true
+      },
+      "expected": {
+        "yolo": true
+      }
+    },
+    {
+      "name": "policy",
+      "framework": "octos",
       "input": {
         "yolo": true
       },

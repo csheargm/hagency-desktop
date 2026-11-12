@@ -5,6 +5,9 @@ use serde_json::{Value, json};
 impl NativeManagement {
     pub async fn account_models(&self, input: AccountModelQuery) -> Result<Value, NativeError> {
         input.validate().map_err(store_error)?;
+        if input.account_id == super::claude_account::ACCOUNT {
+            return self.claude_account_models(input).await;
+        }
         // Bound concurrent provider children per owner; check authority after waiting.
         let _guard = self.owner.0.calls.lock().await;
         let (context, session) = self.authorized().await?;

@@ -382,6 +382,27 @@ impl Io {
             }
         }
     }
+    /// `bound` from inside a running process, with the settling of
+    /// `check_running`: the idle pass of a turn asks for a scope twice a
+    /// second, and one refusal during a credential refresh ended the turn.
+    pub async fn bound_running(&self) -> Result<Bound, NativeError> {
+        let settle = Instant::now() + RUNNING_CHECK_SETTLE;
+        self.settled(settle, || self.bound()).await
+    }
+    /// Runs one authority step of a running process and waits out a transient
+    /// boundary failure until `until` (the activity lease, at the latest).
+    /// The step is run again from its start, so it must not have persisted or
+    /// uploaded anything when it fails with such a code.
+    pub(super) async fn settled<T, F>(
+        &self,
+        until: Instant,
+        step: impl FnMut() -> F,
+    ) -> Result<T, NativeError>
+    where
+        F: std::future::Future<Output = Result<T, NativeError>>,
+    {
+        settle(until, |error| self.transient(error), step).await
+    }
     /// Hosting stopping, or this management package retired or expired, is a
     /// real revocation: no retry, the run stops now.
     fn revoked(&self) -> bool {
@@ -428,7 +449,29 @@ impl Io {
     }
 }
 
-const RETRY_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+pub(super) const RETRY_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The retry rule behind `Io::settled`, apart from `Io` so it can be tested:
+/// a failure `transient` accepts is retried after `RETRY_GAP` while one more
+/// gap still fits before `until`; any other result is returned as it is.
+async fn settle<T, F>(
+    until: Instant,
+    transient: impl Fn(&NativeError) -> bool,
+    mut step: impl FnMut() -> F,
+) -> Result<T, NativeError>
+where
+    F: std::future::Future<Output = Result<T, NativeError>>,
+{
+    loop {
+        match step().await {
+            Err(error) if transient(&error) && Instant::now() + RETRY_GAP < until => {
+                tracing::info!(code = %error.code, "Shared run authority step retrying");
+                tokio::time::sleep(RETRY_GAP).await;
+            }
+            result => return result,
+        }
+    }
+}
 
 /// How long a running process waits out a transient authority failure.
 const RUNNING_CHECK_SETTLE: std::time::Duration = std::time::Duration::from_secs(20);
@@ -710,6 +753,71 @@ pub(super) fn window(
         return Err(failure(409, "shared_execution_ticket_expired"));
     }
     Ok(deadline)
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn flaky(calls: &AtomicU32, failures: u32, code: &'static str) -> Result<u32, NativeError> {
+        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call <= failures {
+            Err(failure(401, code))
+        } else {
+            Ok(call)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_boundary_failure_is_retried_until_the_step_answers() {
+        let calls = AtomicU32::new(0);
+        let until = Instant::now() + Duration::from_secs(60);
+        let value = settle(until, transient_boundary, || async {
+            flaky(&calls, 2, "management_scope_changed")
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 3, "two refusals during a credential refresh, then the answer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn other_failures_and_a_revoked_boundary_end_the_step_at_once() {
+        let calls = AtomicU32::new(0);
+        let until = Instant::now() + Duration::from_secs(60);
+        let error = settle(until, transient_boundary, || async {
+            flaky(&calls, 9, "shared_execution_closed")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "shared_execution_closed");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // `Io::transient` answers false once hosting stopped or the package
+        // was retired, whatever the code.
+        let calls = AtomicU32::new(0);
+        let error = settle(until, |_| false, || async {
+            flaky(&calls, 9, "management_scope_changed")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "management_scope_changed");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_that_outlasts_the_lease_is_returned() {
+        let calls = AtomicU32::new(0);
+        // Less than one retry gap of lease left: no further attempt fits.
+        let until = Instant::now() + Duration::from_secs(1);
+        let error = settle(until, transient_boundary, || async {
+            flaky(&calls, 9, "management_scope_changed")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "management_scope_changed");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[cfg(test)]

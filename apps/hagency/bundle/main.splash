@@ -466,7 +466,7 @@ A.resource_draft_yolo = fn(d,detail){
 }
 A.choose_resource_default = fn(kind,yolo){
     if H.busy || H.command!=nil || H.resource_detail==nil || (kind!="edit" && kind!="create") || H.page!="resource_"+kind {return}
-    if (yolo!=false && yolo!=true) || (yolo && H.resource_detail.resource.framework!="codex") {return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(H.resource_detail.resource.framework)) {return}
     let d=if kind=="edit" {H.resource_edit_draft}else{H.resource_create_draft}
     if d==nil {return}
     // Full trust always asks first, with the same alert as everywhere else.
@@ -523,7 +523,7 @@ A.submit_resource_configuration = fn(){
     let qualified=false for choice in detail.choices {if choice.model==d.model && choice.reasoning==d.reasoning {qualified=true}}
     if !qualified {H.notice=A.resource_edit_error("management_model_unqualified") A.redraw() return}
     let yolo=A.resource_draft_yolo(d,detail)
-    if (yolo!=false && yolo!=true) || (yolo && row.framework!="codex") {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(row.framework)) {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
     let policy_changed=yolo!=A.resource_default_yolo(detail)
     let profile={kind:"preserve"}
     if d.model!=row.model || d.reasoning!=row.reasoning {profile={kind:"select" model:d.model reasoning:d.reasoning}}
@@ -576,7 +576,7 @@ A.submit_resource_creation = fn(){
     let qualified=false for choice in detail.choices {if choice.model==d.model && choice.reasoning==d.reasoning {qualified=true}}
     if !qualified {H.notice=A.resource_create_error("management_model_unqualified") A.redraw() return}
     let yolo=A.resource_draft_yolo(d,detail)
-    if (yolo!=false && yolo!=true) || (yolo && row.framework!="codex") {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
+    if (yolo!=false && yolo!=true) || (yolo && !A.full_trust_tool(row.framework)) {H.notice=A.resource_edit_error("invalid_management_arguments") A.redraw() return}
     let policy_changed=yolo!=A.resource_default_yolo(detail)
     let profile={kind:"preserve"}
     if d.model!=row.model || d.reasoning!=row.reasoning {profile={kind:"select" model:d.model reasoning:d.reasoning}}
@@ -1151,11 +1151,27 @@ H.shared_approvals=[]
 A.shared_mode = fn(row){let {sharedMode=nil}=row return sharedMode}
 A.policy_mode_label = fn(row){return if A.shared_mode(row)=="chat" {A.t("Chat only","仅聊天")}else{A.policy_label(row.executionPolicy.yolo)}}
 A.policy_label = fn(yolo){return if yolo {A.t("Full trust (unrestricted)","完全信任（不受限）")}else{A.t("Standard permissions","标准权限")}}
+// Full trust exists for the two tools whose shared runs implement it, and means something
+// different for each: Codex leaves its workspace sandbox; Claude Code stops asking before it
+// uses a tool but stays inside its own work folder.
+A.full_trust_tool = fn(framework){return framework=="codex" || framework=="claude"}
+// A pooled Agent of either tool has its own web search switch.
+A.shared_web_tool = fn(framework){return framework=="codex" || framework=="claude"}
+A.standard_hint = fn(framework){
+    if framework=="codex" {return A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
+    if framework=="claude" {return A.t("Works in its own work folder; asks you before it runs a command or changes a file","在自己的工作文件夹内工作；运行命令或修改文件前会先请求你批准")}
+    return A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")
+}
+A.full_trust_hint = fn(framework,codex_text){
+    if framework=="codex" {return codex_text}
+    if framework=="claude" {return A.t("Uses its tools without asking you; still limited to its own work folder","使用工具时不再请求你批准；仍只能读写自己的工作文件夹")}
+    return A.t("Not available for this coding tool","此编码工具不支持")
+}
 A.policy_web = fn(row){let {webSearch=nil}=row return webSearch}
 A.toggle_policy_web = fn(){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_detail==nil || (H.policy_mode!="detail" && H.policy_mode!="result") {return}
     let row=H.policy_detail let web=A.policy_web(row)
-    if (web!=true && web!=false) || A.shared_mode(row)==nil || row.framework!="codex" || row.resourceId!=H.policy_resource || row.engagementId!=H.policy_engagement {return}
+    if (web!=true && web!=false) || A.shared_mode(row)==nil || !A.shared_web_tool(row.framework) || row.resourceId!=H.policy_resource || row.engagementId!=H.policy_engagement {return}
     A.submit("hagency.execution_policy.edit",{resourceId:row.resourceId engagementId:row.engagementId expectedRevision:row.revision executionPolicy:{yolo:row.executionPolicy.yolo} webSearch:!web})
 }
 A.policy_valid = fn(data,resource,engagement){
@@ -1164,7 +1180,7 @@ A.policy_valid = fn(data,resource,engagement){
     if resourceId!=resource || engagementId!=engagement || !agent.is_string() || !projectId.is_string() || !framework.is_string() || !revision.is_string() || revision.len()!=64 || appliesTo!="next_dispatch" || !executionPolicy.is_object() {return false}
     let {yolo=nil}=executionPolicy
     let {webSearch=nil}=data
-    return (yolo==true || yolo==false) && (!yolo || framework=="codex") && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && framework=="codex"))
+    return (yolo==true || yolo==false) && (!yolo || A.full_trust_tool(framework)) && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && A.shared_web_tool(framework)))
 }
 // Permission requests are part of the Tools & Permissions hub's Pending tab.
 A.open_shared_approvals = fn(){
@@ -1218,7 +1234,7 @@ A.open_policy_grants = fn(){
 A.choose_policy = fn(yolo){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_detail==nil || (H.policy_mode!="detail" && H.policy_mode!="result") {return}
     let row=H.policy_detail
-    if yolo && row.framework!="codex" {return}
+    if yolo && !A.full_trust_tool(row.framework) {return}
     H.policy_draft={resourceId:row.resourceId engagementId:row.engagementId expectedRevision:row.revision executionPolicy:{yolo:yolo}}
     H.policy_mode="edit" H.notice="" A.redraw()
 }
@@ -1231,7 +1247,7 @@ A.review_policy = fn(){
 A.submit_policy = fn(){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_mode!="review" || H.policy_draft==nil || H.policy_detail==nil {return}
     let d=H.policy_draft let row=H.policy_detail
-    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && row.framework!="codex") {return}
+    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && !A.full_trust_tool(row.framework)) {return}
     A.submit("hagency.execution_policy.edit",d.to_json().parse_json())
 }
 A.valid_policy_result = fn(data,args){
@@ -2150,6 +2166,7 @@ A.dpol_catalog=fn(epoch){
     if !started {A.dpol_failed("management_busy")}
 }
 A.dpol_codex=fn(){let d=H.dpol return d.detail!=nil && d.detail.resource.framework=="codex"}
+A.dpol_framework=fn(){let d=H.dpol return if d.detail!=nil {d.detail.resource.framework} else {""}}
 // "Use defaults" for one Agent: the listing's change flow, against the record this page read.
 A.dpol_assign=fn(id){
     let d=H.dpol
@@ -2161,7 +2178,7 @@ A.dpol_assign=fn(id){
 A.dpol_can=fn(){let d=H.dpol return !H.busy && H.command==nil && d.state=="ready" && d.phase=="" && d.error=="" && A.recipient_optional(d,"refreshing")!=true && (d.mode=="resource" || A.web_can_edit())}
 A.dpol_choose=fn(yolo){
     let d=H.dpol
-    if !A.dpol_can() || yolo==d.yolo || (yolo && !A.dpol_codex()) {return}
+    if !A.dpol_can() || yolo==d.yolo || (yolo && !A.full_trust_tool(A.dpol_framework())) {return}
     d.ask=yolo d.saved=nil d.savedWeb=nil d.error="" A.redraw()
 }
 A.dpol_commit=fn(){
@@ -4852,7 +4869,8 @@ A.owner_requests=fn(connection){
 }
 A.connection_capacity_active=fn(connection){
     let c=H.connection_capacity
-    return c.id==connection.id && c.state=="ready" && c.pool!=nil && c.pool.publishedTokens!=nil && c.pool.grantRevision!=nil
+    // A closed connection publishes nothing, whatever the pool's last grant says.
+    return connection.state=="admitted" && c.id==connection.id && c.state=="ready" && c.pool!=nil && c.pool.publishedTokens!=nil && c.pool.grantRevision!=nil
 }
 A.load_connection_capacity=fn(connection){
     if H.entry_role!="owner" || H.page!="action" || connection.ownerMxid!=H.session.account{return}
@@ -7334,8 +7352,10 @@ A.pool_create_accounts=fn(){
         if !r.is_ok {c.error=A.error_text(r.error) return}
         let {accounts=nil}=r.data
         if accounts==nil {c.error=A.t("The coding tools couldn’t be read. Try again.","暂时无法读取编码工具，请重试。") return}
-        let rows=[] for row in accounts {if row.kind=="managed_namespace" && row.state=="active" {rows.push(row)}}
+        let rows=[] for row in accounts {if (row.kind=="managed_namespace" || row.kind=="local_configuration") && row.state=="active" {rows.push(row)}}
         c.accounts=rows
+        let {want=nil}=c
+        if want!=nil {c.want=nil for row in rows {if row.id==want {A.pool_create_account(row) return}}}
         if c.account!=nil {for row in rows {if row.id==c.account.id {c.account=row}} return}
         if H.enrollment_draft!=nil {for row in rows {if row.id==H.enrollment_draft.account.accountId {A.pool_create_account(row) return}}}
         if rows.len()==1 {A.pool_create_account(rows[0])}
@@ -7348,16 +7368,16 @@ A.pool_create_account=fn(row){
     c.account=row c.models=nil c.modelsError="" c.loadingModels=true
     A.pool_call("hagency.accounts.get",{id:row.id},fn(r){
         if H.page!="pool_create" || H.pool_create==nil || H.pool_create.epoch!=c.epoch || c.account==nil || c.account.id!=row.id {return}
-        if !r.is_ok {c.loadingModels=false c.modelsError=A.account_models_error(r.error) return}
+        if !r.is_ok {c.loadingModels=false c.modelsError=A.pool_models_error(row,r.error) return}
         let data=r.data
         if data.protocol!="hagency-management-v1" || data.account==nil || data.account.id!=row.id {c.loadingModels=false c.modelsError=A.t("This coding tool changed. Choose it again.","此编码工具已变化，请重新选择。") return}
         H.account_detail=data H.account_id=row.id
         A.pool_call("hagency.accounts.models",{accountId:row.id expectedRevision:row.revision},fn(m){
             if H.page!="pool_create" || H.pool_create==nil || H.pool_create.epoch!=c.epoch || c.account==nil || c.account.id!=row.id {return}
             c.loadingModels=false
-            if !m.is_ok {c.modelsError=A.account_models_error(m.error) return}
+            if !m.is_ok {c.modelsError=A.pool_models_error(row,m.error) return}
             let d=m.data
-            if d.protocol!="hagency-management-v1" || d.accountId!=row.id || d.revision!=row.revision || d.provider.runtime!="codex" || d.provider.connected!=true {c.modelsError=A.t("The model list doesn’t match this tool. Try again.","模型结果与此工具不匹配，请重试。") return}
+            if d.protocol!="hagency-management-v1" || d.accountId!=row.id || d.revision!=row.revision || d.provider.runtime!=row.runtime || d.provider.connected!=true {c.modelsError=A.t("The model list doesn’t match this tool. Try again.","模型结果与此工具不匹配，请重试。") return}
             c.models=d H.account_models=d
             let draft=H.enrollment_draft
             if draft!=nil && draft.account.accountId==row.id {return}
@@ -7373,7 +7393,8 @@ A.pool_create_model=fn(model){
     let row=c.account
     let {resourceCount=0}=H.pool_create.account
     let resources=if H.account_detail==nil {[]} else {H.account_detail.resources}
-    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:"1000000" sourceRequired:resourceCount>0 source:nil name:A.pool_model_label(model) named:false}
+    // Only a Codex sign-in folder makes further pools from an existing one.
+    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:"1000000" sourceRequired:resourceCount>0 && row.kind=="managed_namespace" source:nil name:A.pool_model_label(model) named:false}
     H.enrollment_draft=d A.redraw()
     if d.sourceRequired && resources.len()>0 {
         let id=resources[0].id
@@ -7388,13 +7409,25 @@ A.pool_create_model=fn(model){
 }
 A.pool_account_name=fn(account,many){
     let {runtime="",ordinal=nil}=account
-    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude"} else {runtime}
+    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude Code"} else {runtime}
     return if many && ordinal!=nil {name+" #"+ordinal} else {name}
 }
 A.pool_login_text=fn(account){
-    let {readiness=nil,resourceCount=0}=account
+    let {readiness=nil,resourceCount=0,kind=""}=account
     let login=if readiness=="subscription" {A.t("Signed in · subscription","已登录 · 订阅账号")} else if readiness=="api_key" {A.t("Signed in · API key","已登录 · API 密钥")} else {A.t("Sign-in not checked yet","尚未确认登录")}
+    // The owner's own Claude Code on this computer: a pool runs on whichever sign-in it has.
+    if kind=="local_configuration" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点令牌")} else if readiness=="subscription" {A.t("This computer’s settings · claude.ai sign-in","本机配置 · claude.ai 订阅登录")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
     return login+if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
+}
+// Why the models of a tool can't be listed; Claude Code has its own reasons.
+A.pool_models_error=fn(row,code){
+    let {runtime=""}=row
+    if runtime!="claude" {return A.account_models_error(code)}
+    if code=="provider_connection_required" {return A.t("Claude Code on this computer isn’t signed in. Sign in to Claude Code, or set an API key or an endpoint token in its settings, then try again.","本机 Claude Code 尚未登录。请先登录 Claude Code，或在它的配置里设置 API 密钥或端点令牌，然后重试。")}
+    if code=="provider_identity_unavailable" {return A.t("Claude Code’s sign-in on this computer couldn’t be confirmed. With a claude.ai sign-in, open Claude Code once and try again. An API key or endpoint token must be in the “env” section of settings.json.","无法确认本机 Claude Code 的登录。若使用 claude.ai 登录，请先打开一次 Claude Code 再重试；API 密钥或端点令牌需要写在 settings.json 的 “env” 部分。")}
+    if code=="provider_profile_mismatch" || code=="management_not_found" {return A.t("Claude Code is no longer connected on this computer. Connect it under My Agents first.","本机的 Claude Code 已不再接入。请先在「我的 Agent」中接入。")}
+    if code=="provider_account_changed" || code=="management_revision_conflict" {return A.t("Claude Code’s settings changed. Choose it again.","Claude Code 的配置已变化，请重新选择。")}
+    return A.account_models_error(code)
 }
 A.pool_lapsed_rows=fn(){
     let rows=[]
@@ -7465,7 +7498,7 @@ A.account_state = fn(row){
     if row.state == "retired" {return A.t("Retired", "已停用")}
     return A.t("Unknown", "未知")
 }
-A.account_kind = fn(row){return if row.kind == "managed_namespace" {A.t("Provider login", "服务商登录")} else {A.t("Resource association", "资源关联")}}
+A.account_kind = fn(row){return if row.kind == "managed_namespace" {A.t("Provider login", "服务商登录")} else if row.kind == "local_configuration" {A.t("This computer’s settings", "本机配置")} else {A.t("Resource association", "资源关联")}}
 A.account_readiness = fn(row){
     if row.readiness == "subscription" {return A.t("Subscription login observed", "已检测到订阅登录")}
     if row.readiness == "api_key" {return A.t("API-key login observed", "已检测到 API 密钥登录")}
@@ -7544,6 +7577,18 @@ A.enrollment_error=fn(code){
     if code=="provider_connection_required" {return A.t("Sign in to this account before enrolling a resource.","请先登录此账号，再登记资源。")}
     return A.error_text(code)
 }
+// The owner's Claude Code configuration is refused for reasons a retry of the same request can't change.
+A.enrollment_claude=fn(args){
+    let account=A.recipient_optional(args,"account")
+    if account==nil {return false}
+    return A.recipient_optional(account,"accountId")=="account_claude_code"
+}
+A.enrollment_claude_refused=fn(args,code){return A.enrollment_claude(args) && (code=="provider_connection_required" || code=="provider_profile_mismatch" || code=="provider_model_changed")}
+A.enrollment_error_for=fn(args,code){
+    if !A.enrollment_claude(args) {return A.enrollment_error(code)}
+    if code=="provider_model_changed" {return A.t("Claude Code’s settings no longer name this model. Choose a model again.","Claude Code 的配置里已没有这个模型，请重新选择模型。")}
+    return A.pool_models_error({runtime:"claude"},code)
+}
 A.load_account_models = fn(row){
     if H.busy || H.command!=nil || H.page!="provider_account" || H.account_id!=row.id || row.kind!="managed_namespace" || row.state!="active" {return}
     H.account_models=nil H.account_models_attempted=true H.account_models_epoch+=1
@@ -7602,11 +7647,13 @@ A.account_prepared = fn(data){
     H.page="provider_account" H.account_id=data.accountId H.account_resource_after=nil H.account_detail=nil H.ux.accountId=data.accountId A.save()
 }
 A.account_groups = fn(){
-    let result={known:[] unconfirmed:[]}
+    let result={known:[] unconfirmed:[] local:[]}
     if H.account_inventory==nil {return result}
     for row in H.account_inventory.accounts {
-        let {identityKey=nil}=row
-        if identityKey==nil || identityKey=="" {result.unconfirmed.push(row)} else {
+        let {identityKey=nil,kind=""}=row
+        // Claude Code as this computer has it set up: a coding tool of its own, not a sign-in record to confirm.
+        if kind=="local_configuration" {result.local.push(row)}
+        else if identityKey==nil || identityKey=="" {result.unconfirmed.push(row)} else {
             let found=false
             for group in result.known {if group.key==identityKey && group.runtime==row.runtime {
                 group.members.push(row) group.resources+=row.resourceCount found=true
@@ -7615,6 +7662,33 @@ A.account_groups = fn(){
         }
     }
     return result
+}
+// Coding Tools rows: which sign-in it is, then its state and how many pools run on it.
+A.account_title=fn(group,index,member_index){
+    let name=if group.runtime=="codex" {A.t("Codex account ","Codex 账号 ")+(index+1)} else {group.runtime+A.t(" account "," 账号 ")+(index+1)}
+    return if group.members.len()>1 {name+" · "+A.account_kind(group.members[member_index])+" "+(member_index+1)} else {name}
+}
+A.account_pools=fn(row){
+    let {resourceCount=0}=row
+    return if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
+}
+A.account_subtitle=fn(row){
+    let text=A.account_readiness(row)
+    if row.kind!="managed_namespace" {text=A.account_kind(row)+" · "+text} else if row.state!="active" {text=A.account_state(row)+" · "+text}
+    return text+A.account_pools(row)
+}
+// The unconfirmed records to list: none while their row is closed.
+A.account_pending_rows=fn(groups){return if H.account_pending_open {groups.unconfirmed} else {[]}}
+A.account_shared=fn(groups){
+    for group in groups.known {if group.members.len()>1 {return true}}
+    return false
+}
+// Coding Tools lists Claude Code too. It has no sign-in to manage there; its row leads to a new pool on it.
+A.account_pool_create=fn(row){
+    if H.busy || H.command!=nil {return}
+    A.pool_create_open()
+    // The sheet is reading the tools now; it picks this one when they arrive.
+    if H.pool_create!=nil {H.pool_create.want=row.id}
 }
 A.read_account_page = fn(after,epoch,rows,pages){
     let args={} if after!=nil {args.after=after}
@@ -7884,6 +7958,8 @@ A.retry_command = fn(){
             if command.service == "hagency.allocations.decide" || command.service == "hagency.allocations.release" {A.open_allocation(r.data.allocation.id)}
             if command.service=="hagency.connections.create" && A.publication_draft(r.data.admission.contribution) {A.publish_offer(r.data.admission.contribution) return}
             if command.service=="hagency.connections.reoffer" || command.service == "hagency.connections.create" || command.service == "hagency.inbox.decide" || command.service == "hagency.connections.revoke" || command.service == "hagency.connections.verify" || command.service == "hagency.connections.resume" { A.open_connection(r.data.admission.contribution.id) }
+            // The pool's own pages read the connection from the pool list: closing it is news there too.
+            if command.service == "hagency.connections.revoke" && H.pool_meta!=nil {A.pool_meta_load()}
             if command.service == "hagency.projects.request" || command.service == "hagency.projects.decide" || command.service == "hagency.projects.revoke" {A.open_project(r.data.project.id)}
         } else {
             if A.pool_mutation(command.service) {
@@ -7966,8 +8042,8 @@ A.retry_command = fn(){
                 host.request("hagency.intent.pending",{},fn(pending){if pending.is_ok {H.saved_commands=pending.data.commands} A.redraw()})
                 A.redraw() return
             }
-            if command.service=="hagency.accounts.enroll" && (r.error=="provider_identity_unavailable" || r.error=="provider_account_changed") {
-                H.command=nil H.notice=A.enrollment_error(r.error)
+            if command.service=="hagency.accounts.enroll" && (r.error=="provider_identity_unavailable" || r.error=="provider_account_changed" || A.enrollment_claude_refused(command.args,r.error)) {
+                H.command=nil H.notice=A.enrollment_error_for(command.args,r.error)
                 if A.save(){A.acknowledge(command.args.commandId)} A.redraw() return
             }
             if r.error == "native_resume_missing" || r.error == "native_resume_revoked" {H.needs_signin=true}
@@ -7979,7 +8055,7 @@ A.retry_command = fn(){
             if command.service == "hagency.agents.control.set" {H.agent_control=nil}
             if command.service == "hagency.agents.settlement.request" {H.settlement=nil}
             if command.service=="hagency.alerts.triage" {H.alert_detail=nil H.alert_draft=nil}
-            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error(r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if command.service == "hagency.personal_agents.observe" && A.observe_closed(r.error) {A.observe_reason(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
+            H.notice = if command.service=="hagency.alerts.triage" {A.alert_error(r.error)} else if command.service=="hagency.accounts.retire" {A.retirement_error(r.error)} else if command.service=="hagency.accounts.enroll" {A.enrollment_error_for(command.args,r.error)} else if command.service == "hagency.agents.settlement.request" {A.settlement_reason(r.error)} else if topup_service {A.budget_reason(r.error)} else if command.service == "hagency.agents.control.set" {A.control_reason(r.error)} else if name_service {A.name_error(r.error)} else if command.service == "hagency.personal_agents.observe" && A.observe_closed(r.error) {A.observe_reason(r.error)} else if personal_service {A.personal_reason(r.error)} else if allocation_service {A.allocation_reason(r.error)} else if agent_service {A.agent_reason(r.error)} else {A.error_text(r.error)}
             if topup_service {H.agent_budget=nil H.budget_topup=nil H.budget_confirmation=nil H.budget_mode=""}
             if name_service {H.resource_detail=nil H.resource_name_mode="" H.resource_name_draft=nil}
             let kept_draft=H.personal_draft
@@ -10074,7 +10150,7 @@ A.render_page = fn(){
                     }
                 }}
                 if c.accounts!=nil && c.accounts.len()==0 {View{width:Fill height:Fit flow:Down
-                    View{width:Fill height:Fit padding:Inset{left:14 right:14 top:12 bottom:12} mod.widgets.HagencyListSubtitle{text:A.t("No coding tool is connected yet. Connect Codex first; you’ll sign in on the provider’s page.","还没有接入编码工具。请先接入 Codex，会在服务商页面登录。")}}
+                    View{width:Fill height:Fit padding:Inset{left:14 right:14 top:12 bottom:12} mod.widgets.HagencyListSubtitle{text:A.t("No coding tool is connected yet. Connect Codex under Coding Tools (you’ll sign in on the provider’s page), or connect Claude Code under My Agents.","还没有接入编码工具。请在「编码工具」中接入 Codex（会在服务商页面登录），或在「我的 Agent」中接入 Claude Code。")}}
                     mod.widgets.HagencyListDivider{margin:Inset{left:14}}
                     mod.widgets.HagencyListRow{
                         pool_create_tools := mod.widgets.HagencyListTap{enabled:!H.busy on_click:||{H.pool_create=nil A.open_accounts(nil)}}
@@ -10817,10 +10893,120 @@ A.render_page = fn(){
                 }}
             }}
         }}
-        if H.page == "provider_accounts" || H.page == "provider_account" || H.page == "account_prepare" {mod.widgets.HagencyDetailCard{
+        if H.page == "provider_accounts" {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{bottom:28} mod.widgets.HagencyColumn{
+            mod.widgets.HagencyLargeTitle{text:A.t("Coding Tools","编码工具")}
+            mod.widgets.HagencyListNote{padding:Inset{left:2 right:7 top:0 bottom:6} text:A.t("Connect the tool that runs on this device. Manage its login, server access and resource pools in one place.","接入此设备运行的编码工具，集中管理登录、服务器接入及其资源池。")}
+            if H.account_inventory==nil {mod.widgets.HagencyList{mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{
+                mod.widgets.HagencyListValue{text:if H.busy {A.t("Reading accounts…","正在读取账号…")}else{A.t("Account list unavailable","账号列表暂不可用")}}
+            }}}}
+            if H.account_inventory!=nil {
+                let groups=A.account_groups()
+                // One group per coding tool: its sign-ins, then the one thing to do with it from here.
+                View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:"CODEX"}
+                    mod.widgets.HagencyList{
+                        if groups.known.len()==0 {View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("No Codex account yet","还没有 Codex 账号")}}}
+                            mod.widgets.HagencyListDivider{margin:Inset{left:14}}
+                        }}
+                        for index, group in groups.known {let g=group let at=index for member_index, member in g.members {let row=member let nth=member_index View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyFitRow{
+                                mod.widgets.HagencyRowBody{
+                                    mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
+                                    mod.widgets.HagencyListText{
+                                        mod.widgets.HagencyWrapTitle{text:A.account_title(g,at,nth)}
+                                        mod.widgets.HagencyWrapSubtitle{text:A.account_subtitle(row)}
+                                    }
+                                    mod.widgets.HagencyChevron{}
+                                }
+                                account_open := mod.widgets.HagencyRowCover{enabled:!H.busy on_click: || A.open_account(row.id,nil)}
+                            }
+                            mod.widgets.HagencyListDivider{}
+                        }}}
+                        mod.widgets.HagencyListRow{
+                            account_prepare_review := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.review_account_preparation()}
+                            mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("Connect a Codex Account","接入 Codex 账号")}}
+                        }
+                    }
+                    mod.widgets.HagencyListNote{text:A.t("You sign in on the provider’s page. Hagency keeps the login private to this Matrix profile.","在服务商页面登录；Hagency 会将登录信息独立保存在当前 Matrix 身份下。")}
+                    if A.account_shared(groups) {mod.widgets.HagencyListNote{text:A.t("These login records share a recorded account identity. Actions apply to the selected login only.","这些登录记录关联同一账号身份。操作仅作用于所选登录记录。")}}
+                }
+                View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:"CLAUDE CODE"}
+                    mod.widgets.HagencyList{
+                        if groups.local.len()==0 {mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
+                            mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_FIELD mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection draw_icon.color:mod.widgets.RINX_MUTED}}
+                            mod.widgets.HagencyListText{
+                                mod.widgets.HagencyWrapTitle{text:A.t("Not connected yet","尚未接入")}
+                                mod.widgets.HagencyWrapSubtitle{text:A.t("Connect Claude Code under My Agents. It is then listed here and can be shared as a pool.","在「我的 Agent」中接入 Claude Code 后，它会列在这里，也可以用来创建资源池。")}
+                            }
+                        }}}
+                        for index, item in groups.local {let row=item View{width:Fill height:Fit flow:Down
+                            if index>0 {mod.widgets.HagencyListDivider{}}
+                            mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
+                                mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
+                                mod.widgets.HagencyListText{
+                                    mod.widgets.HagencyWrapTitle{text:A.pool_account_name(row,false)}
+                                    account_local_login := mod.widgets.HagencyWrapSubtitle{text:A.pool_login_text(row)}
+                                }
+                            }}
+                            mod.widgets.HagencyListDivider{}
+                            mod.widgets.HagencyListRow{
+                                account_local_pool := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.account_pool_create(row)}
+                                mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("New Pool","新建资源池")}}
+                            }
+                        }}
+                    }
+                    if groups.local.len()>0 {mod.widgets.HagencyListNote{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}}
+                }
+                if groups.unconfirmed.len()>0 {View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:A.t("OTHER RECORDS","其他记录")}
+                    mod.widgets.HagencyList{
+                        mod.widgets.HagencyListRow{
+                            account_pending_toggle := mod.widgets.HagencyListTap{grab_key_focus:true enabled:!H.busy on_click:||{H.account_pending_open=!H.account_pending_open A.redraw()}}
+                            mod.widgets.HagencyListBody{
+                                mod.widgets.HagencyListTitle{text:A.t("Unconfirmed records","待确认记录")}
+                                mod.widgets.HagencyListValue{text:""+groups.unconfirmed.len()}
+                                mod.widgets.HagencyRowGlyph{draw_icon.svg:if H.account_pending_open {mod.rinx_icons.collapse} else {mod.rinx_icons.expand} draw_icon.color:mod.widgets.RINX_MUTED}
+                            }
+                        }
+                        for item in A.account_pending_rows(groups) {let row=item View{width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyListDivider{margin:Inset{left:14}}
+                            mod.widgets.HagencyFitRow{
+                                mod.widgets.HagencyRowBody{
+                                    mod.widgets.HagencyListText{
+                                        mod.widgets.HagencyWrapTitle{text:A.pool_account_name(row,false)+" · "+A.account_kind(row)+if row.ordinal!=nil{" #"+row.ordinal}else{""}}
+                                        mod.widgets.HagencyWrapSubtitle{text:A.account_state(row)+" · "+A.account_readiness(row)+A.account_pools(row)}
+                                    }
+                                    mod.widgets.HagencyChevron{}
+                                }
+                                account_record_open := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.open_account(row.id,nil)}
+                            }
+                        }}
+                    }
+                    mod.widgets.HagencyListNote{text:A.t("These records do not establish another provider account. Open a record to continue setup or inspect its resources.","这些记录尚不能证明是另一个服务商账号。展开后可继续登录设置或查看资源。")}
+                }}
+            }
+            // This computer's setup lives under Resource Pools; the same row as there leads to it.
+            View{width:Fill height:Fit flow:Down spacing:6
+                mod.widgets.HagencyListLabel{text:A.t("DEVICE","设备")}
+                mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
+                    mod.widgets.HagencyRowBody{
+                        mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_INFO_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.device draw_icon.color:mod.widgets.RINX_INFO_FG}}
+                        mod.widgets.HagencyListText{
+                            mod.widgets.HagencyWrapTitle{text:A.t("This Computer","这台电脑")}
+                            mod.widgets.HagencyWrapSubtitle{text:A.t("Set up, move to a new computer, pick up interrupted tasks","设置、迁移到新电脑、接回中断的任务")}
+                        }
+                        mod.widgets.HagencyChevron{}
+                    }
+                    owner_setup := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.pool_device_open("accounts")}
+                }}
+            }
+        }}}
+        if H.page == "provider_account" || H.page == "account_prepare" {mod.widgets.HagencyDetailCard{
             mod.widgets.HagencyActions{
-                accounts_back := mod.widgets.HagencyButton{visible:H.page!="provider_accounts" enabled:!H.busy text:if H.page=="provider_account" {A.t("Coding tools","编码工具")}else{A.t("Back to resources","返回资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click: || {if H.page=="provider_account"{A.open_accounts(H.account_after)}else{A.navigate("resources")}}}
-                accounts_refresh := mod.widgets.HagencyButton{visible:H.page!="provider_accounts" enabled:!H.busy && !A.must_reopen() text:if H.busy{A.t("Updating…","正在更新…")}else{A.t("Refresh","刷新")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.refresh on_click: || A.refresh()}
+                accounts_back := mod.widgets.HagencyButton{enabled:!H.busy text:if H.page=="provider_account" {A.t("Coding tools","编码工具")}else{A.t("Back to resources","返回资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click: || {if H.page=="provider_account"{A.open_accounts(H.account_after)}else{A.navigate("resources")}}}
+                accounts_refresh := mod.widgets.HagencyButton{enabled:!H.busy && !A.must_reopen() text:if H.busy{A.t("Updating…","正在更新…")}else{A.t("Refresh","刷新")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.refresh on_click: || A.refresh()}
             }
             mod.widgets.HagencySection{
                 mod.widgets.HagencyEyebrow{text:A.t("01 / CODING TOOLS","01 / 编码工具")}
@@ -10838,54 +11024,6 @@ A.render_page = fn(){
                     account_prepare_cancel := mod.widgets.HagencyButton{enabled:!H.busy && H.command==nil text:A.t("Cancel", "取消") on_click: || {if !H.busy && H.command==nil {A.open_accounts(nil)}}}
                     account_prepare_confirm := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("Prepare private sign-in", "准备独立登录") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.submit_account_preparation()}
                 }
-            }}
-            if H.page=="provider_accounts" {
-                if H.account_inventory!=nil {mod.widgets.HagencyActions{
-                    account_prepare_review := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && H.command==nil text:A.t("Connect Codex", "接入 Codex") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.add on_click: || A.review_account_preparation()}
-                }}
-                if H.account_inventory==nil {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:if H.busy {A.t("Reading accounts…","正在读取账号…")}else{A.t("Account list unavailable","账号列表暂不可用")}}}}
-                if H.account_inventory!=nil {
-                    if H.account_inventory.accounts.len()==0 {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:A.t("No recorded accounts in this profile","当前身份暂无账号记录")} mod.widgets.HagencyHint{text:A.t("Add a Codex account to begin. You’ll sign in on the provider’s page; Hagency keeps the login private to this Matrix profile.","添加 Codex 账号即可开始。你将在服务商页面登录，Hagency 会将登录信息独立保存在当前 Matrix 身份下。")}}}
-                    let groups=A.account_groups()
-                    View{width:Fill height:Fit flow:Down spacing:16
-                    for index, group in groups.known {mod.widgets.HagencySection{
-                        mod.widgets.HagencySectionTitle{text:if group.runtime=="codex" {A.t("Codex account ","Codex 账号 ")+(index+1)}else{group.runtime+A.t(" account "," 账号 ")+(index+1)}}
-                        mod.widgets.HagencyCopy{text:A.t("Resource pools: ","资源池：")+group.resources}
-                        if group.members.len()>1 {mod.widgets.HagencyHint{text:A.t("These login records share a recorded account identity. Actions apply to the selected login only.","这些登录记录关联同一账号身份。操作仅作用于所选登录记录。")}}
-                        for member_index, row in group.members {View{width:Fill height:Fit flow:Down spacing:(6 * mod.widgets.RINX_SPACING)
-                            if group.members.len()>1 {mod.widgets.HagencyCopy{text:A.account_kind(row)+" "+(member_index+1)}}
-                            if row.state!="active" && row.kind=="managed_namespace" {mod.widgets.HagencyHint{text:A.account_state(row)}}
-                            mod.widgets.HagencyHint{text:A.account_readiness(row)}
-                            account_open := mod.widgets.HagencyButton{enabled:!H.busy text:if row.kind=="managed_namespace"{A.t("Manage tool","管理工具")}else{A.t("View associated resources","查看关联资源")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click: || A.open_account(row.id,nil)}
-                        }}
-                    }}
-                    }
-                    if groups.unconfirmed.len()>0 {mod.widgets.HagencySection{
-                        account_pending_toggle := mod.widgets.HagencyDisclosure{grab_key_focus:true enabled:!H.busy text:A.t("Unconfirmed records · ","待确认记录 · ")+groups.unconfirmed.len() icon_walk:Walk{width:16 height:16} draw_icon.svg:if H.account_pending_open{mod.rinx_icons.collapse}else{mod.rinx_icons.expand} on_click:||{H.account_pending_open=!H.account_pending_open A.redraw()}}
-                        mod.widgets.HagencyHint{text:A.t("These records do not establish another provider account. Open a record to continue setup or inspect its resources.","这些记录尚不能证明是另一个服务商账号。展开后可继续登录设置或查看资源。")}
-                        if H.account_pending_open {for row in groups.unconfirmed {View{width:Fill height:Fit flow:Down spacing:(6 * mod.widgets.RINX_SPACING)
-                            mod.widgets.HagencyCopy{text:row.runtime+" · "+A.account_kind(row)+if row.ordinal!=nil{" #"+row.ordinal}else{""}}
-                            mod.widgets.HagencyHint{text:A.account_state(row)+" · "+A.account_readiness(row)}
-                            mod.widgets.HagencyHint{text:A.t("Resource pools: ","资源池：")+row.resourceCount}
-                            account_record_open := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View record","查看记录") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click:||A.open_account(row.id,nil)}
-                        }}}
-                    }}
-                }
-            }
-            if H.page=="provider_accounts" {mod.widgets.HagencySection{
-                mod.widgets.HagencyHint{text:A.t("Codex sign-in is supported here. Other coding tools are not yet available in this connection flow.","此入口支持 Codex 登录，其他编码工具尚未接入这套连接流程。")}
-                // This computer's setup lives under Resource Pools; the same row as there leads to it.
-                mod.widgets.HagencyList{mod.widgets.HagencyFitRow{
-                    mod.widgets.HagencyRowBody{
-                        mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_INFO_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.device draw_icon.color:mod.widgets.RINX_INFO_FG}}
-                        mod.widgets.HagencyListText{
-                            mod.widgets.HagencyWrapTitle{text:A.t("This Computer","这台电脑")}
-                            mod.widgets.HagencyWrapSubtitle{text:A.t("Set up, move to a new computer, pick up interrupted tasks","设置、迁移到新电脑、接回中断的任务")}
-                        }
-                        mod.widgets.HagencyChevron{}
-                    }
-                    owner_setup := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.pool_device_open("accounts")}
-                }}
             }}
             if H.page=="provider_account" {
                 if H.account_detail==nil {mod.widgets.HagencySection{mod.widgets.HagencyCopy{text:if H.busy {A.t("Reading account…","正在读取账号…")}else{A.t("Account details unavailable","账号详情暂不可用")}}}}
@@ -11505,7 +11643,6 @@ A.render_page = fn(){
                 let row=H.policy_detail
                 let full=row.executionPolicy.yolo
                 let chat=A.shared_mode(row)=="chat"
-                let codex=row.framework=="codex"
                 let project=A.tool_project_name(row)
                 let can=!H.busy && H.command==nil && (H.policy_mode=="detail" || H.policy_mode=="result")
                 let key="policy:"+row.engagementId
@@ -11530,7 +11667,7 @@ A.render_page = fn(){
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.shield draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Standard permissions","标准权限")}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")} else {A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.standard_hint(row.framework)}
                             }
                             if !full && !chat {mod.widgets.HagencyCheck{}}
                         }
@@ -11541,12 +11678,12 @@ A.render_page = fn(){
                         mod.widgets.HagencyListFitBody{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                             mod.widgets.HagencyListText{
-                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if codex {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置")} else {A.t("Only available for Codex Agents","仅 Codex Agent 可以使用")}}
+                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if A.full_trust_tool(row.framework) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.full_trust_hint(row.framework,A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置"))}
                             }
                             if full {mod.widgets.HagencyCheck{draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                         }
-                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && codex && !full on_click: || A.choose_policy(true)}
+                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.full_trust_tool(row.framework) && !full on_click: || A.choose_policy(true)}
                     }
                 }
                 mod.widgets.HagencyListNote{text:A.t("Changes apply when its next task starts; a task that is already running isn’t affected.","修改在下一个任务开始时生效，正在运行的任务不受影响。")}
@@ -12763,7 +12900,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.shield draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Standard permissions","标准权限")}
-                                mod.widgets.HagencyWrapSubtitle{text:A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
+                                mod.widgets.HagencyWrapSubtitle{text:A.standard_hint(A.dpol_framework())}
                             }
                             View{width:18 height:18 if !full {mod.widgets.HagencyCheck{}}}
                         }
@@ -12774,12 +12911,12 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         mod.widgets.HagencyListFitBody{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                             mod.widgets.HagencyListText{
-                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if codex {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
-                                mod.widgets.HagencyWrapSubtitle{text:if codex {A.t("Can use files outside its workspace and the network without asking","可使用工作区以外的文件和网络，且不再请求批准")} else {A.t("Only available for Codex pools","仅 Codex 资源池可以使用")}}
+                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if A.full_trust_tool(A.dpol_framework()) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+                                mod.widgets.HagencyWrapSubtitle{text:A.full_trust_hint(A.dpol_framework(),A.t("Can use files outside its workspace and the network without asking","可使用工作区以外的文件和网络，且不再请求批准"))}
                             }
                             View{width:18 height:18 if full {mod.widgets.HagencyCheck{draw_icon.color:mod.widgets.RINX_WARNING_FG}}}
                         }
-                        default_policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && codex && !full on_click: || A.dpol_choose(true)}
+                        default_policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.full_trust_tool(A.dpol_framework()) && !full on_click: || A.dpol_choose(true)}
                     }
                 }
                 if codex {View{width:Fill height:Fit flow:Down spacing:6
@@ -14646,13 +14783,13 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         if !yolo {resource_create_standard := mod.widgets.HagencyTallSegmentOn{text:A.t("Standard","标准权限") enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",false)}}
                         if yolo {resource_create_standard := mod.widgets.HagencyTallSegment{text:A.t("Standard","标准权限") enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",false)}}
                     }
-                    if detail.resource.framework=="codex" {View{width:Fill height:Fit
+                    if A.full_trust_tool(detail.resource.framework) {View{width:Fill height:Fit
                         if yolo {resource_create_unrestricted := mod.widgets.HagencyTallSegmentOn{text:A.pool_yolo_segment() enabled:!H.busy && H.command==nil draw_text +: {color:mod.widgets.RINX_WARNING_FG color_hover:mod.widgets.RINX_WARNING_FG color_focus:mod.widgets.RINX_WARNING_FG} on_click:||A.choose_resource_default("create",true)}}
                         if !yolo {resource_create_unrestricted := mod.widgets.HagencyTallSegment{text:A.pool_yolo_segment() enabled:!H.busy && H.command==nil on_click:||A.choose_resource_default("create",true)}}
                     }}
                 }
             }}
-            mod.widgets.HagencyListNote{text:if yolo {A.t("Full trust: new Codex Agents run without the workspace sandbox and never ask before using tools.","完全信任：新的 Codex Agent 不使用工作区沙箱，使用工具前也不会询问。")} else {A.t("Agents created in the new pool start with standard permissions.","新资源池里创建的 Agent 默认使用标准权限。")} draw_text.color:if yolo {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+            mod.widgets.HagencyListNote{text:if yolo && detail.resource.framework=="claude" {A.t("Full trust: new Claude Code Agents never ask before using tools; they stay inside their own work folders.","完全信任：新的 Claude Code Agent 使用工具前不会询问；仍只能读写各自的工作文件夹。")} else if yolo {A.t("Full trust: new Codex Agents run without the workspace sandbox and never ask before using tools.","完全信任：新的 Codex Agent 不使用工作区沙箱，使用工具前也不会询问。")} else {A.t("Agents created in the new pool start with standard permissions.","新资源池里创建的 Agent 默认使用标准权限。")} draw_text.color:if yolo {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
             mod.widgets.HagencyListLabel{text:A.t("MONTHLY MAXIMUM","每月上限")}
             mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:10 padding:Inset{left:12 right:12 top:12 bottom:12}
                 mod.widgets.HagencySegments{
@@ -17168,7 +17305,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
             let name=H.policy_detail.agent
             let full=H.policy_draft.executionPolicy.yolo
             mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust “"+name+"”?","要完全信任「"+name+"」吗？")} else {A.t("Use Standard Permissions?","改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking you first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求你批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this for an Agent you trust. It applies to its next task.","请只对你信任的 Agent 开启。下一个任务开始时生效。")} else {A.t("It applies to its next task.","下一个任务开始时生效。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17220,7 +17357,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         }}
         if kind=="create_trust" {View{width:Fill height:Fit flow:Down
             mod.widgets.HagencyAlertTitle{text:A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking you first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if H.resource_detail!=nil && H.resource_detail.resource.framework=="claude" {A.t("Agents created in this pool use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","这个资源池里新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else {A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking you first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")}}
             mod.widgets.HagencyAlertMessage{text:A.t("Only do this if you trust everyone who can request this pool. You can change it later.","请只在你信任所有申请者时开启。以后可以再改。")}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17232,7 +17369,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         if kind=="default_policy" {View{width:Fill height:Fit flow:Down
             let full=H.dpol.ask==true
             mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")} else {A.t("Use Standard Permissions?","新 Agent 改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking you first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Agents created from now on work inside their workspace and ask before doing more.","以后新建的 Agent 会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && A.dpol_framework()=="claude" {A.t("Agents created from now on use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","以后新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking you first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Agents created from now on work inside their workspace and ask before doing more.","以后新建的 Agent 会在工作区内运行，超出范围前会先请求批准。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this if you trust everyone who can request this pool. Existing Agents keep their own permissions.","请只在你信任所有申请者时开启。现有 Agent 保持各自的权限。")} else {A.t("Existing Agents keep their own permissions.","现有 Agent 保持各自的权限。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right

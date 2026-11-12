@@ -3,6 +3,12 @@
 //! switch; it is never hashed into an account identity. The native credential
 //! is read transiently for the fixed provider endpoint and an isolated native
 //! child. It is never serialized, logged or persisted by Hagency.
+//!
+//! An owner whose Claude Code runs on an API key, or on a bearer token for
+//! another endpoint, has no account UUID. That credential is read from the
+//! `env` block of the connected config folder's settings file, where the CLI
+//! itself reads it, and is bound as the endpoint plus a digest of the
+//! credential. It is held as briefly and never persisted either.
 use super::{ProviderError, ProviderPaths, failure};
 use hagency_agent_local::runtime::{ClaudeAccountStatus, Kind, claude_account_status};
 use hagency_runtime::claude::account::{AccountBinding, SharedCredential};
@@ -78,6 +84,105 @@ impl Token {
             .ok_or_else(unavailable)?;
         Ok(Self(token.into()))
     }
+}
+
+/// What the settings file selects in place of a claude.ai sign-in.
+// No Debug/Serialize/Clone, like Token.
+struct ApiSettings {
+    base_url: Option<String>,
+    credential: String,
+    models: Vec<(String, String)>,
+}
+impl ApiSettings {
+    /// `key` is the CLI's own verdict: an API key, else a bearer token. The
+    /// variable for that verdict must be here; one that exists only in the
+    /// owner's shell, a helper script or a cloud provider is not taken.
+    fn parse(bytes: &[u8], key: bool) -> Result<Self, ProviderError> {
+        let value: Value = serde_json::from_slice(bytes).map_err(|_| unavailable())?;
+        let env = value["env"].as_object().ok_or_else(unavailable)?;
+        let text = |name: &str| -> Result<Option<String>, ProviderError> {
+            match env.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) if !text.is_empty() => Ok(Some(text.clone())),
+                _ => Err(unavailable()),
+            }
+        };
+        // The CLI prefers the bearer token when both are set.
+        if key && text("ANTHROPIC_AUTH_TOKEN")?.is_some() {
+            return Err(unavailable());
+        }
+        let credential = text(if key {
+            "ANTHROPIC_API_KEY"
+        } else {
+            "ANTHROPIC_AUTH_TOKEN"
+        })?
+        .ok_or_else(unavailable)?;
+        let mut models = Vec::new();
+        for name in hagency_runtime::claude::account::MODEL_VARIABLES
+            .into_iter()
+            .chain([hagency_runtime::claude::account::MAIN_MODEL_VARIABLE])
+        {
+            if let Some(model) = text(name)? {
+                models.push((name.to_owned(), model));
+            }
+        }
+        Ok(Self {
+            base_url: text("ANTHROPIC_BASE_URL")?,
+            credential,
+            models,
+        })
+    }
+}
+
+/// The settings file is the owner's own and often world-readable. It must
+/// be a regular file of this user that nobody else can write.
+fn settings_file(config: &Path) -> Result<Vec<u8>, ProviderError> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
+    use std::io::Read;
+    const MAX_SETTINGS: usize = 1024 * 1024;
+    let directory = cap_std::fs::Dir::open_ambient_dir(config, cap_std::ambient_authority())
+        .map_err(|_| unavailable())?;
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let file = directory
+        .open_with("settings.json", &options)
+        .map_err(|_| unavailable())?
+        .into_std();
+    let meta = file.metadata().map_err(|_| unavailable())?;
+    if !meta.is_file() {
+        return Err(unavailable());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.mode() & 0o022 != 0 || meta.uid() != rustix::process::geteuid().as_raw() {
+            return Err(unavailable());
+        }
+    }
+    let mut bytes = Vec::new();
+    file.take((MAX_SETTINGS + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable())?;
+    if bytes.len() > MAX_SETTINGS {
+        return Err(unavailable());
+    }
+    Ok(bytes)
+}
+
+fn api_credential(
+    config: &Path,
+    key: bool,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    let settings = ApiSettings::parse(&settings_file(config)?, key)?;
+    SharedCredential::from_api_settings(
+        settings.base_url.as_deref(),
+        settings.credential,
+        key,
+        &settings.models,
+        deadline,
+    )
+    .map_err(|_| unavailable())
 }
 
 fn file_token(config: &Path) -> Result<Token, ProviderError> {
@@ -275,6 +380,78 @@ pub(in crate::console) async fn observe_for_launch(
     Ok(proof)
 }
 
+/// The claude.ai credential is not read at all on this path.
+async fn observe_api_settings(
+    paths: &ProviderPaths,
+    executable: &Path,
+    before: &ClaudeAccountStatus,
+    key: bool,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    let observed = api_credential(&paths.codex_home, key, deadline)?;
+    if *before != selected_status(executable, paths).await? {
+        return Err(failure(409, "provider_account_changed"));
+    }
+    // A settings file changed between the two reads is another account.
+    let again = api_credential(&paths.codex_home, key, deadline)?;
+    if again.binding().provider_digest() != observed.binding().provider_digest() {
+        return Err(failure(409, "provider_account_changed"));
+    }
+    Ok(again)
+}
+
+/// What a pool is made from: the sign-in of the connected configuration,
+/// whichever kind it is, observed exactly as a shared launch observes it. A
+/// configuration that is not signed in at all gets its own answer, so the
+/// page can say so.
+pub(in crate::console) async fn observe_for_pool(
+    paths: &ProviderPaths,
+    deadline: Instant,
+) -> Result<SharedCredential, ProviderError> {
+    let executable = super::external::executable(Kind::Claude)?;
+    super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
+    let observed = observe_for_pool_with(
+        paths,
+        &executable,
+        deadline,
+        PROFILE,
+        token(&paths.home, &paths.codex_home),
+    )
+    .await?;
+    super::external::verify_reference(&paths.codex_home, &paths.credential_ref)?;
+    Ok(observed)
+}
+async fn observe_for_pool_with(
+    paths: &ProviderPaths,
+    executable: &Path,
+    deadline: Instant,
+    endpoint: &str,
+    credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
+) -> Result<SharedCredential, ProviderError> {
+    if Instant::now() >= deadline {
+        return Err(unavailable());
+    }
+    let before = selected_status(executable, paths).await?;
+    if before.api_credential().is_none() && before.oauth_metadata().is_none() {
+        return Err(failure(409, "provider_connection_required"));
+    }
+    observe_signed_in(paths, executable, before, deadline, endpoint, credential).await
+}
+
+/// For display only, never a proof: whether the connected configuration has
+/// an API credential (true), a claude.ai sign-in (false) or neither.
+pub(in crate::console) async fn sign_in(
+    paths: &ProviderPaths,
+) -> Result<Option<bool>, ProviderError> {
+    let executable = super::external::executable(Kind::Claude)?;
+    let status = selected_status(&executable, paths).await?;
+    Ok(match status.api_credential() {
+        Some(_) => Some(true),
+        None if status.oauth_metadata().is_some() => Some(false),
+        None => None,
+    })
+}
+
 #[cfg(test)]
 async fn observe_selected(
     paths: &ProviderPaths,
@@ -301,6 +478,20 @@ async fn observe_credential(
         return Err(unavailable());
     }
     let before = selected_status(executable, paths).await?;
+    observe_signed_in(paths, executable, before, deadline, endpoint, credential).await
+}
+/// `before` is the sign-in the CLI reported at the start of this check.
+async fn observe_signed_in(
+    paths: &ProviderPaths,
+    executable: &Path,
+    before: ClaudeAccountStatus,
+    deadline: Instant,
+    endpoint: &str,
+    credential: impl std::future::Future<Output = Result<Token, ProviderError>>,
+) -> Result<SharedCredential, ProviderError> {
+    if let Some(key) = before.api_credential() {
+        return observe_api_settings(paths, executable, &before, key, deadline).await;
+    }
     if before.oauth_metadata().is_none() {
         return Err(unavailable());
     }

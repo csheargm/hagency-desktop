@@ -8,6 +8,7 @@ import threading
 
 root = pathlib.Path(sys.argv[1])
 requests = []
+credentials = []
 lock = threading.Lock()
 
 
@@ -30,6 +31,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             requests.append(data)
             turn = len(requests)
             (root / "api-requests.json").write_text(json.dumps(requests, indent=2))
+            # Which credential header each request carried, for the tests that
+            # inject one. Both values are synthetic.
+            credentials.append({name: self.headers.get(name) for name in ("authorization", "x-api-key")})
+            (root / "api-credentials.json").write_text(json.dumps(credentials, indent=2))
         text = f"Shared native reply {turn}"
         message = {
             "id": f"msg_shared_{turn}", "type": "message", "role": "assistant",

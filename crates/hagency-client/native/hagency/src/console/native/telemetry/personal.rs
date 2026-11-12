@@ -6,10 +6,15 @@ use hagency_metering::dashboard::ledger::{CountMode, CountScope, UsageSource};
 
 impl OwnerTelemetry {
     pub(crate) fn personal_usage(&self, binding: &ExecutionBinding, usage: &hagency_agent_local::Usage) -> Result<(), TelemetryError> {
+        self.terminal_usage(binding, usage, "personal-terminal")
+    }
+
+    /// One execution whose runtime reports its usage once, at its end.
+    pub(super) fn terminal_usage(&self, binding: &ExecutionBinding, usage: &hagency_agent_local::Usage, stream: &'static str) -> Result<(), TelemetryError> {
         let (input, cache_read, cache_write, output) = usage.category_counts();
         let event = UsageEvent {
             execution_id: binding.execution_id.clone(),
-            stream: "personal-terminal".into(),
+            stream: stream.into(),
             event_id: Some(binding.execution_id.clone()),
             sequence: Some(1),
             observed_at_ms: now_ms(),
@@ -26,7 +31,7 @@ impl OwnerTelemetry {
             },
         };
         let mut inner = self.lock()?;
-        let result = inner.bind(binding.clone()).and_then(|_| inner.event(event, "personal-terminal").map(|_| ()));
+        let result = inner.bind(binding.clone()).and_then(|_| inner.event(event, stream).map(|_| ()));
         inner.active.remove(&binding.execution_id);
         if let Err(error) = result {
             inner.mark_gap();

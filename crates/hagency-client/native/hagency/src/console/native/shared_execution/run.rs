@@ -75,12 +75,19 @@ async fn proof(
     sink: &Arc<SharedProcessSink>,
     a: &Activity,
 ) -> Result<(Bound, VerifiedSharedActivity), NativeError> {
-    let b = io.bound().await?;
-    let e = b.enrollment(r, sink.command(), true).await?;
-    let verified = sink
-        .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
-        .map_err(store)?;
-    Ok((b, verified))
+    // Read-only until it answers: a scope, the enrollment under it and a local
+    // comparison. Around a credential refresh the boundary refuses for a
+    // moment; that is waited out while the lease lasts instead of ending the
+    // turn, as the Claude driver does. A real revocation is not retried.
+    io.settled(a.until, || async {
+        let b = io.bound().await?;
+        let e = b.enrollment(r, sink.command(), true).await?;
+        let verified = sink
+            .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
+            .map_err(store)?;
+        Ok((b, verified))
+    })
+    .await
 }
 async fn renew(
     io: &Io,
@@ -89,7 +96,6 @@ async fn renew(
     control: &SharedTextActivityControl,
     a: &mut Activity,
 ) -> Result<(), NativeError> {
-    let (b, verified) = proof(io, r, sink, a).await?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| failure(503, "native_random_unavailable"))?;
     let id = format!(
@@ -99,9 +105,20 @@ async fn renew(
             .map(|v| format!("{v:02x}"))
             .collect::<String>()
     );
-    r.prepare_shared_renewal(verified, id.clone())
-        .await
-        .map_err(store)?;
+    // The proof and its local record are one retried step. A credential
+    // refresh between the two supersedes the proof, and the record's closing
+    // check then reports an unknown outcome, which ended the turn. The record
+    // is idempotent for one id, process and epoch, so the same id is recorded
+    // again under a fresh proof while the lease lasts.
+    let b = io
+        .settled(a.until, || async {
+            let (b, verified) = proof(io, r, sink, a).await?;
+            r.prepare_shared_renewal(verified, id.clone())
+                .await
+                .map_err(store)?;
+            Ok(b)
+        })
+        .await?;
     let started = Instant::now();
     let renewal = SharedActivityRenewInput {
         authority: a.lease.authority.clone(),
@@ -134,7 +151,9 @@ async fn maybe_renew(
     a: &mut Activity,
 ) -> Result<(), NativeError> {
     if a.until.saturating_duration_since(Instant::now()) <= Duration::from_secs(20) {
-        renew(io, r, sink, control, a).await?
+        renew(io, r, sink, control, a).await.inspect_err(|error| {
+            tracing::warn!(code = %error.code, "Shared activity renewal failed");
+        })?
     }
     Ok(())
 }
@@ -165,7 +184,18 @@ async fn prepare_while_active<T>(
             // across later renewals without rechecking that superseded proof.
             result = &mut preparation => return result,
             _ = tokio::time::sleep_until(wake.into()) => {
-                guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)).await?;
+                // The pending provider call keeps being polled beside the
+                // renewal: the renewal that refreshes the daemon's token takes
+                // seconds, and the call's own bound ran out meanwhile.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)),
+                    preparation.as_mut(),
+                )
+                .await;
+                renewed?;
+                if let Some(result) = finished {
+                    return result;
+                }
             }
         }
     }
@@ -197,9 +227,21 @@ async fn start_while_active(
             // Begin under the exact admitted proof before advancing its epoch.
             result = &mut start => return result.map(|()| None),
             _ = tokio::time::sleep_until(wake.into()) => {
-                match guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await {
-                    Ok(()) => continue,
-                    Err(error) => error,
+                // As in `prepare_while_active`: the start acknowledgement is
+                // read while the renewal runs, not after it.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)),
+                    start.as_mut(),
+                )
+                .await;
+                match (renewed, finished) {
+                    (Ok(()), None) => continue,
+                    (Ok(()), Some(result)) => return result.map(|()| None),
+                    // Acknowledged while its renewal failed: the outcome of
+                    // the retained wait below, without waiting again.
+                    (Err(error), Some(Ok(()))) => return Ok(Some(error)),
+                    (Err(error), Some(Err(_))) => return Err(error),
+                    (Err(error), None) => error,
                 }
             }
         };
@@ -239,6 +281,7 @@ pub(super) async fn run(
                 until,
                 cancel,
                 sender,
+                telemetry,
             )
             .await;
         }
@@ -353,7 +396,7 @@ async fn work_loop(
     cancel: &mut watch::Receiver<bool>,
     telemetry: &crate::console::native::telemetry::OwnerTelemetry,
 ) -> Result<(), NativeError> {
-    let (b, verified) = proof(io, r, sink, a).await?;
+    let (b, verified) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     if r.shared_bootstrap_requires_successor(verified)
         .await
         .map_err(store)?
@@ -375,7 +418,7 @@ async fn work_loop(
             .await?;
             continue;
         };
-        let (b, verified) = proof(io, r, sink, a).await?;
+        let (b, verified) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
         let reply: Timed<WorkReply> = guarded(cancel, a.until, || {
             b.upload(Action::WorkPoll(a.lease.authority.clone()), a.until)
         })
@@ -384,7 +427,7 @@ async fn work_loop(
             w.validate().map_err(store)?;
             if cfg!(feature = "shared-intake") {
                 super::demands::bind_work(&b, r, sink.command(), &w, verified, a.until).await?;
-                let (_, fresh) = proof(io, r, sink, a).await?;
+                let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
                 r.receive_shared_work(fresh, w.clone())
                     .await
                     .map_err(store)?;
@@ -415,17 +458,17 @@ async fn work_loop(
         .await?;
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     // Pin the exact V3 plaintext input before selecting the retained native session.
     let plaintext_input = if !work.encrypted {
         Some(guarded(cancel, a.until, || super::context_io::prepare(
             io, &b, r, p, &work, a.lease.authority.clone(), a.until)).await?)
     } else { None };
-    let (_, p) = proof(io, r, sink, a).await?;
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let mut native_session = prepare_while_active(io, r, sink, control, a, cancel, async {
         r.prepare_shared_native_session(p, work.clone(), process).await.map_err(store)
     }).await?;
-    let (b, _) = proof(io, r, sink, a).await?;
+    let (b, _) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let mut history = prepare_while_active(
         io,
         r,
@@ -487,7 +530,7 @@ async fn work_loop(
         } else {
             text
         };
-        let (_, fresh) = proof(io, r, sink, a).await?;
+        let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
         r.prepare_shared_decrypted_input(fresh, work.clone(), text).await.map_err(store)?
     } else {
         plaintext_input.ok_or_else(|| failure(409, "native_context_protocol_required"))?
@@ -503,12 +546,12 @@ async fn work_loop(
         super::files::Files::new(io, &b, &work, process, Some(&input)),
     )
     .await?;
-    let (_, p) = proof(io, r, sink, a).await?;
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let call = r.prepare_shared_input_call(p, work.clone(), input.clone())
         .await.map_err(store)?;
     let call_id = call.call_id.clone();
     let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let attempt = r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
         .await.map_err(store)?;
     let issued = guarded(cancel, a.until, || {

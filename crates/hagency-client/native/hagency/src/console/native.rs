@@ -130,6 +130,7 @@ mod account_retirement;
 mod account_login;
 mod account_models;
 mod account_enrollment;
+mod claude_account;
 pub use hagency_store::owner_resources::NamespaceEnrollment;
 pub use account_login::AccountLoginAuthorization;
 mod resource_onboarding;

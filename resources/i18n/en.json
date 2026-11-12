@@ -3045,5 +3045,6 @@
   "Approval becomes available after the encrypted details arrive.": "Approval becomes available after the encrypted details arrive.",
   "Waiting for resource owner {owner}": "Waiting for resource owner {owner}",
   "Session approval covers this Codex session only. It ends when this run stops.": "Session approval covers this Codex session only. It ends when this run stops.",
+  "Each approval covers this one tool call.": "Each approval covers this one tool call.",
   "Could not confirm permission status; retrying.": "Could not confirm permission status; retrying."
 }

@@ -158,10 +158,13 @@ pub async fn run<H: Host, C: Capture>(
     }
     host.start(wire, input).await?;
     // Claude binds its session on the first system/init event after prompt.
-    let init = wire
-        .next_message()
-        .await
-        .map_err(|_| Error::Protocol("Claude session init"))?;
+    // No frame in time and a wrong frame are different faults: say which.
+    let init = wire.next_message().await.map_err(|error| {
+        Error::Protocol(match error {
+            claude::session::Error::Timeout => "Claude session init timed out",
+            _ => "Claude session init",
+        })
+    })?;
     if !matches!(
         init,
         claude::Message::Event {

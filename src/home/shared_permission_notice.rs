@@ -111,6 +111,7 @@ impl SharedPermissionNotice {
         let hint=if !pending {crate::i18n::tr("Decision sent; waiting for Agent").to_owned()}
         else if row["encryptedPending"]==true {crate::i18n::tr("Approval becomes available after the encrypted details arrive.").into()}
         else if row["canDecide"]!=true {crate::i18n::format("Waiting for resource owner {owner}", &[("owner",a["ownerMxid"].as_str().unwrap_or("").to_owned())])}
+        else if a["request"]["method"]=="claude/can_use_tool" {crate::i18n::tr("Each approval covers this one tool call.").into()}
         else {crate::i18n::tr("Session approval covers this Codex session only. It ends when this run stops.").into()};
         self.view.label(cx,ids!(hint)).set_text(cx,if self.error.is_empty(){&hint}else{crate::i18n::tr(&self.error)});
         self.view.button(cx,ids!(once)).set_enabled(cx,can);

@@ -676,6 +676,45 @@ pub enum TurnStatus {
     Failed,
     Interrupted,
 }
+/// The reply of one personal turn, collected from its completed messages.
+/// Progress notes (phase `commentary`) are shown live but are not the answer;
+/// they stand in only when the turn produced nothing else. Messages are
+/// separated by a blank line, and text beyond the reply bound is cut at a
+/// character boundary instead of failing a turn that has already run.
+#[derive(Default)]
+struct ReplyText {
+    answer: String,
+    notes: String,
+}
+impl ReplyText {
+    const LIMIT: usize = 65536;
+    fn push(&mut self, message: &str, commentary: bool) {
+        let text = if commentary {
+            &mut self.notes
+        } else {
+            &mut self.answer
+        };
+        if message.is_empty() {
+            return;
+        }
+        let separator = if text.is_empty() { "" } else { "\n\n" };
+        let room = Self::LIMIT.saturating_sub(text.len() + separator.len());
+        if room == 0 {
+            return;
+        }
+        let mut end = message.len().min(room);
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.push_str(separator);
+        text.push_str(&message[..end]);
+    }
+    fn finish(&mut self) -> String {
+        let notes = std::mem::take(&mut self.notes);
+        let answer = std::mem::take(&mut self.answer);
+        if answer.is_empty() { notes } else { answer }
+    }
+}
 #[derive(Debug)]
 pub struct Completed {
     pub text: String,
@@ -1046,7 +1085,29 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             "thread/start"
         };
         let replaced_missing = prior.is_some();
-        let response = match self.rpc(method, params.clone()).await {
+        // Refused resumes of this saved thread, counted in memory for this
+        // host process (the counter the Claude sessions use).
+        let counted = prior
+            .as_ref()
+            .map(|thread| format!("personal-codex\n{context_key}\n{thread}"));
+        let resumed = match self.rpc(method, params.clone()).await {
+            // The app-server refused the resume without saying the thread is
+            // gone: a damaged rollout, or a wording this build does not know.
+            // One refusal says nothing about the saved thread, so it is kept
+            // and this message fails. A thread refused `LIMIT` times in a row
+            // is replaced like a missing one; otherwise every later message of
+            // the conversation would fail the same way for good.
+            Err(Error::Protocol("thread/resume rejected"))
+                if counted.as_deref().is_some_and(|counted| {
+                    hagency_runtime::claude::resume_failures::record(counted)
+                        >= hagency_runtime::claude::resume_failures::LIMIT
+                }) =>
+            {
+                Err(Error::ContextUnavailable)
+            }
+            result => result,
+        };
+        let response = match resumed {
             Err(Error::ContextUnavailable) => {
                 // Start a context for the current new request only. The old
                 // dispatch and its uncertain side effects remain terminal.
@@ -1067,6 +1128,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             }
             result => result?,
         };
+        if let Some(counted) = &counted {
+            // Resumed, or replaced by a thread that started.
+            hagency_runtime::claude::resume_failures::clear(counted);
+        }
         let thread = response["thread"]["id"]
             .as_str()
             .ok_or(Error::Protocol("thread identity missing"))?;
@@ -1370,7 +1435,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .ok_or(Error::Protocol("turn identity missing"))?
             .to_owned();
         let mut total: Option<Counters> = None;
-        let mut text = String::new();
+        let mut collected = ReplyText::default();
         let mut tree = hagency_runtime::codex::tree::TurnTree::new(thread, &turn)
             .map_err(|_| Error::Protocol("invalid root turn"))?;
         let mut room_turn = match (&self.room_mcp, &queue.room) {
@@ -1395,8 +1460,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut file_answer: Option<host_files::Answer> = None;
         let mut controls = controls::Controls::default();
         let mut callbacks_stopped = false;
-        for _ in 0..hagency_runtime::codex::session::MAX_EVENTS {
-            controls.expire()?;
+        // Every frame counts here, text and command-output deltas included,
+        // so a long turn with verbose tool output passes the shared state's
+        // event bound well before it is a runaway. The turn's time limit is
+        // the real bound; this one only stops an endless stream.
+        for _ in 0..16 * hagency_runtime::codex::session::MAX_EVENTS {
+            controls.expire();
             if controls.can_receive()
                 && let Some(pending) = stream
                     .as_mut()
@@ -1415,7 +1484,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 room_turn.take();
                 callbacks_stopped = true;
             }
-            if tree.is_complete() && controls.settled() {
+            // The host asked for a stop and Codex has not answered it in
+            // time. A turn that has ended meanwhile keeps its own result; its
+            // unanswered request keeps the process from being used again.
+            let overdue = controls.stop_overdue();
+            if tree.is_complete() && (controls.settled() || overdue) {
                 self.recover_native_usage(&mut tree).await;
                 let mut status = root_status
                     .take()
@@ -1460,7 +1533,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 }
                 return Ok((
                     Completed {
-                        text,
+                        text: collected.finish(),
                         usage,
                         status,
                         elapsed_seconds: started.elapsed().as_secs(),
@@ -1471,6 +1544,22 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     counters,
                 ));
             }
+            if overdue {
+                // Still running. No turn is retained, so the caller discards
+                // this process, which is the stop. Its usage stays unreported.
+                return Ok((
+                    Completed {
+                        text: collected.finish(),
+                        usage: crate::unreported_usage(),
+                        status: TurnStatus::Interrupted,
+                        elapsed_seconds: started.elapsed().as_secs(),
+                        tool_requests: tools.requested.len(),
+                        tool_returns: tools.returned.len(),
+                        late_failure: None,
+                    },
+                    None,
+                ));
+            }
             if let Some(frame) = controls.prepare(&tree, thread, &turn, &mut self.next_id)? {
                 self.write(frame).await?;
             }
@@ -1479,7 +1568,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 frame
             } else {
                 let read = tokio::select! { biased;
-                    _ = control_deadline.wait() => { controls.expire()?; continue; }
+                    _ = control_deadline.wait() => { controls.expire(); continue; }
                     frame = self.read_until(Deadline::UNBOUNDED) => frame,
                     next = crate::run_controls::next(&mut stream), if controls.can_receive() => {
                         controls.offer(next);
@@ -1542,7 +1631,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                             // stream; its incomplete usage remains reserved.
                             return Ok((
                                 Completed {
-                                    text,
+                                    text: collected.finish(),
                                     usage: crate::unreported_usage(),
                                     status,
                                     elapsed_seconds: started.elapsed().as_secs(),
@@ -1620,12 +1709,25 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     if !self.server_ids.insert(id_key) {
                         return Err(Error::Protocol("reused question ID"));
                     }
+                    // A question that cannot be shown (malformed, too large,
+                    // or one more than can wait at once) is answered with no
+                    // answers, as Codex itself does when its client cannot
+                    // ask: the model decides on its own and the turn goes on.
                     let request = hagency_runtime::codex::session::UserInputRequest::parse(
                         serde_json::from_value(frame["id"].clone())?,
                         params,
                     )
-                    .map_err(|_| Error::Protocol("invalid native question"))?;
-                    questions.ask(request, scope, dispatch, queue, self.callbacks_enabled)?;
+                    .ok()
+                    .filter(|_| !questions.full());
+                    match request {
+                        Some(request) => {
+                            questions.ask(request, scope, dispatch, queue, self.callbacks_enabled)?
+                        }
+                        None => {
+                            self.write(value!({"id":frame["id"],"result":{"answers":{}}}))
+                                .await?
+                        }
+                    }
                     continue;
                 }
                 #[cfg(unix)]
@@ -1701,10 +1803,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         let message = item["text"]
                             .as_str()
                             .ok_or(Error::Protocol("message missing"))?;
-                        if text.len() + message.len() > 65536 {
-                            return Err(Error::Protocol("text capacity"));
-                        }
-                        text.push_str(message);
+                        collected.push(message, item["phase"] == "commentary");
                         if let Some(output) = &queue.live_text {
                             output.complete(id, message);
                         }
@@ -1746,8 +1845,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let method = frame["method"].as_str().unwrap_or("");
         // Test/host shutdown can disable callbacks without granting anything.
         if !self.callbacks_enabled || approvals.full() {
-            self.decline(id, method).await?;
-            return Ok(());
+            return self.declined(id, method, "approvals_unavailable").await;
         }
         // A shared project is changed only through the host file tools. No
         // native command, file change or wider permission is approved there,
@@ -1776,10 +1874,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 p.clone(),
             ) {
                 Ok(request) => Some(request),
-                Err(_) => {
-                    self.decline(id, method).await?;
-                    return Ok(());
-                }
+                Err(_) => return self.declined(id, method, "request_shape").await,
             }
         } else {
             None
@@ -1807,8 +1902,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                             || v["status"] != "inProgress"
                     })
                 {
-                    self.decline(id, method).await?;
-                    return Ok(());
+                    return self.declined(id, method, "file_change_preview").await;
                 }
                 (
                     "codex.file_change".to_owned(),
@@ -1834,8 +1928,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     || p["_meta"]["codex_approval_kind"] != "mcp_tool_call"
                     || matches.len() != 1
                 {
-                    self.decline(id, method).await?;
-                    return Ok(());
+                    return self.declined(id, method, "elicitation_shape").await;
                 }
                 (
                     format!(
@@ -1846,10 +1939,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     value!({"request":p,"item":matches[0]}),
                 )
             }
-            _ => {
-                self.decline(id, method).await?;
-                return Ok(());
-            }
+            _ => return self.declined(id, method, "method").await,
         };
         let preview_missing =
             method == "item/fileChange/requestApproval" && arguments["item"].is_null();
@@ -1893,6 +1983,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             queue,
         );
         Ok(())
+    }
+    /// A request the owner is never shown is declined, and says so in the log.
+    /// The method is a protocol word; the request's content is not logged.
+    async fn declined(&mut self, id: Value, method: &str, cause: &'static str) -> Result<()> {
+        hagency_runtime::codex::approval::declined_unseen(method, cause);
+        self.decline(id, method).await
     }
     async fn decline(&mut self, id: Value, method: &str) -> Result<()> {
         if method == "item/permissions/requestApproval" {
@@ -2523,7 +2619,7 @@ mod tests {
                                 ),
                                 _ => (
                                     "item/commandExecution/requestApproval",
-                                    value!({"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":"touch forbidden","cwd":cwd,"startedAtMs":1}),
+                                    value!({"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":if kind == "command_lines" {"echo a > a.txt\ncat a.txt"} else {"touch forbidden"},"cwd":cwd,"startedAtMs":1}),
                                 ),
                             };
                             emit(&mut w, value!({"id":900,"method":method,"params":params})).await;
@@ -2908,6 +3004,53 @@ mod tests {
                 .unwrap(),
             (10, 0)
         );
+        drop(session);
+        task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn command_of_several_lines_reaches_the_owner_instead_of_being_declined() {
+        // Live 2026-11-11: `echo X > f` then `cat f` in one command was
+        // declined in 75 ms and the owner saw no request.
+        let (_temp, mut ledger, profile) = setup(false);
+        let (mut session, effects, task) = fake(
+            profile.cwd.to_str().unwrap().into(),
+            true,
+            true,
+            10,
+            "command_lines",
+        );
+        let (queue, mut ui) = approval_queue(2).unwrap();
+        session.initialize().await.unwrap();
+        session
+            .open_context(&mut ledger, &scope(), &profile)
+            .await
+            .unwrap();
+        let host = async {
+            let prompt = ui.recv().await.unwrap();
+            assert_eq!(
+                prompt.proposal.arguments["command"],
+                "echo a > a.txt\ncat a.txt"
+            );
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+            prompt.decide(true);
+        };
+        let result = async {
+            session
+                .run(
+                    &mut ledger,
+                    "@alice:test",
+                    &scope(),
+                    "call",
+                    "dispatch",
+                    "hello",
+                    BudgetMode::Postpaid,
+                    &queue,
+                )
+                .await
+        };
+        let (done, ()) = tokio::join!(result, host);
+        done.unwrap();
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
         drop(session);
         task.await.unwrap();
     }
@@ -3317,6 +3460,103 @@ mod tests {
         assert!(ledger.outstanding_calls("@alice:test").unwrap().is_empty());
         drop(session);
         task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn saved_thread_refused_three_times_in_a_row_is_replaced_by_a_fresh_one() {
+        let (_temp, mut ledger, profile) = setup(false);
+        let context = scope().context_key("@alice:test").unwrap();
+        ledger
+            .db
+            .execute(
+                "INSERT INTO contexts VALUES (?,?)",
+                (&context, "refused-thread"),
+            )
+            .unwrap();
+        ledger
+            .db
+            .execute("INSERT INTO codex_usage VALUES (?,?)", (&context, "null"))
+            .unwrap();
+        let limit = hagency_runtime::claude::resume_failures::LIMIT;
+        for attempt in 1..=limit {
+            // Each message opens the conversation with a new process.
+            let (mut session, _, task) = fake(
+                profile.cwd.to_str().unwrap().into(),
+                false,
+                true,
+                10,
+                "resume_denied",
+            );
+            session.initialize().await.unwrap();
+            let opened = session.open_context(&mut ledger, &scope(), &profile).await;
+            let saved: String = ledger
+                .db
+                .query_row(
+                    "SELECT model_session FROM contexts WHERE scope=?",
+                    [&context],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let baselines: i64 = ledger
+                .db
+                .query_row(
+                    "SELECT count(*) FROM codex_usage WHERE scope=?",
+                    [&context],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if attempt < limit {
+                assert!(
+                    matches!(opened, Err(Error::Protocol("thread/resume rejected"))),
+                    "attempt {attempt}"
+                );
+                assert_eq!(saved, "refused-thread", "attempt {attempt}");
+                assert_eq!(baselines, 1, "attempt {attempt}");
+            } else {
+                // The refusal that reaches the limit starts the fake's fresh
+                // thread for this message and resets only the usage baseline.
+                opened.unwrap();
+                assert_eq!(saved, "thread-a");
+                assert_eq!(baselines, 0);
+            }
+            drop(session);
+            task.await.unwrap();
+        }
+    }
+    #[test]
+    fn reply_text_is_the_answer_without_progress_notes() {
+        let mut reply = ReplyText::default();
+        reply.push("Looking at the files first.", true);
+        reply.push("The build fails in step 2.", false);
+        reply.push("", false);
+        reply.push("Fix: pin the toolchain.", false);
+        assert_eq!(
+            reply.finish(),
+            "The build fails in step 2.\n\nFix: pin the toolchain."
+        );
+
+        // Only progress notes: they are the reply rather than nothing.
+        let mut reply = ReplyText::default();
+        reply.push("Still working.", true);
+        reply.push("Stopping here.", true);
+        assert_eq!(reply.finish(), "Still working.\n\nStopping here.");
+
+        // A message without a phase (older app-servers) is part of the answer.
+        let mut reply = ReplyText::default();
+        reply.push("hello", false);
+        assert_eq!(reply.finish(), "hello");
+
+        // Past the bound the text is cut at a character boundary, not failed.
+        let mut reply = ReplyText::default();
+        reply.push(&"a".repeat(ReplyText::LIMIT - 1), false);
+        reply.push("never added: no room for the separator", false);
+        assert_eq!(reply.finish().len(), ReplyText::LIMIT - 1);
+        let mut reply = ReplyText::default();
+        reply.push("a", false);
+        reply.push(&"é".repeat(ReplyText::LIMIT), false);
+        let cut = reply.finish();
+        // One byte, the separator, then whole two-byte characters only.
+        assert_eq!(cut.len(), ReplyText::LIMIT - 1);
+        assert!(cut.ends_with('é'));
     }
     #[tokio::test]
     async fn resumed_context_without_response_receipts_retains_unresolved_usage() {

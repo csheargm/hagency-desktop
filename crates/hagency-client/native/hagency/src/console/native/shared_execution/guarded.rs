@@ -35,6 +35,35 @@ where
     })
 }
 
+/// Runs a lease renewal while the pending provider operation stays polled.
+///
+/// A provider call (`thread/resume`, `turn/start`) carries its own wall-clock
+/// bound. A renewal usually takes a fraction of a second, but the one that
+/// performs the daemon's token refresh takes several: awaited on its own it
+/// left the call unpolled for that long, and the call timed out the moment it
+/// was polled again, which ended the run and left its message unanswered.
+///
+/// The renewal always runs to its end, never dropped half-way: its epoch may
+/// already be applied on the server. If the operation finished meanwhile its
+/// result is handed back; it is not polled again after that.
+pub(super) async fn renew_beside<T, R, O>(
+    renewal: R,
+    mut operation: Pin<&mut O>,
+) -> (Result<(), NativeError>, Option<T>)
+where
+    R: Future<Output = Result<(), NativeError>>,
+    O: Future<Output = T>,
+{
+    tokio::pin!(renewal);
+    let mut finished = None;
+    loop {
+        tokio::select! {biased;
+            renewed = &mut renewal => return (renewed, finished),
+            result = &mut operation, if finished.is_none() => finished = Some(result),
+        }
+    }
+}
+
 /// Whether a driver's wait for the central reply is over.
 ///
 /// `reported` is `None` while the report itself is still being retried, and
@@ -68,6 +97,92 @@ mod tests {
         // A recorded stop or failure has no reply to wait for.
         assert!(reply_settled(Some(None), "failed"));
         assert!(reply_settled(Some(None), "unknown"));
+    }
+
+    /// The call's own bound (80 ms) is shorter than the renewal (300 ms) and
+    /// its answer arrives at 20 ms: it must be answered, not timed out.
+    #[tokio::test(start_paused = true)]
+    async fn a_bounded_call_is_answered_during_a_slow_renewal() {
+        let answer = Arc::new(tokio::sync::Notify::new());
+        let wake = answer.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            wake.notify_one();
+        });
+        let call = async {
+            tokio::time::timeout(Duration::from_millis(80), answer.notified())
+                .await
+                .map_err(|_| failure(409, "call_timed_out"))
+        };
+        tokio::pin!(call);
+        let renewal = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(())
+        };
+        let started = tokio::time::Instant::now();
+        let (renewed, finished) = renew_beside(renewal, call.as_mut()).await;
+        assert!(renewed.is_ok());
+        assert!(finished.expect("the call finished during the renewal").is_ok());
+        // The renewal was not cut short by the call's answer.
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    /// The control for the test above: the same call left unpolled for the
+    /// length of the renewal has run out of time when it is polled again.
+    #[tokio::test(start_paused = true)]
+    async fn the_same_call_times_out_when_the_renewal_is_awaited_alone() {
+        let answer = Arc::new(tokio::sync::Notify::new());
+        let call = async {
+            tokio::time::timeout(Duration::from_millis(80), async {
+                // Like a reply that needs reading once it has arrived.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::task::yield_now().await;
+                answer.notified().await
+            })
+            .await
+            .map_err(|_| failure(409, "call_timed_out"))
+        };
+        tokio::pin!(call);
+        // One poll, so the call's clock is running.
+        tokio::select! {biased;
+            _ = &mut call => panic!("the call cannot be answered yet"),
+            _ = std::future::ready(()) => {}
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        answer.notify_one();
+        assert_eq!(call.await.unwrap_err().code, "call_timed_out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_that_ends_first_leaves_the_call_pending_and_usable() {
+        let answer = Arc::new(tokio::sync::Notify::new());
+        let call = async {
+            answer.notified().await;
+            7u8
+        };
+        tokio::pin!(call);
+        let (renewed, finished) = renew_beside(async { Ok(()) }, call.as_mut()).await;
+        assert!(renewed.is_ok());
+        assert!(finished.is_none());
+        answer.notify_one();
+        assert_eq!(call.await, 7);
+    }
+
+    /// A finished call is not polled again (an `async` block would panic), and
+    /// a failed renewal still hands back what the call returned.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_renewal_still_returns_the_finished_call() {
+        let call = async { 7u8 };
+        tokio::pin!(call);
+        let renewal = async {
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(failure(409, "shared_execution_expired"))
+        };
+        let (renewed, finished) = renew_beside(renewal, call.as_mut()).await;
+        assert_eq!(renewed.unwrap_err().code, "shared_execution_expired");
+        assert_eq!(finished, Some(7));
     }
 
     #[tokio::test]

@@ -16,6 +16,8 @@ impl NativeManagement {
         self.with_intent(intent,self.enroll_account_resource_now(input,confirmed_until)).await
     }
     async fn enroll_account_resource_now(&self,input:NamespaceEnrollment,confirmed_until:Instant)->Result<OwnerResourceReceipt,NativeError>{
+        // The owner's own Claude Code configuration has no sign-in folder.
+        if input.account.account_id==super::claude_account::ACCOUNT {return self.enroll_claude_resource(input,confirmed_until).await;}
         #[cfg(not(feature="resource-adoption"))]
         {let _=(input,confirmed_until);Err(failure(409,"device_setup_required"))}
         #[cfg(feature="resource-adoption")]

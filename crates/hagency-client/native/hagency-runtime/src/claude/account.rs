@@ -11,15 +11,132 @@ use std::{
 };
 
 pub const PROVIDER: &str = "anthropic.claude_ai";
+/// An API key or a bearer token from the owner's own Claude Code settings, for
+/// Anthropic's API or another endpoint that speaks its protocol.
+pub const API_PROVIDER: &str = "claude_code.api_credential";
+/// Used when the owner's settings name no endpoint.
+pub const DEFAULT_ENDPOINT: &str = "https://api.anthropic.com";
+
+/// Which credential the host observed, and so which one it injects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    ClaudeAi,
+    AuthToken,
+    ApiKey,
+}
+
+/// A claude.ai sign-in token. It is a subscription credential, never an API
+/// credential, whichever variable carries it.
+fn subscription_token(credential: &str) -> bool {
+    credential.starts_with("sk-ant-oat")
+}
+
+/// An http(s) address without credentials, query or fragment; its host in
+/// lower case, without the trailing slashes.
+fn endpoint(value: &str) -> Option<(String, String)> {
+    let value = value.trim_end_matches('/');
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+    let authority = rest.split('/').next()?;
+    // `name`, `name:port` or a bracketed address, written out in full: an
+    // escaped or half-written host must not read as some other host than the
+    // one the CLI will call.
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !authority.ends_with(']') => (host, Some(port)),
+        _ => (authority, None),
+    };
+    if port.is_some_and(|port| port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let name = host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+    let address = host.len() > 2
+        && host.starts_with('[')
+        && host.ends_with(']')
+        && host[1..host.len() - 1]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'));
+    if !(name || address) {
+        return None;
+    }
+    // A fully qualified name with its final dot is the same host.
+    let host = host.trim_end_matches('.');
+    if value.len() > 256
+        || host.is_empty()
+        || !value.bytes().all(|b| b.is_ascii_graphic())
+        || value.contains(['@', '?', '#', '"', '\\'])
+    {
+        return None;
+    }
+    Some((value.into(), host.to_ascii_lowercase()))
+}
 
 #[derive(Clone)]
 pub struct AccountBinding {
+    provider: &'static str,
+    source: Source,
     subject: String,
     email: String,
     digest: String,
     expires: Instant,
+    own_endpoint: bool,
 }
 impl AccountBinding {
+    /// Trusted native provider adapter only, from the credential the CLI's
+    /// own settings select. The subject is the endpoint and a digest of the
+    /// credential: the same key at the same endpoint is the same account, and
+    /// neither value is accepted from Matrix, a webview or model output.
+    pub fn from_api_credential(
+        base_url: Option<&str>,
+        credential: &str,
+        key: bool,
+        expires: Instant,
+    ) -> Result<Self, Error> {
+        let (address, host) = endpoint(base_url.unwrap_or(DEFAULT_ENDPOINT)).ok_or(Error::Identity)?;
+        let anthropic = host == "anthropic.com" || host.ends_with(".anthropic.com");
+        if credential.is_empty()
+            || credential.len() > 8192
+            || !credential.bytes().all(|b| b.is_ascii_graphic())
+            || subscription_token(credential)
+            // A bearer token for Anthropic's own API is a claude.ai sign-in.
+            || (!key && anthropic)
+            || expires <= Instant::now()
+            || expires > Instant::now() + Duration::from_secs(60)
+        {
+            return Err(Error::Identity);
+        }
+        let fingerprint = canonical::digest(&json!({
+            "purpose":"hagency.claude.api-credential.v1","endpoint":address,"credential":credential
+        }))
+        .map_err(|_| Error::Identity)?;
+        let subject = canonical::encode(&json!({"endpoint":address,"credential":fingerprint}))
+            .map_err(|_| Error::Identity)?;
+        let digest = canonical::digest(&json!({"provider":API_PROVIDER,"subject":subject}))
+            .map_err(|_| Error::Identity)?;
+        Ok(Self {
+            provider: API_PROVIDER,
+            source: if key { Source::ApiKey } else { Source::AuthToken },
+            subject,
+            email: String::new(),
+            digest,
+            expires,
+            own_endpoint: !anthropic,
+        })
+    }
+    /// False for a claude.ai sign-in.
+    pub fn is_api_credential(&self) -> bool {
+        self.source != Source::ClaudeAi
+    }
+    /// The owner's settings name an endpoint that is not Anthropic's. What it
+    /// serves under a model name is the owner's word, not this policy's.
+    pub fn own_endpoint(&self) -> bool {
+        self.own_endpoint
+    }
+    pub fn provider(&self) -> &'static str {
+        self.provider
+    }
     /// Trusted native provider adapter only, after an authenticated profile
     /// request and unchanged selected-login check. Never accept these values
     /// from Matrix, configuration, a webview or model output.
@@ -55,10 +172,13 @@ impl AccountBinding {
         let digest = canonical::digest(&json!({"provider":PROVIDER,"subject":subject}))
             .map_err(|_| Error::Identity)?;
         Ok(Self {
+            provider: PROVIDER,
+            source: Source::ClaudeAi,
             subject,
             email: email.into(),
             digest,
             expires,
+            own_endpoint: false,
         })
     }
     pub fn subject(&self) -> &str {
@@ -85,23 +205,127 @@ impl AccountBinding {
 pub struct SharedCredential {
     binding: AccountBinding,
     token: String,
+    endpoint: Option<String>,
+    models: Vec<(&'static str, String)>,
+    main: Option<String>,
 }
+/// The owner's model mapping that a shared process keeps: what the aliases and
+/// the CLI's own background and sub-agent calls resolve to at the endpoint.
+pub const MODEL_VARIABLES: [&str; 5] = [
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+];
+/// The owner's own default model. A shared process is started with an
+/// explicit model, so this one is only offered as a choice, never injected.
+pub const MAIN_MODEL_VARIABLE: &str = "ANTHROPIC_MODEL";
 impl SharedCredential {
     pub fn from_authenticated_login(binding: AccountBinding, token: String) -> Result<Self, Error> {
         binding.check()?;
-        if token.is_empty() || token.len() > 8192 || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        if binding.source != Source::ClaudeAi
+            || token.is_empty()
+            || token.len() > 8192
+            || !token.bytes().all(|b| b.is_ascii_graphic())
+        {
             return Err(Error::Identity);
         }
-        Ok(Self { binding, token })
+        Ok(Self {
+            binding,
+            token,
+            endpoint: None,
+            models: Vec::new(),
+            main: None,
+        })
+    }
+    /// The API credential the binding was made from, with the same endpoint.
+    /// `models` holds values of MODEL_VARIABLES, and of MAIN_MODEL_VARIABLE,
+    /// from the same settings.
+    pub fn from_api_settings(
+        base_url: Option<&str>,
+        credential: String,
+        key: bool,
+        models: &[(String, String)],
+        expires: Instant,
+    ) -> Result<Self, Error> {
+        let binding = AccountBinding::from_api_credential(base_url, &credential, key, expires)?;
+        let address = match base_url {
+            Some(value) => Some(endpoint(value).ok_or(Error::Identity)?.0),
+            None => None,
+        };
+        let mut kept = Vec::new();
+        let mut main = None;
+        for (name, value) in models {
+            if !super::model_name(value) {
+                return Err(Error::Identity);
+            }
+            if name == MAIN_MODEL_VARIABLE {
+                main = Some(value.clone());
+                continue;
+            }
+            let name = MODEL_VARIABLES
+                .iter()
+                .find(|known| *known == name)
+                .ok_or(Error::Identity)?;
+            kept.push((*name, value.clone()));
+        }
+        Ok(Self {
+            binding,
+            token: credential,
+            endpoint: address,
+            models: kept,
+            main,
+        })
+    }
+    /// Model names the owner's settings give for this endpoint: their default
+    /// model first, then what the three aliases stand for. The names the CLI
+    /// uses only for its own background calls are not choices.
+    pub fn model_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        let aliases = MODEL_VARIABLES[..3]
+            .iter()
+            .filter_map(|known| self.models.iter().find(|(name, _)| name == known))
+            .map(|(_, value)| value.as_str());
+        for name in self.main.as_deref().into_iter().chain(aliases) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
     pub fn binding(&self) -> &AccountBinding {
         &self.binding
     }
     pub(crate) fn inject(&self, launch: &mut hagency_platform::Launch) -> Result<(), Error> {
         self.binding.check()?;
-        launch
-            .environment
-            .insert("CLAUDE_CODE_OAUTH_TOKEN".into(), self.token.clone().into());
+        let mut set = |name: &str, value: &str| {
+            launch.environment.insert(name.into(), value.into());
+        };
+        match self.binding.source {
+            Source::ClaudeAi => set("CLAUDE_CODE_OAUTH_TOKEN", &self.token),
+            Source::AuthToken | Source::ApiKey => {
+                set(
+                    if self.binding.source == Source::ApiKey {
+                        "ANTHROPIC_API_KEY"
+                    } else {
+                        "ANTHROPIC_AUTH_TOKEN"
+                    },
+                    &self.token,
+                );
+                if let Some(endpoint) = &self.endpoint {
+                    set("ANTHROPIC_BASE_URL", endpoint);
+                }
+                for (name, value) in &self.models {
+                    set(name, value);
+                }
+            }
+        }
+        // Without this the CLI hands an API credential to every command a
+        // tool runs, and a room member could have it printed. Claude Code
+        // 2.1.322 keeps the claude.ai token from those commands by itself;
+        // every kind of sign-in is still launched the same way.
+        set("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
         Ok(())
     }
 }
@@ -146,13 +370,29 @@ impl Metadata {
                 .is_none_or(|source| source == "none")
     }
     pub(crate) fn matches_injected(&self, binding: &AccountBinding) -> bool {
+        let none = |source: &Option<String>| source.as_deref().is_none_or(|s| s == "none");
         self.provider == "firstParty"
-            && self.token_source.as_deref() == Some("CLAUDE_CODE_OAUTH_TOKEN")
-            && self.api_key_source.as_deref().is_none_or(|s| s == "none")
-            && self
-                .email
-                .as_deref()
-                .is_none_or(|email| email == binding.email)
+            && match binding.source {
+                Source::ClaudeAi => {
+                    self.token_source.as_deref() == Some("CLAUDE_CODE_OAUTH_TOKEN")
+                        && none(&self.api_key_source)
+                        && self
+                            .email
+                            .as_deref()
+                            .is_none_or(|email| email == binding.email)
+                }
+                // Claude Code 2.1.322 reports these for the two variables.
+                Source::AuthToken => {
+                    self.token_source.as_deref() == Some("ANTHROPIC_AUTH_TOKEN")
+                        && none(&self.api_key_source)
+                        && self.email.is_none()
+                }
+                Source::ApiKey => {
+                    self.api_key_source.as_deref() == Some("ANTHROPIC_API_KEY")
+                        && none(&self.token_source)
+                        && self.email.is_none()
+                }
+            }
     }
 }
 
@@ -185,5 +425,156 @@ mod tests {
             json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}),
             json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty","email":"different@example.test"}),
         ] { assert!(!Metadata::read(&value).unwrap().matches_injected(&binding)); }
+    }
+    fn soon() -> Instant {
+        Instant::now() + Duration::from_secs(30)
+    }
+    #[test]
+    fn api_credential_identity_is_the_endpoint_and_the_credential() {
+        let gateway = Some("https://Gateway.example:8443/v1/");
+        let token = AccountBinding::from_api_credential(gateway, "token-one", false, soon()).unwrap();
+        assert!(token.is_api_credential());
+        assert_eq!(token.provider(), API_PROVIDER);
+        assert!(!token.subject().contains("token-one"), "the credential itself is never the subject");
+        let same = AccountBinding::from_api_credential(Some("https://Gateway.example:8443/v1"), "token-one", false, soon()).unwrap();
+        assert_eq!(token.provider_digest(), same.provider_digest(), "a trailing slash is not another account");
+        for (base, credential, key) in [
+            (gateway, "token-two", false),
+            (Some("https://other.example"), "token-one", false),
+            (None, "token-one", true),
+        ] {
+            let other = AccountBinding::from_api_credential(base, credential, key, soon()).unwrap();
+            assert_ne!(token.provider_digest(), other.provider_digest());
+        }
+        // Anthropic's own API takes a Console key, never a bearer token, and
+        // a claude.ai sign-in token is refused under either variable.
+        assert!(AccountBinding::from_api_credential(None, "sk-ant-api03-example", true, soon()).is_ok());
+        for (base, credential, key) in [
+            (None, "bearer-for-anthropic", false),
+            (Some("https://api.anthropic.com"), "bearer-for-anthropic", false),
+            (gateway, "sk-ant-oat01-example", false),
+            (None, "sk-ant-oat01-example", true),
+            (Some("ftp://gateway.example"), "token-one", false),
+            (Some("https://user@gateway.example"), "token-one", false),
+            (Some("https://gateway.example/?a=b"), "token-one", false),
+            (gateway, "", false),
+            (gateway, "has space", false),
+        ] {
+            assert!(AccountBinding::from_api_credential(base, credential, key, soon()).is_err(), "{base:?} {key}");
+        }
+        assert!(AccountBinding::from_api_credential(gateway, "token-one", false, Instant::now() + Duration::from_secs(61)).is_err());
+        // Anthropic's host written another way is still Anthropic's: a bearer
+        // token for it is refused, and a key for it is not an "own endpoint".
+        for base in ["https://api.anthropic.com.", "https://API.Anthropic.com:443", "https://api.anthropic.com./v1"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).is_err(), "{base}");
+            let key = AccountBinding::from_api_credential(Some(base), "sk-ant-api03-example", true, soon()).unwrap();
+            assert!(!key.own_endpoint(), "{base}");
+        }
+        // A host that is escaped or half-written is not an address at all.
+        for base in ["https://api.anthropic.com:", "https://api%2eanthropic%2ecom", "https://gateway.example:port", "https://[::1", "https://:4000"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).is_err(), "{base}");
+        }
+        for base in ["http://127.0.0.1:4000", "http://[::1]:4000", "https://gateway.example", "http://local_host-1.lan:8080/v1"] {
+            assert!(AccountBinding::from_api_credential(Some(base), "token-one", false, soon()).unwrap().own_endpoint(), "{base}");
+        }
+    }
+    #[test]
+    fn api_credential_is_injected_with_its_endpoint_mapping_and_the_subprocess_scrub() {
+        let models = [("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), "small-model".to_string())];
+        let launch = |credential: &SharedCredential| {
+            let mut launch = hagency_platform::Launch {
+                executable: "/bin/true".into(),
+                directory: "/".into(),
+                arguments: Vec::new(),
+                environment: Default::default(),
+                require_crash_containment: false,
+            };
+            credential.inject(&mut launch).unwrap();
+            launch
+                .environment
+                .into_iter()
+                .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let token = SharedCredential::from_api_settings(Some("http://127.0.0.1:4000/"), "token-one".into(), false, &models, soon()).unwrap();
+        let environment = launch(&token);
+        assert_eq!(environment["ANTHROPIC_AUTH_TOKEN"], "token-one");
+        assert_eq!(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:4000");
+        assert_eq!(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "small-model");
+        assert_eq!(environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1");
+        assert!(!environment.contains_key("ANTHROPIC_API_KEY") && !environment.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+        let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        let environment = launch(&key);
+        assert_eq!(environment["ANTHROPIC_API_KEY"], "sk-ant-api03-example");
+        assert_eq!(environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1");
+        assert!(!environment.contains_key("ANTHROPIC_BASE_URL") && !environment.contains_key("ANTHROPIC_AUTH_TOKEN"));
+        // A claude.ai sign-in travels as its own variable, with the same scrub.
+        let binding = AccountBinding::from_authenticated_profile(
+            "01234567-89ab-cdef-0123-456789abcdef", "89abcdef-0123-4567-89ab-cdef01234567",
+            "owner@example.test", soon()).unwrap();
+        let login = SharedCredential::from_authenticated_login(binding, "offline-fixture-only".into()).unwrap();
+        let environment = launch(&login);
+        assert_eq!(environment["CLAUDE_CODE_OAUTH_TOKEN"], "offline-fixture-only");
+        assert_eq!(environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1");
+        assert_eq!(environment.len(), 2, "{:?}", environment.keys());
+        // Only the model mapping travels; any other variable is refused.
+        for bad in [("ANTHROPIC_CUSTOM_HEADERS", "x: y"), ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "two words")] {
+            let models = [(bad.0.to_string(), bad.1.to_string())];
+            assert!(SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &models, soon()).is_err());
+        }
+        // A claude.ai binding cannot carry an API credential's fields, and the reverse.
+        assert!(SharedCredential::from_authenticated_login(key.binding().clone(), "x".into()).is_err());
+    }
+    #[test]
+    fn owner_model_names_are_offered_but_the_default_model_is_not_injected() {
+        let models = [
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "middle-model"),
+            ("ANTHROPIC_SMALL_FAST_MODEL", "small-model"),
+            ("ANTHROPIC_MODEL", "main-model"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "main-model"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "small-model"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let gateway = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &models, soon()).unwrap();
+        // The default first, then opus, sonnet, haiku; a name is listed once.
+        assert_eq!(gateway.model_names(), ["main-model", "middle-model", "small-model"]);
+        assert!(gateway.binding().own_endpoint());
+        let mut launch = hagency_platform::Launch {
+            executable: "/bin/true".into(),
+            directory: "/".into(),
+            arguments: Vec::new(),
+            environment: Default::default(),
+            require_crash_containment: false,
+        };
+        gateway.inject(&mut launch).unwrap();
+        assert!(!launch.environment.contains_key(std::ffi::OsStr::new("ANTHROPIC_MODEL")));
+        assert!(launch.environment.contains_key(std::ffi::OsStr::new("ANTHROPIC_SMALL_FAST_MODEL")));
+        let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        assert!(key.model_names().is_empty() && !key.binding().own_endpoint());
+        let proxied = SharedCredential::from_api_settings(Some("https://api.anthropic.com/"), "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        assert!(!proxied.binding().own_endpoint());
+        let bad = [("ANTHROPIC_MODEL".to_string(), "two words".to_string())];
+        assert!(SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &bad, soon()).is_err());
+    }
+    #[test]
+    fn injected_api_credential_must_be_the_source_the_process_reports() {
+        let token = AccountBinding::from_api_credential(Some("https://gateway.example"), "token-one", false, soon()).unwrap();
+        let key = AccountBinding::from_api_credential(None, "sk-ant-api03-example", true, soon()).unwrap();
+        let by_token = json!({"tokenSource":"ANTHROPIC_AUTH_TOKEN","apiProvider":"firstParty"});
+        let by_key = json!({"tokenSource":"none","apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"firstParty"});
+        assert!(Metadata::read(&by_token).unwrap().matches_injected(&token));
+        assert!(Metadata::read(&by_key).unwrap().matches_injected(&key));
+        assert!(!Metadata::read(&by_token).unwrap().matches_injected(&key));
+        assert!(!Metadata::read(&by_key).unwrap().matches_injected(&token));
+        for value in [
+            json!({"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty"}),
+            json!({"tokenSource":"ANTHROPIC_AUTH_TOKEN","apiProvider":"bedrock"}),
+            json!({"tokenSource":"ANTHROPIC_AUTH_TOKEN","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}),
+            json!({"tokenSource":"ANTHROPIC_AUTH_TOKEN","apiProvider":"firstParty","email":"owner@example.test"}),
+        ] {
+            let metadata = Metadata::read(&value).unwrap();
+            assert!(!metadata.matches_injected(&token) && !metadata.matches_injected(&key));
+            assert!(!metadata.matches(&token), "an API credential never passes as an ordinary sign-in");
+        }
     }
 }

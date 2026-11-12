@@ -25,6 +25,10 @@ impl Questions {
     pub fn clear(&mut self) {
         self.0.clear();
     }
+    /// No further question can wait beside the ones already asked.
+    pub fn full(&self) -> bool {
+        self.0.len() >= 8
+    }
     pub fn ask(
         &mut self,
         request: UserInputRequest,

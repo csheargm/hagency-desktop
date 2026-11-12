@@ -933,11 +933,12 @@ fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
     Some(delta)
 }
 
+/// The protocol error of a Claude Code installation below the floor. The host
+/// matches it to tell the owner to update the CLI.
+pub const CLAUDE_VERSION_REQUIRED: &str = "Claude Code 2.1.322 or newer is required";
 fn claude_initialize_error(error: claude::session::Error) -> Error {
     match error {
-        claude::session::Error::UnsupportedVersion => {
-            Error::Protocol("Claude Code 2.1.322 or newer is required")
-        }
+        claude::session::Error::UnsupportedVersion => Error::Protocol(CLAUDE_VERSION_REQUIRED),
         _ => Error::Protocol("Claude initialize"),
     }
 }
@@ -997,6 +998,15 @@ async fn permission(
 }
 type TurnResult = claude_turn::Outcome;
 
+/// Whether this input is a slash command that the Agent's owner sent to their
+/// own local Claude Agent. The owner's CLI then runs it (`/compact`, `/cost`,
+/// a command or skill from the owner's settings). A room member who is not
+/// the owner cannot run commands of the owner's CLI: their text stays a
+/// prompt.
+pub fn owner_command(owner: &str, scope: &Scope, input: &str) -> bool {
+    scope.requester == owner && input.starts_with('/')
+}
+
 struct PersonalClaudeHost<'a> {
     ledger: &'a mut Ledger,
     owner: &'a str,
@@ -1008,9 +1018,14 @@ struct PersonalClaudeHost<'a> {
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
-        process
-            .prompt(input)
-            .await
+        // The owner's own slash command runs as one. Anyone else's text, and
+        // any text the host wrapped, is a prompt and can never be a command.
+        let written = if owner_command(self.owner, self.scope, input) {
+            process.owner_command(input).await
+        } else {
+            process.prompt(input).await
+        };
+        written
             .map(|_| ())
             .map_err(|_| Error::Protocol("Claude prompt"))
     }
@@ -1347,6 +1362,20 @@ impl ClaudeAccountStatus {
         }
         Some((self.email.as_deref()?, self.organization.as_deref()?))
     }
+    /// The CLI uses an API key (true) or a bearer token (false) rather than a
+    /// claude.ai sign-in. Claude Code 2.1.322 reports these as `api_key` and
+    /// `oauth_token`; the second also covers a claude.ai token in the
+    /// environment, which the caller tells apart by the variable it finds.
+    pub fn api_credential(&self) -> Option<bool> {
+        if !self.authenticated || self.provider.as_deref() != Some("firstParty") {
+            return None;
+        }
+        match self.method.as_deref()? {
+            "api_key" => Some(true),
+            "oauth_token" => Some(false),
+            _ => None,
+        }
+    }
 }
 
 pub async fn claude_account_status(
@@ -1452,6 +1481,22 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_the_owners_own_slash_text_is_a_command() {
+        let scope = |requester: &str| Scope {
+            agent: "agent-a".into(),
+            binding: "binding-a".into(),
+            room: "!room:test".into(),
+            requester: requester.into(),
+            thread: "!room:test".into(),
+        };
+        assert!(owner_command("@owner:test", &scope("@owner:test"), "/compact"));
+        // Another room member may call the Agent, but not the owner's CLI.
+        assert!(!owner_command("@owner:test", &scope("@member:test"), "/compact"));
+        for text in ["compact", " /compact", "see /compact", ""] {
+            assert!(!owner_command("@owner:test", &scope("@owner:test"), text));
+        }
+    }
     #[test]
     fn references_require_exact_kind_hash_and_octos_profile() {
         let hash = "a".repeat(64);

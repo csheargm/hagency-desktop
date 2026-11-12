@@ -129,6 +129,30 @@ if kind == 'claude':
                 response = {'mcpServers':[{'name':'hagency_matrix','status':'connected','transport':'sdk','scope':'dynamic','source':'sdk','tools':[{'name':t['name']} for t in room_tools]}] if room_bound else []}
             send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':response}})
             continue
+        if mode == 'local_command' and prompt['message']['content'].startswith('/'):
+            # Captured CLI 2.1.322, input `/cost`: init follows the command,
+            # the reply is synthetic and the result carries no model totals.
+            session = 'offline-session'
+            text = 'Total cost:            $0.0000'
+            zero = {'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}
+            send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
+            lifecycle(prompt['uuid'], 'queued')
+            lifecycle(prompt['uuid'], 'started')
+            send({'type':'system','subtype':'init','session_id':session,'user_message_uuids':[prompt['uuid']]})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'local-command-message','model':'<synthetic>','role':'assistant','type':'message',
+                    'stop_reason':'end_turn','usage':zero,'content':[{'type':'text','text':text}]},
+                'local_command_source':'<local-command-stdout>' + text + '</local-command-stdout>',
+                'local_command_run':{'command':'usage','args':''}})
+            send({'type':'result','subtype':'success','is_error':False,'num_turns':0,'duration_api_ms':0,'stop_reason':None,
+                'session_id':session,'total_cost_usd':0,'usage':zero,'modelUsage':{},'model_usage_since_last_result':{},
+                'permission_denials':[],'result':text,'user_message_uuid':prompt['uuid'],'user_message_uuids':[prompt['uuid']],
+                'local_command':'cost','queued_turn_count':0,'result_index':0})
+            lifecycle(prompt['uuid'], 'completed')
+            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+            if not continuous:
+                break
+            continue
         process_count += 1
         session = 'offline-session'
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':

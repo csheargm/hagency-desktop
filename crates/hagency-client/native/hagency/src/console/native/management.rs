@@ -602,8 +602,24 @@ impl NativeManagement {
     pub async fn account_inventory(&self, query: service::AccountInventoryQuery) -> Result<service::AccountInventory, NativeError> {
         query.validate().map_err(store_error)?;
         let (context, session) = self.authorized().await?;
+        if query.id.as_deref() == Some(super::claude_account::ACCOUNT) {
+            return self.claude_account_detail(&context, &session, query.after).await;
+        }
+        let list = query.id.is_none();
+        let first = list && query.after.is_none();
         let result = session.account_inventory(&context, query).await;
-        self.finish(&context, result, false).await
+        let mut page = self.finish(&context, result, false).await?;
+        if list {
+            self.add_claude_account(&context, &session, &mut page, first).await;
+            // The sign-in check above takes time; the answer is for the
+            // authority that asked.
+            let (fresh, live) = self.authorized().await?;
+            if fresh != context {
+                return Err(failure(401, "management_scope_changed"));
+            }
+            live.authorize(&context, service::Permission::ReadAccounts).map_err(store_error)?;
+        }
+        Ok(page)
     }
     pub async fn resource_detail(
         &self,

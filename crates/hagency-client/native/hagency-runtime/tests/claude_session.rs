@@ -203,6 +203,27 @@ async fn native_claude_initialize_accepts_reports_of_the_accounts_own_hooks() {
     assert_eq!(driver.last_observation().unwrap().sequence(), 1);
 }
 #[tokio::test]
+async fn native_claude_hook_report_read_with_the_initialize_response_is_passed() {
+    // A session-start hook that ends as the CLI answers `initialize`: its
+    // result is read together with the response and waits in the buffer.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322"}}}));
+        let mut report = native_hook_reports().remove(1);
+        report["session_id"] = json!("session-one");
+        bytes.extend(encoded(report));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+}
+
+#[tokio::test]
 async fn native_claude_hook_reports_hide_no_authority_before_initialize() {
     for invalid in [permission("early"), init()] {
         let (mut driver, mut peer) = pair(4096, limits());
@@ -549,7 +570,7 @@ async fn installed_claude_local_command_uses_the_real_parser_and_completion_path
                 .await
                 .unwrap();
         }
-        driver.prompt("/usage").await.unwrap();
+        driver.owner_command("/usage").await.unwrap();
         let init = driver.next_message().await.unwrap();
         assert!(
             matches!(init, Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init")
@@ -586,6 +607,95 @@ async fn installed_claude_local_command_uses_the_real_parser_and_completion_path
     }
     driver.close();
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_claude_owner_command_is_written_as_it_is_and_a_prompt_never_is() {
+    // The owner's command: the CLI must see the slash first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(frame["type"], "user");
+    assert_eq!(frame["message"]["content"], "/cost");
+    assert_eq!(driver.phase(), Phase::Running);
+
+    // Anything that is not a command is refused here, before a write.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    assert!(driver.owner_command("cost").await.is_err());
+
+    // The same text as a prompt: the host line comes first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.prompt("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(
+        frame["message"]["content"],
+        format!("{}/cost", hagency_runtime::claude::PROMPT_LEAD)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_owner_command_init_may_take_as_long_as_the_command() {
+    // Captured from CLI 2.1.322: a local command's init follows the command.
+    // `/cost` on a subscription sign-in took 27 s before that init.
+    fn prelude(command: &str) -> Vec<u8> {
+        let mut bytes = encoded(json!({"type":"system","subtype":"session_state_changed",
+            "state":"running","session_id":"session-one"}));
+        for state in ["queued", "started"] {
+            bytes.extend(encoded(json!({"type":"command_lifecycle","command_uuid":command,
+                "state":state,"session_id":"session-one"})));
+        }
+        bytes
+    }
+    let frame_wait = Duration::from_millis(limits().event_wait_ms);
+    let lifetime = Duration::from_millis(limits().lifetime_ms);
+
+    // The owner's command: init arrives long after the frame wait.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+        tokio::time::sleep(frame_wait * 5).await;
+        peer.output.write_all(&encoded(init())).await.unwrap();
+    });
+    assert!(matches!(
+        message.unwrap(),
+        Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init"
+    ));
+    assert_eq!(driver.session_id(), Some("session-one"));
+    // After init the command is read like any turn: the frame wait is back.
+    let started = tokio::time::Instant::now();
+    assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+
+    // A prompt keeps the frame wait before init.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    prompt(&mut driver, &mut peer).await;
+    let started = tokio::time::Instant::now();
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+    assert_eq!(driver.phase(), Phase::Closed);
+
+    // A command that never reports ends with the session lifetime.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let opened = tokio::time::Instant::now();
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(opened.elapsed(), lifetime);
+    assert_eq!(driver.phase(), Phase::Closed);
 }
 
 #[tokio::test]
@@ -1010,10 +1120,26 @@ async fn native_claude_protocol_version_is_checked_before_any_prompt() {
         json!("3.0.0"),
         json!("2.01.321"),
         json!("2.1.322-beta"),
+        json!("2.1"),
+        json!("2.1.x"),
         json!("2.1.322"),
         json!("2.2.0"),
+        // A newer build is supported whatever it appends; a build of the
+        // floor itself is too, unless it is a pre-release of it.
+        json!("2.1.400-beta.1"),
+        json!("2.1.322.1"),
+        json!("2.1.322+build7"),
     ] {
-        let supported = version == "2.1.322" || version == "2.2.0" || version == "3.0.0";
+        let supported = [
+            "2.1.322",
+            "2.2.0",
+            "3.0.0",
+            "2.1.400-beta.1",
+            "2.1.322.1",
+            "2.1.322+build7",
+        ]
+        .iter()
+        .any(|v| version == *v);
         let (mut driver, mut peer) = pair(8192, limits());
         let (result, ()) = tokio::join!(driver.initialize(), async {
             let request = read(&mut peer).await;

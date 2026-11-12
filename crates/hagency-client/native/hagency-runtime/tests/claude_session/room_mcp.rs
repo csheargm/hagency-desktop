@@ -122,6 +122,27 @@ async fn bound(continuous: bool, tools: RoomTools) -> (Driver, Peer) {
     assert_eq!(driver.phase(), Phase::Ready);
     (driver, peer)
 }
+#[tokio::test]
+async fn claude_room_mcp_binding_passes_reports_of_the_accounts_own_hooks() {
+    // A hook that outlasts the CLI's start-up reports while the tools are
+    // bound. The reports are metadata and do not fail the binding.
+    let tools = RoomTools::history();
+    let (mut driver, mut peer) = pair(32768, limits());
+    initialize(&mut driver, &mut peer).await;
+    for report in native_hook_reports() {
+        emit(&mut peer, report).await;
+    }
+    let (bound, ()) = tokio::join!(driver.bind_room_tools(tools), bind_peer(&mut peer, tools));
+    bound.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
+
+    // Any other frame in that exchange still fails it.
+    let (mut driver, mut peer) = pair(32768, limits());
+    initialize(&mut driver, &mut peer).await;
+    emit(&mut peer, init()).await;
+    let (bound, _) = tokio::join!(driver.bind_room_tools(tools), read(&mut peer));
+    assert!(bound.is_err());
+}
 async fn active() -> (Driver, Peer) {
     let (mut driver, mut peer) = bound(false, RoomTools::history_and_files()).await;
     prompt(&mut driver, &mut peer).await;

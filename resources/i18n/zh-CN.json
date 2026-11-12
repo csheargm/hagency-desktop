@@ -3045,5 +3045,6 @@
   "Approval becomes available after the encrypted details arrive.": "收到加密详情后才能批准。",
   "Waiting for resource owner {owner}": "等待资源所有者 {owner} 批准",
   "Session approval covers this Codex session only. It ends when this run stops.": "会话批准仅限当前 Codex 会话，运行结束即失效。",
+  "Each approval covers this one tool call.": "每次批准只对这一次工具调用有效。",
   "Could not confirm permission status; retrying.": "无法确认权限状态，正在重试。"
 }

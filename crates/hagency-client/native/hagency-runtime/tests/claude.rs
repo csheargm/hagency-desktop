@@ -350,6 +350,30 @@ fn native_claude_stream_host_input() {
     let next: Value =
         serde_json::from_slice(&claude::prompt("next", Some("session-1")).unwrap()).unwrap();
     assert_eq!(next["session_id"], "session-1");
+    // A prompt is never a slash command of the owner's CLI: the host's line
+    // comes first, and the text itself is unchanged after it.
+    for text in ["/cost", "/compact now\nmore"] {
+        let led: Value =
+            serde_json::from_slice(&claude::prompt(text, Some("session-1")).unwrap()).unwrap();
+        assert_eq!(
+            led["message"]["content"],
+            format!("{}{text}", claude::PROMPT_LEAD)
+        );
+    }
+    for text in [" /cost", "see /cost", "a/b"] {
+        let plain: Value = serde_json::from_slice(&claude::prompt(text, None).unwrap()).unwrap();
+        assert_eq!(plain["message"]["content"], text);
+    }
+    // The account owner's command is the one text that goes out as written.
+    let command: Value =
+        serde_json::from_slice(&claude::owner_command("/compact now", Some("session-1")).unwrap())
+            .unwrap();
+    assert_eq!(command["message"]["content"], "/compact now");
+    assert_eq!(command["session_id"], "session-1");
+    for text in ["", "cost", " /cost"] {
+        assert_eq!(claude::owner_command(text, None), Err(claude::Error::Input));
+    }
+    assert!(claude::prompt(&format!("/{}", "x".repeat(MAX_TEXT_BYTES - 1)), None).is_ok());
     assert!(claude::prompt(&"x".repeat(MAX_TEXT_BYTES), None).is_ok());
     assert!(claude::prompt(&"x".repeat(MAX_TEXT_BYTES + 1), None).is_err());
     assert!(claude::prompt("", None).is_err());

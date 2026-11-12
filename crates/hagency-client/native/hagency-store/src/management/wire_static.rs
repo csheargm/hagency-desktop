@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, de::Error};
 
 fn known<E: Error>(text: String) -> Result<&'static str, E> {
     const LABELS: &[&str] = &[
-        super::PROTOCOL, "resource_binding", "managed_namespace", "subscription",
+        super::PROTOCOL, "resource_binding", "managed_namespace", "local_configuration", "subscription",
         "api_key", "unknown", "current_task_proof_required", "health", "tasks",
         "projects", "createdAt", "binding", "repositories", "worktrees", "specs",
         "issues", "activity", "create", "edit", "delete", "accept", "transition",

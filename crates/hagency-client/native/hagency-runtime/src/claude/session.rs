@@ -98,6 +98,8 @@ pub struct SessionDriver<R, W, E> {
     completion: lifecycle::Completion,
     continuous: bool,
     awaiting_init: bool,
+    /// The input being run is the owner's slash command, not a prompt.
+    owner_command: bool,
     prompt_id: Option<String>,
     prompt_started: bool,
     control: control::State,
@@ -172,6 +174,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             completion: Default::default(),
             continuous: false,
             awaiting_init: false,
+            owner_command: false,
             prompt_id: None,
             prompt_started: false,
             control: control::State::default(),
@@ -469,27 +472,61 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         }
         Err(Error::Capacity)
     }
+    /// Hook reports that were read together with the frame the last operation
+    /// ended on, for example a session-start hook that finished as the CLI
+    /// answered `initialize`. They are metadata (see `hook_report`). The
+    /// callers' rule that no other input may be waiting is unchanged: any
+    /// other buffered frame is still refused.
+    pub(super) async fn pass_buffered_hook_reports(&mut self) -> Result<(), Error> {
+        let until = self.wire.event_deadline();
+        for _ in 0..16 {
+            if !self.wire.has_buffered_input() {
+                return Ok(());
+            }
+            match self.wire.next(until).await?.message {
+                Message::Event {
+                    kind: EventKind::System,
+                    payload,
+                    ..
+                } if hook_report(&payload) => {}
+                _ => return Err(Error::Identity),
+            }
+        }
+        Err(Error::Capacity)
+    }
     /// Flushed stdin only: neither execution acknowledgement nor a task receipt.
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
         let operation = Operation::new(self, Phase::Ready)?;
-        let result = operation.driver.prompt_inner(text).await;
+        let result = operation.driver.prompt_inner(text, false).await;
         operation.finish(result)
     }
-    async fn prompt_inner(&mut self, text: &str) -> Result<WriteProgress, Error> {
+    /// A slash command of the account's owner, written as it is: no host line
+    /// and no task guidance before it, so the CLI runs it as a command. The
+    /// turn that follows is read like any other.
+    pub async fn owner_command(&mut self, text: &str) -> Result<WriteProgress, Error> {
+        let operation = Operation::new(self, Phase::Ready)?;
+        let result = operation.driver.prompt_inner(text, true).await;
+        operation.finish(result)
+    }
+    async fn prompt_inner(&mut self, text: &str, command: bool) -> Result<WriteProgress, Error> {
+        self.pass_buffered_hook_reports().await?;
         if self.wire.has_buffered_input() {
             return Err(Error::Identity);
         }
         if text.is_empty() || text.len() > super::MAX_TEXT_BYTES {
             return Err(Error::Protocol(super::Error::Input));
         }
-        let guided = self
-            .task_mcp
-            .as_ref()
-            .map(|helper| format!("{}\n\nAssigned task input:\n{}", helper.guidance(), text));
-        let bytes = super::prompt(
-            guided.as_deref().unwrap_or(text),
-            self.session_id.as_deref(),
-        )?;
+        let bytes = if command {
+            super::owner_command(text, self.session_id.as_deref())?
+        } else {
+            let guided = self.task_mcp.as_ref().map(|helper| {
+                format!("{}\n\nAssigned task input:\n{}", helper.guidance(), text)
+            });
+            super::prompt(
+                guided.as_deref().unwrap_or(text),
+                self.session_id.as_deref(),
+            )?
+        };
         let bytes = if self.continuous {
             let id = lifecycle::prompt_id();
             let mut value: serde_json::Value =
@@ -501,6 +538,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             bytes
         };
         self.awaiting_init = true;
+        self.owner_command = command;
         // Set before entering the writer: even a cancelled partial write can
         // have delivered model input and must never authorize fresh replay.
         self.prompt_started = true;
@@ -515,7 +553,17 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         operation.finish(result)
     }
     async fn next_inner(&mut self) -> Result<Message, Error> {
-        let deadline = self.callback_deadline()?;
+        let mut deadline = self.callback_deadline()?;
+        // The CLI reports init for a local command only when the command has
+        // finished, and a command may take long: `/cost` on a subscription
+        // sign-in asks the account service first (27 s measured with CLI
+        // 2.1.322, more than a minute seen). The frame wait would end that
+        // turn as a protocol failure. Until its init the command is bounded
+        // by the session lifetime, like the turn it is. No approval, stop or
+        // added message can be pending before init.
+        if self.awaiting_init && self.owner_command {
+            deadline = crate::deadline::Deadline::UNBOUNDED;
+        }
         // Current Claude emits command/state metadata before system/init. It
         // carries no usage or approval authority: bind its ID to the eventual
         // init, retain the same deadline, and keep init as observation one.

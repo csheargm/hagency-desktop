@@ -1259,6 +1259,8 @@ async fn heartbeat(
     use std::sync::atomic::Ordering;
     let first_expiry = deadline(&lease).unwrap_or_else(|_| Instant::now());
     let mut next = heartbeat_next(Instant::now(), first_expiry.min(device.valid_until()));
+    // Since when the device refresh after a renewal has had no answer.
+    let mut refresh_unanswered: Option<Instant> = None;
     let reason = loop {
         let Ok(expiry) = deadline(&lease) else {
             break "lease_deadline_elapsed";
@@ -1294,9 +1296,29 @@ async fn heartbeat(
             let fresh = tokio::select! {biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(fresh_expiry.into())=>break "device_refresh_deadline", result=console.authorized_device()=>result};
             let fresh = match fresh {
                 Ok(fresh) => fresh,
-                Err(super::Error::Unavailable) => break "device_refresh_transport",
+                // No answer says nothing about the device, and the lease was
+                // just renewed under the pinned identity. Keep that pin, renew
+                // again on the next pass and ask once more. Only a refresh
+                // that stays unanswered for a lease length stops the runtime;
+                // a refusal still stops it at once.
+                Err(super::Error::Unavailable) => {
+                    let now = Instant::now();
+                    let since = *refresh_unanswered.get_or_insert(now);
+                    if device_refresh_given_up(since, now) {
+                        break "device_refresh_transport";
+                    }
+                    tracing::warn!(
+                        stage = "device_refresh",
+                        unanswered_ms = now.saturating_duration_since(since).as_millis() as u64,
+                        "Device refresh got no answer; retrying with the next renewal"
+                    );
+                    next = heartbeat_next(now, fresh_expiry);
+                    tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(next.min(fresh_expiry).into())=>{} }
+                    continue;
+                }
                 _ => break "device_authorization_required",
             };
+            refresh_unanswered = None;
             if fresh.origin() != device.origin()
                 || fresh.issuer() != device.issuer()
                 || fresh.subject() != device.subject()
@@ -1319,6 +1341,11 @@ async fn heartbeat(
     );
     failed.store(if terminal { 1 } else { 2 }, Ordering::Release);
     stop.send_replace(true);
+}
+/// Whether a device refresh that has had no answer since `since` is given up:
+/// after the same grace as an unanswered running check.
+fn device_refresh_given_up(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= RUNNING_CHECK_GRACE
 }
 fn device_error(error: super::Error) -> RuntimeError {
     if matches!(error, super::Error::Unavailable) {
@@ -1351,7 +1378,22 @@ fn startup_check_failure(error: &codex::Error) -> RuntimeError {
         event = error.diagnostic_event(),
         "Local provider start-up check failed"
     );
-    RuntimeError::Provider
+    // An installation below the floor is not an account problem: the owner
+    // is told to update the CLI, as on the pooled path.
+    version_failure(error).unwrap_or(RuntimeError::Provider)
+}
+/// The owner-facing code of a CLI below the minimum version, if that is what
+/// failed.
+fn version_failure(error: &codex::Error) -> Option<RuntimeError> {
+    match error {
+        codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
+            Some(RuntimeError::Execution("codex_version_unsupported"))
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            Some(RuntimeError::Execution("claude_version_unsupported"))
+        }
+        _ => None,
+    }
 }
 fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
     let (kind, detail) = error.diagnostic();
@@ -1368,6 +1410,9 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
         codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
             RuntimeError::Execution("codex_version_unsupported")
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            RuntimeError::Execution("claude_version_unsupported")
         }
         codex::Error::Protocol(_) | codex::Error::EventScope { .. } | codex::Error::Json(_) => {
             RuntimeError::Execution("codex_protocol_mismatch")
@@ -2161,9 +2206,23 @@ async fn fresh_running<T: Transport>(
     execution: &str,
     cancel: &mut watch::Receiver<bool>,
 ) -> bool {
-    check_running(transport, lease, expected, execution, cancel)
-        .await
-        .is_ok()
+    // An answer decides at once. No answer says nothing about the run: one
+    // failed request here dropped a message that had been accepted and
+    // prepared, or an approval the owner had just given. It is asked again
+    // for the grace of the running check.
+    let give_up = tokio::time::Instant::now() + RUNNING_CHECK_GRACE;
+    loop {
+        match check_running(transport, lease, expected, execution, cancel).await {
+            Ok(()) => return true,
+            Err(RuntimeError::Transport) if tokio::time::Instant::now() < give_up => {}
+            Err(_) => return false,
+        }
+        tracing::warn!(
+            stage = "fresh_running_check",
+            "Running check got no answer before a step; asking again"
+        );
+        tokio::select! {biased; _=canceled(cancel)=>return false, _=tokio::time::sleep(Duration::from_secs(2))=>{}}
+    }
 }
 struct LiveToolGate {
     console: PinnedConsole,
@@ -2225,6 +2284,12 @@ async fn monitor_running<T: Transport>(
     prepared: &inbox::Prepared,
     mut cancel: watch::Receiver<bool>,
 ) -> RuntimeError {
+    // A check that gets no answer says nothing about the run. One slow
+    // request (a busy computer, an owner renewal in progress) ended a healthy
+    // turn as "outcome unknown". Only an answer ends the turn at once; no
+    // answer ends it after the grace. A server that cannot be reached is
+    // still fenced by the device lease, which the heartbeat must renew.
+    let mut unanswered_since: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {biased;_=canceled(&mut cancel)=>return RuntimeError::Stopped,_=tokio::time::sleep(Duration::from_secs(5))=>{}}
         match tokio::time::timeout(
@@ -2239,12 +2304,29 @@ async fn monitor_running<T: Transport>(
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                unanswered_since = None;
+                continue;
+            }
+            Ok(Err(RuntimeError::Transport)) | Err(_) => {}
             Ok(Err(error)) => return error,
-            Err(_) => return RuntimeError::Transport,
         }
+        let unanswered = unanswered_since
+            .get_or_insert_with(tokio::time::Instant::now)
+            .elapsed();
+        if unanswered >= RUNNING_CHECK_GRACE {
+            return RuntimeError::Transport;
+        }
+        tracing::warn!(
+            stage = "running_check",
+            unanswered_ms = unanswered.as_millis() as u64,
+            "Running check got no answer; the turn continues and the check is retried"
+        );
     }
 }
+/// How long the running check may go unanswered before the turn is given up.
+/// The same length as the device lease.
+const RUNNING_CHECK_GRACE: Duration = Duration::from_secs(30);
 /// Best effort only: this notification cannot trigger or retry provider work.
 async fn processing_notice<T: Transport>(
     transport: &T,
@@ -2483,9 +2565,13 @@ async fn run_turn<T: Transport>(
         } else { None }
     } else { None };
     let room_tools = room_bridge.is_some();
+    // The owner's slash command to their own Claude Agent reaches the CLI as
+    // written. Wrapped in room context it would be an ordinary prompt.
+    let owner_command = runtime::kind(&config.credential_ref) == runtime::Kind::Claude
+        && hagency_agent_local::runtime::owner_command(owner, &scope, &input);
     let input = match room_bridge.as_mut() {
-        Some((host, _)) => host.prompt(input).await,
-        None => input,
+        Some((host, _)) if !owner_command => host.prompt(input).await,
+        _ => input,
     };
     // Native extensions may execute during startup. Admit the request before
     // opening a provider or disturbing the retained conversation.
@@ -2940,6 +3026,16 @@ mod tests {
         std::fs::rename(&project, temp.path().join("old-project")).unwrap();
         std::fs::create_dir(&project).unwrap();
         assert_ne!(first, shared_workspace_pin(&project).unwrap());
+    }
+    #[test]
+    fn unanswered_device_refresh_is_retried_for_one_lease_length() {
+        let since = Instant::now();
+        assert!(!device_refresh_given_up(since, since));
+        assert!(!device_refresh_given_up(
+            since,
+            since + RUNNING_CHECK_GRACE - Duration::from_millis(1)
+        ));
+        assert!(device_refresh_given_up(since, since + RUNNING_CHECK_GRACE));
     }
     #[test]
     fn heartbeat_schedule_precedes_short_proof_deadline() {
@@ -5467,13 +5563,14 @@ for raw in sys.stdin:
             })
         }
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn running_monitor_preserves_transport_failure_instead_of_revoking_agent() {
         let (_stop, cancel) = watch::channel(false);
         let prepared = inbox::Prepared {
             dispatch: event(),
             execution_id: "execution-a".into(),
         };
+        let started = tokio::time::Instant::now();
         let result = monitor_running(
             &RunningFailureFake {
                 authorization: false,
@@ -5484,6 +5581,108 @@ for raw in sys.stdin:
         )
         .await;
         assert!(matches!(result, RuntimeError::Transport));
+        // Given up only after the grace, and not much later.
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(15), "{waited:?}");
+    }
+    /// What each running check returns, in order; `None` never answers.
+    struct RunningSequenceFake {
+        answers: StdMutex<std::collections::VecDeque<Option<RuntimeError>>>,
+    }
+    impl Transport for RunningSequenceFake {
+        async fn execute(&self, op: Op) -> Result<Response, RuntimeError> {
+            assert!(matches!(op, Op::AuthorizeTool { .. }));
+            let next = self.answers.lock().unwrap().pop_front();
+            match next.expect("more running checks than the test expects") {
+                Some(error) => Err(error),
+                None => std::future::pending().await,
+            }
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn running_monitor_survives_unanswered_checks_and_ends_on_an_answer() {
+        let (_stop, cancel) = watch::channel(false);
+        let prepared = inbox::Prepared {
+            dispatch: event(),
+            execution_id: "execution-a".into(),
+        };
+        // One check that hangs past its own time limit and one transport
+        // failure, as on a busy computer; then the server refuses the run.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    None,
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        let result = monitor_running(&fake, &lease(), &prepared, cancel).await;
+        assert!(matches!(result, RuntimeError::Authorization));
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+        assert!(fake.answers.lock().unwrap().is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn check_before_a_step_asks_again_when_it_gets_no_answer() {
+        let (_stop, mut cancel) = watch::channel(false);
+        // Two failed requests, then the server's refusal: all three are asked.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        assert!(!fresh_running(&fake, &lease(), &event(), "execution-a", &mut cancel).await);
+        assert!(fake.answers.lock().unwrap().is_empty());
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+
+        // No answer for the whole grace: given up, and not much later.
+        let started = tokio::time::Instant::now();
+        assert!(
+            !fresh_running(
+                &RunningFailureFake {
+                    authorization: false
+                },
+                &lease(),
+                &event(),
+                "execution-a",
+                &mut cancel
+            )
+            .await
+        );
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(5), "{waited:?}");
+    }
+    #[test]
+    fn a_cli_below_the_floor_is_reported_as_such_at_start_up() {
+        let codex = codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED);
+        let claude =
+            codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED);
+        assert!(matches!(
+            startup_check_failure(&codex),
+            RuntimeError::Execution("codex_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            provider_failure("turn", &claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&codex::Error::Protocol("Claude initialize")),
+            RuntimeError::Provider
+        ));
     }
     struct RestartLeaseFake {
         history_calls: std::sync::atomic::AtomicUsize,

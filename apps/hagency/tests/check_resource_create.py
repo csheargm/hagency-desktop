@@ -17,7 +17,7 @@ CASES={
 'default_source_inherited':'H.resource_detail.executionPolicy={yolo:true} A.create_resource_configuration() assert(H.resource_create_draft.yolo) A.submit_resource_creation() let {executionPolicy=nil}=sent[0].args assert(executionPolicy==nil && sent[0].service=="hagency.resources.create")',
 'default_overridden':'H.resource_detail.executionPolicy={yolo:true} A.create_resource_configuration() A.choose_resource_default("create",false) A.submit_resource_creation() assert(sent.len()==1 && sent[0].args.executionPolicy.yolo==false && H.resource_detail.executionPolicy.yolo)',
 'default_enabled':'A.create_resource_configuration() A.choose_resource_default("create",true) A.submit_resource_creation() assert(sent.len()==1 && sent[0].args.executionPolicy.yolo)',
-'default_unsupported_refused':'H.resource_detail.resource.framework="claude" A.create_resource_configuration() A.choose_resource_default("create",true) assert(!H.resource_create_draft.yolo) H.resource_create_draft.yolo=true A.submit_resource_creation() assert(sent.len()==0)',
+'default_unsupported_refused':'H.resource_detail.resource.framework="octos" A.create_resource_configuration() A.choose_resource_default("create",true) assert(!H.resource_create_draft.yolo) H.resource_create_draft.yolo=true A.submit_resource_creation() assert(sent.len()==0)',
 
  'published_source':'''A.create_resource_configuration() assert(H.page=="resource_create" && H.resource_create_draft.sourceResourceId=="resource_original" && H.resource_create_draft.tokens=="700" && sent.len()==0 && H.resource_detail.resource.published)''',
  'offered_source':'''H.resource_detail.editing.reason="previously_offered" A.create_resource_configuration() assert(H.page=="resource_create")''',

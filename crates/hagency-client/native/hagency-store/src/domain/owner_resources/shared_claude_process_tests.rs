@@ -7,24 +7,28 @@ use hagency_runtime::{
 use sha2::{Digest, Sha256};
 
 pub(super) async fn fixture_claude() -> (Fixture, AccountBinding) {
-    let temp = tempfile::tempdir().unwrap();
-    let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
-    let profile = authority('a');
-    let until = Instant::now() + Duration::from_secs(45);
     let binding = AccountBinding::from_authenticated_profile(
         "01234567-89ab-cdef-0123-456789abcdef",
         "89abcdef-0123-4567-89ab-cdef01234567",
         "owner@example.test",
-        until,
+        Instant::now() + Duration::from_secs(45),
     )
     .unwrap();
+    fixture_claude_bound(binding, "claude-opus-5").await
+}
+/// The same enrolled resource and grant for any binding the host observed.
+pub(super) async fn fixture_claude_bound(binding: AccountBinding, model: &str) -> (Fixture, AccountBinding) {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
+    let profile = authority('a');
+    let until = binding.expires();
     let provider = VerifiedProviderAccount::from_claude_binding(binding.clone()).unwrap();
     let resource = registry
         .prepare_enrollment(
             profile.clone(),
             "claude_provider".into(),
             provider,
-            "claude-opus-5".into(),
+            model.into(),
             Some("medium".into()),
             1000,
             until,
@@ -51,6 +55,111 @@ pub(super) async fn fixture_claude() -> (Fixture, AccountBinding) {
         },
         binding,
     )
+}
+/// A pool made from the owner's API key or endpoint token: no sign-in folder,
+/// one seat per endpoint and credential, and a model on the owner's own
+/// endpoint is shared for the coding roles whatever it is called.
+#[tokio::test]
+async fn claude_api_credential_enrolls_without_a_folder_and_marks_the_owners_own_endpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
+    let profile = authority('a');
+    let until = || Instant::now() + Duration::from_secs(45);
+    let gateway = || {
+        VerifiedProviderAccount::from_claude_binding(
+            AccountBinding::from_api_credential(Some("https://gateway.example"), "token-one", false, until()).unwrap(),
+        )
+        .unwrap()
+    };
+    let enroll = |command: &str, proof: VerifiedProviderAccount, model: &str| {
+        registry
+            .prepare_enrollment(profile.clone(), command.into(), proof, model.into(), Some("medium".into()), 1000, until())
+            .unwrap()
+            .approve()
+    };
+    let own = enroll("own_endpoint", gateway(), "open-model-a").await.unwrap();
+    let summary = registry.resource(&profile, own.resource_id.clone()).await.unwrap();
+    assert_eq!((summary.framework.as_str(), summary.model.as_str()), ("claude", "open-model-a"));
+    assert_eq!(summary.capabilities, ["coding", "testing", "integration", "documentation"]);
+    assert!(
+        registry.resource_namespace(profile.clone(), own.resource_id.clone(), summary.revision.clone()).await.unwrap().is_none(),
+        "the shared launch takes a Claude resource only without a sign-in folder"
+    );
+    // The same command again is the same receipt; a second model is a second
+    // pool on the same seat.
+    let again = enroll("own_endpoint", gateway(), "open-model-a").await.unwrap();
+    assert_eq!(again.resource_id, own.resource_id);
+    let second = enroll("own_endpoint_second", gateway(), "open-model-b").await.unwrap();
+    assert_ne!(second.resource_id, own.resource_id);
+    registry.verify_provider_resource(profile.clone(), second.resource_id.clone(), gateway()).await.unwrap();
+    // Another credential is not this resource's account.
+    let other = VerifiedProviderAccount::from_claude_binding(
+        AccountBinding::from_api_credential(Some("https://gateway.example"), "token-two", false, until()).unwrap(),
+    )
+    .unwrap();
+    assert!(registry.verify_provider_resource(profile.clone(), own.resource_id.clone(), other).await.is_err());
+
+    // A Console key on Anthropic's endpoint is rated by the table: a name it
+    // knows keeps its own roles, and nothing marks the resource.
+    let key = VerifiedProviderAccount::from_claude_binding(
+        AccountBinding::from_api_credential(None, "sk-ant-api03-example", true, until()).unwrap(),
+    )
+    .unwrap();
+    let rated = enroll("anthropic_key", key, "claude-opus-5").await.unwrap();
+    let summary = registry.resource(&profile, rated.resource_id).await.unwrap();
+    assert!(summary.capabilities.contains(&"architect".to_owned()), "{:?}", summary.capabilities);
+}
+/// The owner's Claude Code configuration is one account with no sign-in folder
+/// to tell its pools apart. A second pool of the same model and reasoning, and
+/// a new one after the first was deleted, is a pool of its own.
+#[tokio::test]
+async fn claude_configuration_makes_another_pool_of_the_same_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = OwnerResourceRegistry::open_root(&temp.path().join("owner")).unwrap();
+    let profile = authority('a');
+    let until = || Instant::now() + Duration::from_secs(45);
+    let proof = || {
+        VerifiedProviderAccount::from_claude_binding(
+            AccountBinding::from_authenticated_profile(
+                "01234567-89ab-cdef-0123-456789abcdef",
+                "89abcdef-0123-4567-89ab-cdef01234567",
+                "owner@example.test",
+                until(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let enroll = |command: &str, tokens: u64| {
+        registry
+            .prepare_enrollment(profile.clone(), command.into(), proof(), "claude-opus-5".into(), Some("medium".into()), tokens, until())
+            .unwrap()
+            .approve()
+    };
+    let first = enroll("first", 1000).await.unwrap();
+    // Asking for exactly the pool that is there is that pool, not a copy.
+    assert_eq!(enroll("first_again", 1000).await.unwrap().resource_id, first.resource_id);
+    // Another monthly maximum is another pool; the first keeps its own.
+    let second = enroll("second", 2000).await.expect("a second pool of the same model");
+    assert_ne!(second.resource_id, first.resource_id);
+    assert!(second.active);
+    assert_eq!(enroll("second", 2000).await.unwrap().resource_id, second.resource_id, "the same command is the same receipt");
+    for id in [&first.resource_id, &second.resource_id] {
+        let summary = registry.resource(&profile, id.clone()).await.unwrap();
+        assert_eq!((summary.framework.as_str(), summary.model.as_str(), summary.reasoning.as_deref()), ("claude", "claude-opus-5", Some("medium")));
+        registry.verify_provider_resource(profile.clone(), id.clone(), proof()).await.unwrap();
+    }
+    // Deleting the first pool does not use the model up.
+    registry
+        .prepare_revoke(profile.clone(), "delete_first".into(), first.resource_id.clone(), until())
+        .unwrap()
+        .approve()
+        .await
+        .unwrap();
+    let third = enroll("third", 3000).await.expect("a new pool after the first was deleted");
+    assert!(third.active);
+    assert!(third.resource_id != first.resource_id && third.resource_id != second.resource_id);
+    assert!(registry.resource(&profile, first.resource_id.clone()).await.is_err(), "the deleted pool stays deleted");
 }
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_CLAUDE_RUNTIME_PROBE offline supervised child"]

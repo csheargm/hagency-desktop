@@ -98,18 +98,36 @@ impl Approvals {
         } else {
             request_json.clone()
         };
-        let reply: Timed<Value> = b
-            .upload(
-                Action::ApprovalRegister {
-                    authority: a.clone(),
-                    work: work.clone(),
-                    id: id.clone(),
-                    request: wire.clone(),
-                    remaining_ms: remaining,
-                },
-                until,
-            )
-            .await?;
+        // The server returns the row it already holds for the same id and
+        // request, so a registration refused during a credential refresh is
+        // sent again under a fresh scope instead of failing the turn.
+        let mut rebound: Option<Bound> = None;
+        let reply: Timed<Value> = loop {
+            let error = match rebound
+                .as_ref()
+                .unwrap_or(b)
+                .upload(
+                    Action::ApprovalRegister {
+                        authority: a.clone(),
+                        work: work.clone(),
+                        id: id.clone(),
+                        request: wire.clone(),
+                        remaining_ms: remaining,
+                    },
+                    until,
+                )
+                .await
+            {
+                Ok(reply) => break reply,
+                Err(error) => error,
+            };
+            if !io.transient(&error) || Instant::now() + io::RETRY_GAP >= until {
+                return Err(error);
+            }
+            tracing::info!(code = %error.code, "Shared approval registration resubmitting");
+            tokio::time::sleep(io::RETRY_GAP).await;
+            rebound = Some(io.settled(until, || io.bound()).await?);
+        };
         if reply.value["approval"]["id"] != id
             || reply.value["approval"]["workId"] != work.id
             || reply.value["approval"]["request"] != wire
@@ -169,11 +187,20 @@ impl Approvals {
     ) -> Result<Option<SharedWorkReceipt>, NativeError> {
         let mut i = 0;
         while i < self.pending.len() {
+            // Codex withdrew this request, or the turn that asked ended: the
+            // process no longer holds its callback and nothing waits for an
+            // answer. Deciding or expiring it would fail the whole turn.
+            if process.approval_deadline(self.pending[i].request.id()).is_err() {
+                self.pending.remove(i);
+                continue;
+            }
             let p = &mut self.pending[i];
+            let mut expired = false;
             let decision = if tokio::time::Instant::now() >= p.deadline {
                 process
                     .expire_approval(p.request.id())
                     .map_err(|_| invalid())?;
+                expired = true;
                 Some("deny".to_owned())
             } else {
                 if let Some(e) = &mut p.encrypted {
@@ -205,7 +232,7 @@ impl Approvals {
                         continue;
                     }
                 }
-                let reply: Timed<Value> = b
+                let reply: Timed<Value> = match b
                     .upload(
                         Action::ApprovalTake {
                             authority: a.clone(),
@@ -214,7 +241,18 @@ impl Approvals {
                         },
                         until,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(reply) => reply,
+                    // Refused during a credential refresh: nothing was decided
+                    // here. Ask again on the next pass, under a fresh scope.
+                    Err(error) if io.transient(&error) => {
+                        tracing::info!(code = %error.code, "Shared approval decision read retrying");
+                        i += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 if reply.value["id"] != p.id || reply.value["digest"] != p.digest {
                     return Err(invalid());
                 }
@@ -251,10 +289,20 @@ impl Approvals {
                     reply.value["decision"].as_str().map(str::to_owned)
                 }
             };
-            let Some(decision) = decision else {
+            let Some(mut decision) = decision else {
                 i += 1;
                 continue;
             };
+            // An answer read just before the owner bound can no longer be
+            // prepared before it. From the bound on the process accepts only
+            // its own decline, so the request expires instead of the turn
+            // failing on the late answer.
+            if !expired && tokio::time::Instant::now() >= p.deadline {
+                process
+                    .expire_approval(p.request.id())
+                    .map_err(|_| invalid())?;
+                decision = "deny".to_owned();
+            }
             let p = self.pending.remove(i);
             let response = match decision.as_str() {
                 "approve_once" => p.request.response(true),

@@ -27,7 +27,8 @@ struct Stop {
     until: Instant,
     targets: BTreeSet<Key>,
     accepted: usize,
-    refused: usize,
+    // Each refusal keeps its turn, and whether Codex said that turn was over.
+    refused: Vec<(Key, bool)>,
     unsupported: usize,
     acknowledged: bool,
 }
@@ -91,25 +92,27 @@ impl Controls {
             .map(Deadline::from)
             .unwrap_or(Deadline::UNBOUNDED)
     }
-    pub fn expire(&mut self) -> Result<()> {
+    /// The host asked for a stop and Codex has not answered it in time. The
+    /// turn then ends without a retained turn, so its caller discards this
+    /// process; for a turn that is still running, that is the stop.
+    pub fn stop_overdue(&self) -> bool {
         let now = Instant::now();
-        if self
-            .stop
+        self.stop
             .as_ref()
             .is_some_and(|s| s.original.is_some() && s.until <= now)
             || self
                 .requests
                 .values()
                 .any(|r| matches!(r.kind, Kind::Interrupt(_)) && r.until <= now)
-        {
-            // The host requested interruption. An unconfirmed native stop
-            // cannot return this process to the warm-session cache.
-            return Err(Error::Timeout);
-        }
+    }
+    pub fn expire(&mut self) {
+        let now = Instant::now();
+        // Only a steer expires here. An overdue interrupt stays registered:
+        // `stop_overdue` ends the turn and nothing reuses this process.
         let expired: Vec<_> = self
             .requests
             .iter()
-            .filter(|(_, r)| r.until <= now)
+            .filter(|(_, r)| matches!(r.kind, Kind::Steer { .. }) && r.until <= now)
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
@@ -122,7 +125,6 @@ impl Controls {
                 self.late.insert(id, turn);
             }
         }
-        Ok(())
     }
     /// Register the exact request before writing. Dropping the run after a
     /// partial write returns Unknown through the original pending action.
@@ -145,7 +147,7 @@ impl Controls {
                         until: Instant::now() + Duration::from_secs(10),
                         targets: BTreeSet::new(),
                         accepted: 0,
-                        refused: 0,
+                        refused: Vec::new(),
                         unsupported: 0,
                         acknowledged: false,
                     });
@@ -238,7 +240,7 @@ impl Controls {
                 match outcome {
                     Outcome::Accepted => stop.accepted += 1,
                     Outcome::Unsupported => stop.unsupported += 1,
-                    _ => stop.refused += 1,
+                    _ => stop.refused.push((key, already_ended(frame))),
                 }
             }
         }
@@ -256,11 +258,18 @@ impl Controls {
         let Some(stop) = &mut self.stop else {
             return Ok(());
         };
+        // A sub-agent can finish while the interrupt for it is on its way.
+        // A refusal for a turn that has ended by itself is not a failed stop.
+        let refused = stop
+            .refused
+            .iter()
+            .filter(|((thread, turn), ended)| !ended && tree.is_active(thread, turn))
+            .count();
         if stop.accepted == 0 {
-            if stop.refused + stop.unsupported == 0 && !tree.is_complete() {
+            if refused + stop.unsupported == 0 && !tree.is_complete() {
                 return Ok(());
             }
-            let outcome = if stop.refused > 0 {
+            let outcome = if refused > 0 {
                 Outcome::Rejected
             } else if stop.unsupported > 0 {
                 Outcome::Unsupported
@@ -271,7 +280,7 @@ impl Controls {
                 pending.reply(outcome);
             }
             self.stop = None;
-        } else if stop.refused + stop.unsupported > 0 {
+        } else if refused + stop.unsupported > 0 {
             if let Some(pending) = stop.original.take() {
                 pending.reply(Outcome::Unknown);
             }
@@ -293,6 +302,11 @@ fn allocate(next: &mut u64) -> Result<u64> {
         .checked_add(1)
         .ok_or(Error::Protocol("native request ID exhausted"))?;
     Ok(id)
+}
+/// Codex 0.167 answers an interrupt for a turn that is already over with this
+/// error (code -32600). The turn's own completion is then the outcome.
+fn already_ended(frame: &Value) -> bool {
+    frame["error"]["message"] == "no active turn to interrupt"
 }
 fn outcome(frame: &Value) -> Result<Outcome> {
     match (frame.get("result"), frame.get("error")) {

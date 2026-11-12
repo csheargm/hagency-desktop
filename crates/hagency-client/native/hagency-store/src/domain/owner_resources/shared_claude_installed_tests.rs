@@ -10,6 +10,8 @@ struct Native {
     guardian: PathBuf,
     scope: PathBuf,
     port: u16,
+    /// The owner's endpoint token and model, in place of a claude.ai sign-in.
+    api: Option<(&'static str, &'static str)>,
 }
 impl Native {
     fn spawn(&self, binding: &AccountBinding, resume: Option<&str>) -> OwnedClaudeSession {
@@ -31,23 +33,36 @@ impl Native {
         ] {
             environment.insert(key.into(), value.into());
         }
-        environment.insert(
-            "ANTHROPIC_BASE_URL".into(),
-            format!("http://127.0.0.1:{}", self.port).into(),
-        );
-        // This is an isolated fake account already enrolled by the test host.
-        // No real login is read, and no API-key path bypasses native tokenSource.
-        let credential = SharedCredential::from_authenticated_login(
-            binding.clone(),
-            "offline-shared-contract-token".into(),
-        )
-        .unwrap();
+        let endpoint = format!("http://127.0.0.1:{}", self.port);
+        let credential = match self.api {
+            // The endpoint travels with the credential, as in production: the
+            // host puts nothing about the provider into the environment itself.
+            Some((token, _)) => SharedCredential::from_api_settings(
+                Some(&endpoint),
+                token.into(),
+                false,
+                &[],
+                Instant::now() + Duration::from_secs(30),
+            )
+            .unwrap(),
+            None => {
+                environment.insert("ANTHROPIC_BASE_URL".into(), endpoint.into());
+                // This is an isolated fake account already enrolled by the test host.
+                // No real login is read, and no API-key path bypasses native tokenSource.
+                SharedCredential::from_authenticated_login(
+                    binding.clone(),
+                    "offline-shared-contract-token".into(),
+                )
+                .unwrap()
+            }
+        };
+        assert_eq!(credential.binding().provider_digest(), binding.provider_digest());
         OwnedClaudeSession::spawn_shared_isolated_resuming(
             &self.guardian,
             hagency_platform::Launch {
                 executable: self.binary.clone(),
                 arguments: policy
-                    .arguments_resuming("claude-opus-5", "medium", resume)
+                    .arguments_resuming(self.api.map_or("claude-opus-5", |(_, model)| model), "medium", resume)
                     .unwrap()
                     .into_iter()
                     .map(Into::into)
@@ -244,6 +259,17 @@ async fn turn_native(a: &mut Active, text: &str) -> (SharedWorkReceipt, Vec<serd
 #[tokio::test]
 #[ignore = "explicit installed Claude; shared canonical store and isolated localhost model only"]
 async fn installed_claude_two_shared_rounds() {
+    two_shared_rounds(None).await
+}
+/// The same two rounds for a pool made from the owner's endpoint token: the
+/// token and endpoint reach the CLI only through the injected credential, the
+/// process reports that source, and a model name the table does not know runs.
+#[tokio::test]
+#[ignore = "explicit installed Claude; shared canonical store and isolated localhost model only"]
+async fn installed_claude_two_shared_rounds_on_an_endpoint_token() {
+    two_shared_rounds(Some(("offline-endpoint-token", "open-model-a"))).await
+}
+async fn two_shared_rounds(api: Option<(&'static str, &'static str)>) {
     let binary = PathBuf::from(
         std::env::var_os("HAGENCY_TEST_INSTALLED_CLAUDE").expect("explicit installed CLI"),
     )
@@ -259,21 +285,13 @@ async fn installed_claude_two_shared_rounds() {
         .output()
         .unwrap();
     assert!(version.status.success());
-    let (f, binding) = Box::pin(super::super::super::super::claude_process::fixture_claude()).await;
-    let root = f._temp.path().canonicalize().unwrap();
-    let scope = root.join("isolated-shared");
-    std::fs::create_dir(&scope).unwrap();
-    std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for name in ["home", "config", "work", "tmp"] {
-        let path = scope.join(name);
-        std::fs::create_dir(&path).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    let fixture = root.join("provider.py");
+    // The provider first: an API credential's identity includes its endpoint.
+    let provider_root = tempfile::tempdir().unwrap();
+    let fixture = provider_root.path().join("provider.py");
     std::fs::write(&fixture, include_str!("shared_claude_installed_fixture.py")).unwrap();
     let mut model = tokio::process::Command::new("python3")
         .arg(fixture)
-        .arg(&root)
+        .arg(provider_root.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -285,11 +303,35 @@ async fn installed_claude_two_shared_rounds() {
         .read_line(&mut line)
         .await
         .unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+    let (f, binding) = match api {
+        Some((token, name)) => {
+            let binding = AccountBinding::from_api_credential(
+                Some(&format!("http://127.0.0.1:{port}")),
+                token,
+                false,
+                Instant::now() + Duration::from_secs(45),
+            )
+            .unwrap();
+            Box::pin(super::super::super::super::claude_process::fixture_claude_bound(binding, name)).await
+        }
+        None => Box::pin(super::super::super::super::claude_process::fixture_claude()).await,
+    };
+    let root = f._temp.path().canonicalize().unwrap();
+    let scope = root.join("isolated-shared");
+    std::fs::create_dir(&scope).unwrap();
+    std::fs::set_permissions(&scope, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for name in ["home", "config", "work", "tmp"] {
+        let path = scope.join(name);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let native = Native {
         binary,
         guardian,
         scope,
-        port: line.trim().parse().unwrap(),
+        port,
+        api,
     };
     let mut original = command(&f).await;
     original.version = 4;
@@ -384,8 +426,20 @@ async fn installed_claude_two_shared_rounds() {
         );
     }
     let requests: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("api-requests.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(provider_root.path().join("api-requests.json")).unwrap()).unwrap();
     assert_eq!(requests.as_array().unwrap().len(), 2, "{requests}");
+    let credentials: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(provider_root.path().join("api-credentials.json")).unwrap()).unwrap();
+    for (request, credential) in requests.as_array().unwrap().iter().zip(credentials.as_array().unwrap()) {
+        match api {
+            Some((token, name)) => {
+                assert_eq!(request["model"], name, "the owner's model name is sent as it is");
+                assert_eq!(credential["authorization"], format!("Bearer {token}"));
+                assert!(credential["x-api-key"].is_null(), "{credential}");
+            }
+            None => assert_eq!(credential["authorization"], "Bearer offline-shared-contract-token"),
+        }
+    }
     let resumed_context = requests[1]["messages"].to_string();
     assert!(resumed_context.contains("Remember shared blue comet"));
     assert!(resumed_context.contains("Shared native reply 1"));

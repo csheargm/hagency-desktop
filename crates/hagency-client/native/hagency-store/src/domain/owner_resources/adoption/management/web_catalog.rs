@@ -30,21 +30,9 @@ fn retire_blocker(db:&Connection,id:&str)->Result<Option<String>,Error>{
     if templates{return Ok(Some("agent_templates_exist".into()))}
     let used:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM engagements WHERE resource_id=?1 AND state IN('pending','reserved','active'))",[id],|r|r.get(0))?;
     if used {return Ok(Some("active_agents".into()))}
-    // Retirement removes the owner's listing, not its accounting history.
-    // An expired legacy grant can remain active in the settlement ledger;
-    // that flag alone does not mean it can authorize new work. Recurring and
-    // future grants still protect their owner's outstanding authorization.
-    let now=graphs::now_ms()?;
-    let mut grants=db.prepare("SELECT receipt FROM owner_capacity_grants WHERE resource_id=?1 AND active=1")?;
-    for raw in grants.query_map([id],|r|r.get::<_,String>(0))? {
-        let Ok(grant)=serde_json::from_str::<NativeGrantReceipt>(&raw?) else {
-            return Ok(Some("grant_state_unknown".into()));
-        };
-        if grant.resource_id!=id {return Ok(Some("grant_state_unknown".into()))}
-        if grant.calendar.is_some() || (grant.period_end_ms>now && grant.delegation_expires_at_ms>now) {
-            return Ok(Some("active_grant".into()));
-        }
-    }
+    // Which grants still count is the capacity chain's question: one replaced
+    // within its month stops counting once the grant that replaced it is closed.
+    if let Some(reason)=crate::domain::owner_resources::capacity::retirement_grant_blocker(db,id)? {return Ok(Some(reason.into()))}
     let mut children=db.prepare("SELECT a.id,a.state,a.permanent_fence FROM owner_managed_agents a WHERE a.pool_grant_id IN(SELECT id FROM owner_capacity_grants WHERE resource_id=?1) OR a.project_reservation_id IN(SELECT p.id FROM owner_project_reservations p JOIN owner_capacity_grants g ON g.id=p.grant_id WHERE g.resource_id=?1)")?;
     for row in children.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?)))? {
         let (child,state,fenced)=row?;
