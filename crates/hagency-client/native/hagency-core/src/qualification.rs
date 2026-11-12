@@ -164,7 +164,51 @@ pub fn model(profile: &ModelProfile) -> (Option<Tier>, Option<&'static str>) {
             return (Some(*tier), found.family.as_deref());
         }
     }
+    if let Some(tier) = claude_line(profile) {
+        // The family is the one the table's own Claude rows carry.
+        let family = POLICY
+            .tier_accepts
+            .values()
+            .flatten()
+            .find(|row| row.framework == "claude")
+            .and_then(|row| row.family.as_deref());
+        return (Some(tier), family);
+    }
     (None, None)
+}
+/// A Claude model on Anthropic's own endpoint that the table has no row for:
+/// a release newer than the table, as the owner's CLI names it. Anthropic's
+/// model lines keep their standing from one release to the next, so such a
+/// model is rated by its line. A row of the table always wins, and a model on
+/// the owner's own endpoint is never rated this way.
+fn claude_line(profile: &ModelProfile) -> Option<Tier> {
+    if profile.framework != "claude"
+        || !profile
+            .provider
+            .as_deref()
+            .is_none_or(|provider| provider.is_empty() || provider == "anthropic")
+    {
+        return None;
+    }
+    let (line, version) = profile.model.strip_prefix("claude-")?.split_once('-')?;
+    if !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    match line {
+        "opus" | "fable" => Some(Tier::Strong),
+        "sonnet" => Some(Tier::Medium),
+        "haiku" => Some(Tier::Lightweight),
+        _ => None,
+    }
+}
+/// Whether the model's rating comes from its line, not from a row of the table.
+fn rated_by_line(profile: &ModelProfile) -> bool {
+    claude_line(profile).is_some()
+        && !POLICY
+            .tier_accepts
+            .values()
+            .flatten()
+            .any(|row| row.matches(profile))
 }
 pub fn roles() -> impl Iterator<Item = &'static str> {
     POLICY.roles.iter().map(|(name, _)| name.as_str())
@@ -199,6 +243,11 @@ pub fn qualifies(profile: &ModelProfile, role: &str, requested: Option<Tier>) ->
             .excluded
             .iter()
             .any(|entry| entry.role == role && entry.models.contains(&profile.model))
+        // The table keeps its lightweight Claude models out of some roles by
+        // name. A lightweight model rated by its line stays out of them too.
+        && !(rated_by_line(profile)
+            && model(profile).0 == Some(Tier::Lightweight)
+            && POLICY.excluded.iter().any(|entry| entry.role == role))
 }
 pub fn resources_for_role<'a>(
     resources: &'a [Resource],

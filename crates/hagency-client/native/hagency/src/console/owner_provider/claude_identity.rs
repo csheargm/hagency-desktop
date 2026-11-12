@@ -10,7 +10,7 @@
 //! itself reads it, and is bound as the endpoint plus a digest of the
 //! credential. It is held as briefly and never persisted either.
 use super::{ProviderError, ProviderPaths, failure};
-use hagency_agent_local::runtime::{ClaudeAccountStatus, Kind, claude_account_status};
+use hagency_agent_local::runtime::{ClaudeAccountStatus, ClaudeModelChoice, Kind, claude_account_status};
 use hagency_runtime::claude::account::{AccountBinding, SharedCredential};
 use serde_json::{Value, json};
 use std::{
@@ -450,6 +450,19 @@ pub(in crate::console) async fn sign_in(
         None if status.oauth_metadata().is_some() => Some(false),
         None => None,
     })
+}
+
+/// The models the owner's own CLI offers under the connected configuration.
+/// It is asked without a prompt, so nothing is sent to a model.
+pub(in crate::console) async fn models(
+    paths: &ProviderPaths,
+) -> Result<Vec<ClaudeModelChoice>, ProviderError> {
+    let executable = super::external::executable(Kind::Claude)?;
+    let config = (!hagency_agent_local::runtime::claude_uses_default_config(&paths.home, &paths.codex_home))
+        .then_some(paths.codex_home.as_path());
+    hagency_agent_local::runtime::claude_models(&executable, &paths.home, config)
+        .await
+        .map_err(|_| unavailable())
 }
 
 #[cfg(test)]
