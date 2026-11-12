@@ -4,7 +4,7 @@ use url::Url;
 
 use unicode_segmentation::UnicodeSegmentation;
 use chrono::{DateTime, Duration, Local, TimeZone};
-use makepad_widgets::{error, log, Cx, Event, ImageRef, image_cache::{looks_like_svg, ImageError}};
+use makepad_widgets::{error, log, Cx, Event, ImageRef, image_cache::ImageError};
 use matrix_sdk::{media::{MediaFormat, MediaThumbnailSettings}, ruma::{api::client::media::get_content_thumbnail::v3::Method, MilliSecondsSinceUnixEpoch, OwnedRoomAliasId, OwnedRoomId, RoomId}, RoomDisplayName};
 use matrix_sdk_ui::timeline::{EventTimelineItem, PaginationError, TimelineDetails};
 
@@ -208,10 +208,7 @@ pub fn load_image_with_cache_key(
     cache_key: &std::path::Path,
     data: std::sync::Arc<[u8]>,
 ) -> Result<(), ImageError> {
-    if looks_like_svg(&data) {
-        return img.load_svg_from_shared_data(cx, data);
-    }
-    img.load_image_from_data_async(cx, cache_key, data)
+    crate::memory_budget::load_image(img, cx, cache_key, data)
 }
 
 

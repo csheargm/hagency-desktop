@@ -80,7 +80,7 @@ async fn fetch_inner(
         .acquire()
         .await
         .map_err(|_| Error::UnknownError(Box::new(PreviewLimit::Busy)))?;
-    let max = 8 * 1024 * 1024;
+    let max = crate::memory_budget::IMAGE_FILE_BYTES;
     let uri = crate::shared::attachment_download::media_source_mxc(&request.source);
     // Pending local echoes exist only in the SDK cache and are stored as File.
     let local = uri

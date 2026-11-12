@@ -177,3 +177,7 @@ pub mod attachment_transport;
 mod transfer_budget;
 mod media_cache_reader;
 mod media_transport;
+
+mod memory_budget;
+/// Coalesced timeline snapshots and persistent operation routes.
+pub mod timeline_updates;

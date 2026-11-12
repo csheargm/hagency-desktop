@@ -350,6 +350,12 @@ impl MatchEvent for App {
     }
 
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        crate::memory_budget::process_completed_decodes(cx, actions);
+        for action in actions {
+            if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
+                crate::home::room_screen::release_cached_timeline_history(kind, *channel);
+            }
+        }
         if self.ui.button(cx, ids!(hagency_management_modal.content.close)).clicked(actions) {
             cx.action(HagencyAction::Close);
         }
@@ -1477,6 +1483,8 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        crate::memory_budget::collect_images(cx);
+        if matches!(event, Event::Timer(_)) { crate::sliding_sync::collect_unclaimed_timelines(); }
         if matches!(event, Event::Signal) {
             crate::profile::user_verification_cache::process_user_verification_updates(cx);
         }

@@ -7,7 +7,7 @@ use std::sync::{mpsc::Receiver, Arc};
 use chrono::{DateTime, Local};
 use makepad_widgets::{
     event::TouchUpdateEvent,
-    image_cache::{decode_image_from_data, looks_like_svg, ImageBuffer, ImageError},
+    image_cache::{decode_image_from_data, ImageBuffer, ImageError},
     *,
 };
 use matrix_sdk_ui::timeline::EventTimelineItem;
@@ -51,6 +51,8 @@ impl Default for ImageViewerZoomConfig {
 /// Error types for image loading operations
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ImageViewerError {
+    #[error("Image is too large to preview or image memory is busy. Download the original file instead.")]
+    TooLarge,
     #[error("Image appears to be empty or corrupted")]
     BadData,
     #[error("Full image was not found")]
@@ -395,7 +397,7 @@ struct ImageViewer {
     /// The ID of the background task that is currently running
     #[rust] background_task_id: u32,
     /// The mpsc::Receiver used to receive the result of the background task
-    #[rust] receiver: Option<(u32, Receiver<Result<ImageBuffer, ImageError>>)>,
+    #[rust] receiver: Option<(u32, Receiver<Result<(ImageBuffer, crate::memory_budget::ImagePermit), ImageError>>)>,
     /// Whether the full image file has been loaded
     #[rust] is_loaded: bool,
     /// The size of the image container.
@@ -407,6 +409,8 @@ struct ImageViewer {
     #[rust] refit_next_frame: NextFrame,
     /// The texture containing the loaded image
     #[rust] texture: Option<Texture>,
+    #[rust] image_permit: Option<crate::memory_budget::ImagePermit>,
+    #[rust] owner_scope: Option<crate::media_cache::MediaFetchScope>,
     /// The event to trigger displaying with the loaded image after peek_walk_turtle of the widget.
     #[rust] next_frame: NextFrame,
     /// Whether the UI overlay (buttons + metadata) is currently visible or animating to visible.
@@ -447,6 +451,11 @@ struct ImageViewer {
 
 impl Widget for ImageViewer {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if self.owner_scope.is_some_and(|owner| !owner.is_current()) {
+            self.reset(cx);
+            cx.action(ImageViewerAction::Hide);
+            return;
+        }
         // Block all scrolling, as the image viewer modal is full-screen.
         cx.block_scrolling_except_within(Area::Empty);
         self.view.handle_event(cx, event, scope);
@@ -586,7 +595,8 @@ impl Widget for ImageViewer {
         if let (Event::Signal, Some((_background_task_id, receiver))) = (event, &mut self.receiver) {
             let mut remove_receiver = false;
             match receiver.try_recv() {
-                Ok(Ok(image_buffer)) => {
+                Ok(Ok((image_buffer, permit))) => {
+                    self.image_permit = Some(permit);
                     let texture = image_buffer.into_new_texture(cx);
                     self.texture = Some(texture);
                     self.next_frame = cx.new_next_frame();
@@ -762,13 +772,15 @@ impl MatchEvent for ImageViewer {
 
         for action in actions.iter() {
             match action.downcast_ref() {
-                Some(ImageViewerFetchAction::Loaded(bytes)) => {
-                    cx.action(ImageViewerAction::Show(LoadState::Loaded(bytes.clone())));
+                Some(ImageViewerFetchAction::Loaded { source, scope, data: bytes }) if scope.is_current() && self.downloadable.as_ref().is_some_and(|active| crate::shared::attachment_download::media_source_mxc(&active.media_source) == source) => {
+                    self.loaded_bytes = Some(bytes.clone());
+                    self.show_loaded(cx, bytes);
+                    self.owner_scope = Some(*scope);
                 }
-                Some(ImageViewerFetchAction::Failed(error)) => {
+                Some(ImageViewerFetchAction::Failed { source, scope, error }) if scope.is_current() && self.downloadable.as_ref().is_some_and(|active| crate::shared::attachment_download::media_source_mxc(&active.media_source) == source) => {
                     cx.action(ImageViewerAction::Show(LoadState::Error(error.clone())));
                 }
-                None => {}
+                _ => {}
             }
             if let Some(ImageViewerAction::Show(state)) = action.downcast_ref() {
                 match state {
@@ -827,6 +839,20 @@ impl ImageViewer {
 
     /// Reset state.
     pub fn reset(&mut self, cx: &mut Cx) {
+        self.owner_scope = None;
+        self.downloadable = None;
+        if self.image_permit.take().is_some() {
+            if let Some(texture) = self.texture.take() {
+                texture.release(cx);
+                match texture.get_format(cx) {
+                    TextureFormat::VecBGRAu8_32 {data, ..} | TextureFormat::VecMipBGRAu8_32 {data, ..} => *data = None,
+                    _ => {}
+                }
+            }
+        }
+        self.texture = None;
+        let image = self.view.image(cx, ids!(rotated_image_container.rotated_image));
+        crate::memory_budget::release_image(cx, &image);
         self.rotation_step = 0; // Reset to upright (0°)
         self.current_angle = 0.0;
         self.rotation_target_angle = 0.0;
@@ -877,36 +903,34 @@ impl ImageViewer {
     ///
     /// The image is displayed in the center of the widget. If the image is larger than the widget, it is scaled down to fit the widget while retaining its aspect ratio.
     pub fn show_loaded(&mut self, cx: &mut Cx, image_bytes: &Arc<[u8]>) {
+        self.owner_scope = Some(crate::media_cache::MediaFetchScope::capture());
         if self.receiver.is_some() {
             return;
         }
-        // SVG is a vector format: load it straight into the image widget (which
-        // renders it natively and stays crisp at any zoom) instead of decoding to
-        // a raster texture on a worker thread.
-        if looks_like_svg(image_bytes) {
-            let rotated_image = self.image(cx, ids!(rotated_image));
-            let load_state = match rotated_image.load_image_from_data(cx, image_bytes) {
-                Ok(()) => {
-                    self.texture = None;
-                    self.next_frame = cx.new_next_frame();
-                    LoadState::FinishedBackgroundDecoding
-                }
-                Err(_) => LoadState::Error(ImageViewerError::BadData),
-            };
-            cx.action(ImageViewerAction::Show(load_state));
-            self.show_overlay_ui(cx, true);
+        // Header admission bounds raster/animation working sets before decode.
+        // Formats without a bounded raster preview remain downloadable.
+        if !crate::memory_budget::admit_encoded(image_bytes) {
+            self.loaded_bytes = None;
+            cx.action(ImageViewerAction::Show(LoadState::Error(ImageViewerError::TooLarge)));
             return;
         }
+        let permit = match crate::memory_budget::reserve_viewer(cx, image_bytes) {
+            Ok(permit) => permit,
+            Err(error) => { self.loaded_bytes = None;
+                let error = if matches!(error, ImageError::UnsupportedFormat) { ImageViewerError::UnsupportedFormat } else { ImageViewerError::TooLarge };
+                cx.action(ImageViewerAction::Show(LoadState::Error(error))); return; }
+        };
         if let Some(new_value) = self.background_task_id.checked_add(1) {
             self.background_task_id = new_value;
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         self.receiver = Some((self.background_task_id, receiver));
         let image_bytes2 = Arc::clone(image_bytes);
-        std::thread::spawn(move || {
-            let _ = sender.send(decode_image_from_data(&image_bytes2));
+        let job = cx.task_pool().submit(makepad_widgets::makepad_platform::thread::Class::Visible, move || {
+            let _ = sender.send(decode_image_from_data(&image_bytes2).map(|image| (image, permit)));
             SignalToUI::set_ui_signal();
         });
+        match job { Ok(task) => task.detach(), Err(_) => { self.receiver = None; return; } }
         self.show_overlay_ui(cx, true);
     }
 
@@ -923,6 +947,7 @@ impl ImageViewer {
         let natural = if self.texture.is_some() {
             let texture = self.texture.clone();
             rotated_image.set_texture(cx, texture);
+            if let Some(texture) = self.texture.as_ref() { crate::memory_budget::pin_texture(cx, &rotated_image, texture); }
             self.texture
                 .as_ref()
                 .and_then(|t| t.get_format(cx).vec_width_height())
@@ -1051,6 +1076,7 @@ impl ImageViewer {
     /// The loading spinner is shown, the error icon is hidden, and the
     /// status label is set to "Loading...".
     pub fn show_loading(&mut self, cx: &mut Cx) {
+        self.owner_scope = Some(crate::media_cache::MediaFetchScope::capture());
         let footer = self.view.view(cx, ids!(image_layer.footer));
         footer.view(cx, ids!(image_viewer_loading_spinner_view))
             .set_visible(cx, true);
@@ -1206,4 +1232,26 @@ pub struct ImageViewerMetaData {
     pub image_file_size: u64,
     /// When `Some`, the overlay's download button is shown.
     pub downloadable: Option<DownloadableAttachment>,
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    #[test]
+    fn retired_viewer_drops_its_payload_and_closes_before_processing_late_decoder_events() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let viewer = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm); crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.ImageViewer {}});
+            WidgetRef::script_from_value(vm, value).as_image_viewer()
+        });
+        let mut viewer = viewer.borrow_mut().unwrap();
+        viewer.owner_scope = Some(crate::media_cache::MediaFetchScope::stale_for_test());
+        viewer.loaded_bytes = Some(Arc::from(b"retired private bytes".as_slice()));
+        viewer.handle_event(&mut cx, &Event::Signal, &mut Scope::empty());
+        assert!(viewer.loaded_bytes.is_none());
+        assert!(viewer.owner_scope.is_none());
+        assert!(viewer.receiver.is_none());
+        assert!(viewer.downloadable.is_none());
+    }
 }
