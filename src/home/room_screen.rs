@@ -4213,7 +4213,15 @@ impl RoomScreen {
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
         crate::memory_budget::release_tree(cx, &self.child_by_path(ids!(timeline.list)));
-        self.hide_timeline();
+        // A screen that is still waiting for this same conversation (its room just
+        // became known, or the backend just built its timeline) only retries here.
+        // Hiding it would retire the timeline it is about to take; the backend then
+        // builds it again and signals, and the next signal retires it again.
+        let retrying_same_conversation =
+            self.tl_state.is_none() && self.timeline_kind.as_ref() == Some(&timeline_kind);
+        if !retrying_same_conversation {
+            self.hide_timeline();
+        }
         // Opening or restoring a conversation gives the timeline the full width.
         // Information is shown only after an explicit click on its header icon.
         self.chat_info_requested = false;

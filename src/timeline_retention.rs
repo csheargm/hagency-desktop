@@ -302,6 +302,92 @@ mod retention_tests {
             test_set_current_client(None);
         });
     }
+
+    /// A screen that waits for its conversation calls `set_displayed_room` again on every UI
+    /// signal. That retry must take the timeline the backend built for it. Retiring it instead
+    /// made the backend build the same timeline again, signal, and have it retired again, about
+    /// 37 times a second for a thread tab restored at start-up.
+    #[test]
+    fn a_waiting_screen_takes_the_timeline_built_for_it_instead_of_retiring_it() {
+        use crate::home::room_screen::RoomScreenWidgetRefExt;
+        use makepad_widgets::*;
+        const CHILD: &str = "HAGENCY_TIMELINE_RETRY_CHILD";
+        const NAME: &str = "sliding_sync::retention_tests::a_waiting_screen_takes_the_timeline_built_for_it_instead_of_retiring_it";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let id: OwnedRoomId = "!waiting:example.org".try_into().unwrap();
+        // The mock server must outlive the timeline build below.
+        let _server = backend_runtime().block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).and(path_regex(".*/sync"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"next_batch":"initial","rooms":{"join":{
+                    "!waiting:example.org":{
+                        "state":{"events":[
+                            {"type":"m.room.create","state_key":"","event_id":"$create","sender":"@alice:example.org","origin_server_ts":1,"content":{"creator":"@alice:example.org","room_version":"10"}},
+                            {"type":"m.room.member","state_key":"@alice:example.org","event_id":"$join","sender":"@alice:example.org","origin_server_ts":2,"content":{"membership":"join"}}
+                        ]},
+                        "timeline":{"events":[],"limited":false,"prev_batch":"older"}
+                    }
+                }}})))
+                .mount(&server).await;
+            let client = Client::builder().homeserver_url(server.uri())
+                .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_11]).build().await.unwrap();
+            client.matrix_auth().restore_session(serde_json::from_value(serde_json::json!({
+                "access_token":"fixture", "user_id":"@alice:example.org", "device_id":"RETRY"
+            })).unwrap(), Default::default()).await.unwrap();
+            client.sync_once(matrix_sdk::config::SyncSettings::default().timeout(Duration::ZERO)).await.unwrap();
+            test_set_current_client(Some(client.clone()));
+            let room = client.get_room(&id).unwrap();
+            ALL_JOINED_ROOMS.lock().unwrap().insert(id.clone(), JoinedRoomDetails {
+                room_id: id.clone(), room, main_timeline: None, evicted_senders: HashMap::new(),
+                thread_timelines: HashMap::new(), pending_thread_timelines: HashSet::new(),
+                typing_notice_subscriber: None, pinned_events_subscriber: None, identity_resets_subscriber: None, auxiliary_tasks: Vec::new(),
+            });
+            server
+        });
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let screen = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            vm.bx.captured_errors = Some(Vec::new());
+            let value = script_eval!(vm, {mod.widgets.RoomScreen {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            assert!(vm.take_errors().is_empty());
+            widget.as_room_screen()
+        });
+        let name = crate::utils::RoomNameId::empty(id.clone());
+        // First show: no timeline exists yet, so the screen waits for one.
+        screen.set_displayed_room(&mut cx, &name, None);
+        assert!(ALL_JOINED_ROOMS.lock().unwrap().get(&id).unwrap().main_timeline.is_none());
+        // The backend builds the timeline the screen asked for.
+        backend_runtime().block_on(ensure_main_timeline(&id)).unwrap();
+        // The next UI signal makes the waiting screen retry.
+        screen.set_displayed_room(&mut cx, &name, None);
+        {
+            let rooms = ALL_JOINED_ROOMS.lock().unwrap();
+            let details = rooms.get(&id).unwrap().main_timeline.as_ref()
+                .expect("the retry retired the timeline that was built for this screen");
+            assert!(details.timeline_singleton_endpoints.is_none(), "the waiting screen did not take its timeline");
+            assert!(details.request_sender.borrow().is_timeline_open);
+        }
+        // A screen that moves on to another conversation still releases the one it showed.
+        screen.hide_displayed_room(&mut cx);
+        assert!(ALL_JOINED_ROOMS.lock().unwrap().get(&id).unwrap().main_timeline.is_none(), "hiding must still retire the timeline");
+        ALL_JOINED_ROOMS.lock().unwrap().clear();
+        test_set_current_client(None);
+    }
 }
 
 /// A cancelled open/late metadata request must not leave an unclaimed SDK
