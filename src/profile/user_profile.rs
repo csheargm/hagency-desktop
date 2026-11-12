@@ -430,7 +430,7 @@ impl UserProfilePaneInfo {
     }
 }
 
-#[derive(Script, ScriptHook, Widget, Animator)]
+#[derive(Script, Widget, Animator)]
 pub struct UserProfileSlidingPane {
     #[source] source: ScriptObjectRef,
     #[deref] view: View,
@@ -439,8 +439,23 @@ pub struct UserProfileSlidingPane {
 
     #[rust] info: Option<UserProfilePaneInfo>,
     #[rust] is_animating_out: bool,
+    /// The panel width and `slide` value last put on `main_content` and
+    /// `bg_view`; `None` when they have not been placed since this pane was
+    /// last applied from script.
+    #[rust] placed: Option<(f64, f32)>,
     #[rust] member_abilities: MemberAbilities,
     #[rust] abilities_epoch: u64,
+}
+
+impl ScriptHook for UserProfileSlidingPane {
+    fn on_after_apply(&mut self, _vm: &mut ScriptVm, apply: &Apply, _scope: &mut Scope, _value: ScriptValue) {
+        // Applying the pane itself (creation, a theme or language reload) puts
+        // the template's width, margin and backdrop back, so they go on again.
+        // The animator's own `slide` steps change the cached value by themselves.
+        if !apply.is_animate() {
+            self.placed = None;
+        }
+    }
 }
 
 impl Widget for UserProfileSlidingPane {
@@ -680,11 +695,17 @@ impl Widget for UserProfileSlidingPane {
         let mobile = !crate::home::home_screen::effective_is_desktop(cx);
         let panel_width = if mobile { cx.turtle().size().x } else { 300.0 };
         let right_margin = -(f64::from(self.slide) * panel_width);
-        let mut main_content = self.view(cx, ids!(main_content));
-        script_apply_eval!(cx, main_content, {
-            width: #(panel_width)
-            margin.right: #(right_margin)
-        });
+        // Applying a property asks for a redraw, and this runs on every draw:
+        // placing the pane each time kept an open pane drawing for ever.
+        let place = self.placed != Some((panel_width, self.slide));
+        self.placed = Some((panel_width, self.slide));
+        if place {
+            let mut main_content = self.view(cx, ids!(main_content));
+            script_apply_eval!(cx, main_content, {
+                width: #(panel_width)
+                margin.right: #(right_margin)
+            });
+        }
         self.view(cx, ids!(mobile_profile)).set_visible(cx, mobile);
         self.view(cx, ids!(user_profile_view)).set_visible(cx, !mobile);
         self.button(cx, ids!(close_button)).set_visible(cx, !mobile);
@@ -692,11 +713,13 @@ impl Widget for UserProfileSlidingPane {
         // The animator can only interpolate struct fields, not child view properties,
         // so we compute the bg color here from the smoothly-animated `slide` value.
         let bg_alpha = (1.0 - self.slide) * 0.733; // 0.733 ≈ 0xBB/0xFF
-        let bg_color = vec4(0.0, 0.0, 0.0, bg_alpha);
-        let mut bg_view = self.view(cx, ids!(bg_view));
-        script_apply_eval!(cx, bg_view, {
-            draw_bg +: { color: #(bg_color) }
-        });
+        if place {
+            let bg_color = vec4(0.0, 0.0, 0.0, bg_alpha);
+            let mut bg_view = self.view(cx, ids!(bg_view));
+            script_apply_eval!(cx, bg_view, {
+                draw_bg +: { color: #(bg_color) }
+            });
+        }
 
         // Set the user name, using the user ID as a fallback.
         self.label(cx, ids!(user_name)).set_text(cx, info.displayable_name());
