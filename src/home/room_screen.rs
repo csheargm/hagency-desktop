@@ -528,8 +528,45 @@ script_mod! {
         }
     }
 
+
+    // In a desktop window your own messages sit on the right, your avatar at the edge, as on
+    // a phone; everyone else's keep the reading layout on the left.
+    let OwnMessageProfile = View {
+        width: 49.0 height: Fit flow: Down
+        align: Align{x: 0.5, y: 0.0}
+        margin: Inset{top: 4.5}
+        avatar := Avatar {width: 32, height: 32}
+        timestamp := Timestamp {margin: Inset{top: 5.9}}
+        tsp_sign_indicator := TspSignIndicator {}
+    }
+    mod.widgets.OwnMessage = mod.widgets.Message {
+        mobile_bubble: true
+        body := View {
+            width: Fill height: Fit flow: Right spacing: 10
+            padding: Inset{top: 0, bottom: 10, left: (1.5 * mod.widgets.RINX_GUTTER), right: (1.5 * mod.widgets.RINX_GUTTER)}
+            View {width: Fill height: 1}
+            content := MobileMessageContent {
+                align: Align{x: 1}
+                margin: Inset{top: 4.5}
+                username_view.visible: false
+                bubble +: {
+                    draw_bg.color: mod.widgets.RINX_OUTGOING
+                    message +: {
+                        plaintext_view +: {pt_label +: {draw_text +: {text_style: theme.font_regular {font_size: mod.widgets.MESSAGE_FONT_SIZE}}}}
+                        html_view +: {html +: {font_size: mod.widgets.MESSAGE_FONT_SIZE}}
+                    }
+                    link_preview_view +: {font_size: mod.widgets.MESSAGE_FONT_SIZE}
+                }
+            }
+            profile := OwnMessageProfile {}
+        }
+    }
+
     mod.widgets.MobileMiniAppMessage = mod.widgets.MobileMessage {}
     mod.widgets.MobileOwnMiniAppMessage = mod.widgets.MobileOwnMessage {
+        body.content.bubble.draw_bg.color: mod.widgets.RINX_SURFACE
+    }
+    mod.widgets.OwnMiniAppMessage = mod.widgets.OwnMessage {
         body.content.bubble.draw_bg.color: mod.widgets.RINX_SURFACE
     }
     mod.widgets.MiniAppMessage = mod.widgets.Message {}
@@ -583,6 +620,16 @@ script_mod! {
             View {width: Fill height: 1}
             content := MobileImageContent {username_view.visible: false}
             profile := MobileMessageProfile {}
+        }
+    }
+    mod.widgets.OwnImageMessage = mod.widgets.Message {
+        mobile_media: true
+        body := View {
+            width: Fill height: Fit flow: Right spacing: 10
+            padding: Inset{top: 0, bottom: 10, left: (1.5 * mod.widgets.RINX_GUTTER), right: (1.5 * mod.widgets.RINX_GUTTER)}
+            View {width: Fill height: 1}
+            content := MobileImageContent {margin: Inset{top: 4.5} username_view.visible: false}
+            profile := OwnMessageProfile {}
         }
     }
 
@@ -930,6 +977,9 @@ script_mod! {
             MiniAppMessage := mod.widgets.MiniAppMessage {}
             MobileImageMessage := mod.widgets.MobileImageMessage {}
             MobileOwnImageMessage := mod.widgets.MobileOwnImageMessage {}
+            OwnMessage := mod.widgets.OwnMessage {}
+            OwnMiniAppMessage := mod.widgets.OwnMiniAppMessage {}
+            OwnImageMessage := mod.widgets.OwnImageMessage {}
             Message := mod.widgets.Message {}
             CondensedMessage := mod.widgets.CondensedMessage {}
             ImageMessage := mod.widgets.ImageMessage {}
@@ -5318,7 +5368,10 @@ fn populate_message_view(
     // Determine whether we can use a more compact UI view that hides the user's profile info
     // if the previous message (including stickers) was sent by the same user within 10 minutes.
     let mobile = !super::home_screen::effective_is_desktop(cx);
-    let use_compact_view = !mobile && match prev_event.map(|p| p.kind()) {
+    // In a desktop window your own messages sit on the right, your avatar at the edge, as on
+    // a phone. Each one carries the avatar, so none of them is condensed.
+    let own_on_right = !mobile && event_tl_item.is_own();
+    let use_compact_view = !mobile && !own_on_right && match prev_event.map(|p| p.kind()) {
         Some(TimelineItemKind::Event(prev_event_tl_item)) => match prev_event_tl_item.content() {
             TimelineItemContent::MsgLike(_msg_like_content) => {
                 let prev_msg_sender = prev_event_tl_item.sender();
@@ -5363,7 +5416,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     web_mini_app = Some(SharedMiniApp::published_article(
@@ -5378,7 +5431,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     forward_bundle = ForwardBundle::from_message(message);
@@ -5393,7 +5446,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     match SharedMiniApp::from_message(message) {
@@ -5410,6 +5463,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5449,6 +5504,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5550,6 +5607,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5605,6 +5664,8 @@ fn populate_message_view(
                         .is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnImageMessage) } else { id!(MobileImageMessage) }
+                    } else if own_on_right {
+                        id!(OwnImageMessage)
                     } else if use_compact_view {
                         id!(CondensedImageMessage)
                     } else {
@@ -5644,6 +5705,8 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5695,6 +5758,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5725,6 +5790,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5755,6 +5822,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5864,7 +5933,9 @@ fn populate_message_view(
         MsgLikeKind::Sticker(sticker) => {
             has_html_body = false;
             let StickerEventContent { body, info, source, .. } = sticker.content();
-            let template = if use_compact_view {
+            let template = if own_on_right {
+                id!(OwnImageMessage)
+            } else if use_compact_view {
                 id!(CondensedImageMessage)
             } else {
                 id!(ImageMessage)
@@ -5904,7 +5975,9 @@ fn populate_message_view(
         // Handle messages that have been redacted (deleted).
         MsgLikeKind::Redacted => {
             has_html_body = false;
-            let template = if use_compact_view {
+            let template = if own_on_right {
+                id!(OwnMessage)
+            } else if use_compact_view {
                 id!(CondensedMessage)
             } else {
                 id!(Message)
@@ -7947,7 +8020,9 @@ impl Widget for Message {
                 }).unwrap_or(max_width)
             } else { max_width };
             let bubble_width = natural_width.clamp(44.0, max_width);
-            let has_quote = self.view.widget(cx, ids!(mobile_reply_preview)).visible();
+            // a quoted message and a thread's summary take the full width, not the bubble's
+            let has_quote = self.view.widget(cx, ids!(mobile_reply_preview)).visible()
+                || self.view.widget(cx, ids!(content.thread_root_summary)).visible();
             if let Some(mut content) = self.view.view(cx, ids!(body.content)).borrow_mut() {
                 content.walk.width = Size::Fixed(if has_quote { max_width } else { bubble_width });
             }
