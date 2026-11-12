@@ -188,18 +188,12 @@ jobs:
           python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
           cargo test --locked --features agent_chat --lib
-      - name: Verify Windows graphics startup and recreation
-        if: runner.os == 'Windows'
-        run: |
-          python3 - <<'PY'
-          import subprocess
-          result = subprocess.run(['cargo', 'test', '--locked', '-p', 'makepad-platform',
-              '--lib', 'device_tier_starts_on_software_adapter', '--', '--nocapture'],
-              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-          print(result.stdout)
-          result.check_returncode()
-          assert '1 passed; 0 failed' in result.stdout, 'Device startup regression must execute'
-          PY
+      # The engine test this step ran (device_tier_starts_on_software_adapter) belonged to
+      # the earlier engine line and does not exist on this one, whose device code retries
+      # without video support on a software adapter. Its D3D11 tests live in the engine's
+      # own test target, which cargo cannot run from this workspace. Start-up on this
+      # runner's software adapter is checked by "Install and start the packaged Desktop on
+      # Windows" below, which requires three rendered sign-in frames from the installer.
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
