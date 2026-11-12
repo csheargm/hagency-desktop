@@ -132,13 +132,18 @@ mod tests {
             json!({"recoveries": []})
         );
         // A local command runs end to end, past admission and authorization.
+        // Whether this machine has a Codex CLI is not what is checked here:
+        // with none, the command gets as far as looking for it.
         let status = f
             .owner
             .execute(Command::Provider {
                 action: ProviderAction::Status,
             })
             .await;
-        assert!(status.as_ref().is_ok_and(|s| s["state"].is_string()), "{status:?}");
+        match &status {
+            Ok(status) => assert!(status["state"].is_string(), "{status:?}"),
+            Err(error) => assert_eq!(error.code, "codex_binary_unavailable", "{status:?}"),
+        }
         f.owner.shutdown().await;
         registry.shutdown().await.unwrap();
     }

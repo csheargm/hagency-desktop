@@ -241,17 +241,10 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
-      - name: Start the packaged Desktop on macOS
-        if: runner.os == 'macOS'
-        run: |
-          package=$(find dist -maxdepth 1 -name '*.dmg' -print -quit)
-          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
-      - name: Install and start the packaged Desktop on Windows
-        if: runner.os == 'Windows'
-        run: |
-          package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
-          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
-      - name: Preserve macOS candidate
+      # Like the Windows candidate above, kept before the installer check: a
+      # check that fails can then be corrected and run again on this candidate
+      # (verify_only) without packaging it a second time.
+      - name: Preserve macOS candidate before installer checks
         if: runner.os == 'macOS'
         env:
           ARCH: ${{ matrix.arch }}
@@ -263,6 +256,16 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
+      - name: Start the packaged Desktop on macOS
+        if: runner.os == 'macOS'
+        run: |
+          package=$(find dist -maxdepth 1 -name '*.dmg' -print -quit)
+          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
+      - name: Install and start the packaged Desktop on Windows
+        if: runner.os == 'Windows'
+        run: |
+          package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
+          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
       - name: Collect installers and checksums
         env:
           PLATFORM: ${{ matrix.platform }}

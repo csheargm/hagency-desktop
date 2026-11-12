@@ -10,8 +10,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.request import urlopen
-from urllib.error import HTTPError, URLError
 from release_image_check import image_readiness
 
 
@@ -20,9 +18,35 @@ parser.add_argument('--package', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--source-root', type=Path, default=Path(__file__).resolve().parents[1],
                     help='Source checkout that produced the installer (for its kernel pin)')
+parser.add_argument('--remote-tool', type=Path,
+                    help="The engine's makepad-remote tool; built from the source checkout when not given")
 args = parser.parse_args()
 package, output = args.package.resolve(), args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
+
+
+def remote_tool():
+    """The engine's command-line client for a running app's remote endpoint.
+
+    The app no longer serves HTTP on a port: it opens a same-user local endpoint,
+    and this tool, built from the same pinned engine as the app, is how a check
+    reads its semantic tree and its frames.
+    """
+    if args.remote_tool:
+        return args.remote_tool.resolve()
+    subprocess.run(['cargo', 'build', '--locked', '--release', '-p', 'makepad-remote',
+                    '--bin', 'makepad-remote'], cwd=args.source_root, check=True, timeout=1800)
+    target = Path(os.environ.get('CARGO_TARGET_DIR') or args.source_root/'target')
+    return target/'release'/('makepad-remote.exe' if sys.platform == 'win32' else 'makepad-remote')
+
+
+class RemoteNotReady(Exception):
+    pass
+
+
+# Before the app starts, so that the build takes nothing from its readiness deadline.
+tool = remote_tool()
+assert tool.is_file(), f'No makepad-remote tool at {tool}'
 
 with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
     temporary = Path(temporary)
@@ -68,8 +92,9 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
     pin = json.loads((args.source_root/'packaging/octos.lock.json').read_text())['revision']
     revision = re.search(r'\(([0-9a-f]{7,40}) ', kernel_version)
     assert revision and pin.startswith(revision[1]), kernel_version
+    # Launched for a check: the app prints its endpoint line once it listens.
     env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(temporary/'profile'),
-               MAKEPAD_REMOTE='127.0.0.1:0')
+               MAKEPAD_REMOTE='1')
     # Exercise the normal visible Windows launch path on the CI desktop. A
     # permanently hidden HWND exercises compositor occlusion instead of the
     # installer behavior a person sees. macOS supports offscreen Metal draws.
@@ -81,40 +106,49 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
         process = subprocess.Popen([str(binary)], cwd=temporary, env=env, stdout=stream, stderr=stream)
     try:
         deadline = time.monotonic()+90
-        port = None
+        def startup_log():
+            return log.read_text(errors='replace')[-3000:]
+        pid = None
         while time.monotonic() < deadline:
-            assert process.poll() is None, log.read_text(errors='replace')[-3000:]
-            match = re.search(r'\[makepad-remote\] listening on 127\.0\.0\.1:(\d+)', log.read_text(errors='replace'))
-            if match: port = int(match[1]); break
+            assert process.poll() is None, startup_log()
+            match = re.search(r'\[makepad-remote\] pid=(\d+) ', log.read_text(errors='replace'))
+            if match: pid = match[1]; break
             time.sleep(.2)
-        assert port, 'Packaged app did not become ready'
-        def request(path):
-            with urlopen(f'http://127.0.0.1:{port}/'+path, timeout=15) as response:
-                return json.load(response)
-        frames, ready_frames = 0, 0
-        while time.monotonic() < deadline and ready_frames < 3:
-            assert process.poll() is None, log.read_text(errors='replace')[-3000:]
+        assert pid, 'Packaged app did not open its remote endpoint: ' + startup_log()
+        def remote(*command):
             try:
-                snapshot = request('snap?w=0&wait=1')
-                image = request('g?w=0&wait=1')
-                (output/'snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n')
+                result = subprocess.run([str(tool), 'app', pid, *command], capture_output=True,
+                                        encoding='utf-8', errors='replace', timeout=30)
+            except subprocess.TimeoutExpired as error:
+                raise RemoteNotReady(f'{command[0]} did not answer in 30 s') from error
+            if result.returncode != 0:
+                raise RemoteNotReady(f'{command[0]}: {(result.stdout + result.stderr)[-1000:]}')
+            try:
+                return json.loads(result.stdout)
+            except ValueError as error:
+                raise RemoteNotReady(f'{command[0]} answered {result.stdout[-1000:]!r}') from error
+        frames, ready_frames, not_ready = 0, 0, ''
+        while time.monotonic() < deadline and ready_frames < 3:
+            assert process.poll() is None, startup_log()
+            try:
+                snapshot = remote('ui', 'json=1')
+                # Written where the last capture is kept even on failure, so an
+                # empty GPU frame cannot be hidden by a passing semantic snapshot.
+                image = remote('grab', 'out='+str(output/'sign-in.png'))
+                (output/'snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
                 (output/'frame.json').write_text(json.dumps(image, indent=2)+'\n')
                 frames += 1
-                texts = [node.get('t','') for node in snapshot.get('s',[])
-                         if node.get('r') and node['r'][2]>0 and node['r'][3]>0]
+                texts = [node.get('name') or node.get('text') or ''
+                         for tree in snapshot.get('trees', []) for node in tree.get('nodes', [])
+                         if len(node.get('bounds', [])) == 4 and node['bounds'][2]>0 and node['bounds'][3]>0]
                 sign_in = any('Sign in to Hagency' in text or '登录 Hagency' in text for text in texts)
                 pixels = image_readiness(image['png'])
-                # Preserve the last capture even on failure, so an empty GPU
-                # frame cannot be hidden by a passing semantic snapshot.
-                shutil.copy2(image['png'], output/'sign-in.png')
                 ready_frames = ready_frames + 1 if sign_in and pixels['nonBlank'] else 0
-            except HTTPError as error:
-                if error.code != 404: raise
-            except URLError:
-                # The remote server announces its port just before accepting
-                # requests. Retry within the readiness deadline; the next loop
+            except RemoteNotReady as error:
+                # The endpoint line is printed just before the first frame is
+                # drawn. Retry within the readiness deadline; the next loop
                 # still fails immediately if the application has exited.
-                pass
+                not_ready = str(error)
             time.sleep(.4)
         if sys.platform == 'win32':
             # Save independent OS evidence, including whether the ordinary
@@ -143,7 +177,8 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
             user32.EnumWindows(callback_type(inspect_window), 0)
             (output/'native-windows.json').write_text(json.dumps(windows, indent=2)+'\n')
             ImageGrab.grab(all_screens=True).save(output/'desktop.png')
-        assert ready_frames == 3, 'Packaged app did not render sign-in pixels before the deadline'
+        assert ready_frames == 3, ('Packaged app did not render sign-in pixels before the deadline'
+                                   + (f' (last remote failure: {not_ready})' if not_ready else ''))
         errors = [line for line in log.read_text(errors='replace').splitlines()
                   if re.search(r'panicked at|Bundle[d]? file open failed|failed to load.*(font|resource)',line,re.I)]
         assert not errors, errors
