@@ -667,3 +667,107 @@ fn credential_vault_native_macos_roundtrip() {
     cleanup.expect("remove the exact qualification-owned entry");
     assert!(matches!(store.get(&reference), Err(Error::Missing)));
 }
+
+fn development_fixture(
+    directory: &std::path::Path,
+) -> (Arc<Fake>, Vault, Vault, Scope, SecretRef) {
+    let earlier = Arc::new(Fake::default());
+    let files = Vault::new(Arc::new(development::DevelopmentFileStore::new(
+        directory.join("development-secrets"),
+        earlier.clone(),
+    )));
+    let scope = Scope::new(
+        "0123456789abcdef0123456789abcdef",
+        Purpose::Session,
+        b"full owner/device/server/client identity",
+    )
+    .unwrap();
+    let reference = Vault::fresh_reference(&scope).unwrap();
+    (earlier.clone(), Vault::new(earlier), files, scope, reference)
+}
+
+#[test]
+fn credential_vault_development_files_keep_new_secrets_out_of_the_os_store() {
+    let temporary = tempfile::tempdir().unwrap();
+    let (earlier, _, files, scope, reference) = development_fixture(temporary.path());
+    files.create_at(&reference, b"kept in a private file").unwrap();
+    assert_eq!(
+        files.load(&reference, &scope).unwrap().as_slice(),
+        b"kept in a private file"
+    );
+    assert!(earlier.entries.lock().unwrap().is_empty());
+    assert!(earlier.writes.lock().unwrap().is_empty());
+    let directory = temporary.path().join("development-secrets");
+    let entries = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&entries[0]), 0o600);
+        assert_eq!(mode(&directory), 0o700);
+    }
+    // The file name says nothing about the account or the purpose.
+    let name = entries[0].file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(name.len() == 71 && name.ends_with(".secret"));
+    assert!(name[..64].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    // A second secret for the same reference is refused, as in the OS store.
+    assert_eq!(
+        files.create_at(&reference, b"another value"),
+        Err(Error::Conflict)
+    );
+    // Removal is of the file only.
+    let store = development::DevelopmentFileStore::new(directory.clone(), earlier.clone());
+    store.remove(&reference).unwrap();
+    assert_eq!(store.remove(&reference), Err(Error::Missing));
+    assert_eq!(files.load(&reference, &scope).unwrap_err(), Error::Missing);
+}
+
+#[test]
+fn credential_vault_development_files_take_an_earlier_os_secret_once() {
+    let temporary = tempfile::tempdir().unwrap();
+    let (earlier, os, files, scope, reference) = development_fixture(temporary.path());
+    os.create_at(&reference, b"written by an earlier build").unwrap();
+    // A refused OS read is reported as it is and leaves no file behind.
+    *earlier.failure.lock().unwrap() = Some(Error::Denied);
+    assert_eq!(files.load(&reference, &scope).unwrap_err(), Error::Denied);
+    assert!(!temporary.path().join("development-secrets").exists());
+    // An allowed read copies the secret; later reads never ask the OS again.
+    *earlier.failure.lock().unwrap() = None;
+    assert_eq!(
+        files.load(&reference, &scope).unwrap().as_slice(),
+        b"written by an earlier build"
+    );
+    *earlier.failure.lock().unwrap() = Some(Error::Denied);
+    assert_eq!(
+        files.load(&reference, &scope).unwrap().as_slice(),
+        b"written by an earlier build"
+    );
+    // The OS copy is left as it was.
+    assert_eq!(earlier.entries.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn credential_vault_development_files_are_selected_only_by_their_own_word() {
+    if std::env::var_os("HAGENCY_CREDENTIAL_GUARD_CHILD").as_deref()
+        == Some(std::ffi::OsStr::new("development"))
+    {
+        assert!(development::selected());
+        return;
+    }
+    // This process: unset, or `deny` under the automation guard.
+    assert!(!development::selected());
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "credential_vault::tests::credential_vault_development_files_are_selected_only_by_their_own_word", "--test-threads=1"])
+        .env("HAGENCY_NATIVE_CREDENTIAL_IO", development::SELECTOR)
+        .env("HAGENCY_CREDENTIAL_GUARD_CHILD", "development")
+        .output().unwrap();
+    assert!(
+        output.status.success(),
+        "selector probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

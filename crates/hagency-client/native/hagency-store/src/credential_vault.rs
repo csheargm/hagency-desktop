@@ -1,8 +1,11 @@
 //! Scoped native credentials and authenticated documents. Native calls are
 //! synchronous and may prompt or block: invoke them only from an owned worker.
 //! SDK synchronous callbacks use an already unlocked `DocumentKey`, never OS IO.
-//! There is deliberately no default or environment-selected mock backend.
+//! There is deliberately no default or environment-selected mock backend. The
+//! one environment-selected alternative is `development`, the private-file
+//! store a developer turns on for locally built test apps.
 
+pub mod development;
 pub mod document;
 mod native;
 #[cfg(test)]
@@ -174,6 +177,18 @@ impl Vault {
     }
     pub fn native() -> Self {
         Self::new(Arc::new(NativeStore::new()))
+    }
+    /// The store for an app data directory: the OS store, or the developer's
+    /// private files under it when `HAGENCY_NATIVE_CREDENTIAL_IO` asks for them.
+    pub fn for_app_data(root: &std::path::Path) -> Self {
+        if development::selected() {
+            Self::new(Arc::new(development::DevelopmentFileStore::new(
+                root.join("credentials-v1/development-secrets"),
+                Arc::new(NativeStore::new()),
+            )))
+        } else {
+            Self::native()
+        }
     }
     /// Non-authority, installation-local availability probe. This dedicated
     /// purpose can never unlock an account, database, Agent, or revoke record.

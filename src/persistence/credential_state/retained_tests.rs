@@ -870,3 +870,52 @@ async fn credential_migration_legacy_session_named_in_legacy_retained_list_resto
     }
     assert!(service.worker.shutdown(std::time::Duration::from_secs(2)));
 }
+
+// A developer's locally built app keeps its secrets in private files under
+// the profile. A later start (another build, to the OS another program) must
+// restore the saved sign-in from those files without the OS store.
+#[tokio::test]
+async fn credential_development_files_restore_a_saved_sign_in_without_the_os_store() {
+    use hagency_store::credential_vault::development::DevelopmentFileStore;
+    let _serial = SERIAL.lock().await;
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("profile");
+    let (unused, _, session, retained) = fixture(&root);
+    assert!(unused.worker.shutdown(std::time::Duration::from_secs(2)));
+    hagency_store::private::directory(&root.join("db_original")).unwrap();
+    let path = retained.with_file_name("session");
+    hagency_store::private::write_new(&path, &serde_json::to_vec(&session).unwrap()).unwrap();
+    let files = |os: Arc<Fake>| {
+        Vault::new(Arc::new(DevelopmentFileStore::new(
+            root.join("credentials-v1/development-secrets"),
+            os,
+        )))
+    };
+    let os = Arc::new(Fake::default());
+    let first = Arc::new(Service::new(root.clone(), files(os.clone())).unwrap());
+    let loaded = first
+        .load_worker(&path, crate::account_session::epoch(), || true)
+        .map_err(|error| format!("{error:?}"));
+    assert_eq!(
+        loaded.map(|s| s.client_session.passphrase),
+        Ok(session.client_session.passphrase.clone())
+    );
+    assert!(first.worker.shutdown(std::time::Duration::from_secs(2)));
+    // The first process ends: what it held for this sign-in is released.
+    drop(first);
+    // Nothing went to the OS store, and the document on disk is the new form.
+    assert_eq!(*os.puts.lock().unwrap(), 0);
+    assert!(os.values.lock().unwrap().is_empty());
+    let published: Stored = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published.database.db_path, session.client_session.db_path);
+    // The next start has an empty OS store and still restores.
+    let second = Arc::new(Service::new(root.clone(), files(Arc::new(Fake::default()))).unwrap());
+    let again = second
+        .load_worker(&path, crate::account_session::epoch(), || true)
+        .map_err(|error| format!("{error:?}"));
+    assert_eq!(
+        again.map(|s| s.client_session.passphrase),
+        Ok(session.client_session.passphrase.clone())
+    );
+    assert!(second.worker.shutdown(std::time::Duration::from_secs(2)));
+}

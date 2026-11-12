@@ -189,7 +189,15 @@ static SERVICE: std::sync::OnceLock<std::result::Result<Arc<Service>, Error>> =
 fn global() -> std::result::Result<&'static Arc<Service>, Error> {
     SERVICE
         .get_or_init(|| {
-            Service::new(crate::app_data_dir().to_owned(), Vault::native())
+            if hagency_store::credential_vault::development::selected() {
+                // A developer's locally built app: see the store's module notes.
+                makepad_widgets::log!(
+                    "Saved sign-ins are kept in private files under this profile \
+                     (HAGENCY_NATIVE_CREDENTIAL_IO=development-files), not in the OS credential store"
+                );
+            }
+            let root = crate::app_data_dir();
+            Service::new(root.to_owned(), Vault::for_app_data(root))
                 .map(Arc::new)
                 .map_err(classify)
         })
