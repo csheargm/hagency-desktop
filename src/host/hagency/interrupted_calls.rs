@@ -50,9 +50,14 @@ mod tests {
         let base = json!({"commandId":"cmd","agentId":"agt_1","callId":"mac_1","expectedReservedTokens":100,"consumedTokens":40,"evidenceReference":"provider usage page"});
         let Some(Call::Reconcile(q)) = call(RECONCILE, base.clone()).unwrap() else { panic!("expected reconciliation") };
         assert_eq!((q.consumed_tokens, q.expected_reserved_tokens), (40, 100));
+        // Runs are admitted postpaid: an old estimate or a zero reservation
+        // never caps what the owner declares as actually used.
+        let mut above = base.clone();
+        above["consumedTokens"] = json!(101);
+        assert!(matches!(call(RECONCILE, above), Ok(Some(Call::Reconcile(q))) if q.consumed_tokens == 101));
         for (field, value) in [
-            ("consumedTokens", json!(101)),
             ("consumedTokens", json!(-1)),
+            ("consumedTokens", json!(9_007_199_254_740_992u64)),
             ("evidenceReference", json!("")),
             ("evidenceReference", json!("   ")),
             ("evidenceReference", json!("a\u{7}b")),

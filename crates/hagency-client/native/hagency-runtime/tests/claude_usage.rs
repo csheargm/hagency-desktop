@@ -465,7 +465,10 @@ async fn native_claude_steer_cycle_usage_lands_in_the_same_call() {
     first["user_message_uuid"] = prompt.clone();
     first["user_message_uuids"] = json!([prompt]);
     event(&mut d, &mut p, first).await;
-    assert_eq!(counts(usage(&d)), [Some(101), Some(202), Some(303), Some(404)]);
+    assert_eq!(
+        counts(usage(&d)),
+        [Some(101), Some(202), Some(303), Some(404)]
+    );
     // The steer runs as a cycle of its own. Its result reports only its own
     // delta, and the same call's evidence becomes the sum of both.
     event(&mut d, &mut p, lifecycle("started")).await;
@@ -480,7 +483,10 @@ async fn native_claude_steer_cycle_usage_lands_in_the_same_call() {
     let observation = d.last_observation().unwrap();
     assert!(observation.continues_answer() && !observation.is_usage_snapshot());
     assert!(usage(&d).coverage() == UsageCoverage::ReportedModelsResult);
-    assert_eq!(counts(usage(&d)), [Some(202), Some(404), Some(606), Some(808)]);
+    assert_eq!(
+        counts(usage(&d)),
+        [Some(202), Some(404), Some(606), Some(808)]
+    );
     assert_eq!(usage(&d).models(), 2);
     assert!(d.completion_receipt().is_err());
     event(&mut d, &mut p, lifecycle("completed")).await;
@@ -649,5 +655,155 @@ async fn native_claude_notified_children_hold_completion_until_their_bound_repli
             counts(&final_usage.unwrap()),
             [Some(396), Some(140), Some(52), Some(116)]
         );
+    }
+}
+
+/// The prompt's own result, as the captured native CLI writes it.
+fn prompt_result(p: &Peer) -> Value {
+    let captured: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/claude-native-background.json")).unwrap();
+    let mut result = captured
+        .into_iter()
+        .find(|v| v["type"] == "result")
+        .unwrap();
+    result["session_id"] = json!("same-session");
+    result["user_message_uuid"] = p.prompt["uuid"].clone();
+    result["user_message_uuids"] = json!([p.prompt["uuid"]]);
+    result
+}
+fn idle() -> Value {
+    json!({"type":"system","subtype":"session_state_changed","state":"idle","session_id":"same-session"})
+}
+
+/// Claude Code 2.1.322 reports a foreground shell command that runs for a few
+/// seconds as a task: `task_started` and, when the command ends,
+/// `task_notification`, both with a run id (recorded offline with `sleep 3`,
+/// 2026-11-12). The command's output goes back as the tool result, so the CLI
+/// starts no notification turn. Waiting for one left the turn open for good.
+#[tokio::test]
+async fn native_claude_foreground_command_task_does_not_hold_completion() {
+    let (mut d, mut p) = running_with_completion(true).await;
+    event(
+        &mut d,
+        &mut p,
+        json!({"type":"system","subtype":"task_started","task_id":"beaf5t54y",
+        "run_id":"0mwctlbwy-2d79b439","tool_use_id":"toolu_probe_1","description":"probe",
+        "is_backgrounded":false,"task_type":"local_bash","session_id":"same-session"}),
+    )
+    .await;
+    event(
+        &mut d,
+        &mut p,
+        json!({"type":"system","subtype":"task_notification","task_id":"beaf5t54y",
+        "run_id":"0mwctlbwy-2d79b439","tool_use_id":"toolu_probe_1","status":"completed",
+        "output_file":"","summary":"probe","session_id":"same-session"}),
+    )
+    .await;
+    let result = prompt_result(&p);
+    event(&mut d, &mut p, result).await;
+    assert_eq!(d.phase(), Phase::Running, "native idle is still required");
+    event(&mut d, &mut p, idle()).await;
+    assert_eq!(d.phase(), Phase::ResultObserved);
+    assert!(!d.needs_usage_snapshot());
+    d.completion_receipt().unwrap();
+}
+
+/// The same command started in the background (recorded offline with
+/// `run_in_background`, 2026-11-12): the CLI lists the run in its live set,
+/// flags it as backgrounded and, once it ends, starts a notification turn.
+/// The turn stays open until that turn's result arrives.
+#[tokio::test]
+async fn native_claude_background_command_task_holds_completion_until_its_reply() {
+    // The recorded frames; then the live set alone marks the run.
+    for flagged in [true, false] {
+        let (mut d, mut p) = running_with_completion(true).await;
+        event(&mut d, &mut p, json!({"type":"system","subtype":"background_tasks_changed","session_id":"same-session",
+            "tasks":[{"task_id":"b1fl0fq3p","run_id":"0mwctme64-680579d8","task_type":"local_bash","description":"probe"}]})).await;
+        event(
+            &mut d,
+            &mut p,
+            json!({"type":"system","subtype":"task_started","task_id":"b1fl0fq3p",
+            "run_id":"0mwctme64-680579d8","tool_use_id":"toolu_probe_1","description":"probe",
+            "is_backgrounded":flagged,"task_type":"local_bash","session_id":"same-session"}),
+        )
+        .await;
+        let result = prompt_result(&p);
+        event(&mut d, &mut p, result).await;
+        event(&mut d, &mut p, idle()).await;
+        assert_eq!(d.phase(), Phase::Running, "the command is still running");
+        event(&mut d, &mut p, json!({"type":"system","subtype":"task_updated","task_id":"b1fl0fq3p",
+            "run_id":"0mwctme64-680579d8","patch":{"status":"completed","end_time":1794443995650u64},
+            "session_id":"same-session"}))
+        .await;
+        event(&mut d, &mut p, json!({"type":"system","subtype":"task_notification","task_id":"b1fl0fq3p",
+            "run_id":"0mwctme64-680579d8","tool_use_id":"toolu_probe_1","status":"completed",
+            "output_file":"<scratch>/tasks/b1fl0fq3p.output",
+            "summary":"Background command \"probe\" completed (exit code 0)","session_id":"same-session"}))
+        .await;
+        event(&mut d, &mut p, json!({"type":"system","subtype":"background_tasks_changed","session_id":"same-session","tasks":[]})).await;
+        assert_eq!(
+            d.phase(),
+            Phase::Running,
+            "a background run's notification turn is still to come"
+        );
+        event(&mut d, &mut p, json!({"type":"system","subtype":"session_state_changed","state":"running","session_id":"same-session"})).await;
+        event(
+            &mut d,
+            &mut p,
+            json!({"type":"system","subtype":"init","session_id":"same-session"}),
+        )
+        .await;
+        let captured: Vec<Value> =
+            serde_json::from_str(include_str!("fixtures/claude-native-background.json")).unwrap();
+        let mut reply = captured
+            .into_iter()
+            .find(|v| v["type"] == "result" && !v["origin"].is_null())
+            .unwrap();
+        reply["session_id"] = json!("same-session");
+        reply["origin"]["runId"] = json!("0mwctme64-680579d8");
+        reply["result"] = json!("the background command ended");
+        event(&mut d, &mut p, reply).await;
+        assert_eq!(d.phase(), Phase::Running);
+        event(&mut d, &mut p, idle()).await;
+        assert_eq!(d.phase(), Phase::ResultObserved);
+        assert!(
+            d.completion_receipt()
+                .unwrap()
+                .matches_text("the background command ended")
+        );
+    }
+}
+
+/// A run that ended before the prompt's result is still awaited when the CLI
+/// marked it as a background run: by the flag on its start, or by a later
+/// patch when a foreground command is moved to the background. The patch
+/// frame is written from the CLI's task patch shape, not recorded.
+#[tokio::test]
+async fn native_claude_command_marked_background_holds_completion() {
+    for moved in [false, true] {
+        let (mut d, mut p) = running_with_completion(true).await;
+        event(&mut d, &mut p, json!({"type":"system","subtype":"task_started","task_id":"moved-task",
+            "run_id":"moved-run","is_backgrounded":!moved,"task_type":"local_bash","session_id":"same-session"}))
+        .await;
+        if moved {
+            event(
+                &mut d,
+                &mut p,
+                json!({"type":"system","subtype":"task_updated","task_id":"moved-task",
+                "run_id":"moved-run","patch":{"is_backgrounded":true},"session_id":"same-session"}),
+            )
+            .await;
+        }
+        event(
+            &mut d,
+            &mut p,
+            json!({"type":"system","subtype":"task_notification","task_id":"moved-task",
+            "run_id":"moved-run","status":"completed","session_id":"same-session"}),
+        )
+        .await;
+        let result = prompt_result(&p);
+        event(&mut d, &mut p, result).await;
+        event(&mut d, &mut p, idle()).await;
+        assert_eq!(d.phase(), Phase::Running);
     }
 }
