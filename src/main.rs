@@ -43,7 +43,10 @@ fn main() {
             std::process::exit(2);
         }
     }
-    rinx::app::app_main()
+    // The HAL needs the main thread for its main loop; `run_app` gives it
+    // that and runs the app on a thread of its own (under `makepad run`, the
+    // host already did, and the app runs directly).
+    rinx::makepad_widgets::run_app(rinx::app::app_main)
 }
 
 /// Without `standalone`, Rinx is a library for a host such as OctoSense.
