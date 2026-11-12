@@ -1,6 +1,20 @@
 # Desktop 0.5.0 发布
 
-更新：2026-11-07。
+更新：2026-11-12。
+
+## 2026-11-12 rc.6 发布（macOS 安装包有缺陷，由 rc.7 取代）
+
+用户要求提交 JIT 引擎线的改动、让其他人可以运行 JIT 版本，并发布新的 RC；由 Claude 执行。
+
+- [v0.5.0-rc.6](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.6) 于 2026-11-12 15:22:00 UTC 公开为 prerelease。标签和两个安装包源码统一为 Desktop `36187b5fab526b7fa6dfa54d1692f05aa4eb798c`（PR #81 合入 main 后加 #82、#83、#84 三个发布修复）。stable latest 仍为 v1.1.2。
+- Client 已在树内（`crates/hagency-client`），build report 的 clientCommit 与 sourceCommit 相同。Makepad 首次使用 JIT 引擎线：`200eb92bdf511281ebe37bbecd732f296379af4e`（OctoSense fork 分支 `hagency-desktop-0.5.0-rc.6`，记录在 `.jit/sources.lock`）。
+- **发布后发现的缺陷：macOS 安装包找不到包内的图片和字体。** 在构建机以外的 Mac 上，登录页标志、图标等图片不显示，文字改用系统字体。原因：`robius-packaging-commands` 0.4.1 为 macOS 传 `MAKEPAD_PACKAGE_DIR=.`，并靠旧引擎的 `MAKEPAD=apple_bundle` 开关定位 `Contents/Resources`；JIT 线引擎不读这个开关，只按可执行文件旁的包目录查找。Windows 安装包传的同样是 `.`，资源就在可执行文件旁，不受影响。CI 冒烟检查只看登录页文字和非空画面，而字体在构建机上能从源码路径读到，所以没有发现；把公开的 DMG 下载到另一台 Mac 上运行才发现。修复：`build.rs` 在 macOS 的 app／dmg 打包时把包目录设为 `../Resources`；冒烟检查改为要求包内标志图片已绘制、启动日志声明包目录、且没有"字体未随包"错误。
+- [release.yml run 43224070801](https://github.com/hagency-org/hagency-desktop/actions/runs/43224070801) 使用 publish=true、macos-arm64-windows，是第四次 dispatch。前三次没有发布任何内容：(1) run 43189892280：发布流程没有设置 `HAGENCY_NATIVE_CREDENTIAL_IO=deny`，另有两个只在 Windows 编译的断言已过期（PR #82）；(2) run 43195636756："Verify Windows graphics startup and recreation" 运行的引擎测试在 JIT 线不存在，该步骤被删除，**设备重建不再在本流程中检查**（PR #83）；(3) run 43198816202：安装包冒烟脚本仍用旧引擎的 HTTP 远程端口，一个门禁测试依赖机器上装有 Codex CLI，build report 的 makepadCommit 取自旧的 Cargo.toml 固定值（PR #84）。JIT 线在 GitHub 机器上的安装包任务 macOS 约 92 分钟、Windows 约 85 分钟，加上排队和门禁，每次尝试约 2 小时 15 分。
+- 210 项预算／聊天回归全部通过。macOS Desktop 单测 995 通过、2 忽略；Windows 973 通过、2 忽略；两平台各 10 个 app-contract 测试通过。
+- 恰好两个安装包：`hagency-desktop-macos-arm64.dmg`（167,713,717 字节）和 `hagency-desktop-windows-amd64.exe`（121,389,765 字节）。两个 build report、三个 SHA256SUMS 及两个安装包共 7 个公开附件已重新下载，大小和 SHA-256 均与 GitHub 元数据、平台报告及校验文件匹配；报告中的 Desktop、Client、Makepad 提交一致。匿名访问 Release 和安装包下载地址均为 HTTP 200。
+- 两个安装包在 CI 上用隔离 profile 启动，连续三帧登录页非空；随包运行时为 `octos 2.0.3-rc.13 (fe08d8e 2026-11-12)`。Windows 为可见窗口，渲染截图与原生桌面截图已查看，标志正常；macOS 为隐藏窗口，截图中没有标志（即上述缺陷，当时没有被检查拦下）。没有人工 Windows 11 验收。
+- Mac 仍为 ad-hoc 签名、未 notarize；Windows 未签名。升级说明见发布说明：rc.5 及更早版本的 Hosting 设置在首次启动时被丢弃；已保存的登录单向迁入系统凭据库。
+- 证据：上述 run 的 artifacts（`release-regressions`、`installer-checks-*`、`candidate-installers-*`，保留 14 天）。未部署服务端，未修改服务器配置。
 
 ## 2026-11-07 rc.4 发布
 
