@@ -8012,7 +8012,22 @@ impl Widget for Message {
             let text = label.text();
             let mini_app = self.view.widget(cx, ids!(content.mini_app_card)).visible()
                 || self.view.widget(cx, ids!(content.forward_card)).visible();
-            let natural_width = if mini_app { max_width.min(280.0) } else if plaintext.visible() {
+            // A card under the text (a run, an approval, a question, usage, a download) needs
+            // room of its own: a bubble shrunk to a two-letter message squeezed it into a strip.
+            let card = [
+                ids!(content.agent_run_card).as_slice(),
+                ids!(content.agent_run_card_1).as_slice(),
+                ids!(content.agent_run_card_2).as_slice(),
+                ids!(content.agent_approval_card).as_slice(),
+                ids!(content.agent_question_card).as_slice(),
+                ids!(content.agent_question_card_1).as_slice(),
+                ids!(content.agent_question_card_2).as_slice(),
+                ids!(content.octos_action_card).as_slice(),
+                ids!(content.agent_reply).as_slice(),
+                ids!(content.agent_usage).as_slice(),
+                ids!(content.download_section).as_slice(),
+            ].into_iter().any(|path| self.view.widget(cx, path).visible());
+            let natural_width = if mini_app { max_width.min(280.0) } else if card { max_width } else if plaintext.visible() {
                 label.borrow().map(|label| {
                     label.draw_text.layout(cx, 0.0, 0.0, None, false, Align::default(), &text)
                         .rows.iter().map(|row| (row.width_in_lpxs * label.draw_text.font_scale) as f64)
