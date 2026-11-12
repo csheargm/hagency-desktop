@@ -323,6 +323,12 @@ impl MatchEvent for App {
         // such that background threads/tasks will be able to can access it.
         let _app_data_dir = crate::app_data_dir();
         log!("App::handle_startup(): app_data_dir: {:?}", _app_data_dir);
+        // Where this build reads its images and fonts. A packaged build must name a folder
+        // that travels with it; the installer check reads this line.
+        match makepad_widgets::makepad_platform::app_meta::package_dir() {
+            Some(dir) => log!("App::handle_startup(): resources: packaged in {:?}", dir),
+            None => log!("App::handle_startup(): resources: source checkout"),
+        }
 
         if !self.embedded {
             if let Err(e) = persistence::load_window_state(self.ui.window(cx, ids!(main_window)), cx) {

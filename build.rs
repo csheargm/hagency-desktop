@@ -40,6 +40,18 @@ fn main() {
     // when cross-compiling (e.g., building for Android on a Windows CI runner).
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
+    // A macOS bundle keeps its resources in `Contents/Resources`, one folder away from the
+    // executable in `Contents/MacOS`. The packaging tool passes `MAKEPAD_PACKAGE_DIR=.` for a
+    // bundle and leaves finding `Contents/Resources` to a bundle switch of the earlier engine
+    // (`MAKEPAD=apple_bundle`). This engine does not read that switch: it looks in the package
+    // directory, relative to the executable. Left at `.`, a packaged macOS app finds neither
+    // its images nor its bundled fonts on any computer but the one that built it.
+    if target_os == "macos"
+        && matches!(std::env::var("CARGO_PACKAGER_FORMAT").as_deref(), Ok("app" | "dmg"))
+    {
+        println!("cargo:rustc-env=MAKEPAD_PACKAGE_DIR=../Resources");
+    }
+
     // On macOS, we can run Rinx as an ad-hoc codesigned app,
     // which allows certain system features to work (speech recognition, location, etc).
     // See also the `.cargo/config.toml` file that overrides what `cargo run` does.
