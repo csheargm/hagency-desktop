@@ -451,8 +451,7 @@ pub(super) fn install_system_cjk_fallback(vm: &mut ScriptVm) {
             Err(_) => {
                 const FONT: &str = "/System/Library/Fonts/Hiragino Sans GB.ttc";
                 if !std::path::Path::new(FONT).is_file() { return; }
-                vm.bx.code.crate_manifests.borrow_mut().insert(
-                    "rinx_system_fonts".into(), "/System/Library/Fonts".into());
+                vm.register_crate_manifest("rinx_system_fonts", "/System/Library/Fonts");
                 let resource = makepad_widgets::makepad_platform::script::res::register_crate_resource_path(
                     vm, "rinx_system_fonts/Hiragino Sans GB.ttc");
                 (resource, resource)
