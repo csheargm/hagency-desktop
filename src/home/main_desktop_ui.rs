@@ -65,6 +65,17 @@ script_mod! {
             welcome_screen := mod.widgets.WelcomeScreen {}
             room_screen := mod.widgets.RoomScreen {
                 desktop_chat_header +: { visible: true }
+                // A desktop chat column keeps its messages and its input box
+                // clear of the column's edges, however wide the column is.
+                room_screen_wrapper +: {
+                    room_columns +: {
+                        chat_center +: {
+                            timeline_and_input_bar +: {
+                                padding: Inset{left: 15 right: 15}
+                            }
+                        }
+                    }
+                }
             }
             invite_screen := mod.widgets.InviteScreen {}
             space_lobby_screen := mod.widgets.SpaceLobbyScreen {}
