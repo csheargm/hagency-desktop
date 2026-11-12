@@ -68,8 +68,9 @@ jobs:
           ref: ${{ github.sha }}
           path: .release/validation
           persist-credentials: false
+      # Also for a candidate packaged by another run: the installer check builds
+      # the engine's makepad-remote tool from the source commit to drive the app.
       - uses: dtolnay/rust-toolchain@master
-        if: inputs.artifact_run_id == ''
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
