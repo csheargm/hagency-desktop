@@ -744,8 +744,7 @@ async fn fetch_space_avatar(url: OwnedMxcUri, client: &Client) -> matrix_sdk::Re
         source: MediaSource::Plain(url.clone()),
         format: utils::AVATAR_THUMBNAIL_FORMAT.into(),
     };
-    client.media()
-        .get_media_content(&request, true)
+    crate::media_transport::fetch(client, &request)
         .await
         .map(|img_data| FetchedRoomAvatar::Image((url, img_data).into()))
 }

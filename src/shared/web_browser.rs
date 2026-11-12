@@ -393,10 +393,11 @@ impl WebBrowser {
                         crate::sliding_sync::MatrixRequest::DownloadMedia {
                             media_source: attachment.media_source.clone(),
                             filename: attachment.filename.clone(),
+                            max_bytes: crate::attachment_transport::MARKDOWN_LIMIT,
                             on_download_result: Box::new(move |result| {
                                 let result = match result {
                                     MediaDownloadResult::Downloaded(bytes) => {
-                                        markdown_source(bytes)
+                                        bytes.read_small(crate::attachment_transport::MARKDOWN_LIMIT).and_then(markdown_source)
                                     }
                                     MediaDownloadResult::Failed(error) => Err(error),
                                     MediaDownloadResult::Cancelled => {

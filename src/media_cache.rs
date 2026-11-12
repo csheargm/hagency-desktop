@@ -222,9 +222,7 @@ pub(crate) fn error_to_media_cache_entry(error: Error, request: &MediaRequestPar
                 match http_error {
                     HttpError::Reqwest(reqwest_error) => {
                         // Checking if the connection is timeout is not important as Matrix SDK has implemented maximum timeout duration.
-                        if !reqwest_error.is_connect() {
-                            MediaCacheEntry::Failed(StatusCode::INTERNAL_SERVER_ERROR)
-                        } else if reqwest_error.is_status() {
+                        if reqwest_error.is_status() {
                             MediaCacheEntry::Failed(reqwest_error
                                 .status()
                                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
@@ -236,6 +234,8 @@ pub(crate) fn error_to_media_cache_entry(error: Error, request: &MediaRequestPar
                 }
             }
         }
+        Error::UnknownError(error) if error.is::<crate::media_transport::PreviewLimit>() => MediaCacheEntry::Failed(
+            if matches!(error.downcast_ref(), Some(crate::media_transport::PreviewLimit::TooLarge)) { StatusCode::PAYLOAD_TOO_LARGE } else { StatusCode::SERVICE_UNAVAILABLE }),
         Error::InsufficientData => MediaCacheEntry::Failed(StatusCode::PARTIAL_CONTENT),
         Error::AuthenticationRequired => MediaCacheEntry::Failed(StatusCode::UNAUTHORIZED),
         _ => MediaCacheEntry::Failed(StatusCode::INTERNAL_SERVER_ERROR)

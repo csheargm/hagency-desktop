@@ -963,6 +963,7 @@ pub enum MatrixRequest {
     DownloadMedia {
         media_source: MediaSource,
         filename: String,
+        max_bytes: u64,
         on_download_result: Box<dyn FnOnce(MediaDownloadResult) + Send + 'static>,
     },
     /// Request to cancel an in-progress download.
@@ -2456,7 +2457,7 @@ async fn matrix_worker_task(
                         source: MediaSource::Plain(mxc_uri.clone()),
                         format: AVATAR_THUMBNAIL_FORMAT.into(),
                     };
-                    let res = client.media().get_media_content(&media_request, true).await;
+                    let res = crate::media_transport::fetch(&client, &media_request).await;
                     // log!("Fetched avatar for {mxc_uri:?}, succeeded? {}", res.is_ok());
                     on_fetched(AvatarUpdate { mxc_uri, avatar_data: res.map(|v| v.into()) });
                 });
@@ -2476,7 +2477,7 @@ async fn matrix_worker_task(
                 
                 let _fetch_task = crate::account_session::spawn(async move {
                     // log!("Sending fetch media request for {media_request:?}...");
-                    let res = client.media().get_media_content(&media_request, true).await;
+                    let res = crate::media_transport::fetch(&client, &media_request).await;
                     on_fetched(&destination, media_request, res, update_sender);
                 });
             }
@@ -3083,7 +3084,7 @@ async fn matrix_worker_task(
                 });
             }
 
-            MatrixRequest::DownloadMedia { media_source, filename, on_download_result } => {
+            MatrixRequest::DownloadMedia { media_source, filename: _, max_bytes, on_download_result } => {
                 use crate::shared::attachment_download::{enqueue_already_downloading_notification, MediaDownloadResult};
             
                 // Note: in this code block, we always want to call `on_download_result` with any error.
@@ -3103,24 +3104,14 @@ async fn matrix_worker_task(
                 let download_tasks2 = download_tasks.clone();
                 let mxc_uri2 = mxc_uri.clone();
                 let download_future = async move {
-                    let media_request = MediaRequestParameters {
-                        source: media_source,
-                        format: matrix_sdk::media::MediaFormat::File,
-                    };
-                    let res = match client.media().get_media_content(&media_request, true).await {
-                            Ok(bytes) => {
-                                log!("Downloaded attachment {filename:?} ({} bytes) to memory", bytes.len());
-                                Ok(bytes)
-                            }
-                            Err(e) => {
-                                error!("Failed to fetch media content for attachment {filename:?}: {e}");
-                                Err(e.to_string())
-                            }
-                        };
-                    if let Some(active) = download_tasks2.lock().unwrap().remove(&mxc_uri2) {
-                        (active.on_download_result)(match res {
-                            Ok(bytes) => MediaDownloadResult::Downloaded(bytes),
-                            Err(e) => MediaDownloadResult::Failed(e),
+                    let result = crate::attachment_transport::download(
+                        client, media_source, max_bytes, crate::account_session::epoch()
+                    ).await;
+                    let active = download_tasks2.lock().unwrap().remove(&mxc_uri2);
+                    if let Some(active) = active {
+                        (active.on_download_result)(match result {
+                            Ok(file) => MediaDownloadResult::Downloaded(file),
+                            Err(error) => MediaDownloadResult::Failed(error),
                         });
                     }
                 };
@@ -3133,7 +3124,8 @@ async fn matrix_worker_task(
                 );
                 crate::account_session::spawn(async move {
                     if Abortable::new(download_future, abort_registration).await.is_err() {
-                        if let Some(active) = download_tasks3.lock().unwrap().remove(&mxc_uri3) {
+                        let active = download_tasks3.lock().unwrap().remove(&mxc_uri3);
+                        if let Some(active) = active {
                             (active.on_download_result)(MediaDownloadResult::Cancelled);
                         }
                     }
@@ -5424,7 +5416,7 @@ pub(crate) async fn fetch_room_preview_with_avatar(
             source: MediaSource::Plain(avatar_url.clone()),
             format: AVATAR_THUMBNAIL_FORMAT.into(),
         };
-        match client.media().get_media_content(&media_request, true).await {
+        match crate::media_transport::fetch(&client, &media_request).await {
             Ok(avatar_content) => {
                 log!("Fetched avatar for room preview {:?} ({})", room_preview.name, room_preview.room_id);
                 FetchedRoomAvatar::Image((avatar_url, avatar_content).into())
@@ -6326,7 +6318,7 @@ async fn room_avatar(room: &Room, room_name_id: &RoomNameId) -> FetchedRoomAvata
                 source: MediaSource::Plain(avatar_url.clone()),
                 format: AVATAR_THUMBNAIL_FORMAT.into(),
             };
-            if let Ok(avatar) = room.client().media().get_media_content(&request, true).await {
+            if let Ok(avatar) = crate::media_transport::fetch(&room.client(), &request).await {
                 return FetchedRoomAvatar::Image((avatar_url, avatar).into());
             }
         }
@@ -6809,4 +6801,14 @@ pub(crate) fn install_crypto_test_client(client: Option<Client>) {
 #[cfg(test)]
 pub(crate) fn install_link_test_client(client: Option<Client>) {
     CLIENT.replace(client, || {});
+}
+
+/// Direct media transport must reproduce the SDK's terminal-session notification.
+pub(crate) fn notify_invalid_matrix_session(client: &matrix_sdk::Client, epoch: u64, soft_logout: bool) -> bool {
+    if epoch != crate::account_session::epoch() || !crate::matrix_context::is_current(client) { return false; }
+    mark_token_expired();
+    let msg = if soft_logout { "Your login session has expired.\n\nPlease log in again." }
+        else { "Your login token is no longer valid.\n\nPlease log in again." };
+    Cx::post_action(LoginAction::LoginFailure(msg.into()));
+    true
 }
