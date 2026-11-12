@@ -510,7 +510,11 @@ impl Service {
             fresh.validate(&self.root, &session.client_session)?;
             None
         } else {
-            self.retained_database(&context)?
+            // `doc` is held here and has no published version (`existing` is
+            // none). A legacy retained list is migrated inside this lookup and
+            // must not open the same session document again.
+            let session_held = doc.path().file_name() == Some(std::ffi::OsStr::new("session"));
+            self.retained_database_with(&context, session_held)?
         };
         if selected_database.is_none() && fresh.is_none() && source.is_none() {
             self.validate_unreferenced_database(&context)?;

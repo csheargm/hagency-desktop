@@ -780,3 +780,93 @@ async fn sdk_client(origin: &str, owner: OwnedUserId, device: &str) -> matrix_sd
         .unwrap();
     client
 }
+
+// A profile from before the credential move: a legacy session for the current
+// database beside a legacy retained list that names an older database of the
+// same account (left by an earlier sign-in). The first restore must migrate
+// both and keep the session.
+#[tokio::test]
+async fn credential_migration_legacy_session_beside_legacy_retained_list_restores() {
+    let _serial = SERIAL.lock().await;
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("profile");
+    let (service, _fake, session, retained) = fixture(&root);
+    let mut older = session.clone();
+    older.client_session.db_path = "db_older".into();
+    older.client_session.passphrase = "OLDER_DATABASE_KEY".repeat(2);
+    seed_legacy(&retained, &older);
+    hagency_store::private::directory(&root.join("db_older")).unwrap();
+    hagency_store::private::directory(&root.join("db_original")).unwrap();
+    let path = retained.with_file_name("session");
+    hagency_store::private::write_new(&path, &serde_json::to_vec(&session).unwrap()).unwrap();
+    let loaded = service
+        .load_worker(&path, crate::account_session::epoch(), || true)
+        .map_err(|error| format!("{error:?}"));
+    assert_eq!(
+        loaded.map(|s| s.client_session.passphrase),
+        Ok(session.client_session.passphrase.clone())
+    );
+    // The older database keeps its own key under the migrated list.
+    let list: Retained = serde_json::from_slice(&std::fs::read(&retained).unwrap()).unwrap();
+    assert_eq!(list.databases.len(), 1);
+    assert_eq!(
+        list.databases[0].database.db_path,
+        older.client_session.db_path
+    );
+    let installation = service.existing_installation().unwrap();
+    assert_eq!(
+        service
+            .vault
+            .load(
+                &list.databases[0].database.reference,
+                &list.databases[0].identity.scope(&installation).unwrap()
+            )
+            .unwrap()
+            .as_slice(),
+        older.client_session.passphrase.as_bytes()
+    );
+    // A second start reads the published documents.
+    let again = service
+        .load_worker(&path, crate::account_session::epoch(), || true)
+        .map_err(|error| format!("{error:?}"));
+    assert_eq!(
+        again.map(|s| s.client_session.passphrase),
+        Ok(session.client_session.passphrase.clone())
+    );
+    assert!(service.worker.shutdown(std::time::Duration::from_secs(2)));
+}
+
+// The same start when the legacy list names the database the session still
+// uses: the session takes the list's reference and no second key is issued.
+#[tokio::test]
+async fn credential_migration_legacy_session_named_in_legacy_retained_list_restores() {
+    let _serial = SERIAL.lock().await;
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("profile");
+    let (service, _fake, session, retained) = fixture(&root);
+    seed_legacy(&retained, &session);
+    let db = root.join("db_original");
+    hagency_store::private::directory(&db).unwrap();
+    let path = retained.with_file_name("session");
+    hagency_store::private::write_new(&path, &serde_json::to_vec(&session).unwrap()).unwrap();
+    let loaded = service
+        .load_worker(&path, crate::account_session::epoch(), || true)
+        .map_err(|error| format!("{error:?}"));
+    match loaded {
+        Ok(loaded) => {
+            assert_eq!(
+                loaded.client_session.passphrase,
+                session.client_session.passphrase
+            );
+            let list: Retained =
+                serde_json::from_slice(&std::fs::read(&retained).unwrap()).unwrap();
+            let published: Stored = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                published.database.reference,
+                list.databases[0].database.reference
+            );
+        }
+        Err(error) => panic!("{error}"),
+    }
+    assert!(service.worker.shutdown(std::time::Duration::from_secs(2)));
+}
