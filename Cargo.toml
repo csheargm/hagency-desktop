@@ -14,7 +14,13 @@ version = "0.5.0-rc.5"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
+hagency-platform = { path = "crates/hagency-client/native/hagency-platform" }
+matrix-sdk-store-encryption = "=0.19.1"
+matrix-sdk-sqlite = { version = "=0.19.1", default-features = false, features = ["crypto-store"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rmp-serde = "1.3"
 hagency-store = { path = "crates/hagency-client/native/hagency-store" }
+same-file = "1.0.6"
 cap-std = "=4.0.3"
 cap-fs-ext = "=4.0.3"
 zeroize = "1"
@@ -126,6 +132,7 @@ rand = "0.8.5"
 rangemap = "1.5.0"
 sanitize-filename = "0.6"
 serde = "1.0"
+emojis = { version = "=0.9.0", features = ["serde"] }
 serde_json = "1.0"
 thiserror = "2.0.16"
 tokio = { version = "1.43.1", features = ["macros", "rt-multi-thread"] }
@@ -160,6 +167,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 ] }
 
 [dev-dependencies]
+wiremock = "=0.6.5"
 tempfile = "3.24.0"
 # Host unit tests use dashboard snapshots without enabling fixtures in production.
 hagency-owner-dashboard = { path = "crates/owner-dashboard", features = ["fixtures"] }
@@ -190,6 +198,9 @@ napi-ohos = "0.1.3"
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3"

@@ -1,6 +1,6 @@
 //! Handles app persistence by saving and restoring client session data to/from the filesystem.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail};
 use makepad_widgets::{log, Cx};
 use matrix_sdk::{
@@ -15,10 +15,11 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{app_data_dir, cache_dir, login::login_screen::LoginAction};
+use crate::{app_data_dir, login::login_screen::LoginAction};
 
 /// The data needed to re-build a client.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientSessionPersisted {
     /// The URL of the homeserver of the user.
     pub homeserver: String,
@@ -115,7 +116,8 @@ impl PersistedUserSession {
 }
 
 /// The full session to persist.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FullSessionPersisted {
     /// The data to re-build the client.
     pub client_session: ClientSessionPersisted,
@@ -144,7 +146,7 @@ pub struct FullSessionPersisted {
 }
 
 /// A serializable duplicate of [`sliding_sync::Version`].
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum SlidingSyncVersion {
     #[default]
     Native,
@@ -208,74 +210,141 @@ pub(crate) fn resolve_db_path(stored: PathBuf) -> PathBuf {
 
 /// Returns the set of `db` paths referenced by any saved session file.
 ///
-/// This basically scans every saved user session dir, not just the most recent one,
-/// to help ensure that db dirs don't get orphaned on the filesystem forever.
+/// Scan every saved user session directory, not only the most recent one.
 ///
-/// Returns `None` if the app data directory can't be accessed,
-/// which means that nothing should be considered as eligible for deletion.
-async fn collect_referenced_db_paths() -> Option<std::collections::HashSet<PathBuf>> {
-    use std::collections::HashSet;
-    let mut paths = HashSet::new();
-    let data_dir = app_data_dir();
-
-    let mut entries = match tokio::fs::read_dir(data_dir).await {
-        Ok(entries) => entries,
-        Err(e) => {
-            log!(
-                "collect_referenced_db_paths: could not read data dir {}: {e}",
-                data_dir.display()
-            );
+/// Diagnostic inventory only; even a complete result never authorizes deletion.
+/// This explicit diagnostic may read scoped native credentials. Startup cleanup
+/// does not invoke it or request native unlocks.
+/// Return `None` when any part of inventory cannot be completed.
+pub async fn collect_referenced_db_paths() -> Option<std::collections::HashSet<PathBuf>> {
+    let root = app_data_dir();
+    let directory = match tokio::fs::read_dir(root).await {
+        Ok(directory) => directory,
+        Err(error) => {
+            log!("Database inventory incomplete: {error}");
             return None;
         }
     };
+    let entries = futures_util::stream::try_unfold(directory, |mut directory| async move {
+        let entry = directory.next_entry().await?;
+        Ok::<_, std::io::Error>(entry.map(|entry| (entry.path(), directory)))
+    });
+    use futures_util::TryStreamExt;
+    let result = inventory_entries(
+        root,
+        entries.map_err(anyhow::Error::from),
+        |path, retained| async move {
+            if retained {
+                super::credential_state::retained_paths(path).await
+            } else {
+                Ok(vec![
+                    super::credential_state::existing_database(path)
+                        .await?
+                        .client_session
+                        .db_path,
+                ])
+            }
+        },
+    )
+    .await;
+    match result {
+        Ok(paths) => Some(paths),
+        Err(error) => {
+            log!("Database inventory incomplete; no directories can be pruned: {error}");
+            None
+        }
+    }
+}
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
+/// A complete inventory is the only input accepted by GC. The production stream
+/// retains real read_dir errors; isolated tests can inject an error after valid
+/// entries without replacing the credential/file readers.
+pub(super) async fn inventory_entries<S, F, Fut>(
+    root: &Path,
+    entries: S,
+    mut references: F,
+) -> anyhow::Result<std::collections::HashSet<PathBuf>>
+where
+    S: futures_util::Stream<Item = anyhow::Result<PathBuf>> + Send,
+    F: FnMut(PathBuf, bool) -> Fut + Send,
+    Fut: std::future::Future<Output = anyhow::Result<Vec<PathBuf>>> + Send,
+{
+    use futures_util::StreamExt;
+    let mut paths = std::collections::HashSet::new();
+    futures_util::pin_mut!(entries);
+    while let Some(entry) = entries.next().await {
+        let path = entry?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("Database inventory contains an unknown path"))?;
+        let metadata = tokio::fs::symlink_metadata(&path).await?;
         if name.starts_with("db_") {
             continue;
         }
-        let session_file = path.join("persistent_state").join("session");
-        let retained = path.join("persistent_state/retained_db.json");
-        match tokio::fs::read(retained).await {
-            Ok(bytes) => {
-                let Ok(sessions) = serde_json::from_slice::<Vec<ClientSessionPersisted>>(&bytes)
-                else {
-                    return None;
-                };
-                for session in sessions {
-                    paths.insert(resolve_db_path(session.db_path));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "Database inventory contains a linked account path"
+        );
+        if !metadata.is_dir() {
+            continue;
         }
-        let bytes = match tokio::fs::read(&session_file).await {
-            Ok(bytes) => bytes,
+        let state = path.join("persistent_state");
+        match tokio::fs::symlink_metadata(&state).await {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return None,
-        };
-        let session: FullSessionPersisted = match serde_json::from_slice(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                log!(
-                    "collect_referenced_db_paths: skipping unparsable session file {}: {e}",
-                    session_file.display(),
-                );
-                return None;
+            Err(error) => return Err(error.into()),
+            Ok(metadata) => anyhow::ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "Database inventory contains an invalid state directory"
+            ),
+        }
+        for (name, retained) in [("retained_db.json", true), ("session", false)] {
+            let document = state.join(name);
+            match tokio::fs::symlink_metadata(&document).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match tokio::fs::symlink_metadata(state.join(format!(".{name}.vault-journal")))
+                        .await
+                    {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                        Ok(_) => anyhow::bail!(
+                            "Database inventory contains an unfinished credential transaction"
+                        ),
+                    }
+                }
+                Err(error) => return Err(error.into()),
+                Ok(metadata) => anyhow::ensure!(
+                    metadata.is_file() && !metadata.file_type().is_symlink(),
+                    "Database inventory contains an invalid credential file"
+                ),
             }
-        };
-        paths.insert(resolve_db_path(session.client_session.db_path));
+            for stored in references(document, retained).await? {
+                let resolved = if !stored.is_absolute() {
+                    root.join(stored)
+                } else {
+                    match tokio::fs::symlink_metadata(&stored).await {
+                        Ok(_) => stored,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => root.join(
+                            stored
+                                .file_name()
+                                .ok_or_else(|| anyhow!("Invalid database path"))?,
+                        ),
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                paths.insert(resolved);
+            }
+        }
     }
-
-    Some(paths)
+    Ok(paths)
 }
 
+/// Test-only preservation of the original pruning algorithm. A diagnostic
+/// inventory snapshot cannot authorize production deletion across creators.
 /// Deletes old database files that start with `"db_"` within the given `dir` and its subdirectories.
 ///
 /// Only deletes database files that are inactive, i.e., where `is_active` returns false.
+#[cfg(test)]
 async fn prune_orphan_db_dirs(dir: &std::path::Path, is_active: impl Fn(&std::ffi::OsStr) -> bool) {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(e) => e,
@@ -335,13 +404,28 @@ async fn prune_orphan_db_dirs(dir: &std::path::Path, is_active: impl Fn(&std::ff
     }
 }
 
-/// Deletes orphaned (no longer used) database and cache directories.
+/// Defer automatic database/cache deletion until inventory and every database
+/// creator participate in one cross-process protocol. A complete diagnostic
+/// snapshot alone does not prove that a newly created database is orphaned.
+/// This startup entry performs no inventory/native credential IO or deletion.
 pub async fn cleanup_orphan_db_dirs() {
+    log!(
+        "Automatic database cleanup deferred: cross-process inventory and database creation \
+         are not serialized; no database or cache directories deleted"
+    );
+}
+
+#[cfg(test)]
+pub(super) async fn cleanup_with_inventory(
+    data_dir: &Path,
+    cache: &Path,
+    inventory: impl std::future::Future<Output = Option<std::collections::HashSet<PathBuf>>>,
+) {
     use std::collections::HashSet;
     use std::ffi::OsString;
 
     // If we couldn't read the data directory, we can't know which ones are active, so skip pruning.
-    let Some(active) = collect_referenced_db_paths().await else {
+    let Some(active) = inventory.await else {
         return;
     };
     let active_names: HashSet<OsString> = active
@@ -349,12 +433,12 @@ pub async fn cleanup_orphan_db_dirs() {
         .filter_map(|p| p.file_name().map(ToOwned::to_owned))
         .collect();
 
-    let data_dir = app_data_dir();
     prune_orphan_db_dirs(data_dir, |name| active.contains(&data_dir.join(name))).await;
-    prune_orphan_db_dirs(cache_dir(), |name| active_names.contains(name)).await;
+    prune_orphan_db_dirs(cache, |name| active_names.contains(name)).await;
 }
 
-/// Recursive size sum, best-effort. Just for the cleanup log line.
+/// Recursive size sum, best-effort. Just for the test-only cleanup log line.
+#[cfg(test)]
 async fn dir_size_bytes(path: &std::path::Path) -> Option<u64> {
     let mut total = 0u64;
     let mut entries = tokio::fs::read_dir(path).await.ok()?;
@@ -393,6 +477,7 @@ pub async fn restore_session(
 ) -> anyhow::Result<(Client, Option<String>)> {
     restore_session_inner(user_id, true).await
 }
+#[cfg(any(target_os = "ios", target_os = "android"))]
 pub(crate) async fn restore_session_for_login(
     user_id: OwnedUserId,
 ) -> anyhow::Result<(Client, Option<String>)> {
@@ -425,13 +510,13 @@ async fn restore_session_inner(
     });
 
     // The session was serialized as JSON in a file.
-    let serialized_session = tokio::fs::read_to_string(session_file).await?;
+    let loaded_session = super::credential_state::load(session_file).await?;
     let FullSessionPersisted {
         client_session,
         user_session,
         sync_token,
         sliding_sync_version,
-    } = serde_json::from_str(&serialized_session)?;
+    } = loaded_session;
 
     if user_session.meta().user_id != user_id {
         bail!("Saved session belongs to another account");
@@ -479,8 +564,12 @@ async fn restore_session_inner(
         status: status_str,
     });
 
+    // Hold the original grant lease before activation can spawn SDK work.
+    super::credential_state::claim_restoration(&client, &session_file_path(&user_id)).await?;
     // Restore the Matrix user session.
     client.restore_session(user_session.into_sdk()).await?;
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    super::credential_state::capture_restored_target(&client).await?;
     save_latest_user_id(&user_id).await?;
     if callbacks {
         install_session_callbacks(&client, session_file_path(&user_id))?;
@@ -490,9 +579,6 @@ async fn restore_session_inner(
 }
 
 /// Persist a logged-in client session to the filesystem for later use.
-///
-/// TODO: This is not very secure, for simplicity. We should use robius-keychain
-///       or `keyring-rs` to storing secrets securely.
 ///
 /// Note that we could also build the user session from the login response.
 pub async fn save_session(
@@ -509,54 +595,25 @@ pub async fn save_session(
     let sliding_sync_version = client.sliding_sync_version().into();
     // Save that user's session.
     let session_file = session_file_path(&user_session.meta().user_id);
-    let serialized_session = serde_json::to_string(&FullSessionPersisted {
-        client_session,
-        user_session,
-        sync_token: None,
-        sliding_sync_version,
-    })?;
     if let Some(parent) = session_file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
-            if let Some(account) = parent.parent() {
-                tokio::fs::set_permissions(account, std::fs::Permissions::from_mode(0o700)).await?;
-            }
-        }
+        provision_session_parent(parent)?;
     }
-    write_private_session(&session_file, serialized_session.as_bytes()).await?;
+    super::credential_state::save(
+        client,
+        FullSessionPersisted {
+            client_session,
+            user_session,
+            sync_token: None,
+            sliding_sync_version,
+        },
+        crate::account_session::epoch(),
+        session_file.clone(),
+    )
+    .await?;
     save_latest_user_id(&user_id).await?;
 
-    install_session_callbacks(client, session_file.clone())?;
     crate::accounts::refresh()?;
     log!("Session persisted to: {}", session_file.display());
-    Ok(())
-}
-
-/// Atomically replace the token-bearing session with owner-only permissions.
-pub(crate) async fn write_private_session(
-    path: &std::path::Path,
-    data: &[u8],
-) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let temporary = path.with_extension(format!("{:016x}.tmp", rand::random::<u64>()));
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(&temporary).await?;
-    let result = async {
-        file.write_all(data).await?;
-        file.sync_all().await?;
-        tokio::fs::rename(&temporary, path).await
-    }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temporary).await;
-    }
-    result?;
     Ok(())
 }
 
@@ -581,7 +638,7 @@ pub async fn delete_latest_user_id() -> anyhow::Result<bool> {
 
 /// Serializes synchronous SDK refresh persistence against account removal.
 pub(crate) static SESSION_IO: std::sync::Mutex<()> = std::sync::Mutex::new(());
-fn same_stored_session(client: &Client, stored: &FullSessionPersisted) -> bool {
+pub(super) fn same_stored_session(client: &Client, stored: &FullSessionPersisted) -> bool {
     if client.session_meta() != Some(stored.user_session.meta())
         || client.homeserver().as_str().trim_end_matches('/')
             != stored.client_session.homeserver.trim_end_matches('/')
@@ -605,70 +662,23 @@ fn same_stored_session(client: &Client, stored: &FullSessionPersisted) -> bool {
 }
 
 pub(crate) fn install_session_callbacks(client: &Client, path: PathBuf) -> anyhow::Result<()> {
-    let epoch = crate::account_session::epoch();
-    let read_path = path.clone();
-    client.set_session_callbacks(
-        Box::new(move |client| {
-            let _guard = SESSION_IO
-                .lock()
-                .map_err(|_| std::io::Error::other("Session storage unavailable"))?;
-            if epoch != crate::account_session::epoch() {
-                return Err(std::io::Error::other("Account changed").into());
-            }
-            let stored: FullSessionPersisted = serde_json::from_slice(&std::fs::read(&read_path)?)?;
-            if !same_stored_session(&client, &stored) {
-                return Err(std::io::Error::other("Session identity changed").into());
-            }
-            Ok(match stored.user_session {
-                PersistedUserSession::OAuth { user, .. } => user.tokens,
-                PersistedUserSession::Matrix(s) => s.tokens,
-            })
-        }),
-        Box::new(move |client| {
-            use std::io::Write;
-            let _guard = SESSION_IO
-                .lock()
-                .map_err(|_| std::io::Error::other("Session storage unavailable"))?;
-            if epoch != crate::account_session::epoch() {
-                return Err(std::io::Error::other("Account changed").into());
-            }
-            let mut stored: FullSessionPersisted = serde_json::from_slice(&std::fs::read(&path)?)?;
-            if !same_stored_session(&client, &stored) {
-                return Err(std::io::Error::other("Session identity changed").into());
-            }
-            stored.user_session = PersistedUserSession::from_sdk(
-                client
-                    .session()
-                    .ok_or_else(|| std::io::Error::other("No SDK session"))?,
-            )
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-            let temporary = path.with_extension(format!("{:016x}.tmp", rand::random::<u64>()));
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let result = (|| -> std::io::Result<()> {
-                let mut file = options.open(&temporary)?;
-                file.write_all(&serde_json::to_vec(&stored)?)?;
-                file.sync_all()?;
-                std::fs::rename(&temporary, &path)
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(temporary);
-            }
-            result?;
-            Ok(())
-        }),
-    )?;
+    super::credential_state::install_cached(client, path)
+}
+
+fn provision_session_parent(parent: &std::path::Path) -> anyhow::Result<()> {
+    if let Some(account) = parent.parent() {
+        if !account.exists() {
+            hagency_store::private::create_directory_new(account)?;
+        }
+        hagency_store::private::directory(account)?;
+    }
+    hagency_store::private::directory(parent)?;
     Ok(())
 }
 
-/// Final OAuth candidate commit has no await, so cancellation cannot leave a
-/// detached filesystem write racing a later account's login.
-pub(crate) fn save_oauth_session(
+/// Native key preparation runs on the owned credential worker; final publication
+/// still holds the original epoch/SDK fence without an await inside that fence.
+pub(crate) async fn save_oauth_session(
     client: &Client,
     client_session: ClientSessionPersisted,
     epoch: u64,
@@ -676,30 +686,9 @@ pub(crate) fn save_oauth_session(
     let user = client
         .user_id()
         .ok_or_else(|| anyhow!("Missing OAuth identity"))?;
-    save_oauth_session_at(client, client_session, epoch, session_file_path(user), true)
-}
-#[cfg(test)]
-pub(crate) fn save_oauth_session_for_test(
-    client: &Client,
-    client_session: ClientSessionPersisted,
-    epoch: u64,
-    path: PathBuf,
-) -> anyhow::Result<()> {
-    save_oauth_session_at(client, client_session, epoch, path, false)
-}
-fn save_oauth_session_at(
-    client: &Client,
-    client_session: ClientSessionPersisted,
-    epoch: u64,
-    path: PathBuf,
-    picker: bool,
-) -> anyhow::Result<()> {
-    use std::io::Write;
-    let _guard = SESSION_IO
-        .lock()
-        .map_err(|_| std::io::Error::other("Session storage unavailable"))?;
-    if epoch != crate::account_session::epoch() {
-        bail!("Matrix account changed during sign-in");
+    let path = session_file_path(user);
+    if let Some(parent) = path.parent() {
+        provision_session_parent(parent)?;
     }
     let user_session = PersistedUserSession::from_sdk(
         client
@@ -709,53 +698,20 @@ fn save_oauth_session_at(
     if !matches!(user_session, PersistedUserSession::OAuth { .. }) {
         bail!("Missing OAuth session");
     }
-    let user = user_session.meta().user_id.clone();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            if picker {
-                if let Some(account) = parent.parent() {
-                    std::fs::set_permissions(account, std::fs::Permissions::from_mode(0o700))?;
-                }
-            }
-        }
-    }
-    install_session_callbacks(client, path.clone())?;
-    let stored = FullSessionPersisted {
-        client_session,
-        user_session,
-        sync_token: None,
-        sliding_sync_version: client.sliding_sync_version().into(),
-    };
-    let temporary = path.with_extension(format!("{:016x}.tmp", rand::random::<u64>()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| -> std::io::Result<()> {
-        let mut file = options.open(&temporary)?;
-        file.write_all(&serde_json::to_vec(&stored)?)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, &path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result?;
-    // The identity's token file is already committed. Failure to update the
-    // convenience account picker must not revoke that successfully saved grant.
-    if picker {
-        let _ = std::fs::write(
-            app_data_dir().join(LATEST_USER_ID_FILE_NAME),
-            user.as_bytes(),
-        );
-        let _ = crate::accounts::refresh();
-    }
+    super::credential_state::save(
+        client,
+        FullSessionPersisted {
+            client_session,
+            user_session,
+            sync_token: None,
+            sliding_sync_version: client.sliding_sync_version().into(),
+        },
+        epoch,
+        path,
+    )
+    .await?;
+    // Credential commit succeeded. Convenience picker failure must not revoke it.
+    let _ = save_latest_user_id(user).await;
+    let _ = crate::accounts::refresh();
     Ok(())
 }

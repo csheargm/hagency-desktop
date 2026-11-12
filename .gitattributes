@@ -1,2 +1,4 @@
 # Keep bundled manifests, contract fixtures and scripts byte-identical on every OS.
 * text=auto eol=lf
+# Empty final TSV columns retain their delimiter in the upstream emoji catalog.
+src/shared/emoji_keywords.tsv whitespace=-blank-at-eol

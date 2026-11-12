@@ -1,5 +1,8 @@
 //! The `RoomScreen` widget is the UI view that displays a single room or thread's timeline
 //! of events (messages，state changes, etc.), along with an input bar at the bottom.
+use crate::moderation::ReportTarget;
+use crate::moderation_modal::{ModerationModalAction, ModerationRequest};
+use crate::home::identity_reset_banner::{IdentityReset, IdentityResetBannerWidgetExt};
 
 use super::shared_permission_notice::SharedPermissionNoticeWidgetRefExt;
 use crate::theme::Snapshot as ThemeSnapshot;
@@ -42,7 +45,7 @@ use ruma::{OwnedUserId, api::client::receipt::create_receipt::v3::ReceiptType, e
 
 use matrix_sdk_ui::sync_service::State;
 use crate::{
-    app::{AppStateAction, ConfirmDeleteAction, SelectedRoom}, avatar_cache, event_preview::{plaintext_body_of_timeline_item, text_preview_of_encrypted_message, text_preview_of_member_profile_change, text_preview_of_other_message_like, text_preview_of_other_state, text_preview_of_room_membership_change, text_preview_of_timeline_item}, home::{edited_indicator::EditedIndicatorWidgetRefExt, link_preview::{LinkPreviewCache, LinkPreviewRef, LinkPreviewWidgetRefExt}, loading_pane::LoadingPaneWidgetExt, room_image_viewer::{fetch_full_image_for_viewer, get_image_name_and_filesize}, rooms_list::{RoomsListAction, RoomsListRef}, rooms_list_header::RoomsListHeaderAction, tombstone_footer::SuccessorRoomDetails}, media_cache::{MediaCache, MediaCacheEntry}, profile::{
+    app::{AppStateAction, SelectedRoom}, avatar_cache, event_preview::{plaintext_body_of_timeline_item, text_preview_of_encrypted_message, text_preview_of_member_profile_change, text_preview_of_other_message_like, text_preview_of_other_state, text_preview_of_room_membership_change, text_preview_of_timeline_item}, home::{edited_indicator::EditedIndicatorWidgetRefExt, link_preview::{LinkPreviewCache, LinkPreviewRef, LinkPreviewWidgetRefExt}, loading_pane::LoadingPaneWidgetExt, room_image_viewer::{fetch_full_image_for_viewer, get_image_name_and_filesize}, rooms_list::{RoomsListAction, RoomsListRef}, rooms_list_header::RoomsListHeaderAction, tombstone_footer::SuccessorRoomDetails}, media_cache::{MediaCache, MediaCacheEntry}, profile::{
         user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId, UserProfilePaneAction, UserProfilePaneInfo, UserProfileSlidingPaneRef, UserProfileSlidingPaneWidgetExt},
         user_profile_cache,
     },
@@ -150,13 +153,15 @@ script_mod! {
     // A download button or loading spinner shown beneath a message.
     mod.widgets.MessageDownloadSection = View {
         visible: false,
-        width: Fit, height: Fit,
-        flow: Right,
+        width: Fill, height: Fit,
+        flow: Flow.Right{wrap: true},
+        spacing: 8,
+        wrap_spacing: 8,
         margin: Inset{top: 8, bottom: 2}
 
         open_markdown_button := RobrixIconButton {
             visible: false height: mod.widgets.SETTINGS_BUTTON_HEIGHT
-            padding: Inset{left: 12 right: 12} margin: Inset{right: 8}
+            padding: Inset{left: 12 right: 12} margin: 0
             draw_icon.svg: crate_resource("self://resources/icons/eye_open.svg")
             icon_walk: Walk{width: 16 height: 16}
             text: #(crate::i18n::tr("Open")) i18n_text: "Open"
@@ -174,7 +179,7 @@ script_mod! {
         share_button := RobrixIconButton {
             height: mod.widgets.SETTINGS_BUTTON_HEIGHT,
             padding: Inset{left: 12, right: 12}
-            margin: Inset{left: 8}
+            margin: 0
             draw_icon.svg: (ICON_SHARE)
             icon_walk: Walk{width: 16, height: 16}
             text: #(crate::i18n::tr("Share")) i18n_text: "Share"
@@ -1026,6 +1031,7 @@ script_mod! {
 
                 // Below that, display a typing notice when other users in the room are typing.
                 typing_notice := TypingNotice { }
+                identity_reset_banner := IdentityResetBanner { }
 
                 // Below that, warn about a failed message that is holding up this room's send queue.
                 failed_send_banner := FailedSendBanner { }
@@ -1551,6 +1557,7 @@ impl Widget for RoomScreen {
                 // Handle the invite_user_button (in a SmallStateEvent) being clicked.
                 if wr.button(cx, ids!(invite_user_button)).clicked(actions) {
                     let Some(tl) = self.tl_state.as_ref() else { continue };
+                    if !tl.user_power.can_invite() { continue; }
                     if let Some(event_tl_item) = tl.items.get(index).and_then(|item| item.as_event()) {
                         let user_id = event_tl_item.sender().to_owned();
                         let username = if let TimelineDetails::Ready(profile) = event_tl_item.sender_profile() {
@@ -1581,7 +1588,8 @@ impl Widget for RoomScreen {
                 if let Some(TimelineEndpointsRecreated { room_id }) = action.downcast_ref()
                     && self.timeline_kind.as_ref().is_some_and(|k| k.room_id() == room_id)
                 {
-                    self.reconnect_timeline_endpoints(cx, true);
+                    if self.tl_state.is_none() { self.show_timeline(cx); }
+                    else { self.reconnect_timeline_endpoints(cx, true); }
                     continue;
                 }
 
@@ -1590,6 +1598,11 @@ impl Widget for RoomScreen {
                     && room_name_id.room_id() == new_room_name.room_id()
                 {
                     *room_name_id = new_room_name.clone();
+                    continue;
+                }
+
+                if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
+                    timeline_state_store::release_history(kind, *channel);
                     continue;
                 }
 
@@ -1680,6 +1693,7 @@ impl Widget for RoomScreen {
                         }
                     } else if let Some(tl) = self.tl_state.as_mut() {
                         tl.media_cache.clear_all_pending_and_failed_requests();
+                        crate::shared::inline_image::clear_all_pending_and_failed_requests();
                         tl.link_preview_cache.clear_all_pending_and_failed_requests();
                         tl.content_drawn_since_last_update.clear();
                         self.view.portal_list(cx, ids!(timeline.list)).redraw(cx);
@@ -2081,6 +2095,7 @@ impl Widget for RoomScreen {
                                             poll_state,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::UnableToDecrypt(utd) => populate_small_state_event(
                                             cx,
@@ -2091,6 +2106,7 @@ impl Widget for RoomScreen {
                                             utd,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::LiveLocation(live_loc) => populate_small_state_event(
                                             cx,
@@ -2101,6 +2117,7 @@ impl Widget for RoomScreen {
                                             live_loc,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                         MsgLikeKind::Other(other) => populate_small_state_event(
                                             cx,
@@ -2111,6 +2128,7 @@ impl Widget for RoomScreen {
                                             other,
                                             item_drawn_status,
                                             group_header,
+                                            tl_state.user_power.can_invite(),
                                         ),
                                     }
                                 }
@@ -2137,6 +2155,7 @@ impl Widget for RoomScreen {
                                         membership_change,
                                         item_drawn_status,
                                         group_header,
+                                        tl_state.user_power.can_invite(),
                                     )
                                 }
                             }
@@ -2149,6 +2168,7 @@ impl Widget for RoomScreen {
                                 profile_change,
                                 item_drawn_status,
                                 group_header,
+                                tl_state.user_power.can_invite(),
                             ),
                             TimelineItemContent::OtherState(other) => {
                                 // Don't shown noisy updates like policy rules, server ACLs, space links, custom state events, etc.
@@ -2175,6 +2195,7 @@ impl Widget for RoomScreen {
                                         other,
                                         item_drawn_status,
                                         group_header,
+                                        tl_state.user_power.can_invite(),
                                     )
                                 }
                             }
@@ -2348,6 +2369,7 @@ impl RoomScreen {
         let mut items_changed = false;
         let mut should_continue_backwards_pagination = false;
         let mut typing_users = None;
+        let mut identity_resets = None;
         let mut jump_to_read_receipt = None;
         let mut num_updates = 0;
         while let Ok(update) = tl.update_receiver.try_recv() {
@@ -2754,6 +2776,7 @@ impl RoomScreen {
                     };
                     enqueue_popup_notification(message, kind, auto_dismissal_duration);
                 }
+                TimelineUpdate::IdentityResets(resets) => identity_resets = Some(resets),
                 TimelineUpdate::TypingUsers { users } => {
                     // This update loop should be kept tight & fast, so all we do here is
                     // save the list of typing users for future use after the loop exits.
@@ -2916,6 +2939,10 @@ impl RoomScreen {
 
         self.view.failed_send_banner(cx, ids!(failed_send_banner))
             .show_or_hide(cx, blocked_send);
+
+        if let Some(resets) = identity_resets {
+            self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, resets.into_iter().next());
+        }
 
         if let Some(users) = typing_users {
             self.view
@@ -3152,11 +3179,10 @@ impl RoomScreen {
                 }
                 MessageAction::React { details, reaction } => {
                     let Some(tl) = self.tl_state.as_ref() else { return };
-                    submit_async_request(MatrixRequest::ToggleReaction {
-                        timeline_kind: tl.kind.clone(),
-                        timeline_event_id: details.timeline_event_id.clone(),
-                        reaction: reaction.clone(),
-                    });
+                    let Some(event) = Self::find_event_in_timeline(&tl.items, details) else {continue};
+                    if !tl.user_power.can_send_reaction() {continue;}
+                    let reactions = Some(event.reactions());
+                    super::event_reaction_list::toggle_reaction(cx, &tl.kind, &details.timeline_event_id, reactions, reaction);
                 }
                 MessageAction::Reply(details) => {
                     let Some(tl) = self.tl_state.as_ref() else { return };
@@ -3477,35 +3503,19 @@ impl RoomScreen {
                         }),
                     );
                 }
-                MessageAction::Redact { details, reason } => {
-                    let Some(tl) = self.tl_state.as_ref() else { return };
+                MessageAction::Redact(details) => {
+                    let Some(tl) = self.tl_state.as_ref() else {return};
+                    let Some(event) = Self::find_event_in_timeline(&tl.items, details) else {continue};
                     let timeline_event_id = details.timeline_event_id.clone();
                     let timeline_kind = tl.kind.clone();
-                    let reason = reason.clone();
-                    // An unsent message should just be immediately discarded without confirmation,
-                    // as the user might be rushing to quickly cancel it before it actually sends.
                     if matches!(timeline_event_id, TimelineEventItemId::TransactionId(_)) {
-                        submit_async_request(MatrixRequest::RedactMessage {
-                            timeline_kind,
-                            timeline_event_id,
-                            reason,
-                        });
+                        submit_async_request(MatrixRequest::RedactMessage {timeline_kind, timeline_event_id, reason: None});
                         continue;
                     }
-                    let content = ConfirmationModalContent {
-                        title_text: crate::i18n::tr("Delete Message").into(),
-                        body_text: crate::i18n::tr("Are you sure you want to delete this message? This cannot be undone.").into(),
-                        accept_button_text: Some(crate::i18n::tr("Delete").into()),
-                        on_accept_clicked: Some(Box::new(move |_cx| {
-                            submit_async_request(MatrixRequest::RedactMessage {
-                                timeline_kind,
-                                timeline_event_id,
-                                reason,
-                            });
-                        })),
-                        ..Default::default()
-                    };
-                    cx.action(ConfirmDeleteAction::Show(RefCell::new(Some(content))));
+                    if event.is_own() && !tl.user_power.can_redact_own()
+                        || !event.is_own() && !tl.user_power.can_redact_others() {continue;}
+                    let sender_name = (!event.is_own()).then(|| display_name_or_user_id(cx, tl.kind.room_id(), event.sender().to_owned()));
+                    cx.action(ModerationModalAction::Open(ModerationRequest::DeleteMessage {timeline_kind, timeline_event_id, sender_name}));
                 }
                 MessageAction::RetrySend(details) => {
                     let Some(tl) = self.tl_state.as_ref() else { return };
@@ -3514,9 +3524,14 @@ impl RoomScreen {
                         timeline_event_id: details.timeline_event_id.clone(),
                     });
                 }
-                // MessageAction::Report(details) => {
-                //     // TODO
-                // }
+                MessageAction::Report(details) => {
+                    let Some(tl) = self.tl_state.as_ref() else {return};
+                    if Self::find_event_in_timeline(&tl.items, details).is_none() {continue;}
+                    let Some(event_id) = details.event_id() else {continue};
+                    cx.action(ModerationModalAction::Open(ModerationRequest::Report(ReportTarget {
+                        room_id: tl.kind.room_id().clone(), event_id: event_id.clone(),
+                    })));
+                }
 
                 MessageAction::DownloadAttachment(info) => {
                     self.begin_media_transfer(cx, portal_list, info, TransferKind::Download, start_attachment_download);
@@ -3660,6 +3675,7 @@ impl RoomScreen {
             .expect("BUG: Timeline::show_timeline(): no timeline_kind was set.");
         let room_id = kind.room_id().clone();
         let owner = self.widget_uid();
+        crate::sliding_sync::note_timeline_interest(&kind, owner, true);
 
         let (mut tl_state, mut is_first_time_being_loaded) = match timeline_state_store::take(cx, &kind, owner) {
             timeline_state_store::TakeResult::Taken(existing) => (existing, false),
@@ -3707,7 +3723,7 @@ impl RoomScreen {
                     // This avoids unexpectedly hiding any UI elements that should be visible to the user.
                     // This doesn't mean that the user can actually perform all actions;
                     // the power levels will be updated from the homeserver once the room is opened.
-                    user_power: UserPowerLevels::all(),
+                    user_power: UserPowerLevels::assumed_until_fetched(),
                     is_encrypted,
                     // Room members start as None and get populated when fetched from the server
                     room_members: None,
@@ -3793,6 +3809,7 @@ impl RoomScreen {
 
         // Clear the previous room's typing notice and stop its animation.
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
+        self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
         // If the room is loaded, we need to get a few key states:
         // 1. Get the current user's power levels for this room so that we can
         //    show/hide UI elements based on the user's permissions.
@@ -3802,7 +3819,7 @@ impl RoomScreen {
         // 4. Subscribe to typing notices again, now that the room is being shown.
         if self.is_loaded {
             submit_async_request(MatrixRequest::GetRoomPowerLevels {
-                timeline_kind: tl_state.kind.clone(),
+                room_id: tl_state.kind.room_id().clone(),
             });
             submit_async_request(MatrixRequest::GetRoomMembers {
                 timeline_kind: tl_state.kind.clone(),
@@ -3834,7 +3851,7 @@ impl RoomScreen {
 
         // Tell the background subscriber that this timeline is now open (if it was previously closed).
         if let Some(tl) = self.tl_state.as_ref() {
-            tl.request_sender.send_if_modified(|req| !std::mem::replace(&mut req.is_timeline_open, true));
+            crate::sliding_sync::update_timeline_visibility(&tl.kind, &tl.update_receiver, &tl.request_sender, true);
         }
 
         let list = self.portal_list(cx, ids!(list));
@@ -3907,7 +3924,7 @@ impl RoomScreen {
         }
         // If `tl_state` was Some here, it means the timeline is being shown (it's visible),
         // so inform the subscribers of that status.
-        tl.request_sender.send_if_modified(|req| !std::mem::replace(&mut req.is_timeline_open, true));
+        crate::sliding_sync::update_timeline_visibility(&tl.kind, &tl.update_receiver, &tl.request_sender, true);
         let reconnected_sender = tl.request_sender.clone();
         let timeline_kind = tl.kind.clone();
         // Re-subscribe to things needed for this main room timeline to be properly updated
@@ -3940,7 +3957,9 @@ impl RoomScreen {
     /// Invoke this when this RoomScreen/timeline is being hidden or no longer being shown.
     fn hide_timeline(&mut self) {
         let Some(timeline_kind) = self.timeline_kind.clone() else { return };
+        crate::sliding_sync::note_timeline_interest(&timeline_kind, self.widget_uid(), false);
         if self.tl_state.is_none() {
+            crate::sliding_sync::retire_hidden_timeline(&timeline_kind);
             return;
         }
 
@@ -3961,10 +3980,11 @@ impl RoomScreen {
 
         // Tell the background subscriber that this timeline is now closed.
         if let Some(tl) = self.tl_state.as_ref() {
-            tl.request_sender.send_if_modified(|req| std::mem::replace(&mut req.is_timeline_open, false));
+            crate::sliding_sync::update_timeline_visibility(&tl.kind, &tl.update_receiver, &tl.request_sender, false);
         }
 
         self.save_state();
+        crate::sliding_sync::retire_hidden_timeline(&timeline_kind);
 
         // When closing a room view, we do the following with non-persistent states.
         // (This should be the inverse of what's done in `show_timeline()`.)
@@ -3989,6 +4009,7 @@ impl RoomScreen {
         let room_input_bar = self.child_by_path(ids!(room_input_bar)).as_room_input_bar();
         log!("Saving state for room {:?}\n\t{:?}\n\tfirst_id: {:?}, scroll: {}", self.room_name_id.as_ref().map(|r| r.display_name()), self.timeline_kind, portal_list.first_id(), portal_list.scroll_position());
         let state = SavedState {
+            anchor: tl.items.iter().skip(portal_list.first_id()).find_map(|item| item.as_event().and_then(|event| event.event_id()).map(ToOwned::to_owned)),
             first_index_and_scroll: Some((portal_list.first_id(), portal_list.scroll_position())),
             was_at_end: portal_list.is_at_end(),
             room_input_bar_state: room_input_bar.save_state(),
@@ -4008,6 +4029,7 @@ impl RoomScreen {
         let SavedState {
             first_index_and_scroll,
             was_at_end,
+            anchor,
             room_input_bar_state,
         } = &mut tl_state.saved_state;
 
@@ -4028,6 +4050,10 @@ impl RoomScreen {
             portal_list.set_tail_range(true);
         }
 
+        if tl_state.items.is_empty() && !*was_at_end {
+            self.pending_history_jump = anchor.clone();
+            self.history_jump_started = false;
+        }
         // 2. Restore the state of the room input bar.
         let room_input_bar = self.child_by_path(ids!(room_input_bar)).as_room_input_bar();
         let saved_room_input_bar_state = std::mem::take(room_input_bar_state);
@@ -4169,6 +4195,8 @@ impl RoomScreen {
         }
 
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
+        self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
+        crate::memory_budget::release_tree(cx, &self.child_by_path(ids!(timeline.list)));
         self.hide_timeline();
         // Opening or restoring a conversation gives the timeline the full width.
         // Information is shown only after an explicit click on its header icon.
@@ -4197,11 +4225,11 @@ impl RoomScreen {
     }
 
     pub fn hide_displayed_room(&mut self, cx: &mut Cx) {
+        crate::memory_budget::release_tree(cx, &self.child_by_path(ids!(timeline.list)));
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
+        self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
         self.view.action_room_board(cx, ids!(actions_board)).select(cx, None);
-        if self.tl_state.is_some() {
-            self.hide_timeline();
-        }
+        self.hide_timeline();
         // Dropping the loading pane state cancels any in-progress event search.
         self.loading_pane(cx, ids!(loading_pane)).hide(cx);
         self.room_name_id = None;
@@ -4572,6 +4600,7 @@ fn subscribe_to_room_updates(timeline_kind: &TimelineKind, subscribe: bool) {
         room_id: room_id.clone(),
         subscribe,
     });
+    submit_async_request(MatrixRequest::SubscribeToIdentityResets { room_id: room_id.clone(), subscribe });
 }
 
 
@@ -4683,7 +4712,9 @@ pub enum TimelineUpdate {
     /// A notice with an option of Media Request Parameters that one or more requested media items (images, videos, etc.)
     /// that should be displayed in this timeline have now been fetched and are available.
     MediaFetched(MediaRequestParameters),
-    /// A notice that one or more members of a this room are currently typing.
+    /// Members whose changed cryptographic identities need acknowledgement.
+    IdentityResets(Vec<IdentityReset>),
+    /// A notice that one or more members of this room are currently typing.
     TypingUsers {
         /// The list of users (their displayable name) who are currently typing in this room.
         users: Vec<String>,
@@ -4802,6 +4833,27 @@ mod timeline_state_store {
         /// All timeline states (for timelines that have been shown),
         /// one per room/thread timeline. Only relevant from the main UI thread.
         static TIMELINE_STATES: RefCell<HashMap<TimelineKind, StateEntry>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn release_history(kind: &TimelineKind, channel: usize) {
+        TIMELINE_STATES.with_borrow_mut(|states| {
+            if let Some(StateEntry::Stored(state)) = states.get_mut(kind) {
+                if state.update_receiver.identity() > channel { return; }
+                state.items.clear();
+                state.room_members = None;
+                state.fetched_thread_summaries.clear();
+                state.pending_thread_summary_fetches.clear();
+                state.media_cache.clear();
+                state.link_preview_cache.clear();
+                state.content_drawn_since_last_update.clear();
+                state.profile_drawn_since_last_update.clear();
+                state.expanded_reply_previews.clear();
+                state.expanded_system_updates.clear();
+                state.saved_state.first_index_and_scroll = None;
+                state.fully_paginated = false;
+                state.is_paginating = false;
+            }
+        });
     }
 
     /// Attempts to take ownership of the saved UI state for `kind`.
@@ -4990,7 +5042,7 @@ struct TimelineUiState {
     /// Here we use a synchronous (non-async) channel because the receiver runs
     /// in a sync context and the sender runs in an async context,
     /// which is okay because a sender on an unbounded channel never needs to block.
-    update_receiver: crossbeam_channel::Receiver<TimelineUpdate>,
+    update_receiver: crate::timeline_updates::Receiver,
 
     /// The sender for timeline requests from a RoomScreen showing this room
     /// to the background async task that handles this room's timeline updates.
@@ -5090,6 +5142,8 @@ struct SavedState {
     first_index_and_scroll: Option<(usize, f64)>,
     /// Whether the timeline was tracking the end of the list.
     was_at_end: bool,
+    /// Stable reading anchor survives dropping positional SDK/UI snapshots.
+    anchor: Option<OwnedEventId>,
     /// The state of all UI elements in the `RoomInputBar`.
     room_input_bar_state: RoomInputBarState,
 }
@@ -5438,14 +5492,14 @@ fn populate_message_view(
                             }
                         });
                         let formatted = format!(
-                            "<b>Server notice:</b> {}\n\n<i>Notice type:</i>: {}{}{}",
-                            sn.body,
-                            sn.server_notice_type.as_str(),
+                            "<b>Server notice:</b> {}<br><br><i>Notice type:</i>: {}{}{}",
+                            utils::escape_text_and_line_breaks(&sn.body),
+                            htmlize::escape_text(sn.server_notice_type.as_str()),
                             sn.limit_type.as_ref()
-                                .map(|l| format!("\n<i>Limit type:</i> {}", l.as_str()))
+                                .map(|l| format!("<br><i>Limit type:</i> {}", htmlize::escape_text(l.as_str())))
                                 .unwrap_or_default(),
                             sn.admin_contact.as_ref()
-                                .map(|c| format!("\n<i>Admin contact:</i> {}", c))
+                                .map(|c| format!("<br><i>Admin contact:</i> {}", utils::escape_text_and_line_breaks(c)))
                                 .unwrap_or_default(),
                         );
                         let mut link_preview_ref =
@@ -6402,7 +6456,14 @@ pub(crate) fn populate_text_message_content(
     }
     // The message was non-HTML plaintext.
     else {
-        let linkified_html = utils::linkify_get_urls(body, false, Some(&mut links));
+        let linkified_html = match utils::linkify_get_urls(body, false, Some(&mut links)) {
+            // Without a URL the linkifier returns raw text. A room mention will
+            // promote it to HTML, so first escape literal markup and line breaks.
+            Cow::Borrowed(text) if room_mention_room_id.is_some() && text.contains("@room") => {
+                utils::escape_text_and_line_breaks(text)
+            }
+            html => html,
+        };
         let html = apply_room_mention(linkified_html, room_mention_room_id);
         match html {
             Cow::Owned(linkified_html) => message_content_widget.show_html(cx, &linkified_html),
@@ -6653,7 +6714,7 @@ fn populate_file_message_content(
     let caption = file_content.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| file_content.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| file_content.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     message_content_widget.show_html(
@@ -6691,7 +6752,7 @@ fn populate_audio_message_content(
     let caption = audio.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| audio.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| audio.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     // TODO: add an audio to play the audio file
@@ -6735,7 +6796,7 @@ fn populate_video_message_content(
     let caption = video.formatted_caption()
         .filter(|fb| fb.format == MessageFormat::Html)
         .map(|fb| format!("{}<br>", fb.body))
-        .or_else(|| video.caption().map(|c| format!("{}<br>", htmlize::escape_text(c))))
+        .or_else(|| video.caption().map(|c| format!("{}<br>", utils::escape_text_and_line_breaks(c))))
         .unwrap_or_default();
 
     // TODO: populate a video widget here, once makepad supports that
@@ -6778,7 +6839,7 @@ fn populate_location_message_content(
     } else {
         message_content_widget.show_html(
             cx,
-            crate::i18n::format("<i>[Location invalid]</i> {0}", &[("0", (htmlize::escape_text(&location.body)).to_string())])
+            crate::i18n::format("<i>[Location invalid]</i> {0}", &[("0", (utils::escape_text_and_line_breaks(&location.body)).to_string())])
         );
     }
 
@@ -6823,7 +6884,7 @@ fn populate_redacted_message_content(
         if redactor == event_tl_item.sender() {
             fully_drawn = true;
             match reason {
-                Some(r) => crate::i18n::format("⛔ <i>Deleted their own message. Reason: \"{0}\".</i>", &[("0", (htmlize::escape_text(r)).to_string())]),
+                Some(r) => crate::i18n::format("⛔ <i>Deleted their own message. Reason: \"{0}\".</i>", &[("0", (utils::escape_text_and_line_breaks(&r)).to_string())]),
                 None => String::from("⛔ <i>Deleted their own message.</i>"),
             }
         } else {
@@ -6837,7 +6898,7 @@ fn populate_redacted_message_content(
             fully_drawn = redactor_name.was_found();
             let redactor_name_esc = htmlize::escape_text(redactor_name.as_deref().unwrap_or(redactor.as_str()));
             match reason {
-                Some(r) => crate::i18n::format("⛔ <i>{0} deleted this message. Reason: \"{1}\".</i>", &[("0", (redactor_name_esc).to_string()), ("1", (htmlize::escape_text(r)).to_string())]),
+                Some(r) => crate::i18n::format("⛔ <i>{0} deleted this message. Reason: \"{1}\".</i>", &[("0", (redactor_name_esc).to_string()), ("1", (utils::escape_text_and_line_breaks(&r)).to_string())]),
                 None => crate::i18n::format("⛔ <i>{0} deleted this message.</i>", &[("0", (redactor_name_esc).to_string())]),
             }
         }
@@ -7283,6 +7344,7 @@ fn populate_small_state_event(
     event_content: &impl SmallStateEventContent,
     item_drawn_status: ItemDrawnStatus,
     group_header: Option<(usize, bool)>,
+    can_invite: bool,
 ) -> (WidgetRef, ItemDrawnStatus) {
     let mut new_drawn_status = item_drawn_status;
     let template = if super::home_screen::effective_is_desktop(cx) { id!(SmallStateEvent) } else { id!(MobileStateEvent) };
@@ -7324,7 +7386,7 @@ fn populate_small_state_event(
     });
 
     // Proceed to draw the actual event content.
-    event_content.populate_item_content(
+    let (item, status) = event_content.populate_item_content(
         cx,
         list,
         item_id,
@@ -7333,7 +7395,9 @@ fn populate_small_state_event(
         &username,
         item_drawn_status,
         new_drawn_status,
-    )
+    );
+    if !can_invite { item.button(cx, ids!(invite_user_button)).set_visible(cx, false); }
+    (item, status)
 }
 
 
@@ -7433,10 +7497,7 @@ pub enum MessageAction {
     JumpToEvent(OwnedEventId),
     /// The user clicked the "delete" button on a message.
     #[doc(alias("delete"))]
-    Redact {
-        details: MessageDetails,
-        reason: Option<String>,
-    },
+    Redact(MessageDetails),
     /// The user clicked the "retry sending" button on a message that failed to send.
     RetrySend(MessageDetails),
     /// The user clicked a decision button on an agent-chat approval card.
@@ -7446,8 +7507,8 @@ pub enum MessageAction {
         action: ApprovalAction,
     },
 
-    // /// The user clicked the "report" button on a message.
-    // Report(MessageDetails),
+    /// The user clicked the "report" button on a message.
+    Report(MessageDetails),
 
     /// The user clicked the "Download" button on a media/file message.
     DownloadAttachment(DownloadableAttachment),
@@ -7463,6 +7524,7 @@ pub enum MessageAction {
     /// that can be performed on a given message.
     OpenMessageContextMenu {
         details: MessageDetails,
+        own_reactions: Vec<String>,
         /// The absolute position where we should show the context menu,
         /// in which the (0,0) origin coordinate is the top left corner of the app window.
         abs_pos: DVec2,
@@ -7957,6 +8019,7 @@ impl Message {
         cx.widget_action(
             room_screen_widget_uid,
             MessageAction::OpenMessageContextMenu {
+                own_reactions: self.view.widget(cx, ids!(reaction_list)).as_reaction_list().get_own_reactions(),
                 details,
                 abs_pos,
             },
@@ -8099,6 +8162,7 @@ impl MessageRef {
 ///
 /// Takes `&mut Cx` (unused) to enforce that it's only called from the main UI thread.
 pub fn clear_timeline_states(cx: &mut Cx) {
+    crate::sliding_sync::clear_timeline_interest();
     timeline_state_store::clear_all(cx);
 }
 
@@ -8145,6 +8209,10 @@ mod input_bar_focus {
 #[cfg(test)]
 #[path = "room_screen/agent_status_tests.rs"]
 mod agent_chat_status_tests;
+
+#[cfg(test)]
+#[path = "room_screen/upstream_fix_tests.rs"]
+mod upstream_fix_tests;
 
 #[cfg(all(test, feature = "agent_chat"))]
 #[path = "room_screen/agent_selection_tests.rs"]
@@ -8490,9 +8558,9 @@ pub(crate) mod crypto_recovery_resume_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
 
-    pub(crate) fn prepare(cx: &mut Cx, screen: &RoomScreenRef) -> crossbeam_channel::Sender<TimelineUpdate> {
+    pub(crate) fn prepare(cx: &mut Cx, screen: &RoomScreenRef) -> crate::timeline_updates::Sender {
         let id = matrix_sdk::ruma::room_id!("!recovery-resume:example.org").to_owned();
-        let (sender, update_receiver) = crossbeam_channel::unbounded();
+        let (sender, update_receiver) = crate::timeline_updates::channel();
         let (request_sender, _requests) = tokio::sync::watch::channel(crate::sliding_sync::TimelineRequest {
             backwards_paginate: Vec::new(), is_timeline_open: true,
         });
@@ -8554,7 +8622,7 @@ pub(crate) mod crypto_recovery_resume_tests {
         assert!(!state.content_drawn_since_last_update.contains(&0), "stale encrypted rows must be repainted");
         assert!(!state.profile_drawn_since_last_update.contains(&0));
     }
-    pub(crate) fn queue(sender: &crossbeam_channel::Sender<TimelineUpdate>) {
+    pub(crate) fn queue(sender: &crate::timeline_updates::Sender) {
         sender.send(TimelineUpdate::RoomEncrypted).unwrap();
         sender.send(TimelineUpdate::NewItems {
             new_items: Vector::new(), changed_indices: 0..3, clear_cache: true, is_append: false,
@@ -8589,4 +8657,53 @@ use system_updates::{system_update_ranges, is_groupable_system_update, present_s
 #[cfg(feature = "onboarding-test-support")]
 pub fn review_system_update_group(cx: &mut Cx, item: &WidgetRef, group: Option<(usize, bool)>) {
     present_system_update_group(cx, item, group);
+}
+
+pub(crate) fn release_cached_timeline_history(kind: &TimelineKind, channel: usize) {
+    timeline_state_store::release_history(kind, channel);
+}
+
+#[cfg(test)]
+mod retention_ui_tests {
+    use super::*;
+    #[test]
+    fn retained_timeline_ui_preserves_draft_and_reading_anchor_after_history_eviction() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        timeline_state_store::clear_all(&mut cx);
+        let screen = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm); crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomScreen {}});
+            WidgetRef::script_from_value(vm, value).as_room_screen()
+        });
+        let sender = crypto_recovery_resume_tests::prepare(&mut cx, &screen);
+        let owner = screen.widget_uid();
+        let kind = screen.borrow().unwrap().tl_state.as_ref().unwrap().kind.clone();
+        let input = screen.borrow().unwrap().view.text_input(&mut cx, ids!(room_input_bar.input_bar.mentionable_text_input.text_input));
+        input.set_text(&mut cx, "unsent 中文 draft");
+        screen.borrow_mut().unwrap().save_state();
+        let timeline_state_store::TakeResult::Taken(mut parked) = timeline_state_store::take(&mut cx, &kind, owner) else {panic!("parked state missing")};
+        parked.saved_state.anchor = Some("$reading-anchor".try_into().unwrap());
+        parked.saved_state.was_at_end = false;
+        parked.saved_state.first_index_and_scroll = Some((99, 12.0));
+        timeline_state_store::put_back(owner, parked);
+        release_cached_timeline_history(&kind, sender.identity());
+        let timeline_state_store::TakeResult::Taken(mut parked) = timeline_state_store::take(&mut cx, &kind, owner) else {panic!("draft state missing")};
+        assert!(parked.content_drawn_since_last_update.is_empty());
+        assert!(parked.saved_state.first_index_and_scroll.is_none());
+        assert_eq!(parked.saved_state.anchor.as_deref(), Some(ruma::event_id!("$reading-anchor")));
+        input.set_text(&mut cx, "replacement");
+        screen.borrow_mut().unwrap().restore_state(&mut cx, &mut parked);
+        assert_eq!(input.text(), "unsent 中文 draft");
+        assert_eq!(screen.borrow().unwrap().pending_history_jump.as_deref(), Some(ruma::event_id!("$reading-anchor")));
+        // An eviction from an older endpoint cannot erase a newer UI's history.
+        let (newer, receiver) = crate::timeline_updates::channel();
+        parked.update_receiver = receiver;
+        parked.content_drawn_since_last_update.insert(0..3);
+        timeline_state_store::put_back(owner, parked);
+        release_cached_timeline_history(&kind, sender.identity());
+        let timeline_state_store::TakeResult::Taken(parked) = timeline_state_store::take(&mut cx, &kind, owner) else {panic!("new state missing")};
+        assert!(parked.content_drawn_since_last_update.contains(&0));
+        drop(newer);
+        timeline_state_store::clear_all(&mut cx);
+    }
 }

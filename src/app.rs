@@ -2,6 +2,8 @@
 //!
 //! See `handle_startup()` for the first code that runs on app startup.
 
+use crate::home::reaction_picker::{ReactionPickerAction, ReactionPickerWidgetRefExt};
+use crate::moderation_modal::{ModerationModalAction, ModerationModalWidgetRefExt};
 #[cfg(feature = "agent_chat")]
 use crate::agent_chat::approval_inbox::{ApprovalInboxAction, ApprovalInboxWidgetRefExt};
 use crate::agent_access::{AgentAccessAction, AgentAccessPanelWidgetRefExt};
@@ -85,6 +87,8 @@ mod embedded_content {
                 // Context menus should be shown in front of other UI elements,
                 // but behind verification modals.
                 new_message_context_menu := NewMessageContextMenu { }
+                moderation_modal := Modal {can_dismiss: false content := ModerationModal {}}
+                reaction_picker_modal := Modal {can_dismiss: false content := ReactionPicker {}}
                 room_context_menu := RoomContextMenu { }
                 sidebar_action_menu := SidebarActionMenu {}
 
@@ -346,6 +350,12 @@ impl MatchEvent for App {
     }
 
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        crate::memory_budget::process_completed_decodes(cx, actions);
+        for action in actions {
+            if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
+                crate::home::room_screen::release_cached_timeline_history(kind, *channel);
+            }
+        }
         if self.ui.button(cx, ids!(hagency_management_modal.content.close)).clicked(actions) {
             cx.action(HagencyAction::Close);
         }
@@ -509,7 +519,7 @@ impl MatchEvent for App {
             }
 
             match action.downcast_ref() {
-                Some(LogoutAction::LogoutSuccess) => {
+                Some(LogoutAction::LogoutSuccess { epoch, .. }) if *epoch == crate::account_session::epoch() => {
                     robius_speech::cancel_all();
                     self.app_state.logged_in = false;
                     self.ui.modal(cx, ids!(logout_confirm_modal)).close(cx);
@@ -769,11 +779,32 @@ impl MatchEvent for App {
                 continue;
             }
 
+            if let Some(action) = action.downcast_ref::<ModerationModalAction>() {
+                match action {
+                    ModerationModalAction::Open(request) => {
+                        self.ui.moderation_modal(cx, ids!(moderation_modal.content)).set_info(cx, request.clone());
+                        self.ui.modal(cx, ids!(moderation_modal)).open(cx);
+                    }
+                    ModerationModalAction::Close => self.ui.modal(cx, ids!(moderation_modal)).close(cx),
+                }
+                continue;
+            }
+            if let Some(action) = action.downcast_ref::<ReactionPickerAction>() {
+                let modal = self.ui.modal(cx, ids!(reaction_picker_modal));
+                match action {
+                    ReactionPickerAction::Open { details, own_reactions } => {
+                        self.ui.reaction_picker(cx, ids!(reaction_picker_modal.content)).show(cx, details.clone(), own_reactions);
+                        modal.open(cx);
+                    }
+                    ReactionPickerAction::Close => modal.close(cx),
+                }
+            }
+
             // Handle an action requesting to open the new message context menu.
-            if let MessageAction::OpenMessageContextMenu { details, abs_pos } = action.as_widget_action().cast() {
+            if let MessageAction::OpenMessageContextMenu { details, abs_pos, own_reactions } = action.as_widget_action().cast() {
                 self.ui.callout_tooltip(cx, ids!(app_tooltip)).hide(cx);
                 let new_message_context_menu = self.ui.new_message_context_menu(cx, ids!(new_message_context_menu));
-                let expected_dimensions = new_message_context_menu.show(cx, details);
+                let expected_dimensions = new_message_context_menu.show(cx, details, &own_reactions);
                 // Use the overlay container's rect (not the window's) to correctly position
                 // the context menu relative to the body area, which excludes the caption bar.
                 let rect = self.ui.view(cx, ids!(overlay_container)).area().rect(cx);
@@ -945,6 +976,7 @@ impl MatchEvent for App {
                     // refreshed before `LoadDockFromAppState` instantiates
                     // any tabs from them.
                     self.app_state.app_prefs.broadcast_all(cx);
+                    crate::shared::recent_emojis::restore_recent_emojis(cx, user_id, self.app_state.recent_emojis.clone());
                     cx.action(MainDesktopUiAction::LoadDockFromAppState);
                     continue;
                 }
@@ -1250,8 +1282,10 @@ impl App {
     }
 
     fn sync_native_browser_overlays(&self, cx: &mut Cx) {
-        let occluded = [ids!(file_upload_modal), ids!(octoscript_apps_modal), ids!(hagency_management_modal)]
-            .into_iter().any(|id| self.ui.modal(cx, id).is_open());
+        let occluded = [
+            ids!(file_upload_modal), ids!(octoscript_apps_modal), ids!(hagency_management_modal),
+            ids!(reaction_picker_modal), ids!(moderation_modal),
+        ].into_iter().any(|id| self.ui.modal(cx, id).is_open());
         // Only browsers in this content host are covered. A popped-out reader
         // remains visible in its own window, and background dock tabs stay hidden.
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).reader(cx)
@@ -1289,7 +1323,7 @@ impl App {
         self.lifecycle.last_app_state_save = None;
         self.pending_signup_navigation = None;
         self.ui.image_viewer(cx, ids!(image_viewer_modal.content)).reset(cx);
-        for id in [ids!(image_viewer_modal), ids!(file_upload_modal), ids!(invite_modal), ids!(invite_confirmation_modal), ids!(event_source_modal), ids!(positive_confirmation_modal), ids!(delete_confirmation_modal), ids!(block_user_modal), ids!(join_leave_modal), ids!(room_history_modal), ids!(tsp_verification_modal)] {
+        for id in [ids!(moderation_modal), ids!(reaction_picker_modal), ids!(image_viewer_modal), ids!(file_upload_modal), ids!(invite_modal), ids!(invite_confirmation_modal), ids!(event_source_modal), ids!(positive_confirmation_modal), ids!(delete_confirmation_modal), ids!(block_user_modal), ids!(join_leave_modal), ids!(room_history_modal), ids!(tsp_verification_modal)] {
             self.ui.modal(cx, id).close(cx);
         }
         self.close_web_browser(cx);
@@ -1336,6 +1370,9 @@ impl App {
 /// Clears all thread-local UI caches (user profiles, invited rooms, and timeline states).
 /// The `cx` parameter ensures that these thread-local caches are cleared on the main UI thread, 
 fn clear_all_app_state(cx: &mut Cx) {
+    crate::shared::inline_image::clear_inline_image_cache(cx);
+    crate::shared::recent_emojis::clear_recent_emojis(cx);
+    crate::profile::user_verification_cache::clear_user_verification_cache(cx);
     clear_user_profile_cache(cx);
     clear_all_invited_rooms(cx);
     clear_timeline_states(cx);
@@ -1416,6 +1453,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::room::script_mod(vm);
     crate::join_leave_room_modal::script_mod(vm);
     crate::block_user_modal::script_mod(vm);
+    crate::moderation_modal::script_mod(vm);
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);
     crate::hagency::ui::script_mod(vm);
@@ -1448,6 +1486,11 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        crate::memory_budget::collect_images(cx);
+        if matches!(event, Event::Timer(_)) { crate::sliding_sync::collect_unclaimed_timelines(); }
+        if matches!(event, Event::Signal) {
+            crate::profile::user_verification_cache::process_user_verification_updates(cx);
+        }
         crate::shared::system_browser::handle_event(cx, event);
         if let Event::AppOpen(open) = event {
             crate::matrix_links::handle_app_open(cx, open);
@@ -1470,6 +1513,20 @@ impl AppMain for App {
         // (OctoSense leaves the app; Android backgrounds it).
         let back_unhandled = matches!(event, Event::BackPressed { handled } if !handled.get());
         let escape = matches!(event, Event::KeyDown(k) | Event::KeyUp(k) if k.key_code == KeyCode::Escape);
+        if back_unhandled || escape {
+            for id in [ids!(moderation_modal), ids!(reaction_picker_modal)] {
+                let modal = self.ui.modal(cx, id);
+                if !modal.is_open() {continue;}
+                // Consume both halves of Escape so its key-up cannot close the reader underneath.
+                if back_unhandled || matches!(event, Event::KeyUp(_)) {
+                    event.back_pressed();
+                    self.ui.widget(cx, id).handle_event(cx, &Event::Actions(vec![Box::new(ModalAction::Dismissed)]), &mut Scope::empty());
+                    modal.close(cx);
+                }
+                self.sync_native_browser_overlays(cx);
+                return;
+            }
+        }
         if (back_unhandled || escape) && self.ui.modal(cx, ids!(file_upload_modal)).is_open() {
             self.ui.widget(cx, ids!(file_upload_modal)).handle_event(
                 cx, event, &mut Scope::with_data(&mut self.app_state),
@@ -1926,6 +1983,9 @@ impl App {
                 crate::sliding_sync::set_sync_service_desired_running(true, "app foreground");
             }
             Event::Shutdown => {
+                crate::attachment_transport::shutdown();
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                if !crate::persistence::credential_state::shutdown() { makepad_widgets::warning!("Credential worker shutdown remains unconfirmed"); }
                 robius_speech::cancel_all();
                 self.handle_shutdown(cx);
             }
@@ -1956,6 +2016,11 @@ impl App {
             return;
         };
 
+        if cx.has_global::<RoomsListRef>() {
+            cx.get_global::<RoomsListRef>().clone().save_space_graph(&user_id);
+        }
+
+        self.app_state.recent_emojis = crate::shared::recent_emojis::save_recent_emojis(cx, &user_id);
         let app_state_json = match persistence::serialize_app_state(&self.app_state) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -2225,6 +2290,8 @@ pub struct AppState {
     /// App-wide user preferences/settings.
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub app_prefs: AppPreferences,
+    #[serde(default)]
+    pub recent_emojis: crate::shared::recent_emojis::RecentEmojis,
     #[serde(default, flatten)]
     pub agent_access: crate::agent_access::model::AgentAccessSettings,
     /// Discovery hints are persisted; their validation is never restored.
@@ -2786,7 +2853,8 @@ mod back_navigation_tests {
     }
 
     #[test]
-    fn upload_cancel_keeps_the_covered_web_reader_open() {
+    fn upload_reaction_and_moderation_cancel_keep_the_covered_web_reader_open() {
+        for overlay in [ids!(file_upload_modal), ids!(reaction_picker_modal), ids!(moderation_modal)] {
         for escape in [false, true] {
             let mut cx = Cx::new(Box::new(|_, _| {}));
             let mut app = embedded_app(&mut cx);
@@ -2794,7 +2862,7 @@ mod back_navigation_tests {
             let browser = app.ui.web_browser(&mut cx, ids!(web_browser_modal.content));
             browser.action(&mut cx, reader_modal.clone(), &WebBrowserAction::Open("https://example.org".parse().unwrap()));
             let browser_id = browser.browser_id();
-            let upload = app.ui.modal(&mut cx, ids!(file_upload_modal));
+            let upload = app.ui.modal(&mut cx, overlay);
             upload.open(&mut cx);
             AppMain::handle_event(&mut app, &mut cx, &Event::Actions(Vec::new()));
             if escape {
@@ -2810,6 +2878,8 @@ mod back_navigation_tests {
             assert_eq!(browser.browser_id(), browser_id);
             assert_eq!(browser.session().tabs.len(), 1);
         }
+    }
+
     }
 
     #[test]

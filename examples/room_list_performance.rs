@@ -83,6 +83,7 @@ impl MatchEvent for App {
             while let Some(index) = list.next_visible_item(&mut cx) {
                 let room_id = format!("!room{index}:example.org").try_into().unwrap();
                 let room = JoinedRoomInfo {
+                    user_power_levels: None,
                     notification_mode: None,
                     room_name_id: RoomNameId::new(
                         RoomDisplayName::Named(format!("Room {index:02} version {}", self.generation)),

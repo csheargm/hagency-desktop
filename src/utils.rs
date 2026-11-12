@@ -4,7 +4,7 @@ use url::Url;
 
 use unicode_segmentation::UnicodeSegmentation;
 use chrono::{DateTime, Duration, Local, TimeZone};
-use makepad_widgets::{error, log, Cx, Event, ImageRef, image_cache::{looks_like_svg, ImageError}};
+use makepad_widgets::{error, log, Cx, Event, ImageRef, image_cache::ImageError};
 use matrix_sdk::{media::{MediaFormat, MediaThumbnailSettings}, ruma::{api::client::media::get_content_thumbnail::v3::Method, MilliSecondsSinceUnixEpoch, OwnedRoomAliasId, OwnedRoomId, RoomId}, RoomDisplayName};
 use matrix_sdk_ui::timeline::{EventTimelineItem, PaginationError, TimelineDetails};
 
@@ -208,10 +208,7 @@ pub fn load_image_with_cache_key(
     cache_key: &std::path::Path,
     data: std::sync::Arc<[u8]>,
 ) -> Result<(), ImageError> {
-    if looks_like_svg(&data) {
-        return img.load_svg_from_shared_data(cx, data);
-    }
-    img.load_image_from_data_async(cx, cache_key, data)
+    crate::memory_budget::load_image(img, cx, cache_key, data)
 }
 
 
@@ -811,6 +808,16 @@ pub fn trim_start_html_whitespace(mut text: &str) -> &str {
     text
 }
 
+/// Escapes plaintext for HTML without collapsing its line breaks.
+pub fn escape_text_and_line_breaks(text: &str) -> Cow<'_, str> {
+    let escaped = htmlize::escape_text(text);
+    if escaped.contains('\n') {
+        Cow::Owned(escaped.replace('\n', "<br>"))
+    } else {
+        escaped
+    }
+}
+
 /// Looks for bare links in the given `text` and converts them into proper HTML links.
 ///
 /// If `links_found` is provided, it will be populated with the list of URLs found in the text.
@@ -837,7 +844,7 @@ pub fn linkify_get_urls<'t>(
         } else {
             // Once a plain message is promoted to HTML for a URL, literal
             // newlines would otherwise collapse into spaces in the Html widget.
-            Cow::Owned(htmlize::escape_text(text).replace('\n', "<br>"))
+            escape_text_and_line_breaks(text)
         }
     };
     // Closure to escape attributes if it's not HTML.
@@ -878,6 +885,11 @@ pub fn linkify_get_urls<'t>(
                 .flatten()
                 .is_some_and(ends_with_href)
         };
+        // A URL in any other attribute isn't a link either, e.g., an `<img>`'s `src`.
+        let is_link_within_other_attr = |link: &Link| {
+            text.get(.. link.start())
+                .is_some_and(|before| before.rfind('<') > before.rfind('>'))
+        };
 
         // The above checks are relevant to real HTML, but plaintext links are just regular text,
         // not html attributes/tags, so we have to linkify + escap) the URL.
@@ -892,6 +904,8 @@ pub fn linkify_get_urls<'t>(
                     links_found.push(url);
                 }
             }
+        } else if is_html && is_link_within_other_attr(&link) {
+            linkified_text.push_str(text.get(last_end_index..link.end()).unwrap_or_default());
         } else {
             match link.kind() {
                 LinkKind::Url => {
@@ -1758,4 +1772,11 @@ mod tests_ends_with_href {
     fn test_ends_with_href38() {
         assert!(!ends_with_href(" hrf= "));
     }
+}
+
+/// Width of one unwrapped line, used to disclose truncated labels on hover.
+/// Ported from project-robius/robrix (room-name tooltips, 40a0281f).
+pub fn unwrapped_text_width(cx: &mut Cx, draw_text: &makepad_widgets::DrawText, text: &str) -> f64 {
+    draw_text.layout(cx, 0.0, 0.0, None, false, makepad_widgets::Align::default(), text).size_in_lpxs.width as f64
+        * draw_text.font_scale as f64
 }

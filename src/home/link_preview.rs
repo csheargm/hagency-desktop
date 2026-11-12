@@ -564,14 +564,16 @@ pub struct LinkPreviewCache {
     /// The actual cached data.
     cache: BTreeMap<String, Arc<Mutex<TimestampedCacheEntry>>>,
     /// A channel to send updates to a particular timeline when a link preview request has completed.
-    timeline_update_sender: Option<crossbeam_channel::Sender<TimelineUpdate>>,
+    timeline_update_sender: Option<crate::timeline_updates::Sender>,
 }
 
 impl LinkPreviewCache {
+    pub fn clear(&mut self) { self.cache.clear(); }
+
     /// Creates a new link preview cache that will optionally send updates
     /// when a link preview request has completed.
     pub const fn new(
-        timeline_update_sender: Option<crossbeam_channel::Sender<TimelineUpdate>>,
+        timeline_update_sender: Option<crate::timeline_updates::Sender>,
     ) -> Self {
         Self {
             cache: BTreeMap::new(),
@@ -590,13 +592,21 @@ impl LinkPreviewCache {
     /// Sets a new timeline update sender, e.g., for when the backend re-created this room's timeline.
     pub fn set_timeline_update_sender(
         &mut self,
-        sender: crossbeam_channel::Sender<TimelineUpdate>,
+        sender: crate::timeline_updates::Sender,
     ) {
         self.timeline_update_sender = Some(sender);
     }
 
     /// Fetches the link preview for the specified URL.
     pub fn get_or_fetch_link_preview(&mut self, url: &str) -> LinkPreviewCacheEntry {
+        if self.cache.len() >= 128 && !self.cache.contains_key(url) {
+            let oldest = self.cache.iter().filter_map(|(url, entry)| {
+                let entry = entry.lock().ok()?;
+                if matches!(entry.entry, LinkPreviewCacheEntry::Requested) {None} else {Some((url.clone(), entry.timestamp))}
+            }).min_by_key(|(_, time)| *time).map(|(url, _)| url);
+            if let Some(oldest) = oldest { self.cache.remove(&oldest); }
+            else { return LinkPreviewCacheEntry::Failed; }
+        }
         // Clean up old entries periodically
         if self.cache.len() > MAX_CACHE_ENTRIES_BEFORE_CLEANUP {
             self.cleanup_old_entries(Duration::from_secs(CACHE_ENTRY_MAX_AGE_SECS));
@@ -652,7 +662,7 @@ impl LinkPreviewCache {
 fn insert_into_cache(
     value_ref: Arc<Mutex<TimestampedCacheEntry>>,
     data: Result<LinkPreviewData, UrlPreviewError>,
-    update_sender: Option<crossbeam_channel::Sender<TimelineUpdate>>,
+    update_sender: Option<crate::timeline_updates::Sender>,
 ) {
     let new_entry = match data {
         Ok(data) => LinkPreviewCacheEntry::LoadedLinkPreview(data),

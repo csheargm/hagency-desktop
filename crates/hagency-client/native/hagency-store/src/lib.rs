@@ -179,3 +179,6 @@ pub use domain::accounts::{
     AccountReadiness, AccountReadinessMode, AccountState, DEFAULT_READINESS_TTL, LoginAttempt,
     LoginOutcome, LoginVerdict, LogoutObservation, LogoutReadiness, ManagedAccount, ManagedLaunch,
 };
+
+/// Scoped OS credentials and authenticated credential documents.
+pub mod credential_vault;

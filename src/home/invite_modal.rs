@@ -140,6 +140,35 @@ enum InviteModalState {
 /// People the invite dialog can offer, by Matrix ID and display name.
 type Person = (OwnedUserId, Option<String>);
 
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn matrix_invite_power_does_not_replace_agent_authorization_or_session_scope() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut modal = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.InviteModal {}});
+            InviteModal::script_from_value(vm, value)
+        });
+        modal.epoch = crate::account_session::epoch();
+        let person = ruma::user_id!("@person:test");
+        let agent = ruma::user_id!("@_hagency_agt_example:test");
+        assert!(!modal.may_invite_user(person));
+        assert!(modal.may_invite_user(agent), "Agent invitations still go through the Hagency service");
+        modal.can_invite = true;
+        assert!(modal.may_invite_user(person));
+        modal.can_invite = false;
+        assert!(!modal.may_invite_user(person));
+        modal.epoch = modal.epoch.wrapping_add(1);
+        assert!(!modal.may_invite_user(agent));
+        assert!(!modal.may_invite_user(person));
+        assert!(!crate::sliding_sync::UserPowerLevels::assumed_until_fetched().can_invite());
+    }
+}
+
 /// Results of the dialog's background lookups, matched to the request that
 /// asked for them so a late answer never overwrites a newer one.
 #[derive(Debug)]
@@ -162,6 +191,7 @@ pub struct InviteModal {
     #[rust] known: Vec<Person>,
     #[rust] request: u64,
     #[rust] epoch: u64,
+    #[rust] can_invite: bool,
     #[cfg(feature = "onboarding-test-support")]
     #[rust] review_mode: bool,
 }
@@ -170,6 +200,9 @@ impl Widget for InviteModal {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
         self.widget_match_event(cx, event, scope);
+        if matches!(event, Event::Actions(_)) {
+            self.update_invite_button(cx);
+        }
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
@@ -199,7 +232,13 @@ impl Widget for InviteModal {
 
 impl WidgetMatchEvent for InviteModal {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
+        if self.epoch != crate::account_session::epoch() { return; }
         for action in actions {
+            if let Some(update) = action.downcast_ref::<crate::sliding_sync::UserPowerLevelsUpdated>()
+                && self.room_name_id.as_ref().is_some_and(|room| update.is_current_for(room.room_id()))
+            {
+                self.can_invite = update.power_levels.can_invite();
+            }
             match action.downcast_ref() {
                 Some(InvitePeopleAction::Known { request, people }) if *request == self.request => {
                     for person in people {
@@ -295,6 +334,10 @@ impl WidgetMatchEvent for InviteModal {
             }
             match parsed {
                 Ok(user_id) => {
+                    if !self.may_invite_user(&user_id) {
+                        self.status(cx, crate::i18n::tr("You do not have permission to invite people to this room."), true);
+                        return;
+                    }
                     if let Some(room_name_id) = &self.room_name_id {
                         let request = MatrixRequest::InviteUser {
                             room_id: room_name_id.room_id().clone(),
@@ -491,6 +534,8 @@ impl InviteModal {
         let settings = crate::agent_access::current();
         self.request += 1;
         self.epoch = crate::account_session::epoch();
+        self.can_invite = false;
+        submit_async_request(MatrixRequest::GetRoomPowerLevels {room_id: room_name_id.room_id().clone()});
         self.known = settings
             .agent_registry
             .agents()
@@ -522,6 +567,21 @@ impl InviteModal {
         self.view.label(cx, ids!(status_label_view.status_label)).set_text(cx, "");
         self.view.redraw(cx);
         user_id_input.set_key_focus(cx);
+        self.update_invite_button(cx);
+    }
+
+    fn may_invite_user(&self, user_id: &ruma::UserId) -> bool {
+        self.epoch == crate::account_session::epoch()
+            && (self.can_invite || crate::hagency::backend::is_agent_invitation(user_id))
+    }
+
+    fn update_invite_button(&mut self, cx: &mut Cx) {
+        let text = self.view.text_input(cx, ids!(user_id_input)).text();
+        let allowed = ruma::UserId::parse(text.trim()).ok()
+            .map_or(self.can_invite, |id| self.may_invite_user(&id));
+        self.view.button(cx, ids!(confirm_button)).set_enabled(cx,
+            allowed && self.epoch == crate::account_session::epoch()
+                && !matches!(self.state, InviteModalState::WaitingForInvite(_) | InviteModalState::InviteSuccess));
     }
 }
 
@@ -533,6 +593,9 @@ impl InviteModalRef {
         assert!(get_client().is_none(), "Invitation review requires an offline profile");
         let Some(mut inner)=self.borrow_mut() else {return;};
         inner.review_mode=true;
+        // This offline fixture represents a room whose current user can invite people.
+        inner.can_invite=true;
+        inner.update_invite_button(cx);
         if scenario=="ready" {
             inner.known=vec![("@_hagency_agt_cabbage:example.invalid".try_into().unwrap(),Some("小白菜".into())),("@friend:example.invalid".try_into().unwrap(),Some("Alex".into()))];
             let known=inner.known.clone();inner.offer(cx,&known);

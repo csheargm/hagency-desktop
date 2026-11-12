@@ -20,9 +20,16 @@ pub trait FilterableRoom {
     fn alt_aliases(&self) -> Cow<'_, [OwnedRoomAliasId]>;
     fn tags(&self) -> &Tags;
     fn is_direct(&self) -> bool;
+    fn is_invite(&self) -> bool { false }
+    fn has_unreads(&self) -> bool { self.unread_mentions() > 0 || self.unread_messages() > 0 }
+    fn user_power_levels(&self) -> Option<crate::sliding_sync::UserPowerLevels> { None }
 }
 
 impl FilterableRoom for JoinedRoomInfo {
+    fn has_unreads(&self) -> bool {
+        self.is_marked_unread || self.unread_mentions() > 0 || self.num_unread_messages > 0
+    }
+    fn user_power_levels(&self) -> Option<crate::sliding_sync::UserPowerLevels> { self.user_power_levels }
     fn room_id(&self) -> &RoomId {
         self.room_name_id.room_id()
     }
@@ -38,7 +45,7 @@ impl FilterableRoom for JoinedRoomInfo {
     }
 
     fn unread_mentions(&self) -> u64 {
-        self.num_unread_mentions
+        self.num_unread_mentions.saturating_add(crate::hagency::pending_approvals::count_for_room(self.room_name_id.room_id()))
     }
 
     fn unread_messages(&self) -> u64 {
@@ -63,6 +70,7 @@ impl FilterableRoom for JoinedRoomInfo {
 }
 
 impl FilterableRoom for InvitedRoomInfo {
+    fn is_invite(&self) -> bool { true }
     fn room_id(&self) -> &RoomId {
         self.room_name_id.room_id()
     }

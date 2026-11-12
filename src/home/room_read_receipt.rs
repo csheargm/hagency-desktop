@@ -143,9 +143,7 @@ impl Widget for AvatarRow {
         // keep retrying them until their image arrives.
         self.update_undrawn_avatars(cx);
         cx.begin_turtle(walk, Layout::default());
-        for (avatar_ref, _) in self.buttons.iter_mut() {
-            let _ = avatar_ref.draw(cx, scope);
-        }
+        crate::shared::avatar::draw_stacked_avatars(cx, scope, self.buttons.iter().map(|(avatar, _)| avatar));
         if self.read_receipts.as_ref().is_some_and(|r| r.len() > MAX_VISIBLE_AVATARS_IN_READ_RECEIPT) {
             if let Some(label) = &mut self.label {
                 let _ = label.draw(cx, scope);

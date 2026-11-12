@@ -95,6 +95,7 @@ impl TextOrImage {
     /// * `text`: the text that will be displayed in this `TextOrImage`, e.g.,
     ///   a message like "Loading..." or an error message.
     pub fn show_text<T: AsRef<str>>(&mut self, cx: &mut Cx, text: T) {
+        crate::memory_budget::release_image(cx, &self.view.image(cx, ids!(image_view.image)));
         self.view(cx, ids!(image_view)).set_visible(cx, false);
         self.view(cx, ids!(text_view)).set_visible(cx, true);
         self.view.label(cx, ids!(text_view.label)).set_text(cx, text.as_ref());
@@ -139,6 +140,7 @@ impl TextOrImage {
     /// Note that a newly-created `TextOrImage` shows its (empty) text view, so call
     /// this to blank it out, or to drop a previous image when reusing the widget.
     pub fn clear(&mut self, cx: &mut Cx) {
+        crate::memory_budget::release_image(cx, &self.view.image(cx, ids!(image_view.image)));
         self.view(cx, ids!(text_view)).set_visible(cx, false);
         self.view(cx, ids!(image_view)).set_visible(cx, false);
         self.status = TextOrImageStatus::Text;

@@ -42,6 +42,9 @@ pub struct AppPreferences {
     /// Whether to show other users' read receipts beneath timeline events.
     #[serde(default = "default_true", deserialize_with = "deserialize_or_true")]
     pub show_read_receipts: bool,
+    /// Include room invitations in the Unreads and Mentions room filters.
+    #[serde(default = "default_true", deserialize_with = "deserialize_or_true")]
+    pub show_invites_in_unread_filters: bool,
     /// Whether the agent-chat workflow slash commands are offered in rooms
     /// that contain a coordinator agent. Only present in `agent_chat` builds.
     #[cfg(feature = "agent_chat")]
@@ -72,6 +75,7 @@ impl Default for AppPreferences {
             read_receipts_privacy: ReadReceiptsPrivacy::default(),
             mark_as_read_behavior: MarkAsReadBehavior::default(),
             show_read_receipts: true,
+            show_invites_in_unread_filters: true,
             #[cfg(feature = "agent_chat")]
             agent_chat_enabled: false,
             keep_hosting_after_quit: true,
@@ -205,6 +209,12 @@ impl AppPreferences {
         cx.redraw_all();
     }
 
+    pub fn on_show_invites_in_unread_filters_changed(&self, cx: &mut Cx) {
+        cx.global::<AppPreferencesGlobal>().0.show_invites_in_unread_filters = self.show_invites_in_unread_filters;
+        cx.action(crate::home::room_filter_bubbles::RoomFilterBubblesAction::InvitesInUnread(self.show_invites_in_unread_filters));
+        cx.redraw_all();
+    }
+
     /// Applies the current `agent_chat_enabled` value.
     #[cfg(feature = "agent_chat")]
     pub fn on_agent_chat_enabled_changed(&self, cx: &mut Cx) {
@@ -234,6 +244,7 @@ impl AppPreferences {
         self.on_read_receipts_privacy_changed(cx);
         self.on_mark_as_read_behavior_changed(cx);
         self.on_show_read_receipts_changed(cx);
+        self.on_show_invites_in_unread_filters_changed(cx);
         #[cfg(feature = "agent_chat")]
         self.on_agent_chat_enabled_changed(cx);
         self.on_hosting_changed(cx);
