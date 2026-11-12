@@ -609,7 +609,10 @@ impl Widget for MiniAppPageScroll {
 script_mod! {
         use mod.prelude.widgets.*
         mod.widgets.RinxAmountSlider = set_type_default() do #(MiniAppAmountSlider::register_widget(vm)) {
-            ..mod.widgets.Slider
+            // The whole chain, nearest first; see RinxKeyButton below.
+            ..mod.widgets.Slider,
+            ..mod.widgets.SliderFlat,
+            ..mod.widgets.SliderMinimal,
             width: Fill height: 44 margin: 0 padding: 0
             min: 0 max: 1 step: 0 default: 0
             label_walk: Walk{width: 0 height: 0}
@@ -646,8 +649,16 @@ script_mod! {
             decrease := mod.widgets.RinxButton{width:max(44,mod.widgets.RINX_CONTROL_HEIGHT) height:max(44,mod.widgets.RINX_CONTROL_HEIGHT) text:"−" grab_key_focus:true}
             increase := mod.widgets.RinxButton{width:max(44,mod.widgets.RINX_CONTROL_HEIGHT) height:max(44,mod.widgets.RINX_CONTROL_HEIGHT) text:"+" grab_key_focus:true}
         }
+        // A spread copies only what its source sets itself, and when a page
+        // renders again the engine resets every property this type's default
+        // does not name. Name the whole chain, nearest first (a spread never
+        // overwrites), down to the engine Button's own default: without it the
+        // width, alignment and label box of every button fell back to
+        // full-width, top-left after the first render.
         mod.widgets.RinxKeyButton = set_type_default() do #(MiniAppButton::register_widget(vm)) {
-            ..mod.widgets.RinxButton
+            ..mod.widgets.RinxButton,
+            ..mod.widgets.Button,
+            ..mod.widgets.ButtonFlat,
         }
         mod.widgets.RinxKeyPrimaryButton = mod.widgets.RinxKeyButton {
             draw_bg +: {color: mod.widgets.RINX_ACCENT color_focus: mod.widgets.RINX_ACCENT color_hover: mod.widgets.RINX_ACCENT_HOVER color_down: mod.widgets.RINX_ACCENT_DOWN

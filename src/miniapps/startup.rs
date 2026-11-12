@@ -97,7 +97,8 @@ mod tests {
             let value =
                 vm.eval(script! {use mod.prelude.widgets.* use mod.widgets.* MiniAppsPanel{}});
             let panel = MiniAppsPanel::script_from_value(vm, value);
-            assert!(vm.take_errors().is_empty());
+            let errors = vm.take_errors();
+            assert!(errors.is_empty(), "{errors:#?}");
             panel
         });
         let directory = Directory::new();
@@ -194,6 +195,84 @@ host.request("fixture.pending", {}, fn(result){ ui.content.reply.set_text("origi
         assert_eq!(card.borrow().unwrap().view.label(&cx, ids!(content.status)).text(), "en:2");
         assert_eq!(draft.text(), "User draft 中文 {count}");
         assert!(take_splash_host_requests_for(&[heap]).is_empty());
+        card.set_text(&mut cx, "");
+    }
+
+    /// A page that renders again must leave its buttons as they were first
+    /// drawn. The engine resets, on every later render, each property the
+    /// button's own style chain does not name; the mini-app button type once
+    /// named only its theme face, so width, alignment and the label box fell
+    /// back to full-width, top-left defaults and a wrapping row lost every
+    /// second button.
+    #[test]
+    fn native_hagency_buttons_keep_their_shape_when_a_row_renders_again() {
+        // The page's own script space takes its widget types from a list kept
+        // per thread, which the app fills once per process. Each test runs on
+        // its own thread, so fill it here (as agent_capabilities_tests does).
+        makepad_widgets::widget_async::register_splash_isolate_mod(crate::theme::script_mod);
+        makepad_widgets::widget_async::register_splash_isolate_mod(crate::i18n::script_mod);
+        makepad_widgets::widget_async::register_splash_isolate_mod(|vm| {
+            crate::miniapps::design::script_mod(vm);
+        });
+        let (mut cx, mut panel, _directory) = fixture();
+        panel.lease = Some(lease());
+        // The starting language follows a process-wide setting other tests
+        // change; fix it so both language changes below reach the page.
+        panel.language = crate::i18n::Language::English;
+        let card = panel.view.splash(&cx, ids!(card));
+        panel.install_script_source(&mut cx, r#"
+width: Fill height: Fill flow: Down spacing: 16
+let renders = 0
+let review = false
+heading := View{}
+navigation := View{}
+notice := Label{text: ""}
+content := View{
+    actions := View{width:Fill height:Fit flow:Flow.Right{wrap:true} spacing:8 on_render:||{
+        edit := mod.widgets.RinxKeyButton{visible:review text:"Edit"}
+        submit := mod.widgets.RinxKeyPrimaryButton{visible:review text:"Submit"}
+        discard := mod.widgets.RinxKeyButton{text:"Discard"}
+        toggle := mod.widgets.RinxToggle{text:"Toggle"}
+    }}
+}
+let on_app_locale_changed = fn(locale){
+    renders += 1
+    review = renders > 1
+    ui.content.actions.render()
+}
+"#).unwrap();
+        cx.handle_script_tasks();
+        // The first render, as a page makes when it opens.
+        panel.refresh_script_language(&mut cx, crate::i18n::Language::Chinese);
+        cx.handle_script_tasks();
+        let buttons = |card: &makepad_widgets::SplashRef| {
+            let content = card.borrow().unwrap().view.children.iter()
+                .find(|(id, _)| *id == id!(content)).unwrap().1.clone();
+            let mut actions = WidgetRef::empty();
+            content.children(&mut |id, child| if id == id!(actions) { actions = child.clone(); });
+            let mut found = Vec::new();
+            actions.children(&mut |id, child| found.push((id, child.clone())));
+            found
+        };
+        // The width is the part a test can read; alignment and the label box
+        // are private to the engine's Button and are lost by the same rule.
+        let fits = |cx: &mut Cx, widget: &WidgetRef| matches!(widget.walk(cx).width, Size::Fit { .. });
+        let first: Vec<_> = buttons(&card).iter().map(|(id, w)| (*id, fits(&mut cx, w))).collect();
+        assert_eq!(first.len(), 4);
+        for (id, fit) in &first {
+            assert!(*fit, "{id:?} starts as wide as its label");
+        }
+        // The same row renders again, as after any change of the page's state.
+        panel.refresh_script_language(&mut cx, crate::i18n::Language::English);
+        cx.handle_script_tasks();
+        let second: Vec<_> = buttons(&card).iter().map(|(id, w)| (*id, fits(&mut cx, w))).collect();
+        assert_eq!(second.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            first.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        for (id, fit) in &second {
+            assert!(*fit, "{id:?} is still as wide as its label when the row renders again");
+        }
+        let visible: Vec<_> = buttons(&card).iter().map(|(_, w)| w.visible()).collect();
+        assert_eq!(visible, [true, true, true, true]);
         card.set_text(&mut cx, "");
     }
 
