@@ -10504,7 +10504,7 @@ dependencies = [
 
 [[package]]
 name = "rinx"
-version = "0.5.0-rc.6"
+version = "0.5.0-rc.7"
 dependencies = [
  "anyhow",
  "arboard",

@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
                 return json.loads(result.stdout)
             except ValueError as error:
                 raise RemoteNotReady(f'{command[0]} answered {result.stdout[-1000:]!r}') from error
-        frames, ready_frames, not_ready = 0, 0, ''
+        frames, ready_frames, not_ready, seen = 0, 0, '', {}
         while time.monotonic() < deadline and ready_frames < 3:
             assert process.poll() is None, startup_log()
             try:
@@ -138,12 +138,16 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
                 (output/'snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
                 (output/'frame.json').write_text(json.dumps(image, indent=2)+'\n')
                 frames += 1
-                texts = [node.get('name') or node.get('text') or ''
-                         for tree in snapshot.get('trees', []) for node in tree.get('nodes', [])
+                drawn = [node for tree in snapshot.get('trees', []) for node in tree.get('nodes', [])
                          if len(node.get('bounds', [])) == 4 and node['bounds'][2]>0 and node['bounds'][3]>0]
+                texts = [node.get('name') or node.get('text') or '' for node in drawn]
                 sign_in = any('Sign in to Hagency' in text or '登录 Hagency' in text for text in texts)
+                # The logo is an image file in the package. Text is no proof that the
+                # package's files are found: system fonts stand in for the bundled ones.
+                logo = any(node.get('path', '').endswith('login_screen.logo_image') for node in drawn)
                 pixels = image_readiness(image['png'])
-                ready_frames = ready_frames + 1 if sign_in and pixels['nonBlank'] else 0
+                seen = dict(signInText=sign_in, bundledLogo=logo, nonBlank=pixels['nonBlank'])
+                ready_frames = ready_frames + 1 if all(seen.values()) else 0
             except RemoteNotReady as error:
                 # The endpoint line is printed just before the first frame is
                 # drawn. Retry within the readiness deadline; the next loop
@@ -177,14 +181,21 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
             user32.EnumWindows(callback_type(inspect_window), 0)
             (output/'native-windows.json').write_text(json.dumps(windows, indent=2)+'\n')
             ImageGrab.grab(all_screens=True).save(output/'desktop.png')
-        assert ready_frames == 3, ('Packaged app did not render sign-in pixels before the deadline'
+        # A package that reads its files from the checkout it was built in passes every
+        # check on the build machine and fails on every other computer.
+        packaged = re.search(r'resources: packaged in "([^"]+)"', log.read_text(errors='replace'))
+        assert packaged, 'Packaged app was not built to read its resources from its package: ' + startup_log()
+        assert ready_frames == 3, ('Packaged app did not render sign-in with its bundled logo before the deadline'
+                                   + f' (last frame: {seen})'
                                    + (f' (last remote failure: {not_ready})' if not_ready else ''))
         errors = [line for line in log.read_text(errors='replace').splitlines()
-                  if re.search(r'panicked at|Bundle[d]? file open failed|failed to load.*(font|resource)',line,re.I)]
+                  if re.search(r'panicked at|Bundle[d]? file open failed|failed to load.*(font|resource)'
+                               r'|is not packaged with this app',line,re.I)]
         assert not errors, errors
         (output/'report.json').write_text(json.dumps(dict(passed=True, platform=sys.platform,
             package=str(package), isolatedProfile=True, kernelVersion=kernel_version,
-            signInRendered=True, nonBlankScreenshot=pixels, framesChecked=frames,
+            signInRendered=True, bundledLogoRendered=True, packageDirectory=packaged[1],
+            nonBlankScreenshot=pixels, framesChecked=frames,
             rendererOverride=False,
             windowHidden=sys.platform == 'darwin',
             resourceErrors=errors), indent=2)+'\n')

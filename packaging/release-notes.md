@@ -1,4 +1,4 @@
-This sixth release candidate adds Claude Code as an Agent runtime beside Codex, as local Agents and as shared pools. It is the first release candidate built on the new Makepad engine line, it keeps Matrix sign-ins in the operating system's credential store, and it fixes a number of chat and Agent-panel defects. It retains the file exchange, question cards and integrated macOS hosting from rc.5.
+This seventh release candidate replaces rc.6, whose macOS installer could not find the images and fonts packed inside the app. It is otherwise the same as rc.6, which added Claude Code as an Agent runtime beside Codex, as local Agents and as shared pools. It is the first release candidate built on the new Makepad engine line, it keeps Matrix sign-ins in the operating system's credential store, and it fixes a number of chat and Agent-panel defects. It retains the file exchange, question cards and integrated macOS hosting from rc.5.
 
 **Read before upgrading**
 
@@ -6,6 +6,10 @@ This sixth release candidate adds Claude Code as an Agent runtime beside Codex, 
 - **Saved sign-ins move into the operating system's credential store at first start, one way.** An earlier build can then no longer open that profile. The macOS build is ad-hoc signed, so macOS treats each new build as a different program and asks for the login password for every saved item after an update.
 - The execution machine needs Claude Code 2.1.322 or later and Codex 0.167.0 or later. An older CLI is refused with a message that names the required version.
 - Agent features were run against a Hagency server at schema 35. Pooled Claude Agents also need the server to accept a never-started proof for grant version 6; that rule is not in the server repository's main line yet.
+
+**Fixed in rc.7**
+
+- The macOS app finds the files packed inside it. In the rc.6 macOS installer the sign-in logo, icons and other images were missing and text was drawn in system fonts instead of the bundled ones, on every Mac except the one that built it: the package was built with a resource folder setting that the new engine does not use. The Windows installer of rc.6 was not affected. The automated installer check now fails a package that does not draw its bundled logo.
 
 **New in rc.6**
 
@@ -43,6 +47,6 @@ This sixth release candidate adds Claude Code as an Agent runtime beside Codex, 
 
 Install **Hagency Desktop** for chat, Agent management and macOS resource hosting. Provider accounts and coding tools must be configured on the execution machine. Server-side recovery improvements require a compatible Hagency server; this installer does not update the server or its trusted-proxy configuration.
 
-This RC includes macOS Apple Silicon and Windows x64 installers. Windows background resource hosting, Windows ARM64, Intel macOS, automatic updates and mobile store packages are not included. Signing status is stated above. Local and pooled Codex and Claude Agents were exercised by hand in encrypted rooms on one Apple Silicon Mac against a live server, on development builds of this source; the packaged installers were not. This is the first packaging on the new engine line, and the Windows installer has had no manual acceptance run. Agent question and encrypted-history recovery have offline regression coverage. Automated installer checks do not replace a manual Windows 11 acceptance test or production fault-injection coverage of every recovery path.
+This RC includes macOS Apple Silicon and Windows x64 installers. Windows background resource hosting, Windows ARM64, Intel macOS, automatic updates and mobile store packages are not included. Signing status is stated above. Local and pooled Codex and Claude Agents were exercised by hand in encrypted rooms on one Apple Silicon Mac against a live server, on development builds of this source; the packaged installers were not. The rc.6 macOS installer was started on a Mac other than its build machine after publishing, which is how its missing images were found. This is the first packaging on the new engine line, and the Windows installer has had no manual acceptance run. Agent question and encrypted-history recovery have offline regression coverage. Automated installer checks do not replace a manual Windows 11 acceptance test or production fault-injection coverage of every recovery path.
 
 The version series remains Hagency 0.5.0, following the inherited Rinx 1.1.x releases. Install this RC manually. The earlier [dependency audit follow-up](https://github.com/hagency-org/hagency-desktop/blob/work/hagency-desktop-local-20261028/dev-vibe/release-0.5.0/assessment.zh.md) remains open.
