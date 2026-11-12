@@ -7404,15 +7404,15 @@ A.pool_login_text=fn(account){
     let {readiness=nil,resourceCount=0,kind=""}=account
     let login=if readiness=="subscription" {A.t("Signed in · subscription","已登录 · 订阅账号")} else if readiness=="api_key" {A.t("Signed in · API key","已登录 · API 密钥")} else {A.t("Sign-in not checked yet","尚未确认登录")}
     // The owner's own Claude Code on this computer: a pool runs on whichever sign-in it has.
-    if kind=="local_configuration" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点令牌")} else if readiness=="subscription" {A.t("This computer’s settings · claude.ai sign-in","本机配置 · claude.ai 订阅登录")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
+    if kind=="local_configuration" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点凭据")} else if readiness=="subscription" {A.t("This computer’s settings · claude.ai sign-in","本机配置 · claude.ai 订阅登录")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
     return login+if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
 }
 // Why the models of a tool can't be listed; Claude Code has its own reasons.
 A.pool_models_error=fn(row,code){
     let {runtime=""}=row
     if runtime!="claude" {return A.account_models_error(code)}
-    if code=="provider_connection_required" {return A.t("Claude Code on this computer isn’t signed in. Sign in to Claude Code, or set an API key or an endpoint token in its settings, then try again.","本机 Claude Code 尚未登录。请先登录 Claude Code，或在它的配置里设置 API 密钥或端点令牌，然后重试。")}
-    if code=="provider_identity_unavailable" {return A.t("Claude Code’s sign-in on this computer couldn’t be confirmed. With a claude.ai sign-in, open Claude Code once and try again. An API key or endpoint token must be in the “env” section of settings.json.","无法确认本机 Claude Code 的登录。若使用 claude.ai 登录，请先打开一次 Claude Code 再重试；API 密钥或端点令牌需要写在 settings.json 的 “env” 部分。")}
+    if code=="provider_connection_required" {return A.t("Claude Code on this computer isn’t signed in. Sign in to Claude Code, or set an API key or an endpoint token in its settings, then try again.","本机 Claude Code 尚未登录。请先登录 Claude Code，或在它的配置里设置 API 密钥或端点凭据，然后重试。")}
+    if code=="provider_identity_unavailable" {return A.t("Claude Code’s sign-in on this computer couldn’t be confirmed. With a claude.ai sign-in, open Claude Code once and try again. An API key or endpoint token must be in the “env” section of settings.json.","无法确认本机 Claude Code 的登录。若使用 claude.ai 登录，请先打开一次 Claude Code 再重试；API 密钥或端点凭据需要写在 settings.json 的 “env” 部分。")}
     if code=="provider_profile_mismatch" || code=="management_not_found" {return A.t("Claude Code is no longer connected on this computer. Connect it under My Agents first.","本机的 Claude Code 已不再接入。请先在「我的 Agent」中接入。")}
     if code=="provider_account_changed" || code=="management_revision_conflict" {return A.t("Claude Code’s settings changed. Choose it again.","Claude Code 的配置已变化，请重新选择。")}
     return A.account_models_error(code)
