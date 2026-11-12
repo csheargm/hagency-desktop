@@ -399,7 +399,7 @@ impl RobrixHtmlLink {
 /// A pill-shaped widget that shows a Matrix link as an avatar and a title.
 ///
 /// This can be a link to a user, a room, or an event in a room.
-#[derive(Script, ScriptHook, Widget)]
+#[derive(Script, Widget)]
 struct MatrixLinkPill {
     #[deref] view: View,
 
@@ -408,6 +408,17 @@ struct MatrixLinkPill {
     #[rust] url: String,
     /// Whether this pill is still waiting for its name or avatar to arrive.
     #[rust] is_waiting_for_data: bool,
+    /// The mention style the pill wears now: `Some(true)` filled (you or @room),
+    /// `Some(false)` soft, `None` not styled since it was last applied from script.
+    #[rust] filled_style: Option<bool>,
+}
+
+impl ScriptHook for MatrixLinkPill {
+    fn on_after_apply(&mut self, _vm: &mut ScriptVm, _apply: &Apply, _scope: &mut Scope, _value: ScriptValue) {
+        // Applying the pill itself (creation, a style reload) puts the template's
+        // colours back, so the mention style has to be put on again.
+        self.filled_style = None;
+    }
 }
 
 impl Widget for MatrixLinkPill {
@@ -465,12 +476,16 @@ impl MatrixLinkPill {
 
         // Two tiers drawn from the accent pair: a mention of someone else is a
         // quiet soft chip, while a mention of *you* (or @room) is filled.
-        // Always reset both tiers so a recycled pill never keeps a stale style
-        // after a message edit.
-        {
+        // A recycled pill is restyled when its tier differs, so it never keeps a
+        // stale style after a message edit. This runs on every draw, and applying
+        // a style asks for a redraw: applying it each time kept every room that
+        // shows a mention drawing 60 frames a second for ever.
+        let filled = is_room_mention || is_self_mention;
+        if self.filled_style != Some(filled) {
+            self.filled_style = Some(filled);
             let mut pill_bg = self.view(cx, ids!(pill_bg));
             let mut title = pill_bg.label(cx, ids!(title));
-            if is_room_mention || is_self_mention {
+            if filled {
                 script_apply_eval!(cx, pill_bg, { draw_bg +: { color: mod.widgets.RBX_ACCENT } });
                 script_apply_eval!(cx, title, { draw_text +: { color: mod.widgets.RBX_FG_ON_ACCENT } });
             } else {
