@@ -981,6 +981,33 @@ pub(super) fn applicant_from_input(text: &str, account: &str, current: &[String]
     }
     Ok(id)
 }
+/// An account the owner picked from the server's search results, as the form
+/// commits it. The server returned this exact ID, so it is kept letter for
+/// letter: a homeserver can hold an account with capital letters, and
+/// "@ZhangSan" is then a different account from "@zhangsan", which does not exist.
+pub(super) fn applicant_from_account(id: &str, account: &str, current: &[String]) -> Result<String, String> {
+    let tr = crate::i18n::tr;
+    let server = account.split_once(':').map_or("", |(_, server)| server);
+    let Some((name, on)) = id.split_once(':').filter(|(name, _)| name.starts_with('@')) else {
+        return Err(tr("That isn’t a valid username.").into());
+    };
+    if on != server {
+        return Err(crate::i18n::format(
+            "Only people on your server ({server}) can be added.",
+            &[("server", server.to_owned())],
+        ));
+    }
+    if !crate::host::hagency::grants::matrix_user(id) {
+        return Err(tr("That isn’t a valid username.").into());
+    }
+    if current.iter().any(|listed| listed == id) {
+        return Err(crate::i18n::format("{person} is already on the list.", &[("person", name.to_owned())]));
+    }
+    if current.len() >= 64 {
+        return Err(tr("At most 64 people can be on the list.").into());
+    }
+    Ok(id.to_owned())
+}
 /// Facts about the pool the Choose sheet shows beside the change. Each fact
 /// is said once: when the change applies is in the hero's sentence, and the
 /// slider's bounds sit under the slider.
@@ -2536,7 +2563,8 @@ impl MiniAppsPanel {
         let mut managers = managers_of(&prompt.draft.managers);
         let candidates = prompt.people_search.candidates(&managers);
         let Some(person) = candidates.iter().find(|person| person.id == selected) else { return };
-        match applicant_from_input(&person.id, prompt.flow.account(), &managers) {
+        // The picked account is the server's own answer: commit it unchanged.
+        match applicant_from_account(&person.id, prompt.flow.account(), &managers) {
             Ok(id) => {
                 managers.push(id);
                 prompt.draft.managers = managers_of(&managers.join(" ")).join(" ");
@@ -4272,6 +4300,19 @@ mod tests {
         }
         let full: Vec<String> = (0..64).map(|n| format!("@p{n}:test")).collect();
         assert_eq!(applicant_from_input("lisi", "@owner:test", &full).unwrap_err(), "At most 64 people can be on the list.");
+        // An account picked from the server's results keeps its letters: a
+        // server can hold "@ZhangSan", and "@zhangsan" is then nobody.
+        assert_eq!(applicant_from_account("@ZhangSan:test", "@owner:test", &current).as_deref(), Ok("@ZhangSan:test"));
+        assert_eq!(applicant_from_account("@lisi:test", "@owner:test", &current).as_deref(), Ok("@lisi:test"));
+        for (picked, reason) in [
+            ("@ZhangSan:elsewhere.org", "Only people on your server (test) can be added."),
+            ("ZhangSan:test", "That isn’t a valid username."),
+            ("@Zhang San:test", "That isn’t a valid username."),
+            ("@manager:test", "@manager is already on the list."),
+        ] {
+            assert_eq!(applicant_from_account(picked, "@owner:test", &current).unwrap_err(), reason, "{picked}");
+        }
+        assert_eq!(applicant_from_account("@ZhangSan:test", "@owner:test", &full).unwrap_err(), "At most 64 people can be on the list.");
         // A first publish lists everyone as removable, with no "new" tag.
         let rows = listed_people(&[], &["@a:test".to_owned(), "@b:test".to_owned()], false, true);
         assert!(rows.iter().all(|p| p.removable && !p.added));
