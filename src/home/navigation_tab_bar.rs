@@ -648,8 +648,11 @@ impl NavigationTabBar {
 impl NavigationTabBar {
     /// A permission request that waits for this account turns the Agent tab
     /// red, with a dot after its label, until the request is decided or gone.
+    /// So does a resource admission request that waits for the server's administrator.
     fn apply_approval_alert(&mut self, cx: &mut Cx) {
-        self.apply_approval_alert_state(cx, crate::hagency::pending_approvals::total() > 0);
+        let waiting = crate::hagency::pending_approvals::total() > 0
+            || crate::hagency::pending_admissions::total() > 0;
+        self.apply_approval_alert_state(cx, waiting);
     }
 
     fn apply_approval_alert_state(&mut self, cx: &mut Cx, alert: bool) {

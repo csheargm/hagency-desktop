@@ -36,6 +36,11 @@ let {pool_checked=false}=H
 H.pool_checked=pool_checked
 let {create_trust_ask="",tab_requests=0}=H
 H.create_trust_ask=create_trust_ask H.tab_requests=tab_requests
+// The server administrator's admission review: every request it may read (newest first), the state
+// shown ("auto" is the waiting ones when there are any, else all), and how many wait for a decision.
+let {adm=nil}=H
+if adm==nil {adm={filter:"auto" rows:[] ready:false partial:false epoch:0 pending:0 pendingMore:false}}
+H.adm=adm
 let {pool_no_succession=false,pool_offer=nil,pool_no_applicants=false}=H
 H.pool_no_succession=pool_no_succession H.pool_offer=pool_offer H.pool_no_applicants=pool_no_applicants
 // Round 7: publish-ahead asks first; a maximum suggested by an alert; the new pool's banner; the glossary row open.
@@ -3744,6 +3749,10 @@ A.web_refresh_plan=fn(){let w=H.web let c=H.webConnection
     if H.page=="agent_action" && H.agent_confirmation==""{return {service:"hagency.agents.get" args:{id:H.agent_id} done:fn(v){if v.agentRequest.id==H.agent_id{H.agent_selected=v.agentRequest}}}}
     if H.page=="agent_status"{return {service:"hagency.agents.status" args:{id:H.agent_id} done:fn(v){if v.protocol=="hagency-management-v1" && v.agentRequest.id==H.agent_id{H.agent_status=v H.agent_selected=v.agentRequest H.agent_project_id=v.agentRequest.projectId}}}}
     if H.page=="agents" && H.agents.len()<=16{return {service:"hagency.agents.list" args:{after:nil needsMyAction:false projectId:H.agent_project_id} done:fn(v){H.agents=v.items H.agent_after=v.nextAfter}}}
+    if H.page=="inbox" && H.entry_role=="admin" {
+        if !H.adm.ready {return nil}
+        return {service:"hagency.inbox.list" args:{after:nil needsMyAction:true includeProjects:false includeAllocations:false} done:fn(v){A.adm_waiting(v)}}
+    }
     if H.page=="inbox" && H.inbox.len()<=16{return {service:"hagency.inbox.list" args:{after:H.ux.inboxCursor needsMyAction:H.needs_action includeProjects:H.entry_role!="admin" && A.projects_enabled() includeAllocations:H.entry_role!="admin" && A.allocations_enabled()} done:fn(v){H.inbox=v.items H.inbox_after=v.nextAfter if A.agents_enabled(){A.load_agents(H.ux.agentCursor)}}}}
     if H.page=="action" && H.selected!=nil{return {service:"hagency.connections.get" args:{id:H.selected.contribution.id} done:fn(v){if v.admission.contribution.id==H.selected.contribution.id{H.selected=v.admission A.observe_verification(v.admission.contribution,v.observedAtMs) A.load_connection_capacity(v.admission.contribution)}}}}
     if H.page=="resource_alerts" && H.alert_draft==nil{return {service:"hagency.alerts.list" args:{resourceId:H.alert_resource after:H.alert_after status:H.alert_status} done:fn(v){if v.resourceId==H.alert_resource{H.alert_page=v}}}}
@@ -3825,7 +3834,12 @@ A.owner_review_agents=fn(){
     H.owner.poolId="" H.owner.poolLabel="" H.reqs.filter="pending" H.needs_action=true
     A.reqs_show("inbox") A.redraw()
 }
-A.web_auto_refresh=fn(){A.web_refresh_now() start_timeout(15,||A.web_auto_refresh())}
+A.web_auto_refresh=fn(){
+    A.web_refresh_now()
+    // The administrator's red count keeps up on every other page too.
+    if H.ready && !(H.entry_role=="admin" && H.page=="inbox") && H.webRefresh.visible && !H.needs_signin {A.adm_pending_load()}
+    start_timeout(15,||A.web_auto_refresh())
+}
 
 A.web_connection_service=fn(service){return service=="hagency.web_connections.create" || service=="hagency.web_connections.allowance" || service=="hagency.web_connections.withdraw" || service=="hagency.web_connections.issue" || service=="hagency.web_connections.import" || service=="hagency.web_connections.replace" || service=="hagency.web_connections.verify"}
 A.web_connections_open=fn(after){if H.busy{return} let c=H.webConnection c.after=after c.list=nil H.page="web_connections"
@@ -3989,6 +4003,7 @@ A.refresh = fn(){
     A.request("hagency.intent.pending", {}, fn(data){H.saved_commands = data.commands A.refresh_page() A.tab_counts_load()})
 }
 A.refresh_page = fn(){
+    if H.page=="tools" && H.entry_role=="admin" {A.adm_load() return}
     if H.page=="pools" {A.load_pools(nil) return}
     if H.page=="pool_create" {A.pool_create_accounts() return}
     if A.pool_sub_page() {A.pool_sub_refresh() return}
@@ -4089,6 +4104,8 @@ A.connect = fn(){
         if !A.entry_allowed(H.entry_role){H.entry_role=""}
         H.entry_choosing=H.entry_role==""
         if H.owner_review_pending!=nil {A.owner_review_open()}
+        // In any workspace, and on the chooser: an account that decides admission sees what waits.
+        if H.entry_role!="admin" {A.adm_pending_load()}
         if H.entry_role=="owner" && H.page=="overview" && H.command==nil{A.open_accounts(nil)}else{A.refresh()}
     })
 }
@@ -4098,7 +4115,7 @@ A.navigate = fn(page){
     if H.busy {return}
     if A.local_leaving(page) {return}
     H.ux.origin="" H.ux.restore=false
-    if page=="inbox" {H.ux.inboxCursor=nil H.ux.agentCursor=nil H.reqs.result=nil H.reqs.confirm=nil}
+    if page=="inbox" {H.ux.inboxCursor=nil H.ux.agentCursor=nil H.reqs.result=nil H.reqs.confirm=nil H.adm.filter="auto"}
     if page=="projects" {H.ux.projectCursor=nil}
     if page=="resources" {H.ux.resourceCursor=nil H.ux.resourceJourney=false}
     H.page=page H.selected=nil H.connection_project=nil H.confirm="" H.notice="" A.redraw() A.refresh()
@@ -7712,6 +7729,7 @@ A.read_account_page = fn(after,epoch,rows,pages){
 }
 // Tab badges: what waits on each tab, from the pool list's counts or one light read of requests.
 A.tab_badge=fn(tab){
+    if H.entry_role=="admin" && H.session!=nil {return if tab=="inbox" {H.adm.pending} else {0}}
     if H.entry_role!="owner" || H.session==nil {return 0}
     let m=H.pool_meta
     if tab=="inbox" {return if m!=nil && m.requests!=nil {A.pool_pending_total()} else {H.tab_requests}}
@@ -7720,6 +7738,7 @@ A.tab_badge=fn(tab){
     return A.pool_todo_here(A.pool_todo())
 }
 A.tab_counts_load=fn(){
+    if H.entry_role=="admin" {A.adm_pending_load() return}
     if H.entry_role!="owner" || H.session==nil || !A.pool_enabled() {return}
     host.request("hagency.pools.agents.list",{after:nil needsMyAction:true},fn(r){
         if !r.is_ok {return}
@@ -8234,9 +8253,10 @@ A.entry_label=fn(role){
 }
 A.entry_choose=fn(role){
     if H.busy || !A.entry_allowed(role){return}
-    if role!=H.entry_role{H.needs_action=true H.ux.inboxCursor=nil H.ux.agentCursor=nil}
+    if role!=H.entry_role{H.needs_action=true H.ux.inboxCursor=nil H.ux.agentCursor=nil H.adm.filter="auto"}
     H.entry_role=role H.entry_choosing=false H.page="overview" H.notice=""
     A.save() A.redraw()
+    A.adm_pending_load()
     if role=="owner" && H.command==nil{A.open_accounts(nil)}
 }
 A.entry_switch=fn(){if H.busy{return} H.entry_choosing=true H.page="overview" H.notice="" A.redraw()}
@@ -8548,7 +8568,117 @@ A.return_origin=fn(){
     if origin=="inbox" {if H.entry_role=="owner"{A.reqs_load(nil)}else{A.load_inbox()}} else {A.load_dashboard()}
 }
 A.must_reopen=fn(){return H.ux.errorCode=="management_permission_required" || H.ux.errorCode=="management_scope_changed" || H.ux.errorCode=="management_access_required"}
+// The server administrator's admission review. The server lists requests oldest first, a page at a
+// time, and can filter only on "waits for me"; this reads them once and shows them by state.
+A.adm_state_text=fn(state){
+    if state=="pending" {return A.t("Needs review","待审批")}
+    if state=="approved" {return A.t("Approved","已批准")}
+    if state=="rejected" {return A.t("Declined","已拒绝")}
+    if state=="revoked" {return A.t("Closed","已关闭")}
+    if state=="expired" {return A.t("Expired","已过期")}
+    return A.state_text(state)
+}
+A.adm_filter_text=fn(filter){return if filter=="all" {A.t("All","全部")} else {A.adm_state_text(filter)}}
+A.adm_tone=fn(state){
+    if state=="pending" {return mod.widgets.RINX_DANGER_FG}
+    if state=="approved" {return mod.widgets.RINX_SUCCESS_FG}
+    if state=="expired" {return mod.widgets.RINX_WARNING_FG}
+    return mod.widgets.RINX_MUTED
+}
+A.adm_tone_bg=fn(state){
+    if state=="pending" {return mod.widgets.RINX_DANGER_BG}
+    if state=="approved" {return mod.widgets.RINX_SUCCESS_BG}
+    if state=="expired" {return mod.widgets.RINX_WARNING_BG}
+    return mod.widgets.RINX_FIELD
+}
+A.adm_count=fn(filter){
+    let n={c:0}
+    for row in H.adm.rows {if filter=="all" || row.state==filter {n.c=n.c+1}}
+    return n.c
+}
+A.adm_shown=fn(){
+    if H.adm.filter!="auto" {return H.adm.filter}
+    return if A.adm_count("pending")>0 {"pending"} else {"all"}
+}
+A.adm_rows=fn(){
+    let shown=A.adm_shown() let out=[]
+    for row in H.adm.rows {if shown=="all" || row.state==shown {out.push(row)}}
+    return out
+}
+A.adm_filter=fn(filter){H.adm.filter=filter A.redraw()}
+// From the console's counts: the admission page, on that state.
+A.adm_open=fn(filter){
+    if H.busy {return}
+    A.navigate("inbox")
+    H.adm.filter=filter A.redraw()
+}
+A.adm_load=fn(){
+    H.adm.epoch=H.adm.epoch+1
+    H.ux.inboxReady=false H.ux.inboxError=false H.adm.ready=false H.adm.partial=false
+    H.inbox=[] H.agents=[] H.inbox_after=nil H.agent_after=nil
+    A.adm_read(false,nil,H.adm.epoch,[],[],0)
+}
+// Every request first, up to 16 pages. A longer list is cut at its newest end, so the ones that
+// wait are then read on their own: the server filters those itself, and none of them is missed.
+A.adm_read=fn(waiting,after,epoch,all,pending,pages){
+    A.request("hagency.inbox.list",{after:after needsMyAction:waiting includeProjects:false includeAllocations:false},fn(v){
+        if H.adm.epoch!=epoch || H.entry_role!="admin" {return}
+        for row in v.items {if waiting {pending.push(row)} else {all.push(row)}}
+        let more=v.nextAfter!=nil && v.nextAfter!=after
+        if more && pages<15 {A.adm_read(waiting,v.nextAfter,epoch,all,pending,pages+1) return}
+        if more && !waiting {H.adm.partial=true A.adm_read(true,nil,epoch,all,pending,0) return}
+        // Newest first: a request's id grows with the time it was made.
+        let rows=[]
+        for i in pending.len() {rows.push(pending[pending.len()-1-i])}
+        for i in all.len() {
+            let row=all[all.len()-1-i]
+            if !waiting || row.state!="pending" {rows.push(row)}
+        }
+        H.adm.rows=rows H.inbox=rows H.adm.ready=true H.ux.inboxReady=true
+        // How many wait: the red count on the tab and on the home card.
+        H.adm.pending=A.adm_count("pending") H.adm.pendingMore=waiting && more
+    })
+}
+// A quiet read of the requests that wait, wherever the administrator is in the mini app.
+A.adm_pending_load=fn(){
+    if !A.entry_allowed("admin") {return}
+    let account=H.session.account
+    host.request("hagency.inbox.list",{after:nil needsMyAction:true includeProjects:false includeAllocations:false},fn(r){
+        if !r.is_ok || H.session==nil || H.session.account!=account || !A.entry_allowed("admin") {return}
+        let {items=nil,nextAfter=nil}=r.data
+        if items==nil {return}
+        let more=nextAfter!=nil
+        if H.adm.pending==items.len() && H.adm.pendingMore==more {return}
+        H.adm.pending=items.len() H.adm.pendingMore=more
+        if H.busy {ui.navigation.render() return}
+        // The console's counts come from the full list: read it again so they agree with the tab.
+        if H.entry_role=="admin" && H.page=="tools" {A.adm_load() return}
+        if H.page=="overview" {A.redraw()} else {ui.navigation.render()}
+    })
+}
+// The open admission page's own quiet read: new requests join the top of the list. One that no
+// longer waits was decided or withdrawn elsewhere, so the list is read again to show what became of it.
+A.adm_waiting=fn(v){
+    let {items=nil,nextAfter=nil}=v
+    if items==nil || !H.adm.ready {return}
+    if nextAfter!=nil {H.adm.pending=items.len() H.adm.pendingMore=true return}
+    let gone={c:false}
+    for row in H.adm.rows {
+        if row.state=="pending" {
+            let seen={c:false}
+            for item in items {if item.id==row.id {seen.c=true}}
+            if !seen.c {gone.c=true}
+        }
+    }
+    if gone.c {A.adm_load() return}
+    let rows=[]
+    for i in items.len() {rows.push(items[items.len()-1-i])}
+    for row in H.adm.rows {if row.state!="pending" {rows.push(row)}}
+    H.adm.rows=rows H.inbox=rows
+    H.adm.pending=items.len() H.adm.pendingMore=false
+}
 A.load_inbox=fn(){
+    if H.entry_role=="admin" {A.adm_load() return}
     H.ux.inboxReady=false H.ux.inboxError=false H.inbox=[] H.agents=[] H.inbox_after=nil H.agent_after=nil
     A.request("hagency.inbox.list",{after:H.ux.inboxCursor needsMyAction:H.needs_action includeProjects:H.entry_role!="admin" && A.projects_enabled() includeAllocations:H.entry_role!="admin" && A.allocations_enabled()},fn(v){
         H.inbox=v.items H.inbox_after=v.nextAfter
@@ -9049,6 +9179,10 @@ A.render_page = fn(){
                     entry_admin := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy && A.entry_allowed("admin") text:A.t("Open","进入") on_click:||A.entry_choose("admin")}
                 }
                 mod.widgets.HagencyCopy{text:A.t("Review resource admission and inspect server connections and administrative records.","审核资源的加入申请，查看服务器连接与管理记录。")}
+                entry_admin_waiting := View{visible:A.entry_allowed("admin") && H.adm.pending>0 width:Fill height:Fit flow:Right spacing:8 align:Align{y:0.5}
+                    mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if H.adm.pending>99 {"99+"} else {""+H.adm.pending+(if H.adm.pendingMore {"+"} else {""})}}}
+                    mod.widgets.HagencyCopy{draw_text.color:mod.widgets.RINX_DANGER_FG text:A.t("resource admission requests wait for your review","个资源加入申请等待你审批")}
+                }
                 entry_admin_access := mod.widgets.HagencyHint{visible:!A.entry_allowed("admin") text:A.t("This account does not have server admission permission.","当前账号不能管理服务器的加入申请。")}
             }
             entry_scope := mod.widgets.HagencyHint{text:A.t("One account can use multiple workspaces. Available actions follow its current permissions.","同一账号可使用多个工作台，操作范围以当前权限为准。")}
@@ -9080,6 +9214,10 @@ A.render_page = fn(){
             admin_shortcuts := mod.widgets.HagencyCard{visible:H.entry_role=="admin"
                 mod.widgets.HagencySectionTitle{text:A.t("Server management","服务器管理")}
                 mod.widgets.HagencyCopy{text:A.t("Admission lets a resource join this server. The resource owner controls its capacity and Agent permissions.","批准加入后，资源可以在这个服务器上使用；额度和 Agent 权限由资源所有者管理。")}
+                admin_waiting := View{visible:H.adm.pending>0 width:Fill height:Fit flow:Right spacing:8 align:Align{y:0.5}
+                    mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if H.adm.pending>99 {"99+"} else {""+H.adm.pending+(if H.adm.pendingMore {"+"} else {""})}}}
+                    mod.widgets.HagencyCopy{draw_text.color:mod.widgets.RINX_DANGER_FG text:A.t("resource admission requests wait for your review","个资源加入申请等待你审批")}
+                }
                 mod.widgets.HagencyActions{
                     workspace_connections := mod.widgets.HagencyButton{text:A.t("Server connections","服务器连接") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection enabled:!H.busy on_click:||A.navigate("connections")}
                     workspace_console := mod.widgets.HagencyButton{text:A.t("Management console","管理控制台") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.activity enabled:!H.busy on_click:||A.navigate("tools")}
@@ -9755,7 +9893,7 @@ A.render_page = fn(){
         }
     } else {
         if H.ux.origin!="" && H.page!=H.ux.origin {mod.widgets.HagencyActions{
-            origin_back := mod.widgets.HagencyButton{enabled:!H.busy text:if H.ux.origin=="inbox"{A.t("Back to Inbox","返回待办")}else{A.t("Back to overview","返回概览")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click:||A.return_origin()}
+            origin_back := mod.widgets.HagencyButton{enabled:!H.busy text:if H.ux.origin=="inbox"{if H.entry_role=="admin"{A.t("Back to requests","返回审批")}else{A.t("Back to Inbox","返回待办")}}else{A.t("Back to overview","返回概览")} icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click:||A.return_origin()}
         }}
         if H.ux.resourceJourney && A.has_page(["provider_accounts","provider_account","account_prepare","account_enrollment","wizard","action"]) && !(H.page=="action" && H.entry_role=="owner") && !(H.page=="wizard" && H.wizard.step>=3) {mod.widgets.HagencySection{
     mod.widgets.HagencyEyebrow{text:A.t("PUBLISH A RESOURCE POOL","发布资源池")}
@@ -9917,7 +10055,16 @@ A.render_page = fn(){
         if H.page=="tools" {
             mod.widgets.HagencyActions{tools_back := mod.widgets.HagencyButton{text:A.t("Back to overview","返回概览") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.back on_click:||A.navigate("overview")}}
             mod.widgets.HagencyTitle{text:if H.entry_role=="admin"{A.t("Management console","管理控制台")}else if H.entry_role=="owner"{A.t("Resource activity","资源活动")}else{A.t("Tasks and activity","任务与活动")}}
-            console_capabilities := mod.widgets.HagencyCard{visible:H.entry_role!="manager"
+            admin_console := mod.widgets.HagencyCard{visible:H.entry_role=="admin"
+                mod.widgets.HagencyCardHeading{mod.widgets.HagencyBadge{mod.widgets.HagencyGlyph{draw_icon.svg:mod.rinx_icons.resources}} mod.widgets.HagencyTitle{text:A.t("Resources on this server","服务器上的资源")}}
+                mod.widgets.HagencyCopy{text:if H.adm.ready {A.t("Admission requests by state. Choose one to see its requests.","按状态统计的资源加入申请，点击可查看对应的申请。")} else if H.busy {A.t("Reading the admission requests…","正在读取加入申请…")} else {A.t("The admission requests could not be read. Refresh to try again.","加入申请暂时读取不到，请点刷新重试。")}}
+                mod.widgets.HagencyActions{for filter in ["pending","approved","rejected","revoked","expired"] {View{width:Fit height:Fit
+                    admin_console_state := mod.widgets.HagencyButton{enabled:!H.busy && H.adm.ready text:A.adm_filter_text(filter)+" · "+A.adm_count(filter) draw_text.color:if filter=="pending" && A.adm_count(filter)>0 {mod.widgets.RINX_DANGER_FG} else {mod.widgets.RINX_INK} on_click:||A.adm_open(filter)}
+                }}}
+                mod.widgets.HagencyActions{admin_console_connections := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("Server connections","服务器连接") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click:||A.navigate("connections")}}
+                mod.widgets.HagencyHint{text:A.t("A resource's usage, accounts and alerts are kept on its owner's computer. They show in the Resource owner workspace, not to the server administrator.","资源的用量、账号和提醒保存在资源所有者的电脑上，在「资源所有者」工作台查看；服务器管理员看不到这些内容。")}
+            }
+            console_capabilities := mod.widgets.HagencyCard{visible:H.entry_role=="owner"
                 mod.widgets.HagencyCardHeading{mod.widgets.HagencyBadge{mod.widgets.HagencyGlyph{draw_icon.svg:mod.rinx_icons.activity}} mod.widgets.HagencyTitle{text:A.t("Management console","管理控制台")}}
                 mod.widgets.HagencyCopy{text:A.t("See your team, available capabilities, account capacity and usage together.","集中查看 Agent 团队、可用能力、账号容量与用量。")}
                 mod.widgets.HagencyActions{for kind in ["workforce","capability","usage","accounts","alerts"]{View{width:Fit height:Fit web_console_open := mod.widgets.HagencyButton{enabled:!H.busy text:A.web_title(kind) icon_walk:Walk{width:16 height:16} draw_icon.svg:if kind=="workforce" {mod.rinx_icons.person} else {if kind=="usage" {mod.rinx_icons.activity} else {if kind=="alerts" {mod.rinx_icons.inbox} else {if kind=="accounts" {mod.rinx_icons.connection} else {mod.rinx_icons.resources}}}} on_click:||A.open_web(kind,nil)}}}}
@@ -16215,7 +16362,48 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
             }}
             if H.connection_after != nil {more := mod.widgets.HagencyButton{text:A.t("Next page", "下一页") on_click: || A.more()}}
         }
-        if H.page == "inbox" && H.entry_role!="owner" {
+        if H.page == "inbox" && H.entry_role=="admin" {
+            let shown=A.adm_shown()
+            let rows=A.adm_rows()
+            mod.widgets.HagencyTitle{text:A.t("Resource admission","资源加入审批")}
+            mod.widgets.HagencyHint{text:A.t("Resource owners ask to put a pool on this server. Opening a request does not decide it: it waits until you approve or decline.","资源所有者申请把资源池接入这个服务器。打开申请不会改变它的状态，批准或拒绝后才算处理完成。")}
+            adm_filters := mod.widgets.HagencyActions{
+                for filter in ["pending","approved","rejected","revoked","expired","all"] {View{width:Fit height:Fit flow:Overlay
+                    let on=shown==filter
+                    let count=A.adm_count(filter)
+                    let alert=filter=="pending" && count>0
+                    adm_filter := mod.widgets.HagencyChoice{enabled:H.adm.ready padding:Inset{left:12 right:(if alert {(26+12*mod.widgets.RINX_TEXT_SCALE)} else {12}) top:0 bottom:0} draw_bg.color:if on{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_SURFACE} draw_text.color:if on{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} text:if alert || !H.adm.ready {A.adm_filter_text(filter)} else {A.adm_filter_text(filter)+" "+count} on_click:||A.adm_filter(filter)}
+                    View{visible:alert width:Fill height:Fill align:Align{x:1.0 y:0.5} padding:Inset{right:8} adm_filter_badge := mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if count>99 {"99+"} else {""+count+(if H.adm.pendingMore {"+"} else {""})}}}}
+                }}
+            }
+            adm_loading := mod.widgets.HagencyCard{visible:!H.adm.ready
+                mod.widgets.HagencySectionTitle{text:if H.busy{A.t("Checking requests…","正在检查请求…")}else{if A.must_reopen(){A.t("Reopen Hagency to restore access","重新打开 Hagency 以恢复访问")}else if H.needs_signin{A.t("Sign in again to load requests","重新登录后加载申请")}else{A.t("The requests could not be fully loaded","申请尚未完整加载")}}}
+                mod.widgets.HagencyHint{text:if H.busy{A.t("Reading every admission request on this server.","正在读取这个服务器上的全部加入申请。")}else if A.must_reopen(){A.t("Close this mini-app window, then open Hagency again from Mini apps. Requests that wait stay saved.","关闭此小应用窗口，然后从小应用重新打开 Hagency。待审批的申请仍会保留。")}else if H.needs_signin{A.t("Use Sign in again above with this same Matrix account. Requests that wait stay saved.","请使用上方「重新登录」，登录同一 Matrix 账号。待审批的申请仍会保留。")}else{A.t("Try again to read the admission requests. Requests that wait stay saved.","重试以读取加入申请，待审批的申请仍会保留。")}}
+                View{visible:!H.busy && !A.must_reopen() && !H.needs_signin width:Fit height:Fit adm_retry := mod.widgets.RinxKeyPrimaryButton{text:A.t("Try again","重试") on_click:||A.load_inbox()}}
+            }
+            adm_partial := mod.widgets.HagencyHint{visible:H.adm.ready && H.adm.partial text:A.t("This server has more requests than are listed here: the earliest are shown, and every request that waits for you.","这个服务器的申请较多：这里列出较早的申请，以及全部待审批的申请。")}
+            adm_empty := mod.widgets.HagencyCard{visible:H.adm.ready && rows.len()==0
+                mod.widgets.HagencyTitle{text:if shown=="pending" {A.t("Nothing waits for you","暂无待审批的申请")} else if shown=="all" {A.t("No admission requests yet","还没有资源加入申请")} else {A.t("No requests in this state","没有这个状态的申请")}}
+                mod.widgets.HagencyHint{text:A.t("A new request shows here within moments, with a red count on Review.","新的申请会很快出现在这里，「审批」上会显示红色数字。")}
+            }
+            for row in rows {mod.widgets.HagencyCard{
+                let {resourceLabel=nil,decidedAtMs=nil}=row
+                View{width:Fill height:Fit flow:Right spacing:8 align:Align{y:0.5}
+                    mod.widgets.HagencyCopy{text:if resourceLabel!=nil {resourceLabel} else {A.t("Resource pool","资源池")}}
+                    adm_state := mod.widgets.HagencyPill{draw_bg.color:A.adm_tone_bg(row.state)
+                        mod.widgets.HagencyPillDot{draw_bg.color:A.adm_tone(row.state)}
+                        mod.widgets.HagencyPillText{draw_text.color:A.adm_tone(row.state) text:A.adm_state_text(row.state)}
+                    }
+                }
+                mod.widgets.HagencyHint{text:A.t("Requested by","申请人")+" · "+row.requesterMxid}
+                mod.widgets.HagencyHint{text:A.t("Requested","申请时间")+" · "+A.local_moment(row.createdAtMs)}
+                if row.state=="pending" {mod.widgets.HagencyHint{text:A.t("Expires","审批截止")+" · "+A.local_moment(row.expiresAtMs)}}
+                if row.state!="pending" && decidedAtMs!=nil {mod.widgets.HagencyHint{text:A.t("Decided","处理时间")+" · "+A.local_moment(decidedAtMs)}}
+                if row.state=="pending" {View{width:Fit height:Fit adm_review := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Review","审核") on_click:||A.open_request(row.id)}}}
+                if row.state!="pending" {View{width:Fit height:Fit adm_view := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("View details","查看详情") on_click:||A.open_request(row.id)}}}
+            }}
+        }
+        if H.page == "inbox" && H.entry_role!="owner" && H.entry_role!="admin" {
             mod.widgets.HagencyTitle{text:if H.entry_role=="admin"{A.t("Resource admission","资源加入审批")}else{A.t("Inbox","待办")}}
             mod.widgets.HagencyHint{text:A.t("Decisions assigned to your account. Opening a request keeps it pending until you act.","这里显示分配给当前账号的审批。打开申请后，仍需明确操作才会完成。")}
             mod.widgets.HagencyActions{
@@ -17036,13 +17224,13 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="inbox"
                 let badge=A.tab_badge("inbox")
                 inbox := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:(if badge>0 {(20+12*mod.widgets.RINX_TEXT_SCALE)} else {6}) top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
-                    text:if H.entry_role=="admin"{A.t("Admission","加入服务器")}else{A.t("Requests","申请")}
+                    text:if H.entry_role=="admin"{A.t("Review","审批")}else{A.t("Requests","申请")}
                     draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
                     draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
                     icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.inbox color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("inbox")}
                 }
-                if badge>0 {View{width:Fill height:Fill align:Align{x:1.0 y:(if mod.widgets.RINX_TEXT_SCALE>1.2 {0.2} else {0.5})} padding:Inset{right:(4+2*mod.widgets.RINX_TEXT_SCALE)} mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if badge>99 {"99+"} else {""+badge}}}}}
+                if badge>0 {View{width:Fill height:Fill align:Align{x:1.0 y:(if mod.widgets.RINX_TEXT_SCALE>1.2 {0.2} else {0.5})} padding:Inset{right:(4+2*mod.widgets.RINX_TEXT_SCALE)} inbox_badge := mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if badge>99 {"99+"} else {""+badge+(if H.entry_role=="admin" && H.adm.pendingMore {"+"} else {""})}}}}}
             }
             nav_devices := View{visible:false width:Fill height:Fit
                 let active=parent=="devices"

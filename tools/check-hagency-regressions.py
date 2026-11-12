@@ -92,7 +92,7 @@ def main():
     run("package", ["bash", "tools/package-system-apps/check.sh"])
     run("script-vm", ["cargo", "build", "--locked", "--manifest-path", "tools/hagency-script-review/Cargo.toml"])
     vm = ROOT / "tools/hagency-script-review/target/debug/hagency-script-review"
-    for name in ["check_full_bundle", "check_agent_budget", "check_agent_control", "check_agent_work", "check_pool_application", "check_entry_workspaces", "check_account_identity", "check_accounts", "check_owner_tasks", "check_encrypted_approvals", "check_pool_fixes", "check_shared_web", "check_settings_stability", "check_background_observations", "check_publication_first", "check_owner_dashboard_approvals", "check_interrupted_calls"]:
+    for name in ["check_full_bundle", "check_agent_budget", "check_agent_control", "check_agent_work", "check_pool_application", "check_entry_workspaces", "check_account_identity", "check_accounts", "check_owner_tasks", "check_encrypted_approvals", "check_pool_fixes", "check_shared_web", "check_settings_stability", "check_background_observations", "check_publication_first", "check_owner_dashboard_approvals", "check_interrupted_calls", "check_admin_admission"]:
         run(name, ["python3", f"apps/hagency/tests/{name}.py", str(vm), "--output", str(output / name)])
     # Keep these together: a budget fix must not erase rendering, activity or answer actions.
     for name, pattern in [

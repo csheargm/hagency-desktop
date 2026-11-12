@@ -3125,5 +3125,8 @@
   "Finish signing in with Pasion in your browser, then return to Hagency.": "Finish signing in with Pasion in your browser, then return to Hagency.",
   "Logout cancelled by user": "Logout cancelled by user",
   "Local session cleanup remains incomplete": "Local session cleanup remains incomplete",
-  "You do not have permission to invite people to this room.": "You do not have permission to invite people to this room."
+  "You do not have permission to invite people to this room.": "You do not have permission to invite people to this room.",
+  "New resource admission request": "New resource admission request",
+  "Open Hagency's Server admin workspace to decide.": "Open Hagency's Server admin workspace to decide.",
+  "{count} resource admission requests wait for your review": "{count} resource admission requests wait for your review"
 }

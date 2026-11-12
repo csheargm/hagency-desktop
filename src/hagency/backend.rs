@@ -693,6 +693,33 @@ impl Service {
             |owner| self.register_native_owner(owner).map_err(|code| source_error(&code)),
         ).await
     }
+    /// The admission requests that wait for this account's decision, for the app-wide reminder:
+    /// the server's page of them, or null when this account is not its server's administrator.
+    pub async fn admission_requests(&self) -> Result<Value, String> {
+        use ::hagency::native_owner::{ManagementCommand, ManagementPackage, ManagementPermission};
+        let manager = self.management(ManagementPackage {
+            digest: blake3::hash(b"hagency-native-admission-reminder-v1").to_hex().to_string(),
+            instance: 1,
+            account_epoch: 1,
+            permissions: vec![ManagementPermission::ReadConnections, ManagementPermission::ReadInbox],
+        }).await?;
+        let result = async {
+            let session = manager.central(ManagementCommand::Session {}).await.map_err(|e| e.code)?;
+            if session["canAdmitResources"] != true {
+                return Ok(Value::Null);
+            }
+            manager.central(ManagementCommand::Inbox {
+                after: None,
+                needs_my_action: true,
+                include_projects: false,
+                include_allocations: false,
+            }).await.map_err(|e| e.code)
+        }.await;
+        // This handle belongs to this one read.
+        manager.retire();
+        self.check()?;
+        result
+    }
     pub async fn shared_permissions(&self, command: ::hagency::native_owner::ManagementCommand) -> Result<Value,String> {
         use ::hagency::native_owner::{ManagementCommand,ManagementPackage,ManagementPermission};
         if !matches!(&command,ManagementCommand::SharedApprovals{..}|ManagementCommand::SharedApprovalDecide{..}) {return Err("invalid_permission_command".into());}
