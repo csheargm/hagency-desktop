@@ -117,6 +117,16 @@ pub(crate) fn runtime_list_label(runtime:Option<&Result<Value,String>>,agent:&st
     else if phases.iter().all(|p|matches!(*p,"stopped"|"")) {"Not running on this device. Open Service to configure and start."}
     else {"The runtime has not confirmed it is ready. Refresh its status."}
 }
+// Only confirmed running/processing states count as online. Keep diagnostics in
+// Service details rather than presenting multiple competing statuses on cards.
+fn agent_card_status(runtime: Option<&Result<Value, String>>, agent: &str) -> &'static str {
+    let label = runtime_list_label(runtime, agent);
+    if label.starts_with("Running") || label.starts_with("Processing") {
+        "Online"
+    } else {
+        "Offline"
+    }
+}
 fn runtime_diagnostic(code: &str) -> String {
     // Only engine-defined codes are rendered; arbitrary backend text is discarded.
     let message = match code {
@@ -4125,24 +4135,21 @@ impl Widget for HagencyPanel {
                     }
                     description
                 } else {
-                    let identity_state=crate::i18n::tr(if string(value,"state")=="active" {"Server identity active"} else {"Server identity pending"});
-                    let local=match agent_device_state(value,&self.current_device_id,&self.execution_devices,self.devices_loaded) {
-                        AgentDeviceState::Here=>runtime_service_description(self.runtime_list.get(string(value,"id")),string(value,"id")),
-                        AgentDeviceState::Other=>crate::i18n::tr("Processing is assigned to another device; this device does not run it.").to_owned(),
-                        AgentDeviceState::Checking=>crate::i18n::tr("Checking execution device…").to_owned(),
-                        _=>crate::i18n::tr("No available execution device. Open Agent settings to assign this device.").to_owned(),
-                    };
-                    format!("{identity_state} · {}\n{local}", string(value,"puppetMxid"))
+                    string(value, "puppetMxid").to_owned()
                 };
                 row.view(cx, ids!(device_badge)).set_visible(cx, self.page == Page::Agents);
                 if self.page == Page::Agents {
                     let badge = row.widget(cx, ids!(device_badge));
                     let state=agent_device_state(value, &self.current_device_id, &self.execution_devices, self.devices_loaded);
                     render_device_badge(cx, &badge, state, &self.device_badge(value));
-                    let runtime=row.view(cx,ids!(runtime_badge));runtime.set_visible(cx,state==AgentDeviceState::Here);
-                    let label=runtime_list_label(self.runtime_list.get(string(value,"id")),string(value,"id"));
-                    let badge=if label.starts_with("Not running") {"Not running"} else if label.starts_with("Running") || label.starts_with("Processing") {"Running"} else if label.starts_with("Service enabled") {"Enabled"} else if label.starts_with("Starting") {"Starting…"} else if label.starts_with("Checking") {"Checking…"} else if label=="Waiting for the previous runtime lease to be released…" {"Waiting for lease"} else {"Needs attention"};
-                    runtime.label(cx,ids!(device_label)).set_text(cx,crate::i18n::tr(badge));
+                    let runtime=row.view(cx,ids!(runtime_badge));
+                    runtime.set_visible(cx,true);
+                    let status = if state == AgentDeviceState::Here {
+                        agent_card_status(self.runtime_list.get(string(value,"id")), string(value,"id"))
+                    } else {
+                        "Offline"
+                    };
+                    runtime.label(cx,ids!(device_label)).set_text(cx,crate::i18n::tr(status));
                 }
                 self.agent_card_targets.insert(row.widget_uid(),string(value,"id").into());
                 let control=row.button(cx,ids!(service_control));
@@ -4573,6 +4580,22 @@ mod tests {
         panel.agent_detail(&mut cx,1);local_device_fixture(&mut panel,"b");panel.section(&mut cx,ids!(model_section));assert!((draw_small(&mut cx,&mut panel)-top).abs()<1.0,"cross-Agent entry resets to top");
         panel.view.view(&mut cx,ids!(details_scroll)).set_scroll_pos(&mut cx,dvec2(0.0,100.0));draw_small(&mut cx,&mut panel);panel.enter_detail(&mut cx,"project","same-id");assert!((draw_small(&mut cx,&mut panel)-top).abs()<1.0,"cross-Project target resets too");
         panel.view.view(&mut cx,ids!(details_scroll)).set_scroll_pos(&mut cx,dvec2(0.0,100.0));draw_small(&mut cx,&mut panel);panel.reset_detail_scroll(&mut cx);assert!((draw_small(&mut cx,&mut panel)-top).abs()<1.0,"explicit Run/new-form entry resets");
+    }
+    #[test]
+    fn agent_cards_only_report_confirmed_processing_as_online() {
+        assert_eq!(agent_card_status(None, "a"), "Offline");
+        assert_eq!(agent_card_status(Some(&Err("unavailable".into())), "a"), "Offline");
+        for phase in ["starting", "stopped", "checking_provider", "waiting_for_lease", "reconciliation_only"] {
+            let status = Ok(json!({"runtime":{"agentId":"a","phase":phase}}));
+            assert_eq!(agent_card_status(Some(&status), "a"), "Offline", "{phase}");
+        }
+        for phase in ["online", "online_chat_only", "executing", "executing_chat_only", "executing_host_files"] {
+            let status = Ok(json!({"runtime":{"agentId":"a","phase":phase}}));
+            assert_eq!(agent_card_status(Some(&status), "a"), "Online", "{phase}");
+            assert_eq!(agent_card_status(Some(&status), "another-agent"), "Offline");
+        }
+        let enabled = Ok(json!({"service":{"enabled":true,"watcherRunning":true},"runtime":null}));
+        assert_eq!(agent_card_status(Some(&enabled), "a"), "Offline");
     }
     #[test]
     fn local_runtime_badge_does_not_confuse_server_identity_with_processing() {
