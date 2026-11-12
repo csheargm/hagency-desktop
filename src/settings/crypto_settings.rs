@@ -6,7 +6,7 @@ mod backend;
 mod pending;
 #[cfg(test)]
 pub(crate) mod test_support;
-use backend::{Operation, Snapshot, Update};
+use backend::{Operation, Progress, Snapshot, Update};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -57,7 +57,7 @@ script_mod! {
         }
         existing_keys := RinxLabel {
             width: Fill height: Fit flow: Flow.Right{wrap: true} visible: false
-            text: #(crate::i18n::tr("An existing identity or backup needs its original keys. Verify from an existing device or use a client that holds those keys. This screen will not reset them.")) i18n_text: "An existing identity or backup needs its original keys. Verify from an existing device or use a client that holds those keys. This screen will not reset them."
+            text: #(crate::i18n::tr("An existing identity or backup needs its original keys. Verify from an existing device or use a client that holds those keys.")) i18n_text: "An existing identity or backup needs its original keys. Verify from an existing device or use a client that holds those keys."
         }
         restore_section := View {
             width: Fill height: Fit flow: Down spacing: 10 visible: false
@@ -77,6 +77,52 @@ script_mod! {
                 upload := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Back up pending room keys")) i18n_text: "Back up pending room keys"}
             }
         }
+        reset_section := View {
+            width: Fill height: Fit flow: Down spacing: 10 visible: false
+            reset_lead := RinxLabel {
+                width: Fill height: Fit flow: Flow.Right{wrap: true}
+                text: #(crate::i18n::tr("If the original keys are lost, you can start over with a new encryption identity.")) i18n_text: "If the original keys are lost, you can start over with a new encryption identity."
+            }
+            reset_open := RinxButton {
+                width: Fit height: SETTINGS_BUTTON_HEIGHT
+                text: #(crate::i18n::tr("Reset encryption identity…")) i18n_text: "Reset encryption identity…"
+            }
+            reset_confirm := RoundedView {
+                width: Fill height: Fit flow: Down spacing: 10 visible: false
+                padding: Inset{left: 12 right: 12 top: 10 bottom: 12}
+                show_bg: true
+                draw_bg +: {
+                    color: mod.widgets.RINX_DANGER_BG
+                    border_color: mod.widgets.RINX_DANGER_FG
+                    border_size: 1.0
+                    border_radius: 4.0
+                }
+                RinxLabel {
+                    width: Fill height: Fit flow: Flow.Right{wrap: true}
+                    draw_text +: {color: mod.widgets.RINX_DANGER_FG}
+                    text: #(crate::i18n::tr("A reset gives this account a new encryption identity, held by this device, and deletes the room key backup on the server. Encrypted messages whose keys exist only in that backup, or on devices you no longer have, can never be read again. Your other sessions become unverified, and people who verified you will see that your identity changed. This cannot be undone.")) i18n_text: "A reset gives this account a new encryption identity, held by this device, and deletes the room key backup on the server. Encrypted messages whose keys exist only in that backup, or on devices you no longer have, can never be read again. Your other sessions become unverified, and people who verified you will see that your identity changed. This cannot be undone."
+                }
+                RinxLabel {
+                    width: Fill height: Fit flow: Flow.Right{wrap: true}
+                    text: #(crate::i18n::tr("The server may ask for your account password to confirm.")) i18n_text: "The server may ask for your account password to confirm."
+                }
+                reset_password := RobrixTextInput {
+                    width: Fill height: Fit is_password: true
+                    autocapitalize: None autocorrect: Disabled content_type: Password
+                    empty_text: #(crate::i18n::tr("Account password")) i18n_empty_text: "Account password"
+                }
+                View {
+                    width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 10 align: Align{y: 0.5}
+                    reset_now := RinxButton {
+                        width: Fit height: SETTINGS_BUTTON_HEIGHT
+                        draw_bg +: {border_color: mod.widgets.RINX_DANGER_FG border_color_hover: mod.widgets.RINX_DANGER_FG border_color_down: mod.widgets.RINX_DANGER_FG}
+                        draw_text +: {color: mod.widgets.RINX_DANGER_FG color_hover: mod.widgets.RINX_DANGER_FG color_down: mod.widgets.RINX_DANGER_FG color_focus: mod.widgets.RINX_DANGER_FG}
+                        text: #(crate::i18n::tr("Reset now — this cannot be undone")) i18n_text: "Reset now — this cannot be undone"
+                    }
+                    reset_cancel := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Cancel")) i18n_text: "Cancel"}
+                }
+            }
+        }
     }
 }
 #[derive(Script, ScriptHook, Widget)]
@@ -93,6 +139,9 @@ pub struct CryptoSettings {
     state: Option<Snapshot>,
     #[rust]
     notice: String,
+    /// The reset warning is open: the reset itself is a second, separate press.
+    #[rust]
+    confirming_reset: bool,
 }
 impl Widget for CryptoSettings {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -127,15 +176,36 @@ impl Widget for CryptoSettings {
                     Err(error) => {
                         self.state = None;
                         self.notice = format!(
-                            "{}: {error}",
-                            crate::i18n::tr("Could not confirm encryption settings")
+                            "{}: {}",
+                            crate::i18n::tr("Could not confirm encryption settings"),
+                            crate::i18n::tr(error)
                         );
                     }
                 }
                 self.sync(cx);
+            } else if let Some(progress) = action.downcast_ref::<Progress>() {
+                if self.busy
+                    && self.pin.as_ref() == Some(&progress.pin)
+                    && progress.pin.is_current()
+                    && progress.request == self.request
+                {
+                    self.notice = crate::i18n::tr(progress.notice).to_owned();
+                    self.sync(cx);
+                }
             }
         }
         if self.busy {
+            return;
+        }
+        let can_reset = self.state.as_ref().is_some_and(Snapshot::can_reset);
+        if self.view.button(cx, ids!(reset_open)).clicked(actions) && can_reset {
+            self.confirming_reset = true;
+            self.sync(cx);
+            return;
+        }
+        if self.view.button(cx, ids!(reset_cancel)).clicked(actions) {
+            self.close_reset(cx);
+            self.sync(cx);
             return;
         }
         let op = if self.view.button(cx, ids!(refresh)).clicked(actions) {
@@ -171,6 +241,14 @@ impl Widget for CryptoSettings {
             Some(Operation::Restore(key))
         } else if self.view.button(cx, ids!(upload)).clicked(actions) {
             Some(Operation::Upload)
+        } else if self.view.button(cx, ids!(reset_now)).clicked(actions)
+            && self.confirming_reset
+            && can_reset
+        {
+            let input = self.view.text_input(cx, ids!(reset_password));
+            let password = Zeroizing::new(input.text());
+            self.close_reset(cx);
+            Some(Operation::Reset(password))
         } else {
             None
         };
@@ -189,7 +267,15 @@ impl CryptoSettings {
         self.busy = false;
         self.notice.clear();
         self.view.text_input(cx, ids!(key_input)).set_text(cx, "");
+        self.close_reset(cx);
         self.sync(cx);
+    }
+    /// Closes the reset warning and forgets a typed password.
+    fn close_reset(&mut self, cx: &mut Cx) {
+        self.confirming_reset = false;
+        self.view
+            .text_input(cx, ids!(reset_password))
+            .set_text(cx, "");
     }
     fn refresh(&mut self, cx: &mut Cx) {
         let Some(client) = crate::sliding_sync::get_client() else {
@@ -294,7 +380,29 @@ impl CryptoSettings {
         self.view
             .widget(cx, ids!(upload))
             .set_visible(cx, s.is_some_and(|s| s.backup_connected));
+        let can_reset = s.is_some_and(Snapshot::can_reset);
+        if !can_reset && self.confirming_reset {
+            self.close_reset(cx);
+        }
+        self.view
+            .widget(cx, ids!(reset_section))
+            .set_visible(cx, can_reset);
+        self.view
+            .widget(cx, ids!(reset_lead))
+            .set_visible(cx, can_reset && !self.confirming_reset);
+        self.view
+            .widget(cx, ids!(reset_open))
+            .set_visible(cx, can_reset && !self.confirming_reset);
+        self.view
+            .widget(cx, ids!(reset_confirm))
+            .set_visible(cx, can_reset && self.confirming_reset);
+        self.view
+            .text_input(cx, ids!(reset_password))
+            .set_disabled(cx, self.busy);
         for id in [
+            ids!(reset_open),
+            ids!(reset_now),
+            ids!(reset_cancel),
             ids!(refresh),
             ids!(setup),
             ids!(save),
@@ -506,6 +614,125 @@ mod tests {
             );
             install_link_client(None);
         });
+    }
+    #[test]
+    fn reset_is_offered_only_while_this_device_cannot_use_the_existing_keys() {
+        // A new account has nothing to reset.
+        let mut state = Snapshot::default();
+        assert!(!state.can_reset());
+        // An identity made elsewhere, whose keys this device does not hold.
+        state.identity = true;
+        assert!(state.can_reset());
+        state.private_keys = true;
+        assert!(state.can_reset(), "keys that do not verify this device are not its identity");
+        state.verified = true;
+        assert!(!state.can_reset(), "a working identity is never offered a reset");
+        // A backup this device cannot read or extend.
+        state.backup = true;
+        assert!(state.can_reset());
+        state.backup_connected = true;
+        assert!(!state.can_reset());
+        // Recovery configured elsewhere and its key not restored here.
+        let lost_key = Snapshot {
+            identity: true,
+            default_key: Some("existing".into()),
+            ..Default::default()
+        };
+        assert!(lost_key.can_reset());
+        assert!(!lost_key.can_prepare(), "set-up still never replaces existing keys");
+    }
+    #[test]
+    fn a_reset_needs_the_warning_and_a_second_press_and_cancel_forgets_the_password() {
+        const NAME: &str = "settings::crypto_settings::tests::a_reset_needs_the_warning_and_a_second_press_and_cancel_forgets_the_password";
+        if std::env::var("HAGENCY_CRYPTO_UI_TEST").as_deref() != Ok(NAME) {
+            let profile = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env("HAGENCY_CRYPTO_UI_TEST", NAME)
+                .env("HAGENCY_DESKTOP_DATA_DIR", profile.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm,{mod.widgets.CryptoSettings{}});
+            CryptoSettings::script_from_value(vm, value)
+        });
+        let press = |panel: &mut CryptoSettings, cx: &mut Cx, button: &[LiveId; 1]| {
+            let uid = panel.view.button(cx, button).widget_uid();
+            let actions = cx.capture_actions(|cx| {
+                cx.widget_action(uid, ButtonAction::Clicked(KeyModifiers::default()))
+            });
+            panel.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+        };
+        // Working keys: the reset is not on the screen at all.
+        panel.state = Some(Snapshot {
+            identity: true,
+            verified: true,
+            private_keys: true,
+            ..Default::default()
+        });
+        panel.sync(&mut cx);
+        assert!(!panel.view.widget(&cx, ids!(reset_section)).visible());
+        press(&mut panel, &mut cx, ids!(reset_open));
+        assert!(!panel.confirming_reset);
+
+        // An identity made on another device, its keys out of reach.
+        panel.state = Some(Snapshot {
+            identity: true,
+            backup: true,
+            ..Default::default()
+        });
+        panel.sync(&mut cx);
+        assert!(panel.view.widget(&cx, ids!(reset_section)).visible());
+        assert!(panel.view.widget(&cx, ids!(existing_keys)).visible());
+        assert!(panel.view.button(&cx, ids!(reset_open)).visible());
+        assert!(!panel.view.widget(&cx, ids!(reset_confirm)).visible());
+        // The destructive button does nothing while its warning is closed.
+        press(&mut panel, &mut cx, ids!(reset_now));
+        assert!(!panel.busy && panel.request == 0);
+
+        press(&mut panel, &mut cx, ids!(reset_open));
+        assert!(panel.confirming_reset && !panel.busy && panel.request == 0);
+        assert!(panel.view.widget(&cx, ids!(reset_confirm)).visible());
+        assert!(!panel.view.button(&cx, ids!(reset_open)).visible());
+        panel
+            .view
+            .text_input(&cx, ids!(reset_password))
+            .set_text(&mut cx, "synthetic-account-password");
+        press(&mut panel, &mut cx, ids!(reset_cancel));
+        assert!(!panel.confirming_reset && !panel.busy && panel.request == 0);
+        assert!(!panel.view.widget(&cx, ids!(reset_confirm)).visible());
+        assert!(panel.view.text_input(&cx, ids!(reset_password)).text().is_empty());
+
+        // The keys arrive some other way while the warning is open: it closes with them.
+        press(&mut panel, &mut cx, ids!(reset_open));
+        panel
+            .view
+            .text_input(&cx, ids!(reset_password))
+            .set_text(&mut cx, "synthetic-account-password");
+        panel.state = Some(Snapshot {
+            identity: true,
+            verified: true,
+            private_keys: true,
+            backup: true,
+            backup_connected: true,
+            ..Default::default()
+        });
+        panel.sync(&mut cx);
+        assert!(!panel.confirming_reset);
+        assert!(!panel.view.widget(&cx, ids!(reset_section)).visible());
+        assert!(panel.view.text_input(&cx, ids!(reset_password)).text().is_empty());
     }
     #[test]
     fn existing_identity_or_backup_never_offers_replacement_setup() {

@@ -2,7 +2,18 @@
 use super::pending::{self, Plan};
 use crate::{matrix_context::SessionPin, sliding_sync::get_client};
 use anyhow::{Context, Result, ensure};
-use matrix_sdk::Client;
+use matrix_sdk::{
+    Client,
+    encryption::CrossSigningResetAuthType,
+    ruma::{
+        api::client::{
+            keys::get_keys,
+            uiaa::{AuthType, MatrixUserIdentifier, UserIdentifier},
+        },
+        events::GlobalAccountDataEventType,
+        serde::Raw,
+    },
+};
 use matrix_sdk_base::crypto::secret_storage::SecretStorageKey;
 use std::sync::Mutex;
 use zeroize::Zeroizing;
@@ -34,6 +45,14 @@ impl Snapshot {
             && (!self.identity || self.private_keys)
             && (!self.backup || self.backup_connected)
     }
+    /// A reset is the way out when this device cannot get the account's existing keys. While
+    /// the device holds them and the backup is connected, a reset would only destroy.
+    pub fn can_reset(&self) -> bool {
+        let exists = self.identity || self.backup || self.default_key.is_some();
+        let healthy =
+            self.verified && self.private_keys && (!self.backup || self.backup_connected);
+        exists && !healthy
+    }
 }
 #[derive(Clone, Debug)]
 pub(super) struct Update {
@@ -41,6 +60,13 @@ pub(super) struct Update {
     pub request: u64,
     pub result: Result<Snapshot, String>,
     pub notice: Option<&'static str>,
+}
+/// A step of a running operation that waits for the person, shown while the panel stays busy.
+#[derive(Clone, Debug)]
+pub(super) struct Progress {
+    pub pin: SessionPin,
+    pub request: u64,
+    pub notice: &'static str,
 }
 pub(super) enum Operation {
     Refresh,
@@ -52,6 +78,9 @@ pub(super) enum Operation {
     RestoreFile,
     Restore(Zeroizing<String>),
     Upload,
+    /// Replace the account's encryption identity. Carries the account password, which the
+    /// server may ask for to confirm; empty when the person gave none.
+    Reset(Zeroizing<String>),
 }
 pub(super) fn clear() {
     KEY.lock().unwrap().take();
@@ -102,6 +131,35 @@ async fn default_key(client: &Client) -> Result<Option<String>> {
     ensure!(!value.key_id.is_empty(), "Invalid secret-storage key ID");
     Ok(Some(value.key_id))
 }
+/// Whether the server holds this device's signature by the account's current self-signing key:
+/// what other people's clients check. The local store counts the device as signed from the
+/// moment the signature is made, whether or not its upload arrived.
+async fn device_signed_on_server(client: &Client) -> Result<bool> {
+    let user = client.user_id().context("No user")?.to_owned();
+    let device = client.device_id().context("No device")?.to_owned();
+    let mut request = get_keys::v3::Request::new();
+    request.device_keys.insert(user.clone(), Vec::new());
+    let response = client.send(request).await?;
+    let Some(signing) = response.self_signing_keys.get(&user) else {
+        return Ok(false);
+    };
+    let signing: serde_json::Value = serde_json::from_str(signing.json().get())?;
+    let Some(key) = signing["keys"]
+        .as_object()
+        .and_then(|keys| keys.keys().next())
+    else {
+        return Ok(false);
+    };
+    let Some(own) = response
+        .device_keys
+        .get(&user)
+        .and_then(|devices| devices.get(&device))
+    else {
+        return Ok(false);
+    };
+    let own: serde_json::Value = serde_json::from_str(own.json().get())?;
+    Ok(own["signatures"][user.as_str()].get(key).is_some())
+}
 async fn snapshot(client: &Client, pin: &SessionPin) -> Result<Snapshot> {
     let own = identity(client, pin).await?;
     let default_key = default_key(client).await?;
@@ -118,7 +176,8 @@ async fn snapshot(client: &Client, pin: &SessionPin) -> Result<Snapshot> {
         .is_some_and(|s| s.is_complete());
     let device = client.encryption().get_own_device().await?;
     let verified = own.as_ref().is_some_and(|i| i.is_verified())
-        && device.is_some_and(|d| d.is_cross_signed_by_owner() && !d.is_deleted());
+        && device.is_some_and(|d| d.is_cross_signed_by_owner() && !d.is_deleted())
+        && device_signed_on_server(client).await?;
     let plan = Plan::load(&root(), client)?;
     let pending = plan.as_ref().is_some_and(|p| !p.complete);
     let applying = plan.is_some_and(|p| p.applying && !p.complete);
@@ -250,31 +309,200 @@ async fn recover(client: &Client, key: &str) -> Result<()> {
     )??;
     Ok(())
 }
-async fn perform(client: &Client, pin: &SessionPin, op: Operation) -> Result<Option<&'static str>> {
+/// Makes the recovery key of a new set-up and records the public intent. Nothing is uploaded
+/// before the person has saved the key.
+async fn prepare(client: &Client, pin: &SessionPin) -> Result<()> {
+    ensure!(
+        file_picker_supported(),
+        "Set up recovery in the desktop app first"
+    );
+    let state = snapshot(client, pin).await?;
+    ensure!(
+        state.can_prepare(),
+        "Restore existing recovery, or verify from an existing device before setup"
+    );
+    let own = identity(client, pin).await?;
+    let key = SecretStorageKey::new();
+    let plan = Plan::new(client, &key, master(&own))?;
+    current(pin)?;
+    plan.save(&root())?;
+    *KEY.lock().unwrap() = Some(SavedKey {
+        pin: pin.clone(),
+        key: Zeroizing::new(key.to_base58()),
+        saved: false,
+    });
+    Ok(())
+}
+/// Replaces the account's cross-signing identity with a new one that this device holds, then
+/// removes what only the old identity could use: the room key backup on the server and the
+/// default secret-storage key.
+///
+/// The server confirms the replacement first, with the account password or on its own approval
+/// page. Only a confirmed replacement goes on to delete anything, so a refused or abandoned
+/// confirmation leaves the account as it was. (The SDK's own `reset_identity` deletes the backup
+/// before it asks.)
+async fn reset_identity(
+    client: &Client,
+    pin: &SessionPin,
+    request: u64,
+    password: &str,
+) -> Result<()> {
+    let encryption = client.encryption();
+    let user = client.user_id().context("No user")?.to_owned();
+    let before = master(&identity(client, pin).await?);
+    let confirmation = match encryption.reset_cross_signing().await {
+        Ok(confirmation) => confirmation,
+        Err(error) => {
+            makepad_widgets::warning!("encryption identity reset was not accepted: {error}");
+            still_unchanged(
+                client,
+                pin,
+                &before,
+                "The server did not accept the new identity. Nothing was changed.",
+            )
+            .await?;
+            None
+        }
+    };
+    if let Some(confirmation) = confirmation {
+        let auth = match confirmation.auth_type() {
+            CrossSigningResetAuthType::Uiaa(info) => {
+                ensure!(
+                    info.auth_info()
+                        .flows
+                        .iter()
+                        .any(|flow| flow.stages == [AuthType::Password]),
+                    "This server confirms a reset in a way this app does not support. Nothing was changed."
+                );
+                ensure!(
+                    !password.is_empty(),
+                    "Enter your account password to confirm the reset. Nothing was changed."
+                );
+                info.as_password_auth_data(
+                    UserIdentifier::Matrix(MatrixUserIdentifier::new(user.to_string())),
+                    password.to_owned(),
+                )
+            }
+            CrossSigningResetAuthType::OAuth(info) => {
+                current(pin)?;
+                robius_open::Uri::new(info.approval_url.as_str())
+                    .open()
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "The server's approval page could not be opened. Nothing was changed."
+                        )
+                    })?;
+                makepad_widgets::Cx::post_action(Progress {
+                    pin: pin.clone(),
+                    request,
+                    notice: "Approve the reset on the page that opened in your browser. Waiting up to two minutes…",
+                });
+                info.as_auth_data()
+            }
+        };
+        current(pin)?;
+        if let Err(error) = confirmation.auth(auth).await {
+            makepad_widgets::warning!("encryption identity reset was not confirmed: {error}");
+            still_unchanged(
+                client,
+                pin,
+                &before,
+                "The server did not confirm the reset. Check your account password and try again. Nothing was changed.",
+            )
+            .await?;
+        }
+    }
+    // From here on the account has the new identity.
+    current(pin)?;
+    encryption.backups().disable_and_delete().await.context(
+        "The identity was reset, but the old room key backup could not be removed. Reset again to finish.",
+    )?;
+    // The SDK's marker for "no secret storage": the old recovery key protected only the old
+    // identity's secrets, and a new set-up must not be refused because of it.
+    client
+        .account()
+        .set_account_data_raw(
+            GlobalAccountDataEventType::SecretStorageDefaultKey,
+            Raw::new(&serde_json::json!({}))?.cast_unchecked(),
+        )
+        .await
+        .context(
+            "The identity was reset, but the old recovery key could not be retired. Reset again to finish.",
+        )?;
+    // The request that follows the new identity carries this device's signature. Where it did
+    // not arrive, other people's clients would see an unverified device: send it once more.
+    if !device_signed_on_server(client).await.unwrap_or(false)
+        && let Some(device) = encryption.get_own_device().await?
+    {
+        current(pin)?;
+        if let Err(error) = device.verify().await {
+            makepad_widgets::warning!("this device's signature did not reach the server: {error}");
+        }
+    }
+    // Asking for the identity also brings this device's record up to date with the server.
+    let own = identity(client, pin).await?;
+    let device = encryption.get_own_device().await?;
+    ensure!(
+        own.as_ref().is_some_and(|i| i.is_verified())
+            && device.is_some_and(|d| d.is_cross_signed_by_owner() && !d.is_deleted())
+            && encryption
+                .cross_signing_status()
+                .await
+                .is_some_and(|s| s.is_complete())
+            && device_signed_on_server(client).await.unwrap_or(false),
+        UNCONFIRMED_RESET
+    );
+    Ok(())
+}
+const UNCONFIRMED_RESET: &str =
+    "The reset is not confirmed. Refresh, and reset again if this device is still not verified.";
+/// A step of the replacement failed. The request that carries the new identity is followed by
+/// one that carries its signatures, so a failure does not say which side of the replacement the
+/// account is on. Fails with `unchanged` only when the server still holds the identity it had
+/// `before`; returns when the new one is already there, so that the reset goes on.
+async fn still_unchanged(
+    client: &Client,
+    pin: &SessionPin,
+    before: &Option<String>,
+    unchanged: &'static str,
+) -> Result<()> {
+    match identity(client, pin).await {
+        Ok(own) if master(&own) == *before => anyhow::bail!(unchanged),
+        Ok(_) => Ok(()),
+        Err(_) => anyhow::bail!(UNCONFIRMED_RESET),
+    }
+}
+async fn perform(
+    client: &Client,
+    pin: &SessionPin,
+    request: u64,
+    op: Operation,
+) -> Result<Option<&'static str>> {
     current(pin)?;
     match op {
         Operation::Refresh => {}
         Operation::Prepare => {
-            ensure!(
-                file_picker_supported(),
-                "Set up recovery in the desktop app first"
-            );
+            prepare(client, pin).await?;
+            return Ok(Some("Save your recovery key, then enable recovery."));
+        }
+        Operation::Reset(password) => {
             let state = snapshot(client, pin).await?;
             ensure!(
-                state.can_prepare(),
-                "Restore existing recovery, or verify from an existing device before setup"
+                state.can_reset(),
+                "This device already holds the account's keys. Nothing was reset."
             );
-            let own = identity(client, pin).await?;
-            let key = SecretStorageKey::new();
-            let plan = Plan::new(client, &key, master(&own))?;
-            current(pin)?;
-            plan.save(&root())?;
-            *KEY.lock().unwrap() = Some(SavedKey {
-                pin: pin.clone(),
-                key: Zeroizing::new(key.to_base58()),
-                saved: false,
-            });
-            return Ok(Some("Save your recovery key, then enable recovery."));
+            reset_identity(client, pin, request, &password).await?;
+            // A recovery set-up, finished or not, belonged to the replaced identity.
+            Plan::void(&root(), client)?;
+            clear();
+            // Straight on to a recovery key for the new identity, so that the next device
+            // needs neither this one nor another reset.
+            if file_picker_supported() && prepare(client, pin).await.is_ok() {
+                return Ok(Some(
+                    "Encryption identity reset. Save your new recovery key, then enable recovery.",
+                ));
+            }
+            return Ok(Some("Encryption identity reset. Set up recovery next."));
         }
         Operation::Discard => {
             let plan = Plan::load(&root(), client)?.context("No pending setup")?;
@@ -429,7 +657,7 @@ pub(super) fn launch(pin: SessionPin, request: u64, op: Operation) {
         let _guard = OPERATION.lock().await;
         let outcome = async {
             let client = current(&pin)?;
-            let notice = perform(&client, &pin, op).await?;
+            let notice = perform(&client, &pin, request, op).await?;
             let state = snapshot(&client, &pin).await?;
             Ok::<_, anyhow::Error>((state, notice))
         }
@@ -448,3 +676,7 @@ pub(super) fn launch(pin: SessionPin, request: u64, op: Operation) {
         }
     });
 }
+
+#[cfg(test)]
+#[path = "reset_tests.rs"]
+mod reset_tests;
