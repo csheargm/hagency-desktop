@@ -13,6 +13,12 @@ script_mod! {
         // native hit margins keep it easy to drag without a second long bar.
         size: #(WIDTH)
         hit_margin: #(HIT_MARGIN)
+        // The engine now holds a position the app writes to the first pane's
+        // floor as well as a dragged one (50 by default). The room list snaps
+        // shut by writing 0 (`MainDesktopUI::normalize_rooms_width`), which
+        // the floor turned into a 50-point sliver. For a side-by-side split
+        // the first pane's floor is `min_vertical`, named for the bar.
+        min_vertical: 0.0
 
         draw_bg +: {
             bar_size: 32.0
