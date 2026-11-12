@@ -74,6 +74,9 @@ async fn native_execution_policy_lost_reply_recovers_after_restart_and_rechecks_
             .reply
             .is_none()
     );
+    let mut later = selected(&m, query.clone(), "later_policy").await;
+    later.execution_policy.yolo = false;
+    m.edit_execution_policy(later).await.unwrap();
     drop(session);
     drop(m);
     f = approval_bindings::reopen(f).await;
@@ -85,7 +88,7 @@ async fn native_execution_policy_lost_reply_recovers_after_restart_and_rechecks_
     assert_eq!(reply["operation"], "edit_execution_policy");
     assert_eq!(reply["data"], serde_json::to_value(&original).unwrap());
     assert!(
-        m.agent_execution_policy(query.clone())
+        !m.agent_execution_policy(query.clone())
             .await
             .unwrap()
             .execution_policy
@@ -119,6 +122,7 @@ async fn native_execution_policy_lost_reply_recovers_after_restart_and_rechecks_
     );
     f.current.store(true, Ordering::Release);
     assert_eq!(m.edit_execution_policy(input).await.unwrap(), original);
+    assert!(!m.agent_execution_policy(query).await.unwrap().execution_policy.yolo);
     f.owner.suspend().await.unwrap();
     f.stop().await;
 }

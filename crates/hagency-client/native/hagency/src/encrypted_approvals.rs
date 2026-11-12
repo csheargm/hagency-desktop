@@ -98,9 +98,40 @@ fn validate_details(a: &Value, request: &Value, nonce: &str) -> Result<()> {
                 "item/commandExecution/requestApproval"
                     | "item/fileChange/requestApproval"
                     | "item/permissions/requestApproval"
+                    | "claude/can_use_tool"
             )
         )
         || !request["params"].is_object()
+        || request["method"] == "claude/can_use_tool"
+            && (a["sessionScope"] != "current_claude_session"
+                || request["sessionAllowed"] != false
+                || request["managerCanDecide"] != false
+                || request.as_object().is_none_or(|v| {
+                    v.len() != 5
+                        || v.keys().any(|k| {
+                            !matches!(
+                                k.as_str(),
+                                "id" | "method" | "params" | "sessionAllowed" | "managerCanDecide"
+                            )
+                        })
+                })
+                || request["params"].as_object().is_none_or(|v| {
+                    v.len() != 3
+                        || v.keys()
+                            .any(|k| !matches!(k.as_str(), "sessionId" | "toolName" | "input"))
+                })
+                || !request["params"]["input"].is_object()
+                || [
+                    request.get("id"),
+                    request["params"].get("sessionId"),
+                    request["params"].get("toolName"),
+                ]
+                .iter()
+                .any(|v| {
+                    v.and_then(Value::as_str).is_none_or(|s| {
+                        s.is_empty() || s.len() > 255 || s.chars().any(char::is_control)
+                    })
+                }))
     {
         return Err(invalid());
     }
@@ -415,6 +446,31 @@ mod tests {
             request,
             nonce,
         )
+    }
+    #[tokio::test]
+    async fn shared_claude_encrypted_approval_keeps_owner_and_closed_native_request() {
+        let (mut row,_,salt)=fixture();
+        let request=json!({"id":"native-request","method":"claude/can_use_tool","params":{"sessionId":"native-session","toolName":"Bash","input":{"command":"private-command"}},"sessionAllowed":false,"managerCanDecide":false});
+        row["approval"]["request"]=metadata(&request,&salt,"HAGE2EEAGENT").unwrap();
+        row["approval"]["sessionScope"]=json!("current_claude_session");
+        row["digest"]=json!(hash(&row["approval"]).unwrap());
+        let (agent,owner)=pair().await;
+        let mut message=message(&row).unwrap();message.request=Some(request.clone());message.nonce=Some(salt.clone());
+        let(raw,info)=roundtrip(&agent,&owner,REQUEST,&message).await;
+        let card=inbox().await;
+        card.entries.lock().unwrap().push(receive(&raw,Some(&info)).unwrap());
+        assert_eq!(card.details(&row).unwrap(),Some(request.clone()));
+        assert!(may_decide(&row["approval"],"@owner:test.local","approve_once"));
+        assert!(!may_decide(&row["approval"],"@owner:test.local","approve_session"));
+        assert!(!may_decide(&row["approval"],"@manager:test.local","approve_once"));
+        for(pointer,value) in [("/sessionAllowed",json!(true)),("/managerCanDecide",json!(true)),("/id",json!(7)),("/method",json!("request_user_input")),("/params/input",json!("ls"))] {
+            let mut changed=request.clone();*changed.pointer_mut(pointer).unwrap()=value;
+            let mut approval=row["approval"].clone();approval["request"]=metadata(&changed,&salt,"HAGE2EEAGENT").unwrap();
+            assert!(validate_details(&approval,&changed,&salt).is_err(),"{pointer}");
+        }
+        let mut changed=request;changed["params"]["threadId"]=json!("codex-thread");
+        let mut approval=row["approval"].clone();approval["request"]=metadata(&changed,&salt,"HAGE2EEAGENT").unwrap();
+        assert!(validate_details(&approval,&changed,&salt).is_err());
     }
     async fn inbox() -> Inbox {
         Inbox::attach(

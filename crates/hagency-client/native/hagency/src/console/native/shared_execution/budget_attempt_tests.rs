@@ -184,7 +184,7 @@ async fn native_shared_interrupted_call_budget_successor_collects_final_usage(){
     f.owner.suspend().await.unwrap();
     let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
     let row:(String,u64,u64,bool)=db.query_row("SELECT state,reserved_tokens,known_consumed_tokens,usage_complete FROM owner_managed_calls",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(row,("settled".into(),300,27,true));
+    assert_eq!(row,("settled".into(),0,27,true));
     let raw:String=db.query_row("SELECT payload FROM owner_shared_work_observations ORDER BY ledger_revision DESC LIMIT 1",[],|r|r.get(0)).unwrap();
     let receipt:SharedWorkReceipt=serde_json::from_str(&raw).unwrap();
     assert_eq!(receipt.state,"failed");
@@ -224,7 +224,7 @@ async fn native_shared_budget_v3_uncertain_work_start_never_calls_provider(){
     assert_eq!(f.state.lock().unwrap().shared.budget_attempts.refusals,1);
     let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
     let (reserved,issued,consumed):(u64,Option<u64>,u64)=db.query_row("SELECT c.reserved_tokens,p.issue_revision,c.known_consumed_tokens FROM owner_managed_calls c JOIN owner_managed_call_pins p ON p.call_id=c.id",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-    assert_eq!((reserved,issued,consumed),(300,None,0));drop(db);
+    assert_eq!((reserved,issued,consumed),(0,None,0));drop(db);
     f.stop().await;
 }
 fn demand_status(s:&super::super::State)->Value{

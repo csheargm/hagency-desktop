@@ -156,9 +156,9 @@ async fn native_managed_budget_lost_upload_restart_recovers_exact_delta_without_
     let before = budget_snapshot(&f, &c).await;
     assert_eq!(before.effective_ceiling_tokens, 150);
     assert!(!before.execution_supported);
-    f.registry.shutdown().await.unwrap();
-    f.registry =
-        OwnerResourceRegistry::isolated_for_tests(&f._root.path().join("registry")).unwrap();
+    drop(t);
+    f = f.reopen().await;
+    let t = AgentBudgetTransport::new(f.owner.management(package(1)).await.unwrap());
     assert!(matches!(
         t.recover(&f.registry, c.command_id.clone(), digest(&c).unwrap())
             .await

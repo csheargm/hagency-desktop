@@ -2,7 +2,7 @@
 //! Closing a mini-app cannot revoke this service or authorize a replacement
 //! process. The native engine owns the exact demand and Stop journals.
 use super::NativeError;
-use ::hagency::native_owner::AdoptedSharedExecutor;
+use ::hagency::native_owner::CurrentSharedExecutor;
 
 trait DemandIo {
     fn recover_stop(
@@ -19,7 +19,7 @@ trait DemandIo {
     ) -> impl std::future::Future<Output = Result<Option<String>, NativeError>> + Send;
 }
 
-impl DemandIo for AdoptedSharedExecutor {
+impl DemandIo for CurrentSharedExecutor {
     async fn recover_stop(&self, after: Option<String>) -> Result<Option<String>, NativeError> {
         self.resume_next_demand_stop(after)
             .await
@@ -31,7 +31,7 @@ impl DemandIo for AdoptedSharedExecutor {
             .map(|result| result.map(|saved| saved.demand_id))
     }
     async fn poll_demand(&self, after: Option<String>) -> Result<Option<String>, NativeError> {
-        AdoptedSharedExecutor::poll_demand(self, after)
+        CurrentSharedExecutor::poll_demand(self, after)
             .await
             .map(|result| result.next_after)
     }
@@ -45,7 +45,7 @@ pub(super) struct Polling {
 }
 
 impl Polling {
-    pub(super) async fn poll(&mut self, executor: &AdoptedSharedExecutor, live: impl Fn() -> bool) {
+    pub(super) async fn poll(&mut self, executor: &CurrentSharedExecutor, live: impl Fn() -> bool) {
         self.existing(executor, live).await;
     }
 

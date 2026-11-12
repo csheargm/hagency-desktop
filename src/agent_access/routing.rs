@@ -19,7 +19,6 @@ pub fn directives(
         .flatten();
     let bindings = bots.room_bindings_for(room);
     let mut candidates = settings.agent_registry.agent_user_ids();
-    candidates.extend(bots.known_bot_user_ids());
     candidates.extend(bindings.iter().map(|b| b.bot_user_id.clone()));
     candidates.extend(parent.clone());
     candidates.sort();
@@ -90,6 +89,44 @@ pub fn directives(
 mod tests {
     use super::*;
     #[test]
+    fn retired_bot_list_cannot_supply_a_routing_target() {
+        let mut settings: AgentAccessSettings = serde_json::from_value(json!({
+            "agent_registry": {"@current:example.org": {}},
+            "bot_settings": {"known_bot_user_ids": ["@retired:example.org"]}
+        }))
+        .unwrap();
+        settings.normalize();
+        let room = matrix_sdk::ruma::room_id!("!room:example.org");
+        let route = |text: &str| {
+            directives(
+                &settings,
+                None,
+                room,
+                false,
+                &RoomMessageEventContent::text_plain(text),
+                None,
+            )
+        };
+        assert!(route("/status@retired").is_err());
+        assert_eq!(
+            route("/status@current").unwrap().unwrap()["org.octos.target_user_id"],
+            "@current:example.org"
+        );
+        let retired = matrix_sdk::ruma::user_id!("@retired:example.org");
+        let reply = directives(
+            &settings,
+            None,
+            room,
+            false,
+            &RoomMessageEventContent::text_plain("hello"),
+            Some(retired),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!reply.contains_key("org.octos.target_user_id"));
+    }
+
+    #[test]
     fn bindings_do_not_implicitly_address_room_messages() {
         let mut settings = AgentAccessSettings::default();
         settings.bot_settings.enabled = true;
@@ -136,16 +173,14 @@ mod tests {
             json!([child])
         );
         assert!(!route("/allbots hello", None, true).contains_key("org.octos.broadcast_targets"));
-        assert!(
-            directives(
-                &settings,
-                None,
-                room,
-                false,
-                &RoomMessageEventContent::text_plain("/status@missing"),
-                None
-            )
-            .is_err()
-        );
+        assert!(directives(
+            &settings,
+            None,
+            room,
+            false,
+            &RoomMessageEventContent::text_plain("/status@missing"),
+            None
+        )
+        .is_err());
     }
 }

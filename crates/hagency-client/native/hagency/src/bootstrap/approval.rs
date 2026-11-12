@@ -179,7 +179,8 @@ impl Pump {
     ) -> Result<(), hagency_matrix::Error> {
         let _turn = self.collector.service_turn(shutdown).await?;
         self.collector.observe(shutdown).await?;
-        self.collector.enroll_fresh_account(shutdown).await
+        self.collector.enroll_fresh_account(shutdown).await?;
+        self.collector.prepare_private_approval_rooms(shutdown).await
     }
 
     /// Original run receivers are the only source of request plans. The global

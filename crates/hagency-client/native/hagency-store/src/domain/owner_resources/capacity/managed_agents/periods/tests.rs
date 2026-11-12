@@ -315,7 +315,7 @@ async fn apply_at(
 }
 
 #[tokio::test]
-async fn recurring_native_calls_pin_first_period_and_exhaust_without_refill() {
+async fn recurring_native_calls_pin_first_period_and_charge_before_refusing_new_work() {
     let f = fixture(RenewalMode::Automatic).await;
     let prepared = f
         .registry
@@ -327,22 +327,35 @@ async fn recurring_native_calls_pin_first_period_and_exhaust_without_refill() {
         .issue_managed_call(call(&f, "all_credit", 200))
         .await
         .unwrap();
-    assert!(matches!(claim, ManagedCallClaim::Issued(_)));
-    assert!(matches!(
-        f.registry
-            .prepare_managed_call(call(&f, "too_much", 1))
-            .await,
-        Err(Error::Capacity)
-    ));
+    let ManagedCallClaim::Issued(scope) = claim else { panic!("first issue"); };
+    f.registry.prepare_managed_call(call(&f, "unmeasured_does_not_hold", 0)).await.unwrap();
     let budget = f
         .registry
         .managed_agent_budget(enrollment(&f), f.child.clone())
         .await
         .unwrap();
-    // The open call holds nothing, though its own unresolved state still stops a
-    // second call on this Agent.
+    // Unmeasured calls keep their identity but consume no fictitious quota.
     assert_eq!(budget.remaining_tokens, 200);
     assert_eq!(budget.retained_tokens, 0);
+    use hagency_metering::{
+        observation::UsageObservation,
+        runtime_usage::{CodexUsage, CounterBreakdown, ProjectionDiagnostics},
+    };
+    let counters = CounterBreakdown {
+        total_tokens: Some(210), input_tokens: Some(210), cached_input_tokens: Some(0),
+        cache_write_input_tokens: Some(0), output_tokens: Some(0), reasoning_output_tokens: Some(0),
+    };
+    let usage = UsageObservation::codex_runtime(CodexUsage {
+        total: counters, last: counters, context_window: None,
+        diagnostics: ProjectionDiagnostics::default(),
+    }).unwrap();
+    f.registry.record_managed_usage(&scope,
+        ManagedUsageObservation::fixture("actual_overrun", Some(usage), true, true, false)
+    ).await.unwrap();
+    assert!(matches!(f.registry.prepare_managed_call(call(&f, "after_overrun", 0)).await, Err(Error::Capacity)));
+    let budget = f.registry.managed_agent_budget(enrollment(&f), f.child.clone()).await.unwrap();
+    assert_eq!(budget.known_consumed_tokens, 210);
+    assert_eq!(budget.remaining_tokens, 0);
     let child = f.child.clone();
     f.registry.0.store.call(4096,move|db|{
         let period=current(&db.db,&child,graphs::now_ms()?)?.unwrap();

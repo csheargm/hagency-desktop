@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "binding_generation": 1,
+  "publisher_mxid": "@approval:example.test",
+  "owner_mxid": "@owner:example.test",
+  "project_room_associations": [
+    {"agent": "a", "project_room_id": "!project:example.test", "active": true},
+    {"agent": "b", "project_room_id": "!project:example.test", "active": true}
+  ]
+}

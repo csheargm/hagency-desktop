@@ -24,6 +24,7 @@
 #[cfg(unix)]
 pub mod auth;
 pub mod control;
+mod sqlite;
 pub mod bridge;
 pub mod cli;
 pub mod dispatch;
@@ -51,7 +52,7 @@ pub use protocol::{
 use std::path::{Path, PathBuf};
 
 pub const LOCK: &str = "daemon.lock";
-pub const CONTROL: &str = "control.json";
+pub const CONTROL: &str = "control.sqlite3";
 pub const ENROLLMENT: &str = "enrollment.json";
 pub const MATRIX: &str = "matrix";
 

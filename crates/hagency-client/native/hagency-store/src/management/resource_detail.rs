@@ -105,13 +105,10 @@ impl Session {
         self.check(context, Permission::ReadResources)?;
         query.validate()?;
         let mut result = match self.local_store()? {
-            super::SessionStore::Legacy(store) => {
-                store.management_resource_detail(query.id).await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            super::SessionStore::Adopted(store) => {
+
+            super::SessionStore::Current(store) => {
                 store
-                    .detail(&self.adopted_profile(store)?, query.id)
+                    .detail(&self.current_profile(store)?, query.id)
                     .await?
             }
         };

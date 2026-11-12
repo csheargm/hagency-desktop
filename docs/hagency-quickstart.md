@@ -79,7 +79,7 @@ invitation. This picker does not create a second Agent identity.
 | Agent | Identity/device, owner private chat, Room bindings, pause/resume, leave and permanent retirement. |
 | Model & resources | Provider account, model, reasoning options and saved Agent workspace on this device. |
 | Limits | Agent total, selected Room total, and selected requester in that Room. |
-| Service | Selected Room runtime, per-request token reservation, scoped files and pending approvals. |
+| Service | Selected Room runtime, scoped files and pending approvals. Actual usage is charged after each task. |
 
 Select Codex, Claude Code or Octos in **Local agent runtime**.
 Choose **Connect my local account** to reuse the current machine's
@@ -117,17 +117,18 @@ runtimes, save the profile, then restart.
 
 Claude/Octos native tools use the existing Agent, Room and requester permission
 layers and owner approval list. A denial at any layer blocks the operation. The
-Room-files switch is the Codex Hagency file bridge; this bridge is not registered
-with Claude or Octos.
+Matrix file bridge is available to Codex and Claude for the admitted Room.
 
 ## Start and chat
 
 In **Service**, select an active private chat or Room binding. Wait for
-the saved local runtime profile and account check to finish. Estimated token accounting is used by default; set a positive per-request
-reservation and save a supported reasoning effort in Model & resources. Actual usage may exceed
-the estimate. Missing usage is recorded as zero and releases the reservation automatically; an uncertain execution is never replayed.
-Scoped host files are opt-in and currently limited to list/read/create; native
-shell and MCP execution are not exposed by this host.
+the saved local runtime profile and account check to finish, and save a supported
+reasoning effort in Model & resources. Accounting is postpaid: admitted work may
+exceed its budget and continues until completion or an explicit stop. Uncertain
+usage does not discard a completed reply and is not invented or used to replay
+the model. Codex and Claude expose native tools subject to the configured approval
+policy and host isolation. Shared Matrix file sends are bounded to 64 files and
+64 MiB per request; an exact retry retains its original delivery receipt.
 
 **Start responding** starts only that selected scope. **Stop responding** stops it; another
 running Room can stay active. Your owner private chat does not need mentions;
@@ -143,12 +144,19 @@ new requests, exact action details and an expiry countdown. Failed refreshes dis
 decisions. A submitted decision is not proof of successful execution; check the
 Room reply and runtime status. An uncertain submission must not be resent.
 Approval is for the exact
-request or tool shown, not an unrestricted server resource grant. Agent encrypted
-Room execution is deferred; ordinary Matrix encrypted chat remains available.
+request or tool shown. Agent encrypted Room execution uses the Agent's current
+device and Room authorization for history, questions and files.
 
 ### Restart recovery
 
-Restart recovery restores saved runtime intentions. Its rule is to restore only Room scopes you explicitly started and have not explicitly stopped, using the saved reservation, effort and host-files choice after fresh identity, device, lease, resource and ledger checks. **Stop responding excludes that scope from restart recovery**; a normal app shutdown is not the same instruction. An active Agent or saved model alone is not an instruction to run every Room. Missing resources, unknown costs, revoked membership or another assigned device must block recovery; no model replay or automatic takeover.
+Restart recovery restores current-format runtime intentions only for Room scopes
+you explicitly started and have not explicitly stopped. It uses the saved effort
+and host-files choice after fresh identity, device, lease and resource checks.
+**Stop responding excludes that scope from restart recovery**; a normal shutdown
+does not. Old-format intentions are discarded at this cutover, requiring an
+explicit new start. A saved model alone does not start every Room. Missing
+resources, revoked membership or another assigned device block recovery; there
+is no model replay or automatic takeover.
 
 Agent Unlimited does not bypass finite Room/member limits or explicit request denial. A sent paused-policy reply is not successful model inference. See the [runtime recovery record](https://github.com/hagency-org/hagency-client/blob/6cd99ceb84ae407b2315dcd0f5e900022eebac06/docs/design/2026-10-08-agent-runtime-recovery.zh-CN.md) for ordinary/quick restart, explicit Stop exclusion, and remaining untested branches.
 
@@ -161,10 +169,10 @@ Agent Unlimited does not bypass finite Room/member limits or explicit request de
 | Other execution device | Use that device, or explicitly assign this device and satisfy ledger recovery checks. |
 | Missing model/workspace/account | Connect the account and save a model in Model & resources; the private workspace is automatic. |
 | Budget exhausted/denied/approval pending | Configure the matching layer or review the exact pending request. |
-| Unknown cost/side effects or ledger recovery required | Preserve the hold and restore the same owner's complete state. Do not reset balances or replay the model. |
+| Unknown cost or side effects | Keep the available reply and inspect the recorded outcome; never repeat the model solely to recover its usage. |
 | Puppet/owner membership lost | Restore real permissions, wait for confirmed departure, then explicitly rebind/re-adopt. Old dispatches stay fenced. |
 | Ordinary service pause | Clear the applicable pause and explicitly resume when permitted. |
-| Encrypted Agent Room | Use an unencrypted authorized scope; Agent crypto is deferred. |
+| Encrypted Agent Room awaiting keys | Check that the Agent's current device is joined and can decrypt the Room. |
 
 ## Other retained pages
 

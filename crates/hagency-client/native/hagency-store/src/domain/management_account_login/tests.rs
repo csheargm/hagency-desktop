@@ -1,4 +1,5 @@
 use super::*;
+use crate::owner_resources::adoption::TestCurrentManagement;
 use crate::management::{HostContext, Permission, Session, PrepareAccount, AccountInventoryQuery};
 use std::time::{Instant, Duration};
 fn context() -> HostContext {
@@ -12,9 +13,9 @@ fn context() -> HostContext {
     )
     .unwrap()
 }
-fn session(store: crate::DomainStore) -> Session {
-    Session::new(
-        store,
+fn session(store: TestCurrentManagement) -> Session {
+    Session::new_current(
+        store.backing.clone(),
         context(),
         [
             Permission::PrepareAccounts,
@@ -61,14 +62,7 @@ fn verdict(
 async fn managed_login_original_effect_gap_reopen_never_respawns() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");
-    let open = || {
-        crate::DomainStore::start(
-            DomainRepository::open_managed(&path, &"a".repeat(64)).unwrap(),
-            8,
-        )
-        .unwrap()
-    };
-    let store = open();
+    let store = TestCurrentManagement::open(&path, "@owner:test").await;
     let s = session(store.clone());
     let input = account(&s).await;
     let original = s
@@ -92,7 +86,7 @@ async fn managed_login_original_effect_gap_reopen_never_respawns() {
     drop(s);
     store.shutdown().await.unwrap();
     drop(store);
-    let store = open();
+    let store = TestCurrentManagement::open(&path, "@owner:test").await;
     let s = session(store.clone());
     let restored = s
         .begin_account_login(&context(), input.clone())
@@ -123,17 +117,15 @@ async fn managed_login_original_effect_gap_reopen_never_respawns() {
         })
         .await
         .unwrap();
-    assert_eq!(counts, (1, 1));
+    // Canonical reopen retains the original uncertain attempt without manufacturing
+    // an observation or launching a replacement login.
+    assert_eq!(counts, (1, 0));
     store.shutdown().await.unwrap();
 }
 #[tokio::test]
 async fn managed_login_receipts_follow_original_attempt_without_credentials_or_resources() {
     let root = tempfile::tempdir().unwrap();
-    let store = crate::DomainStore::start(
-        DomainRepository::open_managed(&root.path().join("state"), &"a".repeat(64)).unwrap(),
-        8,
-    )
-    .unwrap();
+    let store = TestCurrentManagement::open(&root.path().join("state"), "@owner:test").await;
     let s = session(store.clone());
     let input = account(&s).await;
     let start = s
@@ -230,15 +222,11 @@ async fn managed_login_receipts_follow_original_attempt_without_credentials_or_r
 #[tokio::test]
 async fn managed_login_current_scope_and_profile_checks_precede_any_attempt() {
     let root = tempfile::tempdir().unwrap();
-    let store = crate::DomainStore::start(
-        DomainRepository::open_managed(&root.path().join("state"), &"a".repeat(64)).unwrap(),
-        8,
-    )
-    .unwrap();
+    let store = TestCurrentManagement::open(&root.path().join("state"), "@owner:test").await;
     let s = session(store.clone());
     let input = account(&s).await;
-    let reader = Session::new(
-        store.clone(),
+    let reader = Session::new_current(
+        store.backing.clone(),
         context(),
         [Permission::ReadAccounts],
         Instant::now() + Duration::from_secs(60),

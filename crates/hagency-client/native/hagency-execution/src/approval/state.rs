@@ -16,6 +16,7 @@ use tokio::{sync::mpsc, time::Instant};
 
 pub(super) struct Pending {
     pub request: ApprovalRequest,
+    pub context: HostApprovalContext,
     pub input: HostApprovalRequest,
     pub id: Option<String>,
     pub owner_deadline: Instant,
@@ -140,6 +141,7 @@ pub(super) struct Callbacks {
     pub host: ApprovalHost,
     pub notices: Option<mpsc::Sender<ApprovalNotice>>,
     pub context: Option<HostApprovalContext>,
+    pub scope: Option<std::sync::Arc<OwnedApprovalScope>>,
     pub entries: BTreeMap<RequestId, Pending>,
     pub parked: Option<Reservation>,
     #[cfg(test)]
@@ -156,7 +158,6 @@ pub(super) struct Sending {
 }
 pub(crate) struct ApprovalRun {
     pub(super) callbacks: Callbacks,
-    pub(super) scope: Option<OwnedApprovalScope>,
     pub(super) batch: AdmissionBatch,
     pub(super) sending: Option<Sending>,
 }
@@ -167,6 +168,7 @@ impl ApprovalRun {
                 host,
                 notices: Some(notices),
                 context: None,
+                scope: None,
                 entries: BTreeMap::new(),
                 parked: None,
                 #[cfg(test)]
@@ -176,7 +178,6 @@ impl ApprovalRun {
                 #[cfg(test)]
                 receipt_observer: None,
             },
-            scope: None,
             batch: AdmissionBatch::default(),
             sending: None,
         }
@@ -256,8 +257,21 @@ impl Callbacks {
                 .map_err(|_| Failure::Deadline)?,
             )
             .ok_or(Failure::Deadline)?;
+        let mut context = self.context.as_ref().ok_or(Failure::Admission)?.clone();
+        if context.thread_id != request.thread_id() || context.turn_id != request.turn_id() {
+            // Native scope is checked again before registering with the store.
+            let digest = hagency_core::canonical::digest(&serde_json::json!([
+                context.id,
+                request.thread_id(),
+                request.turn_id()
+            ]))
+            .map_err(|_| Failure::Admission)?;
+            context.id = format!("owned_child_{digest}");
+            context.thread_id = request.thread_id().into();
+            context.turn_id = request.turn_id().into();
+        }
         let input = HostApprovalRequest {
-            context_id: self.context.as_ref().ok_or(Failure::Admission)?.id.clone(),
+            context_id: context.id.clone(),
             upstream_id: rpc_id(request.id())?,
             item_id: request.item_id().into(),
             method: request.method().into(),
@@ -272,6 +286,7 @@ impl Callbacks {
             key.clone(),
             Pending {
                 request,
+                context,
                 input,
                 id: None,
                 owner_deadline,

@@ -283,7 +283,7 @@ impl OwnerResourceRegistry {
                 let b =
                     authority::original(&db.db, &a.enrollment, a.sink.child(), false)?;
                 let prior:Option<u64>=db.db.query_row("SELECT reserved_tokens FROM owner_managed_calls WHERE child_id=?1 AND execution_id=?2",params![a.sink.child(),w.execution_id],|r|r.get(0)).optional()?;
-                let estimated_tokens=if let Some(n)=prior{n}else{let (held,unknown)=call_budget(&db.db,a.sink.child())?;if unknown||held>=b.allocated{return Err(Error::Capacity)}b.allocated-held};
+                let estimated_tokens=if let Some(n)=prior{n}else{let (known,invalid)=postpaid_call_budget(&db.db,a.sink.child())?;if invalid||known>=b.allocated{return Err(Error::Capacity)}0};
                 let execution_digest=canonical::digest(&serde_json::to_value(&w)?)?;
                 a.check()?;
                 Ok(ManagedCallAuthority {assignment:a.assignment(),execution:w.execution_id,execution_digest,estimated_tokens})

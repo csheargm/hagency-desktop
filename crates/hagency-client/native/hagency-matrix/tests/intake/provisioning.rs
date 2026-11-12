@@ -1492,12 +1492,9 @@ async fn native_provisioning_admits_a_room_bound_by_the_ts_event() {
     c.close().await.unwrap();
 }
 
-/// Board #95: a project room bound only by the LEGACY event
-/// (`com.hagency.project.binding.v1`, state_key `""`) — what an earlier Rust
-/// build wrote — is admitted after the upgrade instead of failing with
-/// `Error: Authority`.
+/// Retired room bindings cannot establish current project authority.
 #[tokio::test]
-async fn native_provisioning_admits_a_room_bound_by_the_legacy_event() {
+async fn native_provisioning_refuses_a_room_bound_only_by_the_retired_event() {
     let (f, mut fake, c) = ready_provisioning().await;
     let before = rows(&f, "engagements");
     let project = with_binding(
@@ -1517,14 +1514,30 @@ async fn native_provisioning_admits_a_room_bound_by_the_legacy_event() {
         project,
     )
     .await;
-    let stage = status(&c, &mut fake).await.stage;
-    let summary = result.unwrap_or_else(|e| panic!("intake failed: {e:?}, stage={stage}"));
-    assert_eq!(summary.admitted, 1);
-    assert_eq!(rows(&f, "engagements"), before + 1);
+    assert_eq!(result, Err(Error::Generation));
+    assert_eq!(rows(&f, "engagements"), before);
+    assert!(f.available().await);
+    assert_eq!(status(&c, &mut fake).await.stage, "quarantined");
     c.close().await.unwrap();
 }
 
-/// Board #95: when a room carries BOTH binding events and they disagree, the
+#[tokio::test]
+async fn native_provisioning_refuses_current_binding_under_wrong_state_key() {
+    let (f, mut fake, c) = ready_provisioning().await;
+    let before = rows(&f, "engagements");
+    let mut binding = ts_binding_event(project_binding(&fleet_id()));
+    binding["state_key"] = json!(format!("hf_{}", "b".repeat(32)));
+    let result = run_provisioning_with_project(&c, &mut fake,
+        provisioning_sync("provision", vec![request_event("$request_one", request_body("request_one", 250))]),
+        with_binding(project_state_without_binding(), vec![binding])).await;
+    assert_eq!(result, Err(Error::Generation));
+    assert_eq!(rows(&f, "engagements"), before);
+    assert!(f.available().await);
+    assert_eq!(status(&c, &mut fake).await.stage, "quarantined");
+    c.close().await.unwrap();
+}
+
+/// When a room carries both current and retired binding events, only the
 /// TS event wins. The legacy event here names a foreign fleet; if the legacy
 /// event were consulted the request would be refused, so admission proves the
 /// TS event was the one carried.
@@ -1561,9 +1574,7 @@ async fn native_provisioning_prefers_the_ts_binding_when_both_are_present() {
     c.close().await.unwrap();
 }
 
-/// Board #95: a LEGACY binding that names a foreign fleet is refused with the
-/// same error as today — the fall-back only reads the event, it does not relax
-/// the `verify_request` field gate.
+/// Unknown retired bindings never substitute for a current fleet binding.
 #[tokio::test]
 async fn native_provisioning_refuses_a_foreign_fleet_legacy_binding() {
     let (f, mut fake, c) = ready_provisioning().await;

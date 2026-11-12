@@ -5,7 +5,6 @@ use super::{
 };
 use crate::native_owner::*;
 #[cfg(feature = "resource-adoption")]
-use crate::operator_graphs::reader;
 use hagency_store::management as service;
 use serde_json::Value;
 use std::{
@@ -85,6 +84,21 @@ impl Bridge {
         if let Ok(mut reviews) = self.reviews.lock() {
             reviews.clear();
         }
+    }
+    /// A Desktop window's controller, as an attach leaves it.
+    #[cfg(test)]
+    pub(crate) fn attach_for_tests(&self, id: &str, generation: u64) -> Arc<AtomicBool> {
+        let live = Arc::new(AtomicBool::new(true));
+        self.state.lock().unwrap().controllers.insert(
+            id.into(),
+            Controller {
+                epoch: 1,
+                generation,
+                expires: Arc::new(Mutex::new(Instant::now() + LEASE_TTL)),
+                live: live.clone(),
+            },
+        );
+        live
     }
     fn expire(state: &mut State, generation: u64) {
         let now = Instant::now();
@@ -188,7 +202,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
     ) -> Result<Value, NativeError> {
@@ -204,7 +218,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
     ) -> Result<Value, Failure> {
@@ -220,7 +234,7 @@ impl Bridge {
         native: Option<NativeOwner>,
         owner_root: &Path,
         #[cfg(feature = "resource-adoption")] shared: Option<
-            Arc<crate::native_owner::AdoptedSharedExecutor>,
+            Arc<crate::native_owner::CurrentSharedExecutor>,
         >,
         call: Call,
         receipt_recorded: &AtomicBool,
@@ -416,6 +430,16 @@ impl Bridge {
                 if mutation {
                     match self.journal.admit(request_id, &fingerprint)? {
                         Admission::Pending => return Err(error(503, "daemon_command_pending")),
+                        // A command that only states what should be runs
+                        // again; every other one keeps its first outcome.
+                        Admission::RecoveryRequired if super::repeatable_owner_command(&command) => {
+                            if !live.load(Ordering::Acquire) {
+                                return Err(error(401, "management_scope_changed"));
+                            }
+                            if !self.journal.reenter(request_id)? {
+                                return Err(error(503, "daemon_command_pending"));
+                            }
+                        }
                         Admission::RecoveryRequired => return Err(error(409, "daemon_command_recovery_required")),
                         Admission::Result(r) => { receipt_recorded.store(true,Ordering::Release); return r.map_err(Failure::native); },
                         Admission::New => {}
@@ -773,14 +797,6 @@ impl Bridge {
                 let (id,): (String,) = decode(arguments)?;
                 encode(manager.personal_agent_settings(id).await?)
             },
-            Operation::providers => deferred! {
-                let (): () = decode(arguments)?;
-                encode(manager.providers().await?)
-            },
-            Operation::enroll_resource => deferred! {
-                let (input,): (EnrollResource,) = decode(arguments)?;
-                encode(manager.enroll_resource(input).await?)
-            },
             Operation::tool_approvals => deferred! {
                 let (query,): (ToolApprovalQuery,) = decode(arguments)?;
                 encode(manager.tool_approvals(query).await?)
@@ -809,33 +825,9 @@ impl Bridge {
                 let (query,): (service::ResourceDetailQuery,) = decode(arguments)?;
                 encode(manager.resource_detail(query).await?)
             },
-            Operation::configure_resource => deferred! {
-                let (input,): (service::ConfigureResource,) = decode(arguments)?;
-                encode(manager.configure_resource(input).await?)
-            },
             Operation::publish_resource => deferred! {
                 let (input,): (service::PublishResource,) = decode(arguments)?;
                 encode(manager.publish_resource(input).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_archives => deferred! {
-                let (): () = decode(arguments)?;
-                encode(manager.graph_history_archives().await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_page => deferred! {
-                let (q,): (reader::GraphHistoryQuery,) = decode(arguments)?;
-                encode(manager.graph_history_page(q).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_detail => deferred! {
-                let (q,): (reader::GraphHistoryDetailQuery,) = decode(arguments)?;
-                encode(manager.graph_history_detail(q).await?)
-            },
-            #[cfg(feature = "resource-adoption")]
-            Operation::graph_history_node => deferred! {
-                let (q,): (reader::GraphHistoryNodeQuery,) = decode(arguments)?;
-                encode(manager.graph_history_node(q).await?)
             },
             Operation::central => deferred! {
                 let (command,): (ManagementCommand,) = decode(arguments)?;
@@ -1118,9 +1110,8 @@ async fn recover_native_receipt(journal: &Journal, request_id: &str, manager: &A
         let terminal=AtomicBool::new(false);
         let result = match decode(arguments.clone())? {
             super::project_setup::SetupOperation::Resume { project } => match journal.native_pin(request_id)? {
-                None => return Ok(None),
-                Some(Some(id)) => transport.retry_command_terminal(id,&terminal).await,
-                Some(None) => transport.resume_begin_pinned(project, |id| journal.pin_native(request_id,&id)).await,
+                Some(id) => transport.retry_command_terminal(id,&terminal).await,
+                None => transport.resume_begin_pinned(project, |id| journal.pin_native(request_id,&id)).await,
             },
             super::project_setup::SetupOperation::Retry { command } => transport.retry_command_terminal(command,&terminal).await,
             super::project_setup::SetupOperation::Acknowledge { command } => transport.acknowledge_failure(command).await,
@@ -1141,7 +1132,34 @@ async fn recover_native_receipt(journal: &Journal, request_id: &str, manager: &A
             service::IntentReply::Failure { status, code } => Err(Failure { status, code, terminal:true }),
         }));
     }
+    if operation == Operation::observe_personal_settings {
+        // Natively idempotent under its command ID: the saved request asks
+        // the server again with its original key and gets the original row.
+        // An observation only reads the device, so entering native code a
+        // second time cannot apply anything twice. Without this the bridge
+        // answered every retry with recovery_required and the request could
+        // never be settled.
+        let (input,): (ObservePersonalSettings,) = decode(arguments.clone())?;
+        return Ok(Some(match manager.observe_personal_settings(input).await {
+            Ok(value) => Ok(value),
+            Err(error) => match matching_native_receipt(manager, operation, arguments).await? {
+                Some(receipt) => receipt,
+                None => Err(Failure::from(error)),
+            },
+        }));
+    }
     matching_native_receipt(manager, operation, arguments).await
+}
+
+/// An observation's saved input wraps the original arguments with the
+/// requesting device, under another operation name than the bridge's.
+fn observation_reply(arguments: &Value, saved: &service::PendingIntent) -> Option<service::IntentReply> {
+    let input = arguments.as_array()?.first()?;
+    (saved.operation == service::IntentOperation::PersonalAgentObservation
+        && input.get("commandId").and_then(Value::as_str) == Some(saved.command_id.as_str())
+        && saved.input.get("input") == Some(input))
+        .then(|| saved.reply.clone())
+        .flatten()
 }
 
 fn original_intent(operation: Operation, arguments: &Value) -> Option<(String, service::IntentOperation, Value)> {
@@ -1161,6 +1179,16 @@ fn matching_intent_reply(operation: Operation, arguments: &Value, saved: &servic
     (saved.command_id == id && saved.operation == kind && saved.input == input).then(|| saved.reply.clone()).flatten()
 }
 async fn matching_native_receipt(manager: &Arc<NativeManagement>, operation: Operation, arguments: &Value) -> Result<Option<Result<Value, Failure>>, NativeError> {
+    if operation == Operation::observe_personal_settings {
+        let Some(id) = arguments.get(0).and_then(|input| input.get("commandId")).and_then(Value::as_str) else { return Ok(None) };
+        let Some(saved) = manager.original_command_receipt(id.to_owned()).await? else { return Ok(None) };
+        // Only a recorded refusal settles here. A recorded success is
+        // returned by the native call itself under the same command ID.
+        return Ok(match observation_reply(arguments, &saved) {
+            Some(service::IntentReply::Failure { status, code }) => Some(Err(Failure { status, code, terminal: true })),
+            _ => None,
+        });
+    }
     let Some((id, _, _)) = original_intent(operation, arguments) else { return Ok(None) };
     let Some(saved) = manager.original_command_receipt(id.clone()).await? else { return Ok(None) };
     Ok(match matching_intent_reply(operation, arguments, &saved) {
@@ -1192,6 +1220,26 @@ mod receipt_matching_tests {
         assert_ne!(journal.pending_for("owner","rename").unwrap(),id);
         saved.command_id="different".into();assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
         saved.command_id="rename-1".into();saved.input["name"]=Value::String("other".into());assert!(matching_intent_reply(Operation::rename_resource,&args,&saved).is_none());
-        saved.input=args[0].clone();assert!(matching_intent_reply(Operation::configure_resource,&args,&saved).is_none());
+        saved.input=args[0].clone();assert!(matching_intent_reply(Operation::publish_resource,&args,&saved).is_none());
+    }
+    #[test]
+    fn closed_observation_settles_only_its_own_saved_request() {
+        let args=serde_json::json!([{"commandId":"observe-1","agentId":"agent_a","expectedGeneration":3}]);
+        let requester=serde_json::json!({"origin":"https://s/","userId":"@o:s","deviceId":"D"});
+        let mut saved:service::PendingIntent=serde_json::from_value(serde_json::json!({"commandId":"observe-1","operation":"personal_agent_observation",
+            "input":{"commandId":"observe-1","input":args[0],"requester":requester},
+            "reply":{"kind":"failure","data":{"status":409,"code":"configuration_provider_unavailable"}}})).unwrap();
+        // The generic matcher does not know this operation's saved shape.
+        assert!(matching_intent_reply(Operation::observe_personal_settings,&args,&saved).is_none());
+        let Some(service::IntentReply::Failure{status,code})=observation_reply(&args,&saved) else {panic!("expected the recorded refusal")};
+        assert_eq!((status,code.as_str()),(409,"configuration_provider_unavailable"));
+        let mut other=args.clone();other[0]["expectedGeneration"]=serde_json::json!(4);
+        assert!(observation_reply(&other,&saved).is_none());
+        other=args.clone();other[0]["commandId"]=serde_json::json!("observe-2");
+        assert!(observation_reply(&other,&saved).is_none());
+        saved.operation=service::IntentOperation::PersonalAgentPolicy;
+        assert!(observation_reply(&args,&saved).is_none());
+        saved.operation=service::IntentOperation::PersonalAgentObservation;saved.reply=None;
+        assert!(observation_reply(&args,&saved).is_none());
     }
 }

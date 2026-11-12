@@ -97,6 +97,37 @@ impl SharedExecutionTransport {
         )
         .await
     }
+    #[cfg(all(test, feature = "shared-successors"))]
+    pub(in crate::console::native) async fn poll_claude_successor_fixture(
+        &self,
+        r: &OwnerResourceRegistry,
+        resource_id: String,
+        root: std::path::PathBuf,
+        binding: hagency_runtime::claude::account::AccountBinding,
+        mode: &str,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let resource = r
+            .resource(&b.scope.profile, resource_id)
+            .await
+            .map_err(store)?;
+        let launch = launch::ClaudeLaunch::fixture(
+            r.clone(),
+            b.scope.profile,
+            &resource,
+            root,
+            binding,
+            mode,
+        );
+        self.process_attempt_scoped(
+            r,
+            attempt_io::AttemptAction::Poll { after: None },
+            None,
+            Some(launch::Launch::Claude(launch)),
+            None,
+        )
+        .await
+    }
     pub(super) async fn process_attempt(
         &self,
         r: &OwnerResourceRegistry,
@@ -104,7 +135,7 @@ impl SharedExecutionTransport {
         historical: Option<(String, String, Option<String>)>,
         prepared: Option<super::super::managed_runtime::PreparedLaunch>,
     ) -> Result<SharedExecutionProgress, NativeError> {
-        self.process_attempt_scoped(r, action, historical, prepared, None)
+        self.process_attempt_scoped(r, action, historical, prepared.map(Into::into), None)
             .await
     }
     async fn process_attempt_scoped(
@@ -112,7 +143,7 @@ impl SharedExecutionTransport {
         r: &OwnerResourceRegistry,
         action: attempt_io::AttemptAction,
         historical: Option<(String, String, Option<String>)>,
-        prepared: Option<super::super::managed_runtime::PreparedLaunch>,
+        prepared: Option<launch::Launch>,
         caller_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<SharedExecutionProgress, NativeError> {
         if !cfg!(feature = "shared-successors") {
@@ -176,6 +207,16 @@ impl SharedExecutionTransport {
             &b.scope,
         )?;
         let c = &d.command;
+        if let Some(saved) = &d.recorded {
+            saved.validate_for(c).map_err(store)?;
+            if historical
+                .as_ref()
+                .and_then(|v| v.2.as_deref())
+                .is_some_and(|id| id != saved.observation_id)
+            {
+                return Err(invalid());
+            }
+        }
         if historical.is_none() && d.cleanup_allowed {
             let authority = b
                 .cleanup(r, &c.original_runtime_command)
@@ -213,7 +254,19 @@ impl SharedExecutionTransport {
                 command_id: c.command_id.clone(),
             });
         }
-        let a = b.cleanup(r, &c.original_runtime_command).await?;
+        // Only read-only history may advance without local evidence, after
+        // the original live-process checks. Cleanup/execution tickets retain
+        // their strict proof path and cannot skip a fence, stop or claim.
+        let a = if !d.execution_allowed && !d.cleanup_allowed {
+            let Some(authority) = b.find_cleanup(r, &c.original_runtime_command).await? else {
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
+            };
+            authority
+        } else {
+            b.cleanup(r, &c.original_runtime_command).await?
+        };
         // An unclaimed fenced attempt already yields its not_started receipt.
         let mut local = r
             .recover_shared_attempt_process(
@@ -226,31 +279,30 @@ impl SharedExecutionTransport {
         // Time bound (ADR-193): a claimed process with no stop evidence and no
         // live local child is interrupted once its grace period has passed.
         let cleaning = historical.is_none() && d.cleanup_allowed && !d.execution_allowed;
-        if cleaning && local.as_ref().is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started")) {
-            if let Some(timeout) = r
-                .record_shared_attempt_timeout(b.cleanup(r, &c.original_runtime_command).await?, c.clone())
+        if cleaning
+            && local
+                .as_ref()
+                .is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started"))
+            && let Some(timeout) = r
+                .record_shared_attempt_timeout(
+                    b.cleanup(r, &c.original_runtime_command).await?,
+                    c.clone(),
+                )
                 .await
                 .map_err(store)?
-            {
-                local = Some(timeout);
-            }
+        {
+            local = Some(timeout);
         }
         b.transport.check_scope(&b.scope, false).await?;
         if let Some(saved) = &d.recorded {
-            saved.validate_for(c).map_err(store)?;
-            if historical
-                .as_ref()
-                .and_then(|v| v.2.as_deref())
-                .is_some_and(|id| id != saved.observation_id)
-            {
-                return Err(invalid());
-            }
             if let Some(latest) = &local {
                 if latest.ledger_revision > saved.ledger_revision && latest.reason.is_some() {
                     // A time-bound end is accepted only on a cleanup ticket;
                     // otherwise a later cleanup poll reports it.
                     if !cleaning || !attempt_run::upload_end(&b, &d, until, latest).await? {
-                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                            command_id: c.command_id.clone(),
+                        });
                     }
                     attempt_run::recover_process_work(&self.io, r, c).await?;
                     return Ok(SharedExecutionProgress::Recorded {
@@ -265,7 +317,7 @@ impl SharedExecutionTransport {
                     return Ok(SharedExecutionProgress::Recorded {
                         command_id: c.command_id.clone(),
                         observation_id: latest.observation_id.clone(),
-                    process_state: Some(latest.state.clone()),
+                        process_state: Some(latest.state.clone()),
                     });
                 }
                 if latest.ledger_revision == saved.ledger_revision
@@ -285,14 +337,16 @@ impl SharedExecutionTransport {
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: saved.observation_id.clone(),
-                    process_state: Some(saved.state.clone()),
+                process_state: Some(saved.state.clone()),
             });
         }
         if let Some(local) = local {
             // Non-issuance and time-bound ends are accepted only on a cleanup
             // ticket; a later cleanup poll reports them.
             if !cleaning && (local.state == "not_started" || local.reason.is_some()) {
-                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
             }
             // A never-started attempt of a demand asks the server to run the
             // same event again, with this evidence (ADR-193 amendment).
@@ -309,13 +363,15 @@ impl SharedExecutionTransport {
             // Report actual stop independently before accounting recovery: an
             // old work upload failure must not hide known process termination.
             if !attempt_run::upload_end(&b, &d, until, &local).await? {
-                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
             }
             attempt_run::recover_process_work(&self.io, r, c).await?;
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: local.observation_id,
-                    process_state: Some(local.state.clone()),
+                process_state: Some(local.state.clone()),
             });
         }
         if !d.execution_allowed {
@@ -357,7 +413,7 @@ impl SharedExecutionTransport {
             )
             .await
             .map_err(store)?;
-        if resource.framework != "codex"
+        if resource.framework != c.original_runtime_command.runtime().map_err(store)?
             || resource.revision != c.original_runtime_command.reserve_command.resource_revision
         {
             return Err(failure(409, "shared_execution_resource_changed"));
@@ -375,12 +431,20 @@ impl SharedExecutionTransport {
                 .server_login
                 .state_directory()
                 .ok_or_else(|| failure(409, "shared_execution_launch_unavailable"))?;
-            super::super::managed_runtime::PreparedLaunch::for_resource(
-                &root, &b.scope.device, r, &b.scope.profile, &resource, true,
-            ).await?
+            super::launch::Launch::for_resource(
+                &root,
+                &b.scope.device,
+                r,
+                &b.scope.profile,
+                &resource,
+            )
+            .await?
         };
-        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(&c.original_runtime_command.reserve_command.proposed_agent_id,c.tool_policy.as_ref().map(|p|p.mode.as_str()))?;
-        let process_io=self.io.with_namespace(launch.namespace());
+        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(
+            &c.original_runtime_command.reserve_command.proposed_agent_id,
+            c.tool_policy.as_ref().map(|p| p.mode.as_str()),
+        )?;
+        let process_io = launch.io(&self.io);
         let io = process_io.clone();
         let command = c.clone();
         let check: super::super::managed_runtime::LiveCheck = Arc::new(move || {
@@ -388,13 +452,7 @@ impl SharedExecutionTransport {
             let c = command.clone();
             Box::pin(async move { io.check(&c.original_runtime_command).await })
         });
-        let launch = self
-            .manager
-            .owner
-            .0
-            .managed_runtime
-            .prepare(launch, until, check)
-            .await?;
+        let launch = launch.prepare(&self.manager, until, check).await?;
         b.transport.check_scope(&b.scope, false).await?;
         self.manager
             .owner

@@ -61,7 +61,9 @@ impl SharedProcessSink {
             if !self.source.is_live()
                 || o.provider_digest() != Some(&self.custody.provider)
                 || o.policy_digest()
-                    != Some(canonical::digest(&json!({"policy":"codex_text_v1"}))?.as_str())
+                    != Some(
+                        canonical::digest(&json!({"policy":self.custody.command.policy}))?.as_str(),
+                    )
             {
                 return Err(Error::LocalAuthority);
             }

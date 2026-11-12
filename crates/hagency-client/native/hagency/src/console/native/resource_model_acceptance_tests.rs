@@ -17,7 +17,7 @@ for line in sys.stdin:
  r=json.loads(line);i=r.get('id');m=r.get('method')
  if i is None:continue
  with (home/'fixture-methods').open('a') as f:f.write(m+'\n')
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api'}}
  elif m=='account/read':v={'requiresOpenaiAuth':True,'account':{'type':'chatgpt','email':'fixture-private@example.test','planType':'plus'}}
  elif m=='account/rateLimits/read':v={'accountId':'fixture-quota-identity','rateLimits':{}}
@@ -39,7 +39,7 @@ async fn native_ready_model_child(){
     let installation=tempfile::tempdir().unwrap();initialize_resource_activation_fixture(&installation.path().join("installation")).unwrap();
     let f=Fixture::with_configured_installation().await;let(db,path,_)=f.domain();drop(db);
     let db=rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,true).unwrap();db.execute("DELETE FROM resources",[]).unwrap();drop(db);
-    let review=f.owner.review_device_setup(package(),None,None).await.unwrap();let selected=f.owner.confirm_device_setup(review,package(),||true).await.unwrap();
+    let review=f.owner.review_device_setup(package(),None).await.unwrap();let selected=f.owner.confirm_device_setup(review,package(),||true).await.unwrap();
     let mut f=f.restart_onboarding(selected.clone()).await;let fake=executable(&f);let m=f.owner.management(package()).await.unwrap();
     let account=m.prepare_account(PrepareAccount{command_id:"ready_account".into()}).await.unwrap();
     let row=m.account_inventory(AccountInventoryQuery{id:Some(account.account_id.clone()),after:None}).await.unwrap().account.unwrap();
@@ -79,7 +79,7 @@ async fn native_ceiling_amendment_child(){
     let installation=tempfile::tempdir().unwrap();initialize_resource_activation_fixture(&installation.path().join("installation")).unwrap();
     let f=Fixture::with_configured_installation().await;let(db,path,_)=f.domain();drop(db);
     let db=rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,true).unwrap();db.execute("DELETE FROM resources",[]).unwrap();drop(db);
-    let review=f.owner.review_device_setup(amendment_package(),None,None).await.unwrap();let selected=f.owner.confirm_device_setup(review,amendment_package(),||true).await.unwrap();
+    let review=f.owner.review_device_setup(amendment_package(),None).await.unwrap();let selected=f.owner.confirm_device_setup(review,amendment_package(),||true).await.unwrap();
     let f=f.restart_onboarding(selected).await;executable(&f);let m=f.owner.management(amendment_package()).await.unwrap();
     let account=m.prepare_account(PrepareAccount{command_id:"amend_account".into()}).await.unwrap();
     let row=m.account_inventory(AccountInventoryQuery{id:Some(account.account_id.clone()),after:None}).await.unwrap().account.unwrap();

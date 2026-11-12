@@ -1,6 +1,7 @@
 //! Runtime mechanics only. The host separately owns all durable approval grants.
 use super::*;
 use crate::codex::approval::ApprovalResponse;
+use crate::deadline::Deadline;
 use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 const MAX_CALLBACKS: usize = 16;
@@ -35,9 +36,11 @@ pub enum PreparedUpdate {
 pub struct PreparedApproval {
     source: Arc<AtomicBool>,
     id: RequestId,
+    thread: String,
+    turn: String,
     frame: transport::PreparedFrame,
     response_deadline: Instant,
-    mcp_item: Option<String>,
+    mcp_item: Option<(String, String, String)>,
 }
 impl PreparedApproval {
     /// Fixed original bound for response admission plus write completion. It
@@ -73,7 +76,7 @@ pub(super) struct ControlState {
     /// letting the session time out there.
     host_expiry: bool,
     callbacks: BTreeMap<RequestId, Callback>,
-    read_deadline: Option<Instant>,
+    read_deadline: Option<Deadline>,
 }
 impl ControlState {
     pub(super) fn enabled(&self) -> bool {
@@ -106,7 +109,7 @@ impl ControlState {
     pub(super) fn resolve(&mut self, id: &RequestId) {
         self.callbacks.remove(id);
     }
-    fn deadline<R, W, E>(&mut self, wire: &transport::Driver<R, W, E>) -> Result<Instant, Error> {
+    fn deadline<R, W, E>(&mut self, wire: &transport::Driver<R, W, E>) -> Result<Deadline, Error> {
         // Read-only host maintenance also needs a cancellation-safe yield.
         // This does not enable approvals or reset the original event deadline.
         let deadline = self
@@ -124,12 +127,13 @@ impl ControlState {
                 CallbackStage::Sent => None,
             })
             .min()
+            .map(Deadline::from)
             .unwrap_or_else(|| {
                 *self
                     .read_deadline
                     .get_or_insert_with(|| wire.event_deadline())
             });
-        if Instant::now() >= deadline {
+        if deadline.expired() {
             return Err(Error::Transport(transport::Error::Timeout));
         }
         Ok(deadline)
@@ -219,12 +223,12 @@ impl<R, W, E> SessionDriver<R, W, E> {
         operation.finish(result)
     }
     fn prepare_inner(&mut self, response: ApprovalResponse) -> Result<PreparedApproval, Error> {
-        if self.thread_id() != Some(response.request.thread_id())
-            || self.turn_id() != Some(response.request.turn_id())
-            || response
-                .request
-                .mcp_item()
-                .is_some_and(|id| !self.mcp.active(id))
+        if !self.active_turn(response.request.thread_id(), response.request.turn_id())
+            || response.request.mcp_item().is_some_and(|id| {
+                !self
+                    .mcp
+                    .active(response.request.thread_id(), response.request.turn_id(), id)
+            })
         {
             return Err(Error::Scope);
         }
@@ -247,7 +251,15 @@ impl<R, W, E> SessionDriver<R, W, E> {
             CallbackStage::Prepared | CallbackStage::Sent => return Err(Error::State),
         }
         let response_deadline = callback.response_deadline;
-        let mcp_item = response.request.mcp_item().map(str::to_owned);
+        let thread = response.request.thread_id().to_owned();
+        let turn = response.request.turn_id().to_owned();
+        let mcp_item = response.request.mcp_item().map(|id| {
+            (
+                response.request.thread_id().into(),
+                response.request.turn_id().into(),
+                id.into(),
+            )
+        });
         let frame = self
             .wire
             .prepare_approval(response, callback.response_deadline)
@@ -258,6 +270,8 @@ impl<R, W, E> SessionDriver<R, W, E> {
             .ok_or(Error::Scope)?
             .stage = CallbackStage::Prepared;
         Ok(PreparedApproval {
+            thread,
+            turn,
             mcp_item,
             response_deadline,
             source: self.observation_live.clone(),
@@ -265,23 +279,27 @@ impl<R, W, E> SessionDriver<R, W, E> {
             frame,
         })
     }
-    pub(super) fn advance_observation(&mut self) -> Result<(), Error> {
+    fn observation(&self) -> Result<super::super::Observation, Error> {
+        Ok(super::super::Observation {
+            source: self.bound_source()?,
+            sequence: self.observation_sequence,
+            kind: self.observation_kind.clone(),
+            terminal_usage: self.terminal_usage(),
+            context_usage: self.context_usage.clone(),
+        })
+    }
+}
+
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionDriver<R, W, E> {
+    pub(super) async fn advance_observation(&mut self) -> Result<(), Error> {
+        self.recover_native_usage().await;
         self.observation_sequence = self
             .observation_sequence
             .checked_add(1)
             .ok_or(Error::Capacity)?;
         Ok(())
     }
-    fn observation(&self) -> Result<super::super::Observation, Error> {
-        Ok(super::super::Observation {
-            source: self.bound_source()?,
-            sequence: self.observation_sequence,
-            kind: self.observation_kind.clone(),
-        })
-    }
-}
 
-impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionDriver<R, W, E> {
     /// Poll an independently retained, pinned host future alongside original IO.
     /// On Update, keep that SAME future pinned and handle the update in order;
     /// on Control, consume its output once and do not poll the completed future.
@@ -299,13 +317,28 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             session: self,
             finished: false,
         };
-        let result = operation.session.control_inner(control).await;
+        let mut result = operation.session.control_inner(control).await;
+        if let Err(error) = result.as_ref()
+            && let Some(update) = operation.session.finish_root_after_eof(*error)
+        {
+            result = operation.session.advance_observation().await.and_then(|()| {
+                Ok(ControlUpdate::Update(
+                    update,
+                    Box::new(operation.session.observation()?),
+                ))
+            });
+        }
         operation.finish(result)
     }
     async fn control_inner<F: Future + ?Sized>(
         &mut self,
         control: Pin<&mut F>,
     ) -> Result<ControlUpdate<F::Output>, Error> {
+        self.pump_run_stops().await?;
+        if let Some(update) = self.ready_control_terminal().await? {
+            self.advance_observation().await?;
+            return Ok(ControlUpdate::Update(update, Box::new(self.observation()?)));
+        }
         let deadline = self.control.deadline(&self.wire)?;
         self.wire.ensure_live().map_err(Error::Transport)?;
         let next = match self.pop()? {
@@ -319,7 +352,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         match next {
             transport::Controlled::Event(event) => {
                 let update = self.accept_update(event).await?;
-                self.advance_observation()?;
+                self.advance_observation().await?;
                 // A real typed read completes this event operation. Control
                 // returns and prepared-send buffer drains never reset it.
                 self.control.read_deadline = None;
@@ -355,10 +388,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         if !Arc::ptr_eq(&self.observation_live, &prepared.source) {
             return Err(Error::Scope);
         }
+        if !self.active_turn(&prepared.thread, &prepared.turn) {
+            return Err(Error::Scope);
+        }
         if prepared
             .mcp_item
-            .as_deref()
-            .is_some_and(|id| !self.mcp.active(id))
+            .as_ref()
+            .is_some_and(|(thread, turn, id)| !self.mcp.active(thread, turn, id))
         {
             return Err(Error::Scope);
         }
@@ -368,7 +404,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             .map_err(Error::Transport)?;
         if let Some(event) = self.pop()? {
             let update = self.accept_update(event).await?;
-            self.advance_observation()?;
+            self.advance_observation().await?;
             return Ok(PreparedUpdate::Update(
                 update,
                 Box::new(self.observation()?),
@@ -382,7 +418,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         {
             transport::Controlled::Event(event) => {
                 let update = self.accept_update(event).await?;
-                self.advance_observation()?;
+                self.advance_observation().await?;
                 Ok(PreparedUpdate::Update(
                     update,
                     Box::new(self.observation()?),

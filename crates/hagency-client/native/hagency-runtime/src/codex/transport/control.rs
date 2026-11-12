@@ -17,15 +17,23 @@ pub(in crate::codex) struct PreparedFrame {
 }
 
 impl<R, W, E> Driver<R, W, E> {
-    pub(in crate::codex) fn event_deadline(&self) -> Instant {
-        Instant::now() + Duration::from_millis(self.limits.event_wait_ms)
+    pub(in crate::codex) fn event_deadline(&self) -> Deadline {
+        if self.shared_activity.is_some() {
+            Deadline::UNBOUNDED
+        } else {
+            Deadline::after(Duration::from_millis(self.limits.event_wait_ms))
+        }
     }
     pub(in crate::codex) fn control_policy_fits(&self, owner_ms: u64, reserve_ms: u64) -> bool {
         owner_ms != 0
             && reserve_ms >= self.limits.write_timeout_ms
             && owner_ms.checked_add(reserve_ms).is_some_and(|total| {
                 total <= MAX_REQUEST_MS
-                    && (if self.shared_activity.is_some() {self.has_live_shared_activity()} else {Instant::now() + Duration::from_millis(total) <= self.lifetime})
+                    && (if self.shared_activity.is_some() {
+                        self.has_live_shared_activity()
+                    } else {
+                        Instant::now() + Duration::from_millis(total) <= self.lifetime
+                    })
             })
     }
     pub(in crate::codex) fn approval_deadlines(
@@ -40,7 +48,13 @@ impl<R, W, E> Driver<R, W, E> {
             .ok_or(Error::Closed)?;
         let owner = self.origin + Duration::from_millis(admitted + owner_ms);
         let response = owner + Duration::from_millis(reserve_ms);
-        if owner <= Instant::now() || (if self.shared_activity.is_some() {!self.has_live_shared_activity()} else {response > self.lifetime}) {
+        if owner <= Instant::now()
+            || (if self.shared_activity.is_some() {
+                !self.has_live_shared_activity()
+            } else {
+                response > self.lifetime
+            })
+        {
             return Err(Error::Timeout);
         }
         Ok((owner, response))
@@ -77,7 +91,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
     pub(in crate::codex) async fn next_or_control<F: Future + ?Sized>(
         &mut self,
         mut control: Pin<&mut F>,
-        deadline: Instant,
+        deadline: Deadline,
     ) -> Result<Controlled<F::Output>, Error> {
         let operation = Operation {
             driver: self,
@@ -93,7 +107,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
     async fn control_inner<F: Future + ?Sized>(
         &mut self,
         mut control: Pin<&mut F>,
-        deadline: Instant,
+        deadline: Deadline,
     ) -> Result<Controlled<F::Output>, Error> {
         loop {
             tokio::task::yield_now().await;
@@ -111,7 +125,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
                     self.check(deadline)?;
                     return Ok(Controlled::Control(output));
                 }
-                _ = tokio::time::sleep_until(wake) => return Err(Error::Timeout),
+                _ = tokio::time::sleep_until(wake) => {
+                    // A lease renewal can move the wake while this exact read
+                    // remains pending. Recheck it without replacing the read or
+                    // renewing the callback's original owner deadline.
+                    self.check(deadline)?;
+                    if self.next_deadline(deadline) <= Instant::now() {
+                        return Err(Error::Timeout);
+                    }
+                    continue;
+                },
                 result = streams.stdout.read(&mut self.input) => {
                     self.input_end = result.map_err(|_| Error::Io("stdout read"))?;
                     self.input_start = 0;
@@ -199,7 +222,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
         // frame must finish and be delivered first. No keepalive is fabricated.
         tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(wake) => return Err(Error::Timeout),
+            _ = tokio::time::sleep_until(wake) => {
+                self.check(deadline)?;
+                if self.next_deadline(deadline) <= Instant::now() {
+                    return Err(Error::Timeout);
+                }
+                return Ok(());
+            },
             result = streams.stdout.read(&mut self.input) => {
                 self.input_end = result.map_err(|_| Error::Io("stdout read"))?;
                 self.input_start = 0;
@@ -223,17 +252,188 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
 
 #[cfg(test)]
 mod shared_wait_tests {
- use super::*;
- #[test] fn human_wait_never_extends_or_revives_the_activity_lease(){
-  let mut driver=Driver::new((),(),(),Limits{write_timeout_ms:1000,event_wait_ms:30_000,lifetime_ms:30_000}).unwrap();
-  assert!(!driver.control_policy_fits(120_000,5000));
-  let live=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));let gate=live.clone();let deadline=Instant::now()+Duration::from_secs(20);
-  driver.attach_shared_activity(std::sync::Arc::new(move||gate.load(std::sync::atomic::Ordering::Acquire).then_some(deadline))).unwrap();
-  assert!(driver.control_policy_fits(120_000,5000));
-  assert_eq!(driver.effective_lifetime(),deadline);
-  assert!(!driver.control_policy_fits(MAX_REQUEST_MS,5000));
-  live.store(false,std::sync::atomic::Ordering::Release);
-  assert!(!driver.control_policy_fits(1000,1000));
-  assert!(driver.check(Instant::now()+Duration::from_secs(120)).is_err());
- }
+    use super::*;
+    async fn ready() -> (
+        Driver<tokio::io::DuplexStream, tokio::io::Sink, tokio::io::Empty>,
+        tokio::io::DuplexStream,
+    ) {
+        let (stdout, mut peer) = tokio::io::duplex(4096);
+        let mut driver = Driver::new(
+            stdout,
+            tokio::io::sink(),
+            tokio::io::empty(),
+            Limits {
+                write_timeout_ms: 1000,
+                event_wait_ms: 1000,
+                lifetime_ms: 30_000,
+            },
+        )
+        .unwrap();
+        driver
+            .send(Command::Initialize {
+                client_version: "test".into(),
+                response_timeout_ms: 1000,
+            })
+            .await
+            .unwrap();
+        peer.write_all(b"{\"id\":0,\"result\":{\"userAgent\":\"fixture/0.167.0\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\",\"codexHome\":\"/fixture\"}}\n")
+            .await
+            .unwrap();
+        assert!(matches!(
+            driver.next_event().await,
+            Ok(Event::Initialized { .. })
+        ));
+        driver.send(Command::Initialized).await.unwrap();
+        (driver, peer)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_silent_reads_survive_renewed_epochs_and_stop_when_lease_lapses() {
+        for controlled in [false, true] {
+            let (mut driver, mut peer) = ready().await;
+            let clock = std::sync::Arc::new(std::sync::Mutex::new(Some(
+                Instant::now() + Duration::from_secs(3),
+            )));
+            let current = clock.clone();
+            driver
+                .attach_shared_activity(std::sync::Arc::new(move || *current.lock().unwrap()))
+                .unwrap();
+            let renew = clock.clone();
+            let renewer = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    *renew.lock().unwrap() = Some(Instant::now() + Duration::from_secs(3));
+                }
+            });
+            let began = Instant::now();
+            let read = async {
+                if controlled {
+                    let control = std::future::pending::<()>();
+                    tokio::pin!(control);
+                    let until = driver.event_deadline();
+                    match driver.next_or_control(control.as_mut(), until).await? {
+                        Controlled::Event(event) => Ok(event),
+                        Controlled::Control(()) => panic!("not a host control event"),
+                    }
+                } else {
+                    driver.next_event().await
+                }
+            };
+            let (result, ()) = tokio::join!(read, async {
+                tokio::time::sleep(Duration::from_secs(1801)).await;
+                peer.write_all(b"{\"method\":\"fixture/notice\",\"params\":{}}\n")
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(result.unwrap(), Event::Notification { .. }));
+            assert_eq!(began.elapsed(), Duration::from_secs(1801));
+            renewer.abort();
+            let expiry = clock.lock().unwrap().unwrap();
+            assert_eq!(driver.next_event().await.err(), Some(Error::Timeout));
+            assert_eq!(Instant::now(), expiry);
+            *clock.lock().unwrap() = Some(Instant::now() + Duration::from_secs(3));
+            assert_eq!(
+                driver.next_event().await.err(),
+                Some(Error::Closed),
+                "a lapsed operation is never revived"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_activity_does_not_unbound_rpc_or_partial_frames() {
+        for partial in [false, true] {
+            let (mut driver, mut peer) = ready().await;
+            let lease = Instant::now() + Duration::from_secs(30);
+            driver
+                .attach_shared_activity(std::sync::Arc::new(move || Some(lease)))
+                .unwrap();
+            let began = Instant::now();
+            if partial {
+                peer.write_all(b"{").await.unwrap();
+            } else {
+                driver
+                    .send(Command::Request {
+                        method: "thread/read".into(),
+                        params: serde_json::json!({"threadId":"t"}),
+                        response_timeout_ms: 500,
+                    })
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(driver.next_event().await.err(), Some(Error::Timeout));
+            assert_eq!(
+                began.elapsed(),
+                if partial {
+                    Duration::from_secs(10)
+                } else {
+                    Duration::from_millis(500)
+                }
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_renewal_never_extends_the_original_control_deadline() {
+        let (mut driver, _peer) = ready().await;
+        let clock = std::sync::Arc::new(std::sync::Mutex::new(Some(
+            Instant::now() + Duration::from_secs(3),
+        )));
+        let current = clock.clone();
+        driver
+            .attach_shared_activity(std::sync::Arc::new(move || *current.lock().unwrap()))
+            .unwrap();
+        let renewer = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                *clock.lock().unwrap() = Some(Instant::now() + Duration::from_secs(3));
+            }
+        });
+        let began = Instant::now();
+        let control = std::future::pending::<()>();
+        tokio::pin!(control);
+        assert!(matches!(
+            driver
+                .next_or_control(control.as_mut(), Deadline::after(Duration::from_secs(5)))
+                .await,
+            Err(Error::Timeout)
+        ));
+        assert_eq!(began.elapsed(), Duration::from_secs(5));
+        renewer.abort();
+    }
+
+    #[test]
+    fn human_wait_never_extends_or_revives_the_activity_lease() {
+        let mut driver = Driver::new(
+            (),
+            (),
+            (),
+            Limits {
+                write_timeout_ms: 1000,
+                event_wait_ms: 30_000,
+                lifetime_ms: 30_000,
+            },
+        )
+        .unwrap();
+        assert!(!driver.control_policy_fits(120_000, 5000));
+        let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate = live.clone();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        driver
+            .attach_shared_activity(std::sync::Arc::new(move || {
+                gate.load(std::sync::atomic::Ordering::Acquire)
+                    .then_some(deadline)
+            }))
+            .unwrap();
+        assert!(driver.control_policy_fits(120_000, 5000));
+        assert_eq!(driver.effective_lifetime(), deadline);
+        assert!(!driver.control_policy_fits(MAX_REQUEST_MS, 5000));
+        live.store(false, std::sync::atomic::Ordering::Release);
+        assert!(!driver.control_policy_fits(1000, 1000));
+        assert!(
+            driver
+                .check(Instant::now() + Duration::from_secs(120))
+                .is_err()
+        );
+    }
 }

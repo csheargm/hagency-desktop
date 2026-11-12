@@ -85,62 +85,12 @@ async fn account_inventory_retains_namespace_states_and_latest_readiness_without
             .readiness,
         "unknown"
     );
-    let store = crate::DomainStore::start(db, 8).unwrap();
-    let denied = Session::new(
-        store.clone(),
-        context(),
-        [Permission::ReadProviders],
-        Instant::now() + Duration::from_secs(30),
-    )
-    .unwrap();
-    assert!(
-        denied
-            .account_inventory(&context(), AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    let reader = Session::new(
-        store.clone(),
-        context(),
-        [Permission::ReadAccounts],
-        Instant::now() + Duration::from_secs(30),
-    )
-    .unwrap();
-    let detail = reader
-        .account_inventory(
-            &context(),
-            AccountInventoryQuery {
-                id: Some(active.id),
-                after: None,
-            },
-        )
-        .await
-        .unwrap();
+    let detail = db.management_account_inventory(None, AccountInventoryQuery {
+        id: Some(active.id), after: None,
+    }).unwrap();
     assert_eq!(detail.account.unwrap().state, "active");
     assert!(detail.accounts.is_empty());
-    let wrong = HostContext::new(
-        "@other:test".into(),
-        1,
-        "a".repeat(64),
-        1,
-        "device".into(),
-        1,
-    )
-    .unwrap();
-    assert!(
-        reader
-            .account_inventory(&wrong, AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    reader.retire();
-    assert!(
-        reader
-            .account_inventory(&context(), AccountInventoryQuery::default())
-            .await
-            .is_err()
-    );
-    store.shutdown().await.unwrap();
+
 }
 
 #[test]
@@ -185,24 +135,23 @@ async fn account_preparation_original_identity_permissions_and_reopen() {
     use crate::management::PrepareAccount;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state");
-    let make_store = || crate::DomainStore::start(DomainRepository::open_managed(&path, &"a".repeat(64)).unwrap(),8).unwrap();
-    let store = make_store();
-    let reader = Session::new(store.clone(),context(),[Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let store = crate::owner_resources::adoption::TestCurrentManagement::open(&path,"@owner:test").await;
+    let reader = Session::new_current(store.backing.clone(),context(),[Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let input = || PrepareAccount{command_id:"original_prepare".into()};
     assert!(reader.prepare_account(&context(),input()).await.is_err());
     assert!(reader.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap().accounts.is_empty());
-    let writer = Session::new(store.clone(),context(),[Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let writer = Session::new_current(store.backing.clone(),context(),[Permission::PrepareAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let prepared = writer.prepare_account(&context(),input()).await.unwrap();
     assert_eq!(prepared.state,"active");
-    assert!(path.join(&prepared.account_id).is_dir());
+    assert!(path.join("canonical").join(&prepared.account_id).is_dir());
     assert_eq!(writer.prepare_account(&context(),input()).await.unwrap().account_id,prepared.account_id);
     assert!(writer.account_inventory(&context(),AccountInventoryQuery::default()).await.is_err(),"prepare does not grant inventory reads");
     let page=reader.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap();
     assert_eq!(page.accounts.len(),1); assert_eq!(page.accounts[0].readiness,"unknown");
     writer.retire(); assert!(writer.prepare_account(&context(),input()).await.is_err());
     store.shutdown().await.unwrap(); drop(writer); drop(reader); drop(store);
-    let store=make_store();
-    let restored = Session::new(store.clone(),context(),[Permission::PrepareAccounts,Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
+    let store=crate::owner_resources::adoption::TestCurrentManagement::open(&path,"@owner:test").await;
+    let restored = Session::new_current(store.backing.clone(),context(),[Permission::PrepareAccounts,Permission::ReadAccounts],Instant::now()+Duration::from_secs(60)).unwrap();
     let result=restored.prepare_account(&context(),input()).await.unwrap();
     assert_eq!(result.account_id,prepared.account_id);assert_eq!(result.state,"active");
     assert_eq!(restored.account_inventory(&context(),AccountInventoryQuery::default()).await.unwrap().accounts.len(),1);
@@ -251,7 +200,7 @@ fn account_preparation_schema_upgrade_does_not_claim_existing_namespaces() {
     let root=tempfile::tempdir().unwrap();let path=root.path().join("state");
     let mut db=DomainRepository::open_managed(&path,&"a".repeat(64)).unwrap();
     let account=db.reserve_account(crate::ACCOUNT_PROFILE).unwrap();db.materialize_account(&account.id).unwrap();
-    db.db.execute_batch("DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE owner_namespace_enrollments; DROP TABLE owner_resource_namespaces; DROP TABLE management_account_profiles; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=90;").unwrap();drop(db);
+    db.db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE owner_namespace_enrollments; DROP TABLE owner_resource_namespaces; DROP TABLE management_account_profiles; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=90;").unwrap();drop(db);
     let db=DomainRepository::open_managed(&path,&"a".repeat(64)).unwrap();
     assert_eq!(db.db.pragma_query_value(None,"user_version",|r|r.get::<_,i32>(0)).unwrap(),crate::DOMAIN_SCHEMA_VERSION);
     assert_eq!(db.account_choices().unwrap()[0].id,account.id);

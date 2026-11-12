@@ -29,6 +29,20 @@ A checkout that already exists is left alone, so `.sources/makepad` may be a sym
 tree of your own; `.jit/sources.sh --check` says whether it is at the pin. Without the checkout
 no cargo command works here, because the manifest names it.
 
+**For `makepad run` the checkout must lie outside this repository's folder**, with
+`.sources/makepad` a symlink to it:
+
+    .jit/sources.sh --outside  # checkouts go to ../<this folder's name>-sources (or $HAGENCY_SOURCES_DIR)
+
+The JIT takes every path crate whose real path is inside the launched app's folder for app code
+and gives its structs a hidden slot for live edits. With the makepad checkout as a real directory
+under `.sources/`, makepad's own structs get that slot: the run prints notes like "provided type
+... rustc lays it out in N bytes, makepad run in N+8 ... opaque" and stops at "compile error in
+makepad_script::traits::register_type_inner ... a field of `ScriptTypeObject` (`type_id`) is
+reached from JIT-compiled code". A cargo build is not affected, which is why CI uses the plain
+script. A copy of the whole app folder (for a second window on another profile) keeps the
+symlink and works.
+
 The standalone workspaces that are built and tested on their own use the same checkout through
 `../../.sources/makepad`: `crates/article-makepad`, `crates/owner-dashboard` and
 `tools/hagency-script-review` (so mini-app scripts are reviewed on the script VM the app runs).
@@ -52,6 +66,19 @@ itself and refuses a program whose makepad tree differs, so rebuild it whenever 
   `HAGENCY_DESKTOP_DATA_DIR` and `HAGENCY_OWNER_DAEMON_HOME`, and do not use hosting Setup from
   it: Setup replaces the owner-daemon LaunchAgent, which on a machine with the installed app is
   that app's service.
+- Signed-in test profiles: a locally built or JIT-run app is a new program to the macOS Keychain
+  on every build, so each saved sign-in asks for the login password again, item by item. For a
+  developer's own test profiles, run with `--features development-credential-files` (after the
+  package name, like any cargo flag) and `HAGENCY_NATIVE_CREDENTIAL_IO=development-files`: saved
+  sign-ins are then kept in private files under the profile's data folder. Distributed builds
+  are made without that feature and ignore the variable.
+- One run per app folder: the runs share `target/makepad-run`. For a second window (another
+  profile) copy the app folder and run from the copy.
+- A saved edit is patched into the running app in a fraction of a second. Two traps when a
+  window is open for someone else to use: an edit to a file that holds `script_mod!` while a
+  mini-app panel is open panics the window (a `GenVec ... used in heap` assertion in
+  `MiniAppsPanel::script_apply`, a path only a live-edit design reload takes), and an edit to
+  the makepad checkout is best made with the windows closed.
 - `RINX_OCTOS_BIN` must name an octos binary for `packaged_kernel()` in a development run.
 - The first run compiles everything (about 1.5 min on an M-series MacBook); later runs start
   from the cache in `target/makepad-run`. That cache grows to tens of GB; `makepad clean`
@@ -261,6 +288,14 @@ not tried on Windows.
 
 ## Fixed in makepad after the port
 
+In the pin since 0.5.0-rc.6 (branch `hagency-desktop-0.5.0-rc.6`: `hagency-jit` plus
+OctoSense-org/makepad#143, #146 and #147, not merged there yet):
+
+- A word committed by a composing input method (pinyin) was passed to the text field as a
+  preview: it stayed underlined and the next word typed overwrote it (#146).
+- The retained heap cap refused a native string up front and poisoned a mini app's heap (#143).
+- The two JIT runner fixes for a signed-in run (#147, see "Not verified").
+
 In the pin since OctoSense-org/makepad#137:
 
 - RoomScreen is a view that also names a widget (`#[deref]` plus `#[find]`), and the widget
@@ -385,6 +420,10 @@ Marked `JIT PORT` in the source.
 - Release packaging (`release.yml`, `release-verify.yml`) on this line.
 - Hagency services behind sign-in (owner daemon, Pasion, Agents): the test front serves only
   discovery and OAuth, so the app shows "Could not confirm permission status; retrying."
-- TLS under the JIT was exercised only by one HTTPS request through the Matrix SDK's client
-  (200 over HTTP/2); the test homeserver itself is plain HTTP.
+- TLS under the JIT against a real homeserver needs the pin of 0.5.0-rc.6 or later
+  (OctoSense-org/makepad#147): before it a signed-in run parked on "foreign function
+  `ring_core_..._x25519_sc_mask` is not available on this host" at the first HTTPS request, and
+  could die later with "failed to normalize body for codegen". With it, signed-in windows on
+  three profiles ran against an HTTPS homeserver on macOS arm64 (sync, rooms, threads, the Agent
+  panel, a popped-out mini app). Still open: a warm run hung once at its third live edit.
 - LaunchAgent install from a JIT run.

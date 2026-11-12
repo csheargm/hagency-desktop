@@ -26,6 +26,30 @@ impl ObservationSource {
     pub fn is_retired(&self) -> bool {
         !self.live.load(Ordering::Acquire)
     }
+    pub fn matches_root(&self, thread: &str, turn: &str) -> bool {
+        !self.is_retired() && self.thread == thread && self.turn == turn
+    }
+}
+
+/// Native ancestry observed on this exact live connection. This carries no
+/// owner decision; a later response must still recheck its active native turn.
+/// No public constructor or deserialization can manufacture that ancestry.
+#[derive(Clone)]
+pub struct NativeTurnContext {
+    pub(super) source: ObservationSource,
+    pub(super) thread: String,
+    pub(super) turn: String,
+}
+impl NativeTurnContext {
+    pub fn source(&self) -> &ObservationSource {
+        &self.source
+    }
+    pub fn thread_id(&self) -> &str {
+        &self.thread
+    }
+    pub fn turn_id(&self) -> &str {
+        &self.turn
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,6 +76,8 @@ pub enum TurnResult {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToolEvidence {
     id: String,
+    thread: String,
+    turn: String,
     kind: ToolKind,
     phase: ItemPhase,
     result: ToolResult,
@@ -65,7 +91,7 @@ struct CommandEvidence {
 fn command_evidence(item: &Value) -> Option<CommandEvidence> {
     let command = item.get("command")?.as_str()?;
     let cwd = item.get("cwd")?.as_str()?;
-    if !crate::codex::text(command, 8192)
+    if !crate::codex::script(command, 8192)
         || !crate::codex::text(cwd, 8192)
         || !Path::new(cwd).is_absolute()
     {
@@ -79,6 +105,12 @@ fn command_evidence(item: &Value) -> Option<CommandEvidence> {
 impl ToolEvidence {
     pub fn id(&self) -> &str {
         &self.id
+    }
+    pub fn thread_id(&self) -> &str {
+        &self.thread
+    }
+    pub fn turn_id(&self) -> &str {
+        &self.turn
     }
     pub fn kind(&self) -> ToolKind {
         self.kind
@@ -157,6 +189,8 @@ pub struct Observation {
     pub(super) source: ObservationSource,
     pub(super) sequence: u64,
     pub(super) kind: ObservationKind,
+    pub(super) terminal_usage: Option<super::UsageEvidence>,
+    pub(super) context_usage: Option<super::ContextUsage>,
 }
 impl Observation {
     pub fn source(&self) -> &ObservationSource {
@@ -167,6 +201,16 @@ impl Observation {
     }
     pub fn kind(&self) -> &ObservationKind {
         &self.kind
+    }
+    /// Whole root-turn response totals, including descendants. Present only on
+    /// the terminal observation; missing counters keep the call unmeasured.
+    pub fn terminal_usage(&self) -> Option<&super::UsageEvidence> {
+        self.terminal_usage.as_ref()
+    }
+    /// Capacity of one exact active native conversation. This is not billable
+    /// usage and cannot replenish another thread or an earlier resumed turn.
+    pub fn context_usage(&self) -> Option<&super::ContextUsage> {
+        self.context_usage.as_ref()
     }
 }
 
@@ -192,6 +236,8 @@ pub(super) fn project(
             let result = evidence(category, *phase, &params["item"]);
             ObservationKind::Tool(ToolEvidence {
                 id: id.clone(),
+                thread: params["threadId"].as_str().unwrap_or_default().into(),
+                turn: params["turnId"].as_str().unwrap_or_default().into(),
                 kind: category,
                 phase: *phase,
                 result,

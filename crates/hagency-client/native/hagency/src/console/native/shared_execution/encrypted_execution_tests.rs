@@ -2,6 +2,10 @@
 //! uses a local test adapter. Neither model input nor answer may reach the API.
 use super::*;
 
+#[cfg(feature = "shared-budget-execution")]
+#[path = "history_context_tests.rs"]
+mod history_context;
+
 const PROMPT: &str = "Private encrypted request for the new Agent";
 
 #[tokio::test]

@@ -2,10 +2,10 @@
 use super::*;
 type Result<T> = std::result::Result<T, Error>;
 const MAX_EXACT: u64 = JSON_SAFE_MAX;
-fn key(value: &str) -> Result<()> {
+pub(super) fn key(value: &str) -> Result<()> {
     Ok(identifier(value, 128)?)
 }
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -20,6 +20,8 @@ fn hash_text(value: &str) -> String {
 }
 pub const SHARED_EXECUTION_CAPABILITY: &str = "hagency.managed_agents.execution.v1";
 pub const SHARED_TEXT_POLICY: &str = "codex_text_v1";
+pub const SHARED_CLAUDE_CAPABILITY: &str = "hagency.managed_agents.execution.v4";
+pub const SHARED_CLAUDE_POLICY: &str = "claude_text_v1";
 pub const MAX_SHARED_TEXT: usize = 4096;
 pub const MAX_SHARED_REPLY: usize = 32 * 1024;
 fn exact(n: u64) -> bool {
@@ -47,6 +49,23 @@ pub struct SharedRuntimeCommand {
     pub expires_at_ms: u64,
 }
 impl SharedRuntimeCommand {
+    /// V1 always means Codex. Claude has a distinct signed capability/version;
+    /// old command bytes, digests and retries retain their exact interpretation.
+    pub fn runtime(&self) -> Result<&'static str> {
+        match (self.version, self.capability.as_str(), self.policy.as_str()) {
+            (1, SHARED_EXECUTION_CAPABILITY, SHARED_TEXT_POLICY) => Ok("codex"),
+            (4, SHARED_CLAUDE_CAPABILITY, SHARED_CLAUDE_POLICY) => Ok("claude"),
+            _ => Err(invalid()),
+        }
+    }
+    pub fn execution_policy(&self, web: bool, mode: Option<&str>) -> Result<&'static str> {
+        Ok(match self.runtime()? {
+            "claude" => hagency_runtime::owned::SharedClaudePolicy::from_options(web, mode)
+                .map_err(|_| invalid())?
+                .name(),
+            _ => hagency_runtime::owned::shared_execution_policy(web, mode),
+        })
+    }
     pub fn validate(&self, server: &str) -> Result<()> {
         for id in [
             &self.command_id,
@@ -56,11 +75,9 @@ impl SharedRuntimeCommand {
             key(id)?;
         }
         self.reserve_command.validate(server)?;
-        if self.version != 1
-            || self.capability != SHARED_EXECUTION_CAPABILITY
+        if self.runtime().is_err()
             || self.operation != "agent.execution.provision"
             || self.assignment_generation != 1
-            || self.policy != SHARED_TEXT_POLICY
             || self.reserve_command.definition.tool_mode != "none"
             || self.reserve_command_digest != allocation_digest(&self.reserve_command)?
             || !valid_digest(&self.reserve_receipt_digest)
@@ -100,8 +117,19 @@ impl SharedProcessReceipt {
             || self.assignment_id != c.assignment_id
             || self.agent_reservation_id != c.agent_reservation_id
             || !exact(self.ledger_revision)
-            || !matches!(self.state.as_str(), "qualified" | "stopped" | "unknown" | "not_started")
-            || self.state=="not_started" && (!c.reserve_command.pool_grant.as_ref().is_some_and(|g|g.calendar.is_some()) || c.reserve_command.renewal_mode.is_none() || self.process_digest.is_some() || self.policy_digest.is_some())
+            || !matches!(
+                self.state.as_str(),
+                "qualified" | "stopped" | "unknown" | "not_started"
+            )
+            || self.state == "not_started"
+                && (!c
+                    .reserve_command
+                    .pool_grant
+                    .as_ref()
+                    .is_some_and(|g| g.calendar.is_some())
+                    || c.reserve_command.renewal_mode.is_none()
+                    || self.process_digest.is_some()
+                    || self.policy_digest.is_some())
             || self
                 .process_digest
                 .as_deref()
@@ -190,9 +218,9 @@ pub struct SharedRoomBinding {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkItem {
-    #[serde(default, skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_binding: Option<SharedRoomBinding>,
-    #[serde(default, skip_serializing_if="std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub encrypted: bool,
     pub id: String,
     pub assignment_id: String,
@@ -208,10 +236,16 @@ pub struct SharedWorkItem {
 }
 impl SharedWorkItem {
     pub fn validate(&self) -> Result<()> {
-        if let Some(b)=&self.room_binding {
+        if let Some(b) = &self.room_binding {
             key(&b.id)?;
-            if b.generation==0 || b.assignment_id!=self.assignment_id || b.room_id!=self.room_id
-                || !b.space_id.starts_with('!') || b.space_id.len()>255 { return Err(invalid()); }
+            if b.generation == 0
+                || b.assignment_id != self.assignment_id
+                || b.room_id != self.room_id
+                || !b.space_id.starts_with('!')
+                || b.space_id.len() > 255
+            {
+                return Err(invalid());
+            }
         }
         key(&self.id)?;
         key(&self.assignment_id)?;

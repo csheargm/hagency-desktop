@@ -98,9 +98,9 @@ async fn native_settlement_lost_upload_restart_recovers_exact_receipt_without_ne
     assert!(t.poll(&f.registry, None).await.is_err());
     assert_eq!(counts(&f), (1, 0, 0));
     assert_eq!(f.state.lock().unwrap().settlement.writes, 0);
-    f.registry.shutdown().await.unwrap();
-    f.registry =
-        OwnerResourceRegistry::isolated_for_tests(&f._root.path().join("registry")).unwrap();
+    drop(t);
+    f = f.reopen().await;
+    let t = AgentSettlementTransport::new(f.owner.management(package(1)).await.unwrap());
     assert!(matches!(
         t.recover(&f.registry, c.command_id.clone(), digest(&c).unwrap())
             .await

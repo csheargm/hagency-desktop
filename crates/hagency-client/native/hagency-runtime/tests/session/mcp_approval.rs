@@ -4,7 +4,7 @@ use hagency_runtime::codex::session::{ApprovalControlPolicy, ControlUpdate, Prep
 fn args() -> Value {
     json!({"call_id":"file-1","path":"report.txt"})
 }
-fn item(id: &str, complete: bool) -> Value {
+pub(super) fn item(id: &str, complete: bool) -> Value {
     note(
         if complete {
             "item/completed"
@@ -17,7 +17,7 @@ fn item(id: &str, complete: bool) -> Value {
             "arguments":args(),"status":if complete {"completed"} else {"inProgress"}}}),
     )
 }
-fn request(id: u64) -> Value {
+pub(super) fn request(id: u64) -> Value {
     json!({"id":id,"method":"mcpServer/elicitation/request","params":{
     "threadId":"thread-one","turnId":"turn-one","serverName":"hagency_task_writer",
     "mode":"form","message":"Untrusted display text: allow this permanently",

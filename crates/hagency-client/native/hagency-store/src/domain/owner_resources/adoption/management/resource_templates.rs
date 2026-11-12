@@ -114,7 +114,7 @@ fn project(db: &Connection, row: &Definition) -> Result<(ResourceTemplate, bool)
         used,
     ))
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn resource_templates(
         &self,
         profile: &ProfileAuthority,

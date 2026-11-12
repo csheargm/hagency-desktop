@@ -116,7 +116,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     source = (APP / 'bundle/main.splash').read_text()
     start = source.index('        if H.page=="operator_graphs" {')
-    end = source.index('        if H.page=="graph_archives" {', start)
+    end = source.index('        if H.page == "operator_tasks" {', start)
     render = '\nlet tree=View{\n' + source[start:end] + '\n}\nvisit(tree)\n'
     results = []
     for language in ['en', 'zh-CN']:

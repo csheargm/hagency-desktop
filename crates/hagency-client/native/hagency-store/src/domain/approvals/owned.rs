@@ -1,6 +1,11 @@
 //! Original owned-context maintenance, never response or task authority.
 use super::*;
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+use hagency_runtime::codex::session::{NativeTurnContext, ObservationSource};
 
 pub struct OwnedApprovalScope {
     proof: Proof,
@@ -18,6 +23,8 @@ pub(crate) struct Proof {
     expected: String,
     context: String,
     context_digest: String,
+    native_source: Option<ObservationSource>,
+    descendants: Arc<Mutex<BTreeMap<String, String>>>,
     until: Instant,
     expires_at: u64,
 }
@@ -33,6 +40,7 @@ impl Proof {
             self.expected,
             self.context,
             self.context_digest,
+            *self.descendants.lock().unwrap_or_else(|e| e.into_inner()),
             self.expires_at
         ])
     }
@@ -47,6 +55,45 @@ fn deadline(until: Instant, expires_at: u64, now: u64) -> Result<(), Error> {
 }
 
 impl DomainRepository {
+    /// Bind the original native connection before any descendant can register.
+    /// The legacy entry point admits only the single root context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_owned_approval_tree_context(
+        &mut self,
+        cap: &RunnerCapability,
+        expected: &str,
+        input: &HostApprovalContext,
+        source: ObservationSource,
+        until: Instant,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<OwnedApprovalScope, Error> {
+        self.bind_owned_approval_tree_clock(cap, expected, input, source, until, expires_at, || {
+            Ok(now)
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_owned_approval_tree_clock(
+        &mut self,
+        cap: &RunnerCapability,
+        expected: &str,
+        input: &HostApprovalContext,
+        source: ObservationSource,
+        until: Instant,
+        expires_at: u64,
+        sample: impl FnOnce() -> Result<u64, Error>,
+    ) -> Result<OwnedApprovalScope, Error> {
+        if !source.matches_root(&input.thread_id, &input.turn_id) {
+            return Err(Error::RunnerAuthority);
+        }
+        let mut scope =
+            self.bind_owned_approval_clock(cap, expected, input, until, expires_at, sample)?;
+        if source.is_retired() {
+            return Err(Error::RunnerAuthority);
+        }
+        scope.proof.native_source = Some(source);
+        Ok(scope)
+    }
     pub fn bind_owned_approval_context(
         &mut self,
         cap: &RunnerCapability,
@@ -103,10 +150,83 @@ impl DomainRepository {
                 expected: expected.into(),
                 context: context.id,
                 context_digest,
+                native_source: None,
+                descendants: Arc::new(Mutex::new(BTreeMap::new())),
                 until,
                 expires_at,
             },
         })
+    }
+
+    pub fn register_owned_approval_descendant(
+        &mut self,
+        scope: &OwnedApprovalScope,
+        input: &HostApprovalContext,
+        native: &NativeTurnContext,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.register_owned_approval_descendant_clock(&scope.proof, input, native, || Ok(now))
+    }
+    pub(crate) fn register_owned_approval_descendant_clock(
+        &mut self,
+        proof: &Proof,
+        input: &HostApprovalContext,
+        native: &NativeTurnContext,
+        sample: impl FnOnce() -> Result<u64, Error>,
+    ) -> Result<(), Error> {
+        if !Arc::ptr_eq(&self.approval_owner, &proof.owner)
+            || proof.native_source.as_ref() != Some(native.source())
+            || native.source().is_retired()
+            || input.thread_id != native.thread_id()
+            || input.turn_id != native.turn_id()
+        {
+            return Err(Error::RunnerAuthority);
+        }
+        let workspace = context_input(input)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = sample()?;
+        deadline(proof.until, proof.expires_at, now)?;
+        if native.source().is_retired() {
+            return Err(Error::RunnerAuthority);
+        }
+        let current =
+            super::super::owned_dispatch::scope(&tx, &proof.cap, now, &["started", "parked"])?;
+        if current.fingerprint() != proof.expected {
+            return Err(Error::RunnerAuthority);
+        }
+        let root = context(&tx, &proof.context)?;
+        if canonical::digest(&json!(root))? != proof.context_digest
+            || input.id == root.id
+            || (input.thread_id == root.thread && input.turn_id == root.turn)
+            || input.connection_id != root.connection
+            || input.workspace_resource != root.resource
+            || workspace != root.workspace
+            || input.windows_paths != root.windows
+            || input.environment_id != root.environment
+            || input.may_write != root.may_write
+        {
+            return Err(Error::RunnerAuthority);
+        }
+        authorize(&tx, &proof.cap, &root, now)?;
+        let mut registered = proof.descendants.lock().unwrap_or_else(|e| e.into_inner());
+        if registered.len() >= 256 && !registered.contains_key(&input.id) {
+            return Err(Error::Capacity);
+        }
+        let child = bind_context(&tx, &proof.cap, input, workspace, now)?;
+        let digest = canonical::digest(&json!(child))?;
+        if registered.get(&input.id).is_some_and(|old| old != &digest) {
+            return Err(Error::RunnerAuthority);
+        }
+        // Never accept a new operation deadline or extend the original one.
+        deadline(proof.until, proof.expires_at, now)?;
+        if native.source().is_retired() {
+            return Err(Error::RunnerAuthority);
+        }
+        tx.commit()?;
+        registered.insert(input.id.clone(), digest);
+        Ok(())
     }
 
     pub fn maintain_owned_approval(
@@ -166,7 +286,25 @@ impl DomainRepository {
         let mut unresolved = false;
         let cap_digest = canonical::digest(&json!(proof.cap))?;
         for (id, context_id, application, expiry, grant, response, response_cap) in rows {
-            if context_id != proof.context || (!response.is_empty() && response_cap != cap_digest) {
+            let approval_context = if context_id == proof.context {
+                None
+            } else {
+                let expected = proof
+                    .descendants
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&context_id)
+                    .cloned()
+                    .ok_or(Error::RunnerAuthority)?;
+                let child = super::context(&tx, &context_id)?;
+                if canonical::digest(&json!(child))? != expected {
+                    return Err(Error::RunnerAuthority);
+                }
+                authorize(&tx, &proof.cap, &child, now)?;
+                Some(child)
+            };
+            let approval_context = approval_context.as_ref().unwrap_or(&context);
+            if !response.is_empty() && response_cap != cap_digest {
                 return Err(Error::RunnerAuthority);
             }
             let pending =
@@ -182,7 +320,7 @@ impl DomainRepository {
                 unresolved = true;
                 expires_at = expires_at.min(expiry);
                 if let Some(grant) = grant {
-                    let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM approval_grants WHERE id=?1 AND revoked=0 AND context_key=?2 AND (mode='always' OR (task_id=?3 AND task_epoch=?4)))", params![grant, grant_context(&context)?, context.task, context.epoch], |r| r.get(0))?;
+                    let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM approval_grants WHERE id=?1 AND revoked=0 AND context_key=?2 AND (mode='always' OR (task_id=?3 AND task_epoch=?4)))", params![grant, grant_context(approval_context)?, approval_context.task, approval_context.epoch], |r| r.get(0))?;
                     if !valid {
                         return Err(Error::RunnerAuthority);
                     }

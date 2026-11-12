@@ -1,5 +1,6 @@
 use super::Error;
 use crate::claude::{Decoder, Message};
+use crate::deadline::Deadline;
 use std::{collections::VecDeque, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -11,6 +12,9 @@ const MAX_QUEUED: usize = 16;
 const MAX_QUEUED_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DURATION_MS: u64 = 1_200_000;
 const STDERR_BYTES: usize = 16 * 1024;
+// Error replies owed to native requests this host does not implement. A peer
+// that asks faster than it reads its answers is closed, not served unbounded.
+const MAX_REFUSALS: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -95,7 +99,9 @@ pub(super) struct Wire<R, W, E> {
     decoder: Decoder,
     limits: Limits,
     origin: Instant,
-    lifetime: Instant,
+    lifetime: Deadline,
+    supervised: bool,
+    activity: Option<std::sync::Arc<dyn Fn() -> Option<Instant> + Send + Sync>>,
     input: [u8; READ_BYTES],
     start: usize,
     end: usize,
@@ -107,6 +113,11 @@ pub(super) struct Wire<R, W, E> {
     queue: VecDeque<(Received, usize)>,
     queued_bytes: usize,
     writing: Option<Writing>,
+    // Each refusal is a whole frame of its own. It is written between host
+    // frames, never inside one, and is neither a host write nor an authority:
+    // `writing`, its progress and its barriers describe host frames only.
+    refusals: VecDeque<Vec<u8>>,
+    refusing: Option<(Vec<u8>, usize)>,
     termination: Option<Termination>,
 }
 impl<R, W, E> Wire<R, W, E> {
@@ -122,7 +133,9 @@ impl<R, W, E> Wire<R, W, E> {
             decoder: Decoder::default(),
             limits,
             origin,
-            lifetime: origin + Duration::from_millis(limits.lifetime_ms),
+            lifetime: (origin + Duration::from_millis(limits.lifetime_ms)).into(),
+            supervised: false,
+            activity: None,
             input: [0; READ_BYTES],
             start: 0,
             end: 0,
@@ -134,11 +147,68 @@ impl<R, W, E> Wire<R, W, E> {
             queue: VecDeque::new(),
             queued_bytes: 0,
             writing: None,
+            refusals: VecDeque::new(),
+            refusing: None,
             termination: None,
         })
     }
+    pub fn attach_activity(
+        &mut self,
+        activity: std::sync::Arc<dyn Fn() -> Option<Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        if self.activity.is_some()
+            || self.termination.is_some()
+            || activity().is_none_or(|until| until <= Instant::now())
+        {
+            return Err(Error::State);
+        }
+        self.activity = Some(activity);
+        Ok(())
+    }
+    fn external_deadline(&self) -> Deadline {
+        self.activity
+            .as_ref()
+            .map_or(Deadline::UNBOUNDED, |activity| {
+                activity().unwrap_or_else(Instant::now).into()
+            })
+    }
     pub fn event_deadline(&self) -> Instant {
         Instant::now() + Duration::from_millis(self.limits.event_wait_ms)
+    }
+    pub fn callback_deadline(&self, received: Instant) -> Instant {
+        received + Duration::from_millis(self.limits.event_wait_ms)
+    }
+    pub fn activity_deadline(&self) -> Deadline {
+        if self.supervised {
+            Deadline::UNBOUNDED
+        } else {
+            self.event_deadline().into()
+        }
+    }
+    pub fn supervise(&mut self) -> Result<(), Error> {
+        if self.supervised || self.termination.is_some() || self.writing.is_some() {
+            return Err(Error::State);
+        }
+        self.check(self.event_deadline())?;
+        self.supervised = true;
+        self.lifetime = Deadline::UNBOUNDED;
+        Ok(())
+    }
+    pub fn finish_activity(&mut self) {
+        // A local metadata command must still return promptly after a long run.
+        // It cannot extend any pending permission or question.
+        self.supervised = false;
+        self.lifetime = self.lifetime.limit(self.event_deadline());
+    }
+    pub(super) fn begin_turn(&mut self, limits: Limits) -> Result<(), Error> {
+        limits.validate()?;
+        if self.termination.is_some() || self.writing.is_some() {
+            return Err(Error::State);
+        }
+        self.limits = limits;
+        self.lifetime = Deadline::after(Duration::from_millis(limits.lifetime_ms));
+        self.supervised = false;
+        Ok(())
     }
     pub fn permission_deadlines(
         &self,
@@ -156,7 +226,7 @@ impl<R, W, E> Wire<R, W, E> {
         }
         let owner = at + Duration::from_millis(owner_ms);
         let response = owner + Duration::from_millis(reserve_ms);
-        if owner <= Instant::now() || response > self.lifetime {
+        if owner <= Instant::now() || self.lifetime.at().is_some_and(|until| response > until) {
             return Err(Error::Timeout);
         }
         Ok((owner, response))
@@ -180,6 +250,11 @@ impl<R, W, E> Wire<R, W, E> {
             flushed: w.flushed,
         })
     }
+    pub fn prepared_bytes_sent(&self, sequence: u64) -> bool {
+        self.writing.as_ref().is_some_and(|writing| {
+            writing.prepared == Some(sequence) && writing.offset == writing.bytes.len()
+        })
+    }
     pub fn stderr_snapshot(&self) -> StderrSnapshot {
         StderrSnapshot {
             total_bytes: self.stderr_total,
@@ -196,6 +271,8 @@ impl<R, W, E> Wire<R, W, E> {
         });
         self.streams = None;
         self.writing = None;
+        self.refusals.clear();
+        self.refusing = None;
         self.queue.clear();
         self.queued_bytes = 0;
         self.start = 0;
@@ -205,6 +282,12 @@ impl<R, W, E> Wire<R, W, E> {
     pub fn has_buffered_input(&self) -> bool {
         !self.queue.is_empty() || self.start < self.end || self.decoder.buffered_bytes() != 0
     }
+    pub fn ignored_frames(&self) -> u64 {
+        self.decoder.ignored_frames()
+    }
+    pub fn ignored_metadata(&mut self) {
+        self.decoder.ignored_metadata();
+    }
     fn now_ms(&self) -> u64 {
         Instant::now()
             .duration_since(self.origin)
@@ -212,23 +295,32 @@ impl<R, W, E> Wire<R, W, E> {
             .try_into()
             .unwrap_or(u64::MAX)
     }
-    pub fn check(&mut self, until: Instant) -> Result<(), Error> {
+    pub fn check(&mut self, until: impl Into<Deadline>) -> Result<(), Error> {
         if self.termination.is_some() {
             return Err(Error::Closed);
         }
         self.decoder.check_deadline(self.now_ms())?;
-        if Instant::now() >= until.min(self.lifetime) {
+        if until
+            .into()
+            .limit(self.lifetime)
+            .limit(self.external_deadline())
+            .expired()
+        {
             return Err(Error::Timeout);
         }
         Ok(())
     }
-    fn deadline(&self, until: Instant) -> Instant {
+    fn deadline(&self, until: Deadline) -> Deadline {
         let partial = self
             .decoder
             .deadline_ms()
             .and_then(|ms| self.origin.checked_add(Duration::from_millis(ms)))
-            .unwrap_or(self.lifetime);
-        until.min(self.lifetime).min(partial)
+            .map(Deadline::from)
+            .unwrap_or(Deadline::UNBOUNDED);
+        until
+            .limit(self.lifetime)
+            .limit(self.external_deadline())
+            .limit(partial)
     }
     fn parse(&mut self) -> Result<(), Error> {
         let before = self.decoder.buffered_bytes();
@@ -236,6 +328,20 @@ impl<R, W, E> Wire<R, W, E> {
             .decoder
             .feed(&self.input[self.start..self.end], self.now_ms())?;
         self.start += consumed;
+        while let Some((id, subtype)) = self.decoder.take_unsupported_request() {
+            if self.refusals.len() >= MAX_REFUSALS {
+                return Err(Error::Capacity);
+            }
+            // The subtype is a bounded protocol word without whitespace or
+            // control characters; the request's content is never logged.
+            tracing::warn!(
+                code = "claude_control_request_unsupported",
+                subtype = %subtype.chars().take(64).collect::<String>(),
+                "Claude sent a control request this host does not implement; it is refused and the session continues"
+            );
+            self.refusals
+                .push_back(crate::claude::unsupported_reply(&id)?);
+        }
         if let Some(message) = message {
             let charge = before.checked_add(consumed).ok_or(Error::Capacity)?;
             let total = self
@@ -288,7 +394,9 @@ impl<R, W, E> Wire<R, W, E> {
 }
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, W, E> {
     pub async fn send(&mut self, bytes: Vec<u8>, until: Instant) -> Result<WriteProgress, Error> {
-        let until = until.min(Instant::now() + Duration::from_millis(self.limits.write_timeout_ms));
+        let until = Deadline::from(until).limit(Deadline::after(Duration::from_millis(
+            self.limits.write_timeout_ms,
+        )));
         self.check(until)?;
         if self.writing.is_some() {
             return Err(Error::State);
@@ -309,7 +417,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.step(until, true, false).await?;
         }
     }
-    pub async fn next(&mut self, until: Instant) -> Result<Received, Error> {
+    pub async fn next(&mut self, until: impl Into<Deadline>) -> Result<Received, Error> {
+        let until = until.into();
         loop {
             tokio::task::yield_now().await;
             self.check(until)?;
@@ -319,7 +428,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.step(until, false, false).await?;
         }
     }
-    async fn step(&mut self, until: Instant, write: bool, barrier: bool) -> Result<(), Error> {
+    async fn step(&mut self, until: Deadline, write: bool, barrier: bool) -> Result<(), Error> {
         let control = std::future::pending::<()>();
         tokio::pin!(control);
         self.step_control(until, write, barrier, control.as_mut())
@@ -328,7 +437,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     }
     async fn step_control<F: std::future::Future + ?Sized>(
         &mut self,
-        until: Instant,
+        until: Deadline,
         write: bool,
         barrier: bool,
         mut control: std::pin::Pin<&mut F>,
@@ -344,13 +453,22 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
         enum Observed<T> {
             Write(std::io::Result<usize>),
             Flush(std::io::Result<()>),
+            // `Some(n)`: bytes of the refusal written; `None`: it was flushed.
+            Refusal(std::io::Result<Option<usize>>),
             Read(std::io::Result<usize>),
             Stderr(std::io::Result<usize>),
             Deadline,
             Control(T),
         }
+        // A refusal whose first byte has left is finished before a host frame
+        // may start; a host frame that has started is never interleaved.
+        let refusal_started = self
+            .refusing
+            .as_ref()
+            .is_some_and(|(bytes, offset)| *offset > 0 && *offset < bytes.len());
         let writing = write
             && !partial
+            && !refusal_started
             && self
                 .writing
                 .as_ref()
@@ -361,17 +479,34 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 .writing
                 .as_ref()
                 .is_some_and(|w| w.offset == w.bytes.len() && !w.flushed);
+        let host_started = self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.offset > 0 && w.offset < w.bytes.len());
+        if self.refusing.is_none() && !writing && !flushing && !host_started {
+            self.refusing = self.refusals.pop_front().map(|bytes| (bytes, 0));
+        }
+        let refusing = !writing && !flushing && !host_started && self.refusing.is_some();
         let observed = tokio::select! {
             biased;
-            _=tokio::time::sleep_until(deadline)=>Observed::Deadline,
+            _=deadline.wait()=>Observed::Deadline,
             result=streams.stdout.read(&mut self.input)=>Observed::Read(result),
             output=control.as_mut()=>Observed::Control(output),
             result=async {
                 if writing {
                     let frame=self.writing.as_ref().ok_or(Error::Closed)?;
                     Ok::<_,Error>(Observed::Write(streams.stdin.write(&frame.bytes[frame.offset..]).await))
-                } else {Ok(Observed::Flush(streams.stdin.flush().await))}
-            }, if writing || flushing=>result?,
+                } else if flushing {
+                    Ok(Observed::Flush(streams.stdin.flush().await))
+                } else {
+                    let (bytes, offset) = self.refusing.as_ref().ok_or(Error::Closed)?;
+                    Ok(Observed::Refusal(if *offset < bytes.len() {
+                        streams.stdin.write(&bytes[*offset..]).await.map(Some)
+                    } else {
+                        streams.stdin.flush().await.map(|()| None)
+                    }))
+                }
+            }, if writing || flushing || refusing=>result?,
             result=streams.stderr.read(&mut self.stderr_buffer), if self.stderr_open=>Observed::Stderr(result),
         };
         match observed {
@@ -380,10 +515,23 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 return Ok(Some(output));
             }
             Observed::Deadline => {
+                // An original lease can renew while this exact read waits.
+                // Re-evaluate it without cancelling/restarting the operation.
                 self.check(until)?;
-                return Err(Error::Timeout);
+                return Ok(None);
             }
-            Observed::Write(Ok(0)) => return Err(Error::Io("stdin write zero")),
+            Observed::Write(Ok(0)) | Observed::Refusal(Ok(Some(0))) => {
+                return Err(Error::Io("stdin write zero"));
+            }
+            Observed::Refusal(Ok(Some(n))) => {
+                let (bytes, offset) = self.refusing.as_mut().ok_or(Error::Closed)?;
+                *offset = offset
+                    .checked_add(n)
+                    .filter(|&n| n <= bytes.len())
+                    .ok_or(Error::Io("stdin write"))?;
+            }
+            Observed::Refusal(Ok(None)) => self.refusing = None,
+            Observed::Refusal(Err(_)) => return Err(Error::Io("stdin write")),
             Observed::Read(Ok(0)) => {
                 self.decoder.eof()?;
                 return Err(Error::PeerEof);
@@ -416,7 +564,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     pub async fn next_or_control<F: std::future::Future + ?Sized>(
         &mut self,
         mut control: std::pin::Pin<&mut F>,
-        until: Instant,
+        until: Deadline,
     ) -> Result<Controlled<F::Output>, Error> {
         loop {
             tokio::task::yield_now().await;
@@ -435,14 +583,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
     pub async fn send_prepared(
         &mut self,
         frame: &mut PreparedFrame,
-        control_deadline: Instant,
+        control_deadline: Deadline,
     ) -> Result<Controlled<WriteProgress>, Error> {
-        let until = (*frame.write_deadline.get_or_insert_with(|| {
+        let until = Deadline::from(*frame.write_deadline.get_or_insert_with(|| {
             frame
                 .deadline
                 .min(Instant::now() + Duration::from_millis(self.limits.write_timeout_ms))
         }))
-        .min(control_deadline);
+        .limit(control_deadline);
         self.check(until)?;
         match &self.writing {
             Some(writing) if writing.prepared == Some(frame.id) && frame.bytes.is_none() => {}

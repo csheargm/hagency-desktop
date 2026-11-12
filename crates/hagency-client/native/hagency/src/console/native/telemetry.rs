@@ -18,6 +18,7 @@ mod hook;
 mod store;
 mod personal;
 mod provider;
+mod shared_claude;
 #[cfg(test)]
 mod tests;
 
@@ -105,9 +106,9 @@ pub fn capabilities() -> Vec<RuntimeCapability> {
         RuntimeCapability {
             runtime: Runtime::Claude,
             path: ManagedRental,
-            usage: Unsupported,
+            usage: Collected,
             quota: Unsupported,
-            detail: "the managed pool launcher executes Codex only",
+            detail: "the final result of each pooled Claude call, once its durable receipt holds the usage complete; no provider account or plan is observed",
         },
         RuntimeCapability {
             runtime: Runtime::Octos,

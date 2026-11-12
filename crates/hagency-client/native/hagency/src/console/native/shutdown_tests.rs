@@ -11,6 +11,73 @@ fn resume_state(f: &Fixture) -> String {
     value["state"].as_str().unwrap().to_owned()
 }
 
+async fn projects(f: &Fixture, guarded: bool) -> Result<Value, NativeError> {
+    if guarded {
+        f.owner
+            .execute_guarded(crate::native_owner::Command::Projects, Arc::new(|| true))
+            .await
+    } else {
+        f.owner
+            .execute(crate::native_owner::Command::Projects)
+            .await
+    }
+}
+
+struct CommandSource {
+    current: Source,
+    failed: Arc<AtomicBool>,
+    code: &'static str,
+}
+
+impl MatrixTokenSource for CommandSource {
+    fn access_token(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<MatrixAccessToken, NativeError>> + Send + '_>,
+    > {
+        Box::pin(async {
+            if self.failed.load(Ordering::Acquire) {
+                return Err(failure(
+                    if self.code.ends_with("unavailable") {
+                        503
+                    } else {
+                        401
+                    },
+                    self.code,
+                ));
+            }
+            self.current.access_token().await
+        })
+    }
+}
+
+async fn command_source(f: &Fixture, code: &'static str) -> Arc<AtomicBool> {
+    let failed = Arc::new(AtomicBool::new(false));
+    let source: Arc<dyn MatrixTokenSource> = Arc::new(CommandSource {
+        current: Source(f.current.clone()),
+        failed: failed.clone(),
+        code,
+    });
+    let cookie = f
+        .owner
+        .0
+        .host
+        .console
+        .0
+        .server_login
+        .authorize_matrix(
+            &f.owner.0.host.console,
+            &f.owner.0.expected_origin,
+            &f.owner.0.expected_owner,
+            source.clone(),
+        )
+        .await
+        .unwrap();
+    *f.owner.0.matrix_source.lock().unwrap() = Some(source);
+    *f.owner.0.cookie.lock().await = format!("hagency_console={cookie}");
+    failed
+}
+
 #[tokio::test]
 async fn native_owner_suspend_preserves_original_credentials_but_retires_capabilities() {
     let f = Fixture::new().await;
@@ -123,25 +190,216 @@ async fn native_owner_checked_logout_reports_failed_durable_refusal() {
 
 #[tokio::test]
 async fn native_owner_command_source_loss_suspends_without_withdrawing_saved_account() {
-    let f = Fixture::new().await;
-    let path = f
-        .owner
-        .0
-        .host
-        .state_directory()
-        .join("server-login-sdk-resume.json");
-    let original = std::fs::read(&path).unwrap();
-    f.current.store(false, Ordering::Release);
-    assert_eq!(
+    for guarded in [false, true] {
+        let f = Fixture::new().await;
+        let retained = f.owner.management(package(20)).await.unwrap();
+        let path = f
+            .owner
+            .0
+            .host
+            .state_directory()
+            .join("server-login-sdk-resume.json");
+        let original = std::fs::read(&path).unwrap();
+        f.current.store(false, Ordering::Release);
+        assert_eq!(
+            projects(&f, guarded).await.unwrap_err().code,
+            "matrix_account_changed"
+        );
+        assert_eq!(f.state.lock().unwrap().project_reads, 0);
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert_eq!(resume_state(&f), "active");
+        assert!(f.owner.identity().await.is_err());
+        assert!(retained.authorized().await.is_err());
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn native_owner_post_request_source_loss_retires_ordinary_and_guarded_commands() {
+    for guarded in [false, true] {
+        let f = Fixture::new().await;
+        let failed = command_source(&f, "matrix_account_changed").await;
+        let retained = f.owner.management(package(20)).await.unwrap();
+        let path = f
+            .owner
+            .0
+            .host
+            .state_directory()
+            .join("server-login-sdk-resume.json");
+        let original = std::fs::read(&path).unwrap();
+        f.state.lock().unwrap().fail_source_at_projects = Some(failed);
+        assert_eq!(
+            projects(&f, guarded).await.unwrap_err().code,
+            "matrix_account_changed"
+        );
+        assert_eq!(f.state.lock().unwrap().project_reads, 1);
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert_eq!(resume_state(&f), "active");
+        assert!(f.owner.identity().await.is_err());
+        assert!(retained.authorized().await.is_err());
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn native_owner_temporary_command_source_failure_preserves_active_work_and_recovery() {
+    for guarded in [false, true] {
+        for after_request in [false, true] {
+            for code in [
+                "matrix_authorization_unavailable",
+                "hagency_server_unavailable",
+            ] {
+                let f = Fixture::new().await;
+                let failed = command_source(&f, code).await;
+                let retained = f.owner.management(package(20)).await.unwrap();
+                let path = f
+                    .owner
+                    .0
+                    .host
+                    .state_directory()
+                    .join("server-login-sdk-resume.json");
+                let original = std::fs::read(&path).unwrap();
+                // A mistaken suspension would retire this owner and wait for
+                // the in-flight activity, instead of returning the transient error.
+                let activity = f.owner.0.configuration_custody.enter().unwrap();
+                if after_request {
+                    f.state.lock().unwrap().fail_source_at_projects = Some(failed.clone());
+                } else {
+                    failed.store(true, Ordering::Release);
+                }
+                let error = tokio::time::timeout(Duration::from_secs(3), projects(&f, guarded))
+                    .await
+                    .expect("temporary source failure must not drain active work")
+                    .unwrap_err();
+                assert_eq!(error.status, 503);
+                assert_eq!(error.code, code);
+                assert_eq!(
+                    f.state.lock().unwrap().project_reads,
+                    usize::from(after_request)
+                );
+                assert!(!f.owner.0.configuration_stopped.load(Ordering::Acquire));
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert_eq!(resume_state(&f), "active");
+
+                f.state.lock().unwrap().fail_source_at_projects = None;
+                failed.store(false, Ordering::Release);
+                assert!(f.owner.identity().await.is_ok());
+                assert!(retained.authorized().await.is_ok());
+                assert_eq!(projects(&f, guarded).await.unwrap()["projects"], json!([]));
+                assert_eq!(
+                    f.state.lock().unwrap().project_reads,
+                    usize::from(after_request) + 1
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                drop(activity);
+                f.stop().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_owner_server_refusal_fails_the_command_without_retiring_the_owner() {
+    for guarded in [false, true] {
+        let f = Fixture::new().await;
+        let retained = f.owner.management(package(20)).await.unwrap();
+        let path = f
+            .owner
+            .0
+            .host
+            .state_directory()
+            .join("server-login-sdk-resume.json");
+        let original = std::fs::read(&path).unwrap();
+        // A mistaken suspension would retire this owner and wait for the
+        // in-flight activity, instead of returning the refusal.
+        let activity = f.owner.0.configuration_custody.enter().unwrap();
+        // The server refuses the saved owner session. The SDK account is unchanged.
+        f.state.lock().unwrap().refuse_renewal = true;
         f.owner
-            .execute(crate::native_owner::Command::LoginStatus)
+            .0
+            .host
+            .console
+            .0
+            .server_login
+            .forget_recent_check()
+            .await;
+        let error = tokio::time::timeout(Duration::from_secs(3), projects(&f, guarded))
             .await
-            .unwrap_err()
-            .code,
-        "matrix_account_changed"
-    );
-    assert_eq!(std::fs::read(path).unwrap(), original);
-    assert_eq!(resume_state(&f), "active");
+            .expect("a server refusal must not drain active work")
+            .unwrap_err();
+        assert_eq!(error.code, "sign_in_required");
+        assert_eq!(f.state.lock().unwrap().project_reads, 0);
+        assert!(!f.owner.is_retired());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(resume_state(&f), "active");
+
+        // The same saved session is accepted again: the next command restores it.
+        f.state.lock().unwrap().refuse_renewal = false;
+        assert_eq!(projects(&f, guarded).await.unwrap()["projects"], json!([]));
+        assert_eq!(f.state.lock().unwrap().project_reads, 1);
+        assert!(f.owner.identity().await.is_ok());
+        assert!(retained.authorized().await.is_ok());
+        assert!(!f.owner.is_retired());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        drop(activity);
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn native_owner_retires_for_matrix_source_loss_and_for_nothing_else() {
+    let f = Fixture::new().await;
+    let retained = f.owner.management(package(20)).await.unwrap();
+    let activity = f.owner.0.configuration_custody.enter().unwrap();
+    for (status, code) in [
+        (401, "sign_in_required"),
+        (401, "server_request_failed"),
+        (401, "invalid_server_response"),
+        (401, "native_device_registration_unknown"),
+        (401, "native_resume_revoked"),
+        (401, "native_resume_missing"),
+        (401, "invalid_sdk_token"),
+        (401, "unsupported_hagency_server"),
+        (401, "hagency_server_rejected"),
+        (401, "owner_authorization_required"),
+        (403, "source_current_profile_only"),
+        (503, "matrix_authorization_unavailable"),
+        (503, "server_unavailable"),
+    ] {
+        assert!(!crate::console::native::matrix_source_lost(code), "{code}");
+        for stage in ["sdk_pre_request", "sdk_post_request"] {
+            let error = tokio::time::timeout(
+                Duration::from_secs(3),
+                f.owner.command_matrix_error(failure(status, code), stage),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{code} must not drain active work"));
+            assert_eq!((error.status, error.code.as_str()), (status, code));
+            assert!(!f.owner.is_retired(), "{code}");
+        }
+    }
+    assert!(f.owner.identity().await.is_ok());
+    assert!(retained.authorized().await.is_ok());
+    assert_eq!(projects(&f, false).await.unwrap()["projects"], json!([]));
+    drop(activity);
+
+    for code in [
+        "matrix_account_changed",
+        "matrix_account_mismatch",
+        "matrix_oauth_sign_in_required",
+        "matrix_authorization_required",
+        "unsupported_hagency_issuer",
+    ] {
+        assert!(crate::console::native::matrix_source_lost(code), "{code}");
+    }
+    let error = f
+        .owner
+        .command_matrix_error(failure(401, "matrix_account_mismatch"), "sdk_pre_request")
+        .await;
+    assert_eq!(error.code, "matrix_account_mismatch");
+    assert!(f.owner.is_retired());
     assert!(f.owner.identity().await.is_err());
+    assert!(retained.authorized().await.is_err());
+    assert_eq!(resume_state(&f), "active", "only explicit logout withdraws the saved session");
     f.stop().await;
 }

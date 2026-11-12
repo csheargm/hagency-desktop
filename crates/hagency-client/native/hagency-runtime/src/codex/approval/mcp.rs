@@ -19,7 +19,7 @@ struct Candidate {
 }
 #[derive(Default)]
 pub(crate) struct McpTracker {
-    items: BTreeMap<String, Candidate>,
+    items: BTreeMap<(String, String, String), Candidate>,
     bytes: usize,
 }
 impl McpTracker {
@@ -32,13 +32,18 @@ impl McpTracker {
         }
         let item = &params["item"];
         let id = item["id"].as_str().ok_or(Error::Malformed)?;
+        let key = (
+            params["threadId"].as_str().ok_or(Error::Scope)?.into(),
+            params["turnId"].as_str().ok_or(Error::Scope)?.into(),
+            id.to_owned(),
+        );
         if method == "item/completed" {
-            if let Some(candidate) = self.items.get_mut(id) {
+            if let Some(candidate) = self.items.get_mut(&key) {
                 candidate.active = false;
             }
             return Ok(());
         }
-        if self.items.contains_key(id) {
+        if self.items.contains_key(&key) {
             return Err(Error::Scope);
         }
         if self.items.len() >= super::super::session::MAX_ITEMS {
@@ -66,7 +71,7 @@ impl McpTracker {
             .filter(|n| *n <= MAX_RETAINED_BYTES)
             .ok_or(Error::Capacity)?;
         self.items.insert(
-            id.into(),
+            key,
             Candidate {
                 call: Call {
                     server: item["server"].as_str().ok_or(Error::Malformed)?.into(),
@@ -79,8 +84,10 @@ impl McpTracker {
         );
         Ok(())
     }
-    pub(crate) fn active(&self, id: &str) -> bool {
-        self.items.get(id).is_some_and(|c| c.active && c.consumed)
+    pub(crate) fn active(&self, thread: &str, turn: &str, id: &str) -> bool {
+        self.items
+            .get(&(thread.into(), turn.into(), id.into()))
+            .is_some_and(|c| c.active && c.consumed)
     }
     pub(crate) fn request(
         &mut self,
@@ -127,20 +134,22 @@ impl McpTracker {
         {
             return Err(Error::Policy);
         }
-        let mut matches = self.items.iter().filter(|(_, c)| {
-            c.active
+        let mut matches = self.items.iter().filter(|((thread, turn, _), c)| {
+            params["threadId"] == *thread
+                && params["turnId"] == *turn
+                && c.active
                 && !c.consumed
                 && c.call.server == params["serverName"]
                 && c.call.arguments == params["_meta"]["tool_params"]
         });
-        let item_id = matches
+        let key = matches
             .next()
             .map(|(key, _)| key.clone())
             .ok_or(Error::Scope)?;
         if matches.next().is_some() {
             return Err(Error::Scope);
         }
-        let candidate = self.items.get_mut(&item_id).ok_or(Error::Scope)?;
+        let candidate = self.items.get_mut(&key).ok_or(Error::Scope)?;
         candidate.consumed = true;
         Ok(ApprovalRequest {
             id,
@@ -148,7 +157,7 @@ impl McpTracker {
             common: Common {
                 thread_id: params["threadId"].as_str().ok_or(Error::Malformed)?.into(),
                 turn_id: params["turnId"].as_str().ok_or(Error::Malformed)?.into(),
-                item_id,
+                item_id: key.2,
             },
             params,
             kind: Kind::Mcp(Box::new(candidate.call.clone())),

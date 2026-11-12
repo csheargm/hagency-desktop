@@ -1,17 +1,22 @@
 //! Explicitly enabled first shared text turn on a retained actual provider.
 //! Original central commands, local holds and process evidence remain distinct.
 mod context_io;
+mod launch;
+mod claude_run;
+mod claude_workspace;
 mod e2ee;
-mod history;
-mod files;
+pub(in crate::console) mod history;
+pub(in crate::console) mod files;
 mod approvals;
-pub(in crate::console::native) mod questions;
+pub(in crate::console) mod questions;
 mod demand_io;
 mod demands;
 mod io;
 mod guarded;
 mod stop_capture;
-use guarded::guarded;
+mod run_controls;
+mod cooperative;
+use guarded::{guarded, reply_settled};
 pub use demands::{
     SharedDemandPoll, SharedDemandProgress, SharedDemandResume, SharedDemandStopReceipt,
     SharedDemandStopResume,
@@ -21,7 +26,11 @@ mod attempt_io;
 mod attempt_run;
 mod attempts;
 mod successor_inventory;
-pub use accepted_start::{PreparedSharedSuccessor, SharedSuccessorResume, SharedSuccessorReview, SharedSuccessorAssessment, SharedSuccessorBudgetReview, SharedSuccessorBlockReason, SharedSuccessorDescription};
+pub use accepted_start::{
+    PreparedSharedSuccessor, SharedSuccessorResume, SharedSuccessorReview,
+    SharedSuccessorAssessment, SharedSuccessorBudgetReview, SharedSuccessorBlockReason,
+    SharedSuccessorDescription,
+};
 pub use successor_inventory::{SharedSuccessorPage, SharedSuccessorSummary};
 mod manager;
 mod run;
@@ -149,8 +158,18 @@ impl SharedExecutionTransport {
         r: &OwnerResourceRegistry,
         launch: super::managed_runtime::PreparedLaunch,
     ) -> Result<SharedExecutionProgress, NativeError> {
-        self.process(r, Action::Poll { after: None }, None, Some(launch))
+        self.process(r, Action::Poll { after: None }, None, Some(launch.into()))
             .await
+    }
+    #[cfg(all(test, feature = "shared-execution"))]
+    pub(super) async fn poll_claude_fixture(
+        &self, r: &OwnerResourceRegistry, resource_id: String, root: std::path::PathBuf,
+        binding: hagency_runtime::claude::account::AccountBinding, mode: &str,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
+        let launch = launch::ClaudeLaunch::fixture(r.clone(), b.scope.profile, &resource, root, binding, mode);
+        self.process(r, Action::Poll { after: None }, None, Some(launch::Launch::Claude(launch))).await
     }
     /// Historical accounting upload only. Neither missing evidence nor a server
     /// recovery response can authorize another process or model turn.
@@ -213,7 +232,7 @@ impl SharedExecutionTransport {
         r: &OwnerResourceRegistry,
         action: Action,
         historical: Option<(String, String, Option<String>)>,
-        prepared: Option<super::managed_runtime::PreparedLaunch>,
+        prepared: Option<launch::Launch>,
     ) -> Result<SharedExecutionProgress, NativeError> {
         if !cfg!(feature = "shared-execution") {
             return Err(failure(409, "shared_execution_disabled"));
@@ -279,17 +298,29 @@ impl SharedExecutionTransport {
             .await
             .map_err(store)?;
         b.transport.check_scope(&b.scope, false).await?;
-        if local.is_none() && !d.execution_allowed && d.cleanup_allowed && historical.is_none()
-            && c.reserve_command.pool_grant.as_ref().is_some_and(|grant| grant.calendar.is_some())
+        if local.is_none()
+            && !d.execution_allowed
+            && d.cleanup_allowed
+            && historical.is_none()
+            && c.reserve_command
+                .pool_grant
+                .as_ref()
+                .is_some_and(|grant| grant.calendar.is_some())
         {
             // Only the native atomic no-issuance proof can retire an expired
             // original. A missing receipt or elapsed lease alone never proves
             // that a process did not run.
             let authority = b.cleanup(r, c).await?;
-            local = r.record_unstarted_shared_runtime(authority, c.clone()).await.map_err(store)?;
+            local = r
+                .record_unstarted_shared_runtime(authority, c.clone())
+                .await
+                .map_err(store)?;
             b.transport.check_scope(&b.scope, false).await?;
         }
-        if local.as_ref().is_some_and(|receipt| receipt.state != "not_started") {
+        if local
+            .as_ref()
+            .is_some_and(|receipt| receipt.state != "not_started")
+        {
             // Process history alone is insufficient: durable work observations
             // may still need reporting after a lost reply or process restart.
             run::recover_process_work(&self.io, r, c).await.map_err(|error| {
@@ -315,7 +346,7 @@ impl SharedExecutionTransport {
                     return Ok(SharedExecutionProgress::Recorded {
                         command_id: c.command_id.clone(),
                         observation_id: latest.observation_id.clone(),
-                    process_state: Some(latest.state.clone()),
+                        process_state: Some(latest.state.clone()),
                     });
                 }
                 if latest.ledger_revision == saved.ledger_revision
@@ -332,7 +363,7 @@ impl SharedExecutionTransport {
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: saved.observation_id.clone(),
-                    process_state: Some(saved.state.clone()),
+                process_state: Some(saved.state.clone()),
             });
         }
         if let Some(local) = local {
@@ -340,7 +371,7 @@ impl SharedExecutionTransport {
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: local.observation_id,
-                    process_state: Some(local.state.clone()),
+                process_state: Some(local.state.clone()),
             });
         }
         if !d.execution_allowed {
@@ -365,7 +396,8 @@ impl SharedExecutionTransport {
             .resource(&b.scope.profile, c.reserve_command.resource_id.clone())
             .await
             .map_err(store)?;
-        if resource.framework != "codex" || resource.revision != c.reserve_command.resource_revision
+        if resource.framework != c.runtime().map_err(store)?
+            || resource.revision != c.reserve_command.resource_revision
         {
             return Err(failure(409, "shared_execution_resource_changed"));
         }
@@ -382,12 +414,11 @@ impl SharedExecutionTransport {
                 .server_login
                 .state_directory()
                 .ok_or_else(|| failure(409, "shared_execution_launch_unavailable"))?;
-            super::managed_runtime::PreparedLaunch::for_resource(
-                &root, &b.scope.device, r, &b.scope.profile, &resource, true,
-            ).await?
+            launch::Launch::for_resource(&root, &b.scope.device, r, &b.scope.profile, &resource)
+                .await?
         };
         let launch = launch.with_agent_workspace(&c.reserve_command.proposed_agent_id)?;
-        let process_io=self.io.with_namespace(launch.namespace());
+        let process_io = launch.io(&self.io);
         let io = process_io.clone();
         let command = c.clone();
         let check: super::managed_runtime::LiveCheck = Arc::new(move || {
@@ -395,13 +426,7 @@ impl SharedExecutionTransport {
             let c = command.clone();
             Box::pin(async move { io.check(&c).await })
         });
-        let launch = self
-            .manager
-            .owner
-            .0
-            .managed_runtime
-            .prepare(launch, until, check)
-            .await?;
+        let launch = launch.prepare(&self.manager, until, check).await?;
         b.transport.check_scope(&b.scope, false).await?;
         self.manager
             .owner
@@ -422,18 +447,18 @@ impl SharedExecutionTransport {
     }
 }
 
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_io;
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_attempts;
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_run;
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_work_io;
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_context_io;
 
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_demand_io;
-#[cfg(feature="shared-budget-execution")]
+#[cfg(feature = "shared-budget-execution")]
 mod budget_demands;

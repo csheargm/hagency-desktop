@@ -35,7 +35,7 @@ python3 tools/wechat-ux/check_i18n.py
 ```
 
 The Python tests launch actual Makepad/Metal windows with `MAKEPAD_HIDE_WINDOWS=1`,
-`MAKEPAD_NO_FOCUS=1`, a fresh `RINX_DATA_DIR`, and a private loopback instrumentation
+`MAKEPAD_NO_FOCUS=1`, a fresh `HAGENCY_DESKTOP_DATA_DIR`, and a private loopback instrumentation
 port. They use native clicks/keyboard/scroll events, capture PNGs and widget
 bounds, and stop their own processes. They do not sign into Matrix or use the
 running user's account. Results and input traces go under

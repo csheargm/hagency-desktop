@@ -3,9 +3,35 @@ use super::{ManagementRuntime, NativeError, NativeManagement, failure};
 use hagency_store::{management::Permission, owner_resources::VerifiedProviderAccount};
 
 impl NativeManagement {
+    /// The credential one shared Claude launch runs on. The caller is the
+    /// shared executor, whose session holds `ExecuteManagedAgents` and nothing
+    /// else, so that is the permission asked for here: asking for the two
+    /// provider permissions refused every real launch with
+    /// `management_access_required`.
+    pub(super) async fn shared_claude_credential(
+        &self, paths: &crate::console::owner_provider::ProviderPaths,
+        until: std::time::Instant,
+    ) -> Result<hagency_runtime::claude::account::SharedCredential, NativeError> {
+        let _guard = self.owner.0.calls.lock().await;
+        let (context, session) = self.authorized().await?;
+        session
+            .authorize(&context, Permission::ExecuteManagedAgents)
+            .map_err(super::management::store_error)?;
+        let deadline = until.min(session.valid_until())
+            .min(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        let credential = crate::console::owner_provider::claude_identity::observe_for_launch(paths, deadline)
+            .await.map_err(|e| failure(e.status, e.code))?;
+        let (fresh, live) = self.authorized().await?;
+        if fresh != context { return Err(failure(401, "management_scope_changed")); }
+        live.authorize(&context, Permission::ExecuteManagedAgents)
+            .map_err(super::management::store_error)?;
+        Ok(credential)
+    }
     /// Obtain a short-lived, non-deserializable identity from an already
     /// connected provider. This does not enroll a resource, merge old ledgers,
-    /// approve capacity, read credential files, or initiate provider login.
+    /// approve capacity or initiate provider login. Claude reuses its selected
+    /// native OAuth credential transiently for the fixed provider profile API;
+    /// neither the credential nor public account metadata leaves the adapter.
     /// The native host must still obtain owner consent for registry enrollment.
     pub async fn verified_provider_account(
         &self,
@@ -18,20 +44,18 @@ impl NativeManagement {
                 .authorize(&context, permission)
                 .map_err(|_| failure(403, "management_permission_required"))?;
         }
-        // Claude's public auth status currently has email/orgId, not the
-        // individual quota account UUID. Octos profiles expose no such proof.
-        // Their existing onboarding remains usable; neither can mint a new
-        // installation-level capacity declaration from a path or email.
-        if runtime != ManagementRuntime::Codex {
+        if runtime == ManagementRuntime::Octos {
             return Err(failure(409, "provider_identity_unavailable"));
         }
         let cookie = self.owner.0.cookie.lock().await.clone();
         let raw_cookie = cookie
             .strip_prefix("hagency_console=")
             .ok_or_else(|| failure(401, "owner_authorization_required"))?;
-        let result = crate::console::owner_provider::identity::verify(
+        let result = crate::console::owner_provider::identity::verify_runtime(
             &self.owner.0.host.console,
             raw_cookie,
+            if runtime == ManagementRuntime::Claude { hagency_agent_local::runtime::Kind::Claude }
+            else { hagency_agent_local::runtime::Kind::Codex },
         )
         .await;
         let (fresh, live) = self.authorized().await?;
@@ -83,7 +107,19 @@ impl NativeManagement {
         revision: String,
     ) -> Result<VerifiedProviderAccount, NativeError> {
         let namespace=registry.resource_namespace(profile,resource,revision).await.map_err(super::management::store_error)?;
-        let Some(namespace)=namespace else {return self.verified_provider_account(runtime).await};
+        let Some(namespace)=namespace else {
+            if runtime!=ManagementRuntime::Claude {return self.verified_provider_account(runtime).await}
+            // A Claude resource has no sign-in folder: it is the owner's
+            // connected configuration, observed as the shared launch does.
+            let _guard=self.owner.0.calls.lock().await;
+            let (context,session)=self.authorized().await?;
+            for p in [Permission::ReadProviders,Permission::ConnectProviders] {session.authorize(&context,p).map_err(super::management::store_error)?;}
+            let result=self.claude_resource_proof(&context,&session).await;
+            let (fresh,live)=self.authorized().await?;
+            if fresh!=context {return Err(failure(401,"management_scope_changed"));}
+            for p in [Permission::ReadProviders,Permission::ConnectProviders] {live.authorize(&context,p).map_err(super::management::store_error)?;}
+            return result;
+        };
         if runtime!=ManagementRuntime::Codex {return Err(failure(409,"provider_identity_unavailable"));}
         let _guard=self.owner.0.calls.lock().await;
         let (context,session)=self.authorized().await?;

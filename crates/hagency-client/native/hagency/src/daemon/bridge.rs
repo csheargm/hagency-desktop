@@ -17,7 +17,7 @@ pub use client::{ControllerClient, ManagementClient};
 pub use journal::PendingCommand;
 #[cfg(feature = "resource-adoption")]
 pub use grants::{
-    AdoptedSelection, DeviceSetupReview, OwnerGrantAccess, OwnerGrantCancellationResult,
+    CurrentSelection, DeviceSetupReview, OwnerGrantAccess, OwnerGrantCancellationResult,
     OwnerGrantCancellationReview, OwnerGrantPublicationResult, OwnerGrantPublicationReview,
     OwnerGrantReview, OwnerGrantReviewResult, OwnerOperation, PreparedSharedSuccessor,
     SuccessorAssessment,
@@ -279,7 +279,6 @@ fn owner_mutation(command: &crate::native_owner::Command) -> bool {
                 action: LocalAction::AgentModel
                     | LocalAction::AgentPolicy
                     | LocalAction::Policy
-                    | LocalAction::Model
                     | LocalAction::Runtime
                     | LocalAction::AgentServiceStatus
                     | LocalAction::Approvals,
@@ -289,9 +288,76 @@ fn owner_mutation(command: &crate::native_owner::Command) -> bool {
     )
 }
 
+/// Owner commands that say what should be, not a step to take: this Agent's
+/// service runs or is stopped, a coding tool's local account is used or no
+/// longer used, the private chat with an Agent exists. Each one reads the
+/// current state first and leaves the same state however often it runs (a
+/// second start finds the service running; the private chat keeps its own
+/// record of how far it got).
+///
+/// Only these may run again after a refusal that is not final, or after a
+/// daemon restart cut the first run short. Without that, a start refused
+/// because no model was chosen yet stayed refused for a day under the same
+/// request: the Desktop reuses the request for 24 hours and the daemon
+/// answered every reuse with `daemon_command_recovery_required`. Commands that
+/// create something or decide something (a new Agent, a room binding, a saved
+/// policy, an approval) are not listed and keep the original rule.
+fn repeatable_owner_command(command: &crate::native_owner::Command) -> bool {
+    use crate::native_owner::{Command, LocalAction, ProviderAction};
+    matches!(
+        command,
+        Command::Local {
+            action: LocalAction::StartAgentService | LocalAction::StopAgentService,
+            ..
+        } | Command::Provider {
+            action: ProviderAction::UseLocal | ProviderAction::Disconnect
+        } | Command::RuntimeProvider {
+            action: ProviderAction::UseLocal | ProviderAction::Disconnect,
+            ..
+        } | Command::EnsureAgentOwnerDirect { .. }
+    )
+}
+
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
+    #[test]
+    fn only_desired_state_owner_commands_may_run_again() {
+        use crate::native_owner::{AgentAction, Command, LocalAction, ProviderAction};
+        let local = |action| Command::Local { agent_id: "a".into(), action, input: None, binding_id: None, requester: None };
+        for command in [
+            local(LocalAction::StartAgentService),
+            local(LocalAction::StopAgentService),
+            Command::Provider { action: ProviderAction::UseLocal },
+            Command::Provider { action: ProviderAction::Disconnect },
+            Command::RuntimeProvider { runtime: "claude".into(), action: ProviderAction::UseLocal },
+            Command::RuntimeProvider { runtime: "claude".into(), action: ProviderAction::Disconnect },
+            Command::EnsureAgentOwnerDirect { agent_id: "a".into() },
+        ] {
+            assert!(owner_mutation(&command), "{command:?}");
+            assert!(repeatable_owner_command(&command), "{command:?}");
+        }
+        for command in [
+            Command::CreateAgent { input: serde_json::json!({}) },
+            Command::BindAgent { agent_id: "a".into(), input: serde_json::json!({}) },
+            Command::Agent { agent_id: "a".into(), action: AgentAction::Retire },
+            Command::AssignAgentToCurrentDevice { agent_id: "a".into(), expected_generation: 1 },
+            Command::AgentOwnerDirect { agent_id: "a".into(), room_id: "!r:s".into() },
+            Command::PrepareAgentWorkspace { agent_id: "a".into() },
+            local(LocalAction::SaveAgentModel),
+            local(LocalAction::SaveAgentPolicy),
+            local(LocalAction::ResetAgentPolicy),
+            local(LocalAction::RuntimeStart),
+            local(LocalAction::RuntimeStop),
+            local(LocalAction::Decision { approval_id: "p".into() }),
+            Command::Provider { action: ProviderAction::Login },
+            Command::Provider { action: ProviderAction::Logout },
+            Command::RuntimeProvider { runtime: "claude".into(), action: ProviderAction::Logout },
+        ] {
+            assert!(owner_mutation(&command), "{command:?}");
+            assert!(!repeatable_owner_command(&command), "{command:?}");
+        }
+    }
     #[test]
     fn nested_queries_are_repeatable_and_only_real_writes_need_receipts() {
         for operation in ["session","pools","inbox","agent_budget"] {

@@ -71,7 +71,7 @@ fn standalone_rinx_owns_one_local_runtime_and_stops_only_it() {
     let _ = std::fs::remove_dir_all(&data);
     // Rinx's own data root and the packaged kernel, set explicitly (never PATH).
     unsafe {
-        std::env::set_var("RINX_DATA_DIR", &data);
+        std::env::set_var("HAGENCY_DESKTOP_DATA_DIR", &data);
         // Release validation runs a copy of this executable beside the
         // packaged kernel, exercising production discovery without overrides.
         if std::env::var_os("RINX_TEST_PACKAGED_OCTOS").is_some() {

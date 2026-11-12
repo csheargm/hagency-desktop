@@ -59,7 +59,7 @@ fn credential_changed(row: &mut Record) {
     row.public.access_state = "unverified".into();
     row.public.checked_at = None;
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn web_connections(
         &self,
         profile: &ProfileAuthority,

@@ -85,7 +85,7 @@ async fn native_private_approval_send_cancellation_and_loss() {
         let mut operation = Box::pin(f.collector.send_private_approval_card(card, &cancel));
         loop {
             tokio::select! {r=&mut operation=>panic!("send finished before held request: {r:?}"),request=f.fake.next()=>{
-                if request.method=="PUT"&&(request.target.contains("/send/")==room_write){drop(request);break;}
+                if request.method=="PUT"&&((room_write && request.target.contains("/send/")) || (!room_write && request.target.contains("/sendToDevice/"))){drop(request);break;}
                 respond(request,&mut f.peer).await;
             }}
         }

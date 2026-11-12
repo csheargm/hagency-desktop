@@ -95,12 +95,21 @@ impl VerifiedManagedAgentFence {
     ) -> Result<Self, Error> {
         enrollment.check()?;
         command.validate(&enrollment.profile.account)?;
-        if command.reserve_command.pool_grant.is_none() || !execution_allowed
-            || expires <= Instant::now() || expires > Instant::now() + Duration::from_secs(60)
-            || canonical::digest(&serde_json::to_value(&command)?)? != digest {
+        if command.reserve_command.pool_grant.is_none()
+            || !execution_allowed
+            || expires <= Instant::now()
+            || expires > Instant::now() + Duration::from_secs(60)
+            || canonical::digest(&serde_json::to_value(&command)?)? != digest
+        {
             return Err(Error::LocalAuthority);
         }
-        Ok(Self { enrollment, command, digest, project: None, expires })
+        Ok(Self {
+            enrollment,
+            command,
+            digest,
+            project: None,
+            expires,
+        })
     }
     fn check(&self, r: &Inner) -> Result<(), Error> {
         self.enrollment.check()?;
@@ -126,8 +135,29 @@ pub(super) fn original_project(
     id: &str,
     expected: &str,
 ) -> Result<AllocationCommand, Error> {
+    find_original_project(db, p, device, id, expected)?.ok_or(Error::LocalAuthority)
+}
+fn find_original_project(
+    db: &Connection,
+    p: &ProfileAuthority,
+    device: &str,
+    id: &str,
+    expected: &str,
+) -> Result<Option<AllocationCommand>, Error> {
     let row:Option<(String,String,String,Option<String>,String)>=db.query_row("SELECT g.profile,a.reserve_command,a.reserve_digest,r.reserve_digest,r.reserve_command_id FROM owner_project_authorities a JOIN owner_project_reservations r ON r.id=a.allocation_id JOIN owner_capacity_grants g ON g.id=r.grant_id WHERE a.allocation_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-    let (profile, raw, digest, saved, command_id) = row.ok_or(Error::LocalAuthority)?;
+    let Some((profile, raw, digest, saved, command_id)) = row else {
+        // A clean current installation may have no original allocation. A
+        // partial/broken join is not that absence and must remain a refusal.
+        let partial: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM owner_project_authorities WHERE allocation_id=?1 UNION ALL SELECT 1 FROM owner_project_reservations WHERE id=?1)",
+            [id], |r| r.get(0),
+        )?;
+        return if partial {
+            Err(Error::LocalAuthority)
+        } else {
+            Ok(None)
+        };
+    };
     let c: AllocationCommand = serde_json::from_str(&raw)?;
     validate_command(&c)?;
     if profile != p.digest
@@ -150,7 +180,7 @@ pub(super) fn original_project(
     {
         return Err(Error::Conflict);
     }
-    Ok(c)
+    Ok(Some(c))
 }
 impl OwnerResourceRegistry {
     pub async fn managed_agent_project_history(
@@ -160,6 +190,19 @@ impl OwnerResourceRegistry {
         allocation: String,
         receipt_digest: String,
     ) -> Result<AllocationCommand, Error> {
+        self.find_managed_agent_project_history(profile, device, allocation, receipt_digest)
+            .await?
+            .ok_or(Error::LocalAuthority)
+    }
+    /// Read-only discovery for historical transport deliveries. None means the
+    /// original allocation is absent, never that current authority was refused.
+    pub async fn find_managed_agent_project_history(
+        &self,
+        profile: ProfileAuthority,
+        device: String,
+        allocation: String,
+        receipt_digest: String,
+    ) -> Result<Option<AllocationCommand>, Error> {
         check_read(&profile, &self.0)?;
         identifier(&device, 128)?;
         identifier(&allocation, 128)?;
@@ -172,7 +215,7 @@ impl OwnerResourceRegistry {
             .call(32 * 1024, move |db| {
                 check_read(&profile, &registry)?;
                 let result =
-                    original_project(&db.db, &profile, &device, &allocation, &receipt_digest)?;
+                    find_original_project(&db.db, &profile, &device, &allocation, &receipt_digest)?;
                 check_read(&profile, &registry)?;
                 Ok(result)
             })
@@ -384,12 +427,21 @@ pub(super) fn verify_original(
 ) -> Result<(), Error> {
     if let Some(grant) = &original.pool_grant {
         original.validate(&e.profile.account)?;
-        if expected_project.is_some() || !e.matches_cleanup(grant)
-            || e.executor_generation < grant.executor_generation {
+        if expected_project.is_some()
+            || !e.matches_cleanup(grant)
+            || e.executor_generation < grant.executor_generation
+        {
             return Err(Error::LocalAuthority);
         }
-        let (profile,stored):(String,String)=db.query_row("SELECT profile,receipt FROM owner_capacity_grants WHERE id=?1",[&grant.grant_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        if profile!=e.profile.digest || canonical::digest(&serde_json::from_str::<serde_json::Value>(&stored)?)?!=original.grant_receipt_digest {
+        let (profile, stored): (String, String) = db.query_row(
+            "SELECT profile,receipt FROM owner_capacity_grants WHERE id=?1",
+            [&grant.grant_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if profile != e.profile.digest
+            || canonical::digest(&serde_json::from_str::<serde_json::Value>(&stored)?)?
+                != original.grant_receipt_digest
+        {
             return Err(Error::LocalAuthority);
         }
         return Ok(());

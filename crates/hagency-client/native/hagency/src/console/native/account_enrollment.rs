@@ -11,13 +11,15 @@ impl NativeManagement {
         if Instant::now()>=confirmed_until {return Err(failure(403,"provider_confirmation_expired"));}
         let (context,session)=self.authorized().await?;
         session.authorize(&context,Permission::EnrollResources).map_err(store_error)?;
-        if !self.account_enrollment_ready(){return Err(failure(409,"resource_adoption_required"));}
+        if !self.account_enrollment_ready(){return Err(failure(409,"device_setup_required"));}
         let intent=Intent::new(IntentOperation::EnrollAccountResource,input.command_id.clone(),&input).map_err(store_error)?;
         self.with_intent(intent,self.enroll_account_resource_now(input,confirmed_until)).await
     }
     async fn enroll_account_resource_now(&self,input:NamespaceEnrollment,confirmed_until:Instant)->Result<OwnerResourceReceipt,NativeError>{
+        // The owner's own Claude Code configuration has no sign-in folder.
+        if input.account.account_id==super::claude_account::ACCOUNT {return self.enroll_claude_resource(input,confirmed_until).await;}
         #[cfg(not(feature="resource-adoption"))]
-        {let _=(input,confirmed_until);Err(failure(409,"resource_adoption_required"))}
+        {let _=(input,confirmed_until);Err(failure(409,"device_setup_required"))}
         #[cfg(feature="resource-adoption")]
         {
             let _guard=self.owner.0.calls.lock().await;

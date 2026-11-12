@@ -1,4 +1,29 @@
 use super::*;
+
+#[test]
+fn claude_native_provider_binding_preserves_quota_identity_without_email_or_path_keys() {
+    use hagency_runtime::claude::account::{AccountBinding, PROVIDER};
+    let binding = |account: &str, email: &str| AccountBinding::from_authenticated_profile(
+        account, "89abcdef-0123-4567-89ab-cdef01234567", email,
+        Instant::now() + Duration::from_secs(30),
+    ).unwrap();
+    let original = binding("01234567-89AB-CDEF-0123-456789ABCDEF", "before@example.test");
+    let proof = VerifiedProviderAccount::from_claude_binding(original.clone()).unwrap();
+    assert_eq!(proof.digest, original.provider_digest());
+    assert_eq!(proof.runtime, "claude");
+    assert!(proof.claude_binding().is_ok());
+    let renamed = VerifiedProviderAccount::from_claude_binding(
+        binding("01234567-89ab-cdef-0123-456789abcdef", "after@example.test")
+    ).unwrap();
+    assert_eq!(proof.digest, renamed.digest, "email rename does not create another capacity account");
+    let other = VerifiedProviderAccount::from_claude_binding(
+        binding("01234567-89ab-cdef-0123-456789abcdee", "before@example.test")
+    ).unwrap();
+    assert_ne!(proof.digest, other.digest);
+    let unbound = VerifiedProviderAccount::new("claude", PROVIDER, original.subject(), original.expires()).unwrap();
+    assert_eq!(unbound.digest, proof.digest);
+    assert!(unbound.claude_binding().is_err(), "restored identity is not a fresh native credential observation");
+}
 #[path = "managed_agent_tests.rs"]
 mod managed_agents;
 #[path = "parent_tests.rs"]
@@ -7,6 +32,45 @@ mod parent;
 mod provenance_history;
 #[path = "readmission_tests.rs"]
 mod readmission;
+
+/// A database notes that it was created empty, under the name the server
+/// will know it by. Only that database can claim the note, and it stops
+/// claiming it once it has to report to a server it could not declare to.
+#[tokio::test]
+async fn a_database_created_empty_says_so_until_it_reports_undeclared() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("owner");
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    let note = root.canonicalize().unwrap().join("ledger-created-empty");
+    assert!(registry.ledger_created_empty());
+    assert_eq!(std::fs::read(&note).unwrap(), registry.ledger_id().as_bytes());
+    // The same database after a restart is still the one that was created empty.
+    let name = registry.ledger_id();
+    registry.shutdown().await.unwrap();
+    drop(registry);
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    assert_eq!(registry.ledger_id(), name);
+    assert!(registry.ledger_created_empty());
+    // A note left for another database is not this one's.
+    crate::private::replace(&note, "0".repeat(64).as_bytes()).unwrap();
+    assert!(!registry.ledger_created_empty());
+    crate::private::replace(&note, name.as_bytes()).unwrap();
+    assert!(registry.ledger_created_empty());
+    // Reporting undeclared ends the claim for good, and may be repeated.
+    registry.ledger_reports_undeclared().unwrap();
+    assert!(!note.exists());
+    assert!(!registry.ledger_created_empty());
+    registry.ledger_reports_undeclared().unwrap();
+    // Opening the existing database again never writes the note: a database
+    // from before this note existed, or one that reported undeclared, stays so.
+    registry.shutdown().await.unwrap();
+    drop(registry);
+    let registry = OwnerResourceRegistry::open_root(&root).unwrap();
+    assert_eq!(registry.ledger_id(), name);
+    assert!(!note.exists());
+    assert!(!registry.ledger_created_empty());
+    registry.shutdown().await.unwrap();
+}
 
 #[tokio::test]
 async fn resource_owner_can_allocate_a_legacy_delegated_grant_without_rewriting_it() {

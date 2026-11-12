@@ -1,7 +1,7 @@
 //! Embedded resource management. No HTTP request, listener or browser assets.
 use super::{NativeError, NativeOwner, failure};
 use crate::console::owned_agents::profile_identity;
-use hagency_store::{DomainRepository, DomainStore, management as service};
+use hagency_store::management as service;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -26,18 +26,16 @@ pub struct ManagementPackage {
 
 #[derive(Clone)]
 enum ManagementStore {
-    Legacy(DomainStore),
     Server(service::ServerManagementJournal),
     #[cfg(feature = "resource-adoption")]
-    Adopted(Box<hagency_store::owner_resources::adoption::AdoptedManagementStore>),
+    Current(Box<hagency_store::owner_resources::adoption::CurrentManagementStore>),
 }
 impl ManagementStore {
     async fn shutdown(&self) -> Result<(), hagency_store::Error> {
         match self {
-            Self::Legacy(store) => store.shutdown().await,
             Self::Server(journal) => journal.shutdown().await,
             #[cfg(feature = "resource-adoption")]
-            Self::Adopted(store) => store.shutdown().await,
+            Self::Current(store) => store.shutdown().await,
         }
     }
     fn session(
@@ -47,15 +45,12 @@ impl ManagementStore {
         expires: Instant,
     ) -> Result<service::Session, hagency_store::Error> {
         match self {
-            Self::Legacy(store) => {
-                service::Session::new(store.clone(), context, permissions, expires)
-            }
             Self::Server(journal) => {
                 service::Session::new_server(journal.clone(), context, permissions, expires)
             }
             #[cfg(feature = "resource-adoption")]
-            Self::Adopted(store) => {
-                service::Session::new_adopted(store.as_ref().clone(), context, permissions, expires)
+            Self::Current(store) => {
+                service::Session::new_current(store.as_ref().clone(), context, permissions, expires)
             }
         }
     }
@@ -67,6 +62,8 @@ pub(super) struct Registry {
     drain: tokio::sync::Mutex<Drain>,
     sessions: Mutex<Vec<service::WeakManagementAuthority>>,
     pub(super) mutations: tokio::sync::Mutex<()>,
+    /// What this owner last told the server about its ledger database.
+    pub(super) ledger: tokio::sync::Mutex<super::allocation_transport::LedgerDeclaration>,
 }
 
 #[derive(Default)]
@@ -88,25 +85,25 @@ impl Registry {
         self.ensure_live().is_ok() && self.store.lock().await.is_some()
     }
     #[cfg(feature = "resource-adoption")]
-    pub(super) async fn install_adopted(
+    pub(super) async fn install_current(
         &self,
-        store: hagency_store::owner_resources::adoption::AdoptedManagementStore,
+        store: hagency_store::owner_resources::adoption::CurrentManagementStore,
     ) -> Result<(), NativeError> {
         let mut current = self.store.lock().await;
         self.ensure_live()?;
         if current.is_some() || !store.is_live() {
             return Err(failure(409, "management_backing_changed"));
         }
-        *current = Some(ManagementStore::Adopted(Box::new(store)));
+        *current = Some(ManagementStore::Current(Box::new(store)));
         Ok(())
     }
     #[cfg(feature = "resource-adoption")]
-    pub(super) async fn adopted_ready(&self) -> bool {
+    pub(super) async fn current_ready(&self) -> bool {
         self.ensure_live().is_ok()
-            && matches!(self.store.lock().await.as_ref(),Some(ManagementStore::Adopted(store)) if store.is_live())
+            && matches!(self.store.lock().await.as_ref(),Some(ManagementStore::Current(store)) if store.is_live())
     }
     #[cfg(feature = "resource-adoption")]
-    pub(super) async fn matches_adopted(
+    pub(super) async fn matches_current(
         &self,
         registry: &hagency_store::owner_resources::OwnerResourceRegistry,
         profile: &str,
@@ -114,7 +111,7 @@ impl Registry {
     ) -> bool {
         let current = self.store.lock().await;
         self.ensure_live().is_ok()
-            && matches!(current.as_ref(),Some(ManagementStore::Adopted(store)) if store.is_live() && store.matches_registry(registry) && store.matches_profile(profile,account))
+            && matches!(current.as_ref(),Some(ManagementStore::Current(store)) if store.is_live() && store.matches_registry(registry) && store.matches_profile(profile,account))
     }
     fn ensure_live(&self) -> Result<(), NativeError> {
         if self.retired.load(Ordering::Acquire) {
@@ -309,21 +306,10 @@ impl NativeOwner {
                     let owners = root.join("owned-agent-owners");
                     hagency_store::private::directory(&owners).map_err(store_error)?;
                     let directory = owners.join(format!("management_{profile}"));
-                    match DomainRepository::open_managed(&directory, &profile) {
-                        Ok(repository) => DomainStore::start(repository, 16)
-                            .map(ManagementStore::Legacy).map_err(store_error),
-                        Err(hagency_store::Error::ResourceSetupRequired) => {
-                            // A different account may already have initialized
-                            // this installation. Server administration needs
-                            // durable receipts, never a legacy resource writer.
-                            // An existing receipt-only ledger keeps its original
-                            // database and lock. The journal opener rejects any
-                            // resource history rather than splitting custody.
-                            service::ServerManagementJournal::open(&directory, &profile, &owner)
-                                .map(ManagementStore::Server).map_err(store_error)
-                        }
-                        Err(error) => Err(store_error(error)),
-                    }
+                    // Server management owns only its private journal. A resource
+                    // profile is installed explicitly by the canonical initializer.
+                    service::ServerManagementJournal::open(&directory, &profile, &owner)
+                        .map(ManagementStore::Server).map_err(store_error)
                 })
                 .await
                 .map_err(|_| failure(503, "management_state_unavailable"))??;
@@ -335,7 +321,7 @@ impl NativeOwner {
             }
             let store = current.as_ref().unwrap();
             #[cfg(feature = "resource-adoption")]
-            if let ManagementStore::Adopted(adopted) = store
+            if let ManagementStore::Current(adopted) = store
                 && !adopted.matches_profile(&profile, device.owner_mxid())
             {
                 return Err(failure(401, "management_profile_mismatch"));
@@ -357,6 +343,15 @@ impl NativeOwner {
 }
 
 impl NativeManagement {
+    pub(super) async fn current_setup_journal(&self) -> Result<service::ServerManagementJournal,NativeError> {
+        let (context,session)=self.authorized().await?;
+        session.authorize(&context,service::Permission::ReadResources).map_err(store_error)?;
+        match &self.store {
+            ManagementStore::Server(journal) => Ok(journal.clone()),
+            #[cfg(feature="resource-adoption")]
+            ManagementStore::Current(_) => Err(failure(409,"empty_device_already_active")),
+        }
+    }
     /// Keep a read-only provider selection bound to the already authorized
     /// management context without exposing package or profile internals.
     #[cfg(feature="resource-adoption")]
@@ -404,61 +399,39 @@ impl NativeManagement {
         }
         Ok(())
     }
+    /// The server-facing name of the owner database whose mutation numbers
+    /// this manager's receipts carry. Only a current profile has one.
+    pub(super) fn ledger_id(&self) -> Option<String> {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return Some(store.ledger_id());
+        }
+        None
+    }
+    /// See `OwnerResourceRegistry::ledger_created_empty`.
+    pub(super) fn ledger_created_empty(&self) -> bool {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return store.ledger_created_empty();
+        }
+        false
+    }
+    /// See `OwnerResourceRegistry::ledger_reports_undeclared`.
+    pub(super) fn ledger_reports_undeclared(&self) -> Result<(), NativeError> {
+        #[cfg(feature = "resource-adoption")]
+        if let ManagementStore::Current(store) = &self.store {
+            return store.ledger_reports_undeclared().map_err(store_error);
+        }
+        Ok(())
+    }
     pub(super) fn account_enrollment_ready(&self)->bool {
         #[cfg(feature="resource-adoption")]
-        {matches!(&self.store,ManagementStore::Adopted(_))}
+        {matches!(&self.store,ManagementStore::Current(_))}
         #[cfg(not(feature="resource-adoption"))]
         {false}
     }
 
 
-    /// Acquire off the async/UI thread, then carry the lease into the actual
-    /// queued resource command. A cancelled reply must not release writer
-    /// exclusion while SQLite can still commit the original command.
-    pub(super) async fn legacy_resource_lease(
-        &self,
-        context: &service::HostContext,
-        session: &service::Session,
-        permission: service::Permission,
-    ) -> Result<hagency_store::installation_authority::LegacyResourceLease, NativeError> {
-        session
-            .authorize(context, permission)
-            .map_err(store_error)?;
-        let authority = session.authority();
-        let original = context.clone();
-        #[cfg(test)]
-        let root = self
-            .owner
-            .0
-            .host
-            .console
-            .0
-            .server_login
-            .state_directory()
-            .ok_or(failure(503, "management_state_unavailable"))?
-            .join("test-installation-authority");
-        let lease = tokio::task::spawn_blocking(move || {
-            let expires = Instant::now() + Duration::from_secs(60);
-            let gate = move || authority.authorize(&original, permission).is_ok();
-            #[cfg(not(test))]
-            let lease =
-                hagency_store::installation_authority::LegacyResourceLease::acquire(expires, gate);
-            #[cfg(test)]
-            let lease =
-                hagency_store::installation_authority::LegacyResourceLease::isolated_for_tests(
-                    &root, expires, gate,
-                );
-            lease.map_err(store_error)
-        })
-        .await
-        .map_err(|_| failure(503, "management_unavailable"))??;
-        let (current, _) = self.authorized().await?;
-        if current != *context {
-            return Err(failure(401, "management_scope_changed"));
-        }
-        lease.check().map_err(store_error)?;
-        Ok(lease)
-    }
     /// Irreversible package or owner retirement. Expired renewable sessions are
     /// not retirement, and a false result does not replace current authorization.
     pub fn is_retired(&self) -> bool {
@@ -629,8 +602,24 @@ impl NativeManagement {
     pub async fn account_inventory(&self, query: service::AccountInventoryQuery) -> Result<service::AccountInventory, NativeError> {
         query.validate().map_err(store_error)?;
         let (context, session) = self.authorized().await?;
+        if query.id.as_deref() == Some(super::claude_account::ACCOUNT) {
+            return self.claude_account_detail(&context, &session, query.after).await;
+        }
+        let list = query.id.is_none();
+        let first = list && query.after.is_none();
         let result = session.account_inventory(&context, query).await;
-        self.finish(&context, result, false).await
+        let mut page = self.finish(&context, result, false).await?;
+        if list {
+            self.add_claude_account(&context, &session, &mut page, first).await;
+            // The sign-in check above takes time; the answer is for the
+            // authority that asked.
+            let (fresh, live) = self.authorized().await?;
+            if fresh != context {
+                return Err(failure(401, "management_scope_changed"));
+            }
+            live.authorize(&context, service::Permission::ReadAccounts).map_err(store_error)?;
+        }
+        Ok(page)
     }
     pub async fn resource_detail(
         &self,
@@ -641,66 +630,17 @@ impl NativeManagement {
         let result = session.resource_detail(&context, query).await;
         self.finish(&context, result, false).await
     }
-    pub async fn configure_resource(
-        &self,
-        input: service::ConfigureResource,
-    ) -> Result<hagency_store::ResourceConfigurationResult, NativeError> {
-        self.owner.require_regular_mode()?;
-        let intent = service::Intent::new(
-            service::IntentOperation::ConfigureResource,
-            input.command_id.clone(),
-            &input,
-        )
-        .map_err(store_error)?;
-        self.with_intent(intent, self.configure_resource_now(input))
-            .await
-    }
-    async fn configure_resource_now(
-        &self,
-        input: service::ConfigureResource,
-    ) -> Result<hagency_store::ResourceConfigurationResult, NativeError> {
-        let (context, session) = self.authorized().await?;
-        let lease = self
-            .legacy_resource_lease(&context, &session, service::Permission::ConfigureResources)
-            .await?;
-        let result = session
-            .configure_resource_with_legacy_lease(&context, input, lease)
-            .await;
-        self.finish(&context, result, true).await
-    }
-    pub async fn publish_resource(
-        &self,
-        input: service::PublishResource,
-    ) -> Result<hagency_store::ResourcePublicationResult, NativeError> {
-        if !self.account_enrollment_ready() {
-            self.owner.require_regular_mode()?;
-        }
+    pub async fn publish_resource(&self,input:service::PublishResource)
+        -> Result<hagency_store::ResourcePublicationResult,NativeError> {
         input.validate().map_err(store_error)?;
-        let intent = service::Intent::new(
-            service::IntentOperation::PublishResource,
-            input.command_id.clone(),
-            &input,
-        )
-        .map_err(store_error)?;
-        self.with_intent(intent, self.publish_resource_now(input))
-            .await
+        let intent=service::Intent::new(service::IntentOperation::PublishResource,input.command_id.clone(),&input).map_err(store_error)?;
+        self.with_intent(intent,self.publish_resource_now(input)).await
     }
-    async fn publish_resource_now(
-        &self,
-        input: service::PublishResource,
-    ) -> Result<hagency_store::ResourcePublicationResult, NativeError> {
-        let (context, session) = self.authorized().await?;
-        if self.account_enrollment_ready() {
-            let result = session.publish_resource(&context, input).await;
-            return self.finish(&context, result, true).await;
-        }
-        let lease = self
-            .legacy_resource_lease(&context, &session, service::Permission::PublishResources)
-            .await?;
-        let result = session
-            .publish_resource_with_legacy_lease(&context, input, lease)
-            .await;
-        self.finish(&context, result, true).await
+    async fn publish_resource_now(&self,input:service::PublishResource)
+        -> Result<hagency_store::ResourcePublicationResult,NativeError> {
+        let (context,session)=self.authorized().await?;
+        let result=session.publish_resource(&context,input).await;
+        self.finish(&context,result,true).await
     }
     pub fn retire(&self) {
         // Package closure is local and must not log the human out of Matrix.
@@ -789,7 +729,7 @@ impl NativeManagement {
         )
         .map_err(store_error)?;
         #[cfg(feature = "resource-adoption")]
-        if let ManagementStore::Adopted(store) = &self.store {
+        if let ManagementStore::Current(store) = &self.store {
             let registry = store
                 .native_owner_cleanup_registry(&profile)
                 .map_err(store_error)?;
@@ -846,7 +786,7 @@ impl NativeManagement {
         .map_err(store_error)?;
         #[cfg(feature = "resource-adoption")]
         let registry = match &self.store {
-            ManagementStore::Adopted(s) => s
+            ManagementStore::Current(s) => s
                 .native_owner_cleanup_registry(&profile)
                 .map_err(store_error)?,
             _ => return Err(failure(409, "owner_stop_local_custody_required")),
@@ -859,7 +799,7 @@ impl NativeManagement {
         #[cfg(feature = "resource-adoption")]
         {
             self.owner
-                .adopted_management_selection(registry.clone())
+                .current_profile_selection(registry.clone())
                 .await?
                 .check_owner_stop(&self.owner)
                 .await?;

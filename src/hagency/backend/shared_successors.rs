@@ -2,7 +2,7 @@
 //! and the automatic worker only reads/submits existing immutable start intents.
 use super::*;
 use ::hagency::native_owner::{
-    AdoptedSharedExecutor, PreparedSharedSuccessor, SharedSuccessorReview, SharedSuccessorResume,
+    CurrentSharedExecutor, PreparedSharedSuccessor, SharedSuccessorReview, SharedSuccessorResume,
     SharedExecutionProgress, SharedSuccessorAssessment, SharedSuccessorBudgetReview,
     SharedSuccessorDescription,
 };
@@ -18,7 +18,7 @@ pub(crate) struct PreparedSuccessorStart {
     custody: SuccessorCustody,
 }
 enum SuccessorCustody {
-    Local {executor: Arc<AdoptedSharedExecutor>, prepared: Box<PreparedSharedSuccessor>},
+    Local {executor: Arc<CurrentSharedExecutor>, prepared: Box<PreparedSharedSuccessor>},
     Remote {controller: Arc<::hagency::daemon::bridge::ControllerClient>, prepared: ::hagency::daemon::bridge::PreparedSharedSuccessor},
 }
 impl PreparedSuccessorStart {
@@ -170,7 +170,7 @@ trait SavedSuccessorIo {
         after: Option<String>,
     ) -> impl std::future::Future<Output = Result<SharedExecutionProgress, NativeError>> + Send;
 }
-impl SavedSuccessorIo for AdoptedSharedExecutor {
+impl SavedSuccessorIo for CurrentSharedExecutor {
     async fn resume(
         &self,
         after: Option<String>,
@@ -187,7 +187,7 @@ pub(super) struct Polling {
     attempt: Option<String>,
 }
 impl Polling {
-    pub(super) async fn poll(&mut self, executor: &AdoptedSharedExecutor, live: impl Fn() -> bool) {
+    pub(super) async fn poll(&mut self, executor: &CurrentSharedExecutor, live: impl Fn() -> bool) {
         self.existing(executor, live).await
     }
     async fn existing(&mut self, executor: &impl SavedSuccessorIo, live: impl Fn() -> bool) {

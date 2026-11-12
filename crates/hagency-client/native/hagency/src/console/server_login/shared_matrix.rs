@@ -201,6 +201,16 @@ impl ServerLogin {
             Ok(None)
         }
     }
+    /// Test hook: the next renewal asks the server again instead of reusing a
+    /// proof it checked within the last five seconds.
+    #[cfg(test)]
+    pub(in crate::console) async fn forget_recent_check(&self) {
+        for session in self.sessions.lock().await.values_mut() {
+            session.checked = Instant::now()
+                .checked_sub(Duration::from_secs(6))
+                .expect("monotonic clock older than six seconds");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -408,7 +418,7 @@ mod tests {
                             json!({"deviceId":"device","token":"b".repeat(64),"generation":1,"validUntilMs":until})
                         }
                         "/hagency/api/v1/devices/current" => {
-                            json!({"userId":"uid","mxid":mxid,"issuer":issuer,"subject":"sub","clientId":"sdk-client","deviceId":"device","generation":if behavior.load(Ordering::Acquire)==5 {2}else{1},"validUntilMs":until})
+                            json!({"userId":"uid","mxid":mxid,"issuer":issuer,"subject":"sub","clientId":"sdk-client","deviceId":"device","generation":if behavior.load(Ordering::Acquire)==5 {2}else{1},"validUntilMs":if behavior.load(Ordering::Acquire)==12 {until+90_000}else{until}})
                         }
                         "/hagency/api/v1/sessions/current/renew" => {
                             json!({"validUntilMs":if short_proof{until-25_000}else{until}})
@@ -1148,8 +1158,8 @@ mod tests {
         task.abort();
     }
     #[tokio::test]
-    async fn management_provider_connect_denies_read_only_expired_and_closed_prompts() {
-        use crate::native_owner::{ManagementPackage, ManagementPermission, ManagementRuntime};
+    async fn management_account_enrollment_denies_read_only_expired_and_closed_prompts() {
+        use crate::native_owner::{ManagementPackage, ManagementPermission, NamespaceEnrollment};
         let (origin, _, task) = fixture("@owner:test", None).await;
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let source = Arc::new(Source {
@@ -1173,42 +1183,46 @@ mod tests {
             account_epoch: 1,
             permissions,
         };
+        let input = || serde_json::from_value::<NamespaceEnrollment>(serde_json::json!({
+            "commandId":"current-enrollment", "account":{"accountId":"account_original", "expectedRevision":"a".repeat(64)},
+            "model":"gpt-5.6-sol", "reasoning":"medium", "monthlyTokens":1000
+        })).unwrap();
         let reader = native
-            .management(package(1, vec![ManagementPermission::ReadProviders]))
+            .management(package(1, vec![ManagementPermission::ReadAccounts]))
             .await
             .unwrap();
         assert_eq!(
             reader
-                .connect_provider(
-                    ManagementRuntime::Codex,
+                .enroll_account_resource(
+                    input(),
                     Instant::now() + Duration::from_secs(60)
                 )
                 .await
-                .unwrap_err()
+                .err().unwrap()
                 .code,
-            "management_permission_required"
+            "management_access_required"
         );
         let manager = native
-            .management(package(2, vec![ManagementPermission::ConnectProviders]))
+            .management(package(2, vec![ManagementPermission::EnrollResources]))
             .await
             .unwrap();
         assert_eq!(
             manager
-                .connect_provider(ManagementRuntime::Codex, Instant::now())
+                .enroll_account_resource(input(), Instant::now())
                 .await
-                .unwrap_err()
+                .err().unwrap()
                 .code,
             "provider_confirmation_expired"
         );
         manager.retire();
         assert_eq!(
             manager
-                .connect_provider(
-                    ManagementRuntime::Codex,
+                .enroll_account_resource(
+                    input(),
                     Instant::now() + Duration::from_secs(60)
                 )
                 .await
-                .unwrap_err()
+                .err().unwrap()
                 .code,
             "management_access_required"
         );
@@ -1320,8 +1334,22 @@ mod tests {
     #[tokio::test]
     async fn management_retirement_observes_package_and_owner_irreversible_fences() {
         use crate::native_owner::{ManagementPackage, ManagementPermission};
+        // Public setup selects process installation authority. Give this case
+        // its own process and explicit temporary installation before any open.
+        if std::env::var("HAGENCY_MATRIX_MANAGEMENT_RETIREMENT_FIXTURE").as_deref() != Ok("1") {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["console::server_login::shared_matrix::tests::management_retirement_observes_package_and_owner_irreversible_fences", "--exact", "--nocapture"])
+                .env("HAGENCY_MATRIX_MANAGEMENT_RETIREMENT_FIXTURE", "1")
+                .output().unwrap();
+            assert!(result.status.success(), "{} {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+            return;
+        }
         let (origin, _, task) = fixture("@owner:test", None).await;
-        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // tempfile uses platform-default permissions. Let the fixture provision
+        // its own owner-private installation directory, as current setup does.
+        crate::native_owner::initialize_resource_activation_fixture(&root.path().join("installation"))
+            .unwrap();
         let source = Arc::new(Source {
             token: std::sync::Mutex::new("sdk-first".into()),
             current: Arc::new(AtomicBool::new(true)),
@@ -1333,10 +1361,21 @@ mod tests {
             &root.path().join("state"),
             &origin,
             "@owner:test",
-            source,
+            source.clone(),
         )
         .await
         .unwrap();
+        let setup_package = || ManagementPackage {
+            digest: "b".repeat(64), instance: 8000, account_epoch: 1,
+            permissions: vec![ManagementPermission::ReadResources, ManagementPermission::PrepareSourceQuiescence],
+        };
+        let review = native.review_device_setup(setup_package(), None).await.unwrap();
+        let selection = native.confirm_device_setup(review, setup_package(), || true).await.unwrap();
+        native.suspend().await.unwrap();
+        drop(native);
+        let native = selection.open_with_matrix_guarded(
+            &root.path().join("state"), &origin, "@owner:test", source, |_| Ok(()),
+        ).await.unwrap();
         let package = |instance| ManagementPackage {
             digest: "a".repeat(64),
             instance,
@@ -1401,13 +1440,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(
-            management
-                .resources(Default::default())
-                .await
-                .unwrap()
-                .resources
-                .is_empty()
+        assert_eq!(
+            management.resources(Default::default()).await.unwrap_err().code,
+            "device_setup_required",
+            "SDK login alone must not create a resource profile",
         );
         management.retire();
         assert_eq!(

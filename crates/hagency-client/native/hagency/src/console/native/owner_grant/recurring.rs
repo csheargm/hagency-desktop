@@ -17,7 +17,7 @@ pub(super) fn inherits(previous: &Original, next: &Original) -> bool {
         && a.eligible_managers == b.eligible_managers
         && a.allow_self_approval == b.allow_self_approval
         && previous.binding == next.binding
-        && previous.admission == next.admission
+        && admission::AdmissionRound::same_request(&previous.admission, &next.admission)
         && next.period.start_ms >= previous.period.end_ms
         && next.selection.delegation_expires_at_ms == next.period.end_ms
         && next.succession.as_ref().is_some_and(|s| {

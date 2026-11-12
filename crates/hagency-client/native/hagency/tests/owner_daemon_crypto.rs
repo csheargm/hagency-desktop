@@ -359,7 +359,9 @@ async fn real_daemon_encrypted_child() {
     assert_eq!(models["authenticated"], true);
     let workspace = root.join("work");
     std::fs::create_dir(&workspace).unwrap();
-    native.execute(local(id, LocalAction::SaveAgentModel, Some(json!({"profile":{"model":"fixture","credential_ref":models["credentialRef"],"workspace_root":workspace,"reasoning_effort":"low","web_search":false}})))).await.unwrap();
+    let initial = native.execute(local(id, LocalAction::AgentModel, None)).await.unwrap();
+    let initial: Option<hagency_agent_local::ModelProfile> = serde_json::from_value(initial["modelProfile"].clone()).unwrap();
+    native.execute(local(id, LocalAction::SaveAgentModel, Some(json!({"expectedProfileDigest":hagency_agent_local::model_profile_digest(initial.as_ref()).unwrap(),"profile":{"model":"fixture","credential_ref":models["credentialRef"],"workspace_root":workspace,"reasoning_effort":"low","web_search":false}})))).await.unwrap();
     let policy = native
         .execute(local(id, LocalAction::AgentPolicy, None))
         .await

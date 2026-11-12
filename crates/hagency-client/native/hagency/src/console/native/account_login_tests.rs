@@ -35,7 +35,7 @@ with (home/'fixture-spawns').open('a') as f:f.write('spawn\n')
 for line in sys.stdin:
  r=json.loads(line);i=r.get('id');m=r.get('method')
  if i is None:continue
- if m=='initialize':v={}
+ if m=='initialize':v={'userAgent':'fixture/0.167.0'}
  elif m=='config/read':v={'config':{'model_provider':'openai','chatgpt_base_url':'https://chatgpt.com/backend-api'}}
  elif m=='account/read':v={'requiresOpenaiAuth':True,'account':({'type':'chatgpt','email':('changed@example.test' if (home/'fixture-switched').exists() else 'not-for-mini-app@example.test'),'planType':'plus'} if (home/'fixture-complete').exists() else None)}
  elif m=='model/list':
@@ -72,13 +72,13 @@ async fn input(
         .await
         .unwrap();
     let inventory = m
-        .account_inventory(AccountInventoryQuery::default())
+        .account_inventory(AccountInventoryQuery { id: Some(account.account_id.clone()), after: None })
         .await
         .unwrap();
     let request = AccountLoginRequest {
         command_id: "login-original".into(),
         account_id: account.account_id,
-        expected_revision: inventory.accounts[0].revision.clone().unwrap(),
+        expected_revision: inventory.account.unwrap().revision.unwrap(),
     };
     (m, request)
 }
@@ -150,10 +150,11 @@ async fn native_managed_login_selected_namespace_completion_and_original_replay(
     std::fs::write(namespace.join("fixture-complete"), "").unwrap();
     wait(&m, &input, "authenticated").await;
     assert_eq!(
-        m.account_inventory(AccountInventoryQuery::default())
+        m.account_inventory(AccountInventoryQuery { id: Some(input.account_id.clone()), after: None })
             .await
             .unwrap()
-            .accounts[0]
+            .account
+            .unwrap()
             .readiness,
         "subscription"
     );
@@ -195,10 +196,11 @@ async fn native_managed_login_cancel_stops_original_process_without_new_attempt(
         1
     );
     assert_eq!(
-        m.account_inventory(AccountInventoryQuery::default())
+        m.account_inventory(AccountInventoryQuery { id: Some(input.account_id.clone()), after: None })
             .await
             .unwrap()
-            .accounts[0]
+            .account
+            .unwrap()
             .readiness,
         "unknown"
     );
@@ -220,10 +222,11 @@ async fn native_managed_login_sdk_loss_drains_and_cannot_deliver_authorization()
         "authenticated"
     );
     assert_eq!(
-        m.account_inventory(AccountInventoryQuery::default())
+        m.account_inventory(AccountInventoryQuery { id: Some(input.account_id.clone()), after: None })
             .await
             .unwrap()
-            .accounts[0]
+            .account
+            .unwrap()
             .readiness,
         "unknown"
     );
@@ -268,10 +271,8 @@ async fn native_managed_login_reserved_before_spawn_recovers_without_provider_af
     drop(m);
     drop(transport);
     drop(owner);
-    let owner =
-        NativeOwner::open_with_matrix(&path, &origin, "@owner:test", Arc::new(Source(current)))
-            .await
-            .unwrap();
+    let selection=crate::native_owner::CurrentProfileSelection::load_for_isolated_tests(&path,&origin,"@owner:test",registry.clone()).unwrap().unwrap();
+    let owner=selection.open_with_matrix_guarded(&path,&origin,"@owner:test",Arc::new(Source(current)),|_|Ok(())).await.unwrap();
     let m = owner.management(package()).await.unwrap();
     let result = m
         .retry_saved_command(input.command_id.clone())
@@ -308,17 +309,17 @@ async fn native_account_models_observe_only_selected_namespace_without_login_or_
     assert!(!namespace.join("fixture-starts").exists());
     std::fs::write(namespace.join("fixture-complete"), "").unwrap();
     let reply = m.account_models(model_query(&input)).await.unwrap();
-    assert_eq!(reply["enrollmentReady"],false,"legacy account storage needs device setup before canonical enrollment");
+    assert_eq!(reply["enrollmentReady"],true,"the current canonical account is ready for explicit enrollment");
     let mut enrollment_package=package();
     enrollment_package.instance+=20;
-    enrollment_package.permissions.push(Permission::EnrollResources);
+    // Model observation does not itself grant the separate enrollment action.
     let enroller=f.owner.management(enrollment_package).await.unwrap();
     let error=enroller.enroll_account_resource(super::super::NamespaceEnrollment{
-        command_id:"legacy-enrollment-not-started".into(),
+        command_id:"ungranted-enrollment-not-started".into(),
         account:model_query(&input),model:"gpt-5.6-sol".into(),reasoning:Some("high".into()),monthly_tokens:1000,
-    },std::time::Instant::now()+Duration::from_secs(30)).await.err().expect("legacy storage must refuse enrollment");
-    assert_eq!(error.code,"resource_adoption_required");
-    assert!(!enroller.saved_commands().await.unwrap().iter().any(|r|r.command_id=="legacy-enrollment-not-started"),"readiness refusal must precede original-intent creation");
+    },std::time::Instant::now()+Duration::from_secs(30)).await.err().expect("enrollment needs its own current permission");
+    assert_eq!(error.code,"management_access_required");
+    assert!(!enroller.saved_commands().await.unwrap().iter().any(|r|r.command_id=="ungranted-enrollment-not-started"));
 
     assert_eq!(reply["accountId"], input.account_id);
     assert_eq!(reply["provider"]["models"][0]["model"], "gpt-5.6-sol");
@@ -337,10 +338,11 @@ async fn native_account_models_observe_only_selected_namespace_without_login_or_
     }
     assert!(!namespace.join("fixture-starts").exists());
     assert_eq!(
-        m.account_inventory(AccountInventoryQuery::default())
+        m.account_inventory(AccountInventoryQuery { id: Some(input.account_id.clone()), after: None })
             .await
             .unwrap()
-            .accounts[0]
+            .account
+            .unwrap()
             .readiness,
         "unknown"
     );

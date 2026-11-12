@@ -63,6 +63,18 @@ fn host_request_polls_on_backend_stack() {
     });
 }
 
+/// What the manager answers to a resource listing. A live manager reaches the
+/// native resource store; in this fixture no hosting device was set up, which
+/// the store refuses as `device_setup_required`. A retired manager fails
+/// before it gets there.
+async fn listing(manager: &NativeManagement) -> String {
+    match manager.resources(Default::default()).await {
+        Ok(page) => format!("{} resources", page.resources.len()),
+        Err(error) => error.code,
+    }
+}
+const LIVE: &str = "device_setup_required";
+
 // Uses the real host cache and native OS profile lock. No global SDK account,
 // CURRENT service, production profile, provider process or Matrix room changes.
 #[tokio::test]
@@ -75,14 +87,7 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
     let old = Arc::downgrade(&native);
     let manager = NativeManagement::local(native);
     assert!(!manager.is_retired());
-    assert!(
-        manager
-            .resources(Default::default())
-            .await
-            .unwrap()
-            .resources
-            .is_empty()
-    );
+    assert_eq!(listing(&manager).await, LIVE);
     let (host, lease) = host_and_lease();
     *host.0.manager.lock().unwrap() = Some(manager.clone());
     assert!(Arc::ptr_eq(
@@ -94,7 +99,7 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
     // account's still-open mini app retains its cached manager.
     owner.shutdown().await;
     assert!(manager.is_retired());
-    assert!(manager.resources(Default::default()).await.is_err());
+    assert_ne!(listing(&manager).await, LIVE);
     drop(manager);
     drop(owner);
     assert!(old.upgrade().is_some());
@@ -115,14 +120,7 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
     let fresh_owner = fixture.open_after_explicit_signin().await.unwrap();
     let fresh = NativeManagement::local(fresh_owner.management(package()).await.unwrap());
     assert!(!fresh.is_retired());
-    assert!(
-        fresh
-            .resources(Default::default())
-            .await
-            .unwrap()
-            .resources
-            .is_empty()
-    );
+    assert_eq!(listing(&fresh).await, LIVE);
     *host.0.manager.lock().unwrap() = Some(fresh.clone());
     assert!(Arc::ptr_eq(
         &host.cached_manager().unwrap().unwrap(),
@@ -132,7 +130,7 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
     host.retire();
     assert!(host.0.manager.lock().unwrap().is_none());
     assert!(fresh.is_retired());
-    assert!(fresh.resources(Default::default()).await.is_err());
+    assert_ne!(listing(&fresh).await, LIVE);
     assert_eq!(
         host.manager(&lease).await.err().unwrap(),
         "management_scope_changed"
@@ -170,7 +168,7 @@ async fn failed_adoption_cache_eviction_releases_original_profile_before_recover
     let manager = NativeManagement::local(owner.management(package()).await.unwrap());
     let (host, _) = host_and_lease();
     *host.0.manager.lock().unwrap() = Some(manager.clone());
-    host.evict_retired_adoption_caches().unwrap();
+    host.evict_retired_setup_caches().unwrap();
     assert!(host.0.manager.lock().unwrap().is_some());
     owner.shutdown().await;
     drop(manager);
@@ -179,7 +177,7 @@ async fn failed_adoption_cache_eviction_releases_original_profile_before_recover
         fixture.open_detached().await.err().unwrap().code,
         "native_owner_state_unavailable"
     );
-    host.evict_retired_adoption_caches().unwrap();
+    host.evict_retired_setup_caches().unwrap();
     assert!(host.0.manager.lock().unwrap().is_none());
     assert_eq!(
         fixture.open_detached().await.err().unwrap().code,

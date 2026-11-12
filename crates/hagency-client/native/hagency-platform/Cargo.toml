@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-resource-adoption = []
 test-support = ["dep:tempfile"]
 
 [dependencies]

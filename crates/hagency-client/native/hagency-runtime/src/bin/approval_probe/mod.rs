@@ -104,6 +104,9 @@ pub(super) fn timeout_read(duration: Duration) -> io::Result<String> {
         .map_err(|_| io::ErrorKind::TimedOut.into())
 }
 pub(super) fn run(mode: &str, reader: &mut impl BufRead, marker: &Path) -> io::Result<bool> {
+    if mode.starts_with("owned-approval-child") {
+        return child(mode, reader, marker);
+    }
     if mode == "owned-approval-mcp" {
         return mcp(reader, marker, false);
     }
@@ -336,6 +339,31 @@ pub(super) fn run(mode: &str, reader: &mut impl BufRead, marker: &Path) -> io::R
         b"actual responses received",
     )?;
     Ok(true)
+}
+
+fn child(mode: &str, reader: &mut impl BufRead, marker: &Path) -> io::Result<bool> {
+    note("turn/started", json!({"threadId":"child-thread","turn":{
+        "id":"child-turn","rootTurnId": if mode == "owned-approval-child-foreign" {"foreign-turn"} else {"owned-turn"},
+        "status":"inProgress","items":[]}}))?;
+    note("rawResponse/completed", json!({"threadId":"owned-thread","turnId":"owned-turn","responseId":"root-response","usage":{
+        "inputTokens":10,"outputTokens":4,"cachedInputTokens":2,"reasoningOutputTokens":1,"totalTokens":14}}))?;
+    note("item/started", json!({"threadId":"owned-thread","turnId":"owned-turn","startedAtMs":9,
+        "item":{"id":"answer","type":"agentMessage","text":"","phase":"final_answer"}}))?;
+    note("item/completed", json!({"threadId":"owned-thread","turnId":"owned-turn","completedAtMs":10,
+        "item":{"id":"answer","type":"agentMessage","text":"ROOT_REPLY","phase":"final_answer"}}))?;
+    note("turn/completed", json!({"threadId":"owned-thread","turn":{"id":"owned-turn","status":"completed","items":[]}}))?;
+    send(json!({"id":"approval-child","method":"item/commandExecution/requestApproval","params":{
+        "threadId":"child-thread","turnId":"child-turn","itemId":"child-command","startedAtMs":1,
+        "command":"echo approved","cwd":std::env::current_dir()?.to_string_lossy(),"availableDecisions":["accept","decline"]}}))?;
+    let response = read(reader, marker)?;
+    if response["id"] != "approval-child" { return Err(io::Error::other("wrong child callback")); }
+    append_bytes(marker, &response)?;
+    note("serverRequest/resolved", json!({"threadId":"child-thread","requestId":"approval-child"}))?;
+    note("rawResponse/completed", json!({"threadId":"child-thread","turnId":"child-turn","responseId":"child-response","usage":{
+        "inputTokens":10,"outputTokens":4,"cachedInputTokens":2,"reasoningOutputTokens":1,"totalTokens":14}}))?;
+    note("turn/completed", json!({"threadId":"child-thread","turn":{"id":"child-turn","rootTurnId":"owned-turn","status":"completed","items":[]}}))?;
+    announce(marker, "approval-continued")?;
+    Ok(false)
 }
 
 fn mcp(reader: &mut impl BufRead, marker: &Path, unsupported_form: bool) -> io::Result<bool> {

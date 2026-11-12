@@ -2568,13 +2568,24 @@ async fn matrix_worker_task(
                     // or routing metadata can alter the verdict on its way out.
                     if !claim.is_current(&room.client()) {claim.complete(SendResult::ConfirmedPreSendFailure); return;}
                     let transaction_id: ruma::OwnedTransactionId = claim.transaction_id.clone().into();
-                    match room.send_raw("m.room.message", content).with_transaction_id(&transaction_id).await {
-                        Ok(_) => {
+                    let client = room.client();
+                    let sending = room.send_raw("m.room.message", content).with_transaction_id(&transaction_id);
+                    match claim.while_current(&client, sending).await {
+                        Ok(Ok(_)) => {
                             claim.complete(SendResult::Sent);
                             log!("Sent agent-chat approval verdict to {timeline_kind}.");
                             Cx::post_action(ApprovalVerdictResult::Sent { room_id, source_event_id });
                         }
-                        Err(error) => fail(error.to_string(), SendResult::OutcomeUnknown),
+                        Ok(Err(error)) => fail(error.to_string(), SendResult::OutcomeUnknown),
+                        Err(_) => {
+                            // A request may have reached HTTP before cancellation.
+                            // Keep the original claim until its outcome is known.
+                            if crate::matrix_context::is_current(&client) {
+                                fail("Approval expired or changed while preparing its encrypted reply.".into(), SendResult::OutcomeUnknown);
+                            } else {
+                                claim.complete(SendResult::OutcomeUnknown);
+                            }
+                        }
                     }
                 });
             }
@@ -5888,7 +5899,6 @@ async fn timeline_subscriber_handler(
     let (mut timeline_items, mut subscriber) = timeline.subscribe().await;
     log!("Received initial timeline update of {} items for room {room_id}, thread {thread_root_event_id:?}.", timeline_items.len());
 
-    for event in timeline_items.iter().filter_map(|item|item.as_event()) {crate::agent_access::discovery::ingest(&timeline.room().client(), &room_id, event);}
     #[cfg(feature = "agent_chat")]
     for event in timeline_items.iter().filter_map(|item| item.as_event()) {crate::agent_chat::approval_runtime::ingest(&timeline.room().client(), &room_id, event);}
     if timeline_update_sender.send(TimelineUpdate::FirstUpdate {
@@ -6166,7 +6176,6 @@ async fn timeline_subscriber_handler(
             let is_progress_only = num_progress_updates == num_updates;
 
             if num_updates > 0 {
-                if !is_progress_only {for event in timeline_items.iter().filter_map(|item|item.as_event()) {crate::agent_access::discovery::ingest(&timeline.room().client(), &room_id, event);}}
                 #[cfg(feature = "agent_chat")]
                 if !is_progress_only {for event in timeline_items.iter().filter_map(|item| item.as_event()) {crate::agent_chat::approval_runtime::ingest(&timeline.room().client(), &room_id, event);}}
                 // Handle the case where back pagination inserts items at the beginning of the timeline

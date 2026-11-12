@@ -109,21 +109,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadWorkspaces)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_workspaces(&query, |_, _| {
-                            session.check(&context, Permission::ReadWorkspaces)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .resource_workspaces(&self.adopted_profile(store)?, query)
+                    .resource_workspaces(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -139,21 +127,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadWorkspaces)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(16 * 1024, move |db| {
-                        db.management_workspace(&query, |_, _| {
-                            session.check(&context, Permission::ReadWorkspaces)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .resource_workspace(&self.adopted_profile(store)?, query)
+                    .resource_workspace(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -170,9 +146,7 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::ClearWorkspaceDirty)?;
         let profile = match self.local_store()? {
-            SessionStore::Legacy(_) => "",
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store.identity().0,
+            SessionStore::Current(store) => store.identity().0,
         };
         let receipt = CommandReceipt::new(
             context,
@@ -181,21 +155,9 @@ impl Session {
             &serde_json::json!({"profile":profile,"input":input}),
         )?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(24 * 1024, move |db| {
-                        db.management_clear_workspace_dirty(&input, receipt, |_, _| {
-                            session.check(&context, Permission::ClearWorkspaceDirty)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .clear_workspace_dirty(&self.adopted_profile(store)?, input, receipt)
+                    .clear_workspace_dirty(&self.current_profile(store)?, input, receipt)
                     .await?
             }
         };

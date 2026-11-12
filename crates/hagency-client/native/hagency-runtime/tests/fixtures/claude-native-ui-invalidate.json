@@ -1,0 +1,7 @@
+{
+  "type": "system",
+  "subtype": "ui_invalidate",
+  "event": "ui.render",
+  "uuid": "2d2e0cc3-c163-4465-91f5-c5ca15a3f5a8",
+  "session_id": "bead740e-bcf5-45a7-94e3-86f08881c5ce"
+}

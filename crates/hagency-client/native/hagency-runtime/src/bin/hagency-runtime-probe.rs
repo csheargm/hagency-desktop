@@ -336,7 +336,7 @@ fn fake(mode: &str, marker: &Path) -> io::Result<()> {
     }
     result(
         &request,
-        json!({ "userAgent": "offline-fixture/0.153.4", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" }),
+        json!({ "userAgent": "offline-fixture/0.167.0", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" }),
     )?;
     method(&read(stdin.as_mut().unwrap(), marker)?, "initialized")?;
     let request = read(stdin.as_mut().unwrap(), marker)?;
@@ -489,6 +489,10 @@ fn main() -> io::Result<()> {
         return hagency_platform::run_guardian();
     }
     match args.as_slice() {
+        [first, ..] if first == "--print" => {
+            let mode = std::env::var("HAGENCY_OFFLINE_CLAUDE_MODE").map_err(io::Error::other)?;
+            claude_probe::run(&mode, &std::env::current_dir()?.join("shared-claude"))
+        }
         [command] if command == "app-server" => {
             // Fixed host installation entrypoint for offline dispatch fixtures.
             // The environment is explicitly supplied by that test host only.
@@ -571,7 +575,8 @@ fn main() -> io::Result<()> {
             mode.to_str().ok_or(io::ErrorKind::InvalidInput)?,
             Path::new(marker),
         ),
-        [command, mode, marker] if command == "fake-claude" => claude_probe::run(
+        [command, mode, marker, tail @ ..] if command == "fake-claude"
+            && (tail.is_empty() || matches!(tail, [flag, _] if flag == "--resume")) => claude_probe::run(
             mode.to_str().ok_or(io::ErrorKind::InvalidInput)?,
             Path::new(marker),
         ),

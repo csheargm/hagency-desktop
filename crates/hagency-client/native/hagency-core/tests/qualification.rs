@@ -130,6 +130,31 @@ fn current_codex_policy_does_not_infer_models_efforts_or_providers() {
 }
 
 #[test]
+fn a_model_on_the_owners_own_claude_endpoint_is_medium_whatever_its_name() {
+    let own = |model: &str, framework: &str| ModelProfile {
+        framework: framework.into(),
+        model: model.into(),
+        provider: Some(qualification::OWNER_ENDPOINT.into()),
+        reasoning: Some("medium".into()),
+    };
+    // A name the table has never seen, and one it rates strong elsewhere.
+    for name in ["glm-4.6", "claude-opus-5"] {
+        let profile = own(name, "claude");
+        assert_eq!(qualification::model(&profile), (Some(Tier::Medium), None));
+        let roles: Vec<_> = qualification::roles()
+            .filter(|role| qualification::qualifies(&profile, role, None))
+            .collect();
+        assert_eq!(roles, ["coding", "testing", "integration", "documentation"]);
+    }
+    // Only Claude Code has such a provider, and an empty name is still no model.
+    assert_eq!(qualification::model(&own("glm-4.6", "codex")), (None, None));
+    assert_eq!(qualification::model(&own("", "claude")), (None, None));
+    // Without the marker an unknown name stays unqualified.
+    let plain = ModelProfile { provider: None, ..own("glm-4.6", "claude") };
+    assert_eq!(qualification::model(&plain), (None, None));
+}
+
+#[test]
 fn qualification_matches_javascript() {
     let fixtures: Value =
         serde_json::from_str(include_str!("../../fixtures/qualification.json")).unwrap();

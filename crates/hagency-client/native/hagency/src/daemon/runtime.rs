@@ -2,8 +2,8 @@
 //!
 //! Lifecycle ported from Hagency Desktop's `backend::Service`: register the
 //! native owner in a synchronous retirement slot before authorization starts,
-//! open the adopted selection (or legacy owner) through SDK authorization,
-//! restore legacy runtime intents, then start the allocation and shared
+//! open the current profile through SDK authorization,
+//! restore current personal runtime intents, then start the allocation and shared
 //! workers. Stop retires and drains workers before suspending the native
 //! owner, which releases the owner-root lock. Ordinary stop never revokes the
 //! native resumption; only explicit sign-out does.
@@ -256,7 +256,7 @@ struct Hosted {
     allocation: Arc<Worker>,
     shared: Arc<Worker>,
     #[cfg(feature="resource-adoption")]
-    executor_slot:Arc<tokio::sync::Mutex<Option<Arc<crate::native_owner::AdoptedSharedExecutor>>>>,
+    executor_slot:Arc<tokio::sync::Mutex<Option<Arc<crate::native_owner::CurrentSharedExecutor>>>>,
     monitor: tokio::task::JoinHandle<()>,
 }
 
@@ -602,16 +602,15 @@ impl Inner {
             return Err(OpenError::Terminal("native_owner_drain_required".into()));
         }
         let adopted = selection.is_some();
-        if !adopted {
-            // Saved explicit consent is not authority: every restore re-enters
-            // the normal start controller with fresh gates.
-            match owner.restore_runtime_intents().await {
-                Ok(value) => {
-                    let total = value["recoveries"].as_array().map_or(0, Vec::len);
-                    tracing::info!(total, "Agent startup recovery evaluated");
-                }
-                Err(error) => tracing::warn!(code = %error.code, "Agent startup recovery unavailable"),
+        // The owner's local Agents run with or without pools on this device.
+        // Saved explicit consent is not authority: every restore re-enters
+        // the normal start controller with fresh gates.
+        match owner.restore_runtime_intents().await {
+            Ok(value) => {
+                let total = value["recoveries"].as_array().map_or(0, Vec::len);
+                tracing::info!(total, "Agent startup recovery evaluated");
             }
+            Err(error) => tracing::warn!(code = %error.code, "Agent startup recovery unavailable"),
         }
         let gate: Arc<dyn Fn() -> bool + Send + Sync> = {
             let custody = Arc::downgrade(&custody);
@@ -681,11 +680,11 @@ impl Inner {
         &self,
         enrollment: &Enrollment,
         custody: &Arc<SdkCustody>,
-    ) -> Result<(NativeOwner, Option<crate::native_owner::AdoptedManagementSelection>), NativeError> {
-        use crate::native_owner::AdoptedManagementSelection;
+    ) -> Result<(NativeOwner, Option<crate::native_owner::CurrentProfileSelection>), NativeError> {
+        use crate::native_owner::CurrentProfileSelection;
         let root = &enrollment.owner_root;
         let selection = if root.exists() {
-            AdoptedManagementSelection::load_for_host(root, &enrollment.origin, &enrollment.owner).await?
+            CurrentProfileSelection::load_for_host(root, &enrollment.origin, &enrollment.owner).await?
         } else {
             None
         };
@@ -693,7 +692,7 @@ impl Inner {
         let owner = match &selection {
             Some(selection) => {
                 selection
-                    .open_for_onboarding_with_matrix_guarded(root, &enrollment.origin, &enrollment.owner, custody.tokens(), guard)
+                    .open_with_matrix_guarded(root, &enrollment.origin, &enrollment.owner, custody.tokens(), guard)
                     .await?
             }
             None => {
@@ -776,6 +775,12 @@ impl Inner {
             task.abort();
             let _ = task.await;
         }
+        // Desktop windows retain management, grant and review handles through
+        // the bridge, and each holds the open owner. The drain below fences
+        // them, but only dropping them releases the owner-root lock; with a
+        // window attached the next start could otherwise never reopen the
+        // root. The other stop-then-reopen paths revoke the bridge the same way.
+        self.bridge.revoke_all();
         let mut hosted_slot=self.hosted.lock().await;
         let result = match hosted_slot.as_ref() {
             Some(hosted) => {
@@ -845,6 +850,15 @@ fn drain_detail(code: &str) -> &'static str {
     }
 }
 
+/// The engine retires itself when a command finds the Matrix account, or its
+/// server session, gone. SDK custody can still read as authorized then, and
+/// nothing else would release an owner that can no longer do any work: the
+/// daemon would keep reporting Running. Retired custody means the host itself
+/// is already closing this owner.
+fn owner_retired_itself(custody: AuthState, owner_retired: bool) -> bool {
+    owner_retired && custody != AuthState::Retired
+}
+
 async fn monitor(
     inner: std::sync::Weak<Inner>,
     custody: Arc<SdkCustody>,
@@ -861,29 +875,34 @@ async fn monitor(
         if retired.load(Ordering::Acquire) || inner.generation.load(Ordering::Acquire) != epoch {
             return;
         }
-        match custody.state() {
-            AuthState::SignInRequired => {
-                // Fence execution; keep native enrollment for an explicit
-                // re-enrollment or sign-out decision by the owner.
-                inner.event(ActivityState::Warning, "Owner authorization expired", "matrix_authorization_required");
-                retired.store(true, Ordering::Release);
-                // close() aborts this monitor: run it in its own task.
-                tokio::spawn(async move {
-                    let mut hosted_slot=inner.hosted.lock().await;
-                    if inner.generation.load(Ordering::Acquire)!=epoch {return;}
-                    if let Some(hosted) = hosted_slot.as_ref() {
-                        let result = inner.close(hosted, false).await;
-                        if result.is_ok() {hosted_slot.take();}
-                        if inner.generation.load(Ordering::Acquire)==epoch {
-                            inner.set_phase(
-                                Phase::Failed,
-                                Some(result.err().unwrap_or("matrix_authorization_required").into()),
-                            );
-                        }
+        let state = custody.state();
+        if state == AuthState::SignInRequired || owner_retired_itself(state, owner.is_retired()) {
+            // Fence execution; keep native enrollment for an explicit
+            // re-enrollment or sign-out decision by the owner.
+            inner.event(
+                ActivityState::Warning,
+                if state == AuthState::SignInRequired { "Owner authorization expired" } else { "Owner authorization ended" },
+                "matrix_authorization_required",
+            );
+            retired.store(true, Ordering::Release);
+            // close() aborts this monitor: run it in its own task.
+            tokio::spawn(async move {
+                let mut hosted_slot=inner.hosted.lock().await;
+                if inner.generation.load(Ordering::Acquire)!=epoch {return;}
+                if let Some(hosted) = hosted_slot.as_ref() {
+                    let result = inner.close(hosted, false).await;
+                    if result.is_ok() {hosted_slot.take();}
+                    if inner.generation.load(Ordering::Acquire)==epoch {
+                        inner.set_phase(
+                            Phase::Failed,
+                            Some(result.err().unwrap_or("matrix_authorization_required").into()),
+                        );
                     }
-                });
-                return;
-            }
+                }
+            });
+            return;
+        }
+        match state {
             AuthState::Unavailable => {
                 inner.set_phase(Phase::Offline, Some("matrix_authorization_unavailable".into()))
             }
@@ -896,7 +915,7 @@ async fn monitor(
                     );
                 }
             }
-            AuthState::Retired => return,
+            AuthState::SignInRequired | AuthState::Retired => return,
         }
         if last_provider.is_none_or(|t|t.elapsed()>=PROVIDER_PERIOD) {
             last_provider=Some(tokio::time::Instant::now());
@@ -1409,6 +1428,22 @@ mod tests {
         assert!(runtime.inner.provider_refresh.lock().await.is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hosting_stop_releases_what_desktop_windows_hold_through_the_bridge() {
+        let temp = private_home();
+        let runtime = OwnerRuntime::new(temp.path().into()).unwrap();
+        let generation = runtime.inner.generation.load(Ordering::Acquire);
+        // An attached window: its managers, grants and reviews each hold the
+        // open owner, and with it the owner-root lock.
+        let live = runtime.inner.bridge.attach_for_tests("window", generation);
+        assert!(runtime.inner.bridge.validate("window", generation).is_ok());
+        assert_eq!(runtime.inner.stop().await, Ok(()));
+        // Stop let them go, so a later start can reopen the root. The window
+        // attaches again after that start.
+        assert!(!live.load(Ordering::Acquire));
+        assert!(runtime.inner.bridge.validate("window", generation).is_err());
+    }
+
     #[test]
     fn drain_detail_names_only_known_drains() {
         assert_eq!(drain_detail("native_provider_drain_unknown"), "native_provider_drain_unknown");
@@ -1419,11 +1454,20 @@ mod tests {
     }
 
     #[test]
+    fn a_self_retired_owner_is_released_unless_the_host_is_already_closing_it() {
+        for custody in [AuthState::Authorized, AuthState::Unavailable, AuthState::SignInRequired] {
+            assert!(owner_retired_itself(custody, true), "{custody:?}");
+            assert!(!owner_retired_itself(custody, false), "{custody:?}");
+        }
+        assert!(!owner_retired_itself(AuthState::Retired, true));
+    }
+
+    #[test]
     fn retry_classification_waits_for_a_busy_root_but_not_for_authority() {
         assert!(retryable("native_owner_state_unavailable"));
         assert!(retryable("matrix_authorization_unavailable"));
         assert!(retryable("server_unavailable"));
-        for code in ["matrix_authorization_required", "matrix_account_mismatch", "adopted_management_scope_changed", "native_resume_revoked"] {
+        for code in ["matrix_authorization_required", "matrix_account_mismatch", "current_profile_scope_changed", "native_resume_revoked"] {
             assert!(!retryable(code), "{code}");
         }
         assert_eq!(static_code("/Users/x/.codex/auth.json secret"), "native_owner_drain_required");

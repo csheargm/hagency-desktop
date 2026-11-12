@@ -106,7 +106,11 @@ impl Frozen {
             || self.content["body"].as_str().is_none_or(str::is_empty)
             || d["version"] != 1
             || d["kind"] != "request"
-            || d["runtime"] != "codex"
+            || d["owner_mxid"] != a.owner_mxid
+            || d["publisher_mxid"] != a.bot_mxid
+            || d["revision"] != 1
+            || d.get("migration_kind").is_some()
+            || !matches!(d["runtime"].as_str(), Some("codex" | "claude" | "octos"))
             || d["agent"] != a.agent_name
             || d["project"] != a.project_id
             || d["project_room_id"] != a.project_room_id
@@ -118,7 +122,24 @@ impl Frozen {
             || !d["input_preview"].is_string()
             || t.reusable_scope != d.get("reusable_scope").is_some()
             || actions.len() != expected.len()
-            || actions.iter().zip(expected).any(|(v, id)| v["id"] != id)
+            || actions.iter().zip(expected).any(|(v, id)| {
+                let style = match id {
+                    "approve_once" => "primary",
+                    "deny" => "danger",
+                    _ => "secondary",
+                };
+                v["id"] != id
+                    || v["style"] != style
+                    || v["label"]
+                        .as_str()
+                        .is_none_or(|label| label.trim().is_empty())
+            })
+            || (t.reusable_scope
+                && ["description", "workspace", "task_id"].iter().any(|field| {
+                    d["reusable_scope"][*field]
+                        .as_str()
+                        .is_none_or(|value| value.trim().is_empty())
+                }))
         {
             return Err(Error::Storage);
         }
@@ -471,6 +492,9 @@ mod tests {
             "com.agentchat.approval": {
                 "version": 1,
                 "kind": "request",
+                "owner_mxid": "@owner:hq.test",
+                "publisher_mxid": "@bot:hq.test",
+                "revision": 1,
                 "runtime": "codex",
                 "agent": "agent-one",
                 "project": "project-one",
@@ -481,10 +505,24 @@ mod tests {
                 "upstream_request_id": "17",
                 "tool_name": "shell",
                 "input_preview": "{\"command\":\"echo ok\"}",
-                "actions": [{"id": "approve_once"}, {"id": "deny"}]
+                "actions": [{"id": "approve_once", "style":"primary", "label":"Approve once"}, {"id": "deny", "style":"danger", "label":"Deny"}]
             }
         });
-        assert!(frozen(request).validate().is_ok());
+        assert!(frozen(request.clone()).validate().is_ok());
+        for field in ["owner_mxid", "publisher_mxid", "revision"] {
+            let mut missing = request.clone();
+            missing["com.agentchat.approval"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(frozen(missing).validate().is_err(), "unbound {field}");
+            let mut changed = request.clone();
+            changed["com.agentchat.approval"][field] = json!("@different:hq.test");
+            assert!(frozen(changed).validate().is_err(), "mismatched {field}");
+        }
+        let mut migrated = request;
+        migrated["com.agentchat.approval"]["migration_kind"] = json!("legacy_v1");
+        assert!(frozen(migrated).validate().is_err());
         // The notice shape the retained builder emits (fixture `notices`
         // rows): same event key, kind `status`, no request-only fields.
         let notice = json!({

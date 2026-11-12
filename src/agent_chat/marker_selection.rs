@@ -1,9 +1,4 @@
 use matrix_sdk::ruma::serde::Raw;
-#[derive(Debug)]
-pub(super) struct ApprovalMarkerSelection {
-    pub observed_v2: bool,
-    pub marker: Result<Option<serde_json::Value>, ()>,
-}
 
 struct ApprovalMarkerEnvelope<'a> {
     event_type: std::borrow::Cow<'a, str>,
@@ -69,90 +64,28 @@ impl<'de> serde::Deserialize<'de> for ApprovalMarkerEnvelope<'de> {
     }
 }
 
-fn select_approval_marker_state(
-    events: Vec<(String, String, usize, serde_json::Value)>,
-) -> ApprovalMarkerSelection {
-    const V1: &str = "com.agentchat.approval.room.v1";
-    const V2: &str = "com.agentchat.approval.room.v2";
-    const MAX_EVENT_BYTES: usize = 65_536;
-
-    let mut v1 = Vec::new();
-    let mut v2 = Vec::new();
-    for (event_type, state_key, bytes, event) in events {
-        if !state_key.is_empty() {
-            continue;
-        }
-        match event_type.as_str() {
-            V1 => v1.push((bytes, event)),
-            V2 => v2.push((bytes, event)),
-            _ => {}
-        }
-    }
-    let observed_v2 = !v2.is_empty();
-    let selected = if observed_v2 { v2 } else { v1 };
-    let marker = match selected.as_slice() {
-        [] => Ok(None),
-        [(bytes, event)] if *bytes <= MAX_EVENT_BYTES => Ok(Some(event.clone())),
-        _ => Err(()),
-    };
-    ApprovalMarkerSelection {
-        observed_v2,
-        marker,
-    }
-}
-
 pub(super) fn select_approval_marker_raw_state<'a, T: 'a>(
     events: impl IntoIterator<Item = &'a Raw<T>>,
-    namespace: super::approval::Namespace,
-) -> ApprovalMarkerSelection {
-    const V1: &str = "com.agentchat.approval.room.v1";
+) -> Result<Option<serde_json::Value>, ()> {
     const V2: &str = "com.agentchat.approval.room.v2";
-
     let mut candidates = Vec::new();
-    let mut invalid = false;
     for raw in events {
         let raw_json = raw.json().get();
-        let envelope = match serde_json::from_str::<ApprovalMarkerEnvelope<'_>>(raw_json) {
-            Ok(envelope) => envelope,
-            Err(_) => {
-                invalid = true;
-                continue;
-            }
-        };
-        let Some(suffix) = envelope.event_type.strip_prefix(namespace.base()) else {
-            continue;
-        };
-        let event_type = format!("com.agentchat{suffix}");
-        if !matches!(event_type.as_ref(), V1 | V2) {
+        let envelope =
+            serde_json::from_str::<ApprovalMarkerEnvelope<'_>>(raw_json).map_err(|_| ())?;
+        if envelope.event_type != V2 || !envelope.state_key.is_empty() {
             continue;
         }
-        let state_key = envelope.state_key;
-        let event = match raw_json.len() <= 65_536 && envelope.has_single_content {
-            true => match serde_json::from_str::<serde_json::Value>(raw_json) {
-                Ok(mut event) => {
-                    if let Some(content) = event.get_mut("content") {
-                        *content = super::approval_runtime::normalize(namespace, content);
-                    }
-                    event["type"] = serde_json::json!(event_type);
-                    event
-                }
-                Err(_) => {
-                    invalid = true;
-                    serde_json::Value::Null
-                }
-            },
-            false => {
-                invalid = true;
-                serde_json::Value::Null
-            }
-        };
-        candidates.push((event_type, state_key.into_owned(), raw_json.len(), event));
+        if raw_json.len() > 65_536 || !envelope.has_single_content {
+            return Err(());
+        }
+        candidates.push(serde_json::from_str(raw_json).map_err(|_| ())?);
     }
-    let mut selected = select_approval_marker_state(candidates);
-    if invalid {
-        selected.marker = Err(());
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.pop()),
+        _ => Err(()),
     }
-    selected
 }
 
 #[cfg(test)]
@@ -160,31 +93,30 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn markers_are_isolated_between_namespaces() {
-        for source in super::super::approval::Namespace::ALL {
-            let event = Raw::<serde_json::Value>::new(&json!({"type":format!("{}.approval.room.v2",source.base()),"state_key":"","content":{"version":2}})).unwrap();
-            for selected in super::super::approval::Namespace::ALL {
-                let result = select_approval_marker_raw_state([&event], selected);
-                assert_eq!(result.observed_v2, source == selected);
-                assert_eq!(result.marker.unwrap().is_some(), source == selected);
-            }
-        }
+    fn current_marker_keeps_original_event_evidence() {
+        let original = json!({"type":"com.agentchat.approval.room.v2","state_key":"","event_id":"$marker","sender":"@publisher:test","content":{"version":2}});
+        let event = Raw::<serde_json::Value>::new(&original).unwrap();
+        assert_eq!(
+            select_approval_marker_raw_state([&event]).unwrap(),
+            Some(original)
+        );
     }
     #[test]
-    fn malformed_or_duplicate_v2_blocks_v1_downgrade_in_every_namespace() {
-        for namespace in super::super::approval::Namespace::ALL {
-            let v1=Raw::<serde_json::Value>::new(&json!({"type":format!("{}.approval.room.v1",namespace.base()),"state_key":"","content":{"version":1}})).unwrap();
-            let v2=Raw::<serde_json::Value>::new(&json!({"type":format!("{}.approval.room.v2",namespace.base()),"state_key":"","content":null})).unwrap();
-            let selected = select_approval_marker_raw_state([&v1, &v2, &v2], namespace);
-            assert!(selected.observed_v2);
-            assert!(selected.marker.is_err());
-            let selected = select_approval_marker_raw_state([&v1, &v2], namespace);
-            assert!(selected.observed_v2);
-            assert_eq!(
-                selected.marker.unwrap().unwrap()["type"],
-                "com.agentchat.approval.room.v2"
-            );
-        }
+    fn duplicate_current_markers_reject_the_room_without_old_fallback() {
+        let v1=Raw::<serde_json::Value>::new(&json!({"type":"com.agentchat.approval.room.v1","state_key":"","content":{"version":1}})).unwrap();
+        let v2 = Raw::<serde_json::Value>::new(
+            &json!({"type":"com.agentchat.approval.room.v2","state_key":"","content":null}),
+        )
+        .unwrap();
+        assert!(select_approval_marker_raw_state([&v1, &v2, &v2]).is_err());
+        // Content validation belongs to ingest_marker. Selection retains the
+        // actual current event, never substitutes an older protocol payload.
+        assert_eq!(
+            select_approval_marker_raw_state([&v1, &v2])
+                .unwrap()
+                .unwrap()["type"],
+            "com.agentchat.approval.room.v2"
+        );
     }
     #[test]
     fn duplicate_content_keys_are_rejected_before_value_parsing() {
@@ -193,9 +125,26 @@ mod tests {
                 .into(),
         )
         .unwrap();
-        let selected =
-            select_approval_marker_raw_state([&raw], super::super::approval::Namespace::DEFAULT);
-        assert!(selected.observed_v2);
-        assert!(selected.marker.is_err());
+        assert!(select_approval_marker_raw_state([&raw]).is_err());
+    }
+    #[test]
+    fn obsolete_marker_alone_is_not_a_destination() {
+        let obsolete = Raw::<serde_json::Value>::new(&json!({"type":"com.agentchat.approval.room.v1","state_key":"","content":{"version":1}})).unwrap();
+        assert!(
+            select_approval_marker_raw_state([&obsolete])
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn obsolete_branding_cannot_select_a_current_marker() {
+        for old in ["com.hafleet", "com.hagency"] {
+            let event = Raw::<serde_json::Value>::new(&json!({"type":format!("{old}.approval.room.v2"),"state_key":"","content":{"version":2}})).unwrap();
+            assert!(
+                select_approval_marker_raw_state([&event])
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 }

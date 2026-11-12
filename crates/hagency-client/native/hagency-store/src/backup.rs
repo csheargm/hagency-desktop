@@ -179,7 +179,7 @@ pub fn snapshot(state: &Path, out: &Path, now: u64) -> Result<Manifest, Error> {
     #[cfg(test)]
     hagency_platform::legacy_writer::test_support::initialize_process_root()?;
     let _legacy_writer =
-        hagency_platform::legacy_writer::LegacyWriterAdmission::acquire_for_legacy_startup()?;
+        hagency_platform::legacy_writer::LegacyWriterAdmission::acquire()?;
 
     private::directory(state)?;
     if out.exists() {
@@ -225,7 +225,7 @@ pub fn restore(state: &Path, from: &Path) -> Result<Manifest, Error> {
     #[cfg(test)]
     hagency_platform::legacy_writer::test_support::initialize_process_root()?;
     let _legacy_writer =
-        hagency_platform::legacy_writer::LegacyWriterAdmission::acquire_for_legacy_startup()?;
+        hagency_platform::legacy_writer::LegacyWriterAdmission::acquire()?;
 
     let manifest = verify(from)?;
     if state.exists() {

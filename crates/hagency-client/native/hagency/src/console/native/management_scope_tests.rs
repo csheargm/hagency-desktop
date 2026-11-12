@@ -11,8 +11,8 @@ fn context(instance: u64) -> service::HostContext {
     )
     .unwrap()
 }
-fn session(store: &DomainStore, instance: u64) -> service::Session {
-    service::Session::new(
+fn session(store: &service::ServerManagementJournal, instance: u64) -> service::Session {
+    service::Session::new_server(
         store.clone(),
         context(instance),
         [service::Permission::ReadResources],
@@ -20,13 +20,11 @@ fn session(store: &DomainStore, instance: u64) -> service::Session {
     )
     .unwrap()
 }
-async fn fixture() -> (tempfile::TempDir, DomainStore) {
-    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-    let store = DomainStore::start(
-        DomainRepository::open(&root.path().join("domain")).unwrap(),
-        16,
-    )
-    .unwrap();
+async fn fixture() -> (tempfile::TempDir, service::ServerManagementJournal) {
+    let root = tempfile::tempdir().unwrap();
+    let store = service::ServerManagementJournal::open(
+        &root.path().join("server"), &"a".repeat(64), "@owner:test",
+    ).unwrap();
     (root, store)
 }
 #[tokio::test]

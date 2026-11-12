@@ -207,21 +207,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadStoppedTasks)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_stopped_tasks(&query, |_, _| {
-                            session.check(&context, Permission::ReadStoppedTasks)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .stopped_tasks(&self.adopted_profile(store)?, query)
+                    .stopped_tasks(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -237,21 +225,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadStoppedTasks)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_stopped_inspection(&query, |_, _| {
-                            session.check(&context, Permission::ReadStoppedTasks)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .stopped_inspection(&self.adopted_profile(store)?, query)
+                    .stopped_inspection(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -260,9 +236,7 @@ impl Session {
     }
     fn stopped_profile(&self) -> Result<&str, Error> {
         Ok(match self.local_store()? {
-            SessionStore::Legacy(_) => "",
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store.identity().0,
+            SessionStore::Current(store) => store.identity().0,
         })
     }
     pub async fn review_stopped(
@@ -281,21 +255,9 @@ impl Session {
             &serde_json::json!({"profile":self.stopped_profile()?,"input":input}),
         )?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_review_stopped(&input, receipt, |_, _| {
-                            session.check(&context, Permission::InspectStoppedTasks)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .review_stopped(&self.adopted_profile(store)?, input, receipt)
+                    .review_stopped(&self.current_profile(store)?, input, receipt)
                     .await?
             }
         };
@@ -333,26 +295,10 @@ impl Session {
             input.command_id
         ]))?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
-                store
-                    .call(32 * 1024, move |db| {
-                        db.management_resolve_stopped(
-                            &input,
-                            receipt,
-                            inspected,
-                            &request_id,
-                            |_, _| session.check(&context, Permission::ResolveStoppedTasks),
-                        )
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
                     .resolve_stopped(
-                        &self.adopted_profile(store)?,
+                        &self.current_profile(store)?,
                         input,
                         receipt,
                         inspected,

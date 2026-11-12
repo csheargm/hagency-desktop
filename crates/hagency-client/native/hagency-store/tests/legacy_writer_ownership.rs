@@ -60,7 +60,8 @@ fn ready(path: &Path, child: &mut WriterChild) {
 fn run(root: &Path, source: &Path, mode: &str) {
     let output = command(root, source, mode).output().unwrap();
     assert!(
-        output.status.success(),
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed;"),
         "{} {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -110,39 +111,42 @@ fn legacy_writer_child() {
             assert_eq!(byte[0], b'p');
             drop(personal);
         }
-        "prepare" => {
-            drop(DomainRepository::open(&source).unwrap());
+        "current_open" => {
+            let domain = DomainRepository::open(&source).unwrap();
+            let personal = hagency_agent_local::Ledger::open(
+                source.join("personal.sqlite"),
+                "@fixture:example.test",
+            )
+            .unwrap();
+            assert!(matches!(
+                ExclusiveWriterGuard::isolated_for_tests(&root),
+                Err(legacy_writer::Error::Locked)
+            ));
+            drop(domain);
+            drop(personal);
         }
-        "locked" | "refused" => {
-            let locked = std::env::var("HAGENCY_NORMAL_WRITER_MODE").unwrap() == "locked";
+        "locked" => {
             for result in [
                 DomainRepository::open(&source),
                 DomainRepository::open_managed(&source, &"a".repeat(64)),
-                DomainRepository::open_for_migration(&source),
             ] {
-                assert!(if locked {
-                    matches!(result, Err(Error::Locked))
-                } else {
-                    matches!(result, Err(Error::ResourceSetupRequired))
-                });
+                assert!(matches!(result, Err(Error::Locked)));
             }
             assert!(matches!(
                 hagency_agent_local::Ledger::open(
                     source.join("personal.sqlite"),
                     "@fixture:example.test"
                 ),
-                Err(hagency_agent_local::Error::Installation(_))
+                Err(hagency_agent_local::Error::Installation(
+                    legacy_writer::Error::Locked
+                ))
             ));
             let out = root.join("forbidden-snapshot");
             for result in [
                 hagency_store::backup::snapshot(&source, &out, 1),
                 hagency_store::backup::restore(&out, &source),
             ] {
-                assert!(if locked {
-                    matches!(result, Err(Error::Locked))
-                } else {
-                    matches!(result, Err(Error::ResourceSetupRequired))
-                });
+                assert!(matches!(result, Err(Error::Locked)));
             }
             assert!(!out.exists());
         }
@@ -200,36 +204,24 @@ fn all_normal_open_modes_refuse_before_creating_source_under_exclusive_custody()
     assert!(!source.exists());
 }
 #[test]
-fn durable_refusal_precedes_fresh_creation_and_old_schema_migration() {
-    let (_temp, root, source) = fixture();
-    run(&root, &source, "prepare");
-    let db = rusqlite::Connection::open(source.join("domain.sqlite3")).unwrap();
-    db.set_db_config(
-        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
-        true,
-    )
-    .unwrap();
-    db.execute_batch("DROP TABLE owner_managed_fences;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=76;")
-        .unwrap();
-    drop(db);
-    let files = ["domain.sqlite3", "domain.sqlite3-wal"];
-    let before: Vec<_> = files
-        .iter()
-        .map(|f| std::fs::read(source.join(f)).unwrap())
-        .collect();
-    let marker=serde_json::to_vec(&serde_json::json!({"version":1,"registryId":"a".repeat(64),"migrationId":"original","inventoryDigest":"b".repeat(64)})).unwrap();
-    hagency_store::private::write_new(&root.join("legacy-resource-refusal.json"), &marker).unwrap();
-    run(&root, &source, "refused");
-    for (name, bytes) in files.into_iter().zip(before) {
-        assert_eq!(std::fs::read(source.join(name)).unwrap(), bytes);
+fn obsolete_migration_records_cannot_block_current_writers_or_process_restart() {
+    for marker in [
+        br#"{"version":1,"registryId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","migrationId":"original","inventoryDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#.as_slice(),
+        b"obsolete malformed record".as_slice(),
+    ] {
+        let (_temp, root, source) = fixture();
+        let path = root.join("legacy-resource-refusal.json");
+        hagency_store::private::write_new(&path, marker).unwrap();
+        run(&root, &source, "current_open");
+        let guard = ExclusiveWriterGuard::isolated_for_tests(&root).unwrap();
+        run(&root, &source, "locked");
+        guard.check().unwrap();
+        drop(guard);
+        run(&root, &source, "current_open");
+        assert!(source.join("domain.sqlite3").is_file());
+        assert!(source.join("personal.sqlite").is_file());
+        assert_eq!(std::fs::read(path).unwrap(), marker);
     }
-    let missing = source.with_file_name("absent");
-    run(&root, &missing, "refused");
-    assert!(!missing.exists());
-    assert_eq!(
-        std::fs::read(root.join("legacy-resource-refusal.json")).unwrap(),
-        marker
-    );
 }
 #[test]
 #[cfg(feature = "test-support")]

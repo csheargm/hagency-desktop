@@ -1,20 +1,18 @@
-//! File exchange for an admitted encrypted conversation, separate from task MCP.
+//! File exchange for an admitted conversation, separate from task MCP.
 //! The host fixes the room/workspace; the model supplies only event IDs and paths.
 use super::*;
 use crate::console::owned_runtime::e2ee::{AgentDevice, RoomFile};
-use hagency_runtime::{codex::session::RoomFileOperation, owned::OwnedSession};
+use hagency_runtime::{room_tools::RoomFileOperation, owned::OwnedSession};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 mod storage;
 #[cfg(test)]
 pub(super) mod tests;
 use storage::{ReceiveRecord, SendRecord, Store, Workspace};
-const MAX_TRANSFERS: usize = 16;
+mod send_allowance;
+use send_allowance::SendAllowance;
 const MAX_BYTES: usize = crate::documents::MAX_FILE_BYTES;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
 type Result<T> = std::result::Result<T, &'static str>;
@@ -22,7 +20,7 @@ fn sha(bytes: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(bytes.as_ref()))
 }
 
-pub(super) trait FileIo: Send + Sync {
+pub(in crate::console) trait FileIo: Send + Sync {
     fn identity(&self) -> Result<String>;
     fn receive(
         &self,
@@ -42,6 +40,7 @@ pub(super) enum Source {
         device: Arc<AgentDevice>,
         io: Io,
         work: String,
+        encrypted: bool,
     },
     #[cfg(test)]
     Fixture(Arc<tests::Endpoint>),
@@ -63,7 +62,7 @@ impl FileIo for Source {
     }
     async fn upload(&self, bytes: Vec<u8>) -> Result<String> {
         match self {
-            Self::Device { device, io, work } => {
+            Self::Device { device, io, work, .. } => {
                 authorize(io, work).await?;
                 device.upload_room_file(bytes).await
             }
@@ -73,9 +72,13 @@ impl FileIo for Source {
     }
     async fn send(&self, room: &str, txn: &str, content: Value) -> Result<String> {
         match self {
-            Self::Device { device, io, work } => {
+            Self::Device { device, io, work, encrypted } => {
                 authorize(io, work).await?;
-                device.publish_room_file(room, txn, content).await
+                if *encrypted {
+                    device.publish_room_file(room, txn, content).await
+                } else {
+                    device.publish_room_file_with_security(room, txn, content, false).await
+                }
             }
             #[cfg(test)]
             Self::Fixture(f) => f.send(room, txn, content).await,
@@ -98,7 +101,15 @@ async fn authorize(io: &Io, work: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) struct Files<S = Source> {
+/// Host-selected immutable reply scope, independent of provider/runtime type.
+pub(in crate::console) struct Conversation<'a> {
+    pub namespace: &'a str,
+    pub room: &'a str,
+    pub event: &'a str,
+    pub requester: &'a str,
+    pub thread: Option<&'a str>,
+}
+pub(in crate::console) struct Files<S> {
     source: Arc<S>,
     room: String,
     reply_to: String,
@@ -106,18 +117,40 @@ pub(super) struct Files<S = Source> {
     scope: String,
     workspace: Workspace,
     store: Store,
-    transfers: HashSet<String>,
     transfer_timeout: Duration,
+    send_allowance: Option<SendAllowance>,
 }
-impl Files {
+impl Files<Source> {
     pub(super) async fn new(
         io: &Io,
         b: &Bound,
         work: &SharedWorkItem,
         process: &OwnedSession,
+        input: Option<&SharedPreparedInput>,
     ) -> std::result::Result<Option<Self>, NativeError> {
-        if !work.encrypted || !process.shared_tools_enabled() {
+        Self::for_workspace(
+            io,
+            b,
+            work,
+            process.shared_workspace(),
+            process.shared_tools_enabled(),
+            input,
+        )
+        .await
+    }
+    pub(super) async fn for_workspace(
+        io: &Io,
+        b: &Bound,
+        work: &SharedWorkItem,
+        workspace: &Path,
+        enabled: bool,
+        input: Option<&SharedPreparedInput>,
+    ) -> std::result::Result<Option<Self>, NativeError> {
+        if !enabled || !work.encrypted && !input.is_some_and(SharedPreparedInput::uses_native_history) {
             return Ok(None);
+        }
+        if !work.encrypted {
+            input.and_then(SharedPreparedInput::context).ok_or_else(invalid)?.render_for(work).map_err(store)?;
         }
         #[cfg(test)]
         if let Some(fixture) = &io.crypto_fixture {
@@ -125,7 +158,7 @@ impl Files {
                 Some(f) => Self::open(
                     Arc::new(Source::Fixture(f.clone())),
                     work,
-                    process.shared_workspace(),
+                    workspace,
                     &f.records,
                 )
                 .map(Some)
@@ -140,9 +173,10 @@ impl Files {
                 device,
                 io: io.clone(),
                 work: work.id.clone(),
+                encrypted: work.encrypted,
             }),
             work,
-            process.shared_workspace(),
+            workspace,
             &root,
         )
         .map(Some)
@@ -156,26 +190,48 @@ impl<S: FileIo> Files<S> {
         workspace: &Path,
         records: &Path,
     ) -> Result<Self> {
+        let mut files = Self::for_room(
+            source,
+            Conversation {
+                namespace: &work.assignment_id,
+                room: &work.room_id,
+                event: &work.event_id,
+                requester: &work.requester_mxid,
+                thread: (work.thread_root != work.event_id).then_some(work.thread_root.as_str()),
+            },
+            workspace,
+            records,
+        )?;
+        files.send_allowance = Some(SendAllowance::shared());
+        Ok(files)
+    }
+    pub(in crate::console) fn for_room(
+        source: Arc<S>,
+        room: Conversation<'_>,
+        workspace: &Path,
+        records: &Path,
+    ) -> Result<Self> {
+        // Preserve the shared-agent receipt namespace byte-for-byte.
         let scope = sha(serde_json::to_vec(&json!([
-            work.assignment_id,
-            work.room_id,
-            work.event_id,
-            work.requester_mxid
+            room.namespace,
+            room.room,
+            room.event,
+            room.requester
         ]))
         .map_err(|_| "file_scope_invalid")?);
         Ok(Self {
             source,
-            room: work.room_id.clone(),
-            reply_to: work.event_id.clone(),
-            thread: (work.thread_root != work.event_id).then(|| work.thread_root.clone()),
+            room: room.room.into(),
+            reply_to: room.event.into(),
+            thread: room.thread.map(str::to_owned),
             scope,
             workspace: Workspace::open(workspace)?,
             store: Store::open(records)?,
-            transfers: HashSet::new(),
             transfer_timeout: TRANSFER_TIMEOUT,
+            send_allowance: None,
         })
     }
-    pub(super) async fn handle<H: super::history::HistoryIo>(
+    pub(in crate::console) async fn handle<H: super::history::HistoryIo>(
         &mut self,
         operation: &RoomFileOperation,
         history: &super::history::Reader<H>,
@@ -202,13 +258,6 @@ impl<S: FileIo> Files<S> {
             Err(error) => json!({"error":error}).to_string(),
         }
     }
-    fn admit(&mut self, id: &str) -> Result<()> {
-        if !self.transfers.contains(id) && self.transfers.len() >= MAX_TRANSFERS {
-            return Err("file_transfer_limit");
-        }
-        self.transfers.insert(id.into());
-        Ok(())
-    }
     async fn receive(&mut self, event: &str) -> Result<Value> {
         tokio::time::timeout(self.transfer_timeout, self.receive_inner(event))
             .await
@@ -216,7 +265,6 @@ impl<S: FileIo> Files<S> {
     }
     async fn receive_inner(&mut self, event: &str) -> Result<Value> {
         let id = format!("receive_{}", sha(format!("{}|{event}", self.scope)));
-        self.admit(&id)?;
         if let Some(saved) = self.store.read::<ReceiveRecord>(&id)? {
             return self.workspace.receive_receipt(&saved);
         }
@@ -298,7 +346,6 @@ impl<S: FileIo> Files<S> {
             return Err("file_filename_refused");
         }
         let id = self.send_id(call_id);
-        self.admit(&id)?;
         let selection_digest =
             sha(serde_json::to_vec(operation).map_err(|_| "invalid_file_arguments")?);
         let mut saved = match self.store.read::<SendRecord>(&id)? {
@@ -318,6 +365,9 @@ impl<S: FileIo> Files<S> {
                 let snapshot = self.workspace.snapshot(&selection)?;
                 let size = snapshot.len();
                 let hash = sha(snapshot.bytes());
+                if let Some(allowance) = &self.send_allowance {
+                    allowance.admit(&self.store, &self.scope, &id, &selection_digest, size)?;
+                }
                 let codec = hagency_media::Codec::new(
                     hagency_media::Limits::new(MAX_BYTES, 1).map_err(|_| "file_size_limit")?,
                 );

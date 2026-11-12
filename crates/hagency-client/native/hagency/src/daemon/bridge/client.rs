@@ -1,7 +1,6 @@
 use super::{Call, Failure, Lease, Operation, Package, decode, encode, error, journal::Journal};
 use crate::native_owner::*;
 #[cfg(feature = "resource-adoption")]
-use crate::operator_graphs::reader;
 use hagency_store::management as service;
 use serde::Serialize;
 use serde_json::Value;
@@ -351,7 +350,6 @@ pub(crate) fn fingerprint(owner: &str, scope: &str, call: &Call) -> Result<Strin
                     | Operation::apply_web_connection
                     | Operation::retire_account
                     | Operation::create_resource_configuration
-                    | Operation::connect_provider
                     | Operation::prepare_personal_workspace
                     | Operation::edit_local_resource
                     | Operation::enroll_account_resource

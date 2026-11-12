@@ -44,6 +44,7 @@ struct WireState {
     processing: usize,
     processing_input: Option<Value>,
     first_reply: Option<Value>,
+    continuous: bool,
     matrix_device_keys: BTreeMap<String, Value>,
 }
 impl WireState {
@@ -228,17 +229,16 @@ impl WireState {
                     self.first_reply = Some(input.clone());
                     return (503, json!({"code":"fixture_reply_response_lost"}));
                 }
-                assert_eq!(
-                    self.first_reply.as_ref(),
-                    Some(input),
-                    "retry preserves exact reply and execution identity"
-                );
+                if self.first_reply.as_ref().unwrap()["reply"]["dispatchId"] == input["reply"]["dispatchId"] {
+                    assert_eq!(self.first_reply.as_ref(), Some(input), "retry preserves exact reply and execution identity");
+                }
                 let reply = &input["reply"];
                 let d = self
                     .events
                     .iter_mut()
                     .find(|d| d["id"] == reply["dispatchId"])
                     .unwrap();
+                let new_reply = d["state"] != "replied";
                 d["state"] = "replied".into();
                 let digest = format!(
                     "{:x}",
@@ -250,10 +250,13 @@ impl WireState {
                         .as_bytes()
                     )
                 );
-                (
-                    200,
-                    json!({"reply":{"id":"reply-a","ownerEventId":d["id"],"agentId":"agent-a","bindingId":"binding-a","ownerUserId":"uid","roomId":"!room-a:test","puppetMxid":"@agent:test","bindingGeneration":1,"dispatchEpoch":d["dispatchEpoch"],"deliveryEpoch":self.epoch,"requesterMxid":"@bob:test","threadRoot":"$root:test","body":reply["body"],"payloadDigest":digest,"matrixTxnId":format!("hagency_{:x}",Sha256::digest(d["id"].as_str().unwrap().as_bytes())),"state":"sent","matrixEventId":"$fixture-sent:test"}}),
-                )
+                let response = json!({"reply":{"id":format!("reply-{}",d["id"].as_str().unwrap()),"ownerEventId":d["id"],"agentId":"agent-a","bindingId":"binding-a","ownerUserId":"uid","roomId":"!room-a:test","puppetMxid":"@agent:test","bindingGeneration":1,"dispatchEpoch":d["dispatchEpoch"],"deliveryEpoch":self.epoch,"requesterMxid":d["requesterMxid"],"threadRoot":"$root:test","body":reply["body"],"payloadDigest":digest,"matrixTxnId":format!("hagency_{:x}",Sha256::digest(d["id"].as_str().unwrap().as_bytes())),"state":"sent","matrixEventId":"$fixture-sent:test"}});
+                if self.continuous && new_reply && self.events.len() < 3 {
+                    let mut next = event(if self.events.len() == 1 { "dispatch-b" } else { "dispatch-c" }, self.epoch);
+                    if self.events.len() == 2 { next["requesterMxid"] = "@carol:test".into(); }
+                    self.events.push(next);
+                }
+                (200, response)
             }
             _ => (404, json!({"code":"fixture_unknown_path"})),
         }
@@ -360,7 +363,7 @@ fn provider(
     unknown: bool,
 ) {
     let source=r##"#!/usr/bin/python3
-import sys,json,time,sqlite3
+import sys,json,time,sqlite3,os
 marker=MARKER
 ledger=LEDGER
 unknown=UNKNOWN
@@ -368,7 +371,7 @@ for raw in sys.stdin:
  f=json.loads(raw);m=f.get('method');ident=f.get('id');p=f.get('params',{})
  def reply(v): print(json.dumps({'id':ident,'result':v}),flush=True)
  def emit(m,p): print(json.dumps({'method':m,'params':p}),flush=True)
- if m=='initialize': reply({})
+ if m=='initialize': reply({'userAgent':'fixture/0.167.0'})
  elif m=='initialized': pass
  elif m=='account/read': reply({'requiresOpenaiAuth':True,'account':{'type':'chatgpt'}})
  elif m=='config/read':
@@ -378,20 +381,24 @@ for raw in sys.stdin:
   c['features']['code_mode_host']=True
   reply({'config':c})
  elif m in ['thread/start','thread/resume']:
-  reply({'thread':{'id':'thread-a','cwd':p['cwd']},'cwd':p['cwd'],'model':p['model'],'approvalPolicy':'untrusted','approvalsReviewer':'user','sandbox':{'type':'readOnly','networkAccess':False}})
+  thread=p.get('threadId','thread-'+str(os.getpid()));cwd=p['cwd']
+  reply({'thread':{'id':thread,'cwd':cwd},'cwd':cwd,'model':p['model'],'approvalPolicy':'untrusted','approvalsReviewer':'user','sandbox':{'type':{'read-only':'readOnly','workspace-write':'workspaceWrite'}[p['sandbox']],'networkAccess':False}})
  elif m=='thread/name/set': reply({})
+ elif m=='thread/read': reply({'thread':{'id':thread,'cwd':cwd,'status':{'type':'idle'}}})
  elif m=='turn/start':
   db=sqlite3.connect('file:'+ledger+'?mode=ro',uri=True)
-  assert db.execute("select count(*) from calls where state='pending' and reserved=10").fetchone()[0]==1
-  assert db.execute("select count(*) from accounts where held=10").fetchone()[0]==3
+  assert db.execute("select count(*) from calls where state='pending' and reserved=0").fetchone()[0]==1
+  assert db.execute("select count(*) from accounts where held!=0").fetchone()[0]==0
   db.close()
-  with open(marker,'a') as out:out.write('turn\n')
-  reply({'turn':{'id':'turn-a','status':'inProgress'}})
+  with open(marker,'a') as out:out.write(json.dumps({'pid':os.getpid(),'thread':thread})+'\n')
+  turn='turn-'+str(len(open(marker).readlines()))
+  reply({'turn':{'id':turn,'status':'inProgress'}})
   time.sleep(6)
   first_unknown = unknown and len(open(marker).readlines()) == 1
-  if not first_unknown:emit('thread/tokenUsage/updated',{'threadId':'thread-a','turnId':'turn-a','tokenUsage':{'total':{'inputTokens':3,'outputTokens':2,'cachedInputTokens':0,'reasoningOutputTokens':0,'totalTokens':5},'last':{'inputTokens':3,'outputTokens':2,'cachedInputTokens':0,'reasoningOutputTokens':0,'totalTokens':5}}})
-  emit('item/completed',{'threadId':'thread-a','turnId':'turn-a','item':{'id':'message-a','type':'agentMessage','text':'isolated fixture answer'}})
-  emit('turn/completed',{'threadId':'thread-a','turn':{'id':'turn-a','status':'invalid' if first_unknown else 'completed'}})
+  if not first_unknown:emit('rawResponse/completed',{'threadId':thread,'turnId':turn,'responseId':'response-'+turn,'usage':{'inputTokens':3,'outputTokens':2,'cachedInputTokens':0,'reasoningOutputTokens':0,'totalTokens':5}})
+  emit('item/completed',{'threadId':thread,'turnId':turn,'item':{'id':'message-a','type':'agentMessage','text':'isolated fixture answer'}})
+  emit('turn/completed',{'threadId':thread,'turn':{'id':turn,'status':'invalid' if first_unknown else 'completed'}})
+  if os.path.exists(marker+'.exit_once') and len(open(marker).readlines())==1:sys.exit(0)
  else: raise Exception(m)
 "##.replace("MARKER",&serde_json::to_string(marker).unwrap()).replace("LEDGER",&serde_json::to_string(ledger).unwrap()).replace("UNKNOWN",if unknown{"True"}else{"False"});
     std::fs::write(script, source).unwrap();
@@ -435,7 +442,8 @@ async fn host_round(
         stop.clone(),
         status,
     ));
-    let ready = tokio::time::timeout(Duration::from_secs(20), async {
+    let wait_seconds = if state.lock().unwrap().continuous { 50 } else { 20 };
+    let ready = tokio::time::timeout(Duration::from_secs(wait_seconds), async {
         loop {
             let done = {
                 let s = state.lock().unwrap();
@@ -452,6 +460,10 @@ async fn host_round(
                             >= baseline_polls + 2
                 } else if unknown {
                     s.events.len() == 2 && s.events[1]["state"] == "replied"
+                } else if s.continuous {
+                    s.events.len() == 3 && s.events.iter().all(|d| d["state"] == "replied")
+                        && Ledger::open_scoped(&local_path, OWNER, &device_profile).unwrap()
+                            .inbox_record(OWNER, "dispatch-c").is_ok_and(|r| r.state == State::Replied)
                 } else {
                     s.events.first().is_some_and(|d| d["state"] == "replied")
                         && Ledger::open_scoped(&local_path, OWNER, &device_profile)
@@ -492,6 +504,12 @@ async fn fixture(unknown: bool, budget: u64) {
     fixture_with_processing_failure(unknown, budget, 0).await;
 }
 async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_failure: u8) {
+    fixture_options(unknown, budget, processing_failure, false).await;
+}
+async fn fixture_options(unknown: bool, budget: u64, processing_failure: u8, continuous: bool) {
+    fixture_modes(unknown, budget, processing_failure, continuous, false).await;
+}
+async fn fixture_modes(unknown: bool, budget: u64, processing_failure: u8, continuous: bool, exit_before_followup: bool) {
     // Agent device opens share a process-wide lock. Separate these fixtures
     // before starting their clocks so another test's real SDK bootstrap cannot
     // consume the two-turn case's fixed execution/lease-renewal deadline.
@@ -501,6 +519,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
         Budget, Layer, Limit, ModelProfile, Period, Policy, RequestPolicy, ToolPolicy,
     };
     let (origin, state, server) = server(unknown, processing_failure).await;
+    state.lock().unwrap().continuous = continuous;
     let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let native =
@@ -535,6 +554,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
     let script = root.join("fake-provider");
     let marker = root.join("turns");
     std::fs::write(&marker, "").unwrap();
+    if exit_before_followup { std::fs::write(marker.with_extension("exit_once"), "").unwrap(); }
     provider(&script, &marker, &path, unknown);
     let scope = inbox::Dispatch {
         id: "dispatch-a".into(),
@@ -584,6 +604,14 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
             },
         )
         .unwrap();
+    if continuous {
+        let mut stranger = scope.clone();
+        stranger.requester = "@carol:test".into();
+        ledger.set_policy(OWNER, &stranger, Layer::Requester, 0, &Policy {
+            budget: Budget { limit: Limit::Unlimited, period: Period::Lifetime },
+            requests: RequestPolicy::Allow, high_risk: ToolPolicy::Deny,
+        }).unwrap();
+    }
     drop(ledger);
     let config = || StartConfig {
         agent_id: "agent-a".into(),
@@ -598,10 +626,9 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
             shared_auth: false,
             web_search: true,
         },
-        mode: BudgetMode::Estimated { reservation: 10 },
         credential_ref: "keychain:fixture".into(),
         takeover: Takeover::Never,
-        host_files: false,
+        host_files: continuous,
         shared_workspace: false,
         shared_workspace_pin: None,
         owner_direct: false,
@@ -618,17 +645,31 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
     )
     .await;
     let ledger = Ledger::open_scoped(&path, OWNER, &profile_id).unwrap();
-    let expected_turns = if unknown { 2 } else { usize::from(budget > 0) };
+    let expected_turns = if continuous { 3 } else if unknown { 2 } else { usize::from(budget > 0) };
     assert_eq!(
         std::fs::read_to_string(&marker).unwrap().lines().count(),
         expected_turns
     );
+    if continuous {
+        let turns: Vec<Value> = std::fs::read_to_string(&marker).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        if exit_before_followup {
+            assert_ne!(turns[0]["pid"], turns[1]["pid"], "a dead process must be replaced before the new model call");
+        } else {
+            assert_eq!(turns[0]["pid"], turns[1]["pid"], "same conversation must reuse the native process");
+        }
+        assert_eq!(turns[0]["thread"], turns[1]["thread"]);
+        assert_ne!(turns[1]["pid"], turns[2]["pid"], "a new requester must get its own process");
+        assert_ne!(turns[1]["thread"], turns[2]["thread"]);
+    }
     let account = ledger
         .account(&scope, Layer::Room, Period::Lifetime, now())
         .unwrap();
     if unknown {
         assert_eq!(account, (5, 0));
-        assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
+        let outstanding = ledger.outstanding_calls(OWNER).unwrap();
+        assert_eq!(outstanding.len(), 1);
+        assert_eq!(outstanding[0].state, "unknown");
+        assert_eq!(outstanding[0].reserved, 0);
         assert_eq!(
             ledger.inbox_record(OWNER, "dispatch-b").unwrap().state,
             State::Replied
@@ -645,7 +686,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
             State::Unknown
         );
     } else {
-        assert_eq!(account, (if budget > 0 { 5 } else { 0 }, 0));
+        assert_eq!(account, (if budget > 0 { 5 * expected_turns as u64 } else { 0 }, 0));
         let reply = state.lock().unwrap().first_reply.as_ref().unwrap()["reply"]["body"]
             .as_str()
             .unwrap()
@@ -655,7 +696,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
             assert!(reply.starts_with("isolated fixture answer"));
             assert!(!reply.contains("本次用量"));
         } else {
-            assert!(reply.contains("可用额度不足"));
+            assert!(reply.contains("已结算用量达到本期额度"));
             assert!(reply.contains("本次未调用模型"));
             assert!(!reply.contains("本轮处理已结束"));
         }
@@ -679,7 +720,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
         assert!(s.paths.iter().any(|p| p.ends_with("/events/start")));
         assert_eq!(
             s.processing,
-            if unknown {
+            if continuous { 4 } else if unknown {
                 3
             } else if budget > 0 {
                 2
@@ -721,7 +762,7 @@ async fn fixture_with_processing_failure(unknown: bool, budget: u64, processing_
         );
         assert!(s.paths.iter().any(|p| p.ends_with("/leases/release")));
         if !unknown {
-            assert_eq!(s.replies, 2);
+            assert_eq!(s.replies, if continuous { 4 } else { 2 });
         }
     }
     native.shutdown().await;
@@ -733,7 +774,21 @@ async fn typed_http_runtime_replies_retries_and_restart_never_repeat_provider_tu
     fixture(false, 100).await;
 }
 #[tokio::test]
-async fn typed_http_runtime_unreported_failure_releases_hold_and_next_provider_turn_succeeds() {
+async fn typed_http_postpaid_overrun_finishes_and_recovers_without_replay() {
+    // The fake native turn reports five tokens against a one-token budget.
+    // Completion, delivery retry and restart must retain that exact charge.
+    fixture(false, 1).await;
+}
+#[tokio::test]
+async fn typed_http_continuous_native_session_retains_process_but_isolates_requesters() {
+    fixture_options(false, 100, 0, true).await;
+}
+#[tokio::test]
+async fn typed_http_continuous_native_session_replaces_dead_process_before_reserving() {
+    fixture_modes(false, 100, 0, true, true).await;
+}
+#[tokio::test]
+async fn typed_http_runtime_unreported_failure_stays_unresolved_and_next_provider_turn_succeeds() {
     fixture(true, 100).await;
 }
 #[tokio::test]
@@ -768,7 +823,7 @@ async fn typed_http_runtime_intent_recovery_rechecks_scope_and_explicit_stop_sur
         binding_id: "binding-a".into(),
         device_id: "different-device".into(),
         consent_id: new_consent_id().unwrap(),
-        reservation: 50,
+
         effort: "low".into(),
         host_files: false,
         shared_workspace: false,
@@ -818,9 +873,6 @@ async fn typed_http_runtime_intent_recovery_rechecks_scope_and_explicit_stop_sur
             effort: saved.effort.clone(),
             shared_auth: false,
             web_search: true,
-        },
-        mode: BudgetMode::Estimated {
-            reservation: saved.reservation,
         },
         credential_ref: "none".into(),
         takeover: Takeover::Never,
@@ -947,7 +999,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         )
         .unwrap();
     drop(ledger);
-    let input = json!({"bindingId":"binding-a","reservation":50,"effort":"low","hostFiles":false,"takeover":false});
+    let input = json!({"bindingId":"binding-a","effort":"low","hostFiles":false,"takeover":false});
     native
         .execute(super::super::native::Command::Local {
             agent_id: "agent-a".into(),
@@ -999,10 +1051,10 @@ async fn typed_http_runtime_intent_positive_restore_child() {
     let (intent_path, profile_id) = intent_location(restarted.test_console(), &device).unwrap();
     let mut intents = read_intents(&intent_path, &profile_id).unwrap().intents;
     let mut direct = intents.remove(0);
-    direct.reservation = 15000;
+
     let mut project = direct.clone();
     project.binding_id = "binding-other".into();
-    project.reservation = 7000;
+
     change_intent(
         &intent_path,
         &profile_id,
@@ -1045,7 +1097,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.reservation, 15000);
+
     // Agent-wide intent starts all active Rooms under one lease, discovers a
     // newly joined Room, preserves pause, and Stop defeats restart recovery.
     use super::super::native::{Command, LocalAction};
@@ -1062,7 +1114,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         .execute(Command::Local {
             agent_id: "agent-a".into(),
             action: LocalAction::StartAgentService,
-            input: Some(json!({"reservation":15000,"effort":"low"})),
+            input: Some(json!({"effort":"low"})),
             binding_id: None,
             requester: None,
         })
@@ -1201,7 +1253,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(status["service"]["reservation"], 15000);
+    assert!(status["service"].get("reservation").is_none());
     assert_eq!(status["service"]["effort"], "low");
     // Preferences survive a fresh host, but never represent execution consent.
     stopped.suspend().await.unwrap();
@@ -1225,7 +1277,7 @@ async fn typed_http_runtime_intent_positive_restore_child() {
         })
         .await
         .unwrap();
-    assert_eq!(status["service"]["reservation"], 15000);
+    assert!(status["service"].get("reservation").is_none());
     assert_eq!(status["service"]["effort"], "low");
     wait_binding(&stopped, &state, "binding-a", true).await;
     let preferences_path = intent_path.with_file_name("agent-service-options.json");

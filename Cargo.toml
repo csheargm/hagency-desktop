@@ -10,7 +10,7 @@ license = "Apache-2.0"
 readme = "README.md"
 categories = ["gui"]
 repository = "https://github.com/hagency-org/hagency-desktop"
-version = "0.5.0-rc.5"
+version = "0.5.0-rc.6"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
@@ -231,6 +231,9 @@ onboarding-test-support = ["resource-adoption", "hagency/test-support", "hagency
 owner-accessibility = ["hagency-owner-dashboard/native-accessibility"]
 # Isolated local accounts exist only in instrument builds.
 palpo-instrument = []
+# A developer's locally built test app: saved sign-ins may be kept in private
+# files instead of the OS credential store. Never part of a distributed build.
+development-credential-files = ["hagency-store/development-credential-files"]
 # Ordinary Hagency Desktop builds include the native management and worker flow.
 # Instrumentation and isolated fixture support remain explicit opt-ins above.
 default = ["standalone", "agent_chat", "shared-budget-execution"]

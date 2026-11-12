@@ -57,22 +57,9 @@ impl Session {
         self.check(context, Permission::ReadAccounts)?;
         query.validate()?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let authority = self.authority();
-                let original = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(4096, move |db| {
-                        authority.authorize(&original, Permission::ReadAccounts)?;
-                        let result = db.management_account_inventory(None, query)?;
-                        authority.authorize(&original, Permission::ReadAccounts)?;
-                        Ok(result)
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .account_inventory(&self.adopted_profile(store)?, query)
+                    .account_inventory(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -105,14 +92,9 @@ impl Session {
         let authority = self.authority();
         let original = context.clone();
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let receipt = CommandReceipt::new(context, "account.prepare", &input.command_id, &input)?;
-                store.call(4096, move |db| db.management_prepare_account("", receipt, || authority.authorize(&original, Permission::PrepareAccounts))).await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 let receipt = CommandReceipt::new(context, "account.prepare", &input.command_id, &serde_json::json!({"profile":store.identity().0,"input":input}))?;
-                store.prepare_account(&self.adopted_profile(store)?, receipt, authority, original).await?
+                store.prepare_account(&self.current_profile(store)?, receipt, authority, original).await?
             }
         };
         self.check(context, Permission::PrepareAccounts).map_err(|_| Error::OutcomeUnknown)?;

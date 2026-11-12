@@ -286,7 +286,11 @@ pub async fn respond_with(
     let mut response = if request.target.ends_with("/whoami") {
         (200, who())
     } else if request.target.ends_with("/state") {
-        (200, room())
+        let mut state = room();
+        if let Some(marker) = peer.approval_markers.last() {
+            state.as_array_mut().unwrap().push(marker.clone());
+        }
+        (200, state)
     } else if request.target.contains("/sync?") {
         (
             200,

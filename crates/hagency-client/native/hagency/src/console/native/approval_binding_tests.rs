@@ -18,56 +18,8 @@ fn package() -> ManagementPackage {
         ],
     }
 }
-pub(super) async fn repository(owner: &NativeOwner) -> hagency_store::DomainRepository {
-    let login = &owner.0.host.console.0.server_login;
-    let device = login.authorized_device().await.unwrap();
-    let profile = crate::console::owned_agents::profile_identity(
-        device.origin(),
-        device.issuer(),
-        device.subject(),
-        device.owner_mxid(),
-    )
-    .unwrap();
-    let directory = login
-        .state_directory()
-        .unwrap()
-        .join("owned-agent-owners")
-        .join(format!("management_{profile}"));
-    owner.suspend().await.unwrap();
-    hagency_store::DomainRepository::open_managed(&directory, &profile).unwrap()
-}
 pub(super) async fn reopen(f: Fixture) -> Fixture {
-    let Fixture {
-        _root,
-        owner,
-        transport,
-        registry,
-        state,
-        task,
-        current,
-    } = f;
-    let origin = owner.0.expected_origin.clone();
-    owner.suspend().await.unwrap();
-    drop(transport);
-    drop(owner);
-    let owner = NativeOwner::open_with_matrix(
-        &_root.path().join("host"),
-        &origin,
-        "@owner:test",
-        Arc::new(Source(current.clone())),
-    )
-    .await
-    .unwrap();
-    let transport = AllocationTransport::new(owner.management(super::package(1)).await.unwrap());
-    Fixture {
-        _root,
-        owner,
-        transport,
-        registry,
-        state,
-        task,
-        current,
-    }
+    f.reopen().await
 }
 pub(super) async fn fixture() -> (
     Fixture,
@@ -75,49 +27,42 @@ pub(super) async fn fixture() -> (
     hagency_core::approvals::ApprovalRoomObservation,
 ) {
     let f = Fixture::new().await;
-    let mut db = repository(&f.owner).await;
-    let resource = legacy::resource("binding_fixture", "binding_seat", 1000);
-    db.put_seat(&hagency_core::project::Seat {
-        id: resource.seat_id.clone(),
-        declaration: None,
-    })
-    .unwrap();
-    db.put_resource(&resource).unwrap();
-    db.register(&legacy::registration()).unwrap();
-    let proof = legacy::proof(&legacy::request(
-        "binding_request",
-        "binding_agent",
-        &resource,
-        20,
-    ));
-    let engagement = db.admit(&proof, 1000).unwrap();
-    db.approve("binding_approve", &proof, 1000).unwrap();
-    let effect = db.claim_effect().unwrap().unwrap();
-    db.observe_effect(
-        &effect.id,
-        effect.fence,
-        &hagency_store::EffectOutcome::Applied {
-            receipt: "fixture provisioning".into(),
-        },
-    )
-    .unwrap();
-    let room = hagency_core::approvals::ApprovalRoomObservation {
-        engagement_id: engagement.id,
-        registration_generation: 1,
-        generation: 1,
-        room_id: "!private:example.test".into(),
-        device_id: "BOT_DEVICE".into(),
-        joined: std::collections::BTreeSet::from([
-            "@owner:example.test".into(),
-            "@approval:example.test".into(),
-        ]),
-        invite_only: true,
-        encrypted: true,
-        available: true,
-    };
-    db.observe_approval_room(&room, 1010).unwrap();
-    drop(db);
-    (reopen(f).await, resource.id(), room)
+    let resource_id = f.state.lock().unwrap().grant.as_ref().unwrap().resource_id.clone();
+    let id = resource_id.clone();
+    let room = f.registry.with_repository_for_tests(move |db| {
+        let mut resource = db.resource_configuration(&id)?;
+        // Current enrollment creates a private resource. This fixture exercises
+        // the published fleet approval path and must explicitly publish it.
+        resource.published = true;
+        db.put_resource(&resource)?;
+        db.register(&legacy::registration())?;
+        let proof = legacy::proof(&legacy::request(
+            "binding_request", "binding_agent", &resource, 20,
+        ));
+        let engagement = db.admit(&proof, 1000)?;
+        db.approve("binding_approve", &proof, 1000)?;
+        let effect = db.claim_effect()?.unwrap();
+        db.observe_effect(
+            &effect.id, effect.fence,
+            &hagency_store::EffectOutcome::Applied { receipt: "fixture provisioning".into() },
+        )?;
+        let room = hagency_core::approvals::ApprovalRoomObservation {
+            engagement_id: engagement.id,
+            registration_generation: 1,
+            generation: 1,
+            room_id: "!private:example.test".into(),
+            device_id: "BOT_DEVICE".into(),
+            joined: std::collections::BTreeSet::from([
+                "@owner:example.test".into(), "@approval:example.test".into(),
+            ]),
+            invite_only: true,
+            encrypted: true,
+            available: true,
+        };
+        db.observe_approval_room(&room, 1010)?;
+        Ok(room)
+    }).await.unwrap();
+    (reopen(f).await, resource_id, room)
 }
 fn query(id: &str) -> ResourceApprovalBindingQuery {
     ResourceApprovalBindingQuery {
@@ -125,6 +70,28 @@ fn query(id: &str) -> ResourceApprovalBindingQuery {
         after: String::new(),
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn native_approval_binding_receipt_failure_rolls_back_the_current_store() {
+    let (f, id, _) = fixture().await;
+    let m = f.owner.management(package()).await.unwrap();
+    let before = m.resource_approval_bindings(query(&id)).await.unwrap().bindings.remove(0);
+    let input = RetireResourceApprovalBinding {
+        command_id: "receipt_failure".into(), resource_id: id.clone(),
+        engagement_id: before.engagement_id.clone(), expected_revision: before.revision.clone(),
+    };
+    let (ctx, session) = m.authorized().await.unwrap();
+    let sql = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+    sql.execute_batch("CREATE TRIGGER fail_binding_receipt BEFORE INSERT ON management_commands WHEN NEW.operation='approval_binding.retire' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END;").unwrap();
+    assert!(session.retire_resource_approval_binding(&ctx, input.clone()).await.is_err());
+    assert_eq!(m.resource_approval_bindings(query(&id)).await.unwrap().bindings[0], before);
+    assert_eq!(sql.query_row("SELECT count(*) FROM management_commands WHERE operation='approval_binding.retire'", [], |r| r.get::<_, u64>(0)).unwrap(), 0);
+    sql.execute_batch("DROP TRIGGER fail_binding_receipt").unwrap();
+    session.retire_resource_approval_binding(&ctx, input).await.unwrap();
+    assert!(m.resource_approval_bindings(query(&id)).await.unwrap().bindings.is_empty());
+    f.owner.suspend().await.unwrap();
+    f.stop().await;
 }
 #[tokio::test]
 async fn native_approval_binding_lost_reply_restart_and_successor_are_exact() {
@@ -180,9 +147,8 @@ async fn native_approval_binding_lost_reply_restart_and_successor_are_exact() {
     assert_eq!(reply["operation"], "retire_approval_binding");
     assert_eq!(reply["data"], serde_json::to_value(&original).unwrap());
     drop(m);
-    let mut db = repository(&f.owner).await;
-    db.observe_approval_room(&room, 1020).unwrap();
-    drop(db);
+    let successor = room.clone();
+    f.registry.with_repository_for_tests(move |db| db.observe_approval_room(&successor, 1020)).await.unwrap();
     f = reopen(f).await;
     let m = f.owner.management(package()).await.unwrap();
     assert_eq!(

@@ -2,6 +2,8 @@
 use super::*;
 #[path = "shared_successor_call_tests.rs"]
 mod calls;
+#[path = "shared_claude_session_tests.rs"]
+mod claude_sessions;
 use hagency_runtime::{
     codex::{session::Settings, transport::Limits},
     owned::{
@@ -52,11 +54,14 @@ async fn text_fixture() -> Fixture {
     }
 }
 async fn spawn(f: &Fixture, id: &str) -> (OwnedSession, PathBuf) {
+    spawn_mode(f, id, "text").await
+}
+async fn spawn_mode(f: &Fixture, id: &str, mode: &str) -> (OwnedSession, PathBuf) {
     let binary = PathBuf::from(
         std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised offline fixture"),
     );
     let root = f._temp.path().join(id);
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let instructions = root.join(SHARED_TEXT_INSTRUCTIONS_FILE);
     std::fs::write(&instructions, SHARED_TEXT_INSTRUCTIONS).unwrap();
@@ -72,7 +77,7 @@ async fn spawn(f: &Fixture, id: &str) -> (OwnedSession, PathBuf) {
     .unwrap();
     let launch = hagency_platform::Launch {
         executable: binary.clone(),
-        arguments: vec!["text".into(), root.as_os_str().into()],
+        arguments: vec![mode.into(), root.as_os_str().into()],
         directory: root.clone(),
         environment: std::collections::BTreeMap::new(),
         require_crash_containment: false,
@@ -237,8 +242,9 @@ async fn shared_successor_actual_process_stop_allows_attempt_three_without_rebin
         ),
         (7, 7, 143)
     );
-    // The original process stopped, so its old call closed at its known usage.
-    assert!(third.budget_observation.usage_complete);
+    // Stopping proves there is no live spender. It does not turn partial
+    // usage into a final bill; postpaid admission still permits the next call.
+    assert!(!third.budget_observation.usage_complete);
     assert_eq!(third.original_runtime_digest, digest(&original));
     let SharedAttemptClaim::Issued(third_custody) = f
         .registry

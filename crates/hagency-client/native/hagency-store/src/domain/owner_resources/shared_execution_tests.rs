@@ -1,7 +1,12 @@
 use super::*;
 use shared_execution::*;
+#[path = "shared_current_input_fixture.rs"]
+mod current_input;
+use current_input::CurrentSharedInputFixture;
 #[path = "shared_process_custody_tests.rs"]
 mod process_custody;
+#[path = "shared_claude_process_tests.rs"]
+mod claude_process;
 #[path = "shared_successor_tests.rs"]
 mod successor;
 fn digest<T: Serialize>(v: &T) -> String {
@@ -179,7 +184,7 @@ async fn shared_execution_schema80_upgrade_is_atomic_and_retains_old_history() {
     let path = f._temp.path().join("owner/domain.sqlite3");
     f.registry.shutdown().await.unwrap();
     let mut db = Connection::open(&path).unwrap();
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE IF EXISTS owner_operator_task_comments;DROP TABLE IF EXISTS owner_operator_tasks;DROP TABLE IF EXISTS owner_operator_task_histories;DROP TABLE IF EXISTS owner_resource_display_names;DROP TABLE IF EXISTS owner_shared_start_intents;DROP TABLE IF EXISTS owner_shared_successor_fences;DROP TABLE IF EXISTS owner_shared_successor_call_pins;DROP TABLE IF EXISTS owner_shared_successor_observations;DROP TABLE IF EXISTS owner_shared_successor_attempts;DROP TABLE owner_shared_activity_renewals;DROP TABLE owner_shared_work_observations;DROP TABLE owner_shared_work_events;DROP TABLE owner_shared_work_inbox;DROP TABLE owner_shared_process_observations;DROP TABLE owner_shared_runtime_lifetimes;DROP TRIGGER owner_metadata_excludes_shared;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=79;CREATE TABLE owner_shared_work_inbox(collision INTEGER);").unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE IF EXISTS owner_operator_task_comments;DROP TABLE IF EXISTS owner_operator_tasks;DROP TABLE IF EXISTS owner_operator_task_histories;DROP TABLE IF EXISTS owner_resource_display_names;DROP TABLE IF EXISTS owner_shared_start_intents;DROP TABLE IF EXISTS owner_shared_successor_fences;DROP TABLE IF EXISTS owner_shared_successor_call_pins;DROP TABLE IF EXISTS owner_shared_successor_observations;DROP TABLE IF EXISTS owner_shared_successor_attempts;DROP TABLE owner_shared_activity_renewals;DROP TABLE owner_shared_work_observations;DROP TABLE owner_shared_work_events;DROP TABLE owner_shared_work_inbox;DROP TABLE owner_shared_process_observations;DROP TABLE owner_shared_runtime_lifetimes;DROP TRIGGER owner_metadata_excludes_shared;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=79;CREATE TABLE owner_shared_work_inbox(collision INTEGER);").unwrap();
     drop(db);
     assert!(OwnerResourceRegistry::open_root(&f._temp.path().join("owner")).is_err());
     db = Connection::open(&path).unwrap();
@@ -221,6 +226,13 @@ async fn shared_execution_actual_process_qualifies_holds_once_and_keeps_live_cle
 #[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE built from the supervised offline runtime fixture"]
 async fn shared_execution_actual_usage_charges_overrun_without_double_cache_read() {
     run_actual_capture("text-usage", false).await;
+}
+#[tokio::test]
+#[ignore = "requires explicitly built offline supervised runtime probe"]
+async fn shared_execution_native_tree_totals_deduplicate_and_missing_child_keeps_hold() {
+    for mode in ["text-tree-measured", "text-tree-missing", "text-tree-eof"] {
+        run_actual_capture(mode, false).await;
+    }
 }
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE built from the supervised offline runtime fixture"]
@@ -408,7 +420,7 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     };
     assert!(
         f.registry
-            .prepare_shared_call(active(), work.clone())
+            .prepare_current_call(|| active(), work.clone())
             .await
             .is_err()
     );
@@ -422,16 +434,16 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
         .unwrap();
     let first = f
         .registry
-        .prepare_shared_call(active(), work.clone())
+        .prepare_current_call(|| active(), work.clone())
         .await
         .unwrap();
     let again = f
         .registry
-        .prepare_shared_call(active(), work.clone())
+        .prepare_current_call(|| active(), work.clone())
         .await
         .unwrap();
     assert_eq!(first.call_id, again.call_id);
-    assert_eq!(first.reserved_tokens, 150);
+    assert_eq!(first.reserved_tokens, 0);
     let mut wrong = work.clone();
     wrong.body.push('!');
     assert!(
@@ -442,18 +454,18 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     );
     let attempt = f
         .registry
-        .begin_shared_start(active(), work.clone(), first.call_id.clone())
+        .begin_current_start(|| active(), work.clone(), first.call_id.clone())
         .await
         .unwrap();
     assert!(matches!(
         f.registry
-            .begin_shared_start(active(), work.clone(), first.call_id.clone())
+            .begin_current_start(|| active(), work.clone(), first.call_id.clone())
             .await,
         Err(Error::OutcomeUnknown)
     ));
     let call = f
         .registry
-        .issue_shared_call(
+        .issue_current_call(
             attempt,
             SharedWorkStart {
                 work: work.clone(),
@@ -467,14 +479,12 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
     call.check().unwrap();
     process.start_shared_text_thread().await.unwrap();
     call.check().unwrap();
-    process
-        .start_shared_text_turn(if mismatch {
-            "Different unbound fixture text".into()
-        } else {
-            work.body.clone()
-        })
-        .await
-        .unwrap();
+    if mismatch {
+        process.start_shared_text_turn("Different unbound fixture text".into())
+            .await.unwrap();
+    } else {
+        call.start_turn(&mut process).await.unwrap();
+    }
     if mismatch {
         assert!(matches!(
             call.bind_turn(&process),
@@ -520,6 +530,13 @@ async fn run_actual_capture_bound(mode: &str, mismatch: bool, shorter_wall: bool
             !final_receipt.usage_complete,
             "terminal alone cannot invent usage"
         );
+    } else if mode.starts_with("text-tree-") {
+        assert_eq!(final_receipt.state, "completed");
+        assert_eq!(final_receipt.body.as_deref(), Some("Offline answer."));
+        let measured = mode == "text-tree-measured";
+        assert_eq!(final_receipt.known_consumed_tokens, if measured {28} else {14});
+        assert_eq!(final_receipt.retained_tokens, Some(if measured {28} else {14}));
+        assert_eq!(final_receipt.usage_complete, measured);
     } else {
         assert_eq!(final_receipt.state, "completed");
         if mode == "text-escaped" {

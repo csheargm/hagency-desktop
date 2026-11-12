@@ -3,6 +3,41 @@ use hagency_store::DomainStore;
 use std::{sync::Arc, time::Duration};
 
 #[test]
+fn native_approval_marker_uses_all_current_bindings_and_exact_owner_device() {
+    let mut f = Fixture::new(true);
+    let authority = f.db.approval_room_authority(&f.agents[0]).unwrap();
+    let marker =
+        f.db.private_approval_room_marker(&authority, "BOT_DEVICE", 1)
+            .unwrap();
+    let expected: Value =
+        serde_json::from_str(include_str!("../fixtures/native-approval-marker.json")).unwrap();
+    assert_eq!(marker, expected);
+    assert!(
+        f.db.private_approval_room_marker(&authority, "ANOTHER_DEVICE", 1)
+            .is_err()
+    );
+    let mut foreign = authority.clone();
+    foreign.owner_mxid = "@other:example.test".into();
+    assert!(
+        f.db.private_approval_room_marker(&foreign, "BOT_DEVICE", 1)
+            .is_err()
+    );
+    for generation in [0, hagency_core::JSON_SAFE_MAX + 1] {
+        assert!(
+            f.db.private_approval_room_marker(&authority, "BOT_DEVICE", generation)
+                .is_err()
+        );
+    }
+    let mut unsafe_room = f.rooms[0].clone();
+    unsafe_room.joined.insert("@other:example.test".into());
+    f.db.observe_approval_room(&unsafe_room, 1010).unwrap();
+    assert!(
+        f.db.private_approval_room_marker(&authority, "BOT_DEVICE", 2)
+            .is_err()
+    );
+}
+
+#[test]
 fn native_approval_wire_corpus() {
     let mut cards = Vec::new();
     for (name, workspace, reusable, rpc, padding) in [
@@ -109,6 +144,10 @@ fn native_private_approval_card_content() {
         );
         assert!(card.content().get("m.relates_to").is_none());
         let detail = &card.content()["com.agentchat.approval"];
+        assert_eq!(detail["owner_mxid"], target.authority.owner_mxid);
+        assert_eq!(detail["publisher_mxid"], target.authority.bot_mxid);
+        assert_eq!(detail["revision"], 1);
+        assert_eq!(request.id.strip_prefix("approval_").unwrap().len(), 40);
         assert_eq!(detail["request_id"], request.id);
         assert_eq!(detail["input_digest"], target.request_digest);
         // The card names the AGENT (board #99): the fixture registers the

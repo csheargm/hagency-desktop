@@ -289,7 +289,7 @@ fn fake() -> io::Result<()> {
     stage("initialize-read")?;
     send(
         &mut output,
-        json!({"id":init["id"],"result":{"userAgent":"offline/0.153.4","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}}),
+        json!({"id":init["id"],"result":{"userAgent":"offline/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}}),
     )?;
     stage("initialize-answered")?;
     request(&mut input, "initialized", &mut log)?;

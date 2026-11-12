@@ -48,7 +48,6 @@ CASES = {
     'unrelated_saved_command_preserved': '''let original={service:"other" args:{commandId:"preserve"}} H.command=original A.flow_new() A.open_flows(nil) replies[0]({is_ok:true data:list}) assert(H.command==original && H.flow_draft==nil)''',
     'pending_graph_request_blocks_replacement': '''H.saved_commands=[{operation:"graph_create" commandId:"original" hasReply:false}] A.flow_new() assert(H.flow_draft==nil && calls.len()==0)''',
     'recorded_status_is_never_delivery': '''H.page="operator_graph_node" H.flow_node=node RENDER assert(has(A.flow_notice()) && has(A.flow_status("dispatched")+" · "+A.flow_delivery("pending_binding"))) assert(!has("Dispatched") && !has("已派发"))''',
-    'archive_navigation_is_distinct': '''H.page="operator_graphs" H.flow_list=list RENDER find("flow_archive").on_click() assert(H.page=="graph_archives" && calls[0].service=="hagency.graph_history.archives")''',
     'multi_node_and_condition_prepare_only': '''start_draft() A.flow_prepare_create() assert(calls.len()==1 && calls[0].service=="hagency.graphs.create") assert(calls[0].args.nodes["second"].dependsOn[0]=="first" && calls[0].args.nodes["second"].conditionJson==H.flow_draft.nodes[1].conditionJson) replies[0]({is_ok:true data:prepared}) assert(calls.len()==1 && H.flow_phase=="saved" && H.flow_pending.commandId=="graphcmd_original")''',
     'empty_create_stays_editable': '''A.flow_new() A.flow_prepare_create() assert(calls.len()==0 && H.flow_phase=="editing" && H.flow_error!="") H.flow_draft.label="Name" A.flow_prepare_create() assert(calls.len()==0)''',
     'node_editor_adds_unique_node': '''A.flow_new() A.flow_edit(-1) A.flow_set_node("id","alpha") A.flow_set_node("assignee","Agent A") A.flow_set_node("description","Research") A.flow_save_node() assert(H.flow_draft.nodes.len()==1 && H.flow_draft.nodes[0].id=="alpha" && H.page=="operator_graph_edit")''',
@@ -116,7 +115,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     source = (APP / 'bundle/main.splash').read_text()
     start = source.index('        if H.page=="operator_graphs" {')
-    end = source.index('        if H.page=="graph_archives" {', start)
+    end = source.index('        if H.page == "operator_tasks" {', start)
     render = '\nlet tree=View{\n' + source[start:end] + '\n}\nvisit(tree)\n'
     results = []
     for language in ['en', 'zh-CN']:

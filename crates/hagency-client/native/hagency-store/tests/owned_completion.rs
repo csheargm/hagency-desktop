@@ -1,6 +1,4 @@
 mod common;
-#[path = "outcome_resolution/management_stopped.rs"]
-mod management_stopped;
 #[path = "outcome_resolution/mod.rs"]
 mod outcome_resolution;
 use common::*;

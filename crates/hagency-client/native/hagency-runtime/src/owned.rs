@@ -20,6 +20,8 @@ pub use session::OwnedSession;
 mod octos;
 pub use octos::OwnedOctosSession;
 mod claude;
+mod claude_shared;
+pub use claude_shared::SharedClaudePolicy;
 pub use claude::OwnedClaudeSession;
 
 /// Exact platform observations, deliberately distinct from upstream completion.
@@ -45,4 +47,6 @@ pub enum StartError {
     },
 }
 
-pub use shared_text::{SHARED_TOOLS_INSTRUCTIONS,SHARED_TOOLS_INSTRUCTIONS_FILE,shared_execution_policy};
+pub use shared_text::{
+    SHARED_TOOLS_INSTRUCTIONS, SHARED_TOOLS_INSTRUCTIONS_FILE, shared_execution_policy,
+};

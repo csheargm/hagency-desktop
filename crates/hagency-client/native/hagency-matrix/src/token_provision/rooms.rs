@@ -454,7 +454,7 @@ impl Operation {
         }
     }
     /// The stored create/invite/join responses of a finished rooms step.
-    fn stored_dm(&self, records: &[Option<Value>], done: usize) -> Result<String, Error> {
+    fn stored_dm(&self, records: &[Option<Value>]) -> Result<String, Error> {
         for index in [0, 2, 4] {
             if records[index].as_ref().is_none_or(|v| !v.is_null()) {
                 return Err(Error::Storage);
@@ -473,7 +473,7 @@ impl Operation {
         if success(&invited)?.as_object().is_none_or(|v| !v.is_empty())
             || success(&joined)?.get("room_id").and_then(Value::as_str)
                 != Some(self.request.target_room_id.as_str())
-            || records[done].as_ref()
+            || records[AGENT_ROOMS].as_ref()
                 != Some(&json!({"dm":dm,"project":self.request.target_room_id}))
         {
             return Err(Error::Storage);
@@ -492,30 +492,26 @@ impl Operation {
         resuming: bool,
     ) -> Result<Vec<HostRoom>, Error> {
         let custody = custody.clone();
-        let legacy = records[..7].iter().all(Option::is_some)
-            && records[AGENT_ROOMS..].iter().all(Option::is_none);
         // An owner invite with no `complete` is either a wait for the owner or
         // a completed custody whose last record was lost; on disk they look
         // the same. Only the job that observed the wait may replay it.
-        if !legacy
-            && records[OWNER_INVITE_POSSIBLE].is_some()
+        if records[OWNER_INVITE_POSSIBLE].is_some()
             && records[COMPLETE].is_none()
             && !resuming
         {
             return Err(Error::OutcomeUnknown);
         }
-        if !legacy
-            && records[COMPLETE].is_some()
-            && (records[OWNER_INVITE_RESPONSE].is_none()
+        if records[COMPLETE].is_some()
+            && (records[OWNER_INVITE_POSSIBLE]
+                .as_ref()
+                .is_none_or(|v| !v.is_null())
+                || records[OWNER_INVITE_RESPONSE].is_none()
                 || records[AGENT_ROOMS] != records[COMPLETE])
         {
             return Err(Error::Storage);
         }
-        let dm = if legacy {
-            // Pre-ADR-184 custody: `complete` already includes the owner.
-            self.stored_dm(records, COMPLETE)?
-        } else if records[..6].iter().all(Option::is_some) && records[AGENT_ROOMS].is_some() {
-            self.stored_dm(records, AGENT_ROOMS)?
+        let dm = if records[..6].iter().all(Option::is_some) && records[AGENT_ROOMS].is_some() {
+            self.stored_dm(records)?
         } else {
             if records.iter().any(Option::is_some) {
                 return Err(Error::OutcomeUnknown);
@@ -628,7 +624,7 @@ impl Operation {
         if !self.member(&project, "join") {
             return Err(Error::Recipients);
         }
-        if records[AGENT_ROOMS].is_none() && !legacy {
+        if records[AGENT_ROOMS].is_none() {
             write(
                 &custody,
                 "agent-rooms",
@@ -651,17 +647,10 @@ impl Operation {
         resuming: bool,
     ) -> Result<Vec<HostRoom>, Error> {
         let custody = custody.clone();
-        let legacy = records[..7].iter().all(Option::is_some)
-            && records[AGENT_ROOMS..].iter().all(Option::is_none);
-        if legacy {
-            let dm = self.stored_dm(records, COMPLETE)?;
-            *job.dm.lock().map_err(|_| Error::OutcomeUnknown)? = Some(dm.clone());
-            return Ok(self.rooms(&dm));
-        }
         if records[AGENT_ROOMS].is_none() {
             return Err(Error::Storage);
         }
-        let dm = self.stored_dm(records, AGENT_ROOMS)?;
+        let dm = self.stored_dm(records)?;
         *job.dm.lock().map_err(|_| Error::OutcomeUnknown)? = Some(dm.clone());
         if records[COMPLETE].is_some() {
             if records[OWNER_INVITE_POSSIBLE]

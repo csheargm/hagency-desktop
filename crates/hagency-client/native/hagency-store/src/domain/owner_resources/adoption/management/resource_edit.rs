@@ -54,7 +54,7 @@ fn require_editable(db: &Connection, registry: &str, resource: &Resource) -> Res
     Ok(())
 }
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn recover_local_resource_edit(
         &self,
         profile: &ProfileAuthority,

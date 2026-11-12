@@ -18,7 +18,7 @@ def main():
     profile = root.resolve() / 'profile'; profile.mkdir(parents=True)
     app = WindowApp(root, port=port(), auto_login=False); app.output.mkdir(parents=True)
     app.log = (app.output / 'native.log').open('w')
-    env = dict(os.environ, RINX_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(app.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1')
+    env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(app.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1')
     env.pop('MAKEPAD_FOCUS', None)
     app.process = subprocess.Popen([str(args.binary.resolve())], env=env, stdout=app.log, stderr=subprocess.STDOUT)
     report = {'passed': False, 'checks': [], 'evidence': str(root.resolve())}

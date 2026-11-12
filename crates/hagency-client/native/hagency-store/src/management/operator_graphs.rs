@@ -26,10 +26,8 @@ impl Session {
             return Err(Error::LocalAuthority);
         }
         self.check(context, permission)?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::Unqualified);
-        };
-        let profile = self.adopted_profile(store)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        let profile = self.current_profile(store)?;
         let registry = store.enrollment_registry(&profile)?;
         let backing = store.clone();
         let native_profile = profile.clone();

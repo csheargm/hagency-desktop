@@ -2,7 +2,9 @@ use super::{Cleanup, StartError};
 use crate::claude::session::{
     ApprovalControlPolicy, ControlUpdate, PermissionDecision, PreparedApproval, PreparedUpdate,
 };
-use crate::claude::session::{Observation, ObservationSource};
+use crate::claude::session::{InterruptReceipt, InterruptUpdate, PreparedInterrupt};
+use crate::claude::session::{PreparedSteer, SteerState, SteerUpdate};
+use crate::claude::session::{Observation, ObservationSource, PreparedRoomReply, RoomToolRequest};
 use crate::claude::{
     Message,
     session::{Error, Limits, Phase, SessionDriver, StderrSnapshot, Termination, WriteProgress},
@@ -21,8 +23,12 @@ pub struct OwnedClaudeSession {
     session: SessionDriver<Receiver, Sender, Receiver>,
     owner: SupervisedProcess,
     cleanup: Cleanup,
+    pub(super) shared: Option<super::claude_shared::State>,
 }
 impl OwnedClaudeSession {
+    pub(super) fn bind_shared_credential(&mut self, binding: &crate::claude::account::AccountBinding) -> Result<(), Error> {
+        self.session.bind_injected_account(binding)
+    }
     /// Use on an IO-enabled execution worker: guardian startup/stop is bounded
     /// synchronous work. Never detach this owner into an HTTP request task.
     pub fn spawn(guardian: &Path, launch: &Launch, limits: Limits) -> Result<Self, StartError> {
@@ -61,6 +67,7 @@ impl OwnedClaudeSession {
                 session,
                 owner,
                 cleanup: Cleanup::Pending,
+                shared: None,
             }),
             Err(error) => Err(StartError::Uncertain {
                 kind: error.kind(),
@@ -74,8 +81,65 @@ impl OwnedClaudeSession {
     pub fn phase(&self) -> Phase {
         self.session.phase()
     }
+    pub fn ignored_frames(&self) -> u64 {
+        self.session.ignored_frames()
+    }
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
+    }
+    pub fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
+        self.session.expect_resume(id)
+    }
+    /// The pinned resume identity, only once the native CLI reported before
+    /// any model input that this context does not exist (`MissingResume`) and
+    /// the physical cleanup of that process was observed. This is the sole
+    /// permission to retire a saved session and start fresh. Every other
+    /// startup failure returns `None`: the saved session is kept for a retry.
+    /// No failure after input permits replay.
+    pub fn pre_prompt_resume_id(&self) -> Option<&str> {
+        if self.session.resume_missing_before_prompt()
+            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped)
+        {
+            self.session_id()
+        } else {
+            None
+        }
+    }
+    /// The pinned resume identity of a launch that failed before any model
+    /// input, for whatever reason, once the physical cleanup of that process
+    /// was observed. This is not evidence that the saved context is missing
+    /// and permits nothing alone: a host may replace the saved session on it
+    /// only after `claude::resume_failures::LIMIT` consecutive such failures.
+    pub fn failed_before_prompt_resume_id(&self) -> Option<&str> {
+        if self.session.failed_before_prompt()
+            && matches!(self.cleanup, Cleanup::Observed(r) if r.scope.whole_tree_stopped)
+        {
+            self.session_id()
+        } else {
+            None
+        }
+    }
+    pub(super) fn expect_shared_resume(&mut self, id: &str) -> Result<(), Error> {
+        self.session.expect_resume(id)
+    }
+    /// Corroborate a host-authenticated account binding with this process's
+    /// native initialization. The host must additionally retain and recheck
+    /// the original selected credential namespace and launch policy. This
+    /// receipt itself grants no task, capacity or provider-login authority.
+    pub fn qualify_account(
+        &self,
+        binding: &crate::claude::account::AccountBinding,
+    ) -> Result<crate::claude::account::AccountObservation, Error> {
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
+        self.session.qualify_account(binding)
+    }
+    pub fn matches_account_observation(
+        &self,
+        receipt: &crate::claude::account::AccountObservation,
+    ) -> bool {
+        self.cleanup == Cleanup::Pending && self.session.matches_account_observation(receipt)
     }
     pub fn observation_source(&self) -> Result<ObservationSource, Error> {
         self.session.observation_source()
@@ -85,6 +149,12 @@ impl OwnedClaudeSession {
     }
     pub fn last_observation(&self) -> Option<&Observation> {
         self.session.last_observation()
+    }
+    pub(super) fn attach_shared_activity(
+        &mut self,
+        activity: std::sync::Arc<dyn Fn() -> Option<tokio::time::Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        self.session.attach_shared_activity(activity)
     }
     pub fn cleanup(&self) -> Cleanup {
         self.cleanup
@@ -98,13 +168,78 @@ impl OwnedClaudeSession {
     pub fn stderr_snapshot(&self) -> StderrSnapshot {
         self.session.stderr_snapshot()
     }
+    pub fn enable_native_completion(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_native_completion();
+        operation.finish(result)
+    }
+    pub fn supervise_turn(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.supervise_turn();
+        operation.finish(result)
+    }
+    pub fn needs_usage_snapshot(&self) -> bool {
+        self.session.needs_usage_snapshot()
+    }
+    pub fn enable_continuous_session(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_continuous_session();
+        operation.finish(result)
+    }
+    pub fn can_followup(&self) -> bool {
+        self.session.can_followup()
+    }
+    pub fn begin_followup(&mut self, limits: Limits) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.begin_followup(limits);
+        operation.finish(result)
+    }
+    pub async fn prepare_followup(&mut self, limits: Limits) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.prepare_followup(limits).await;
+        operation.finish(result)
+    }
+    pub fn usage_snapshot_requested(&self) -> bool {
+        self.session.usage_snapshot_requested()
+    }
+    pub fn completion_receipt(&self) -> Result<crate::claude::session::CompletionReceipt, Error> {
+        self.session.completion_receipt()
+    }
+    pub fn answer_interrupted(&self) -> bool {
+        self.session.answer_interrupted()
+    }
+    pub fn closed_answer_receipt(
+        &self,
+    ) -> Result<crate::claude::session::CompletionReceipt, Error> {
+        self.session.closed_answer_receipt()
+    }
+    pub async fn request_usage_snapshot(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.request_usage_snapshot().await;
+        operation.finish(result)
+    }
     pub fn enable_approval_control(&mut self, policy: ApprovalControlPolicy) -> Result<(), Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.enable_approval_control(policy);
         operation.finish(result)
     }
-    pub fn approval_deadline(&self, id: &str) -> Result<tokio::time::Instant, Error> {
+    pub fn approval_deadline(&mut self, id: &str) -> Result<tokio::time::Instant, Error> {
         self.session.approval_deadline(id)
+    }
+    pub fn set_question_wait(&mut self, wait_ms: u64) -> Result<(), Error> {
+        self.session.set_question_wait(wait_ms)
+    }
+    pub fn question(&self, id: &str) -> Result<Vec<crate::questions::Question>, Error> {
+        self.session.question(id)
+    }
+    pub fn prepare_question(
+        &mut self,
+        id: &str,
+        answers: &crate::questions::Answers,
+    ) -> Result<PreparedApproval, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.prepare_question(id, answers);
+        operation.finish(result)
     }
     pub fn prepare_approval(
         &mut self,
@@ -118,6 +253,9 @@ impl OwnedClaudeSession {
     /// ResultObserved is not automatic stop: background activity may survive a
     /// Claude result. Only the retained owner can supply physical stop evidence.
     pub fn stop(&mut self) -> Cleanup {
+        if let Some(shared) = &self.shared {
+            shared.source.retire();
+        }
         self.session.close();
         if !matches!(self.cleanup,Cleanup::Observed(report) if report.scope.whole_tree_stopped) {
             self.cleanup = observe_stop(&mut self.owner);
@@ -131,7 +269,28 @@ impl OwnedClaudeSession {
     }
     pub async fn prompt(&mut self, text: &str) -> Result<WriteProgress, Error> {
         let operation = Operation::new(self)?;
-        let result = operation.runner.session.prompt(text).await;
+        let result = async {
+            if let Some(shared) = &operation.runner.shared {
+                shared.source.begin_thread().map_err(|_| Error::State)?;
+                shared.source.begin_turn(text).map_err(|_| Error::State)?;
+            }
+            operation.runner.session.prompt(text).await
+        }
+        .await;
+        operation.finish(result)
+    }
+    /// The owner's slash command to their own CLI (see
+    /// `SessionDriver::owner_command`). A shared process serves other people
+    /// and never takes one.
+    pub async fn owner_command(&mut self, text: &str) -> Result<WriteProgress, Error> {
+        let operation = Operation::new(self)?;
+        let result = async {
+            if operation.runner.shared.is_some() {
+                return Err(Error::State);
+            }
+            operation.runner.session.owner_command(text).await
+        }
+        .await;
         operation.finish(result)
     }
     pub async fn bind_task_mcp(&mut self, helper: crate::claude::TaskMcp) -> Result<(), Error> {
@@ -139,10 +298,109 @@ impl OwnedClaudeSession {
         let result = operation.runner.session.bind_task_mcp(helper).await;
         operation.finish(result)
     }
+    pub async fn bind_room_tools(
+        &mut self,
+        tools: crate::room_tools::RoomTools,
+    ) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.bind_room_tools(tools).await;
+        operation.finish(result)
+    }
+    pub fn enable_room_tool_callbacks(&mut self) -> Result<(), Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.enable_room_tool_callbacks();
+        operation.finish(result)
+    }
+    pub fn room_tool_request(&self, id: &str) -> Result<RoomToolRequest, Error> {
+        self.session.room_tool_request(id)
+    }
+    pub fn prepare_room_tool_reply(
+        &mut self,
+        request: &RoomToolRequest,
+        text: &str,
+        is_error: bool,
+    ) -> Result<PreparedRoomReply, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .prepare_room_tool_reply(request, text, is_error);
+        operation.finish(result)
+    }
+    pub fn prepare_room_metadata_reply(
+        &mut self,
+        request: &RoomToolRequest,
+    ) -> Result<PreparedRoomReply, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .prepare_room_metadata_reply(request);
+        operation.finish(result)
+    }
+    pub async fn send_prepared_room_reply(
+        &mut self,
+        prepared: &mut PreparedRoomReply,
+    ) -> Result<PreparedUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .send_prepared_room_reply(prepared)
+            .await;
+        operation.finish(result)
+    }
     pub async fn next_message(&mut self) -> Result<Message, Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.next_message().await;
         operation.finish(result)
+    }
+    pub fn prepare_interrupt(&mut self) -> Result<PreparedInterrupt, Error> {
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
+        // A stale host action must not kill an unrelated current turn. This
+        // synchronous preflight neither writes nor cancels a native operation.
+        self.session.prepare_interrupt()
+    }
+    pub fn interrupt_receipt(&self) -> Option<&InterruptReceipt> {
+        self.session.interrupt_receipt()
+    }
+    pub fn is_interrupting(&self) -> bool {
+        self.session.is_interrupting()
+    }
+    pub async fn send_prepared_interrupt(
+        &mut self,
+        prepared: &mut PreparedInterrupt,
+    ) -> Result<InterruptUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .send_prepared_interrupt(prepared)
+            .await;
+        operation.finish_interrupt(result)
+    }
+    pub fn prepare_steer(&mut self, text: &str) -> Result<PreparedSteer, Error> {
+        if self.cleanup != Cleanup::Pending {
+            return Err(Error::Closed);
+        }
+        // As for a stop, a refused preparation leaves the turn untouched.
+        self.session.prepare_steer(text)
+    }
+    pub fn steer_state(&self, message_id: &str) -> Option<SteerState> {
+        self.session.steer_state(message_id)
+    }
+    pub fn steer_cancelled(&self, message_id: &str) -> Option<bool> {
+        self.session.steer_cancelled(message_id)
+    }
+    pub async fn send_prepared_steer(
+        &mut self,
+        prepared: &mut PreparedSteer,
+    ) -> Result<SteerUpdate, Error> {
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.send_prepared_steer(prepared).await;
+        operation.finish_interrupt(result)
     }
     pub async fn next_or_control<F: std::future::Future + ?Sized>(
         &mut self,
@@ -192,6 +450,15 @@ impl<'a> Operation<'a> {
     }
     fn finish<T>(mut self, result: Result<T, Error>) -> Result<T, Error> {
         if result.is_err() {
+            self.runner.stop();
+        }
+        self.finished = true;
+        result
+    }
+    fn finish_interrupt<T>(mut self, result: Result<T, Error>) -> Result<T, Error> {
+        // The driver closes on protocol/IO errors and uncertain writes, but
+        // harmless rejected preparations leave its active stream untouched.
+        if self.runner.session.phase() == Phase::Closed {
             self.runner.stop();
         }
         self.finished = true;

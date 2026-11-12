@@ -274,7 +274,9 @@ mod sdk_resume_tests {
 
     #[tokio::test]
     async fn sdk_resume_unavailable_preserves_exact_credentials_and_never_rotates() {
-        for mode_value in [2, 6, 7] {
+        // 12: the device proof lies outside the local clock window. The clocks
+        // disagree; the owner did not sign out.
+        for mode_value in [2, 6, 7, 12] {
             let mode = Arc::new(std::sync::atomic::AtomicU16::new(0));
             let (origin, records, task) =
                 fixture_controlled("@owner:test", None, mode.clone()).await;

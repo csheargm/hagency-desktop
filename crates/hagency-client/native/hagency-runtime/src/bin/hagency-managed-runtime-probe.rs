@@ -21,6 +21,13 @@ fn main() -> io::Result<()> {
     };
     let mode = mode.to_string_lossy();
     let root = Path::new(root);
+    let overrides = if overrides.starts_with(&[
+        "app-server".into(), "--listen".into(), "stdio://".into(),
+    ]) {
+        &overrides[3..]
+    } else {
+        overrides
+    };
     fs::write(root.join("process-id"), std::process::id().to_string())?;
     let mut quota = 0;
     let mut history = history_probe::Probe::default();
@@ -35,7 +42,7 @@ fn main() -> io::Result<()> {
             files.response(root,&v)?;
             continue;
         }
-        if mode == "text-room-history-usage" && v.get("method").is_none() {
+        if mode.starts_with("text-room-history") && v.get("method").is_none() {
             history.response(root, &v)?;
             continue;
         }
@@ -55,7 +62,7 @@ fn main() -> io::Result<()> {
         }
         if (mode.starts_with("text-workspace")
             || mode.starts_with("text-question")
-            || mode == "text-room-history-usage")
+            || mode.starts_with("text-room-history"))
             && matches!(method, "thread/start" | "turn/start")
         {
             let name = if method == "thread/start" {
@@ -65,7 +72,7 @@ fn main() -> io::Result<()> {
             };
             fs::write(root.join(name), serde_json::to_vec(&v["params"])?)?;
         }
-        if mode == "text-room-history-usage"
+        if mode.starts_with("text-room-history")
             && method == "thread/start"
             && v["params"]["dynamicTools"][0]["name"] != "read_room_history"
         {
@@ -108,10 +115,13 @@ fn main() -> io::Result<()> {
         if mode == "text-start-interrupt-usage" && method == "turn/start" {
             std::thread::sleep(Duration::from_secs(7));
         }
+        if mode == "text-native-session" && native_session_request(root, &v)? {
+            continue;
+        }
         let value = match method {
             "turn/interrupt" if mode.ends_with("interrupt-usage") => json!({}),
             "initialize" => {
-                json!({"userAgent":"managed-offline-fixture","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})
+                json!({"userAgent":"managed-offline-fixture/0.167.0","platformFamily":"unix","platformOs":"fixture","codexHome":"/fixture"})
             }
             "config/read" => {
                 let mut config: Value =
@@ -133,7 +143,8 @@ fn main() -> io::Result<()> {
                         ["mcp_servers", name, "enabled"] if value == "false" => {
                             config["mcp_servers"][*name]["enabled"] = false.into()
                         }
-                        ["web_search" | "model_instructions_file"] => {
+                        ["web_search" | "model_instructions_file" | "model_provider"
+                            | "chatgpt_base_url" | "cli_auth_credentials_store"] => {
                             let value: String =
                                 serde_json::from_str(value).map_err(io::Error::other)?;
                             config[key] = value.into();
@@ -208,8 +219,8 @@ fn main() -> io::Result<()> {
                 files.begin()?;
                 continue;
             }
-            if mode == "text-room-history-usage" {
-                history.begin()?;
+            if mode.starts_with("text-room-history") {
+                history.begin(mode == "text-room-history-context-usage")?;
                 continue;
             }
             if mode.starts_with("text-question") {
@@ -301,6 +312,14 @@ fn main() -> io::Result<()> {
             } else {
                 "Offline answer.".into()
             };
+            if mode.starts_with("text-tree-") {
+                let usage = json!({"totalTokens":14,"inputTokens":10,"cachedInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1});
+                for _ in 0..2 {
+                    println!("{}", json!({"method":"rawResponse/completed","params":{"threadId":"text-thread","turnId":"text-turn","responseId":"root-response","usage":usage}}));
+                }
+                println!("{}", json!({"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn","rootTurnId":"text-turn","status":"inProgress","items":[]}}}));
+                println!("{}", json!({"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"child-turn","tokenUsage":{"total":{"totalTokens":99999}}}}));
+            }
             if matches!(
                 &*mode,
                 "text-workspace-standard-usage"
@@ -391,6 +410,17 @@ fn main() -> io::Result<()> {
                 "{}",
                 json!({"method":"turn/completed","params":{"threadId":"text-thread","turn":{"id":"text-turn","status":"completed","items":[]}}})
             );
+            if mode.starts_with("text-tree-") {
+                if mode == "text-tree-eof" {
+                    io::stdout().flush()?;
+                    return Ok(());
+                }
+                if mode == "text-tree-measured" {
+                    let usage = json!({"totalTokens":14,"inputTokens":10,"cachedInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1});
+                    println!("{}", json!({"method":"rawResponse/completed","params":{"threadId":"child-thread","turnId":"child-turn","responseId":"child-response","usage":usage}}));
+                }
+                println!("{}", json!({"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","rootTurnId":"text-turn","status":"completed","items":[]}}}));
+            }
         }
         io::stdout().flush()?;
     }
@@ -461,4 +491,64 @@ fn finish_text_turn(answer: &str) -> io::Result<()> {
         json!({"method":"turn/completed","params":{"threadId":"text-thread","turn":{"id":"text-turn","status":"completed","items":[]}}})
     );
     io::stdout().flush()
+}
+
+// Offline native persistence fixture. Every process reads its own retained
+// transcript and emits original per-response receipts alongside old cumulative
+// context totals, so resumption cannot accidentally charge the history again.
+fn native_session_request(root: &std::path::Path, v: &Value) -> io::Result<bool> {
+    let method=v["method"].as_str().unwrap_or("");
+    let params=&v["params"];
+    match method {
+        "thread/start" | "thread/resume" => {
+            let id=if method=="thread/start" {
+                if params["ephemeral"]!=false { return Err(io::Error::other("native session must persist")); }
+                let count=fs::read_to_string(root.join("native-counter")).ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0)+1;
+                fs::write(root.join("native-counter"),count.to_string())?;
+                let id=format!("native-thread-{count}");
+                fs::write(root.join(format!("{id}.json")),b"[]")?;
+                id
+            } else {
+                let id=params["threadId"].as_str().ok_or_else(||io::Error::other("resume id"))?;
+                if !id.starts_with("native-thread-") || id.contains('/') { return Err(io::Error::other("resume identity")); }
+                if let Ok(message) = fs::read_to_string(root.join("native-resume-error")) {
+                    println!("{}",json!({"id":v["id"],"error":{"code":-32600,"message":message}}));
+                    io::stdout().flush()?;
+                    return Ok(true);
+                }
+                if !root.join(format!("{id}.json")).exists() {
+                    println!("{}",json!({"id":v["id"],"error":{"code":-32600,"message":format!("no rollout found for thread id {id}")}}));
+                    io::stdout().flush()?;
+                    return Ok(true);
+                }
+                fs::read(root.join(format!("{id}.json")))?;
+                id.to_owned()
+            };
+            fs::write(root.join("native-current"),&id)?;
+            println!("{}",json!({"id":v["id"],"result":{"thread":{"id":id,"cwd":params["cwd"],"status":{"type":"idle"},"turns":[]},"cwd":params["cwd"],"model":params["model"],"modelProvider":"openai","approvalPolicy":params["approvalPolicy"],"approvalsReviewer":"user","sandbox":{"type":"readOnly","networkAccess":false}}}));
+        }
+        "turn/start" => {
+            let id=fs::read_to_string(root.join("native-current"))?;
+            if params["threadId"]!=id { return Err(io::Error::other("native thread changed")); }
+            let path=root.join(format!("{id}.json"));
+            let mut inputs:Vec<String>=serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+            let text=params["input"][0]["text"].as_str().ok_or_else(||io::Error::other("input"))?;
+            let answer=format!("Previous native inputs: {}",inputs.join("; "));
+            inputs.push(text.into());
+            fs::write(path,serde_json::to_vec(&inputs)?)?;
+            let turn=format!("native-turn-{}",inputs.len());
+            println!("{}",json!({"id":v["id"],"result":{"turn":{"id":turn,"items":[],"status":"inProgress"}}}));
+            let old=if inputs.len()==1 { json!({"totalTokens":11,"inputTokens":8,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0}) } else { json!({"totalTokens":9000,"inputTokens":8000,"cachedInputTokens":0,"outputTokens":1000,"reasoningOutputTokens":0}) };
+            println!("{}",json!({"method":"thread/tokenUsage/updated","params":{"threadId":id,"turnId":turn,"tokenUsage":{"total":old,"last":old,"modelContextWindow":20000}}}));
+            let actual=json!({"totalTokens":11,"inputTokens":8,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0});
+            println!("{}",json!({"method":"rawResponse/completed","params":{"threadId":id,"turnId":turn,"responseId":format!("response-{turn}"),"usage":actual}}));
+            println!("{}",json!({"method":"item/started","params":{"threadId":id,"turnId":turn,"startedAtMs":1,"item":{"id":"answer","type":"agentMessage","text":"","phase":"final_answer"}}}));
+            println!("{}",json!({"method":"item/agentMessage/delta","params":{"threadId":id,"turnId":turn,"itemId":"answer","delta":answer}}));
+            println!("{}",json!({"method":"item/completed","params":{"threadId":id,"turnId":turn,"completedAtMs":2,"item":{"id":"answer","type":"agentMessage","text":answer,"phase":"final_answer"}}}));
+            println!("{}",json!({"method":"turn/completed","params":{"threadId":id,"turn":{"id":turn,"status":"completed","items":[]}}}));
+        }
+        _ => return Ok(false),
+    }
+    io::stdout().flush()?;
+    Ok(true)
 }

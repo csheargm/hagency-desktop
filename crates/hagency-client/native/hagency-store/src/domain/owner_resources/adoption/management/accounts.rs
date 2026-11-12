@@ -1,7 +1,7 @@
 use super::*;
 use crate::management::{AccountInventory, AccountInventoryQuery};
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) fn account_login_store(&self, profile: &ProfileAuthority) -> Result<crate::DomainStore, Error> {
         self.check(profile)?;
         Ok(self.registry.0.store.clone())
@@ -35,7 +35,7 @@ impl AdoptedManagementStore {
     }
 }
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn prepare_account(
         &self,
         profile: &ProfileAuthority,

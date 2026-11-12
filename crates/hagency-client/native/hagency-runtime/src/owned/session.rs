@@ -25,6 +25,7 @@ pub struct OwnedSession {
     cleanup: Cleanup,
     pub(super) managed_source: super::managed::ManagedProcessSource,
     pub(super) text_source: super::shared_text::SharedTextProcessSource,
+    pub(super) live_text: Option<crate::live_text::LiveText>,
     /// Diagnostics build only (ADR-182 pin): every stop verdict of this
     /// session reads `Unknown`, as a tree the guardian could not prove gone
     /// would, however many times the host asks. No production build has it.
@@ -34,6 +35,22 @@ pub struct OwnedSession {
 impl OwnedSession {
     pub fn shared_workspace(&self) -> &Path {
         Path::new(self.session.settings().cwd())
+    }
+    /// Effective native profile, including model, sandbox, tools and workspace.
+    /// This is a cache partition, never an execution grant.
+    pub fn shared_session_profile_digest(&self) -> Result<String, session::Error> {
+        hagency_core::canonical::digest(&serde_json::json!({
+            "thread":self.session.settings().thread_request(None),
+            "effort":self.session.settings().effort(),
+        }))
+            .map_err(|_| session::Error::Policy)
+    }
+    pub fn retain_shared_context(&mut self) -> Result<(), session::Error> {
+        if !self.text_source.has_live_activity() { return Err(session::Error::State); }
+        self.session.retain_context()
+    }
+    pub fn shared_thread_id(&self) -> Option<&str> {
+        self.session.thread_id()
     }
     pub(super) fn shared_settings_match(&self, mode: Option<&str>) -> bool {
         self.session.settings().shared_mode_matches(mode)
@@ -92,6 +109,7 @@ impl OwnedSession {
                     cleanup: Cleanup::Pending,
                     managed_source: super::managed::ManagedProcessSource::new(),
                     text_source: super::shared_text::SharedTextProcessSource::new(),
+                    live_text: None,
                     #[cfg(feature = "test-diagnostics")]
                     unproven: false,
                 })
@@ -170,6 +188,9 @@ impl OwnedSession {
     }
     pub fn matches_observation_source(&self, source: &session::ObservationSource) -> bool {
         self.session.matches_observation_source(source)
+    }
+    pub fn matches_completed_observation_source(&self, source: &session::ObservationSource) -> bool {
+        self.session.matches_completed_source(source)
     }
     pub fn protocol_outcome(&self) -> Option<&Outcome> {
         self.session.outcome()
@@ -308,6 +329,9 @@ impl OwnedSession {
     ) -> Result<tokio::time::Instant, session::Error> {
         self.session.approval_deadline(id)
     }
+    pub fn native_turn_context(&self, thread: &str, turn: &str) -> Result<session::NativeTurnContext, session::Error> {
+        self.session.native_turn_context(thread, turn)
+    }
     /// The host takes on owner-wait expiry for this session. Grants nothing.
     pub fn enable_owner_wait_expiry(&mut self) -> Result<(), session::Error> {
         self.session.enable_owner_wait_expiry()
@@ -371,6 +395,13 @@ impl OwnedSession {
         let result = operation.runner.session.start_thread().await;
         operation.finish(result)
     }
+    pub async fn resume_thread(&mut self, id: session::ResumeThreadId) -> Result<String, session::Error> {
+        self.managed_source.retire();
+        self.text_source.retire();
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.resume_thread(id).await;
+        operation.finish(result)
+    }
     pub async fn start_turn(&mut self, input: String) -> Result<String, session::Error> {
         self.managed_source.retire();
         self.text_source.retire();
@@ -392,6 +423,15 @@ impl OwnedSession {
         &mut self,
         room: &str,
     ) -> Result<String, session::Error> {
+        self.open_shared_text_thread_for_room(room, None).await.map(|(id, _)| id)
+    }
+    /// A recorded native thread may supply context for this new work item.
+    /// Source custody, input admission and usage receipts remain per process.
+    pub async fn open_shared_text_thread_for_room(
+        &mut self,
+        room: &str,
+        resume: Option<session::ResumeThreadId>,
+    ) -> Result<(String, bool), session::Error> {
         self.text_source.begin_thread()?;
         self.managed_source.retire();
         let operation = Operation::new(self)?;
@@ -401,7 +441,7 @@ impl OwnedSession {
                 room,
             )?;
             operation.runner.session.bind_shared_workspace(directory)?;
-            operation.runner.session.start_thread().await
+            operation.runner.session.resume_or_start_thread(resume).await
         }
         .await;
         operation.finish(result)
@@ -527,6 +567,37 @@ impl OwnedSession {
     pub async fn interrupt(&mut self) -> Result<InterruptDisposition, session::Error> {
         let operation = Operation::new(self)?;
         let result = operation.runner.session.interrupt().await;
+        operation.finish(result)
+    }
+    pub fn run_control_receipts(&mut self) -> Vec<session::RunReceipt> {
+        self.session.run_control_receipts()
+    }
+    pub fn run_controls_hold_answers(&self) -> bool {
+        self.session.run_controls_hold_answers()
+    }
+    pub fn run_stop_accepted(&self) -> bool {
+        self.session.run_stop_accepted()
+    }
+    pub fn user_input_waiting(&self, request: &session::UserInputRequest) -> bool {
+        self.session.user_input_waiting(request)
+    }
+    pub fn room_history_admissible(&self, call: &session::RoomHistoryCall) -> bool {
+        self.session.room_history_admissible(call)
+    }
+    pub fn room_file_admissible(&self, call: &session::RoomFileCall) -> bool {
+        self.session.room_file_admissible(call)
+    }
+    pub async fn submit_run_control(
+        &mut self,
+        id: String,
+        action: session::RunAction,
+    ) -> Result<session::RunOutcome, session::Error> {
+        let operation = Operation::new(self)?;
+        let result = operation
+            .runner
+            .session
+            .submit_run_control(id, action)
+            .await;
         operation.finish(result)
     }
     pub async fn next_update(&mut self) -> Result<Update, session::Error> {

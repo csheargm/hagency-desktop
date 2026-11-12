@@ -1,7 +1,7 @@
 use super::*;
 use crate::management::{HostContext,Permission,Session,WebCatalogQuery,WebCatalogCommand,WebCatalogChange};
 fn context(f:&Fixture)->HostContext{HostContext::new(f.profile.account.clone(),1,"b".repeat(64),1,"web_device".into(),1).unwrap()}
-fn session(b:AdoptedManagementStore,c:&HostContext)->Session{Session::new_adopted(b,c.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(60)).unwrap()}
+fn session(b:CurrentManagementStore,c:&HostContext)->Session{Session::new_current(b,c.clone(),[Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadResources],Instant::now()+Duration::from_secs(60)).unwrap()}
 fn query(f:&Fixture)->WebCatalogQuery{WebCatalogQuery{resource_id:f.resource.id(),after:None}}
 async fn input(s:&Session,c:&HostContext,f:&Fixture,id:&str,change:WebCatalogChange)->WebCatalogCommand{WebCatalogCommand{command_id:id.into(),resource_id:f.resource.id(),expected_revision:s.web_catalog(c,query(f)).await.unwrap().revision,change}}
 #[tokio::test]
@@ -17,7 +17,7 @@ async fn web_catalog_declared_rate_cas_replay_and_scope_isolation(){
     let clear=input(&s,&c,&f,"clear",WebCatalogChange::RateCap{rate_cap_per_day:None}).await;s.apply_web_catalog(&c,clear).await.unwrap();
     assert_eq!(s.apply_web_catalog(&c,original.clone()).await.unwrap(),saved);
     let mut changed=original;changed.change=WebCatalogChange::RateCap{rate_cap_per_day:Some(751)};assert!(matches!(s.apply_web_catalog(&c,changed).await,Err(Error::Conflict)));
-    let denied=Session::new_adopted(b.clone(),c.clone(),[Permission::ReadWebCatalog],Instant::now()+Duration::from_secs(60)).unwrap();
+    let denied=Session::new_current(b.clone(),c.clone(),[Permission::ReadWebCatalog],Instant::now()+Duration::from_secs(60)).unwrap();
     let cmd=input(&s,&c,&f,"denied",WebCatalogChange::RateCap{rate_cap_per_day:Some(1)}).await;assert!(matches!(denied.apply_web_catalog(&c,cmd).await,Err(Error::LocalAuthority)));
     let hidden="c".repeat(64);let id=f.resource.id();f.registry.0.store.call(1,move|db|{db.db.execute("INSERT INTO owner_web_catalog_settings VALUES(?1,'rate_cap',?2,'999')",params![hidden,id])?;Ok(())}).await.unwrap();
     assert_eq!(s.web_catalog(&c,query(&f)).await.unwrap().rate_cap_per_day,None);
@@ -165,7 +165,7 @@ async fn web_catalog_cancel_races_on_original_receipt_without_replaying_or_mutat
         (Some(result),Ok(applied))=>{assert_eq!(result,applied);assert_eq!(s.web_catalog(&c,query(&f)).await.unwrap().rate_cap_per_day,Some(70));},
         unexpected=>panic!("inconsistent cancellation race: {unexpected:?}"),
     }
-    let denied=Session::new_adopted(b.clone(),c.clone(),[Permission::ReadWebCatalog],Instant::now()+Duration::from_secs(30)).unwrap();
+    let denied=Session::new_current(b.clone(),c.clone(),[Permission::ReadWebCatalog],Instant::now()+Duration::from_secs(30)).unwrap();
     assert!(matches!(denied.cancel_web_catalog(&c,original).await,Err(Error::LocalAuthority)));
     b.shutdown().await.unwrap();f.registry.shutdown().await.unwrap();
 }

@@ -115,6 +115,23 @@ fn fixture() -> (tempfile::TempDir, Arc<Endpoint>, Files<Endpoint>, PathBuf) {
     let files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
     (temp, endpoint, files, workspace)
 }
+
+#[tokio::test]
+async fn chat_files_common_constructor_preserves_receipts_and_separates_personal_bindings() {
+    let (_temp, endpoint, mut original, workspace) = fixture();
+    std::fs::write(workspace.join("report.pdf"), b"original content").unwrap();
+    let delivered = original.send(&send("report.pdf")).await.unwrap();
+    drop(original);
+    let work = work();
+    let from_scope = |namespace| Files::for_room(endpoint.clone(), Conversation {
+        namespace, room: &work.room_id, event: &work.event_id, requester: &work.requester_mxid, thread: None,
+    }, &workspace, &endpoint.records).unwrap();
+    let mut same = from_scope(&work.assignment_id);
+    assert_eq!(same.send(&send("report.pdf")).await.unwrap(), delivered);
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 1);
+    let new_binding = from_scope("personal-agent-binding-generation-2");
+    assert_eq!(new_binding.delivery(delivered["delivery_id"].as_str().unwrap()).unwrap_err(), "file_delivery_not_found");
+}
 fn send(path: &str) -> RoomFileOperation {
     RoomFileOperation::SendFile {
         call_id: "report-1".into(),
@@ -122,6 +139,54 @@ fn send(path: &str) -> RoomFileOperation {
         filename: Some("结果.pdf".into()),
         caption: None,
     }
+}
+
+fn send_with_id(path: &str, id: &str) -> RoomFileOperation {
+    let mut operation = send(path);
+    if let RoomFileOperation::SendFile { call_id, .. } = &mut operation {
+        *call_id = id.into();
+    }
+    operation
+}
+
+#[tokio::test]
+async fn chat_files_shared_send_count_survives_restart_and_replays_at_the_limit() {
+    let (_temp, endpoint, mut files, workspace) = fixture();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    std::fs::write(workspace.join("report.pdf"), b"abc").unwrap();
+    let original = files.send(&send_with_id("report.pdf", "first")).await.unwrap();
+    endpoint.lose_upload.store(true, Ordering::SeqCst);
+    let uncertain = files.send(&send_with_id("report.pdf", "second")).await.unwrap();
+    assert_eq!(uncertain["status"], "outcome_unknown");
+    drop(files);
+    let mut files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    assert_eq!(files.send(&send_with_id("report.pdf", "first")).await.unwrap(), original);
+    assert_eq!(files.send(&send_with_id("report.pdf", "second")).await.unwrap(), uncertain);
+    assert_eq!(files.send(&send_with_id("report.pdf", "third")).await.unwrap_err(), "file_send_turn_limit");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 2);
+    assert_eq!(endpoint.events.lock().unwrap().len(), 1);
+    let mut next = work();
+    next.event_id = "$next-request:test".into();
+    next.thread_root = next.event_id.clone();
+    let mut files = Files::open(endpoint.clone(), &next, &workspace, &endpoint.records).unwrap();
+    files.send_allowance = Some(SendAllowance { count: 2, bytes: 100 });
+    assert_eq!(files.send(&send_with_id("report.pdf", "first")).await.unwrap()["status"], "delivered");
+}
+
+#[tokio::test]
+async fn chat_files_shared_send_bytes_refuse_before_upload_without_stopping_other_operations() {
+    let (_temp, endpoint, mut files, workspace) = fixture();
+    files.send_allowance = Some(SendAllowance { count: 8, bytes: 5 });
+    std::fs::write(workspace.join("report.pdf"), b"abc").unwrap();
+    let original = files.send(&send_with_id("report.pdf", "first")).await.unwrap();
+    assert_eq!(files.send(&send_with_id("report.pdf", "second")).await.unwrap_err(), "file_send_turn_limit");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 1);
+    assert_eq!(files.delivery(original["delivery_id"].as_str().unwrap()).unwrap(), original);
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    std::fs::write(workspace.join("small.txt"), b"de").unwrap();
+    assert_eq!(files.send(&send_with_id("small.txt", "third")).await.unwrap()["status"], "delivered");
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -350,26 +415,36 @@ async fn chat_files_network_timeouts_preserve_unknown_outcomes_and_allow_safe_re
 }
 
 #[tokio::test]
-async fn chat_files_transfer_limit_still_allows_reading_existing_receipts() {
+async fn chat_files_long_turn_uses_durable_receipts_without_a_cumulative_transfer_cap() {
     let (_temp, endpoint, mut files, workspace) = fixture();
     std::fs::write(workspace.join("report.pdf"), b"bounded").unwrap();
     let mut receipt = Value::Null;
-    for n in 0..MAX_TRANSFERS {
+    for n in 0..32 {
         let mut op = send("report.pdf");
         if let RoomFileOperation::SendFile { call_id, .. } = &mut op {
             *call_id = format!("report-{n}");
         }
         receipt = files.send(&op).await.unwrap();
     }
-    assert_eq!(
-        files.receive("$attachment:test").await.unwrap_err(),
-        "file_transfer_limit"
-    );
-    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 0);
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 1);
     assert_eq!(
         files
             .delivery(receipt["delivery_id"].as_str().unwrap())
             .unwrap(),
         receipt
     );
+    drop(files);
+    let mut files = Files::open(endpoint.clone(), &work(), &workspace, &endpoint.records).unwrap();
+    for n in 0..32 {
+        let mut op = send("report.pdf");
+        if let RoomFileOperation::SendFile { call_id, .. } = &mut op {
+            *call_id = format!("report-{n}");
+        }
+        assert_eq!(files.send(&op).await.unwrap()["status"], "delivered");
+    }
+    assert_eq!(files.receive("$attachment:test").await.unwrap()["status"], "ready");
+    assert_eq!(endpoint.receives.load(Ordering::SeqCst), 1);
+    assert_eq!(endpoint.uploads.lock().unwrap().len(), 32);
+    assert_eq!(endpoint.events.lock().unwrap().len(), 32);
 }

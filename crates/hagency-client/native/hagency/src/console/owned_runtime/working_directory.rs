@@ -34,6 +34,25 @@ pub(super) fn for_turn(
     Ok((profile, workspace))
 }
 
+/// The folder a Room's own file tools receive into and send from.
+///
+/// It is the turn's working directory, except with the shared-workspace
+/// opt-in: there the working directory is the owner's project, which only the
+/// host file tools change, so Room files stay in the folder this Room has
+/// without the opt-in.
+pub(super) fn for_room_files(
+    configured: &Profile,
+    turn: &Profile,
+    owner: &str,
+    scope: &Scope,
+    shared_workspace: bool,
+) -> Result<std::path::PathBuf, RuntimeError> {
+    if !shared_workspace {
+        return Ok(turn.cwd.clone());
+    }
+    room_files::chat_directory(&configured.cwd, owner, scope).map_err(|_| RuntimeError::Profile)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +124,14 @@ mod tests {
         let (selected, files) = for_turn(&profile, "@owner:test", &scope, false, true, Some(&pin)).unwrap();
         assert_eq!(selected.cwd, project);
         assert!(files.unwrap().is_shared());
+        // Room files do not land in the project itself: they keep the folder
+        // this Room has without the opt-in.
+        let (plain, _) = for_turn(&profile, "@owner:test", &scope, false, false, None).unwrap();
+        let room_files = for_room_files(&profile, &selected, "@owner:test", &scope, true).unwrap();
+        assert_eq!(room_files, plain.cwd);
+        assert_ne!(room_files, project);
+        assert!(room_files.starts_with(project.join(".hagency-room-workspaces")));
+        assert_eq!(for_room_files(&profile, &plain, "@owner:test", &scope, false).unwrap(), plain.cwd);
     }
 
 }

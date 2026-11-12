@@ -29,6 +29,7 @@ struct State {
 }
 #[derive(Clone, Default)]
 pub(in crate::console::native) struct Manager {
+    pub(super) claude_workspaces: super::claude_workspace::Workspaces,
     state: Arc<Mutex<State>>,
     custody: TaskCustody,
     /// Owner telemetry fed by verified turn observations (never budget).
@@ -77,10 +78,16 @@ fn unknown() -> NativeError {
     failure(409, "shared_execution_outcome_unknown")
 }
 impl Manager {
-    pub(in crate::console::native) fn telemetry(&self) -> crate::console::native::telemetry::OwnerTelemetry {
+    pub(in crate::console::native) fn sweep_claude(&self, root: &std::path::Path) -> Result<(), NativeError> {
+        self.claude_workspaces.sweep_existing(root)
+    }
+    pub(in crate::console::native) fn telemetry(
+        &self,
+    ) -> crate::console::native::telemetry::OwnerTelemetry {
         self.telemetry.clone()
     }
     pub fn close(&self) {
+        self.claude_workspaces.close();
         self.custody.close();
         match self.state.lock() {
             Ok(mut s) => {
@@ -124,6 +131,9 @@ impl Manager {
         assignment: &str,
         revision: u64,
     ) -> Result<(), NativeError> {
+        // Stop pauses the Agent; a later Run continues it. Saved sessions and
+        // work folders are therefore kept here. Only loss of a conversation's
+        // authority removes that conversation's files (`Lease::retire`).
         let mut s = self
             .state
             .lock()
@@ -257,7 +267,7 @@ impl Manager {
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedRuntimeDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: SharedRuntimeDelivery,
         observed: u64,
@@ -308,7 +318,7 @@ impl Manager {
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedAttemptDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: super::attempt_io::Delivery,
         observed: u64,
@@ -355,13 +365,13 @@ impl Manager {
             },
         )
     }
-    #[cfg(feature="shared-budget-execution")]
+    #[cfg(feature = "shared-budget-execution")]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_budget_attempt(
         &self,
         registry: OwnerResourceRegistry,
         proof: VerifiedSharedBudgetAttemptDelivery,
-        launch: super::super::managed_runtime::PreparedLaunch,
+        launch: launch::Launch,
         io: Io,
         delivery: super::budget_io::Delivery,
         observed: u64,

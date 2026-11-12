@@ -102,7 +102,10 @@ impl ManagedCallAuthority {
         self.assignment.check(registry)?;
         identifier(&self.execution, 128)?;
         hash(&self.execution_digest)?;
-        exact(self.estimated_tokens)
+        // Zero is a postpaid call. Positive legacy estimates remain part of
+        // their original immutable identity, never a cap on actual usage.
+        if self.estimated_tokens > JSON_SAFE_MAX { return Err(Error::Capacity); }
+        Ok(())
     }
     #[cfg(test)]
     pub(crate) fn fixture(

@@ -49,11 +49,26 @@ const PLAIN_BYTES: usize = 42 * 1024;
 static DEVICES: LazyLock<Mutex<HashMap<String, Arc<AgentDevice>>>> =
     LazyLock::new(Default::default);
 
+/// Membership lookups can be cancelled when the native turn completes. Until
+/// the whole batch returns to its caller, keep every taken event recoverable.
+struct ActionCheckBatch<T, F: FnMut(Vec<T>)> {
+    events: Vec<T>,
+    requeue: F,
+}
+impl<T, F: FnMut(Vec<T>)> Drop for ActionCheckBatch<T, F> {
+    fn drop(&mut self) {
+        (self.requeue)(std::mem::take(&mut self.events));
+    }
+}
+
 pub(in crate::console) struct AgentDevice {
     client: Client,
     pub(in crate::console) approvals: crate::encrypted_approvals::Inbox,
     /// Room members' answers to this Agent's question cards.
     pub(in crate::console) questions: crate::agent_questions::Inbox,
+    pub(in crate::console) question_records: std::path::PathBuf,
+    run_controls: crate::agent_questions::Inbox,
+    pub(in crate::console) run_records: std::path::PathBuf,
     revoked: Arc<AtomicBool>,
     sync: tokio::task::AbortHandle,
 }
@@ -125,6 +140,7 @@ pub(super) async fn device<T: Transport>(
     if let Some(device) = devices.get(&key)
         && !device.revoked.load(Ordering::Acquire)
     {
+        super::run_controls::device_ready(device.clone());
         return Ok(device.clone());
     }
     let Response::E2eeDevice(grant) = operation(
@@ -139,6 +155,8 @@ pub(super) async fn device<T: Transport>(
         return Err(RuntimeError::Transport);
     };
     let device = Arc::new(AgentDevice::open(grant, &directory, &config.agent_id).await?);
+    super::questions::device_ready(device.clone());
+    super::run_controls::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
 }
@@ -404,6 +422,10 @@ impl AgentDevice {
         // the owner's client starts sharing room keys with it.
         let approvals = crate::encrypted_approvals::Inbox::attach(&client);
         let questions = crate::agent_questions::Inbox::attach(&client);
+        let run_controls = crate::agent_questions::Inbox::attach_event(
+            &client,
+            crate::agent_run_controls::ACTION_EVENT,
+        );
         client
             .sync_once(SyncSettings::default().timeout(Duration::ZERO))
             .await
@@ -414,6 +436,9 @@ impl AgentDevice {
             client,
             approvals,
             questions,
+            question_records: root.join("question-cards.json"),
+            run_controls,
+            run_records: root.join("run-cards.json"),
             revoked,
             sync,
         })
@@ -516,6 +541,14 @@ impl AgentDevice {
             .client
             .get_room(&room_id)
             .ok_or(RuntimeError::Transport)?;
+        if room
+            .latest_encryption_state()
+            .await
+            .map_err(|_| RuntimeError::Transport)?
+            .is_unknown()
+        {
+            return Err(RuntimeError::Transport);
+        }
         let txn: OwnedTransactionId = txn.into();
         match room
             .send_raw("m.room.message", content)
@@ -542,6 +575,29 @@ impl AgentDevice {
         room: &str,
         card_event_id: &str,
     ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
+        self.room_actions(&self.questions, room, card_event_id)
+            .await
+    }
+
+    pub(in crate::console) async fn run_actions(
+        &self,
+        room: &str,
+        card_event_id: &str,
+    ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
+        self.room_actions(&self.run_controls, room, card_event_id)
+            .await
+    }
+
+    pub(in crate::console) fn run_actions_pending(&self, room: &str, card_event_id: &str) -> bool {
+        self.run_controls.pending_for(room, card_event_id)
+    }
+
+    async fn room_actions(
+        &self,
+        inbox: &crate::agent_questions::Inbox,
+        room: &str,
+        card_event_id: &str,
+    ) -> Result<Vec<crate::agent_questions::Received>, RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let room = self
             .client
@@ -549,9 +605,7 @@ impl AgentDevice {
             .ok_or(RuntimeError::Transport)?;
         // Room keys can arrive after the answer: retry undecryptable references.
         // Each pass is bounded; anything left waits for the next pass.
-        for id in self
-            .questions
-            .due_undecrypted(room_id.as_str(), card_event_id, 4)
+        for id in inbox.due_undecrypted(room_id.as_str(), card_event_id, 4)
         {
             let Ok(event_id) = OwnedEventId::try_from(id.as_str()) else {
                 continue;
@@ -561,22 +615,29 @@ impl AgentDevice {
                 && let TimelineEventKind::Decrypted(decrypted) = &event.kind
                 && let Ok(value) = decrypted.event.deserialize_as::<serde_json::Value>()
             {
-                self.questions.decrypted(
+                inbox.decrypted(
                     room_id.as_str(),
                     &value,
                     Some(&decrypted.encryption_info),
                 );
             }
         }
-        let encrypted = room
+        let encryption = room
             .latest_encryption_state()
             .await
-            .map_err(|_| RuntimeError::Transport)?
-            .is_encrypted();
+            .map_err(|_| RuntimeError::Transport)?;
+        if encryption.is_unknown() {
+            return Err(RuntimeError::Transport);
+        }
+        let encrypted = encryption.is_encrypted();
         let own = self.client.user_id().map(|u| u.to_string());
         let mut answers = Vec::new();
         let mut unsure = Vec::new();
-        for received in self.questions.take(room_id.as_str(), card_event_id, 4) {
+        let mut batch = ActionCheckBatch {
+            events: inbox.take(room_id.as_str(), card_event_id, 4),
+            requeue: |events| inbox.requeue(events),
+        };
+        for received in &batch.events {
             if !received.admissible(encrypted, own.as_deref()) {
                 continue;
             }
@@ -588,15 +649,15 @@ impl AgentDevice {
                     if *member.membership()
                         == matrix_sdk::ruma::events::room::member::MembershipState::Join =>
                 {
-                    answers.push(received)
+                    answers.push(received.clone())
                 }
                 // Not a current member: never an answer.
                 Ok(Ok(_)) => {}
                 // Membership unknown for now: keep the answer for the next pass.
-                _ => unsure.push(received),
+                _ => unsure.push(received.clone()),
             }
         }
-        self.questions.requeue(unsure);
+        batch.events = unsure;
         Ok(answers)
     }
 
@@ -810,6 +871,27 @@ fn sync_has_work(response: &matrix_sdk::sync::SyncResponse) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn canceled_action_membership_lookup_requeues_the_entire_taken_batch() {
+        let returned = std::sync::Mutex::new(Vec::new());
+        let lookup = async {
+            let _batch = ActionCheckBatch {
+                events: vec!["first-verified", "second-awaiting-membership", "third-unchecked"],
+                requeue: |events| returned.lock().unwrap().extend(events),
+            };
+            std::future::pending::<()>().await;
+        };
+        assert!(tokio::time::timeout(Duration::from_millis(1), lookup).await.is_err());
+        assert_eq!(*returned.lock().unwrap(),
+            ["first-verified", "second-awaiting-membership", "third-unchecked"]);
+        let batch = ActionCheckBatch {
+            events: vec!["membership-still-unknown"],
+            requeue: |events| returned.lock().unwrap().extend(events),
+        };
+        drop(batch);
+        assert_eq!(returned.lock().unwrap().last(), Some(&"membership-still-unknown"));
+    }
 
     #[test]
     fn shared_work_sync_wakes_for_late_keys_but_not_empty_polls() {

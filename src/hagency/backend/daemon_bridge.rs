@@ -82,10 +82,8 @@ impl Service {
     /// cancelled waiter or failed drain. Completed selections also own the
     /// canonical registry writer, even after the native owner has suspended.
     pub(super) async fn release_local_for_daemon(&self) -> Result<(), String> {
-        #[cfg(feature = "resource-adoption")]
-        let mut activation = self.0.activation.lock().await;
-        #[cfg(feature = "resource-adoption")]
-        if matches!(*activation, super::adoption::ActivationTask::Running(_)) {
+                let mut activation = self.0.activation.lock().await;
+                if matches!(*activation, super::adoption::ActivationTask::Running(_)) {
             let _ = Self::await_activation(&mut activation).await;
         }
         let mut native = self.0.native.lock().await;
@@ -99,8 +97,7 @@ impl Service {
         if let Some(owner) = &owner {
             owner.retire();
         }
-        #[cfg(feature = "resource-adoption")]
-        {
+                {
             self.0.allocations.retire();
             self.0.allocations.drain().await;
         }
@@ -118,12 +115,11 @@ impl Service {
                 .unwrap_or_else(|p| p.into_inner())
                 .take();
         }
-        #[cfg(feature = "resource-adoption")]
-        {
-            self.0.adopted_initialization.lock()
+                {
+            self.0.current_initialization.lock()
                 .map_err(|_| "management_unavailable")?.take();
             *activation = super::adoption::ActivationTask::Empty;
-            self.0.adoption_pending.store(false, std::sync::atomic::Ordering::Release);
+            self.0.setup_pending.store(false, std::sync::atomic::Ordering::Release);
         }
         Ok(())
     }

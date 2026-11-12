@@ -16,7 +16,7 @@ Matrix servers are not supported by the current login flow.
   assigns the current authorized device; Room bindings are separate.
 - The server checks identity, Room admission and the assigned execution device.
   Project/Room administrators manage Agent access and service pauses.
-- The owner selects Codex, model, workspace, budgets and tool policy on their own
+- The owner selects Codex or Claude Code, model, workspace, budgets and tool policy on their own
   device. These resource choices require no server administrator approval.
 - One device can run multiple Agents. Switching accounts stops the current owner
   runtime; it does not transfer Agents or merge account data.
@@ -29,18 +29,18 @@ Matrix servers are not supported by the current login flow.
    Create a Space or select a joined Space. Add discussion Rooms from its details.
 3. Open **Agents → New Agent**, enter a name, and wait for the identity and its
    owner private chat to become ready. No Project or Room is required to create it.
-4. In **Codex**, choose **Use my signed-in local Codex account**. An
-   already signed-in local account does not require another login. Alternatively,
-   use the separate Codex sign-in controls. Choose and save a model and workspace.
-5. Set the Agent, Room and requester limits in **Budgets**. Then select
-   the private chat or a bound Room in **Run**, explicitly choose
-   estimated accounting and a reservation, and start that Room.
+4. In **Model & resources**, connect a locally signed-in Codex or Claude Code
+   account, then save a model and reasoning effort. Hagency creates a private workspace.
+5. Set the Agent, Room and requester policy in **Usage & limits**. Select
+   the private chat or a bound Room in **Service** and start responding.
+   Actual usage is charged after the task. An admitted task may exceed its budget;
+   quota exhaustion does not interrupt its work.
 
 See the [full native quick-start guide](docs/hagency-quickstart.md) for Room
 bindings, member invitations, policy boundaries and recovery states.
 
 Project tabs are **Overview / Rooms / Members / Access**. Agent tabs are
-**Agent / Codex / Budgets / Run**, for identity/device, local resources, request
+**Agent and device / Model & resources / Usage & limits / Service**, for identity/device, local resources, request
 policy and quota, and scoped execution/approvals respectively.
 
 ## Navigation and retained features
@@ -55,7 +55,18 @@ Matrix chat, contacts, room search and attachments, encrypted human conversation
 Moments, the native article editor and scoped mini-app import/consent/run remain.
 The default mini-app catalog has no Palpo app. Hagency management uses the native
 Projects and Agents pages; the former Palpo resource/coordinator workflow is retired.
-Agent encrypted-Room execution is deferred; this does not remove Matrix chat crypto.
+Agents can read encrypted Room history and exchange files through the admitted
+Matrix conversation. Shared file publication permits up to 64 files and 64 MiB
+per request; hitting that transfer limit returns a tool error and leaves the task running.
+
+Native Codex and Claude sessions retain their context between turns. Shared Claude
+on macOS uses a separate workspace and Seatbelt confinement; owner hooks, settings
+and unrelated MCP servers are not loaded. Native session files are sealed while
+the process is stopped and require fresh scope authorization before reopening.
+The runtime requires Claude Code 2.1.322 or newer and Codex 0.167.0 or newer;
+older versions are refused. Conversational controls accept authenticated Matrix sender devices
+without requiring cross-signing, and still check the card's responder and current
+Room membership. They do not grant tool-approval authority.
 
 Matrix room, alias and event links open inside the app. Links to rooms you have
 not joined show a confirmation first; message links select their original Room
@@ -82,8 +93,10 @@ Hagency setup.
 `RINX_DATA_DIR` and `ROBRIX_DATA_DIR` environment aliases remain in the desktop
 launcher. They do not enable compatibility with retired Fleet data. Owner ledgers,
 workspaces and provider associations stay scoped to the full authenticated account.
-Moving execution to another device does not move ownership or reset historical
-costs; restore the same owner's complete ledger when the recovery gate requires it.
+Moving execution to another device does not transfer ownership. This native CLI
+cutover requires matching current Desktop, daemon and server builds; it does not
+restore previous-release runtime options or approval protocols. Old runtime
+intentions are discarded, and each Room must be explicitly started again.
 
 Device verification and key recovery are available under **Settings → Account → Encryption and recovery**.
 Verified devices still need their room keys to read encrypted history. See
@@ -107,8 +120,8 @@ python3 tools/wechat-ux/check_i18n.py
 The app builds against one makepad checkout under `.sources/` (git-ignored), pinned
 in `.jit/sources.lock`; no cargo command works before `.jit/sources.sh` has fetched it.
 The same sources also run under the makepad JIT runner (`makepad run`), which patches
-an edit into the running app. See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup,
-commands, memory needs and known gaps.
+an edit into the running app; for that, fetch the checkout with `.jit/sources.sh --outside`.
+See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup, commands, memory needs and known gaps.
 
 The Cargo package/binary retains the name `rinx`; the application presents itself
 as Hagency. Default features use the standalone native application. The retired

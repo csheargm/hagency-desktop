@@ -5,8 +5,11 @@ use super::*;
 #[tokio::test]
 #[ignore = "requires explicitly built offline supervised probe"]
 async fn native_shared_chat_files_cross_standard_yolo_successor_and_budget_runs() {
-    for (budget, yolo) in [(false, false), (false, true), (true, false), (true, true)] {
-        eprintln!("file roundtrip: budget={budget} yolo={yolo}");
+    for (budget, yolo, plaintext) in [
+        (false, false, false), (false, true, false), (true, false, false), (true, true, false),
+        (false, false, true), (false, true, true), (true, false, true), (true, true, true),
+    ] {
+        eprintln!("file roundtrip: budget={budget} yolo={yolo} plaintext={plaintext}");
         let (f, t, c) = if budget {
             Box::pin(budget_attempts::prepared_with_tools(Some(yolo))).await
         } else {
@@ -32,9 +35,11 @@ async fn native_shared_chat_files_cross_standard_yolo_successor_and_budget_runs(
         };
         let work = {
             let mut s = f.state.lock().unwrap();
+            s.shared.contexts.active = plaintext;
+            s.shared.contexts.v3 = plaintext;
             let w = s.shared.work.as_mut().unwrap();
-            w.encrypted = true;
-            w.body = w.event_id.clone();
+            w.encrypted = !plaintext;
+            w.body = if plaintext { "Process the uploaded file and send the result".into() } else { w.event_id.clone() };
             w.body_digest = format!("{:x}", Sha256::digest(w.body.as_bytes()));
             w.clone()
         };
@@ -116,11 +121,13 @@ async fn native_shared_chat_files_cross_standard_yolo_successor_and_budget_runs(
         );
         drop(events);
         drop(uploads);
-        assert_eq!(replies.lock().unwrap().len(), 1);
-        assert_eq!(
-            replies.lock().unwrap()[0].1,
-            "File received, processed and delivered"
-        );
+        if plaintext {
+            assert!(f.state.lock().unwrap().shared.receipts.values().any(|r|
+                r.body.as_deref() == Some("File received, processed and delivered")));
+        } else {
+            assert_eq!(replies.lock().unwrap().len(), 1);
+            assert_eq!(replies.lock().unwrap()[0].1, "File received, processed and delivered");
+        }
         assert_eq!(f.state.lock().unwrap().shared.starts, 1);
         assert!(
             f.state

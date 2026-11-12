@@ -1,6 +1,6 @@
 //! Pinned Codex 0.153.4/0.154.0 request shapes. Parsed data is never owner authority.
 mod mcp;
-use super::{RequestId, session::Error, text};
+use super::{RequestId, script, session::Error, text};
 pub(crate) use mcp::McpTracker;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -63,8 +63,19 @@ pub struct ApprovalResponse {
     /// authority; `response()` is the only constructor.
     pub(super) allow: bool,
 }
+impl ApprovalResponse {
+    /// Encode a host-authorized decision on another app-server transport.
+    /// This accessor supplies no owner authority; callers must consume it first.
+    pub fn wire_result(&self) -> &Value {
+        &self.result
+    }
+}
 
 impl ApprovalRequest {
+    /// Validate an observed native callback. This is data, never an approval.
+    pub fn from_callback(id: RequestId, method: String, params: Value) -> Result<Self, Error> {
+        Self::parse(id, method, params)
+    }
     pub fn id(&self) -> &RequestId {
         &self.id
     }
@@ -121,7 +132,7 @@ impl ApprovalRequest {
             return Err(Error::Malformed);
         }
         let shared = ["threadId", "turnId", "itemId", "startedAtMs", "reason"];
-        optional_text(&params, "reason", 8192)?;
+        optional_script(&params, "reason", 8192)?;
         let kind = match method.as_str() {
             "item/commandExecution/requestApproval" => {
                 fields(
@@ -151,9 +162,13 @@ impl ApprovalRequest {
                 if present(&params, "kind").is_some() {
                     optional_text(&params, "kind", 255)?;
                 }
-                for field in ["approvalId", "environmentId", "command", "cwd"] {
+                for field in ["approvalId", "environmentId", "cwd"] {
                     optional_text(&params, field, 8192)?;
                 }
+                // A command of several lines is an ordinary command (two
+                // commands, a here-document). Refused for its line break, it
+                // was declined before the owner saw it (live 2026-11-11).
+                optional_script(&params, "command", 8192)?;
                 // The offered decisions are the requester's menu, not this
                 // adapter's: it answers accept or decline whatever the list says,
                 // as the retained runner does. Never apply amendments.
@@ -185,10 +200,10 @@ impl ApprovalRequest {
                     // owner like any other. The core scopes it as the retained
                     // product does: approving a network request is a decision
                     // about the host (`lib/execution-authorization.js`).
-                    optional_text(&params, "command", 8192)?;
+                    optional_script(&params, "command", 8192)?;
                     optional_text(&params, "cwd", 8192)?;
                 } else {
-                    required_text(&params, "command", 8192)?;
+                    required_script(&params, "command", 8192)?;
                     required_text(&params, "cwd", 8192)?;
                 }
                 Kind::Command
@@ -225,16 +240,25 @@ impl ApprovalRequest {
     /// are exact once/decline responses, never session or policy amendments.
     /// Native session scope only: never persists a rule to later Codex threads.
     pub fn session_response(&self) -> Result<ApprovalResponse, Error> {
-        let result=match &self.kind {
+        let result = match &self.kind {
             Kind::Command => {
-                if present(&self.params,"availableDecisions").is_some_and(|v| !v.as_array().is_some_and(|a|a.contains(&json!("acceptForSession")))) {return Err(Error::Policy);}
+                if present(&self.params, "availableDecisions").is_some_and(|v| {
+                    !v.as_array()
+                        .is_some_and(|a| a.contains(&json!("acceptForSession")))
+                }) {
+                    return Err(Error::Policy);
+                }
                 json!({"decision":"acceptForSession"})
-            },
-            Kind::File=>json!({"decision":"acceptForSession"}),
-            Kind::Permissions(profile)=>json!({"permissions":profile,"scope":"session"}),
-            Kind::Mcp(_)=>return Err(Error::Policy),
+            }
+            Kind::File => json!({"decision":"acceptForSession"}),
+            Kind::Permissions(profile) => json!({"permissions":profile,"scope":"session"}),
+            Kind::Mcp(_) => return Err(Error::Policy),
         };
-        Ok(ApprovalResponse{request:self.clone(),result,allow:true})
+        Ok(ApprovalResponse {
+            request: self.clone(),
+            result,
+            allow: true,
+        })
     }
     pub fn response(&self, allow: bool) -> ApprovalResponse {
         let result = match &self.kind {
@@ -268,6 +292,16 @@ fn fields(value: &Value, common: &[&str], extra: &[&str]) -> Result<(), Error> {
 fn present<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value.get(key).filter(|v| !v.is_null())
 }
+/// Log line for a request a host declined without showing it to the owner.
+/// The method is a protocol word; the request's content is never logged.
+pub fn declined_unseen(method: &str, cause: &'static str) {
+    tracing::warn!(
+        code = "codex_approval_declined_unseen",
+        cause,
+        method = %method.chars().take(64).collect::<String>(),
+        "A Codex approval request was declined without being shown to the owner"
+    );
+}
 fn required_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
     value
         .get(key)
@@ -279,6 +313,21 @@ fn required_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
 fn optional_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
     if present(value, key).is_some() {
         required_text(value, key, limit)
+    } else {
+        Ok(())
+    }
+}
+fn required_script(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| script(s, limit))
+        .map(|_| ())
+        .ok_or(Error::Malformed)
+}
+fn optional_script(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
+    if present(value, key).is_some() {
+        required_script(value, key, limit)
     } else {
         Ok(())
     }
@@ -393,11 +442,34 @@ mod tests {
                 json!({"decision":"decline"})
             );
         }
+        // A command of several lines, or with a tab, is an ordinary command
+        // and reaches the owner. Other control characters are still refused.
+        for command in ["echo a > a.txt\ncat a.txt", "cat <<EOF\n\tline\nEOF"] {
+            let mut p = params();
+            p["command"] = json!(command);
+            p["reason"] = json!("first line\nsecond line");
+            let request = parse(p).unwrap_or_else(|e| panic!("{command:?}: {e:?}"));
+            assert_eq!(request.params()["command"], command);
+            assert_eq!(request.response(true).result, json!({"decision":"accept"}));
+        }
+        for command in ["echo a\recho b", "echo \u{1b}[2Ka", "echo a\u{0}", "\u{8}"] {
+            let mut p = params();
+            p["command"] = json!(command);
+            assert!(parse(p).is_err(), "{command:?}");
+        }
+        let mut p = params();
+        p["cwd"] = json!("/tmp\n/other");
+        assert!(parse(p).is_err());
         let mut p = params();
         p["networkApprovalContext"] = json!({"host":"example.test","protocol":"https"});
         let network = parse(p).unwrap();
-        assert_eq!(network.session_response().unwrap().result,json!({"decision":"acceptForSession"}));
-        let mut no_session=params();no_session["availableDecisions"]=json!(["accept","decline"]);assert!(parse(no_session).unwrap().session_response().is_err());
+        assert_eq!(
+            network.session_response().unwrap().result,
+            json!({"decision":"acceptForSession"})
+        );
+        let mut no_session = params();
+        no_session["availableDecisions"] = json!(["accept", "decline"]);
+        assert!(parse(no_session).unwrap().session_response().is_err());
         assert_eq!(network.response(true).result, json!({"decision":"accept"}));
         let mut p = params();
         p["reason"] = json!("x".repeat(MAX_APPROVAL_BYTES));
@@ -411,7 +483,10 @@ mod tests {
         .unwrap();
         assert_ne!(request.id(), file.id());
         assert_eq!(file.response(true).result, json!({"decision":"accept"}));
-        assert_eq!(file.session_response().unwrap().result,json!({"decision":"acceptForSession"}));
+        assert_eq!(
+            file.session_response().unwrap().result,
+            json!({"decision":"acceptForSession"})
+        );
         // A grant-root request reaches the owner too. Accepting it accepts this
         // one change; the adapter has no session-wide answer to give.
         let mut p = common.clone();
@@ -436,7 +511,10 @@ mod tests {
             permission.response(false).result,
             json!({"permissions":{},"scope":"turn"})
         );
-        assert_eq!(permission.session_response().unwrap().result,json!({"permissions":p["permissions"],"scope":"session"}));
+        assert_eq!(
+            permission.session_response().unwrap().result,
+            json!({"permissions":p["permissions"],"scope":"session"})
+        );
         for bad in [
             json!({"extra":true}),
             json!({"network":{"enabled":true,"host":"fake"}}),
@@ -479,7 +557,7 @@ mod tests {
     fn ready() -> Connection {
         let mut c = Connection::default();
         let (id, _) = c.initialize("test", 0, 1000).unwrap();
-        let line=encode(Message::Response{id,result:json!({"userAgent":"fixture","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"})}).unwrap();
+        let line=encode(Message::Response{id,result:json!({"userAgent":"fixture/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"})}).unwrap();
         c.receive(&line, 1).unwrap();
         c.initialized(2).unwrap();
         c

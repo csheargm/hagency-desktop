@@ -1,20 +1,48 @@
 //! Explicit v3 startup and exact evidence recovery.
 use super::*;
 impl SharedExecutionTransport {
-    pub async fn start_budget_successor(&self,r:&OwnerResourceRegistry,original:SharedRuntimeCommand)->Result<SharedExecutionProgress,NativeError>{
-        let b=self.io.bound().await?;
-        let e=b.enrollment(r,&original,true).await?;
-        let selected=r.shared_budget_successor_selection(e,original.clone()).await.map_err(store)?;
-        let cleanup=b.cleanup(r,&original).await?;
-        let saved=r.recover_shared_budget_attempt_start(cleanup,original.clone(),selected.predecessor.command_digest).await.map_err(store)?;
-        let intent=if let Some(saved)=saved{saved}else{
-            let e=b.enrollment(r,&original,true).await?;
-            let mut bytes=[0u8;16];getrandom::fill(&mut bytes).map_err(|_|failure(503,"native_random_unavailable"))?;
-            let id=format!("sbsi_{}",bytes.iter().map(|b|format!("{b:02x}")).collect::<String>());
-            r.prepare_shared_budget_attempt_start(e,original,id).await.map_err(store)?
+    pub async fn start_budget_successor(
+        &self,
+        r: &OwnerResourceRegistry,
+        original: SharedRuntimeCommand,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let e = b.enrollment(r, &original, true).await?;
+        let selected = r
+            .shared_budget_successor_selection(e, original.clone())
+            .await
+            .map_err(store)?;
+        let cleanup = b.cleanup(r, &original).await?;
+        let saved = r
+            .recover_shared_budget_attempt_start(
+                cleanup,
+                original.clone(),
+                selected.predecessor.command_digest,
+            )
+            .await
+            .map_err(store)?;
+        let intent = if let Some(saved) = saved {
+            saved
+        } else {
+            let e = b.enrollment(r, &original, true).await?;
+            let mut bytes = [0u8; 16];
+            getrandom::fill(&mut bytes).map_err(|_| failure(503, "native_random_unavailable"))?;
+            let id = format!(
+                "sbsi_{}",
+                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+            r.prepare_shared_budget_attempt_start(e, original, id)
+                .await
+                .map_err(store)?
         };
-        b.transport.check_scope(&b.scope,false).await?;
-        self.process_budget_attempt(r,budget_io::AttemptAction::Start(intent.input().clone()),None,None).await
+        b.transport.check_scope(&b.scope, false).await?;
+        self.process_budget_attempt(
+            r,
+            budget_io::AttemptAction::Start(intent.input().clone()),
+            None,
+            None,
+        )
+        .await
     }
     pub async fn poll_budget_successor(
         &self,
@@ -80,7 +108,7 @@ impl SharedExecutionTransport {
         }
         let expected_start = match &action {
             budget_io::AttemptAction::Start(input) => Some(input.clone()),
-            budget_io::AttemptAction::DemandStart{input,..} => Some(input.start.clone()),
+            budget_io::AttemptAction::DemandStart { input, .. } => Some(input.start.clone()),
             _ => None,
         };
         let b = self.io.bound().await?;
@@ -185,18 +213,29 @@ impl SharedExecutionTransport {
             .map_err(store)?;
         let cleaning = d.cleanup_allowed && !d.execution_allowed && historical.is_none();
         if local.is_none() && cleaning {
-            local = r.record_unstarted_shared_budget_attempt(
-                b.cleanup(r, &c.original_runtime_command).await?, c.clone(),
-            ).await.map_err(store)?;
+            local = r
+                .record_unstarted_shared_budget_attempt(
+                    b.cleanup(r, &c.original_runtime_command).await?,
+                    c.clone(),
+                )
+                .await
+                .map_err(store)?;
         }
         // Time bound (ADR-193): a claimed process with no stop evidence and no
         // live local child is interrupted once its grace period has passed.
-        if cleaning && local.as_ref().is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started")) {
-            if let Some(timeout) = r.record_shared_budget_attempt_timeout(
-                b.cleanup(r, &c.original_runtime_command).await?, c.clone(),
-            ).await.map_err(store)? {
+        if cleaning
+            && local
+                .as_ref()
+                .is_none_or(|l| !matches!(l.state.as_str(), "stopped" | "not_started"))
+            && let Some(timeout) = r
+                .record_shared_budget_attempt_timeout(
+                    b.cleanup(r, &c.original_runtime_command).await?,
+                    c.clone(),
+                )
+                .await
+                .map_err(store)?
+            {
                 local = Some(timeout);
-            }
         }
         b.transport.check_scope(&b.scope, false).await?;
         if let Some(saved) = &d.recorded {
@@ -213,7 +252,9 @@ impl SharedExecutionTransport {
                     // A time-bound end is accepted only on a cleanup ticket;
                     // otherwise a later cleanup poll reports it.
                     if !cleaning || !budget_run::upload_end(&b, &d, until, latest).await? {
-                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                        return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                            command_id: c.command_id.clone(),
+                        });
                     }
                     budget_run::recover_process_work(&self.io, r, c).await?;
                     return Ok(SharedExecutionProgress::Recorded {
@@ -228,7 +269,7 @@ impl SharedExecutionTransport {
                     return Ok(SharedExecutionProgress::Recorded {
                         command_id: c.command_id.clone(),
                         observation_id: latest.observation_id.clone(),
-                    process_state: Some(latest.state.clone()),
+                        process_state: Some(latest.state.clone()),
                     });
                 }
                 if latest.ledger_revision == saved.ledger_revision
@@ -248,20 +289,22 @@ impl SharedExecutionTransport {
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: saved.observation_id.clone(),
-                    process_state: Some(saved.state.clone()),
+                process_state: Some(saved.state.clone()),
             });
         }
         if let Some(local) = local {
             // Report actual stop independently before accounting recovery: an
             // old work upload failure must not hide known process termination.
             if !budget_run::upload_end(&b, &d, until, &local).await? {
-                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing { command_id: c.command_id.clone() });
+                return Ok(SharedExecutionProgress::HistoricalEvidenceMissing {
+                    command_id: c.command_id.clone(),
+                });
             }
             budget_run::recover_process_work(&self.io, r, c).await?;
             return Ok(SharedExecutionProgress::Recorded {
                 command_id: c.command_id.clone(),
                 observation_id: local.observation_id,
-                    process_state: Some(local.state.clone()),
+                process_state: Some(local.state.clone()),
             });
         }
         if !d.execution_allowed {
@@ -270,9 +313,14 @@ impl SharedExecutionTransport {
             });
         }
         let e = b.enrollment(r, &c.original_runtime_command, true).await?;
-        let proof =
-            VerifiedSharedBudgetAttemptDelivery::new(e, c.clone(), d.command_digest.clone(), true, until)
-                .map_err(store)?;
+        let proof = VerifiedSharedBudgetAttemptDelivery::new(
+            e,
+            c.clone(),
+            d.command_digest.clone(),
+            true,
+            until,
+        )
+        .map_err(store)?;
         let a = b.cleanup(r, &c.original_runtime_command).await?;
         if r.shared_budget_successor_history(a, c.clone())
             .await
@@ -303,13 +351,13 @@ impl SharedExecutionTransport {
             )
             .await
             .map_err(store)?;
-        if resource.framework != "codex"
+        if resource.framework != c.original_runtime_command.runtime().map_err(store)?
             || resource.revision != c.original_runtime_command.reserve_command.resource_revision
         {
             return Err(failure(409, "shared_execution_resource_changed"));
         }
         let launch = if let Some(prepared) = prepared {
-            prepared
+            launch::Launch::from(prepared)
         } else {
             let root = self
                 .manager
@@ -321,15 +369,18 @@ impl SharedExecutionTransport {
                 .server_login
                 .state_directory()
                 .ok_or_else(|| failure(409, "shared_execution_launch_unavailable"))?;
-            super::super::managed_runtime::PreparedLaunch::for_resource(
-                &root, &b.scope.device, r, &b.scope.profile, &resource, true,
+            super::launch::Launch::for_resource(
+                &root, &b.scope.device, r, &b.scope.profile, &resource,
             ).await.map_err(|error| {
                 tracing::warn!(command_id=%c.command_id,code=%error.code,"Shared Agent launch preparation failed");
                 error
             })?
         };
-        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(&c.original_runtime_command.reserve_command.proposed_agent_id,c.tool_policy.as_ref().map(|p|p.mode.as_str()))?;
-        let process_io=self.io.with_namespace(launch.namespace());
+        let launch = launch.with_live_web(c.web_search)?.with_agent_tools(
+            &c.original_runtime_command.reserve_command.proposed_agent_id,
+            c.tool_policy.as_ref().map(|p| p.mode.as_str()),
+        )?;
+        let process_io = launch.io(&self.io);
         let io = process_io.clone();
         let command = c.clone();
         let check: super::super::managed_runtime::LiveCheck = Arc::new(move || {
@@ -337,12 +388,7 @@ impl SharedExecutionTransport {
             let c = command.clone();
             Box::pin(async move { io.check(&c.original_runtime_command).await })
         });
-        let launch = self
-            .manager
-            .owner
-            .0
-            .managed_runtime
-            .prepare(launch, until, check)
+        let launch = launch.prepare(&self.manager, until, check)
             .await.map_err(|error| {
                 tracing::warn!(command_id=%c.command_id,code=%error.code,"Shared Agent policy inspection failed");
                 error

@@ -1,8 +1,8 @@
 use super::*;
 use crate::console::native::reconciliation_sources::tests::Fixture;
-use crate::console::native::{ManagementPackage,SourceQuiescenceRequest};
+use crate::console::native::{ManagementPackage};
 use hagency_store::management::Permission;
-use hagency_store::owner_resources::{OwnerResourceRegistry,VerifiedProviderAccount};
+use hagency_store::owner_resources::{OwnerResourceRegistry};
 use std::time::{Duration,Instant};
 
 fn package(instance:u64)->ManagementPackage{ManagementPackage{digest:"a".repeat(64),instance,account_epoch:1,permissions:vec![Permission::ReadResources,Permission::PublishResources,Permission::PrepareSourceQuiescence,Permission::ReadWebCatalog,Permission::ManageWebCatalog,Permission::ReadIntents,Permission::AcknowledgeIntents]}}
@@ -21,23 +21,13 @@ async fn web_catalog_cancellation_process_child(){
     let mode=std::env::var("HAGENCY_WEB_CANCEL_FIXTURE").unwrap_or_default();
     if mode!="1"&&mode!="publication"{return}
     let f=Fixture::new().await;
-    let(mut domain,_,resource)=f.domain();
-    domain.put_seat(&hagency_core::project::Seat{id:resource.seat_id.clone(),declaration:None}).unwrap();drop(domain);
-    let(personal,_)=f.personal();drop(personal);
     let registry=OwnerResourceRegistry::isolated_for_tests(&f.temp.path().join("canonical")).unwrap();
-    let mut request=SourceQuiescenceRequest::new(&f.owner,package(1),registry.clone(),Instant::now()+Duration::from_secs(50),||true).unwrap();
-    request.lease_root=Some(hagency_platform::legacy_writer::test_support::initialize_process_root().unwrap());
-    let work=f.owner.prepare_source_quiescence(request).await.unwrap();
-    let sources=work.close_and_drain().await.unwrap();
-    let provider=||VerifiedProviderAccount::new("codex","https://provider.test","synthetic-web-cancel",Instant::now()+Duration::from_secs(30)).unwrap();
-    let transfer=sources.prepare_resource_adoption("web_cancel_original".into(),provider(),700).await.unwrap();
-    assert_eq!(transfer.advance(provider()).await.unwrap().phase,"active");
-    transfer.drain_journal().await.unwrap();drop(transfer);drop(sources);drop(work);
-    let f=f.restart_adopted(registry.clone(),"web_cancel_original".into()).await;
+    let f=f.initialize_current(registry.clone()).await;
+    let resource=f.current_resource(&registry).await;
     let manager=f.owner.management(package(2)).await.unwrap();
     if mode=="publication" {
         use hagency_store::management::PublishResource;
-        assert!(f.owner.0.adoption_recovery.get().is_some());
+        assert!(f.owner.0.current_profile.get().is_some());
         let before=manager.resources(hagency_store::management::ResourceQuery{after:String::new(),limit:16,framework:None,capability:None,published:None}).await.unwrap().resources.into_iter().find(|r|r.id==resource.id()).unwrap();
         let original=PublishResource{command_id:"native_publish_original".into(),resource_id:resource.id(),expected_revision:before.revision.clone(),published:!before.published};
         let copy=||serde_json::from_value::<PublishResource>(serde_json::to_value(&original).unwrap()).unwrap();

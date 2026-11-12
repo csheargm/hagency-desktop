@@ -54,24 +54,11 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::RenameResources)?;
         input.validate()?;
-        #[cfg(not(feature = "resource-adoption"))]
-        {
-            Err(
-                hagency_core::InvalidInput("local naming requires canonical resource management")
-                    .into(),
-            )
-        }
-        #[cfg(feature = "resource-adoption")]
+
         {
             let result = match self.local_store()? {
-                SessionStore::Legacy(_) => {
-                    return Err(hagency_core::InvalidInput(
-                        "local naming requires canonical resource management",
-                    )
-                    .into());
-                }
-                #[cfg(feature = "resource-adoption")]
-                SessionStore::Adopted(store) => {
+
+                SessionStore::Current(store) => {
                     // Include exact native profile in receipt comparison. It is
                     // never supplied by the script or inferred from a visible ID.
                     let receipt = CommandReceipt::new(
@@ -81,7 +68,7 @@ impl Session {
                         &serde_json::json!({"profile":store.identity().0,"input":input}),
                     )?;
                     store
-                        .rename_resource(&self.adopted_profile(store)?, input, receipt)
+                        .rename_resource(&self.current_profile(store)?, input, receipt)
                         .await?
                 }
             };

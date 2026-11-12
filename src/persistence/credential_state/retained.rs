@@ -112,6 +112,7 @@ impl Service {
         &self,
         old: &ClientSessionPersisted,
         hash: &str,
+        session_held: bool,
     ) -> Result<Option<RetainedEntry>> {
         if let Some(cached) = self
             .cache
@@ -142,6 +143,12 @@ impl Service {
                 identity,
                 database: cached.database.clone(),
             }));
+        }
+        // The caller is migrating this account's session document and holds
+        // its lock; that document has no published original to reuse, and a
+        // second open of it here would be refused as a conflict.
+        if session_held {
+            return Ok(None);
         }
         let path = self.root.join(hash).join("persistent_state/session");
         match std::fs::symlink_metadata(&path) {
@@ -203,6 +210,18 @@ impl Service {
         owner: Option<OwnedUserId>,
         incoming: Option<ClientSessionPersisted>,
         epoch: u64,
+    ) -> Result<Vec<PathBuf>> {
+        self.retain_worker_with(path, owner, incoming, epoch, false)
+    }
+    /// `session_held`: the caller holds this account's session document, which
+    /// is absent or still in the legacy form.
+    fn retain_worker_with(
+        &self,
+        path: &Path,
+        owner: Option<OwnedUserId>,
+        incoming: Option<ClientSessionPersisted>,
+        epoch: u64,
+        session_held: bool,
     ) -> Result<Vec<PathBuf>> {
         ensure!(
             crate::account_session::epoch() == epoch,
@@ -302,7 +321,7 @@ impl Service {
                 );
                 drop(_gate);
                 drop(doc);
-                return self.retain_worker(path, owner, incoming, epoch);
+                return self.retain_worker_with(path, owner, incoming, epoch, session_held);
             }
         }
         if let Some(incoming) = incoming {
@@ -366,7 +385,7 @@ impl Service {
                 !entries.iter().any(|e| e.database.db_path == old.db_path),
                 "credential_retained_database_ambiguous"
             );
-            let entry = if let Some(entry) = self.original_entry(&old, &hash)? {
+            let entry = if let Some(entry) = self.original_entry(&old, &hash, session_held)? {
                 entry
             } else {
                 let context = RetainedIdentity::LegacyDatabase {
@@ -559,6 +578,15 @@ impl Service {
         homeserver: &str,
         epoch: u64,
     ) -> Result<Vec<(Database, Zeroizing<String>)>> {
+        self.candidates_with(owner, homeserver, epoch, false)
+    }
+    fn candidates_with(
+        &self,
+        owner: &OwnedUserId,
+        homeserver: &str,
+        epoch: u64,
+        session_held: bool,
+    ) -> Result<Vec<(Database, Zeroizing<String>)>> {
         let path = crate::accounts::account_dir(&self.root, owner)
             .join("persistent_state/retained_db.json");
         match std::fs::symlink_metadata(&path) {
@@ -566,7 +594,7 @@ impl Service {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         }
-        self.retain_worker(&path, Some(owner.clone()), None, epoch)?;
+        self.retain_worker_with(&path, Some(owner.clone()), None, epoch, session_held)?;
         let installation = self.existing_installation()?;
         let doc = Document::open(&path, MAX_SESSION)?;
         let source = doc.read()?.ok_or(Error::Missing)?;
@@ -601,11 +629,20 @@ impl Service {
     /// Exact retained reference selection only. A missing key/schema is an
     /// error, never a miss that permits issuing a replacement database key.
     pub(super) fn retained_database(&self, identity: &Identity) -> Result<Option<Database>> {
+        self.retained_database_with(identity, false)
+    }
+    /// `session_held` as in `retain_worker_with`.
+    pub(super) fn retained_database_with(
+        &self,
+        identity: &Identity,
+        session_held: bool,
+    ) -> Result<Option<Database>> {
         let mut result = None;
-        for (database, _) in self.candidates(
+        for (database, _) in self.candidates_with(
             &identity.owner,
             &identity.homeserver,
             crate::account_session::epoch(),
+            session_held,
         )? {
             if database.db_path != identity.db_path || database.homeserver != identity.homeserver {
                 continue;

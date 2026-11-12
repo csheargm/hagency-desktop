@@ -48,8 +48,8 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(backing: AdoptedManagementStore, context: HostContext) -> Session {
-    Session::new_adopted(
+fn session(backing: CurrentManagementStore, context: HostContext) -> Session {
+    Session::new_current(
         backing,
         context,
         [Permission::ReadResources, Permission::ConfigureResources],
@@ -272,17 +272,7 @@ async fn local_edit_keeps_quota_identity_and_recovers_original_after_offer_and_r
     drop(backing);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal = crate::management::PrivateManagementJournal::open_existing(
-        &f.source,
-        transfer.archive_binding().unwrap(),
-    )
-    .unwrap();
-    let reopened = transfer.adopted_management(journal).await.unwrap();
+    let reopened = current_backing(&f).await;
     let fresh = session(reopened.clone(), ctx.clone());
     assert_eq!(
         serde_json::to_value(
@@ -502,7 +492,7 @@ async fn local_edit_namespace_is_exact_and_current_not_an_optional_fallback() {
     assert_eq!(detail.editing.reason, None);
     assert_eq!(before_read, invariant_rows(&f).await);
     assert_eq!(receipts(&f).await, 0);
-    let read_only = Session::new_adopted(backing.clone(), ctx.clone(), [Permission::ReadResources], Instant::now() + Duration::from_secs(60)).unwrap();
+    let read_only = Session::new_current(backing.clone(), ctx.clone(), [Permission::ReadResources], Instant::now() + Duration::from_secs(60)).unwrap();
     let read_detail = read_only.resource_detail(&ctx, ResourceDetailQuery { id: id.clone() }).await.unwrap();
     assert!(!read_detail.editing.allowed);
     assert_eq!(read_detail.editing.reason, Some(ResourceEditBlocker::ReadOnly));
@@ -564,7 +554,7 @@ async fn local_edit_queued_retirement_and_permission_checks_prevent_writes() {
     let ctx = context(&f);
     let s = session(backing.clone(), ctx.clone());
     let id = enroll(&f, "queue_create").await;
-    let readonly = Session::new_adopted(
+    let readonly = Session::new_current(
         backing.clone(),
         ctx.clone(),
         [Permission::ReadResources],

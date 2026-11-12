@@ -37,9 +37,11 @@ use matrix_sdk::{
     }
 };
 use matrix_sdk_ui::timeline::{
-    self, EmbeddedEvent, EncryptedMessage, EventSendState, EventTimelineItem, InReplyToDetails, LiveLocationState, MemberProfileChange, MsgLikeContent, MsgLikeKind, OtherMessageLike, PollState, RoomMembershipChange, TimelineDetails, TimelineEventItemId, TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem
+    self, EmbeddedEvent, EncryptedMessage, EventSendState, EventTimelineItem, InReplyToDetails, LiveLocationState, MemberProfileChange, MsgLikeContent, MsgLikeKind, OtherMessageLike, PollState, RoomMembershipChange, TimelineDetails, TimelineEventItemId, TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
-use ruma::{OwnedUserId, api::client::receipt::create_receipt::v3::ReceiptType, events::{AnyRedactionEvent, AnySyncMessageLikeEvent, AnySyncTimelineEvent, StateEventContentChange, SyncMessageLikeEvent, room::member::MembershipState}};
+use ruma::{OwnedUserId, api::client::receipt::create_receipt::v3::ReceiptType, events::{AnyRedactionEvent, AnySyncMessageLikeEvent, AnySyncTimelineEvent, StateEventContentChange, SyncMessageLikeEvent, room::member::MembershipState,
+    },
+};
 
 use matrix_sdk_ui::sync_service::State;
 use crate::{
@@ -430,6 +432,9 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card_1 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -479,6 +484,9 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {}
+                agent_run_card := mod.widgets.AgentRunCard {}
+                agent_run_card_1 := mod.widgets.AgentRunCard {}
+                agent_run_card_2 := mod.widgets.AgentRunCard {}
                 octos_action_card := mod.widgets.OctosActionCard {}
                 agent_reply := mod.widgets.AgentReply {}
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
@@ -520,8 +528,45 @@ script_mod! {
         }
     }
 
+
+    // In a desktop window your own messages sit on the right, your avatar at the edge, as on
+    // a phone; everyone else's keep the reading layout on the left.
+    let OwnMessageProfile = View {
+        width: 49.0 height: Fit flow: Down
+        align: Align{x: 0.5, y: 0.0}
+        margin: Inset{top: 4.5}
+        avatar := Avatar {width: 32, height: 32}
+        timestamp := Timestamp {margin: Inset{top: 5.9}}
+        tsp_sign_indicator := TspSignIndicator {}
+    }
+    mod.widgets.OwnMessage = mod.widgets.Message {
+        mobile_bubble: true
+        body := View {
+            width: Fill height: Fit flow: Right spacing: 10
+            padding: Inset{top: 0, bottom: 10, left: (1.5 * mod.widgets.RINX_GUTTER), right: (1.5 * mod.widgets.RINX_GUTTER)}
+            View {width: Fill height: 1}
+            content := MobileMessageContent {
+                align: Align{x: 1}
+                margin: Inset{top: 4.5}
+                username_view.visible: false
+                bubble +: {
+                    draw_bg.color: mod.widgets.RINX_OUTGOING
+                    message +: {
+                        plaintext_view +: {pt_label +: {draw_text +: {text_style: theme.font_regular {font_size: mod.widgets.MESSAGE_FONT_SIZE}}}}
+                        html_view +: {html +: {font_size: mod.widgets.MESSAGE_FONT_SIZE}}
+                    }
+                    link_preview_view +: {font_size: mod.widgets.MESSAGE_FONT_SIZE}
+                }
+            }
+            profile := OwnMessageProfile {}
+        }
+    }
+
     mod.widgets.MobileMiniAppMessage = mod.widgets.MobileMessage {}
     mod.widgets.MobileOwnMiniAppMessage = mod.widgets.MobileOwnMessage {
+        body.content.bubble.draw_bg.color: mod.widgets.RINX_SURFACE
+    }
+    mod.widgets.OwnMiniAppMessage = mod.widgets.OwnMessage {
         body.content.bubble.draw_bg.color: mod.widgets.RINX_SURFACE
     }
     mod.widgets.MiniAppMessage = mod.widgets.Message {}
@@ -577,6 +622,16 @@ script_mod! {
             profile := MobileMessageProfile {}
         }
     }
+    mod.widgets.OwnImageMessage = mod.widgets.Message {
+        mobile_media: true
+        body := View {
+            width: Fill height: Fit flow: Right spacing: 10
+            padding: Inset{top: 0, bottom: 10, left: (1.5 * mod.widgets.RINX_GUTTER), right: (1.5 * mod.widgets.RINX_GUTTER)}
+            View {width: Fill height: 1}
+            content := MobileImageContent {margin: Inset{top: 4.5} username_view.visible: false}
+            profile := OwnMessageProfile {}
+        }
+    }
 
     // The view used for a condensed message that came right after another message
     // from the same sender, and thus doesn't need to display the sender's profile again.
@@ -621,6 +676,9 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card_1 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -919,6 +977,9 @@ script_mod! {
             MiniAppMessage := mod.widgets.MiniAppMessage {}
             MobileImageMessage := mod.widgets.MobileImageMessage {}
             MobileOwnImageMessage := mod.widgets.MobileOwnImageMessage {}
+            OwnMessage := mod.widgets.OwnMessage {}
+            OwnMiniAppMessage := mod.widgets.OwnMiniAppMessage {}
+            OwnImageMessage := mod.widgets.OwnImageMessage {}
             Message := mod.widgets.Message {}
             CondensedMessage := mod.widgets.CondensedMessage {}
             ImageMessage := mod.widgets.ImageMessage {}
@@ -1618,14 +1679,13 @@ impl Widget for RoomScreen {
                     }
                 }
 
-                if matches!(action.downcast_ref::<crate::agent_access::AgentAccessAction>(), Some(crate::agent_access::AgentAccessAction::Changed)) || action.downcast_ref::<crate::agent_access::discovery::DiscoveredBots>().is_some() {
+                if matches!(action.downcast_ref::<crate::agent_access::AgentAccessAction>(), Some(crate::agent_access::AgentAccessAction::Changed)) {
                     if let Some(tl)=self.tl_state.as_mut() {tl.profile_drawn_since_last_update.clear();tl.content_drawn_since_last_update.clear();}
                     self.view.redraw(cx);
                 }
                 // Shared-execution requests and Agent questions arrive and resolve
                 // outside the timeline: re-populate so their cards appear, update and
                 // disappear in place.
-                #[cfg(feature = "agent_chat")]
                 if action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsChanged>().is_some()
                     || action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>().is_some()
                     || action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some()
@@ -4203,7 +4263,15 @@ impl RoomScreen {
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
         crate::memory_budget::release_tree(cx, &self.child_by_path(ids!(timeline.list)));
-        self.hide_timeline();
+        // A screen that is still waiting for this same conversation (its room just
+        // became known, or the backend just built its timeline) only retries here.
+        // Hiding it would retire the timeline it is about to take; the backend then
+        // builds it again and signals, and the next signal retires it again.
+        let retrying_same_conversation =
+            self.tl_state.is_none() && self.timeline_kind.as_ref() == Some(&timeline_kind);
+        if !retrying_same_conversation {
+            self.hide_timeline();
+        }
         // Opening or restoring a conversation gives the timeline the full width.
         // Information is shown only after an explicit click on its header icon.
         self.chat_info_requested = false;
@@ -4434,7 +4502,7 @@ impl RoomScreen {
         let now = current_unix_time_millis();
         let item_range = details.item_id .. details.item_id + 1;
         let pending = matches!(
-            crate::agent_chat::approval_runtime::decision(timeline_kind.room_id(), &request, now),
+            crate::agent_chat::approval_runtime::decision(timeline_kind.room_id(), &event_id, &request, now),
             ApprovalDecisionState::Pending,
         );
         if !pending {
@@ -5300,7 +5368,10 @@ fn populate_message_view(
     // Determine whether we can use a more compact UI view that hides the user's profile info
     // if the previous message (including stickers) was sent by the same user within 10 minutes.
     let mobile = !super::home_screen::effective_is_desktop(cx);
-    let use_compact_view = !mobile && match prev_event.map(|p| p.kind()) {
+    // In a desktop window your own messages sit on the right, your avatar at the edge, as on
+    // a phone. Each one carries the avatar, so none of them is condensed.
+    let own_on_right = !mobile && event_tl_item.is_own();
+    let use_compact_view = !mobile && !own_on_right && match prev_event.map(|p| p.kind()) {
         Some(TimelineItemKind::Event(prev_event_tl_item)) => match prev_event_tl_item.content() {
             TimelineItemContent::MsgLike(_msg_like_content) => {
                 let prev_msg_sender = prev_event_tl_item.sender();
@@ -5345,7 +5416,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     web_mini_app = Some(SharedMiniApp::published_article(
@@ -5360,7 +5431,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     forward_bundle = ForwardBundle::from_message(message);
@@ -5375,7 +5446,7 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMiniAppMessage) } else { id!(MobileMiniAppMessage) }
-                    } else { id!(MiniAppMessage) };
+                    } else if own_on_right { id!(OwnMiniAppMessage) } else { id!(MiniAppMessage) };
                     let (item, _) = list.item_with_existed(cx, item_id, template);
                     item.link_preview(cx, ids!(content.link_preview_view)).clear(cx);
                     match SharedMiniApp::from_message(message) {
@@ -5392,6 +5463,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5431,6 +5504,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5532,6 +5607,8 @@ fn populate_message_view(
                     has_html_body = formatted.as_ref().is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5587,6 +5664,8 @@ fn populate_message_view(
                         .is_some_and(|f| f.format == MessageFormat::Html);
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnImageMessage) } else { id!(MobileImageMessage) }
+                    } else if own_on_right {
+                        id!(OwnImageMessage)
                     } else if use_compact_view {
                         id!(CondensedImageMessage)
                     } else {
@@ -5626,6 +5705,8 @@ fn populate_message_view(
                     has_html_body = false;
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5677,6 +5758,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5707,6 +5790,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5737,6 +5822,8 @@ fn populate_message_view(
                     });
                     let template = if mobile {
                         if event_tl_item.is_own() { id!(MobileOwnMessage) } else { id!(MobileMessage) }
+                    } else if own_on_right {
+                        id!(OwnMessage)
                     } else if use_compact_view {
                         id!(CondensedMessage)
                     } else {
@@ -5846,7 +5933,9 @@ fn populate_message_view(
         MsgLikeKind::Sticker(sticker) => {
             has_html_body = false;
             let StickerEventContent { body, info, source, .. } = sticker.content();
-            let template = if use_compact_view {
+            let template = if own_on_right {
+                id!(OwnImageMessage)
+            } else if use_compact_view {
                 id!(CondensedImageMessage)
             } else {
                 id!(ImageMessage)
@@ -5886,7 +5975,9 @@ fn populate_message_view(
         // Handle messages that have been redacted (deleted).
         MsgLikeKind::Redacted => {
             has_html_body = false;
-            let template = if use_compact_view {
+            let template = if own_on_right {
+                id!(OwnMessage)
+            } else if use_compact_view {
                 id!(CondensedMessage)
             } else {
                 id!(Message)
@@ -6117,7 +6208,9 @@ fn populate_message_view(
         }
         populate_agent_question_card(cx, &item, event_tl_item, timeline_kind);
     }
-
+    if !used_cached_item {
+        populate_agent_run_cards(cx, &item, event_tl_item, timeline_kind);
+    }
 
     // If `used_cached_item` is false, we should always redraw the profile, even if profile_drawn is true.
     let skip_draw_profile =
@@ -6310,7 +6403,7 @@ fn populate_agent_chat_approval_card(
         }
         return;
     };
-    let decision = crate::agent_chat::approval_runtime::decision(room_id, request, current_unix_time_millis());
+    let decision = crate::agent_chat::approval_runtime::decision(room_id, event_id, request, current_unix_time_millis());
     if matches!(decision, ApprovalDecisionState::Pending) {
         approvals.track_live(event_id, request.expires_at_millis);
     } else {
@@ -6356,7 +6449,39 @@ fn populate_shared_permission_card(
         LocalDecision::None if !pending.can_decide() => ApprovalDecisionState::Confirmed(format!("Waiting for resource owner {} / 等待资源所有者批准", pending.owner_mxid())),
         LocalDecision::None => ApprovalDecisionState::Pending,
     };
-    card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions }));
+    card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions,
+        }),
+    );
+}
+
+fn populate_agent_run_cards(
+    cx: &mut Cx,
+    item: &WidgetRef,
+    event: &EventTimelineItem,
+    kind: &TimelineKind,
+) {
+    use super::agent_run_card::AgentRunCardWidgetRefExt;
+    let entries = event
+        .event_id()
+        .map(|id| {
+            crate::hagency::run_controls::for_event(
+                kind.room_id(),
+                id.as_str(),
+                matches!(kind, TimelineKind::MainRoom { .. }),
+            )
+        })
+        .unwrap_or_default();
+    for (index, path) in [
+        ids!(content.agent_run_card),
+        ids!(content.agent_run_card_1),
+        ids!(content.agent_run_card_2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        item.agent_run_card(cx, path)
+            .set_entry(cx, entries.get(index));
+    }
 }
 
 /// Shows the question an Agent asked during the run this message started (the
@@ -7887,7 +8012,22 @@ impl Widget for Message {
             let text = label.text();
             let mini_app = self.view.widget(cx, ids!(content.mini_app_card)).visible()
                 || self.view.widget(cx, ids!(content.forward_card)).visible();
-            let natural_width = if mini_app { max_width.min(280.0) } else if plaintext.visible() {
+            // A card under the text (a run, an approval, a question, usage, a download) needs
+            // room of its own: a bubble shrunk to a two-letter message squeezed it into a strip.
+            let card = [
+                ids!(content.agent_run_card).as_slice(),
+                ids!(content.agent_run_card_1).as_slice(),
+                ids!(content.agent_run_card_2).as_slice(),
+                ids!(content.agent_approval_card).as_slice(),
+                ids!(content.agent_question_card).as_slice(),
+                ids!(content.agent_question_card_1).as_slice(),
+                ids!(content.agent_question_card_2).as_slice(),
+                ids!(content.octos_action_card).as_slice(),
+                ids!(content.agent_reply).as_slice(),
+                ids!(content.agent_usage).as_slice(),
+                ids!(content.download_section).as_slice(),
+            ].into_iter().any(|path| self.view.widget(cx, path).visible());
+            let natural_width = if mini_app { max_width.min(280.0) } else if card { max_width } else if plaintext.visible() {
                 label.borrow().map(|label| {
                     label.draw_text.layout(cx, 0.0, 0.0, None, false, Align::default(), &text)
                         .rows.iter().map(|row| (row.width_in_lpxs * label.draw_text.font_scale) as f64)
@@ -7895,7 +8035,9 @@ impl Widget for Message {
                 }).unwrap_or(max_width)
             } else { max_width };
             let bubble_width = natural_width.clamp(44.0, max_width);
-            let has_quote = self.view.widget(cx, ids!(mobile_reply_preview)).visible();
+            // a quoted message and a thread's summary take the full width, not the bubble's
+            let has_quote = self.view.widget(cx, ids!(mobile_reply_preview)).visible()
+                || self.view.widget(cx, ids!(content.thread_root_summary)).visible();
             if let Some(mut content) = self.view.view(cx, ids!(body.content)).borrow_mut() {
                 content.walk.width = Size::Fixed(if has_quote { max_width } else { bubble_width });
             }
@@ -7944,7 +8086,25 @@ impl Message {
         #[cfg(not(feature = "agent_chat"))]
         let in_approval_card = false;
         in_approval_card
-            || self.view.widget(cx, ids!(reaction_list)).as_reaction_list().contains_button(cx, abs)
+            || self.view.widget(cx, ids!(content.agent_run_card))
+                .area()
+                .clipped_rect(cx)
+                .contains(abs)
+            || self
+                .view
+                .widget(cx, ids!(content.agent_run_card_1))
+                .area()
+                .clipped_rect(cx)
+                .contains(abs)
+            || self
+                .view
+                .widget(cx, ids!(content.agent_run_card_2))
+                .area()
+                .clipped_rect(cx)
+                .contains(abs)
+            || self
+                .view
+                .widget(cx, ids!(reaction_list)).as_reaction_list().contains_button(cx, abs)
             || self.view.widget(cx, ids!(avatar_row)).area().clipped_rect(cx).contains(abs)
             || self.view.widget(cx, ids!(content.download_section)).area().clipped_rect(cx).contains(abs)
             || (is_long_press && (

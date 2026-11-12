@@ -218,7 +218,7 @@ fn wrong_owner_scope_execution_and_lease_fail_without_granting_run() {
     );
 }
 #[test]
-fn startup_seals_execution_and_releases_unreported_usage() {
+fn startup_seals_execution_and_preserves_unreported_usage() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("local.db");
     let mut l = setup(&path);
@@ -253,9 +253,9 @@ fn startup_seals_execution_and_releases_unreported_usage() {
             10
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
 }
 #[test]
 fn capacity_rejects_before_receipt_and_safe_lease_redelivery_preserves_execution_identity() {
@@ -531,7 +531,7 @@ fn uncertain_inbox_payload_budget_and_tool_evidence_survive_sent_compaction() {
         l.confirm_matrix_delivery(OWNER, &unknown.id, &uncertain.execution_id)
             .is_err()
     );
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
     assert_eq!(
         l.account(
             &unknown.scope(),
@@ -540,7 +540,7 @@ fn uncertain_inbox_payload_budget_and_tool_evidence_survive_sent_compaction() {
             10
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
     let approvals: i64 =
         l.db.query_row("SELECT count(*) FROM approvals", [], |r| r.get(0))
@@ -737,6 +737,79 @@ fn continuity_complete_unknown_hold_and_settled_cost_survive_restart_but_reset_b
     );
 }
 #[test]
+fn continuity_reply_with_unreported_usage_survives_restart_but_an_open_reservation_fails() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("local.db");
+    let mut l = setup(&path);
+    received(&mut l);
+    let p = l.prepare_execution(OWNER, &event().id).unwrap();
+    l.confirm_execution_start(OWNER, &response(&p, true))
+        .unwrap();
+    charge_policy(&mut l);
+    l.reserve(&event().scope(), &p.execution_id, &event().id, 50, 10)
+        .unwrap();
+    // A stopped turn: the provider reported no usage and the stop notice is
+    // the reply. Seen live: the Agent refused to start after the next restart.
+    l.settle(&event().scope(), &p.execution_id, &crate::unreported_usage())
+        .unwrap();
+    l.persist_execution_reply(OWNER, &event().id, &p.execution_id, "stopped")
+        .unwrap();
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
+    assert!(
+        l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+    drop(l);
+    let l = Ledger::open(&path, OWNER).unwrap();
+    assert!(
+        l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+    // A reply beside a reservation that was never closed is still refused.
+    l.db.execute("UPDATE calls SET state='pending'", []).unwrap();
+    assert!(
+        !l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
+            .unwrap()
+    );
+}
+#[test]
+fn postpaid_history_survives_restart_and_compaction_without_forgiving_or_replaying_usage() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("local.db");
+    let mut l = setup(&path);
+    received(&mut l);
+    let p = l.prepare_execution(OWNER, &event().id).unwrap();
+    l.confirm_execution_start(OWNER, &response(&p, true)).unwrap();
+    charge_policy(&mut l);
+    l.begin_postpaid(&event().scope(), &p.execution_id, &event().id, 10).unwrap();
+    assert!(l.covers_execution_history(OWNER, "agent-a", &[history(&p)]).unwrap());
+    l.recover_agent_executions(OWNER, "agent-a").unwrap();
+    drop(l);
+    let mut l = Ledger::open(&path, OWNER).unwrap();
+    assert!(l.covers_execution_history(OWNER, "agent-a", &[history(&p)]).unwrap());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
+    assert!(!l.inbox_record(OWNER, &event().id).unwrap().dispatch.body.is_empty());
+    assert!(l.confirm_execution_start(OWNER, &response(&p, true)).unwrap().is_none());
+    // A zero reservation is not enough: the original postpaid identity must match.
+    l.db.execute("UPDATE calls SET digest='forged' WHERE id=?", [&p.execution_id]).unwrap();
+    assert!(!l.covers_execution_history(OWNER, "agent-a", &[history(&p)]).unwrap());
+    l.db.execute("UPDATE calls SET digest=? WHERE id=?", (call_digest(&event().scope(), &event().id, 0).unwrap(), &p.execution_id)).unwrap();
+    let usage = crate::Usage {
+        input: 140, output: 10, cached_input: 0, cache_write_input: None,
+        reasoning_output: 0, accounting_version: "fixture-actual-v1".into(),
+    };
+    l.settle(&event().scope(), &p.execution_id, &usage).unwrap();
+    l.settle(&event().scope(), &p.execution_id, &usage).unwrap();
+    l.recover_agent_executions(OWNER, "agent-a").unwrap();
+    drop(l);
+    let l = Ledger::open(&path, OWNER).unwrap();
+    assert!(l.inbox_record(OWNER, &event().id).unwrap().dispatch.body.is_empty());
+    assert!(l.covers_execution_history(OWNER, "agent-a", &[history(&p)]).unwrap());
+    assert_eq!(l.account(&event().scope(), crate::Layer::Room, crate::Period::Lifetime, 10).unwrap(), (150, 0));
+    l.db.execute("UPDATE accounts SET spent=0", []).unwrap();
+    assert!(!l.covers_execution_history(OWNER, "agent-a", &[history(&p)]).unwrap());
+}
+#[test]
 fn continuity_rejection_seals_only_proven_no_call_and_preserves_existing_unknown_charge() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("local.db");
@@ -765,7 +838,7 @@ fn continuity_rejection_seals_only_proven_no_call_and_preserves_existing_unknown
     l.mark_unknown(&event().scope(), &p.execution_id).unwrap();
     l.finish_local_execution(OWNER, &event().id, &p.execution_id, Finish::Rejected)
         .unwrap();
-    assert!(l.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(l.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
     assert!(
         l.covers_execution_history(OWNER, "agent-a", &[history(&p)])
             .unwrap()
@@ -1183,7 +1256,8 @@ fn no_provider_notice_is_atomic_recoverable_and_has_an_immutable_reply() {
 }
 #[test]
 fn no_provider_notice_never_overwrites_pending_unknown_or_settled_model_charges() {
-    for state in ["pending", "unknown", "settled"] {
+    for (state, postpaid) in ["pending", "unknown", "settled"]
+        .into_iter().flat_map(|state| [(state, false), (state, true)]) {
         let temp = tempfile::tempdir().unwrap();
         let mut l = setup(&temp.path().join("local.db"));
         received(&mut l);
@@ -1191,8 +1265,11 @@ fn no_provider_notice_never_overwrites_pending_unknown_or_settled_model_charges(
         l.confirm_execution_start(OWNER, &response(&p, true))
             .unwrap();
         charge_policy(&mut l);
-        l.reserve(&event().scope(), &p.execution_id, &event().id, 50, 10)
-            .unwrap();
+        if postpaid {
+            l.begin_postpaid(&event().scope(), &p.execution_id, &event().id, 10).unwrap();
+        } else {
+            l.reserve(&event().scope(), &p.execution_id, &event().id, 50, 10).unwrap();
+        }
         if state == "unknown" {
             l.mark_unknown(&event().scope(), &p.execution_id).unwrap();
         }
@@ -1230,13 +1307,7 @@ fn no_provider_notice_never_overwrites_pending_unknown_or_settled_model_charges(
                 10
             )
             .unwrap(),
-            if state == "settled" {
-                (5, 0)
-            } else if state == "unknown" {
-                (0, 0)
-            } else {
-                (0, 50)
-            }
+            if state == "settled" { (5, 0) } else { (0, if postpaid { 0 } else { 50 }) }
         );
     }
 }
@@ -1327,7 +1398,7 @@ fn no_provider_notice_keeps_original_execution_unknown_but_new_requests_can_run(
             12
         )
         .unwrap(),
-        (0, 0)
+        (0, 50)
     );
     assert_eq!(
         l.reserve(&event().scope(), "new-call", "new-dispatch", 1, 12)

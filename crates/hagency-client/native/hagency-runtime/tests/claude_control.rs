@@ -71,7 +71,7 @@ async fn running(capacity: usize, enabled: bool) -> (Driver, Peer) {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
@@ -97,6 +97,33 @@ async fn callback(driver: &mut Driver, peer: &mut Peer, id: &str, input: Value) 
     ));
 }
 
+#[tokio::test]
+async fn native_claude_many_sequential_tools_keep_replay_protection() {
+    let (mut driver, mut peer) = running(4096, true).await;
+    for n in 0..40 {
+        let id = format!("request-{n}");
+        let input = json!({"command":format!("step {n}")});
+        callback(&mut driver, &mut peer, &id, input.clone()).await;
+        let mut response = driver
+            .prepare_approval(&id, PermissionDecision::Allow)
+            .unwrap();
+        let (sent, reply) = tokio::join!(
+            driver.send_prepared_approval(&mut response),
+            read(&mut peer)
+        );
+        assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+        assert_eq!(reply["response"]["response"]["updatedInput"], input);
+    }
+    assert!(matches!(
+        event(
+            &mut driver,
+            &mut peer,
+            request("request-0", json!({"command":"changed"}))
+        )
+        .await,
+        Err(Error::Identity)
+    ));
+}
 #[tokio::test]
 async fn native_claude_permission_exact_response() {
     for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
@@ -125,7 +152,9 @@ async fn native_claude_permission_exact_response() {
         let expected = match decision {
             PermissionDecision::Allow => json!({"behavior":"allow","updatedInput":original}),
             PermissionDecision::Deny => {
-                json!({"behavior":"deny","message":"Permission denied by Hagency.","interrupt":true})
+                // The model is told and the turn goes on: the CLI aborts a
+                // turn whose refusal says `interrupt: true`.
+                json!({"behavior":"deny","message":hagency_runtime::claude::session::DENIED,"interrupt":false})
             }
         };
         assert_eq!(
@@ -179,6 +208,73 @@ async fn native_claude_permission_exact_response() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn native_claude_supervised_turn_survives_silence_without_renewing_approval() {
+    let (mut driver, mut peer) = running(4096, false).await;
+    driver.supervise_turn().unwrap();
+    driver.enable_approval_control(policy()).unwrap();
+    let started = tokio::time::Instant::now();
+    let (received, ()) = tokio::join!(driver.next_message(), async {
+        tokio::time::sleep(Duration::from_secs(1801)).await;
+        peer.output.write_all(&frame(notice())).await.unwrap();
+    });
+    assert!(matches!(received.unwrap(), Message::Event { .. }));
+    assert_eq!(started.elapsed(), Duration::from_secs(1801));
+    callback(
+        &mut driver,
+        &mut peer,
+        "fixed-owner-wait",
+        json!({"command":"write"}),
+    )
+    .await;
+    let deadline = driver.approval_deadline("fixed-owner-wait").unwrap();
+    assert_eq!(
+        driver.supervise_turn(),
+        Err(Error::State),
+        "cannot extend a pending grant"
+    );
+    assert_eq!(
+        driver.approval_deadline("fixed-owner-wait").unwrap(),
+        deadline
+    );
+    tokio::time::advance(Duration::from_millis(1001)).await;
+    assert!(matches!(
+        driver.prepare_approval("fixed-owner-wait", PermissionDecision::Allow),
+        Err(Error::Timeout)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_supervised_wait_keeps_partial_frame_and_host_stop() {
+    for partial in [false, true] {
+        let (mut driver, mut peer) = running(4096, false).await;
+        driver.supervise_turn().unwrap();
+        driver.enable_approval_control(policy()).unwrap();
+        let source = driver.observation_source().unwrap();
+        tokio::time::advance(Duration::from_secs(1801)).await;
+        if partial {
+            peer.output.write_all(b"{").await.unwrap();
+        }
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(20), driver.next_message()).await;
+        if partial {
+            assert!(matches!(
+                result,
+                Ok(Err(Error::Protocol(
+                    hagency_runtime::claude::Error::Timeout
+                )))
+            ));
+            assert_eq!(started.elapsed(), Duration::from_secs(10));
+        } else {
+            assert!(result.is_err());
+            assert_eq!(driver.termination().unwrap().cause, Error::Cancelled);
+        }
+        assert!(source.is_retired());
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert!(peer.output.write_all(b"no replay").await.is_err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn native_claude_permission_control_deadlines() {
     let (mut driver, mut peer) = running(4096, true).await;
     callback(&mut driver, &mut peer, "pending", json!({})).await;
@@ -220,12 +316,18 @@ async fn native_claude_permission_control_deadlines() {
     ));
 
     let (mut driver, mut peer) = running(4096, true).await;
-    // Both messages are returned by one actual pipe read. Consuming the second
-    // later must not replace its original receive timestamp with "now".
+    // Buffered receipt does not spend an owner wait before presentation.
+    // Once presented, its deadline remains fixed even while other events flow.
     let mut bytes = frame(notice());
     bytes.extend(frame(request("delayed", json!({}))));
     peer.output.write_all(&bytes).await.unwrap();
     driver.next_message().await.unwrap();
+    tokio::time::advance(Duration::from_millis(1001)).await;
+    assert!(matches!(
+        driver.next_message().await.unwrap(),
+        Message::Permission { .. }
+    ));
+    driver.approval_deadline("delayed").unwrap();
     tokio::time::advance(Duration::from_millis(1001)).await;
     assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
 
@@ -486,7 +588,7 @@ async fn native_claude_permission_answer_before_flush_completes_the_write() {
         let value = read(&mut peer).await;
         peer.output
             .write_all(&frame(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":value["request_id"],"response":{}}})))
+            "subtype":"success","request_id":value["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
@@ -536,4 +638,335 @@ async fn native_claude_permission_answer_before_flush_completes_the_write() {
         PreparedUpdate::WriteAccepted(progress) if progress.flushed
     ));
     assert!(driver.termination().is_none());
+}
+
+fn question_input() -> Value {
+    json!({"questions": (0..4).map(|i| json!({
+        "question":format!("Question {i}?"), "header":format!("Q{i}"), "multiSelect":i == 0,
+        "options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]
+    })).collect::<Vec<_>>(), "metadata":{"source":"native"}, "answers":{"injected":"ignored"}})
+}
+async fn question(driver: &mut Driver, peer: &mut Peer, input: Value) {
+    let mut value = request("question", input);
+    value["request"]["tool_name"] = json!("AskUserQuestion");
+    event(driver, peer, value).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_question_four_questions_multiselect_and_text_return_original_input() {
+    use hagency_runtime::questions::Answer;
+    let (mut driver, mut peer) = running(8192, true).await;
+    let input = question_input();
+    question(&mut driver, &mut peer, input.clone()).await;
+    let data = driver.question("question").unwrap();
+    assert_eq!(data.len(), 4);
+    assert!(data[0].multi_select && data[3].accepts_text());
+    let answers = [
+        (
+            "q0".into(),
+            Answer::Options(vec!["Two".into(), "One".into()]),
+        ),
+        ("q1".into(), Answer::Option("One".into())),
+        ("q2".into(), Answer::Text("Custom answer".into())),
+        ("q3".into(), Answer::Option("Two".into())),
+    ]
+    .into();
+    let mut response = driver.prepare_question("question", &answers).unwrap();
+    let (sent, value) = tokio::join!(
+        driver.send_prepared_approval(&mut response),
+        read(&mut peer)
+    );
+    assert!(matches!(sent, Ok(PreparedUpdate::WriteAccepted(_))));
+    let native = &value["response"]["response"];
+    assert_eq!(native["behavior"], "allow");
+    assert_eq!(native["updatedInput"]["questions"], input["questions"]);
+    assert_eq!(native["updatedInput"]["metadata"], input["metadata"]);
+    assert_eq!(
+        native["updatedInput"]["answers"],
+        json!({"Question 0?":"Two, One","Question 1?":"One","Question 2?":"Custom answer","Question 3?":"Two"})
+    );
+    assert!(native.get("updatedPermissions").is_none());
+    assert!(
+        driver.prepare_question("question", &answers).is_err(),
+        "cannot replay a consumed callback"
+    );
+}
+
+#[tokio::test]
+async fn question_channel_cannot_approve_tools_or_encode_invalid_native_answers() {
+    use hagency_runtime::questions::Answer;
+    let (mut driver, mut peer) = running(8192, true).await;
+    callback(&mut driver, &mut peer, "tool", question_input()).await;
+    assert!(driver.question("tool").is_err());
+    assert!(
+        driver
+            .prepare_question("tool", &Default::default())
+            .is_err()
+    );
+    for answers in [
+        [(
+            "q1".into(),
+            Answer::Options(vec!["One".into(), "Two".into()]),
+        )]
+        .into(),
+        [(
+            "q0".into(),
+            Answer::Options(vec!["One".into(), "One".into()]),
+        )]
+        .into(),
+        [("q0".into(), Answer::Option("Not an option".into()))].into(),
+        [("foreign".into(), Answer::Text("Injected".into()))].into(),
+    ] {
+        let (mut driver, mut peer) = running(8192, true).await;
+        question(&mut driver, &mut peer, question_input()).await;
+        assert!(driver.prepare_question("question", &answers).is_err());
+    }
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    assert!(
+        driver
+            .prepare_approval("question", PermissionDecision::Allow)
+            .is_err(),
+        "a Boolean tool grant cannot invent an answer"
+    );
+}
+
+#[tokio::test]
+async fn unanswered_question_continues_without_interrupt_and_cancelled_question_cannot_send() {
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    let mut response = driver
+        .prepare_question("question", &Default::default())
+        .unwrap();
+    let (sent, value) = tokio::join!(
+        driver.send_prepared_approval(&mut response),
+        read(&mut peer)
+    );
+    assert!(matches!(sent, Ok(PreparedUpdate::WriteAccepted(_))));
+    assert_eq!(value["response"]["response"]["behavior"], "deny");
+    assert_eq!(value["response"]["response"]["interrupt"], false);
+    let (mut driver, mut peer) = running(8192, true).await;
+    question(&mut driver, &mut peer, question_input()).await;
+    let mut response = driver
+        .prepare_question("question", &Default::default())
+        .unwrap();
+    event(&mut driver, &mut peer, cancel("question"))
+        .await
+        .unwrap();
+    assert!(driver.send_prepared_approval(&mut response).await.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_permission_wait_starts_when_presented_without_extending_first() {
+    let (mut driver, mut peer) = running(4096, false).await;
+    driver.supervise_turn().unwrap();
+    driver.enable_approval_control(policy()).unwrap();
+    callback(&mut driver, &mut peer, "first", json!({"command":"one"})).await;
+    let first = driver.approval_deadline("first").unwrap();
+    tokio::time::advance(Duration::from_millis(800)).await;
+    callback(&mut driver, &mut peer, "queued", json!({"command":"two"})).await;
+    assert_eq!(driver.approval_deadline("first").unwrap(), first);
+    let mut answer = driver
+        .prepare_approval("first", PermissionDecision::Deny)
+        .unwrap();
+    let (sent, _) = tokio::join!(driver.send_prepared_approval(&mut answer), read(&mut peer));
+    assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+    tokio::time::advance(Duration::from_secs(10)).await;
+    event(&mut driver, &mut peer, notice()).await.unwrap();
+    let shown = tokio::time::Instant::now();
+    let second = driver.approval_deadline("queued").unwrap();
+    assert_eq!(second, shown + Duration::from_secs(1));
+    tokio::time::advance(Duration::from_millis(900)).await;
+    let mut answer = driver
+        .prepare_approval("queued", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, _) = tokio::join!(driver.send_prepared_approval(&mut answer), read(&mut peer));
+    assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+    event(&mut driver, &mut peer, result()).await.unwrap();
+    assert_eq!(driver.phase(), Phase::ResultObserved);
+}
+
+fn unknown_request(id: &str) -> Vec<u8> {
+    frame(json!({"type":"control_request","request_id":id,
+        "request":{"subtype":"future_dialog","detail":{"private":"sentinel"}}}))
+}
+fn assert_refusal(reply: &Value, id: &str) {
+    assert_eq!(reply["type"], "control_response");
+    assert_eq!(reply["response"]["subtype"], "error");
+    assert_eq!(reply["response"]["request_id"], id);
+    assert!(reply["response"]["error"].is_string());
+    assert!(reply["response"].get("response").is_none());
+}
+/// A frame that was split or never finished shows up as a peer that waits
+/// forever for the rest of its line: fail instead of hanging.
+async fn whole_frames<T>(exchange: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), exchange)
+        .await
+        .expect("every host frame is written whole and in order")
+}
+async fn send_to_completion(
+    driver: &mut Driver,
+    prepared: &mut hagency_runtime::claude::session::PreparedApproval,
+) -> Result<usize, Error> {
+    let mut messages = 0;
+    loop {
+        match driver.send_prepared_approval(prepared).await? {
+            PreparedUpdate::WriteAccepted(_) => return Ok(messages),
+            PreparedUpdate::Message(_) => messages += 1,
+        }
+    }
+}
+
+/// F8: an unknown native request that arrives while an approval reply is
+/// partly written is refused only after that reply, as its own frame.
+#[tokio::test]
+async fn native_claude_unknown_request_during_a_partial_approval_reply_keeps_both_frames_whole() {
+    let (mut driver, mut peer) = running(128, true).await;
+    let input = json!({"command":"x".repeat(4000)});
+    callback(&mut driver, &mut peer, "partial", input.clone()).await;
+    let mut prepared = driver
+        .prepare_approval("partial", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, line) = whole_frames(async {
+        tokio::join!(send_to_completion(&mut driver, &mut prepared), async {
+            // Part of the approval reply has left before the unknown request arrives.
+            let mut line = vec![0; 8];
+            peer.input.read_exact(&mut line).await.unwrap();
+            // The request is followed by half of another frame: that fences
+            // the approval reply, and must not let the refusal in instead.
+            let mut bytes = unknown_request("future-1");
+            let notice = frame(notice());
+            bytes.extend(&notice[..notice.len() - 1]);
+            peer.output.write_all(&bytes).await.unwrap();
+            let mut chunk = [0; 256];
+            while let Ok(Ok(read)) = tokio::time::timeout(
+                Duration::from_millis(50),
+                peer.input.read(&mut chunk),
+            )
+            .await
+            {
+                line.extend(&chunk[..read]);
+            }
+            peer.output.write_all(b"\n").await.unwrap();
+            let mut rest = Vec::new();
+            peer.input.read_until(b'\n', &mut rest).await.unwrap();
+            line.extend(rest);
+            line
+        })
+    })
+    .await;
+    assert!(
+        sent.is_ok(),
+        "an unknown control request ended the session during an approval reply: {:?}",
+        sent.err()
+    );
+    // The unknown request was never a host message: only the notice was.
+    assert_eq!(sent.unwrap(), 1);
+    let approval: Value = serde_json::from_slice(&line).expect("one whole approval frame");
+    assert_eq!(approval["response"]["request_id"], "partial");
+    assert_eq!(
+        approval["response"]["response"],
+        json!({"behavior":"allow","updatedInput":input})
+    );
+    // A refusal is never reported as a host write.
+    assert!(driver.write_progress().is_none());
+    let (message, reply) = whole_frames(async {
+        tokio::join!(driver.next_message(), async {
+            let reply = read(&mut peer).await;
+            peer.output.write_all(&frame(notice())).await.unwrap();
+            reply
+        })
+    })
+    .await;
+    message.unwrap();
+    assert_refusal(&reply, "future-1");
+    assert!(driver.termination().is_none());
+}
+
+/// F8: a refusal that is partly written is finished before a later approval
+/// reply starts, and it neither blocks nor counts as that host write.
+#[tokio::test]
+async fn native_claude_partial_refusal_is_finished_before_a_later_approval_reply() {
+    let (mut driver, mut peer) = running(64, true).await;
+    let input = json!({"command":"exact"});
+    // With this identity the refusal is longer than everything the 64-byte
+    // pipe and the peer's one small read can take before the next request.
+    let id = format!("future-{}", "2".repeat(200));
+    let (message, prefix) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&unknown_request(&id)).await.unwrap();
+        // Only part of the refusal has left.
+        let mut prefix = vec![0; 8];
+        if peer.input.read_exact(&mut prefix).await.is_err() {
+            return None;
+        }
+        let _ = peer
+            .output
+            .write_all(&frame(request("after", input.clone())))
+            .await;
+        Some(prefix)
+    });
+    assert!(
+        matches!(message, Ok(Message::Permission { .. })),
+        "an unknown control request ended the turn: {:?}",
+        message.err()
+    );
+    let mut first = prefix.expect("the refusal was started");
+    assert!(driver.write_progress().is_none());
+    let mut prepared = driver
+        .prepare_approval("after", PermissionDecision::Allow)
+        .unwrap();
+    let (sent, second) = whole_frames(async {
+        tokio::join!(send_to_completion(&mut driver, &mut prepared), async {
+            let mut rest = Vec::new();
+            peer.input.read_until(b'\n', &mut rest).await.unwrap();
+            first.extend(rest);
+            read(&mut peer).await
+        })
+    })
+    .await;
+    assert_eq!(sent.unwrap(), 0);
+    assert!(first.len() > 8 + 2 * 64, "the refusal was still being written");
+    let refusal: Value = serde_json::from_slice(&first).expect("one whole refusal frame");
+    assert_refusal(&refusal, &id);
+    assert_eq!(second["response"]["request_id"], "after");
+    assert_eq!(
+        second["response"]["response"],
+        json!({"behavior":"allow","updatedInput":input})
+    );
+    assert!(driver.termination().is_none());
+}
+
+/// F8: a permission request whose envelope carries keys this host does not
+/// read is presented and answered from exactly its original tool and input.
+#[tokio::test]
+async fn native_claude_permission_with_extra_envelope_keys_gets_its_exact_response() {
+    for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
+        let (mut driver, mut peer) = running(4096, true).await;
+        let input = json!({"command":"exact"});
+        let mut value = request("extra", input.clone());
+        value["uuid"] = json!("u-1");
+        value["session_id"] = json!("session-one");
+        let admitted = event(&mut driver, &mut peer, value).await;
+        assert!(
+            matches!(&admitted, Ok(Message::Permission { request_id, tool_name, .. })
+                if request_id == "extra" && tool_name == "Bash"),
+            "extra keys on a permission request ended the session: {:?}",
+            admitted.err()
+        );
+        let mut prepared = driver.prepare_approval("extra", decision).unwrap();
+        let (sent, reply) = tokio::join!(
+            driver.send_prepared_approval(&mut prepared),
+            read(&mut peer)
+        );
+        assert!(matches!(sent.unwrap(), PreparedUpdate::WriteAccepted(_)));
+        assert_eq!(reply["response"]["request_id"], "extra");
+        if decision == PermissionDecision::Allow {
+            assert_eq!(
+                reply["response"]["response"],
+                json!({"behavior":"allow","updatedInput":input})
+            );
+        } else {
+            assert_eq!(reply["response"]["response"]["behavior"], "deny");
+        }
+    }
 }

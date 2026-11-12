@@ -1,5 +1,5 @@
 //! Opt-in integration test: only explicitly supplied @robrix_ux_ fixture users.
-//! ROBRIX_MOMENTS_FIXTURE and ROBRIX_DATA_DIR must point to isolated test data.
+//! ROBRIX_MOMENTS_FIXTURE and HAGENCY_DESKTOP_DATA_DIR must point to isolated test data.
 use super::{
     backend::{Service, Pending, Feed},
     model::{self, Index, Entry},
@@ -21,7 +21,7 @@ async fn client(
         id.starts_with("@robrix_ux_"),
         "Only isolated fixture accounts are allowed"
     );
-    let root = PathBuf::from(std::env::var("ROBRIX_DATA_DIR")?)
+    let root = PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR")?)
         .join("sdk-devices")
         .join(device);
     let client = crate::sliding_sync::base_client_builder(&root, "moments-fixture-store")
@@ -135,7 +135,7 @@ async fn palpo_moments_recipient_encryption_and_native_seed() -> Result<()> {
     let fixture: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("ROBRIX_MOMENTS_FIXTURE")?)?)?;
     ensure!(
-        std::env::var("ROBRIX_DATA_DIR")?.contains("moments"),
+        std::env::var("HAGENCY_DESKTOP_DATA_DIR")?.contains("moments"),
         "An isolated moments test directory is required"
     );
     let mut checks = vec![];
@@ -195,7 +195,7 @@ async fn palpo_moments_recipient_encryption_and_native_seed() -> Result<()> {
         let edit=author_room.send_raw("m.room.message",json!({"msgtype":"m.text","body":"* edited","m.new_content":edited,"m.relates_to":{"rel_type":"m.replace","event_id":first}})).await?.response.event_id;
         decrypted(&bob,&room,&edit).await?;
         ensure!(index(&bob,&room).await?.posts(&room,&alice.owner).iter().any(|p|p.id==first&&p.edited));checks.push("same_author_edit_retains_root_identity");
-        let photo=PathBuf::from(std::env::var("ROBRIX_DATA_DIR")?).join("fixture-photo.png");
+        let photo=PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR")?).join("fixture-photo.png");
         if !photo.exists(){std::fs::write(&photo,include_bytes!("../../tools/wechat-ux/fixtures/moments-photo.png"))?;}
         let (album,_)=post(&alice,&room,"Weekend album · 周末相册",vec![photo.clone(),photo.clone()]).await?;
         let media_event=decrypted(&bob,&room,&album).await?;
@@ -253,7 +253,7 @@ async fn palpo_moments_recipient_encryption_and_native_seed() -> Result<()> {
         decrypted(&bob,&room,&native).await?;
         let bob_room=bob.ensure_timeline().await?;wait_room(&bob,&bob_room,RoomState::Joined).await?;
         if !bob.validate(&bob_room).await?.members.iter().any(|m|m.id==alice.owner){bob.membership(&bob_room,&alice.owner,true).await?;}
-        super::backend::write_private(&PathBuf::from(std::env::var("ROBRIX_DATA_DIR")?).join("live-result.json"),&json!({"passed":true,"checks":checks,"removed_viewer_can_fetch_ciphertext":removed_viewer_can_fetch_ciphertext,"timeline":room,"friend_timeline":bob_room,"file_transfer":transfer,"native_event":native,"album":album}))?;
+        super::backend::write_private(&PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR")?).join("live-result.json"),&json!({"passed":true,"checks":checks,"removed_viewer_can_fetch_ciphertext":removed_viewer_can_fetch_ciphertext,"timeline":room,"friend_timeline":bob_room,"file_transfer":transfer,"native_event":native,"album":album}))?;
         Ok::<(),anyhow::Error>(())
     }.await;
     for task in tasks {

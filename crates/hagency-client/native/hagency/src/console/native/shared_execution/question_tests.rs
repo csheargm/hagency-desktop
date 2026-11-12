@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 const PROMPT: &str = "Private encrypted request that makes the Agent ask";
 const MEMBER: &str = "@alice:test";
 const STRANGER: &str = "@mallory:test";
+const OTHER_MEMBER: &str = "@bob:test";
 /// Another Agent in the room, joined like any member.
 const OTHER_AGENT: &str = "@_hagency_agt_other:test";
 
@@ -41,6 +42,7 @@ async fn prepared(lane: &str) -> (Fixture, SharedExecutionTransport, SharedWorkI
     let work = {
         let mut s = f.state.lock().unwrap();
         let w = s.shared.work.as_mut().unwrap();
+        w.requester_mxid = MEMBER.into();
         w.encrypted = true;
         w.body = w.event_id.clone();
         w.body_digest = format!("{:x}", Sha256::digest(w.body.as_bytes()));
@@ -157,7 +159,7 @@ async fn native_shared_question_member_answer_resumes_the_run_with_exactly_that_
     for lane in lanes() {
         let (f, t, work) = prepared(lane).await;
         let (t, sent) = t.with_crypto_fixture(Some(PROMPT.into()));
-        let (t, room) = t.with_question_fixture(&[MEMBER, OTHER_AGENT], Duration::from_secs(60));
+        let (t, room) = t.with_question_fixture(&[MEMBER, OTHER_AGENT, OTHER_MEMBER], Duration::from_secs(60));
         let _ = std::fs::remove_file(f._root.path().join("shared-probe/thread-request.json"));
         start(&f, &t, lane, "text-question").await;
         let (card_event, card, content) = card(&room, lane).await;
@@ -187,6 +189,8 @@ async fn native_shared_question_member_answer_resumes_the_run_with_exactly_that_
             STRANGER,
             card.answer_content(&card_event, &postgres).unwrap(),
         );
+        assert_eq!(card.responders, vec![MEMBER]);
+        room.answer(OTHER_MEMBER, card.answer_content(&card_event, &postgres).unwrap());
         // Another Agent in the room never answers, though it is a member.
         room.answer(
             OTHER_AGENT,
@@ -194,7 +198,7 @@ async fn native_shared_question_member_answer_resumes_the_run_with_exactly_that_
         );
         room.answer(
             MEMBER,
-            json!({"version":1,"cardId":card.id,"answers":{"db":{"option":"MongoDB"}},
+            json!({"version":card.version,"cardId":card.id,"answers":{"db":{"option":"MongoDB"}},
             "m.relates_to":{"rel_type":"m.reference","event_id":card_event}}),
         );
         tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -443,11 +447,12 @@ async fn native_shared_question_device_opening_comes_out_of_the_same_wait() {
 #[tokio::test]
 #[ignore = "requires explicit offline supervised runtime probe"]
 async fn native_shared_question_plaintext_room_uses_only_an_open_device() {
-    // A plaintext room never needed the Agent's device: no device login starts
-    // in the middle of a turn for it. An Agent whose device is open anyway
-    // still asks there.
+    // Keep the base fixture's required V3 history adapter. The question path
+    // must not open a device for a plaintext room; it can ask only when the
+    // question device is already open.
     for open in [false, true] {
         let (f, t, _) = Box::pin(fixture()).await;
+        let requester = f.state.lock().unwrap().shared.work.as_ref().unwrap().requester_mxid.clone();
         assert!(
             !f.state
                 .lock()
@@ -458,15 +463,15 @@ async fn native_shared_question_plaintext_room_uses_only_an_open_device() {
                 .unwrap()
                 .encrypted
         );
-        let (t, _sent) = t.with_crypto_fixture(None);
-        let (t, room) = t.with_question_fixture(&[MEMBER], Duration::from_secs(60));
+        let (t, room) = t.with_question_fixture(&[&requester], Duration::from_secs(60));
         room.device_open
             .store(open, std::sync::atomic::Ordering::SeqCst);
         start(&f, &t, "original", "text-question").await;
         if open {
             let (card_event, card, _) = card(&room, "plaintext").await;
+            assert_eq!(card.responders, vec![requester.clone()]);
             let pick = BTreeMap::from([("db".to_owned(), AnswerValue::Option("SQLite".into()))]);
-            room.answer(MEMBER, card.answer_content(&card_event, &pick).unwrap());
+            room.answer(&requester, card.answer_content(&card_event, &pick).unwrap());
         }
         stopped_lane(&f, "original", Duration::from_secs(30)).await;
         if open {

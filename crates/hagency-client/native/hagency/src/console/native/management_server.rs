@@ -822,6 +822,14 @@ impl NativeManagement {
             .await
             .map_err(|_| failure(401, "owner_authorization_required"))?;
         let pin = DeviceIdentity::from(&device);
+        if matches!(
+            &command,
+            ManagementCommand::Contribute { .. } | ManagementCommand::Reoffer { .. }
+        ) {
+            // Nothing of the offer has been sent or recorded yet, so a failed
+            // declaration is reported as itself.
+            self.declare_ledger_before_offer(&device).await?;
+        }
         // Provider observation can outlive the original finite session. Refresh
         // only the local capability, retaining the exact owner/package/device
         // context and the command's original permission before sending.

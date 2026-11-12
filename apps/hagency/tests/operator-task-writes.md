@@ -5,10 +5,9 @@ mini app. It does not dispatch model work, change shared-agent assignments, or
 write Matrix project records. The local board and Matrix Projects remain
 separate views.
 
-The writer is available only on the canonical store whose original active v1
-adoption proves empty task history under the reviewed source contract. Existing
-untransferred legacy tasks remain readable. Populated task transfer and legacy
-writes are not implemented by this checkpoint.
+The writer uses the current canonical profile and its initialization proof.
+An absent or invalid proof denies task writes. Each operation still checks the
+current package, SDK identity and task-specific permission.
 
 ## Closed services and custody
 

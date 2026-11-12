@@ -1,14 +1,10 @@
-//! Actual offline processes read the rendered input; answers depend on the
-//! saved same-thread delivered pair rather than two canned independent replies.
+//! Original offline native processes retain their own sessions. Every new
+//! input contains only the current request; receipts remain independently bound.
 use super::*;
-#[derive(Default)]
 pub(super) struct State {
     pub active: bool,
-    /// Advertise `shared-thread-context-v2`; records stay version 1 until a
-    /// freeze request names a budget, exactly like the server.
-    pub v2: bool,
-    /// Every `budget` object received on a freeze request, in order.
-    budgets: Vec<Value>,
+    pub v3: bool,
+    plain_mode: bool,
     works: BTreeMap<String, SharedWorkItem>,
     contexts: BTreeMap<String, SharedContextRecord>,
     deliveries: BTreeMap<String, SharedDeliveryRecord>,
@@ -16,6 +12,12 @@ pub(super) struct State {
     lose_start: bool,
     wrong_thread: bool,
     rich: bool,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self { active: true, v3: true, plain_mode: false, works: BTreeMap::new(), contexts: BTreeMap::new(),
+            deliveries: BTreeMap::new(), starts: 0, lose_start: false, wrong_thread: false, rich: false }
+    }
 }
 fn hash_text(v: &str) -> String {
     format!("{:x}", Sha256::digest(v.as_bytes()))
@@ -40,83 +42,31 @@ pub(super) fn management(
         s.shared.contexts.works.insert(w.id.clone(), w.clone());
         let c = s.shared.contexts.contexts.get(&w.id);
         return Some(Some(
-            json!({"mode":"thread_context_v1","contextDigest":c.map(|c|&c.context_digest),"inputDigest":c.map(|c|&c.input_digest),"observedAtMs":at}),
+            json!({"mode":if s.shared.contexts.plain_mode {"plain_text_v1"} else {"thread_context_v1"},"contextDigest":c.map(|c|&c.context_digest),"inputDigest":c.map(|c|&c.input_digest),"observedAtMs":at}),
         ));
     }
     if path.ends_with("/context") || path.ends_with("/context/recover") {
         if !s.shared.contexts.contexts.contains_key(&w.id) {
-            let mut history = Vec::new();
-            for (id, d) in &s.shared.contexts.deliveries {
-                let old = &s.shared.contexts.works[id];
-                if old.assignment_id == w.assignment_id
-                    && old.room_id == w.room_id
-                    && old.thread_root == w.thread_root
-                    && (old.created_at_ms, &old.id) < (w.created_at_ms, &w.id)
-                {
-                    history.push(SharedContextPair {
-                        work_id: old.id.clone(),
-                        work_digest: digest(old).unwrap(),
-                        event_id: old.event_id.clone(),
-                        requester_mxid: old.requester_mxid.clone(),
-                        received_at_ms: old.created_at_ms,
-                        user_body: old.body.clone(),
-                        user_body_digest: old.body_digest.clone(),
-                        delivery: d.receipt.clone(),
-                        delivery_digest: d.receipt_digest.clone(),
-                        edited_event_id: None,
-                        edited_body: None,
-                        edited_body_digest: None,
-                    });
-                }
-            }
-            history.sort_by(|a, b| {
-                (a.received_at_ms, &a.work_id).cmp(&(b.received_at_ms, &b.work_id))
-            });
+            assert!(s.shared.contexts.v3);
+            assert_eq!(body["version"], 3);
+            assert!(body.get("budget").is_none());
+            #[cfg(feature = "shared-intake")]
             let binding = demands::context_binding(s);
-            let budget = body.get("budget").cloned();
-            let total = history.len() as u64;
-            let mut c = SharedThreadContext {
-                version: 1,
-                input_profile: "shared_thread_text_v1".into(),
-                work_id: w.id.clone(),
-                work_digest: wh,
+            #[cfg(not(feature = "shared-intake"))]
+            let binding: Option<SharedDemandBinding> = None;
+            let c = SharedThreadContext {
+                version: 3, input_profile: INPUT_PROFILE_V3.into(),
+                work_id: w.id.clone(), work_digest: wh,
                 assignment_id: w.assignment_id.clone(),
                 runtime_command_digest: w.runtime_command_digest.clone(),
                 demand_binding_digest: binding.as_ref().map(|b| digest(b).unwrap()),
                 control_revision: binding.map(|b| b.control_revision),
-                room_id: w.room_id.clone(),
-                thread_root: w.thread_root.clone(),
-                event_id: w.event_id.clone(),
-                received_at_ms: w.created_at_ms,
+                room_id: w.room_id.clone(), thread_root: w.thread_root.clone(),
+                event_id: w.event_id.clone(), received_at_ms: w.created_at_ms,
                 context_ordinal: s.shared.contexts.contexts.len() as u64 + 1,
-                coverage: "prior_delivered_pairs_only".into(),
-                omitted_earlier: false,
-                budget: None,
-                history,
+                coverage: COVERAGE_NATIVE_HISTORY.into(), omitted_earlier: true,
+                history: vec![],
             };
-            if let Some(b) = budget {
-                // Mirror the server: an observed window inside the accepted
-                // range sets the budget, anything else budgets as default.
-                assert_eq!(b["version"], 2);
-                let (window, source) = budget_window(b["modelContextWindow"].as_u64());
-                let bytes = history_budget_bytes(window);
-                c.version = 2;
-                c.input_profile = INPUT_PROFILE_V2.into();
-                if c.history.len() > MAX_HISTORY_PAIRS_V2 {
-                    let drop = c.history.len() - MAX_HISTORY_PAIRS_V2;
-                    c.history.drain(..drop); // keep the newest pairs, like the server
-                }
-                c.budget = Some(SharedContextBudget {
-                    model_context_window: window,
-                    window_source: source.into(),
-                    history_budget_bytes: bytes,
-                    prior_pairs_total: total,
-                    prior_pairs_redacted: 0,
-                    included_pairs: c.history.len() as u64,
-                });
-                c.omitted_earlier = total > c.history.len() as u64;
-                s.shared.contexts.budgets.push(b);
-            }
             let record = SharedContextRecord {
                 context_digest: digest(&c).unwrap(),
                 input_digest: hash_text(&render_context(&c, &w).unwrap()),
@@ -138,11 +88,14 @@ pub(super) fn management(
         assert_eq!(body["inputDigest"], c.input_digest);
         s.shared.starts += 1;
         s.shared.contexts.starts += 1;
-        if std::mem::take(&mut s.shared.contexts.lose_start) {
+        let newly_started = s.shared.work_starts.insert(w.id.clone());
+        if std::mem::take(&mut s.shared.contexts.lose_start)
+            || std::mem::take(&mut s.shared.lose_start)
+        {
             return Some(None);
         }
         return Some(Some(
-            json!({"start":{"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":s.shared.starts==1},"contextDigest":c.context_digest,"inputDigest":c.input_digest,"observedAtMs":at}),
+            json!({"start":{"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":!s.shared.false_start && newly_started},"contextDigest":c.context_digest,"inputDigest":c.input_digest,"observedAtMs":at}),
         ));
     }
     let receipt = s
@@ -152,7 +105,11 @@ pub(super) fn management(
         .filter(|r| r.work_id == w.id)
         .max_by_key(|r| r.ledger_revision)
         .unwrap();
-    let text = receipt.body.clone().unwrap();
+    let Some(text) = receipt.body.clone() else {
+        // A missing native idle/terminal receipt has no outgoing Matrix reply.
+        // Preserve unknown accounting without inventing delivery evidence.
+        return Some(Some(json!({"state":null,"delivery":null,"observedAtMs":at})));
+    };
     let mut content = json!({"msgtype":"m.text","body":text,"m.relates_to":{"rel_type":"m.thread","event_id":w.thread_root,"is_falling_back":true,"m.in_reply_to":{"event_id":w.thread_root}}});
     let formatted_body = s.shared.contexts.rich.then(|| "<p>HTML receipt evidence only</p>".to_string());
     if let Some(body) = &formatted_body {
@@ -189,6 +146,7 @@ pub(super) fn management(
         json!({"state":"sent","delivery":record,"observedAtMs":at}),
     ))
 }
+#[cfg(feature = "shared-intake")]
 fn offer(f: &Fixture, n: u64, thread: &str, body: &str) {
     demands::offer(f, n);
     let mut s = f.state.lock().unwrap();
@@ -199,6 +157,7 @@ fn offer(f: &Fixture, n: u64, thread: &str, body: &str) {
     w.body_digest = hash_text(body);
 }
 #[tokio::test]
+#[cfg(feature = "shared-intake")]
 #[ignore = "requires explicit offline context probe"]
 async fn native_shared_context_room_workspaces_follow_actual_work_and_survive_successor_processes() {
     let (f, t, command) = demands::fixture_budget(2000).await;
@@ -224,91 +183,41 @@ async fn native_shared_context_room_workspaces_follow_actual_work_and_survive_su
 }
 
 #[tokio::test]
+#[cfg(feature = "shared-intake")]
 #[ignore = "requires explicit offline context probe"]
 async fn native_shared_context_actual_successive_turns_remember_only_same_thread() {
     let (f, t, _) = demands::fixture_budget(2000).await;
-    for (n, thread, body) in [
-        (1, "$thread", "Remember the name 雪."),
-        (2, "$thread", "What was the name?"),
-        (3, "$other", "What was the name?"),
-    ] {
+    f.state.lock().unwrap().shared.contexts.rich = true;
+    for (n, thread, body) in [(1, "$thread", "Remember the name 雪."),
+        (2, "$thread", "What was the name?"), (3, "$other", "What was the name?")] {
         offer(&f, n, thread, body);
-        t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-context")))
-            .await
-            .unwrap();
+        t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-native-session"))).await.unwrap();
         demands::wait_attempt(&f).await;
     }
     {
         let s = f.state.lock().unwrap();
         assert_eq!(s.shared.contexts.starts, 3);
-        assert_eq!(
-            s.shared.contexts.contexts["demand_work_2"]
-                .context
-                .history
-                .len(),
-            1
-        );
-        assert!(
-            s.shared.contexts.contexts["demand_work_3"]
-                .context
-                .history
-                .is_empty()
-        );
-        let answer = |id: &str| {
-            s.shared
-                .receipts
-                .values()
-                .find(|r| r.work_id == id && r.body.is_some())
-                .unwrap()
-                .body
-                .clone()
-                .unwrap()
-        };
-        assert_eq!(answer("demand_work_2"), "The name is 雪.");
-        assert_eq!(answer("demand_work_3"), "No prior delivered name.");
+        for c in s.shared.contexts.contexts.values() {
+            assert_eq!(c.context.version, 3);
+            assert!(c.context.history.is_empty());
+        }
+        let answer = |id: &str| s.shared.receipts.values().find(|r| r.work_id == id && r.body.is_some()).unwrap().body.clone().unwrap();
+        assert!(answer("demand_work_2").contains("Remember the name 雪."));
+        assert_eq!(answer("demand_work_3"), "Previous native inputs: ");
+        assert!(s.shared.contexts.deliveries.values().any(|r| r.receipt.formatted_body.is_some()));
     }
-    let inputs = std::fs::read_to_string(f._root.path().join("shared-probe/inputs")).unwrap();
-    let inputs: Vec<String> = inputs
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(inputs.len(), 3);
-    assert!(inputs[1].contains("The name is 雪."));
-    assert!(!inputs[2].contains("The name is 雪."));
+    let inputs: Vec<String> = serde_json::from_slice(&std::fs::read(f._root.path().join("shared-probe/native-thread-1.json")).unwrap()).unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert!(inputs[1].contains("What was the name?"));
+    assert!(!inputs[1].contains("Remember the name 雪."));
+    assert!(!inputs[1].contains("HTML receipt evidence"));
     assert_eq!(rows(&f, "owner_shared_context_call_pins"), 3);
     assert_eq!(rows(&f, "owner_shared_reply_deliveries"), 3);
     f.stop().await;
 }
 
 #[tokio::test]
-#[ignore = "requires explicit offline context probe"]
-async fn native_shared_context_actual_rich_reply_followup_uses_plain_body_only() {
-    let (f, t, _) = demands::fixture_budget(2000).await;
-    f.state.lock().unwrap().shared.contexts.rich = true;
-    for (n, body) in [(1, "Remember the name 雪."), (2, "What was the name?")] {
-        offer(&f, n, "$thread", body);
-        t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-context"))).await.unwrap();
-        demands::wait_attempt(&f).await;
-    }
-    let inputs = std::fs::read_to_string(f._root.path().join("shared-probe/inputs")).unwrap();
-    let inputs: Vec<String> = inputs.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-    assert_eq!(inputs.len(), 2);
-    assert!(inputs[1].contains("The name is 雪."));
-    assert!(!inputs[1].contains("formattedBody"));
-    assert!(!inputs[1].contains("HTML receipt evidence"));
-    {
-        let state = f.state.lock().unwrap();
-        let history = &state.shared.contexts.contexts["demand_work_2"].context.history;
-        assert_eq!(history.len(), 1);
-        assert!(history[0].delivery.formatted_body.is_some());
-        assert_eq!(state.shared.contexts.starts, 2);
-        assert!(state.shared.receipts.values().any(|r| r.work_id == "demand_work_2" && r.body.as_deref() == Some("The name is 雪.")));
-    }
-    assert_eq!(rows(&f, "owner_shared_context_call_pins"), 2);
-    assert_eq!(rows(&f, "owner_shared_reply_deliveries"), 2);
-    f.stop().await;
-}
-#[tokio::test]
+#[cfg(feature = "shared-intake")]
 #[ignore = "requires explicit offline context probe"]
 async fn native_shared_context_lost_start_retains_original_hold_without_model_replay() {
     let (mut f, t, _) = demands::fixture_budget(1000).await;
@@ -354,6 +263,7 @@ async fn native_shared_context_lost_start_retains_original_hold_without_model_re
     f.stop().await;
 }
 #[tokio::test]
+#[cfg(feature = "shared-intake")]
 #[ignore = "requires explicit offline context probe"]
 async fn native_shared_context_wrong_thread_refuses_before_any_call_hold() {
     let (f, t, _) = demands::fixture_budget(1000).await;
@@ -370,53 +280,38 @@ async fn native_shared_context_wrong_thread_refuses_before_any_call_hold() {
 }
 
 #[tokio::test]
+#[cfg(feature = "shared-intake")]
 #[ignore = "requires explicit offline context probe"]
-async fn native_shared_context_v2_negotiates_the_model_budget_and_states_coverage() {
-    let (f, t, _) = demands::fixture_budget(2000).await;
-    f.state.lock().unwrap().shared.contexts.v2 = true;
-    for (n, body) in [(1, "Remember the name 雪."), (2, "What was the name?")] {
-        offer(&f, n, "$thread", body);
-        t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-context")))
-            .await
-            .unwrap();
-        demands::wait_attempt(&f).await;
-    }
-    let inputs = std::fs::read_to_string(f._root.path().join("shared-probe/inputs")).unwrap();
-    let inputs: Vec<String> = inputs.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-    assert_eq!(inputs.len(), 2);
-    assert!(inputs[0].starts_with("Answer currentRequest only. history holds 0 of 0 earlier delivered exchanges from this thread in time order. "));
-    assert!(inputs[1].starts_with("Answer currentRequest only. history holds 1 of 1 earlier delivered exchanges from this thread in time order. "));
-    assert!(inputs[1].contains("The name is 雪.") && inputs[1].contains("\"version\":2"));
-    {
-        let s = f.state.lock().unwrap();
-        // The first freeze precedes any usage report; the second names the
-        // window the probe reported (10000 tokens), which is below the accepted
-        // range, so both records budget as default. The plumbing from the
-        // usage observation to the freeze request is what matters here.
-        let budgets: Vec<Value> = s.shared.contexts.budgets.clone();
-        assert_eq!(budgets.len(), 2, "{budgets:?}");
-        assert!(budgets.iter().all(|b| b["version"] == 2), "{budgets:?}");
-        assert!(budgets[0]["modelContextWindow"].is_null(), "{budgets:?}");
-        assert_eq!(budgets[1]["modelContextWindow"], 10000, "{budgets:?}");
-        let c = &s.shared.contexts.contexts["demand_work_2"].context;
-        assert_eq!((c.version, c.input_profile.as_str()), (2, INPUT_PROFILE_V2));
-        let b = c.budget.as_ref().unwrap();
-        assert_eq!(
-            (b.model_context_window, b.window_source.as_str(), b.history_budget_bytes, b.prior_pairs_total, b.included_pairs),
-            (DEFAULT_MODEL_CONTEXT_WINDOW, WINDOW_SOURCE_DEFAULT, 31_999, 1, 1)
-        );
-        assert_eq!(s.shared.contexts.starts, 2);
-        assert!(s.shared.receipts.values().any(|r| r.work_id == "demand_work_2" && r.body.as_deref() == Some("The name is 雪.")));
-    }
-    let db = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
-    let saved: String = db
-        .query_row("SELECT payload FROM owner_shared_contexts WHERE work_id='demand_work_2'", [], |r| r.get(0))
-        .unwrap();
-    let saved: SharedThreadContext = serde_json::from_str(&saved).unwrap();
-    assert_eq!(saved.version, 2);
-    assert_eq!(saved.history[0].user_body, "Remember the name 雪.");
-    drop(db);
-    assert_eq!(rows(&f, "owner_shared_context_call_pins"), 2);
-    assert_eq!(rows(&f, "owner_shared_reply_deliveries"), 2);
+async fn native_shared_context_missing_capability_refuses_before_call_or_provider_input() {
+    let (f, t, _) = demands::fixture_budget(1000).await;
+    offer(&f, 1, "$thread", "Current request");
+    f.state.lock().unwrap().shared.contexts.v3 = false;
+    t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-native-session"))).await.unwrap();
+    demands::wait_attempt(&f).await;
+    assert_eq!(rows(&f, "owner_managed_calls"), 0);
+    assert_eq!(rows(&f, "owner_shared_contexts"), 0);
+    assert_eq!(demands::count_methods(&f, "turn/start"), 0);
     f.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicit offline context probe; also runs with only shared-execution enabled"]
+async fn native_shared_execution_requires_v3_before_call_admission() {
+    for plain_mode in [false, true] {
+        let (f, t, _) = fixture().await;
+        {
+            let mut state = f.state.lock().unwrap();
+            state.shared.contexts.v3 = plain_mode;
+            state.shared.contexts.plain_mode = plain_mode;
+        }
+        t.poll_fixture(&f.registry, launch(&f, "text-native-session"))
+            .await.unwrap();
+        stopped(&f).await;
+        assert_eq!(rows(&f, "owner_managed_calls"), 0);
+        assert_eq!(rows(&f, "owner_shared_contexts"), 0);
+        assert_eq!(f.state.lock().unwrap().shared.starts, 0);
+        let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
+        assert_eq!(methods.lines().filter(|method| *method == "turn/start").count(), 0);
+        f.stop().await;
+    }
 }

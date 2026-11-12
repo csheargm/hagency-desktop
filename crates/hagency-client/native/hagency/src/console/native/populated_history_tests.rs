@@ -1,7 +1,7 @@
-//! Existing owner database acceptance, not a migration or live-provider test.
+//! Populated current account history, without a live provider.
 use super::*;
 use crate::console::native::web_overview::{WebAccountCapacityQuery,WebOverviewQuery};
-use hagency_store::management::{AccountInventoryQuery,WebAlertsQuery};
+use hagency_store::management::{AccountInventoryQuery,WebAlertsQuery,WebCatalogChange,WebCatalogCommand};
 
 fn history_package()->ManagementPackage {
     let mut p=package();p.instance=1061;
@@ -9,30 +9,48 @@ fn history_package()->ManagementPackage {
 }
 fn snapshots(path:&std::path::Path)->Vec<(String,Vec<Vec<String>>)> {
     let db=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    ["resources","role_offers","ceiling_alerts","ceiling_alert_notes"].into_iter().map(|table|{
+    ["resources","owner_web_catalog_settings","management_commands","ceiling_alerts","ceiling_alert_notes"].into_iter().map(|table|{
         let mut q=db.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();let n=q.column_count();
         let rows=q.query_map([],|r|Ok((0..n).map(|c|format!("{:?}",r.get_ref(c).unwrap())).collect())).unwrap().collect::<Result<Vec<_>,_>>().unwrap();(table.into(),rows)
     }).collect()
 }
 #[tokio::test]
-async fn native_populated_old_account_history_pagination_owner_guard_and_restart() {
+async fn native_populated_current_account_history_pagination_owner_guard_and_restart() {
     let (mut f,original)=fixture().await;
-    let login=&f.owner.0.host.console.0.server_login;let device=login.authorized_device().await.unwrap();
-    let profile=crate::console::owned_agents::profile_identity(device.origin(),device.issuer(),device.subject(),device.owner_mxid()).unwrap();
-    let directory=login.state_directory().unwrap().join("owned-agent-owners").join(format!("management_{profile}"));
-    let database=directory.join("domain.sqlite3");
-    f.owner.suspend().await.unwrap();
-    {
-        let mut db=hagency_store::DomainRepository::open_managed(&directory,&profile).unwrap();
-        for i in 0..35 {
-            let seat=if i<18{"fixture_seat".into()}else{format!("history-seat-{i}")};
-            db.put_seat(&hagency_core::project::Seat{id:seat.clone(),declaration:None}).unwrap();
-            let resource:hagency_core::project::Resource=serde_json::from_value(json!({"presetId":format!("history-{i:02}"),"seatId":seat,"framework":"codex","model":"gpt-5.6-sol","reasoning":"medium","published":false,"ceiling":{"tokens":1000,"period":"monthly"}})).unwrap();
-            db.put_resource(&resource).unwrap();
+    let database=f._root.path().join("registry/domain.sqlite3");
+    let scope=f.transport.scope(Permission::PublishGrants).await.unwrap();
+    let id=original.clone();
+    let source=f.registry.with_repository_for_tests(move |db|db.resource_configuration(&id)).await.unwrap();
+    let mut setup=history_package();setup.instance+=100;setup.permissions.extend([Permission::ConfigureResources,Permission::ManageWebCatalog]);
+    let manager=f.owner.management(setup).await.unwrap();
+    let (context,session)=manager.authorized().await.unwrap();
+    for i in 0..35 {
+        if i<18 {
+            session.create_resource_configuration(&context,hagency_store::management::CreateResourceConfiguration{
+                command_id:format!("history-config-{i}"),source_resource_id:original.clone(),
+                expected_revision:hagency_store::resource_publication_revision(&source).unwrap(),
+                profile:hagency_store::ProfileChange::Preserve{},ceiling:hagency_store::CeilingChange::Preserve{},execution_policy:None,
+            },Instant::now()+Duration::from_secs(30)).await.unwrap();
+        } else {
+            f.registry.prepare_enrollment(scope.profile.clone(),format!("history-account-{i}"),
+                VerifiedProviderAccount::new("codex","https://provider.test",&format!("history-subject-{i}"),Instant::now()+Duration::from_secs(30)).unwrap(),
+                source.model.clone(),source.reasoning.clone(),1000,Instant::now()+Duration::from_secs(30),
+            ).unwrap().approve().await.unwrap();
         }
-        for i in 0..19 {db.add_alert_note("fixture:original","older-owner",&format!("Retained note / 历史记录 {i}"),100+i).unwrap();}
-        db.set_offer("documentation",Some(2),Some(500),Some(100),true,"private-old-writer",110).unwrap();
-        drop(db);
+    }
+    let offer_revision=session.web_offers(&context,original.clone()).await.unwrap().revision;
+    // Persist the offer through the current profile writer and its original
+    // receipt. The read-only view must never expose this private command ID.
+    session.apply_web_catalog(&context,WebCatalogCommand{
+        command_id:"private-current-writer".into(),resource_id:original.clone(),expected_revision:offer_revision,
+        change:WebCatalogChange::Offer{role:"documentation".into(),count:Some(2),budget_cap_per_engagement:Some(500),rate_cap:Some(100),published:true},
+    }).await.unwrap();
+    drop(session);drop(manager);drop(scope);
+    f.registry.with_repository_for_tests(|db|{
+        for i in 0..19 {db.add_alert_note("fixture:original","older-owner",&format!("Retained note / 历史记录 {i}"),100+i)?;}
+        Ok(())
+    }).await.unwrap();
+    {
         let db=rusqlite::Connection::open(&database).unwrap();
         for i in 0..20 {db.execute("INSERT INTO ceiling_alerts(dedupe_key,resource_id,summary,detail,runbook,impact,recovery_condition,occurrences,first_seen_ms,last_seen_ms) VALUES(?1,?2,'Retained observation',?3,'Review','No permission change','Recheck',1,1,1)",rusqlite::params![format!("history:{i:02}"),original,r#"{"ceilingTokens":1000,"drawnTokens":1100,"credential":"history-private-sentinel"}"#]).unwrap();}
     }
@@ -44,11 +62,14 @@ async fn native_populated_old_account_history_pagination_owner_guard_and_restart
         after=page.next_after;if after.is_none(){break}
     }
     assert_eq!(account_ids.len(),18);let shared=shared.unwrap();
-    let offers=m.web_offers(original.clone()).await.unwrap();assert!(!offers.offers_editable);assert_eq!(offers.offer_editing_reason.as_deref(),Some("legacy_owner_read_only"));
-    let retained=offers.items.iter().find(|v|v.role=="documentation").unwrap();assert_eq!((retained.count,retained.budget_cap_per_engagement,retained.rate_cap,retained.published),(Some(2),Some(500),Some(100),true));assert!(!retained.catalog_published);
-    assert!(!serde_json::to_string(&offers).unwrap().contains("private-old-writer"));
+    let offers=m.web_offers(original.clone()).await.unwrap();assert!(offers.offers_editable);assert_eq!(offers.offer_editing_reason,None);
+    let retained=offers.items.iter().find(|v|v.role=="documentation").unwrap();assert_eq!((retained.count,retained.budget_cap_per_engagement,retained.rate_cap,retained.published),(Some(2),Some(500),Some(100),true));
+    // Current enrollment supplies published, qualified capacity. The owner's
+    // explicit offer therefore remains advertised after a real registry reopen.
+    assert!(retained.qualified);assert!(retained.catalog_published);
+    assert!(!serde_json::to_string(&offers).unwrap().contains("private-current-writer"));
     let capabilities=m.web_capability(WebOverviewQuery::default()).await.unwrap();assert_eq!(capabilities["items"].as_array().unwrap().len(),16);assert!(capabilities["nextAfter"].is_string());
-    for row in capabilities["items"].as_array().unwrap(){assert_eq!(row["offersEditable"],false);assert_eq!(row["offerEditingReason"],"legacy_owner_read_only");}
+    for row in capabilities["items"].as_array().unwrap(){assert_eq!(row["offersEditable"],true);assert_eq!(row["offerEditingReason"],Value::Null);}
     let first=m.web_account_capacity(WebAccountCapacityQuery{id:Some(shared.clone()),..Default::default()}).await.unwrap();
     let row=&first["items"][0];assert_eq!(row["resources"].as_array().unwrap().len(),16);assert_eq!(row["aggregateComplete"],false);assert_eq!(row["oversubscribedTokens"],Value::Null);
     let next=row["nextResourceAfter"].as_str().unwrap().to_owned();
@@ -66,6 +87,7 @@ async fn native_populated_old_account_history_pagination_owner_guard_and_restart
     assert_eq!(m.account_inventory(AccountInventoryQuery{id:Some(shared),after:None}).await.unwrap().account.unwrap().resource_count,19);
     assert_eq!(m.web_alerts(Default::default()).await.unwrap().counts.total,21);
     assert_eq!(m.resource_alert(query(&original)).await.unwrap().notes.len(),16);
+    assert_eq!(serde_json::to_value(m.web_offers(original.clone()).await.unwrap()).unwrap(),serde_json::to_value(offers).unwrap());
     assert_eq!(snapshots(&database),before,"reads/restart preserve populated original history");
     f.owner.suspend().await.unwrap();f.stop().await;
 }

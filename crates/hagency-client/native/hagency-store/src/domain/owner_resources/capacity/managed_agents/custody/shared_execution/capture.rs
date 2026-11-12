@@ -3,15 +3,40 @@ use hagency_runtime::{
     codex::session::{ObservationKind, ObservationSource, TurnResult, UsageEvidence},
     owned::{OwnedSession, SharedTextEvent},
 };
+mod claude;
+mod native_session;
+pub use native_session::SharedNativeSession;
+mod claude_native_session;
+pub use claude_native_session::SharedClaudeSession;
+
+enum Source {
+    Codex(ObservationSource),
+    Claude(hagency_runtime::claude::session::ObservationSource),
+}
+impl Source {
+    fn is_retired(&self) -> bool {
+        match self {
+            Self::Codex(s) => s.is_retired(),
+            Self::Claude(s) => s.is_retired(),
+        }
+    }
+}
+enum Usage {
+    Codex(UsageEvidence),
+    Claude(hagency_runtime::claude::session::UsageEvidence),
+}
+
 /// Bounded, original-process capture. Numerical usage is never accepted without
 /// an exact runtime source and contiguous accepted event sequence.
 pub struct SharedCallSink {
     custody: SharedCallCustody,
-    source: ObservationSource,
+    source: Source,
     sequence: u64,
     clean: bool,
     terminal: Option<TurnResult>,
-    usage: Option<UsageEvidence>,
+    usage: Option<Usage>,
+    claude_result: Option<bool>,
+    claude_unaccounted: bool,
     output: String,
     output_overflow: bool,
     last_text_item: Option<String>,
@@ -19,13 +44,13 @@ pub struct SharedCallSink {
 impl SharedCallCustody {
     pub fn bind_turn(self, process: &OwnedSession) -> Result<SharedCallSink, Error> {
         let source = self.capture_source(process)?;
-        Ok(self.capture(source))
+        Ok(self.capture(Source::Codex(source)))
     }
     /// Keep a durable call outcome even if the start acknowledgement could not
     /// be attached to an observation source. This grants no retry authority.
     pub async fn bind_started_turn(self, process: &OwnedSession) -> Result<SharedCallSink, Error> {
         match self.capture_source(process) {
-            Ok(source) => Ok(self.capture(source)),
+            Ok(source) => Ok(self.capture(Source::Codex(source))),
             Err(error) => {
                 self.finish_failed_start().await?;
                 Err(error)
@@ -37,12 +62,14 @@ impl SharedCallCustody {
         let source = process
             .observation_source()
             .map_err(|_| Error::LocalAuthority)?;
-        let expected=self.context_input_digest().unwrap_or_else(||self.work.body_digest.clone());
-        if !self
-            .sink
-            .source()
-            .matches_input_digest(&expected)
-            || !self.sink.source().same(&process.shared_text_process_source())
+        let expected = self
+            .context_input_digest()
+            .unwrap_or_else(|| self.work.body_digest.clone());
+        if !self.sink.source().matches_input_digest(&expected)
+            || !self
+                .sink
+                .source()
+                .same(&process.shared_text_process_source())
             || !process.matches_observation_source(&source)
             || source.is_retired()
         {
@@ -50,14 +77,21 @@ impl SharedCallCustody {
         }
         Ok(source)
     }
-    fn capture(self, source: ObservationSource) -> SharedCallSink {
+    fn capture(self, source: Source) -> SharedCallSink {
+        let sequence = if matches!(source, Source::Claude(_)) {
+            1
+        } else {
+            0
+        };
         SharedCallSink {
             custody: self,
             source,
-            sequence: 0,
+            sequence,
             clean: true,
             terminal: None,
             usage: None,
+            claude_result: None,
+            claude_unaccounted: false,
             output: String::new(),
             output_overflow: false,
             last_text_item: None,
@@ -66,12 +100,16 @@ impl SharedCallCustody {
 }
 impl SharedCallSink {
     fn append_text(&mut self, text: &str) {
-        if self.output_overflow { return; }
-        let remaining=MAX_SHARED_REPLY.saturating_sub(self.output.len());
-        let mut end=text.len().min(remaining);
-        while !text.is_char_boundary(end) {end-=1;}
+        if self.output_overflow {
+            return;
+        }
+        let remaining = MAX_SHARED_REPLY.saturating_sub(self.output.len());
+        let mut end = text.len().min(remaining);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
         self.output.push_str(&text[..end]);
-        self.output_overflow=end<text.len();
+        self.output_overflow = end < text.len();
     }
     pub fn work(&self) -> &SharedWorkItem {
         &self.custody.work
@@ -81,7 +119,7 @@ impl SharedCallSink {
         event: SharedTextEvent,
     ) -> Result<Option<SharedWorkReceipt>, Error> {
         if !self.custody.sink.source().same(event.source())
-            || event.observation().source() != &self.source
+            || !matches!(&self.source, Source::Codex(source) if event.observation().source() == source)
         {
             return Err(Error::LocalAuthority);
         }
@@ -96,20 +134,24 @@ impl SharedCallSink {
             // items. Keep their Markdown blocks separated without altering
             // incremental chunks belonging to the same item.
             if !text.is_empty() {
-                if !self.output.is_empty() && self.last_text_item.as_deref()!=event.text_item_id() {
+                if !self.output.is_empty() && self.last_text_item.as_deref() != event.text_item_id()
+                {
                     self.append_text("\n\n");
                 }
-                self.last_text_item=event.text_item_id().map(str::to_owned);
+                self.last_text_item = event.text_item_id().map(str::to_owned);
                 self.append_text(text);
             }
         }
         let write = match o.kind() {
             ObservationKind::Usage(e) => {
-                self.usage = Some(e.clone());
+                self.usage = Some(Usage::Codex(e.clone()));
                 true
             }
             ObservationKind::TurnEnded(result) => {
                 self.terminal = Some(*result);
+                if let Some(usage) = o.terminal_usage() {
+                    self.usage = Some(Usage::Codex(usage.clone()));
+                }
                 true
             }
             ObservationKind::Tool(_) if event.is_authorized_tool() => false,
@@ -139,15 +181,16 @@ impl SharedCallSink {
         let issued = c.call.scope.issued_revision;
         let registry = c.call.scope.registry.clone();
         let terminal = self.terminal.is_some() || forced_unknown;
-        let complete = self.clean && !self.source.is_retired() && self.terminal.is_some();
+        let complete = self.clean
+            && !self.source.is_retired()
+            && self.terminal.is_some()
+            && !self.claude_unaccounted;
         let state = if forced_unknown || !self.clean {
             "unknown"
         } else {
             match self.terminal {
                 Some(TurnResult::Completed) => "completed",
-                Some(TurnResult::Failed | TurnResult::Interrupted) => {
-                    "failed"
-                }
+                Some(TurnResult::Failed | TurnResult::Interrupted) => "failed",
                 _ => "unknown",
             }
         };
@@ -157,22 +200,33 @@ impl SharedCallSink {
                 &json!({"workId":c.work.id,"callId":call,"sequence":self.sequence,"forcedUnknown":forced_unknown,"state":state})
             )?
         );
-        let usage = ManagedUsageObservation::shared_capture(
-            format!("{id}_usage"),
-            self.usage.as_ref(),
-            terminal,
-            complete,
-            false,
-        );
-        let body = (state == "completed").then(|| bounded_reply(&self.output,self.output_overflow));
+        let usage = match self.usage.as_ref() {
+            Some(Usage::Claude(evidence)) => ManagedUsageObservation::shared_claude_capture(
+                format!("{id}_usage"),
+                evidence,
+                terminal,
+                complete,
+            ),
+            evidence => ManagedUsageObservation::shared_capture(
+                format!("{id}_usage"),
+                evidence.and_then(|e| match e {
+                    Usage::Codex(e) => Some(e),
+                    _ => None,
+                }),
+                terminal,
+                complete,
+                false,
+            ),
+        };
+        let body =
+            (state == "completed").then(|| bounded_reply(&self.output, self.output_overflow));
         let work = c.work.clone();
         let process = c.process_digest()?;
         let state = state.to_owned();
         registry
             .store
             .call(64 * 1024, move |db| {
-                if original_call_changed(&db.db, &child, &binding, issued, &call)?
-                {
+                if original_call_changed(&db.db, &child, &binding, issued, &call)? {
                     return Err(Error::LocalAuthority);
                 }
                 let tx = db
@@ -218,12 +272,16 @@ impl SharedCallSink {
                 // a labelled prefix and real terminal usage rather than lose
                 // an otherwise completed answer.
                 while serde_json::to_vec(&receipt)?.len() > 48 * 1024 {
-                    let body=receipt.body.as_mut().ok_or(Error::Capacity)?;
-                    let mut end=body.len()/2;
-                    while !body.is_char_boundary(end) {end-=1;}
-                    if end==0 {return Err(Error::Capacity)}
-                    *body=bounded_reply(&body[..end],true);
-                    receipt.body_digest=Some(text_digest(body));
+                    let body = receipt.body.as_mut().ok_or(Error::Capacity)?;
+                    let mut end = body.len() / 2;
+                    while !body.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    if end == 0 {
+                        return Err(Error::Capacity);
+                    }
+                    *body = bounded_reply(&body[..end], true);
+                    receipt.body_digest = Some(text_digest(body));
                 }
                 receipt.validate_for(&work, &process)?;
                 let payload = canonical::encode(&serde_json::to_value(&receipt)?)?;
@@ -255,9 +313,13 @@ fn original_call_changed(
 }
 
 const TRUNCATED_REPLY: &str = "\n\n[答复超过单条消息长度限制，以上内容已截断。]";
-fn bounded_reply(text:&str,truncated:bool)->String {
-    if !truncated {return text.to_owned()}
-    let mut end=text.len().min(MAX_SHARED_REPLY-TRUNCATED_REPLY.len());
-    while !text.is_char_boundary(end) {end-=1;}
-    text[..end].to_owned()+TRUNCATED_REPLY
+fn bounded_reply(text: &str, truncated: bool) -> String {
+    if !truncated {
+        return text.to_owned();
+    }
+    let mut end = text.len().min(MAX_SHARED_REPLY - TRUNCATED_REPLY.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned() + TRUNCATED_REPLY
 }

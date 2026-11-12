@@ -65,34 +65,39 @@ pub fn seed_owned_state(state: &Path) {
 }
 pub fn assert_owned_survives(state: &Path) {
     let mut ledger = Ledger::open(owned_path(state), OWNER).unwrap();
-    assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
-    let hagency_agent_local::Reservation::AlreadySettled(missing) = ledger
-        .reserve(
-            &scope(),
-            "release-unknown-call",
-            "release-dispatch",
-            100,
-            10,
-        )
-        .unwrap()
-    else {
-        panic!("the original accounting identity must survive");
-    };
-    assert_eq!(missing.input + missing.output, 0);
-    assert_eq!(missing.accounting_version, "unreported-zero-v1");
+    let outstanding = ledger.outstanding_calls(OWNER).unwrap();
+    let original = outstanding
+        .iter()
+        .find(|call| call.id == "release-unknown-call")
+        .unwrap();
+    assert_eq!(original.state, "unknown");
+    assert_eq!(original.reserved, 100);
+    let prior_check = outstanding.iter().any(|call| call.id == "different-call");
+    assert_eq!(outstanding.len(), if prior_check { 2 } else { 1 });
+    assert!(
+        matches!(
+            ledger.reserve(
+                &scope(),
+                "release-unknown-call",
+                "release-dispatch",
+                100,
+                10,
+            ),
+            Err(hagency_agent_local::Error::Unknown)
+        ),
+        "the original unresolved call must survive without being replayed"
+    );
     for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
         assert_eq!(
             ledger
                 .account(&scope(), layer, Period::Lifetime, 10)
                 .unwrap(),
-            (25, 0)
+            (25, if prior_check { 110 } else { 100 })
         );
     }
     assert!(matches!(
-        ledger
-            .reserve(&scope(), "different-call", "different-dispatch", 10, 10)
-            .unwrap(),
-        hagency_agent_local::Reservation::New | hagency_agent_local::Reservation::AlreadySettled(_)
+        ledger.reserve(&scope(), "different-call", "different-dispatch", 10, 10),
+        Ok(hagency_agent_local::Reservation::New) | Err(hagency_agent_local::Error::Unknown)
     ));
     ledger.mark_unknown(&scope(), "different-call").unwrap();
     assert!(Ledger::open(owned_path(state), "@other:example.test").is_err());

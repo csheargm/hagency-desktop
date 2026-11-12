@@ -60,7 +60,7 @@ fn serve(mode: &str, marker: &Path) -> io::Result<()> {
     let mut input = io::stdin().lock();
     reply(
         &expected(&mut input, "initialize")?,
-        json!({"userAgent":"fixture/0.153.4","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}),
+        json!({"userAgent":"fixture/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}),
     )?;
     expected(&mut input, "initialized")?;
     let req = expected(&mut input, "thread/start")?;

@@ -150,7 +150,10 @@ impl CapturedEvent for codex::Observation {
     fn kind(&self) -> Kind<'_> {
         match self.kind() {
             codex::ObservationKind::Invalidated => Kind::Invalidated,
-            codex::ObservationKind::TurnEnded(_) => Kind::End,
+            codex::ObservationKind::TurnEnded(_) => match self.terminal_usage() {
+                Some(e) => Kind::Usage { evidence: EvidenceRef::Codex(e), terminal: true },
+                None => Kind::End,
+            },
             codex::ObservationKind::Usage(e) => Kind::Usage {
                 evidence: EvidenceRef::Codex(e),
                 terminal: false,

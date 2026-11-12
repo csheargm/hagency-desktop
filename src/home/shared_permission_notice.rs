@@ -16,6 +16,12 @@ fn execution_busy(value:&Value,room:&str,thread:&str)->bool {
 }
 fn execution_notice(value:&Value,room:&str,thread:&str)->Option<&'static str> {
     let row=execution_row(value,room,thread)?;
+    if row["reason"]=="owner_daemon_update_required" {
+        return Some("Message has not started. The resource owner needs to update Hagency and start its service; the same message can then continue.");
+    }
+    if row["reason"]=="owner_daemon_unavailable" {
+        return Some("Message has not started. Waiting for the resource owner's Hagency service to reconnect.");
+    }
     if row["reason"]=="budget_blocked" {
         return Some(match row["budgetState"].as_str() {
             Some("usage_unresolved") => "The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.",
@@ -105,6 +111,7 @@ impl SharedPermissionNotice {
         let hint=if !pending {crate::i18n::tr("Decision sent; waiting for Agent").to_owned()}
         else if row["encryptedPending"]==true {crate::i18n::tr("Approval becomes available after the encrypted details arrive.").into()}
         else if row["canDecide"]!=true {crate::i18n::format("Waiting for resource owner {owner}", &[("owner",a["ownerMxid"].as_str().unwrap_or("").to_owned())])}
+        else if a["request"]["method"]=="claude/can_use_tool" {crate::i18n::tr("Each approval covers this one tool call.").into()}
         else {crate::i18n::tr("Session approval covers this Codex session only. It ends when this run stops.").into()};
         self.view.label(cx,ids!(hint)).set_text(cx,if self.error.is_empty(){&hint}else{crate::i18n::tr(&self.error)});
         self.view.button(cx,ids!(once)).set_enabled(cx,can);
@@ -173,6 +180,30 @@ impl SharedPermissionNoticeRef {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn shared_protocol_blocked_notice_keeps_the_original_message_and_stops_activity() {
+        for (reason, explanation) in [
+            ("owner_daemon_update_required", "update Hagency and start its service"),
+            ("owner_daemon_unavailable", "service to reconnect"),
+        ] {
+            let value = json!({"executions":[
+                {"roomId":"!other","threadRoot":"$thread","state":"started"},
+                {"roomId":"!room","threadRoot":"$thread","eventId":"$original","state":"blocked","reason":reason}
+            ]});
+            let notice = execution_notice(&value, "!room", "$thread").unwrap();
+            assert!(notice.starts_with("Message has not started."));
+            assert!(notice.contains(explanation));
+            assert!(!notice.contains("Send the message again"));
+            assert!(!execution_busy(&value, "!room", "$thread"));
+            assert!(execution_notice(&value, "!room", "$unrelated").is_none());
+            assert!(!execution_busy(&value, "!room", "$unrelated"));
+        }
+        // The same retained event can become eligible when its daemon returns.
+        let current = json!({"executions":[{"roomId":"!room","threadRoot":"$thread","eventId":"$original","state":"pending","reason":null}]});
+        assert_eq!(execution_notice(&current, "!room", "$thread"), Some("Message queued; waiting for Agent."));
+        assert!(execution_busy(&current, "!room", "$thread"));
+    }
+
     #[test]
     fn shared_execution_notice_tracks_latest_message_and_exact_room_thread() {
         let v=json!({"executions":[

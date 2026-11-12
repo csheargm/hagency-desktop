@@ -24,6 +24,8 @@ pub(in crate::console::native) struct PreparedLaunch {
     tool_mode: Option<String>,
     text_model: Option<(String, String)>,
     namespace: Option<Arc<ResourceNamespace>>,
+    #[cfg(test)]
+    fixture_prefix: Vec<std::ffi::OsString>,
 }
 impl PreparedLaunch {
     pub(in crate::console::native) async fn for_resource(
@@ -245,7 +247,12 @@ impl PreparedLaunch {
             arguments.extend(["-c".into(), format!("features.{feature}=false").into()]);
         }
         let mut environment = BTreeMap::new();
-        environment.insert("HOME".into(), hagency_platform::codex_process_home(&paths.home).map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?.into_os_string());
+        environment.insert(
+            "HOME".into(),
+            hagency_platform::codex_process_home(&paths.home)
+                .map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?
+                .into_os_string(),
+        );
         environment.insert("CODEX_HOME".into(), paths.codex_home.into_os_string());
         environment.insert("PATH".into(), "".into());
         if let Some(value) = std::env::var_os("SystemRoot") {
@@ -277,6 +284,8 @@ impl PreparedLaunch {
             tool_mode: None,
             text_model,
             namespace: None,
+            #[cfg(test)]
+            fixture_prefix: Vec::new(),
         })
     }
     pub(in crate::console::native) async fn discover(
@@ -288,7 +297,11 @@ impl PreparedLaunch {
     > {
         if self.text_model.is_some() {
             process
-                .discover_shared_tool_policy(&self.instructions, self.web_search, self.tool_mode.as_deref())
+                .discover_shared_tool_policy(
+                    &self.instructions,
+                    self.web_search,
+                    self.tool_mode.as_deref(),
+                )
                 .await
         } else {
             process.discover_managed_policy(&self.instructions).await
@@ -310,52 +323,149 @@ impl PreparedLaunch {
         self.discovery_pending = false;
         Ok(())
     }
-    pub(in crate::console::native) fn with_live_web(mut self, enabled: bool) -> Result<Self, NativeError> {
-        if !enabled { return Ok(self); }
+    pub(in crate::console::native) fn with_live_web(
+        mut self,
+        enabled: bool,
+    ) -> Result<Self, NativeError> {
+        if !enabled {
+            return Ok(self);
+        }
         if self.text_model.is_none() || !self.discovery_pending {
             return Err(failure(409, "shared_web_policy_unavailable"));
         }
-        let path = self.launch.directory.join(hagency_runtime::owned::SHARED_WEB_INSTRUCTIONS_FILE);
+        let path = self
+            .launch
+            .directory
+            .join(hagency_runtime::owned::SHARED_WEB_INSTRUCTIONS_FILE);
         let bytes = hagency_runtime::owned::SHARED_WEB_INSTRUCTIONS.as_bytes();
-        if !path.try_exists().map_err(|_| failure(409, "shared_web_policy_unavailable"))? {
-            hagency_store::private::write_new(&path, bytes).map_err(|_| failure(409, "shared_web_policy_unavailable"))?;
+        if !path
+            .try_exists()
+            .map_err(|_| failure(409, "shared_web_policy_unavailable"))?
+        {
+            hagency_store::private::write_new(&path, bytes)
+                .map_err(|_| failure(409, "shared_web_policy_unavailable"))?;
         }
         let mut content = Vec::new();
-        hagency_store::private::open(&path, false).map_err(|_| failure(409, "shared_web_policy_unavailable"))?
-            .take((bytes.len()+1) as u64).read_to_end(&mut content).map_err(|_| failure(409, "shared_web_policy_unavailable"))?;
-        if content != bytes { return Err(failure(409, "shared_web_policy_unavailable")); }
-        self.launch.arguments.extend(["-c".into(), "web_search=\"live\"".into(),
-            "-c".into(), "features.standalone_web_search=true".into(),
-            "-c".into(), "features.code_mode_host=true".into(),
-            "-c".into(), format!("model_instructions_file={}",serde_json::to_string(&path).map_err(|_| failure(409, "shared_web_policy_unavailable"))?).into()]);
+        hagency_store::private::open(&path, false)
+            .map_err(|_| failure(409, "shared_web_policy_unavailable"))?
+            .take((bytes.len() + 1) as u64)
+            .read_to_end(&mut content)
+            .map_err(|_| failure(409, "shared_web_policy_unavailable"))?;
+        if content != bytes {
+            return Err(failure(409, "shared_web_policy_unavailable"));
+        }
+        self.launch.arguments.extend([
+            "-c".into(),
+            "web_search=\"live\"".into(),
+            "-c".into(),
+            "features.standalone_web_search=true".into(),
+            "-c".into(),
+            "features.code_mode_host=true".into(),
+            "-c".into(),
+            format!(
+                "model_instructions_file={}",
+                serde_json::to_string(&path)
+                    .map_err(|_| failure(409, "shared_web_policy_unavailable"))?
+            )
+            .into(),
+        ]);
         self.instructions = path;
         self.web_search = true;
         Ok(self)
     }
-    pub(in crate::console::native) fn with_agent_workspace(mut self, agent: &str) -> Result<Self, NativeError> {
-        if agent.is_empty() || agent.len()>128 || !agent.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'_' || b==b'-') {return Err(failure(409,"shared_tool_workspace_unavailable"));}
+    pub(in crate::console::native) fn with_agent_workspace(
+        mut self,
+        agent: &str,
+    ) -> Result<Self, NativeError> {
+        if agent.is_empty()
+            || agent.len() > 128
+            || !agent
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(failure(409, "shared_tool_workspace_unavailable"));
+        }
         // Process startup uses the Agent root; the admitted work selects a room
         // below it before thread/start. Credentials stay outside both directories.
-        let workspaces=self.launch.directory.join("workspaces");
-        hagency_store::private::directory(&workspaces).map_err(|_|failure(409,"shared_tool_workspace_unavailable"))?;
-        let directory=workspaces.join(agent);
-        hagency_store::private::directory(&directory).map_err(|_|failure(409,"shared_tool_workspace_unavailable"))?;
-        if directory.canonicalize().ok().as_ref()!=Some(&directory) {return Err(failure(409,"shared_tool_workspace_unavailable"));}
-        self.launch.directory=directory;
+        let workspaces = self.launch.directory.join("workspaces");
+        hagency_store::private::directory(&workspaces)
+            .map_err(|_| failure(409, "shared_tool_workspace_unavailable"))?;
+        let directory = workspaces.join(agent);
+        hagency_store::private::directory(&directory)
+            .map_err(|_| failure(409, "shared_tool_workspace_unavailable"))?;
+        if directory.canonicalize().ok().as_ref() != Some(&directory) {
+            return Err(failure(409, "shared_tool_workspace_unavailable"));
+        }
+        self.launch.directory = directory;
         Ok(self)
     }
-    pub(in crate::console::native) fn with_agent_tools(mut self, agent: &str, mode: Option<&str>) -> Result<Self, NativeError> {
-        let Some(mode)=mode else {return self.with_agent_workspace(agent)};
-        if !matches!(mode,"standard"|"yolo") || !self.discovery_pending || self.text_model.is_none() {return Err(failure(409,"shared_tool_policy_unavailable"));}
-        let path=self.launch.directory.join(hagency_runtime::owned::SHARED_TOOLS_INSTRUCTIONS_FILE);
-        let bytes=hagency_runtime::owned::SHARED_TOOLS_INSTRUCTIONS.as_bytes();
-        if !path.try_exists().map_err(|_|failure(409,"shared_tool_policy_unavailable"))? {hagency_store::private::write_new(&path,bytes).map_err(|_|failure(409,"shared_tool_policy_unavailable"))?;}
-        let mut content=Vec::new();
-        hagency_store::private::open(&path,false).map_err(|_|failure(409,"shared_tool_policy_unavailable"))?.take((bytes.len()+1) as u64).read_to_end(&mut content).map_err(|_|failure(409,"shared_tool_policy_unavailable"))?;
-        if content!=bytes {return Err(failure(409,"shared_tool_policy_unavailable"));}
-        self.launch.arguments.extend(["-c".into(),"features.shell_tool=true".into(),"-c".into(),"features.unified_exec=true".into(),"-c".into(),"features.code_mode_host=true".into(),"-c".into(),format!("model_instructions_file={}",serde_json::to_string(&path).map_err(|_|failure(409,"shared_tool_policy_unavailable"))?).into()]);
-        self.launch.environment.insert("PATH".into(),"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into());
-        self.instructions=path;self.tool_mode=Some(mode.into());self.with_agent_workspace(agent)
+    pub(in crate::console::native) fn with_agent_tools(
+        mut self,
+        agent: &str,
+        mode: Option<&str>,
+    ) -> Result<Self, NativeError> {
+        let Some(mode) = mode else {
+            return self.with_agent_workspace(agent);
+        };
+        if !matches!(mode, "standard" | "yolo")
+            || !self.discovery_pending
+            || self.text_model.is_none()
+        {
+            return Err(failure(409, "shared_tool_policy_unavailable"));
+        }
+        let path = self
+            .launch
+            .directory
+            .join(hagency_runtime::owned::SHARED_TOOLS_INSTRUCTIONS_FILE);
+        let bytes = hagency_runtime::owned::SHARED_TOOLS_INSTRUCTIONS.as_bytes();
+        if !path
+            .try_exists()
+            .map_err(|_| failure(409, "shared_tool_policy_unavailable"))?
+        {
+            hagency_store::private::write_new(&path, bytes)
+                .map_err(|_| failure(409, "shared_tool_policy_unavailable"))?;
+        }
+        let mut content = Vec::new();
+        hagency_store::private::open(&path, false)
+            .map_err(|_| failure(409, "shared_tool_policy_unavailable"))?
+            .take((bytes.len() + 1) as u64)
+            .read_to_end(&mut content)
+            .map_err(|_| failure(409, "shared_tool_policy_unavailable"))?;
+        if content != bytes {
+            return Err(failure(409, "shared_tool_policy_unavailable"));
+        }
+        // Native tool execution inherits the owner's capabilities and project
+        // configuration. The metadata/text-only launch's restrictive overrides
+        // must not survive into this separately qualified execution process.
+        let shared_auth = self
+            .launch
+            .arguments
+            .iter()
+            .any(|arg| arg == "cli_auth_credentials_store=\"auto\"");
+        self.launch.arguments =
+            hagency_runtime::codex::native_arguments(shared_auth, Some(self.web_search))
+                .into_iter()
+                .map(Into::into)
+                .collect();
+        self.launch.arguments.extend([
+            "-c".into(),
+            "model_provider=\"openai\"".into(),
+            "-c".into(),
+            "chatgpt_base_url=\"https://chatgpt.com/backend-api\"".into(),
+        ]);
+        #[cfg(test)]
+        self.launch.arguments.splice(0..0, self.fixture_prefix.clone());
+        self.launch.environment.insert(
+            "PATH".into(),
+            std::env::var_os("PATH")
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| {
+                    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into()
+                }),
+        );
+        self.instructions = path;
+        self.tool_mode = Some(mode.into());
+        self.with_agent_workspace(agent)
     }
     pub(in crate::console::native) fn instructions(&self) -> &Path {
         &self.instructions
@@ -389,7 +499,11 @@ impl PreparedLaunch {
                 .map_or_else(|| "medium".into(), |v| v.1.clone()),
         )
         .map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?;
-        let settings=match self.tool_mode.as_deref() {Some("yolo")=>settings.with_execution_policy(true),Some("standard")=>settings,_=>settings.read_only()};
+        let settings = match self.tool_mode.as_deref() {
+            Some("yolo") => settings.with_execution_policy(true),
+            Some("standard") => settings,
+            _ => settings.read_only(),
+        };
         OwnedSession::spawn(
             &self.guardian,
             &self.launch,
@@ -435,6 +549,7 @@ impl PreparedLaunch {
             tool_mode: None,
             text_model: None,
             namespace: None,
+            fixture_prefix: vec![mode.into(), directory.as_os_str().into()],
             launch: Launch {
                 executable: binary,
                 arguments: vec![mode.into(), directory.as_os_str().into()],
@@ -466,14 +581,25 @@ mod selected_provider_test {
         let second = launch("agent_two", "yolo").unwrap();
         assert_eq!(first.launch.directory, root.join("workspaces/agent_one"));
         assert_eq!(second.launch.directory, root.join("workspaces/agent_two"));
-        assert_eq!(launch("agent_one", "standard").unwrap().launch.directory, first.launch.directory);
+        if let Some(path) = std::env::var_os("PATH").filter(|path| !path.is_empty()) {
+            assert_eq!(
+                first.launch.environment.get(std::ffi::OsStr::new("PATH")),
+                Some(&path)
+            );
+        }
+        assert_eq!(
+            launch("agent_one", "standard").unwrap().launch.directory,
+            first.launch.directory
+        );
         let readonly = PreparedLaunch::fixture("/unused".into(), root.clone(), "unused")
-            .with_agent_tools("agent_one", None).unwrap();
+            .with_agent_tools("agent_one", None)
+            .unwrap();
         assert_eq!(readonly.launch.directory, first.launch.directory);
         hagency_store::private::directory(&first.launch.directory).unwrap();
         assert_eq!(std::fs::read(&credential).unwrap(), b"unchanged");
         assert!(launch("../escape", "standard").is_err());
-        #[cfg(unix)] {
+        #[cfg(unix)]
+        {
             std::os::unix::fs::symlink(&root, root.join("workspaces/escape")).unwrap();
             assert!(launch("escape", "standard").is_err());
         }
@@ -482,40 +608,87 @@ mod selected_provider_test {
     #[ignore = "requires explicit owner namespace; performs one real hosted weather search without Matrix delivery"]
     async fn native_shared_live_web_actual_weather_query() {
         use hagency_runtime::codex::session::{ObservationKind, TurnResult};
-        let codex_home = PathBuf::from(std::env::var_os("HAGENCY_TEST_ISOLATED_PROVIDER_HOME").expect("explicit owner namespace"));
-        let guardian = PathBuf::from(std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised guardian"));
+        let codex_home = PathBuf::from(
+            std::env::var_os("HAGENCY_TEST_ISOLATED_PROVIDER_HOME")
+                .expect("explicit owner namespace"),
+        );
+        let guardian = PathBuf::from(
+            std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised guardian"),
+        );
         let credential_ref = owner_provider::selected_reference(&codex_home, false).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().canonicalize().unwrap().join("weather");
         hagency_store::private::directory(&home).unwrap();
         let launch = PreparedLaunch::from_paths_policy(
-            owner_provider::ProviderPaths { home, codex_home, credential_ref, shared: false },
-            guardian, Some(("gpt-6-astra".into(), "low".into())),
-        ).unwrap().with_live_web(true).unwrap();
+            owner_provider::ProviderPaths {
+                home,
+                codex_home,
+                credential_ref,
+                shared: false,
+            },
+            guardian,
+            Some(("gpt-6-astra".into(), "low".into())),
+        )
+        .unwrap()
+        .with_live_web(true)
+        .unwrap();
         let manager = Manager::default();
-        let launch = manager.prepare(launch, Instant::now()+Duration::from_secs(30), Arc::new(|| Box::pin(async { Ok(()) }))).await.unwrap();
-        let mut process = launch.spawn(Instant::now()+Duration::from_secs(30)).unwrap();
+        let launch = manager
+            .prepare(
+                launch,
+                Instant::now() + Duration::from_secs(30),
+                Arc::new(|| Box::pin(async { Ok(()) })),
+            )
+            .await
+            .unwrap();
+        let mut process = launch
+            .spawn(Instant::now() + Duration::from_secs(30))
+            .unwrap();
         process.initialize().await.unwrap();
-        process.qualify_shared_text_with_web(launch.instructions(), true).await.unwrap();
-        let maximum = Instant::now()+Duration::from_secs(120);
-        process.install_shared_text_activity(1, Instant::now()+Duration::from_secs(25), maximum).unwrap();
+        process
+            .qualify_shared_text_with_web(launch.instructions(), true)
+            .await
+            .unwrap();
+        let maximum = Instant::now() + Duration::from_secs(120);
+        process
+            .install_shared_text_activity(1, Instant::now() + Duration::from_secs(25), maximum)
+            .unwrap();
         let control = process.shared_text_activity_control().unwrap();
         let renewal = tokio::spawn(async move {
             for epoch in 2..14 {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                if control.renew(epoch, (Instant::now()+Duration::from_secs(25)).min(maximum), maximum).is_err() { break; }
+                if control
+                    .renew(
+                        epoch,
+                        (Instant::now() + Duration::from_secs(25)).min(maximum),
+                        maximum,
+                    )
+                    .is_err()
+                {
+                    break;
+                }
             }
         });
         process.start_shared_text_thread().await.unwrap();
-        process.start_shared_text_turn("北京现在的天气如何？请联网查询，并给出数据时间和来源链接。".into()).await.unwrap();
+        process
+            .start_shared_text_turn(
+                "北京现在的天气如何？请联网查询，并给出数据时间和来源链接。".into(),
+            )
+            .await
+            .unwrap();
         let mut searches = 0;
         let mut body = String::new();
         loop {
             let event = process.next_shared_text_event().await.unwrap();
-            if event.is_authorized_web_search() { searches += 1; }
-            if let Some(delta) = event.delta() { body.push_str(delta); }
+            if event.is_authorized_web_search() {
+                searches += 1;
+            }
+            if let Some(delta) = event.delta() {
+                body.push_str(delta);
+            }
             if let ObservationKind::TurnEnded(result) = event.observation().kind() {
-                assert!(matches!(result, TurnResult::Completed)); break;
+                assert!(matches!(result, TurnResult::Completed));
+                break;
             }
         }
         renewal.abort();
@@ -524,7 +697,10 @@ mod selected_provider_test {
         assert_eq!(stopped.state(), ManagedProcessState::Stopped);
         assert!(searches >= 2, "no actual hosted search observed: {body}");
         assert!(body.contains("https://"), "no source link: {body}");
-        println!("{}", serde_json::json!({"hostedSearchEvents":searches,"reply":body,"matrixMessageSent":false}));
+        println!(
+            "{}",
+            serde_json::json!({"hostedSearchEvents":searches,"reply":body,"matrixMessageSent":false})
+        );
     }
     #[tokio::test]
     #[ignore = "requires explicit isolated provider namespace and supervised guardian"]
@@ -538,67 +714,111 @@ mod selected_provider_test {
                 .expect("explicit original managed namespace"),
         );
         let guardian = PathBuf::from(
-            std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE")
-                .expect("explicit supervised guardian"),
+            std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("explicit supervised guardian"),
         );
         let credential_ref = owner_provider::selected_reference(&codex_home, false).unwrap();
         let protected = [codex_home.join("config.toml"), codex_home.join("auth.json")];
         // Isolated namespaces use the original keyring entry. Inspect only
         // file existence; never read credential contents for this acceptance.
-        let files = || protected.iter().map(|path| path.try_exists().unwrap()).collect::<Vec<_>>();
+        let files = || {
+            protected
+                .iter()
+                .map(|path| path.try_exists().unwrap())
+                .collect::<Vec<_>>()
+        };
         let before = files();
         assert!(before.iter().all(|exists| !exists));
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().canonicalize().unwrap().join("qualification");
         hagency_store::private::directory(&home).unwrap();
         let launch = PreparedLaunch::from_paths_policy(
-            owner_provider::ProviderPaths { home, codex_home, credential_ref, shared: false },
+            owner_provider::ProviderPaths {
+                home,
+                codex_home,
+                credential_ref,
+                shared: false,
+            },
             guardian,
             Some(("gpt-6.1-sol".into(), "low".into())),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(launch.discovery_required());
         let manager = Manager::default();
         let deadline = Instant::now() + Duration::from_secs(30);
-        let launch = manager.prepare(launch, deadline, Arc::new(|| Box::pin(async { Ok(()) })))
-            .await.unwrap();
+        let launch = manager
+            .prepare(launch, deadline, Arc::new(|| Box::pin(async { Ok(()) })))
+            .await
+            .unwrap();
         assert!(!launch.discovery_required());
         let mut process = launch.spawn(deadline).unwrap();
         let result = async {
             process.initialize().await?;
             process.qualify_shared_text(launch.instructions()).await
-        }.await;
+        }
+        .await;
         let stopped = process.stop_shared_text_observation();
         assert_eq!(stopped.state(), ManagedProcessState::Stopped);
         manager.drain().await.unwrap();
         assert_eq!(before, files(), "protected namespace configuration changed");
         let proof = result.expect("actual isolated text-policy qualification");
         assert!(proof.provider_digest().is_some() && proof.policy_digest().is_some());
-        eprintln!("isolated-namespace: account-stable=true; no-tools-policy=true; original-inspector-stopped=true; original-qualified-process-stopped=true; protected-inputs-unchanged=true; model-turns=0");
+        eprintln!(
+            "isolated-namespace: account-stable=true; no-tools-policy=true; original-inspector-stopped=true; original-qualified-process-stopped=true; protected-inputs-unchanged=true; model-turns=0"
+        );
     }
     #[tokio::test]
     #[ignore = "requires explicit provider namespace; metadata only, no model turns"]
     async fn native_shared_tools_actual_isolated_namespace_policy() {
-        let _ = tracing_subscriber::fmt().with_env_filter("hagency_runtime::owned::managed=debug").with_ansi(false).try_init();
-        let codex_home = PathBuf::from(std::env::var_os("HAGENCY_TEST_ISOLATED_PROVIDER_HOME").expect("explicit original namespace"));
-        let guardian = PathBuf::from(std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised guardian"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("hagency_runtime::owned::managed=debug")
+            .with_ansi(false)
+            .try_init();
+        let codex_home = PathBuf::from(
+            std::env::var_os("HAGENCY_TEST_ISOLATED_PROVIDER_HOME")
+                .expect("explicit original namespace"),
+        );
+        let guardian = PathBuf::from(
+            std::env::var_os("HAGENCY_TEST_RUNTIME_PROBE").expect("supervised guardian"),
+        );
         let credential_ref = owner_provider::selected_reference(&codex_home, false).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().canonicalize().unwrap().join("qualification");
         hagency_store::private::directory(&home).unwrap();
         let launch = PreparedLaunch::from_paths_policy(
-            owner_provider::ProviderPaths { home, codex_home, credential_ref, shared: false },
-            guardian, Some(("gpt-6-astra".into(), "low".into())),
-        ).unwrap().with_live_web(true).unwrap().with_agent_tools("diagnostic_agent", Some("yolo")).unwrap();
+            owner_provider::ProviderPaths {
+                home,
+                codex_home,
+                credential_ref,
+                shared: false,
+            },
+            guardian,
+            Some(("gpt-6-astra".into(), "low".into())),
+        )
+        .unwrap()
+        .with_live_web(true)
+        .unwrap()
+        .with_agent_tools("diagnostic_agent", Some("yolo"))
+        .unwrap();
         let manager = Manager::default();
-        let deadline = Instant::now()+Duration::from_secs(30);
-        let result = manager.prepare(launch,deadline,Arc::new(|| Box::pin(async {Ok(())}))).await;
-        let launch = match result { Ok(v)=>v, Err(e)=> {manager.drain().await.unwrap();panic!("preflight failed: {}",e.code)} };
-        let mut process=launch.spawn(deadline).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let result = manager
+            .prepare(launch, deadline, Arc::new(|| Box::pin(async { Ok(()) })))
+            .await;
+        let launch = match result {
+            Ok(v) => v,
+            Err(e) => {
+                manager.drain().await.unwrap();
+                panic!("preflight failed: {}", e.code)
+            }
+        };
+        let mut process = launch.spawn(deadline).unwrap();
         process.initialize().await.unwrap();
-        let result=process.qualify_shared_tools(launch.instructions(),true,Some("yolo")).await;
-        let stopped=process.stop_shared_text_observation();
+        let result = process
+            .qualify_shared_tools(launch.instructions(), true, Some("yolo"))
+            .await;
+        let stopped = process.stop_shared_text_observation();
         manager.drain().await.unwrap();
-        assert_eq!(stopped.state(),ManagedProcessState::Stopped);
+        assert_eq!(stopped.state(), ManagedProcessState::Stopped);
         result.unwrap();
         eprintln!("actual live-web YOLO policy qualified; model-turns=0");
     }

@@ -250,7 +250,7 @@ impl Prepared {
             .unwrap();
             let (a, ()) = tokio::join!(session.initialize(), async {
                 let r = read(&mut input).await;
-                send(&mut output,json!({"id":r["id"],"result":{"userAgent":"fixture/0.153.4","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}})).await;
+                send(&mut output,json!({"id":r["id"],"result":{"userAgent":"fixture/0.167.0","platformFamily":"fixture","platformOs":"fixture","codexHome":"/fixture"}})).await;
                 read(&mut input).await;
             });
             a.unwrap();

@@ -105,22 +105,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadApprovalBindings)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_approval_bindings(&query, |db| {
-                            session.check(&context, Permission::ReadApprovalBindings)?;
-                            require_resource(db, &query.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .resource_approval_bindings(&self.adopted_profile(store)?, query)
+                    .resource_approval_bindings(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -138,9 +125,7 @@ impl Session {
         let _command = self.scope.commands.lock().await;
         self.check(context, Permission::RetireApprovalBindings)?;
         let profile = match self.local_store()? {
-            SessionStore::Legacy(_) => "",
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => store.identity().0,
+            SessionStore::Current(store) => store.identity().0,
         };
         let receipt = CommandReceipt::new(
             context,
@@ -149,22 +134,9 @@ impl Session {
             &serde_json::json!({"profile":profile,"input":input}),
         )?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let session = self.clone();
-                let context = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(16 * 1024, move |db| {
-                        db.management_retire_approval_binding(&input, receipt, |db| {
-                            session.check(&context, Permission::RetireApprovalBindings)?;
-                            require_resource(db, &input.resource_id)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .retire_resource_approval_binding(&self.adopted_profile(store)?, input, receipt)
+                    .retire_resource_approval_binding(&self.current_profile(store)?, input, receipt)
                     .await?
             }
         };

@@ -267,6 +267,11 @@ impl NativeManagement {
             // before current revision/retained-commitment eligibility.
             && !(intent.operation() == IntentOperation::PublishResource
                 && result.as_ref().is_err_and(|error| matches!(error.code.as_str(), "management_resource_in_use" | "management_revision_conflict")))
+            // The retry asks under the original key and reads the original
+            // request's own row. That is its answer, and an observation leaves
+            // nothing behind that an earlier attempt could have committed.
+            && !(intent.operation() == IntentOperation::PersonalAgentObservation
+                && result.as_ref().is_err_and(super::personal_agent_observation::request_closed))
             && result
                 .as_ref()
                 .is_err_and(|error| known_failure_for(intent.operation(), error))
@@ -373,20 +378,11 @@ impl NativeManagement {
                 serde_json::from_value(saved.input).map_err(|_|failure(503,"management_saved_command_invalid"))?,
                 std::time::Instant::now()+std::time::Duration::from_secs(30),
             )).await?),
-            IntentOperation::EnrollResource => serde_json::to_value(
-                Box::pin(self.enroll_resource(
-                    serde_json::from_value(saved.input)
-                        .map_err(|_| failure(503, "management_saved_command_invalid"))?,
-                ))
-                .await?,
-            ),
-            IntentOperation::ConfigureResource => serde_json::to_value(
-                Box::pin(self.configure_resource(
-                    serde_json::from_value(saved.input)
-                        .map_err(|_| failure(503, "management_saved_command_invalid"))?,
-                ))
-                .await?,
-            ),
+            // Retain the original saved receipt/input as historical custody.
+            // Removed definition operations cannot be replayed into a new writer.
+            IntentOperation::EnrollResource | IntentOperation::ConfigureResource => {
+                return Err(failure(409,"management_operation_retired"));
+            }
             IntentOperation::PublishResource => serde_json::to_value(
                 Box::pin(self.publish_resource(
                     serde_json::from_value(saved.input)

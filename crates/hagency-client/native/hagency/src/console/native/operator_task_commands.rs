@@ -66,7 +66,7 @@ impl NativeManagement {
             .await
             .map_err(store_error)?
         {
-            return Err(failure(409, "task_history_not_migrated"));
+            return Err(failure(409, "current_task_proof_required"));
         }
         let (fresh, session) = self.authorized().await?;
         if fresh != context {
@@ -123,7 +123,7 @@ impl NativeManagement {
             .map_err(store_error)?;
         let proof = session.operator_task_write_access(&context).await;
         if !self.finish(&context, proof, false).await? {
-            return Err(failure(409, "task_history_not_migrated"));
+            return Err(failure(409, "current_task_proof_required"));
         }
         let (result, error) = match saved.reply {
             Some(IntentReply::Success(value)) => (
@@ -182,7 +182,7 @@ impl NativeManagement {
             .await
             .map_err(store_error)?
         {
-            return Err(failure(409, "task_history_not_migrated"));
+            return Err(failure(409, "current_task_proof_required"));
         }
         let intent = Intent::new(
             command.change.operation(),

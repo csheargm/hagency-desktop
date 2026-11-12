@@ -245,12 +245,8 @@ async fn managed_custody_call_preparation_and_issue_preserve_capacity_and_restar
             .await,
         Err(Error::Conflict)
     ));
-    assert!(matches!(
-        f.registry
-            .prepare_managed_call(call(&f, &child, "two", 151))
-            .await,
-        Err(Error::Capacity)
-    ));
+    // An old estimate is not a reservation or an admission bound.
+    assert!(f.registry.prepare_managed_call(call(&f, &child, "two", 151)).await.is_ok());
     let (a, b) = tokio::join!(
         f.registry.issue_managed_call(call(&f, &child, "one", 100)),
         f.registry.issue_managed_call(call(&f, &child, "one", 100))
@@ -673,10 +669,7 @@ async fn managed_custody_codex_required_fields_and_capture_keep_reservation() {
             .unwrap();
         assert!(!history.usage_complete);
         assert_eq!(history.reserved_tokens, 6);
-        assert!(matches!(
-            f.registry.prepare_managed_call(call(&f, &child, "blocked_successor", 1)).await,
-            Err(Error::Capacity)
-        ));
+        assert!(f.registry.prepare_managed_call(call(&f, &child, "next_task", 0)).await.is_ok());
         f.registry.shutdown().await.unwrap();
     }
 }
@@ -828,7 +821,7 @@ async fn managed_custody_schema76_migration_is_atomic_and_keeps_schema75_agent_h
     let root = f._temp.path().join("owner");
     f.registry.shutdown().await.unwrap();
     let db = Connection::open(root.join("domain.sqlite3")).unwrap();
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE IF EXISTS owner_operator_task_comments;DROP TABLE IF EXISTS owner_operator_tasks;DROP TABLE IF EXISTS owner_operator_task_histories;DROP TABLE IF EXISTS owner_resource_display_names;DROP TABLE IF EXISTS owner_shared_start_intents;DROP TABLE IF EXISTS owner_shared_successor_fences;DROP TABLE IF EXISTS owner_shared_successor_call_pins;DROP TABLE IF EXISTS owner_shared_successor_observations;DROP TABLE IF EXISTS owner_shared_successor_attempts;DROP TABLE IF EXISTS owner_shared_activity_renewals;DROP TABLE IF EXISTS owner_shared_work_observations;DROP TABLE IF EXISTS owner_shared_work_events;DROP TABLE IF EXISTS owner_shared_work_inbox;DROP TABLE IF EXISTS owner_shared_process_observations;DROP TABLE IF EXISTS owner_shared_runtime_lifetimes;DROP TRIGGER IF EXISTS owner_metadata_excludes_shared;DROP TABLE IF EXISTS owner_managed_runtime_observations;DROP TABLE IF EXISTS owner_managed_runtime_stops;DROP TABLE IF EXISTS owner_managed_runtime_lifetimes;DROP TABLE IF EXISTS owner_resource_adoptions;DROP TABLE owner_managed_fences;DROP TABLE owner_managed_observations;DROP TABLE owner_managed_call_pins;DROP TABLE owner_managed_assignment_pins;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=75;CREATE TABLE owner_managed_call_pins(collision INTEGER);").unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TABLE IF EXISTS owner_web_catalog_settings; DROP TABLE IF EXISTS owner_operator_graph_recipients; DROP TABLE IF EXISTS owner_operator_graph_outbox; DROP TABLE IF EXISTS owner_operator_graph_commands; DROP TABLE IF EXISTS owner_operator_graphs; DROP TABLE IF EXISTS owner_operator_graph_archive_chunks; DROP TABLE IF EXISTS owner_operator_graph_archives; DROP TABLE IF EXISTS owned_dispatch_execution_policies;DROP TABLE IF EXISTS approval_binding_incarnations;DROP TRIGGER IF EXISTS owner_resource_provenance_immutable;DROP TRIGGER IF EXISTS owner_resource_provenance_retained;DROP TABLE IF EXISTS owner_resource_provenance;DROP TABLE IF EXISTS owner_namespace_enrollments;DROP TABLE IF EXISTS owner_resource_namespaces;DROP TABLE IF EXISTS management_account_profiles;DROP TABLE IF EXISTS owner_shared_budget_demand_decisions;DROP TABLE IF EXISTS owner_shared_budget_work_refusals;DROP TABLE IF EXISTS owner_shared_budget_start_intents;DROP TABLE IF EXISTS owner_managed_budget_deltas;DROP TABLE IF EXISTS owner_managed_budget_commands;DROP TABLE IF EXISTS owner_operator_task_transfer_comments;DROP TABLE IF EXISTS owner_operator_task_transfer_tasks;DROP TABLE IF EXISTS owner_shared_context_call_pins;DROP TABLE IF EXISTS owner_shared_reply_deliveries;DROP TABLE IF EXISTS owner_shared_contexts;DROP TABLE IF EXISTS owner_shared_input_modes;DROP TABLE IF EXISTS owner_shared_stop_receipts;DROP TABLE IF EXISTS owner_shared_stop_intents;DROP TABLE IF EXISTS owner_shared_demand_bindings;DROP TABLE IF EXISTS owner_shared_demand_decisions;DROP TABLE IF EXISTS owner_shared_demands;DROP TABLE IF EXISTS owner_shared_demand_controls;DROP TABLE IF EXISTS owner_operator_task_comments;DROP TABLE IF EXISTS owner_operator_tasks;DROP TABLE IF EXISTS owner_operator_task_histories;DROP TABLE IF EXISTS owner_resource_display_names;DROP TABLE IF EXISTS owner_shared_start_intents;DROP TABLE IF EXISTS owner_shared_successor_fences;DROP TABLE IF EXISTS owner_shared_successor_call_pins;DROP TABLE IF EXISTS owner_shared_successor_observations;DROP TABLE IF EXISTS owner_shared_successor_attempts;DROP TABLE IF EXISTS owner_shared_activity_renewals;DROP TABLE IF EXISTS owner_shared_work_observations;DROP TABLE IF EXISTS owner_shared_work_events;DROP TABLE IF EXISTS owner_shared_work_inbox;DROP TABLE IF EXISTS owner_shared_process_observations;DROP TABLE IF EXISTS owner_shared_runtime_lifetimes;DROP TRIGGER IF EXISTS owner_metadata_excludes_shared;DROP TABLE IF EXISTS owner_managed_runtime_observations;DROP TABLE IF EXISTS owner_managed_runtime_stops;DROP TABLE IF EXISTS owner_managed_runtime_lifetimes;DROP TABLE IF EXISTS owner_resource_adoptions;DROP TABLE owner_managed_fences;DROP TABLE owner_managed_observations;DROP TABLE owner_managed_call_pins;DROP TABLE owner_managed_assignment_pins;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=75;CREATE TABLE owner_managed_call_pins(collision INTEGER);").unwrap();
     drop(db);
     assert!(OwnerResourceRegistry::open_root(&root).is_err());
     let db = Connection::open(root.join("domain.sqlite3")).unwrap();
@@ -1054,16 +1047,13 @@ async fn owner_reconciliation_settles_only_calls_whose_process_is_gone() {
     qualify(&f, &child).await;
     let query = InterruptedCallQuery { agent_id: "agent_native".into() };
     let custody = issue(&f, &child, "one", 100).await;
-    // While the custody object lives, the call is listed but not reconcilable
-    // and the reservation still blocks further calls.
+    // While custody lives the call cannot be reconciled. Unknown usage does
+    // not consume a fictitious reservation or block another task.
     let page = f.registry.interrupted_calls(f.profile.clone(), query.clone()).await.unwrap();
     assert_eq!(page.calls.len(), 1);
     assert!(page.calls[0].live && !page.calls[0].usage_observed && page.calls[0].state == "issued");
     assert_eq!((page.calls[0].reserved_tokens, page.calls[0].known_consumed_tokens), (100, 0));
-    assert!(matches!(
-        f.registry.prepare_managed_call(call(&f, &child, "two", 100)).await,
-        Err(Error::Capacity)
-    ));
+    assert!(f.registry.prepare_managed_call(call(&f, &child, "two", 100)).await.is_ok());
     let input = ReconcileInterruptedCall {
         command_id: "rc_one".into(),
         agent_id: "agent_native".into(),
@@ -1131,15 +1121,11 @@ async fn owner_reconciliation_never_goes_below_observed_usage() {
         consumed_tokens: consumed,
         evidence_reference: "provider usage page 2026-11-03".into(),
     };
-    // Below the observed lower bound, above the reservation, or a stale
-    // reservation figure: all refused without changing anything.
+    // Below the observed lower bound or a stale original estimate is refused.
     assert!(f.registry.reconcile_interrupted_call(f.profile.clone(), declare("rc_low", 20, 100)).await.is_err());
     assert!(f.registry.reconcile_interrupted_call(f.profile.clone(), declare("rc_high", 101, 101)).await.is_err());
     assert!(f.registry.reconcile_interrupted_call(f.profile.clone(), declare("rc_stale", 40, 99)).await.is_err());
-    assert!(matches!(
-        f.registry.prepare_managed_call(call(&f, &child, "two", 60)).await,
-        Err(Error::Capacity)
-    ));
+    assert!(f.registry.prepare_managed_call(call(&f, &child, "two", 100)).await.is_ok());
     let settled = f.registry.reconcile_interrupted_call(f.profile.clone(), declare("rc_ok", 40, 100)).await.unwrap();
     assert_eq!((settled.consumed_tokens, settled.released_tokens, settled.replayed), (40, 60, false));
     assert!(f.registry.interrupted_calls(f.profile.clone(), query).await.unwrap().calls.is_empty());
@@ -1155,10 +1141,40 @@ async fn observed_window(f: &Fixture, child: &str) -> Option<u64> {
         .0
         .store
         .call(4096, move |db| {
-            shared_execution::observed_context_window(&db.db, &child)
+            db.db.query_row("SELECT json_extract(evidence,'$.observation.usage.runtime_evidence.usage.context_window') FROM owner_managed_observations WHERE child_id=?1 AND kind='usage' AND json_type(evidence,'$.observation.usage.runtime_evidence.usage.context_window')='integer' ORDER BY ledger_revision DESC LIMIT 1", [&child], |r| r.get::<_,u64>(0)).optional().map_err(Into::into)
         })
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn postpaid_managed_usage_and_owner_reconciliation_charge_overrun_without_an_estimate() {
+    for known in [false, true] {
+        let f = fixture().await;
+        let child = native_child(&f).await;
+        qualify(&f, &child).await;
+        let custody = issue(&f, &child, "postpaid", 0).await;
+        let id = custody.call_id().to_owned();
+        let receipt = f.registry.record_managed_usage(&custody,
+            reported("native_usage", if known { 200 } else { 20 }, true, known),
+        ).await.unwrap();
+        assert_eq!(receipt.known_consumed_tokens, if known {200} else {20});
+        drop(custody);
+        if !known {
+            let declaration = ReconcileInterruptedCall {
+                command_id: "verified_overrun".into(), agent_id: "agent_native".into(), call_id: id.clone(),
+                expected_reserved_tokens: 0, consumed_tokens: 200,
+                evidence_reference: "offline fixture verified receipt".into(),
+            };
+            let settled = f.registry.reconcile_interrupted_call(f.profile.clone(), declaration.clone()).await.unwrap();
+            assert_eq!((settled.consumed_tokens, settled.released_tokens), (200, 0));
+            assert!(f.registry.reconcile_interrupted_call(f.profile.clone(), declaration).await.unwrap().replayed);
+        }
+        let history = f.registry.managed_call_history(clean(&f, &child, 1), id).await.unwrap();
+        assert_eq!((history.reserved_tokens,history.known_consumed_tokens,history.usage_complete), (0,200,true));
+        assert!(matches!(f.registry.prepare_managed_call(call(&f,&child,"next",0)).await,Err(Error::Capacity)));
+        f.registry.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]

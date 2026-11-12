@@ -2,6 +2,45 @@ use super::{approval_fixture::*, *};
 use hagency_core::approvals::ApprovalChoice;
 
 #[tokio::test]
+async fn native_owned_descendant_approval_keeps_original_owner_and_connection() {
+    for choice in [ApprovalChoice::Once, ApprovalChoice::Deny] {
+        let f = Fixture::configured(true);
+        let (mut op, mut notices) = operation(&f, "owned-approval-child", policy());
+        let request = notice(&f, &mut op, &mut notices).await;
+        let card = f.domain.private_approval(request.request_id.clone()).await.unwrap();
+        assert_eq!(card.params["threadId"], "child-thread");
+        assert_eq!(card.params["turnId"], "child-turn");
+        assert_eq!(card.owner_mxid, "@owner:example.test");
+        assert_eq!(f.state(), "parked");
+        let sql = f.sql();
+        let contexts: (i64,i64) = sql.query_row("SELECT COUNT(*),COUNT(DISTINCT json_extract(config,'$.connection')) FROM approval_contexts WHERE dispatch_id='dispatch'", [], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(contexts, (2,1));
+        drop(sql);
+        assert!(f.domain.observe_owner_verdict(hagency_core::approvals::OwnerVerdictObservation {
+            request_id: request.request_id.clone(), request_digest: card.digest,
+            binding_generation: card.binding_generation, server_name: "example.test".into(),
+            room_id: card.room_id, sender_mxid: "@worker:example.test".into(),
+            event_id: "$foreign-owner".into(), encrypted: true, choice,
+        }).await.is_err());
+        assert!(responses(&f).is_empty());
+        choose(&f, &request.request_id, choice).await;
+        let report = op.wait().await.unwrap();
+        assert_eq!(report.protocol, Protocol::Completed, "{:?} {:?}", report.failure, report.runtime_observation());
+        assert_eq!(responses(&f)[0]["result"]["decision"], if choice == ApprovalChoice::Once {"accept"} else {"decline"});
+        assert_eq!(responses(&f).len(), 1);
+        drop(report);
+        drop(op);
+        f.domain.shutdown().await.unwrap();
+    }
+    let f = Fixture::configured(true);
+    let (mut op, mut notices) = operation(&f, "owned-approval-child-foreign", policy());
+    let report = op.wait().await.unwrap();
+    assert_ne!(report.protocol, Protocol::Completed);
+    assert!(notices.recv().await.is_none());
+    assert!(responses(&f).is_empty());
+}
+
+#[tokio::test]
 async fn native_owned_approval_long_budget() {
     let f = Fixture::configured(true);
     let long = Limits {

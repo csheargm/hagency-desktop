@@ -64,7 +64,7 @@ async fn native_creation_child() {
     drop(db);
     let review = f
         .owner
-        .review_device_setup(package(), None, None)
+        .review_device_setup(package(), None)
         .await
         .unwrap();
     let selected = f

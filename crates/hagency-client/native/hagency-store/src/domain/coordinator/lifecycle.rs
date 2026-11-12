@@ -53,7 +53,7 @@ pub(super) fn authorize(db: &Connection, command: &AgentControl, now: u64) -> Re
         )
         .optional()?
         .ok_or(Error::NotFound)?;
-    let approved = migration::approved_request(&decision)?;
+    let approved = audit::approved_request(&decision, matches!(command.operation, AgentOperation::Stop | AgentOperation::Retire | AgentOperation::RetryCleanup))?;
     if approved.server_engagement_id != c.server_engagement_id
         || approved.project_id != command.project_id
         || approved.project_revision != command.project_revision

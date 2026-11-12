@@ -407,7 +407,6 @@ macro_rules! deadline_methods {
 deadline_methods! {
     retire_account(input:native::RetireAccount)->native::AccountRetirement;
     create_resource_configuration(input:native::CreateResourceConfiguration)->native::ResourceConfigurationResult;
-    connect_provider(input:native::ManagementRuntime)->Value;
     prepare_personal_workspace(input:native::PreparePersonalWorkspace)->Value;
     edit_local_resource(input:native::EditLocalResource)->native::ResourceConfigurationResult;
     enroll_account_resource(input:native::NamespaceEnrollment)->hagency_store::owner_resources::OwnerResourceReceipt;
@@ -528,10 +527,6 @@ impl Bridge {
                     m.create_resource_configuration(input, deadline(ms)?)
                         .await?,
                 )
-            }
-            Operation::connect_provider => {
-                let (input, ms): (native::ManagementRuntime, u64) = decode(args)?;
-                m.connect_provider(input, deadline(ms)?).await
             }
             Operation::prepare_personal_workspace => {
                 let (input, ms): (native::PreparePersonalWorkspace, u64) = decode(args)?;

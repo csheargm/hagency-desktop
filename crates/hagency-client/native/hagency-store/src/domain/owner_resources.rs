@@ -1,22 +1,17 @@
 //! One OS-owner resource ledger; Matrix profiles are explicitly granted access.
 //! No caller-selected production path, credential storage or provider execution.
-#[cfg(any(test, feature = "resource-adoption"))]
 pub mod adoption;
 mod capacity;
 pub use capacity::{budget, shared_execution};
 mod namespace;
 pub use namespace::{NamespaceEnrollment, ResourceAccountSelection, ResourceNamespace};
 mod provenance;
-#[cfg(feature = "resource-adoption")]
-pub mod graph_archives;
-#[cfg(feature = "resource-adoption")]
 pub mod graph_journal;
-#[cfg(feature = "resource-adoption")]
 mod edit_binding;
-#[cfg(feature = "resource-adoption")]
 pub use edit_binding::ResourceEditBinding;
 mod provider_binding;
 pub use provider_binding::VerifiedOwnerResourceBinding;
+mod previous_build;
 #[cfg(test)]
 mod tests;
 use super::*;
@@ -24,7 +19,6 @@ use crate::{DomainStore, management::ResourceSummary};
 pub(super) use capacity::additional_commitments;
 pub(super) use capacity::unsettled_resource;
 pub(super) use capacity::unsettled_resource_except;
-#[cfg(feature = "resource-adoption")]
 pub(super) use capacity::unsettled_exact_resource;
 pub use capacity::{
     InterruptedCall, InterruptedCallPage, InterruptedCallQuery, InterruptedCallReconciliation,
@@ -64,9 +58,24 @@ use std::{
 
 static REGISTRIES: LazyLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<Inner>>>> =
     LazyLock::new(Default::default);
+/// Written beside the database when it is created, holding the name the
+/// server will know it by. While the note is there and names this database,
+/// the database was created empty and has told no server anything that a
+/// declaration did not precede.
+const CREATED_EMPTY: &str = "ledger-created-empty";
+
+fn ledger_name(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"hagency-owner-ledger-v1\0");
+    hash.update(id.as_bytes());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 struct Inner {
     store: DomainStore,
     id: String,
+    root: PathBuf,
     closed: AtomicBool,
     /// Call ids whose custody object is alive in this process. Owner
     /// reconciliation refuses them: only a dead process leaves a call open.
@@ -152,6 +161,7 @@ pub struct VerifiedProviderAccount {
     digest: String,
     runtime: String,
     expires: Instant,
+    claude: Option<hagency_runtime::claude::account::AccountBinding>,
 }
 impl VerifiedProviderAccount {
     pub fn new(
@@ -180,7 +190,22 @@ impl VerifiedProviderAccount {
             digest: canonical::digest(&json!({"provider":provider,"subject":subject}))?,
             runtime: runtime.into(),
             expires,
+            claude: None,
         })
+    }
+    pub fn from_claude_binding(binding: hagency_runtime::claude::account::AccountBinding) -> Result<Self, Error> {
+        binding.check().map_err(|_| Error::LocalAuthority)?;
+        let mut proof = Self::new("claude", binding.provider(), binding.subject(), binding.expires())?;
+        if proof.digest != binding.provider_digest() { return Err(Error::LocalAuthority); }
+        proof.claude = Some(binding);
+        Ok(proof)
+    }
+    /// The original native provider probe, never reconstructed from a resource
+    /// row. A shared Claude process must also produce its own matching receipt.
+    pub fn claude_binding(&self) -> Result<&hagency_runtime::claude::account::AccountBinding, Error> {
+        let binding = self.claude.as_ref().ok_or(Error::LocalAuthority)?;
+        binding.check().map_err(|_| Error::LocalAuthority)?;
+        Ok(binding)
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -294,6 +319,16 @@ impl OwnerResourceRegistry {
     pub fn isolated_for_tests(root: &Path) -> Result<Self, Error> {
         Self::open_root(root)
     }
+    /// Runs fixture setup through the actual isolated canonical writer.
+    /// This helper is absent from production/default builds.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn with_repository_for_tests<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut DomainRepository) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        self.0.store.call(128 * 1024, operation).await
+    }
     /// Call from a blocking native initialization task. Application profile
     /// paths and HOME environment overrides cannot select an alternate ledger.
     pub fn open() -> Result<Self, Error> {
@@ -345,6 +380,7 @@ impl OwnerResourceRegistry {
         let inner = Arc::new(Inner {
             store,
             id,
+            root: root.clone(),
             closed: AtomicBool::new(false),
             live_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
@@ -353,6 +389,29 @@ impl OwnerResourceRegistry {
     }
     pub fn id(&self) -> &str {
         &self.0.id
+    }
+    /// Names this database's mutation numbers to the server. Every database
+    /// counts from 1, so a server tells two databases of one device apart by
+    /// this name. It is derived, so the database identity itself stays local.
+    pub fn ledger_id(&self) -> String {
+        ledger_name(&self.0.id)
+    }
+    /// This database was created empty by this build and has not reported to
+    /// a server without declaring itself first. Whatever a server still holds
+    /// for this device therefore came from an earlier database.
+    pub fn ledger_created_empty(&self) -> bool {
+        crate::private::read_secret(&self.0.root.join(CREATED_EMPTY))
+            .is_ok_and(|note| note == self.ledger_id().as_bytes())
+    }
+    /// The database is about to report to a server that cannot be told which
+    /// database is speaking. From here on it can no longer claim that what
+    /// the server holds is not its own.
+    pub fn ledger_reports_undeclared(&self) -> Result<(), Error> {
+        match std::fs::remove_file(self.0.root.join(CREATED_EMPTY)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
     pub async fn shutdown(&self) -> Result<(), Error> {
         self.0.closed.store(true, Ordering::Release);
@@ -478,7 +537,6 @@ fn authorize_resource(db: &Connection, profile: &ProfileAuthority, id: &str) -> 
         [id],
         |r| r.get(0),
     ).optional()?.ok_or(Error::LocalAuthority)?;
-    require_adopted_seat_ready(db, &seat)?;
     let allowed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_grants WHERE profile=?1 AND resource_id=?2 AND active=1)",params![profile.digest,id],|r|r.get(0))?;
     if allowed {
         Ok(())
@@ -486,14 +544,7 @@ fn authorize_resource(db: &Connection, profile: &ProfileAuthority, id: &str) -> 
         Err(Error::LocalAuthority)
     }
 }
-fn require_adopted_seat_ready(db: &Connection, seat: &str) -> Result<(), Error> {
-    let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_adoptions WHERE phase<4 AND json_extract(plan,'$.targetSeat.id')=?1)",[seat],|r|r.get(0))?;
-    if pending {
-        Err(Error::LocalAuthority)
-    } else {
-        Ok(())
-    }
-}
+
 impl DomainRepository {
     fn bind_owner_registry(&mut self, root: &Path) -> Result<String, Error> {
         let directory = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
@@ -524,6 +575,10 @@ impl DomainRepository {
                 let mut bytes = [0; 32];
                 getrandom::fill(&mut bytes).map_err(|_| Error::Unavailable)?;
                 let id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                // Before the identity exists: a failure after this leaves a
+                // note for a database that was never created, which the next
+                // one replaces and no other can match.
+                crate::private::replace(&root.join(CREATED_EMPTY), ledger_name(&id).as_bytes())?;
                 tx.execute(
                     "INSERT INTO owner_resource_identity VALUES(1,?1,?2,1)",
                     params![id, identity],
@@ -595,7 +650,6 @@ impl DomainRepository {
                 let seat_id = mapping
                     .clone()
                     .unwrap_or_else(|| format!("seat_owner_{}", proof.digest));
-                require_adopted_seat_ready(&tx, &seat_id)?;
                 // The owner chose this pool's maximum, not a provider-wide cap.
                 let seat = Seat { id: seat_id.clone(), declaration: None };
                 let stored: Option<String> = tx
@@ -625,23 +679,51 @@ impl DomainRepository {
                 if let Some(selection)=namespace { definition["namespace"]=selection.key(); }
                 let preset = canonical::digest(&definition)?;
                 let preset_id=if namespace.is_some() {format!("owner_ns_{preset}")} else {format!("owner_{preset}")};
-                let r: Resource = serde_json::from_value(
-                    json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}}),
-                )?;
-                r.validate()?;
-                let exists: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
-                    [r.id()],
-                    |r| r.get(0),
-                )?;
-                if !exists {
-                    let r = prepare_resource_write(&tx, &r, Some(false), true)?;
-                    write_resource_configuration(&tx, &r, true)?;
-                    created_resource = true;
-                } else if canonical::digest(&serde_json::to_value(read_resource(&tx, &r.id())?)?)?
-                    != canonical::digest(&serde_json::to_value(&r)?)?
-                {
-                    return Err(Error::Conflict);
+                let configured = |preset_id: String| -> Result<Resource, Error> {
+                    let mut configuration = json!({"presetId":preset_id,"seatId":seat_id,"framework":proof.runtime,"model":model,"reasoning":reasoning,"published":false,"ceiling":{"tokens":monthly_tokens,"period":"monthly"}});
+                    // What the owner's own endpoint serves under this name is the
+                    // owner's word; the capacity table rates no row of it.
+                    if proof.claude.as_ref().is_some_and(|binding| binding.own_endpoint()) {
+                        configuration["provider"] = json!(hagency_core::qualification::OWNER_ENDPOINT);
+                    }
+                    let r: Resource = serde_json::from_value(configuration)?;
+                    r.validate()?;
+                    Ok(r)
+                };
+                let taken = |tx: &Connection, r: &Resource| -> Result<Option<bool>, Error> {
+                    let exists: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
+                        [r.id()],
+                        |r| r.get(0),
+                    )?;
+                    if !exists {
+                        return Ok(None);
+                    }
+                    Ok(Some(
+                        canonical::digest(&serde_json::to_value(read_resource(tx, &r.id())?)?)?
+                            == canonical::digest(&serde_json::to_value(r)?)?,
+                    ))
+                };
+                let mut r = configured(preset_id)?;
+                let mut same = taken(&tx, &r)?;
+                // The owner's Claude Code configuration has no sign-in folder
+                // to tell its pools apart: the account, model and reasoning
+                // name the first pool only. One that differs from it (another
+                // maximum, or the first was published, changed or deleted) is
+                // a pool of its own, named by the command that asks for it.
+                if same == Some(false) && namespace.is_none() && proof.claude.is_some() {
+                    definition["command"] = json!(consent.command);
+                    r = configured(format!("owner_{}", canonical::digest(&definition)?))?;
+                    same = taken(&tx, &r)?;
+                }
+                match same {
+                    None => {
+                        let r = prepare_resource_write(&tx, &r, Some(false), true)?;
+                        write_resource_configuration(&tx, &r, true)?;
+                        created_resource = true;
+                    }
+                    Some(true) => {}
+                    Some(false) => return Err(Error::Conflict),
                 }
                 if let Some(selection)=namespace {
                     namespace::bind(&tx, &r.id(), selection)?;
@@ -650,7 +732,6 @@ impl DomainRepository {
             }
             Action::Link { resource } => {
                 let target = read_resource(&tx, resource)?;
-                require_adopted_seat_ready(&tx, &target.seat_id)?;
                 (resource.clone(), true)
             }
             Action::Revoke { resource } => {

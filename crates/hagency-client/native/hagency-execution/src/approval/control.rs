@@ -96,18 +96,21 @@ impl ApprovalRun {
         let Deadline { until, expires_at } = deadline;
         self.callbacks.context = Some(context.clone());
         // Retain the sole returned scope before enabling callback control.
-        self.scope = Some(
+        self.callbacks.scope = Some(std::sync::Arc::new(
             domain
-                .bind_owned_approval_context(
+                .bind_owned_approval_tree_context(
                     cap.clone(),
                     expected.into(),
                     context,
+                    runner
+                        .observation_source()
+                        .map_err(|_| Failure::Admission)?,
                     until.into_std(),
                     expires_at,
                 )
                 .await
                 .map_err(|error| Failure::lost(crate::AuthoritySite::ApprovalBind, &error))?,
-        );
+        ));
         runner
             .enable_approval_control(self.callbacks.host.policy())
             .map_err(|_| Failure::Admission)?;
@@ -199,8 +202,13 @@ impl ApprovalRun {
                     return Ok(());
                 }
             }
-            let scope = self.scope.as_ref().ok_or(Failure::Admission)?;
-            let maintenance = domain.maintain_owned_approval(scope);
+            let scope = self
+                .callbacks
+                .scope
+                .as_ref()
+                .ok_or(Failure::Admission)?
+                .clone();
+            let maintenance = domain.maintain_owned_approval(&scope);
             #[cfg(test)]
             let maintenance = {
                 let gate = if self.callbacks.fault == Some(super::Fault::MaintainGate) {
@@ -295,7 +303,7 @@ impl ApprovalRun {
                 state::matches(
                     entry.grant.as_ref().ok_or(Failure::Protocol)?,
                     entry,
-                    self.callbacks.context.as_ref().ok_or(Failure::Admission)?,
+                    &entry.context,
                 )?;
                 if authorized.terminal? {
                     // The turn-end rule is the authority on quiet ends: a

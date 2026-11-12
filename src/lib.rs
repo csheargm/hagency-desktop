@@ -170,6 +170,8 @@ pub fn cache_dir() -> &'static Path {
 }
 
 #[cfg(test)]
+mod data_directory_tests;
+#[cfg(test)]
 mod upstream_port_tests;
 
 /// File-backed, integrity-checked attachment results.

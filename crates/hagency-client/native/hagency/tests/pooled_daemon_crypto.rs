@@ -221,10 +221,10 @@ mod fixture {
 
     use hagency::native_owner::Command;
     use hagency::native_owner::{
-        EnrollResource, ManagementCommand, ManagementPackage, NativeManagement, OwnerGrantChoices,
+        NamespaceEnrollment, ManagementCommand, ManagementPackage, NativeManagement, OwnerGrantChoices,
         OwnerGrantPublicationResult, initialize_resource_activation_fixture,
     };
-    use hagency_store::management::{Permission, ResourceQuery};
+    use hagency_store::management::{Permission, ResourceQuery, PrepareAccount, AccountInventoryQuery, AccountModelQuery};
     fn package(instance: u64) -> ManagementPackage {
         use Permission::*;
         ManagementPackage {
@@ -233,8 +233,9 @@ mod fixture {
             account_epoch: 1,
             permissions: vec![
                 ReadResources,
-                ReadProviders,
-                ConnectProviders,
+                ReadAccounts,
+                PrepareAccounts,
+                ReadAccountModels,
                 EnrollResources,
                 PrepareSourceQuiescence,
                 ReadConnections,
@@ -357,36 +358,9 @@ mod fixture {
         let native = NativeOwner::open_with_matrix(&native_root, &origin, owner, source.clone())
             .await
             .unwrap();
-        stage("authenticated original resource owner");
-        let manager = native.management(package(1)).await.unwrap();
-        manager
-            .enroll_resource(EnrollResource {
-                command_id: unique_id("fixture_enroll"),
-                runtime: "codex".into(),
-                model_id: "gpt-5.6-sol".into(),
-                reasoning: Some("medium".into()),
-                monthly_tokens: 10000,
-            })
-            .await
-            .unwrap();
-        let before = manager.resources(ResourceQuery::default()).await.unwrap();
-        assert_eq!(before.resources.len(), 1);
-        let resource_id = before.resources[0].id.clone();
-        manager.retire();
-        drop(manager);
-        native
-            .seed_empty_personal_activation_fixture()
-            .await
-            .unwrap();
-        stage("native model enrollment complete; adopting original resource");
-        let review = native
-            .review_resource_activation(package(2), None, 10000)
-            .await
-            .unwrap();
-        let selection = native
-            .confirm_resource_activation(review, package(2), || true)
-            .await
-            .unwrap();
+        stage("authenticated current resource owner");
+        let review=native.review_device_setup(package(1),None,None).await.unwrap();
+        let selection=native.confirm_device_setup(review,package(1),||true).await.unwrap();
         native.suspend().await.unwrap();
         drop(native);
         let native = selection
@@ -397,8 +371,18 @@ mod fixture {
             selection.device_setup_phase(&native).await.unwrap(),
             "active"
         );
-        stage("canonical resource adoption active");
+        stage("current canonical profile active");
         let manager = native.management(package(3)).await.unwrap();
+        let account=manager.prepare_account(PrepareAccount{command_id:unique_id("fixture_account")}).await.unwrap();
+        let inventory=manager.account_inventory(AccountInventoryQuery{id:Some(account.account_id.clone()),after:None}).await.unwrap();
+        let selected=inventory.account.unwrap();
+        let receipt=manager.enroll_account_resource(NamespaceEnrollment{
+            command_id:unique_id("fixture_enroll"),
+            account:AccountModelQuery{account_id:account.account_id,expected_revision:selected.revision.unwrap()},
+            model:"gpt-5.6-sol".into(),reasoning:Some("medium".into()),monthly_tokens:10000,
+        },std::time::Instant::now()+Duration::from_secs(30)).await.unwrap();
+        let resource_id=receipt.resource_id;
+
         let resources = manager.resources(ResourceQuery::default()).await.unwrap();
         let resource = resources
             .resources
@@ -420,8 +404,8 @@ mod fixture {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        // This fixture explicitly configures a UTC monthly account ceiling.
-        // The owner-selected pool calendar must stay within that ceiling.
+        // The fixture explicitly selects a UTC monthly pool calendar and
+        // capacity within the current resource ceiling.
         let review = access
             .prepare(
                 contribution_id.clone(),

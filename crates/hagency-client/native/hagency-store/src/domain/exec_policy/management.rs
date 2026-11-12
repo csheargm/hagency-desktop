@@ -180,7 +180,8 @@ fn shared_snapshot(db: &Connection, query: &ExecutionPolicyQuery) -> Result<Agen
         shared_mode:Some(if saved.is_none(){"chat"}else if yolo{"yolo"}else{"standard"}.into()),
         resource_id:query.resource_id.clone(),engagement_id:query.engagement_id.clone(),
         agent:command["definition"]["name"].as_str().ok_or(Error::LocalAuthority)?.into(),
-        project_id:String::new(),project_name:None,framework:"codex".into(),
+        // The pool's own coding tool, so the page words its options for that tool.
+        project_id:String::new(),project_name:None,framework:super::super::read_resource(db,&query.resource_id)?.framework,
         execution_policy:ExecutionPolicyValue{yolo},applies_to:PolicyApplication::NextDispatch,revision:String::new(),
     };
     result.revision=hagency_core::canonical::digest(&json!({"policy":result,"saved":saved,"webRevision":web.revision}))?;

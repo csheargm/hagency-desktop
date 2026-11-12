@@ -2,7 +2,7 @@
 //! Stop recovery precedes both new process and original-demand recovery. Each
 //! cursor belongs to its own journal; closing the mini app changes no custody.
 use super::NativeError;
-use ::hagency::native_owner::{AdoptedSharedExecutor,AgentBudgetProgress,SharedExecutionProgress};
+use ::hagency::native_owner::{CurrentSharedExecutor,AgentBudgetProgress,SharedExecutionProgress};
 trait BudgetIo {
     fn recover_stop(&self,after:Option<String>)->impl std::future::Future<Output=Result<Option<String>,NativeError>>+Send;
     fn apply_delta(&self,after:Option<String>)->impl std::future::Future<Output=Result<Option<String>,NativeError>>+Send;
@@ -10,7 +10,7 @@ trait BudgetIo {
     fn poll_process(&self,after:Option<String>)->impl std::future::Future<Output=Result<Option<String>,NativeError>>+Send;
     fn poll_demand(&self,after:Option<String>)->impl std::future::Future<Output=Result<Option<String>,NativeError>>+Send;
 }
-impl BudgetIo for AdoptedSharedExecutor {
+impl BudgetIo for CurrentSharedExecutor {
     async fn recover_stop(&self,after:Option<String>)->Result<Option<String>,NativeError>{self.resume_next_demand_stop(after).await.map(|s|s.map(|v|v.command_id))}
     async fn apply_delta(&self,after:Option<String>)->Result<Option<String>,NativeError>{
         self.poll_budget(after).await.map(|s|match s{AgentBudgetProgress::Idle=>None,AgentBudgetProgress::HistoricalReceiptMissing{command_id}|AgentBudgetProgress::Recorded{command_id,..}=>Some(command_id)})
@@ -24,7 +24,7 @@ impl BudgetIo for AdoptedSharedExecutor {
 #[derive(Default)]
 pub(super) struct Polling {stop:Option<String>,delta:Option<String>,demand:Option<String>,process:Option<String>,assignment:Option<String>}
 impl Polling {
-    pub(super) async fn poll(&mut self,executor:&AdoptedSharedExecutor,live:impl Fn()->bool){self.existing(executor,live).await;}
+    pub(super) async fn poll(&mut self,executor:&CurrentSharedExecutor,live:impl Fn()->bool){self.existing(executor,live).await;}
     async fn existing(&mut self,io:&impl BudgetIo,live:impl Fn()->bool){
         if !live(){return}
         let result=io.recover_stop(self.stop.clone()).await;

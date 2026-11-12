@@ -246,7 +246,10 @@ impl History {
         if predecessor.state != State::Recorded
             || predecessor.original.selection.grant_id != link.predecessor_grant_id
             || &predecessor.original.binding.contribution_id != contribution
-            || predecessor.original.admission != original.admission
+            || !admission::AdmissionRound::same_request(
+                &predecessor.original.admission,
+                &original.admission,
+            )
         {
             return Err(history_error());
         }

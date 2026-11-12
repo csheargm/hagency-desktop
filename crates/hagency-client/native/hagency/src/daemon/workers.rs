@@ -250,7 +250,7 @@ pub mod native {
     //! that Hagency Desktop already uses for pool hosting.
     use super::*;
     use crate::native_owner::{
-        AdoptedAllocationExecutor, AdoptedManagementSelection, AdoptedSharedExecutor,
+        CurrentAllocationExecutor, CurrentProfileSelection, CurrentSharedExecutor,
         AgentSettlementProgress, AllocationProgress, ManagedAgentProgress, ManagedMatrixProgress,
         ManagementPackage, NativeOwner, SharedDemandProgress, SharedExecutionProgress,
     };
@@ -281,7 +281,7 @@ pub mod native {
         }
     }
 
-    impl PassIo for AdoptedSharedExecutor {
+    impl PassIo for CurrentSharedExecutor {
         fn enabled(&self, step: Step) -> bool {
             match step {
                 Step::DemandStop
@@ -419,13 +419,13 @@ pub mod native {
     #[allow(clippy::too_many_arguments)]
     pub async fn run_shared(
         owner: NativeOwner,
-        selection: AdoptedManagementSelection,
+        selection: CurrentProfileSelection,
         control: Arc<Control>,
         gate: Gate,
         admission: Arc<Admission>,
         epoch: u64,
         health: Arc<std::sync::Mutex<Option<String>>>,
-        executor_slot: Arc<tokio::sync::Mutex<Option<Arc<AdoptedSharedExecutor>>>>,
+        executor_slot: Arc<tokio::sync::Mutex<Option<Arc<CurrentSharedExecutor>>>>,
     ) {
         let live = || !control.retired.load(Ordering::Acquire) && gate();
         let mut cursors = Cursors::default();
@@ -504,7 +504,7 @@ pub mod native {
     /// and receipts continue while admission is paused.
     pub async fn run_allocation(
         owner: NativeOwner,
-        selection: AdoptedManagementSelection,
+        selection: CurrentProfileSelection,
         control: Arc<Control>,
         gate: Gate,
         epoch: u64,
@@ -513,7 +513,7 @@ pub mod native {
         let live = || !control.retired.load(Ordering::Acquire) && gate();
         let mut allocation: Option<String> = None;
         let mut settlement: Option<String> = None;
-        let mut executor: Option<AdoptedAllocationExecutor> = None;
+        let mut executor: Option<CurrentAllocationExecutor> = None;
         let advance = |cursor: &mut Option<String>, r: Result<AllocationProgress, NativeError>| {
             match r {
                 Ok(

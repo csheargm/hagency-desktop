@@ -50,7 +50,7 @@ fn namespace_source(
     }))
 }
 
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn recover_resource_configuration(
         &self,
         profile: &ProfileAuthority,

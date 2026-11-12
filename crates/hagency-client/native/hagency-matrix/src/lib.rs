@@ -185,6 +185,7 @@ pub use presence::{
 pub use presence::{ack_request, typing_request};
 
 mod approval_intake;
+mod approval_markers;
 pub use approval_intake::{
     ApprovalCollector, ApprovalCustodyStage, ApprovalCustodyStatus, ApprovalIntakeSummary,
     ApprovalServiceTurn, FleetApprovalAnchor, HostApprovalConfig, HostApprovalPlan,

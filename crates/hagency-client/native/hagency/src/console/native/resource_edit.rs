@@ -136,7 +136,7 @@ impl NativeManagement {
         input.validate().map_err(store_error)?;
         #[cfg(not(feature = "resource-adoption"))]
         {
-            Err(failure(409, "resource_adoption_required"))
+            Err(failure(409, "device_setup_required"))
         }
         #[cfg(feature = "resource-adoption")]
         {
@@ -239,7 +239,7 @@ impl NativeManagement {
         #[cfg(not(feature = "resource-adoption"))]
         {
             let _ = (input, confirmed_until);
-            Err(failure(409, "resource_adoption_required"))
+            Err(failure(409, "device_setup_required"))
         }
         #[cfg(feature = "resource-adoption")]
         {

@@ -70,15 +70,15 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
         .await
         .unwrap();
     let h = prepare(&a, &w).await;
-    assert_eq!(h.reserved_tokens, 143);
+    assert_eq!(h.reserved_tokens, 0);
     let attempt =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 attempt,
                 SharedWorkStart {
                     work: w.clone(),
@@ -91,10 +91,7 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
             .unwrap();
     a.process.start_shared_text_thread().await.unwrap();
     custody.check().unwrap();
-    a.process
-        .start_shared_text_turn(w.body.clone())
-        .await
-        .unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_turn(&a.process).unwrap();
     loop {
         let event = a.process.next_shared_text_event().await.unwrap();
@@ -135,6 +132,8 @@ async fn shared_demand_actual_idle_process_promotes_exact_event_without_new_star
             .await
             .unwrap();
     assert_eq!((old.reserved_tokens, old.known_consumed_tokens), (40, 7));
+    assert!(!old.usage_complete);
+    assert_eq!(old.state, "unknown");
     a.stop().await;
 }
 #[tokio::test]
@@ -146,7 +145,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id.clone())
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id.clone())
             .await
             .unwrap();
     a.f.registry
@@ -155,7 +154,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
         .unwrap();
     assert!(
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -173,7 +172,7 @@ async fn shared_demand_actual_stop_revision_blocks_prepared_call_before_issue() 
             .await
             .unwrap();
     assert!(saved.issue_revision.is_none());
-    assert_eq!(saved.reserved_tokens, 143);
+    assert_eq!(saved.reserved_tokens, 0);
     a.stop().await;
 }
 
@@ -223,7 +222,8 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
     );
     let now = graphs::now_ms().unwrap();
     let command = SharedAttemptCommand {
-        web_search: false, tool_policy: None,
+        web_search: false,
+        tool_policy: None,
         version: 2,
         capability: SHARED_ATTEMPT_CAPABILITY.into(),
         operation: "agent.execution.provision".into(),
@@ -312,12 +312,12 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
     let h = prepare(&a, &w).await;
     let start =
         a.f.registry
-            .begin_shared_start(a.authority(), w.clone(), h.call_id)
+            .begin_current_start(|| a.authority(), w.clone(), h.call_id)
             .await
             .unwrap();
     let custody =
         a.f.registry
-            .issue_shared_call(
+            .issue_current_call(
                 start,
                 SharedWorkStart {
                     work: w.clone(),
@@ -330,10 +330,7 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
             .unwrap();
     a.process.start_shared_text_thread().await.unwrap();
     custody.check().unwrap();
-    a.process
-        .start_shared_text_turn(w.body.clone())
-        .await
-        .unwrap();
+    custody.start_turn(&mut a.process).await.unwrap();
     let mut capture = custody.bind_turn(&a.process).unwrap();
     loop {
         let event = a.process.next_shared_text_event().await.unwrap();
@@ -368,8 +365,8 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
         Instant::now() + Duration::from_secs(8),
     )
     .unwrap();
-    // The finished turn reported no usage. Its process has stopped, so that
-    // counts as zero and the next event starts instead of being blocked.
+    // No final usage was reported. Postpaid admission permits the next event
+    // while the old call remains explicitly unknown; stop never invents zero.
     let later =
         a.f.registry
             .prepare_shared_demand(proof, a.original.clone(), Some(a.command.clone()))
@@ -381,13 +378,15 @@ async fn shared_demand_actual_stopped_predecessor_claims_once_and_requires_promo
         (observation.retained_tokens, observation.remaining_tokens),
         (7, 143)
     );
-    assert!(observation.usage_complete);
+    assert!(!observation.usage_complete);
     let old =
         a.f.registry
             .managed_call_history(cleanup(&a.f, &a.original, 1).await, "old_unknown".into())
             .await
             .unwrap();
     assert_eq!((old.reserved_tokens, old.known_consumed_tokens), (40, 7));
+    assert!(!old.usage_complete);
+    assert_eq!(old.state, "unknown");
     a.f.registry.shutdown().await.unwrap();
 }
 

@@ -1,14 +1,12 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, Arc<Registry>, DomainStore) {
-    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-    let store = DomainStore::start(
-        DomainRepository::open(&root.path().join("domain")).unwrap(),
-        16,
-    )
-    .unwrap();
+fn fixture() -> (tempfile::TempDir, Arc<Registry>, service::ServerManagementJournal) {
+    let root = tempfile::tempdir().unwrap();
+    let store = service::ServerManagementJournal::open(
+        &root.path().join("server"), &"a".repeat(64), "@owner:test",
+    ).unwrap();
     let registry = Arc::new(Registry::default());
-    *registry.store.try_lock().unwrap() = Some(ManagementStore::Legacy(store.clone()));
+    *registry.store.try_lock().unwrap() = Some(ManagementStore::Server(store.clone()));
     (root, registry, store)
 }
 
@@ -24,7 +22,7 @@ async fn cancelled_drain_retains_original_acknowledgement_for_concurrent_callers
         1,
     )
     .unwrap();
-    let session = service::Session::new(
+    let session = service::Session::new_server(
         store.clone(),
         context,
         [service::Permission::ReadResources],
@@ -47,14 +45,14 @@ async fn cancelled_drain_retains_original_acknowledgement_for_concurrent_callers
     ));
     assert!(registry.store.try_lock().unwrap().is_some());
     assert!(matches!(
-        DomainRepository::open(&root.path().join("domain")),
+        service::ServerManagementJournal::open(&root.path().join("server"), &"a".repeat(64), "@owner:test"),
         Err(hagency_store::Error::Locked)
     ));
     let (one, two) = tokio::join!(registry.drain(), registry.drain());
     one.unwrap();
     two.unwrap();
     registry.drain().await.unwrap();
-    assert!(!store.writer_open());
+    assert!(!store.is_live());
     assert!(registry.store.try_lock().unwrap().is_none());
     assert_eq!(
         registry.ensure_live().unwrap_err().code,
@@ -62,14 +60,14 @@ async fn cancelled_drain_retains_original_acknowledgement_for_concurrent_callers
     );
     // Check the actual ownership lock, rather than treating channel closure as
     // proof that a new resource writer could acquire the source.
-    DomainRepository::open(&root.path().join("domain")).unwrap();
+    service::ServerManagementJournal::open(&root.path().join("server"), &"a".repeat(64), "@owner:test").unwrap();
 }
 
 #[tokio::test]
 async fn closed_writer_never_upgrades_a_failed_drain_to_acknowledged() {
     let (_root, registry, store) = fixture();
     store.shutdown().await.unwrap();
-    assert!(!store.writer_open());
+    assert!(!store.is_live());
     let first = registry.drain().await.unwrap_err();
     let second = registry.drain().await.unwrap_err();
     assert_eq!(first.code, "management_drain_unavailable");

@@ -779,6 +779,11 @@ impl Widget for WebBrowser {
 }
 
 impl WebBrowserRef {
+    #[cfg(test)]
+    pub(crate) fn overlay_occluded(&self) -> bool {
+        self.borrow().is_some_and(|inner| inner.overlay_occluded)
+    }
+
     /// Hide the native surface while a foreground dialog covers this host.
     /// Detaching keeps the page, navigation history, form inputs and scroll alive.
     pub fn set_overlay_occluded(&self, cx: &mut Cx, occluded: bool) {

@@ -18,10 +18,6 @@ pub(crate) mod canonical;
 #[cfg(feature = "resource-adoption")]
 pub(crate) mod current;
 #[cfg(feature = "resource-adoption")]
-pub(crate) mod history;
-#[cfg(feature = "resource-adoption")]
-pub(crate) mod reader;
-#[cfg(feature = "resource-adoption")]
 pub(crate) mod recipients;
 pub(crate) mod transitions;
 
@@ -437,7 +433,7 @@ pub(crate) struct GraphStore {
     inner: std::sync::Mutex<StoreInner>,
     // Retain the existing installation-wide writer admission through every
     // graph, message and counter write, including an in-flight HTTP request.
-    // Unsupported platforms keep legacy operation but cannot claim adoption.
+    // Unsupported platforms do not claim installation-wide lock coverage.
     _writer: hagency_platform::legacy_writer::LegacyWriterAdmission,
 }
 struct StoreInner {
@@ -449,11 +445,11 @@ struct StoreInner {
 impl GraphStore {
     pub(crate) fn open(dir: &Path) -> Result<Self, GraphError> {
         let writer =
-            hagency_platform::legacy_writer::LegacyWriterAdmission::acquire_for_legacy_startup()
+            hagency_platform::legacy_writer::LegacyWriterAdmission::acquire()
                 .map_err(|_| {
                     graph_error(
                         "graph_writer_unavailable",
-                        "legacy task graph writer is unavailable",
+                        "task graph writer is unavailable",
                     )
                 })?;
         Self::with_writer(dir, writer)

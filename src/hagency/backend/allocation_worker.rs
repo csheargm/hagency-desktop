@@ -1,7 +1,7 @@
 //! Retained original-device allocation worker. Its authority comes from the
 //! published owner grant and fresh SDK/device checks, never a mini-app lease.
 use super::*;
-use ::hagency::native_owner::{AdoptedManagementSelection, AllocationProgress, ManagementPackage};
+use ::hagency::native_owner::{CurrentProfileSelection, AllocationProgress, ManagementPackage};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -64,7 +64,7 @@ impl Service {
             let _ = handle.await;
         }
         task.take();
-        let Ok(Some(selection)) = self.load_adopted_initialization().await else {
+        let Ok(Some(selection)) = self.load_current_initialization().await else {
             return;
         };
         if self.check().is_err() || self.0.allocations.control.retired.load(Ordering::Acquire) {
@@ -82,7 +82,7 @@ impl Service {
 async fn run(
     weak: Weak<Inner>,
     owner: NativeOwner,
-    selection: AdoptedManagementSelection,
+    selection: CurrentProfileSelection,
     control: Arc<Control>,
 ) {
     let gate_weak = weak.clone();

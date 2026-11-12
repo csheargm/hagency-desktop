@@ -32,6 +32,141 @@ fn usage(observation: &Observation) -> &UsageEvidence {
 }
 
 #[tokio::test]
+async fn native_context_capacity_is_preserved_while_an_approval_write_is_pending() {
+    use hagency_runtime::codex::session::{ApprovalControlPolicy, PreparedUpdate};
+    let (mut session, mut peer) = running().await;
+    session
+        .enable_approval_control(ApprovalControlPolicy {
+            owner_wait_ms: 5000,
+            response_reserve_ms: 500,
+        })
+        .unwrap();
+    write(&mut peer, approval_event(json!(7))).await;
+    let Update::Approval(request) = session.next_update().await.unwrap() else {
+        panic!("approval callback missing");
+    };
+    let mut reply = session.prepare_approval(request.response(false)).unwrap();
+    write(&mut peer, note("thread/tokenUsage/updated", metrics())).await;
+    let PreparedUpdate::Update(Update::Progress, observation) =
+        session.send_prepared_approval(&mut reply).await.unwrap()
+    else {
+        panic!("context must be observed before the approval write");
+    };
+    let context = observation.context_usage().unwrap();
+    assert!(context.is_root());
+    assert_eq!((context.window(), context.used()), (200_000, 15));
+    assert!(matches!(
+        session.send_prepared_approval(&mut reply).await.unwrap(),
+        PreparedUpdate::WriteAccepted(_)
+    ));
+    assert_eq!(read(&mut peer.stdin).await["id"], 7);
+}
+
+#[tokio::test]
+async fn native_context_capacity_survives_exact_billing_without_becoming_usage() {
+    let (mut s, mut p) = running().await;
+    let receipt = note(
+        "rawResponse/completed",
+        json!({
+            "threadId":"thread-one","turnId":"turn-one","responseId":"one-response",
+            "usage":{"totalTokens":14,"inputTokens":10,"cachedInputTokens":2,"outputTokens":4,"reasoningOutputTokens":1}
+        }),
+    );
+    let (result, ()) = tokio::join!(s.next_observed_update(), write(&mut p, receipt));
+    let (_, measured) = result.unwrap();
+    assert_eq!(usage(&measured).total().total_tokens(), Some(14));
+    assert!(measured.context_usage().is_none());
+    let observed = observe(&mut s, &mut p, metrics()).await;
+    assert!(matches!(observed.kind(), ObservationKind::Ignored));
+    let context = observed.context_usage().unwrap();
+    assert_eq!((context.window(), context.used()), (200_000, 15));
+    let (result, ()) = tokio::join!(s.next_observed_update(), write(&mut p, end("completed")));
+    let (_, terminal) = result.unwrap();
+    assert!(
+        terminal.context_usage().is_none(),
+        "capacity never leaks onto another event"
+    );
+    assert_eq!(
+        terminal.terminal_usage().unwrap().total().total_tokens(),
+        Some(14)
+    );
+}
+
+#[tokio::test]
+async fn native_context_capacity_is_scoped_to_the_current_root_or_descendant_after_resume() {
+    let (mut s, mut p) = fixture(false);
+    initialize(&mut s, &mut p).await;
+    let (result, _) = tokio::join!(
+        s.resume_thread(ResumeThreadId::new("thread-one".into()).unwrap()),
+        exchange(&mut p, thread_result(false), vec![])
+    );
+    result.unwrap();
+    start(&mut s, &mut p, vec![]).await.unwrap();
+    let mut previous = metrics();
+    previous["turnId"] = "prior-native-turn".into();
+    assert!(
+        observe(&mut s, &mut p, previous)
+            .await
+            .context_usage()
+            .is_none()
+    );
+    let current = observe(&mut s, &mut p, metrics()).await;
+    assert!(current.context_usage().is_some());
+    assert!(current.context_usage().unwrap().is_root());
+    assert!(
+        matches!(current.kind(), ObservationKind::Ignored),
+        "cold context is not measurable billing"
+    );
+    update(&mut s, &mut p, note("turn/started", json!({
+        "threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-one","status":"inProgress","items":[]}
+    }))).await.unwrap();
+    let mut child = metrics();
+    child["threadId"] = "child".into();
+    child["turnId"] = "child-turn".into();
+    let observed = observe(&mut s, &mut p, child).await;
+    let context = observed.context_usage().unwrap();
+    assert!(!context.is_root());
+    assert_eq!(
+        (context.thread_id(), context.turn_id()),
+        ("child", "child-turn")
+    );
+}
+
+#[tokio::test]
+async fn native_context_capacity_never_uses_invalid_or_missing_counters() {
+    let (mut s, mut p) = running().await;
+    for (field, value) in [
+        ("modelContextWindow", json!(0)),
+        ("modelContextWindow", Value::Null),
+        ("modelContextWindow", json!("200000")),
+        ("last", json!({"totalTokens":0})),
+    ] {
+        let mut params = metrics();
+        params["tokenUsage"][field] = value;
+        assert!(
+            observe(&mut s, &mut p, params)
+                .await
+                .context_usage()
+                .is_none()
+        );
+    }
+    let mut params = metrics();
+    params["tokenUsage"]["last"]["totalTokens"] = 1.into();
+    assert!(
+        observe(&mut s, &mut p, params)
+            .await
+            .context_usage()
+            .is_none()
+    );
+    assert!(
+        observe(&mut s, &mut p, metrics())
+            .await
+            .context_usage()
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn native_codex_usage_observation_counters_are_separate_and_exact() {
     let (mut s, mut p) = running().await;
     let source = s.observation_source().unwrap();

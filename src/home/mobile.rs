@@ -153,11 +153,11 @@ script_mod! {
                             avatar := mod.widgets.MobileAvatar {width: 40 height: 40}
                             View {width: Fill height: Fit flow: Down spacing: 3
                                 name := Label {
-                                    width: Fill max_lines: 1 text_overflow: Ellipsis
+                                    width: Fill padding: 0 max_lines: 1 text_overflow: Ellipsis
                                     draw_text +: {color: mod.widgets.MOBILE_INK text_style: theme.font_regular {font_size: (12.5 * mod.widgets.RINX_TEXT_SCALE)}}
                                 }
                                 user_id := Label {
-                                    width: Fill max_lines: 1 text_overflow: Ellipsis
+                                    width: Fill padding: 0 max_lines: 1 text_overflow: Ellipsis
                                     draw_text +: {color: mod.widgets.MOBILE_MUTED text_style: theme.font_regular {font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
                                 }
                             }

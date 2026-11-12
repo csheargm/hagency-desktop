@@ -3,7 +3,6 @@ use super::*;
 #[cfg(feature="shared-budget-execution")]
 #[path="budget_attempt_tests.rs"]
 mod budget_attempts;
-#[cfg(feature="shared-context")]
 #[path="context_tests.rs"]
 mod contexts;
 #[cfg(feature="shared-context")]
@@ -12,6 +11,8 @@ mod encrypted;
 #[cfg(feature="shared-context")]
 #[path="question_tests.rs"]
 mod question_runs;
+#[path = "claude_tests.rs"]
+mod claude_runs;
 #[cfg(feature = "shared-successors")]
 #[path = "attempt_tests.rs"]
 mod attempts;
@@ -37,7 +38,6 @@ use sha2::{Digest, Sha256};
 pub(crate) struct State {
     #[cfg(feature="shared-budget-execution")]
     budget_attempts: budget_attempts::State,
-    #[cfg(feature="shared-context")]
     contexts: contexts::State,
     #[cfg(feature = "shared-intake")]
     demands: demands::State,
@@ -51,10 +51,13 @@ pub(crate) struct State {
     work: Option<SharedWorkItem>,
     receipts: BTreeMap<String, SharedWorkReceipt>,
     starts: usize,
+    work_starts: std::collections::BTreeSet<String>,
     activity_epoch: u64,
     refuse_renewal: bool,
     delay_renewal_reply: bool,
     delay_start_reply: bool,
+    delay_run_card_device: bool,
+    run_card_device_requested: std::sync::atomic::AtomicBool,
     process_writes: usize,
     work_writes: usize,
     lose_start: bool,
@@ -62,6 +65,7 @@ pub(crate) struct State {
     lose_work_result: bool,
     lose_completed_work_result: bool,
     work_recover_calls: usize,
+    session_routes: usize,
     forged_work: bool,
     lose_stop_before_write: bool,
     cleanup: bool,
@@ -69,12 +73,18 @@ pub(crate) struct State {
     stopped_before_reply: bool,
 }
 pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
+    if s.delay_run_card_device && path.ends_with("/crypto/device") {
+        s.run_card_device_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Some(Duration::from_secs(30));
+    }
     if s.delay_renewal_reply && path.ends_with("/activity/renew") {
         return Some(Duration::from_secs(30));
     }
     // Central admission can consume the renewal margin while the provider
     // has not received turn/start yet.
-    if s.delay_start_reply && path.ends_with("/work/start") {
+    if s.delay_start_reply
+        && (path.ends_with("/work/start") || path.ends_with("/context/start"))
+    {
         return Some(Duration::from_secs(6));
     }
     if !s.hold_idle_boundary || !path.ends_with("/shared-execution/work/poll") {
@@ -86,7 +96,34 @@ pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
         .contains(&elapsed)
         .then(|| Duration::from_millis(31_500 - elapsed))
 }
+pub(crate) fn claude_enabled(s: &super::State) -> bool {
+    s.shared.command.as_ref().is_some_and(|c| c.version == 4)
+}
 pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Option<Value> {
+    #[cfg(feature = "shared-successors")]
+    if path.ends_with("/session-route") {
+        let c = s.shared.attempts.command.as_ref().unwrap();
+        assert!(path.ends_with(&format!("/runtime/{}/session-route", c.command_id)));
+        assert_eq!(body["commandDigest"], digest(c).unwrap());
+        assert!(s.shared.attempts.tickets.get(body["token"].as_str().unwrap())
+            .is_some_and(|(execute, until)| *execute && *until > now()));
+        let w = s.shared.work.as_ref().unwrap();
+        let route = SharedSessionRoute { version: 1, runtime_command_id: c.command_id.clone(),
+            runtime_command_digest: digest(c).unwrap(), assignment_id: w.assignment_id.clone(),
+            event_id: w.event_id.clone(), body_digest: w.body_digest.clone(), room_id: w.room_id.clone(),
+            requester_mxid: w.requester_mxid.clone(), thread_root: w.thread_root.clone(),
+            room_binding: w.room_binding.clone(), encrypted: w.encrypted,
+            native_context_version: (!w.encrypted && s.shared.contexts.v3).then_some(3) };
+        s.shared.session_routes += 1;
+        return Some(json!({"route": route, "observedAtMs": now()}));
+    }
+    if path.ends_with("/crypto/device") {
+        // Plaintext execution fixtures have no Agent device grant. Run cards
+        // are optional presentation: an unavailable grant must neither create
+        // another model call nor break the original work/recovery path.
+        assert_eq!(body["assignmentId"], s.shared.command.as_ref().unwrap().assignment_id);
+        return None;
+    }
     if path.ends_with("/crypto/send") {
         assert_eq!(body["workId"], s.shared.work.as_ref().unwrap().id);
         return Some(json!({"observedAtMs":now()}));
@@ -97,7 +134,6 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     let normalized=path.replace("/budget-work/","/work/").replace("/budget-activity/","/activity/");
     #[cfg(feature="shared-budget-execution")]
     let path=normalized.as_str();
-    #[cfg(feature="shared-context")]
     if let Some(reply)=contexts::management(path,body,s){return reply;}
     #[cfg(feature = "shared-intake")]
     if let Some(reply) = demands::management(path, body, s) {
@@ -113,7 +149,7 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     let at = now();
     let c = s.shared.command.clone().unwrap();
     let h = digest(&c).unwrap();
-    if path.ends_with("/runtime/poll") || path.contains("/runtime/") && path.ends_with("/recover") {
+    if path.ends_with("/runtime/poll") || path.ends_with("/runtime/poll-v4") || path.contains("/runtime/") && path.ends_with("/recover") {
         let history = path.ends_with("/recover");
         if history {
             assert_eq!(body["commandDigest"], h);
@@ -217,7 +253,7 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     if path.ends_with("/work/poll") {
         let mut w = serde_json::to_value(w).unwrap();
         if s.shared.forged_work {
-            w["requesterMxid"] = json!("@other:test");
+            w["assignmentId"] = json!("foreign_assignment");
         }
         return Some(json!({"work":w,"observedAtMs":at}));
     }
@@ -228,11 +264,12 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     if path.ends_with("/work/start") {
         assert_eq!(body["workDigest"], wh);
         s.shared.starts += 1;
+        let newly_started = s.shared.work_starts.insert(w.id.clone());
         if std::mem::take(&mut s.shared.lose_start) {
             return None;
         }
         return Some(
-            json!({"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":!s.shared.false_start && s.shared.starts==1,"observedAtMs":at}),
+            json!({"work":w,"workDigest":wh,"activityEpoch":s.shared.activity_epoch,"newlyStarted":!s.shared.false_start && newly_started,"observedAtMs":at}),
         );
     }
     if path.contains("/work/") && path.ends_with("/recover") {
@@ -374,12 +411,19 @@ async fn runtime_fixture(
         execution_id: "execution_fixture".into(),
         created_at_ms: now(),
     };
+    let history_room = work.room_id.clone();
+    let history_anchor = work.event_id.clone();
     {
         let mut s = f.state.lock().unwrap();
         s.shared.command = Some(command.clone());
         s.shared.work = Some(work);
     }
-    let t = SharedExecutionTransport::new(f.owner.management(package(1)).await.unwrap());
+    // A V3 input promises the real bounded history reader. Supply an empty
+    // local Matrix fixture for these provider/ledger tests; run-card device
+    // requests still take their actual HTTP path below.
+    let (t, _) = SharedExecutionTransport::new(f.owner.management(package(1)).await.unwrap())
+        .with_crypto_fixture(None);
+    let (t, _) = t.with_history_fixture(history_room, history_anchor, vec![]);
     (f, t, command)
 }
 fn launch(f: &Fixture, mode: &str) -> PreparedLaunch {
@@ -507,6 +551,28 @@ async fn native_shared_execution_one_turn_usage_and_reply_recovery_no_rerun() {
 }
 #[tokio::test]
 #[ignore = "requires explicitly built offline supervised probe"]
+async fn native_shared_run_card_device_delay_does_not_block_native_turn() {
+    let (f, t, _) = fixture().await;
+    f.state.lock().unwrap().shared.delay_run_card_device = true;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        t.poll_fixture(&f.registry, launch(&f, "text-renew")).await.unwrap();
+        method_seen(&f, "turn/start").await;
+        loop {
+            if f.state.lock().unwrap().shared.run_card_device_requested.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        std::fs::write(f._root.path().join("shared-probe/release-text"), b"release").unwrap();
+        stopped(&f).await;
+    }).await.expect("native work must start and finish while the optional card device is still unavailable");
+    assert_eq!(f.state.lock().unwrap().shared.starts, 1);
+    let state = f.state.lock().unwrap();
+    assert_eq!(state.shared.receipts.len(), 1);
+    assert!(state.shared.receipts.values().all(|receipt| receipt.usage_complete));
+    drop(state);
+    f.stop().await;
+}
+#[tokio::test]
+#[ignore = "requires explicitly built offline supervised probe"]
 async fn native_shared_execution_uncertain_or_replayed_start_never_runs_model() {
     for lost in [true, false] {
         let (f, t, c) = fixture().await;
@@ -523,7 +589,9 @@ async fn native_shared_execution_uncertain_or_replayed_start_never_runs_model() 
             .await
             .unwrap();
         let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
-        assert!(!methods.contains("turn/start") && !methods.contains("thread/start"));
+        // Native thread creation prepares context before admission. Only
+        // turn/start sends model input and must never happen on uncertainty.
+        assert!(!methods.contains("turn/start"));
         assert_eq!(f.state.lock().unwrap().shared.starts, 1);
         assert_eq!(rows(&f, "owner_managed_calls"), 1);
         assert_eq!(f.state.lock().unwrap().shared.work_writes, 0);
@@ -593,7 +661,7 @@ async fn native_shared_execution_logout_during_turn_drains_and_retains_unknown_e
 }
 #[tokio::test]
 #[ignore = "requires explicitly built offline supervised probe"]
-async fn native_shared_execution_foreign_request_is_denied_before_call_hold() {
+async fn native_shared_execution_foreign_assignment_is_denied_before_call_hold() {
     let (f, t, _) = fixture().await;
     f.state.lock().unwrap().shared.forged_work = true;
     t.poll_fixture(&f.registry, launch(&f, "text-usage"))
@@ -604,6 +672,24 @@ async fn native_shared_execution_foreign_request_is_denied_before_call_hold() {
     assert_eq!(f.state.lock().unwrap().shared.starts, 0);
     let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
     assert!(!methods.contains("turn/start"));
+    f.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly built offline supervised probe"]
+async fn native_shared_execution_authorized_group_requester_keeps_its_identity() {
+    let (f, t, _) = fixture().await;
+    f.state.lock().unwrap().shared.work.as_mut().unwrap().requester_mxid = "@member:test".into();
+    t.poll_fixture(&f.registry, launch(&f, "text-usage")).await.unwrap();
+    stopped(&f).await;
+    {
+        let state = f.state.lock().unwrap();
+        assert_eq!(state.shared.starts, 1);
+        assert_eq!(state.shared.work.as_ref().unwrap().requester_mxid, "@member:test");
+        assert!(state.shared.receipts.values().any(|receipt| receipt.state == "completed"));
+    }
+    let methods = std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
+    assert_eq!(methods.lines().filter(|line| *line == "turn/start").count(), 1);
     f.stop().await;
 }
 
@@ -813,12 +899,24 @@ async fn refuse_renewal_and_wait_for_usage(f: &Fixture) {
 #[tokio::test]
 #[ignore = "requires explicit offline supervised runtime probe"]
 async fn native_shared_interrupted_call_collects_final_usage_before_stopping_original_and_successor() {
-    for (successor, refused_renewal) in [(false,false),(true,false),(false,true),(true,true)] {
-        let (f, t, c) = if successor { attempts::predecessor().await } else { fixture().await };
+    for (successor, refused_renewal) in [
+        (false,false), (false,true),
+        #[cfg(feature = "shared-successors")]
+        (true,false),
+        #[cfg(feature = "shared-successors")]
+        (true,true),
+    ] {
+        let (f, t, _c) = match successor {
+            #[cfg(feature = "shared-successors")]
+            true => attempts::predecessor().await,
+            _ => fixture().await,
+        };
+        #[cfg(feature = "shared-successors")]
         if successor {
-            attempts::prepare_lost_start(&f, &t, &c).await;
+            attempts::prepare_lost_start(&f, &t, &_c).await;
             t.poll_successor_fixture(&f.registry, launch(&f, "text-interrupt-usage")).await.unwrap();
-        } else {
+        }
+        if !successor {
             t.poll_fixture(&f.registry, launch(&f, "text-interrupt-usage")).await.unwrap();
         }
         method_seen(&f, "turn/start").await;
@@ -828,7 +926,7 @@ async fn native_shared_interrupted_call_collects_final_usage_before_stopping_ori
         f.owner.suspend().await.unwrap();
         let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
         let row:(String,u64,u64,bool)=db.query_row("SELECT state,reserved_tokens,known_consumed_tokens,usage_complete FROM owner_managed_calls",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-        assert_eq!(row,("settled".into(),100,27,true));
+        assert_eq!(row,("settled".into(),0,27,true));
         let raw:String=db.query_row("SELECT payload FROM owner_shared_work_observations ORDER BY ledger_revision DESC LIMIT 1",[],|r|r.get(0)).unwrap();
         let receipt:SharedWorkReceipt=serde_json::from_str(&raw).unwrap();
         assert_eq!(receipt.state,"failed");
@@ -874,8 +972,10 @@ async fn native_shared_interrupted_call_slow_admission_does_not_strand_unused_bu
     let methods=std::fs::read_to_string(f._root.path().join("shared-probe/methods")).unwrap();
     assert_eq!(methods.lines().filter(|m|*m=="turn/start").count(),1);
     let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
-    let complete:bool=db.query_row("SELECT usage_complete AND known_consumed_tokens < reserved_tokens FROM owner_managed_calls",[],|r|r.get(0)).unwrap();
-    assert!(complete,"unused allowance is released only after the real provider receipt");
+    // The fixture reports 30 input (10 cached) + 7 output. The existing
+    // shared-budget unit excludes cache reads, so the measured charge is 27.
+    let complete:bool=db.query_row("SELECT usage_complete AND reserved_tokens = 0 AND known_consumed_tokens = 27 FROM owner_managed_calls",[],|r|r.get(0)).unwrap();
+    assert!(complete,"the real provider receipt is charged without an upfront estimate");
     drop(db);
     f.stop().await;
 }
@@ -1115,11 +1215,13 @@ async fn native_shared_execution_retirement_stops_completed_process_with_reply_p
 }
 
 /// An older server has no demand retry route (ADR-193 amendment).
-pub(crate) fn demand_retry_enabled(s:&super::State)->bool{!s.shared.demands.no_retry}
-#[cfg(feature="shared-context")]
-pub(crate) fn context_enabled(s:&super::State)->bool{s.shared.contexts.active}
-#[cfg(feature="shared-context")]
-pub(crate) fn context_v2_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2}
+pub(crate) fn demand_retry_enabled(_s:&super::State)->bool{
+    #[cfg(feature = "shared-intake")]
+    return !_s.shared.demands.no_retry;
+    #[cfg(not(feature = "shared-intake"))]
+    false
+}
+pub(crate) fn context_v3_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v3}
 
 #[cfg(feature = "shared-budget-execution")]
 #[path = "file_execution_tests.rs"]

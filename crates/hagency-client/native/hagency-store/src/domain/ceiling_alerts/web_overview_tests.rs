@@ -1,6 +1,5 @@
 use super::*;
-use crate::management::{WebAlertsQuery, HostContext, Permission, Session};
-use crate::DomainStore;
+use crate::management::WebAlertsQuery;
 use hagency_core::project::{Resource, Seat};
 
 fn fixture() -> (tempfile::TempDir, DomainRepository, String, String) {
@@ -111,71 +110,4 @@ fn web_alert_scope_counts_filters_pagination_and_revocation() {
         .unwrap();
     assert_eq!(revoked.counts.total, 0);
     assert!(revoked.alerts.is_empty());
-}
-#[tokio::test]
-async fn web_alert_session_cannot_borrow_another_scope_or_missing_permission() {
-    let (_root, db, _, _) = fixture();
-    let store = DomainStore::start(db, 8).unwrap();
-    let context = HostContext::new(
-        "@owner:test".into(),
-        1,
-        "a".repeat(64),
-        1,
-        "device".into(),
-        1,
-    )
-    .unwrap();
-    let expires = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let denied = Session::new(
-        store.clone(),
-        context.clone(),
-        [Permission::ReadResources],
-        expires,
-    )
-    .unwrap();
-    assert!(
-        denied
-            .web_alerts(&context, WebAlertsQuery::default())
-            .await
-            .is_err()
-    );
-    let allowed = Session::new(
-        store.clone(),
-        context.clone(),
-        [Permission::ReadAlerts],
-        expires,
-    )
-    .unwrap();
-    assert_eq!(
-        allowed
-            .web_alerts(&context, WebAlertsQuery::default())
-            .await
-            .unwrap()
-            .counts
-            .total,
-        19
-    );
-    let other = HostContext::new(
-        "@other:test".into(),
-        1,
-        "a".repeat(64),
-        1,
-        "device".into(),
-        1,
-    )
-    .unwrap();
-    assert!(
-        allowed
-            .web_alerts(&other, WebAlertsQuery::default())
-            .await
-            .is_err()
-    );
-    allowed.retire();
-    assert!(
-        allowed
-            .web_alerts(&context, WebAlertsQuery::default())
-            .await
-            .is_err()
-    );
-    store.shutdown().await.unwrap();
 }

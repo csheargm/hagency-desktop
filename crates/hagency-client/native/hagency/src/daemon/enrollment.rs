@@ -27,8 +27,8 @@ pub enum EnrollmentState {
     Enrolled,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Enrollment {
     pub version: u8,
     pub origin: String,
@@ -36,46 +36,6 @@ pub struct Enrollment {
     pub display_name: Option<String>,
     pub owner_root: PathBuf,
     pub state: EnrollmentState,
-}
-
-/// The journal as stored by this build (version 2) or by builds before
-/// ADR-192 (version 1, with handover states).
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Stored {
-    version: u8,
-    origin: String,
-    owner: String,
-    #[serde(default)]
-    display_name: Option<String>,
-    owner_root: PathBuf,
-    #[serde(default)]
-    state: Option<EnrollmentState>,
-    #[serde(default)]
-    handover: Option<LegacyHandover>,
-}
-
-/// Handover states of version 1 journals. Rolled-back and still-preparing
-/// enrollments are never hosted; every other state hosted its root.
-#[derive(Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum LegacyHandover {
-    Preparing,
-    Fresh,
-    Staged {},
-    Active {},
-    Released {},
-}
-
-impl From<LegacyHandover> for EnrollmentState {
-    fn from(value: LegacyHandover) -> Self {
-        match value {
-            LegacyHandover::Preparing | LegacyHandover::Released {} => Self::Preparing,
-            LegacyHandover::Fresh | LegacyHandover::Staged {} | LegacyHandover::Active {} => {
-                Self::Enrolled
-            }
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
@@ -106,31 +66,34 @@ fn path(home: &Path) -> PathBuf {
 }
 
 impl Enrollment {
+    /// Product decision for a journal an earlier build wrote: remove it at
+    /// start, without asking, and begin unenrolled. Only a readable journal
+    /// that names an earlier version qualifies; a damaged one stays the
+    /// storage error it was. The daemon's Matrix session is not touched.
+    pub fn discard_earlier_format(home: &Path) -> bool {
+        let Ok(Some(raw)) = super::read_private(&path(home), LIMIT) else {
+            return false;
+        };
+        let earlier = serde_json::from_slice::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.as_object()?.get("version")?.as_u64())
+            .is_some_and(|version| (1..u64::from(VERSION)).contains(&version));
+        earlier && std::fs::remove_file(path(home)).is_ok()
+    }
     pub fn load(home: &Path) -> Result<Option<Self>, EnrollmentError> {
         let Some(raw) =
             super::read_private(&path(home), LIMIT).map_err(|_| EnrollmentError::Storage)?
         else {
             return Ok(None);
         };
-        let stored: Stored = serde_json::from_slice(&raw).map_err(|_| EnrollmentError::Storage)?;
-        let state = match (stored.version, stored.state, stored.handover) {
-            (VERSION, Some(state), None) => state,
-            (1, None, Some(handover)) => handover.into(),
-            _ => return Err(EnrollmentError::Storage),
-        };
-        if Self::check_root(home, &stored.owner_root).is_err()
+        let stored: Self = serde_json::from_slice(&raw).map_err(|_| EnrollmentError::Storage)?;
+        if stored.version != VERSION
+            || Self::check_root(home, &stored.owner_root).is_err()
             || !super::protocol::valid_owner_id(&stored.owner)
         {
             return Err(EnrollmentError::Storage);
         }
-        Ok(Some(Self {
-            version: VERSION,
-            origin: stored.origin,
-            owner: stored.owner,
-            display_name: stored.display_name,
-            owner_root: stored.owner_root,
-            state,
-        }))
+        Ok(Some(stored))
     }
 
     fn save(&self, home: &Path) -> Result<(), EnrollmentError> {
@@ -205,8 +168,8 @@ impl Enrollment {
     }
 
     /// Record a completed enrollment of the owner's registered root, after
-    /// the daemon's own SDK sign-in. Replaces an earlier root of the same
-    /// owner (a journal from before ADR-192); refuses another owner.
+    /// the daemon's own SDK sign-in. Replaces a current enrollment of the same
+    /// owner when its registered root changes; refuses another owner.
     pub fn enroll(
         home: &Path,
         origin: &str,
@@ -267,6 +230,50 @@ mod tests {
             .parent()
             .unwrap()
             .join(format!("{name}-{}", super::super::new_request_id()))
+    }
+
+    /// The published earlier build wrote version 1 with a `handover` field.
+    #[test]
+    fn an_earlier_format_journal_is_removed_at_start_and_nothing_else_is() {
+        let temp = home();
+        let registered = root(&temp, "earlier-root");
+        let earlier = serde_json::to_vec(&serde_json::json!({
+            "version": 1, "origin": "https://s/", "owner": "@o:s", "displayName": null,
+            "ownerRoot": registered, "handover": {"state": "active", "source": null, "sinceMs": 1},
+        }))
+        .unwrap();
+        let journal = path(temp.path());
+        hagency_store::private::replace(&journal, &earlier).unwrap();
+        let session = temp.path().join(super::super::MATRIX).join("session.json");
+        hagency_store::private::directory(session.parent().unwrap()).unwrap();
+        hagency_store::private::replace(&session, b"the daemon's own Matrix session").unwrap();
+        assert_eq!(Enrollment::load(temp.path()), Err(EnrollmentError::Storage));
+        assert!(Enrollment::discard_earlier_format(temp.path()));
+        assert_eq!(Enrollment::load(temp.path()), Ok(None));
+        assert!(session.exists());
+        assert!(!Enrollment::discard_earlier_format(temp.path()));
+    }
+
+    #[test]
+    fn a_current_or_damaged_journal_is_never_removed() {
+        let temp = home();
+        let registered = root(&temp, "current-root");
+        let current =
+            Enrollment::prepare(temp.path(), "https://s/", "@o:s", None, registered).unwrap();
+        assert!(!Enrollment::discard_earlier_format(temp.path()));
+        assert_eq!(Enrollment::load(temp.path()).unwrap().unwrap(), current);
+        for kept in [
+            &br#"{"version":0}"#[..],
+            br#"{"version":9}"#,
+            br#"{"version":"1"}"#,
+            br#"[1]"#,
+            b"damaged",
+        ] {
+            hagency_store::private::replace(&path(temp.path()), kept).unwrap();
+            assert!(!Enrollment::discard_earlier_format(temp.path()));
+            assert_eq!(std::fs::read(path(temp.path())).unwrap(), kept);
+            assert_eq!(Enrollment::load(temp.path()), Err(EnrollmentError::Storage));
+        }
     }
 
     #[test]
@@ -344,75 +351,42 @@ mod tests {
     }
 
     #[test]
-    fn journals_from_before_adr_192_load_without_handover_states() {
+    fn old_and_unknown_journals_are_refused_without_rewriting_identity() {
         let temp = home();
-        let legacy = root(&temp, "legacy-root");
-        for (handover, state) in [
-            (
-                serde_json::json!({"state":"preparing"}),
-                EnrollmentState::Preparing,
-            ),
-            (
-                serde_json::json!({"state":"fresh"}),
-                EnrollmentState::Enrolled,
-            ),
-            (
-                serde_json::json!({"state":"staged","source":"desktop","stagedAtMs":1}),
-                EnrollmentState::Enrolled,
-            ),
-            (
-                serde_json::json!({"state":"active","source":null,"sinceMs":1}),
-                EnrollmentState::Enrolled,
-            ),
-            (
-                serde_json::json!({"state":"released","atMs":1}),
-                EnrollmentState::Preparing,
-            ),
+        let registered = root(&temp, "registered-root");
+        let path = temp.path().join(super::super::ENROLLMENT);
+        let mut invalid = Vec::new();
+        for handover in [
+            serde_json::json!({"state":"preparing"}),
+            serde_json::json!({"state":"fresh"}),
+            serde_json::json!({"state":"staged","source":"desktop","stagedAtMs":1}),
+            serde_json::json!({"state":"active","source":null,"sinceMs":1}),
+            serde_json::json!({"state":"released","atMs":1}),
         ] {
-            let raw = serde_json::json!({"version":1,"origin":"https://s/","owner":"@o:s","displayName":null,"ownerRoot":legacy,"handover":handover});
-            hagency_store::private::replace(
-                &temp.path().join(super::super::ENROLLMENT),
-                &serde_json::to_vec(&raw).unwrap(),
-            )
-            .unwrap();
-            let loaded = Enrollment::load(temp.path()).unwrap().unwrap();
-            assert_eq!(
-                (loaded.state, loaded.owner_root.as_path()),
-                (state, legacy.as_path()),
-                "{handover}"
-            );
+            invalid.push(serde_json::json!({"version":1,"origin":"https://s/","owner":"@o:s","displayName":null,"ownerRoot":registered,"handover":handover}));
         }
-        // The next write uses the current format.
-        let saved = Enrollment::enroll(temp.path(), "https://s/", "@o:s", None, &legacy).unwrap();
-        let raw: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(temp.path().join(super::super::ENROLLMENT)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            (
-                raw["version"].as_u64(),
-                raw["state"].as_str(),
-                raw.get("handover")
-            ),
-            (Some(2), Some("enrolled"), None)
-        );
-        assert_eq!(Enrollment::load(temp.path()).unwrap().unwrap(), saved);
-        for bad in [
-            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":legacy,"handover":{"state":"fresh"}}),
-            serde_json::json!({"version":1,"origin":"https://s/","owner":"@o:s","ownerRoot":legacy,"state":"enrolled"}),
-            serde_json::json!({"version":9,"origin":"https://s/","owner":"@o:s","ownerRoot":legacy,"state":"enrolled"}),
-            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":legacy,"state":"staged"}),
-        ] {
-            hagency_store::private::replace(
-                &temp.path().join(super::super::ENROLLMENT),
-                &serde_json::to_vec(&bad).unwrap(),
-            )
-            .unwrap();
+        invalid.extend([
+            serde_json::json!({"version":1,"origin":"https://s/","owner":"@o:s","ownerRoot":registered,"state":"enrolled"}),
+            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":registered,"state":"enrolled","handover":{"state":"released"}}),
+            serde_json::json!({"version":9,"origin":"https://s/","owner":"@o:s","ownerRoot":registered,"state":"enrolled"}),
+            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":registered,"state":"staged"}),
+            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":registered}),
+            serde_json::json!({"version":2,"origin":"https://s/","owner":"@o:s","ownerRoot":registered,"state":"enrolled","futurePolicy":"paused"}),
+        ]);
+        for journal in invalid {
+            let raw = serde_json::to_vec(&journal).unwrap();
+            hagency_store::private::replace(&path, &raw).unwrap();
+            assert_eq!(Enrollment::load(temp.path()).unwrap_err(), EnrollmentError::Storage);
             assert_eq!(
-                Enrollment::load(temp.path()).unwrap_err(),
-                EnrollmentError::Storage,
-                "{bad}"
+                Enrollment::prepare(temp.path(), "https://s/", "@o:s", None, registered.clone()).unwrap_err(),
+                EnrollmentError::Storage
             );
+            assert_eq!(
+                Enrollment::enroll(temp.path(), "https://s/", "@o:s", None, &registered).unwrap_err(),
+                EnrollmentError::Storage
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), raw, "rejected enrollment was rewritten");
+            assert!(!registered.exists(), "rejected enrollment opened the owner root");
         }
     }
 

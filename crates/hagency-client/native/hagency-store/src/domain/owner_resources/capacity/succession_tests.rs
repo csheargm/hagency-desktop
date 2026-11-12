@@ -774,3 +774,47 @@ async fn a_pool_child_is_not_bounded_by_its_reserve_command_expiry() {
     assert_eq!(until, f.root.period_end_ms.min(f.root.delegation_expires_at_ms));
     f.registry.shutdown().await.unwrap();
 }
+/// Deleting a pool: a grant replaced within its month keeps its row for the
+/// accounts and never gets a closure of its own. It stops standing in the way
+/// once the grant that replaced it is closed.
+#[tokio::test]
+async fn a_replaced_grant_stops_blocking_pool_deletion_once_its_chain_is_closed() {
+    async fn blocker(f: &Chain) -> Option<&'static str> {
+        let resource = f.resource.clone();
+        at(f, move |db| super::retirement_grant_blocker(db, &resource)).await
+    }
+    let f = chain(1000, 600).await;
+    assert_eq!(blocker(&f).await, Some("active_grant"));
+    let head = amend(&f, &f.root, "chain_amend", 500).await.unwrap();
+    assert_eq!(confirm(&f, "chain_amend").await.state, "effective");
+    assert_eq!(blocker(&f).await, Some("active_grant"), "the grant in force still counts");
+    // The owner closes the pool's server connection: the server asks for the
+    // closure of the grant in force, and only of that one.
+    let close = GrantClosureCommand {
+        version: 1,
+        command_id: "chain_amend_close".into(),
+        operation: "grant.close".into(),
+        grant_id: head.grant_id.clone(),
+        grant_receipt_digest: canonical::digest(&serde_json::to_value(&head).unwrap()).unwrap(),
+        previous_settlement_digest: None,
+        reason: "owner_withdrawal".into(),
+        requested_at_ms: graphs::now_ms().unwrap(),
+    };
+    let digest = canonical::digest(&serde_json::to_value(&close).unwrap()).unwrap();
+    let settled = f
+        .registry
+        .apply_parent_settlement(VerifiedParentDelivery::new(enrollment(&f), close, digest, true, Instant::now() + Duration::from_secs(20)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(settled.state, "closed");
+    let flags = at(&f, |db| {
+        Ok((
+            db.query_row("SELECT active FROM owner_capacity_grants WHERE id='chain_root'", [], |r| r.get::<_, bool>(0))?,
+            db.query_row("SELECT active FROM owner_capacity_grants WHERE id='chain_amend'", [], |r| r.get::<_, bool>(0))?,
+        ))
+    })
+    .await;
+    assert_eq!(flags, (true, false), "the replaced root keeps its row and its flag");
+    assert_eq!(blocker(&f).await, None);
+    f.registry.shutdown().await.unwrap();
+}

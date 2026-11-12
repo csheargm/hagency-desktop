@@ -1,6 +1,6 @@
-//! The model's questions to its room (Codex `request_user_input`). Each
+//! Common Matrix question lifecycle for native provider callbacks. Each
 //! request becomes one card in the run's thread, drawn under the message that
-//! started the run, and any joined member may answer it. All questions of one
+//! started the run. The host names its permitted participants. All questions of one
 //! run share one wait of `ANSWER_WAIT_MS`, counted from each ask, so the
 //! messages queued behind the run wait at most that long for answers, opening
 //! the Agent's device and posting included; the activity lease is renewed as
@@ -31,9 +31,9 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-/// One run asks at most this many times; later questions are answered with
-/// nothing, so a model that keeps asking cannot hold the queue for hours.
-const MAX_CARDS_PER_TURN: usize = 6;
+/// Bound simultaneous cards, not how many a long native turn may ask.
+/// Waiting time is accounted separately by WaitBudget.
+const MAX_PENDING_CARDS: usize = 8;
 /// Posting a card or its outcome. A first message in a large encrypted room
 /// shares its room key with every member's devices first.
 const POST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -53,7 +53,7 @@ const MAX_RECORDS: usize = 64;
 /// A member's answer event as the Matrix boundary hands it over: from a
 /// current member, authenticated where the room is encrypted. Content is
 /// still unchecked.
-pub(super) struct Candidate {
+pub(in crate::console) struct Candidate {
     pub(super) event_id: String,
     pub(super) sender: String,
     pub(super) content: Value,
@@ -104,7 +104,7 @@ impl QuestionIo for AgentDevice {
     }
 }
 
-pub(super) enum Source {
+pub(in crate::console) enum Source {
     Device(Arc<AgentDevice>),
     #[cfg(test)]
     Fixture(Arc<Fixture>),
@@ -323,7 +323,7 @@ fn outbox_key(source: &Source, records: Option<&Path>) -> String {
         (Some(path), _) => path.display().to_string(),
         (None, Source::Device(device)) => format!("device:{:p}", Arc::as_ptr(device)),
         #[cfg(test)]
-        (None, Source::Fixture(fixture)) => format!("fixture:{:p}", Arc::as_ptr(fixture)),
+        (None, Source::Fixture(fixture)) => format!("fixture:{}", fixture.id),
     }
 }
 fn enqueue(key: &str, closings: Vec<Closing>) {
@@ -340,7 +340,7 @@ fn enqueue(key: &str, closings: Vec<Closing>) {
 /// The Agent's device is in use: show the outcomes it still owes its rooms,
 /// at most every `FLUSH_INTERVAL`, and once per process close the cards an
 /// earlier process left open.
-pub(super) fn device_ready(source: Arc<Source>, records: Option<PathBuf>) {
+pub(in crate::console) fn device_ready(source: Arc<Source>, records: Option<PathBuf>) {
     kick(source, records, false);
 }
 
@@ -559,7 +559,7 @@ async fn close(source: &Source, closing: &mut Closing) -> Result<String, ()> {
             match (answered_by, answer_event) {
                 // Answered before the restart: shown as answered or not at all,
                 // never as expired.
-                (Some(by), Some(answer)) if !protocol::is_agent(by) => read(answer.clone())
+                (Some(by), Some(answer)) if card.may_answer(by) => read(answer.clone())
                     .await
                     .filter(|v| v["sender"] == by.as_str())
                     .and_then(|v| card.parse_answer(&event, &v["content"]))
@@ -589,8 +589,8 @@ async fn close(source: &Source, closing: &mut Closing) -> Result<String, ()> {
     Ok(event)
 }
 
-struct Pending {
-    request: UserInputRequest,
+struct Pending<R> {
+    request: R,
     card: Card,
     room: String,
     card_event: String,
@@ -600,8 +600,8 @@ struct Pending {
 
 /// A room answer is only shown as accepted after its runtime callback was
 /// written. A withdrawn callback, failed write, or dropped task expires it.
-struct Delivery {
-    request_id: RequestId,
+struct Delivery<K> {
+    request_id: K,
     room: String,
     card_event: String,
     unanswered: Card,
@@ -662,8 +662,66 @@ impl WaitBudget {
 /// The Agent's device for this run, with where its cards are recorded.
 type Opened = (Arc<Source>, Option<PathBuf>);
 
-#[derive(Default)]
-pub(super) struct Questions {
+/// Immutable host-selected addressing. Never supplied by the model or an
+/// answer event. A shared task admits its requester; personal hosting also
+/// admits the Agent owner, using the already authenticated dispatch/lease.
+pub(in crate::console) struct QuestionContext {
+    pub id: String,
+    pub room_id: String,
+    pub event_id: String,
+    pub thread_root: String,
+    pub responders: Vec<String>,
+}
+impl QuestionContext {
+    /// The thread a card is posted in. A request outside any thread (an
+    /// owner's direct conversation) names its room as the root; its card goes
+    /// into the thread its own message starts, where its run card already is.
+    fn card_thread(&self) -> String {
+        if self.thread_root == self.room_id {
+            self.event_id.clone()
+        } else {
+            self.thread_root.clone()
+        }
+    }
+}
+
+pub(in crate::console) trait CardRequest: Sized {
+    type Key: Clone + PartialEq + Serialize;
+    type Response;
+    fn id(&self) -> &Self::Key;
+    fn questions(&self) -> Vec<hagency_runtime::questions::Question>;
+    fn forbidden(&self) -> bool { false }
+    fn closed(&self) -> bool { false }
+    fn deadline(&self) -> Option<tokio::time::Instant> { None }
+    fn answer(self, answers: &hagency_runtime::questions::Answers) -> Result<Self::Response, Self>;
+    fn unanswered(self) -> Self::Response;
+}
+impl CardRequest for UserInputRequest {
+    type Key = RequestId;
+    type Response = UserInputResponse;
+    fn id(&self) -> &RequestId { self.id() }
+    fn questions(&self) -> Vec<hagency_runtime::questions::Question> { self.host_questions() }
+    fn forbidden(&self) -> bool { self.is_codex_approval() }
+    fn answer(self, answers: &hagency_runtime::questions::Answers) -> Result<Self::Response, Self> {
+        self.answer_host(answers).map_err(|_| self)
+    }
+    fn unanswered(self) -> Self::Response { UserInputRequest::unanswered(&self) }
+}
+impl CardRequest for hagency_agent_local::questions::PendingQuestion {
+    type Key = String;
+    type Response = hagency_agent_local::questions::Delivery;
+    fn id(&self) -> &String { &self.id }
+    fn questions(&self) -> Vec<hagency_runtime::questions::Question> { self.questions.clone() }
+    fn closed(&self) -> bool { self.is_closed() }
+    fn deadline(&self) -> Option<tokio::time::Instant> { Some(self.deadline) }
+    fn answer(self, answers: &hagency_runtime::questions::Answers) -> Result<Self::Response, Self> {
+        if self.is_closed() || !hagency_runtime::questions::valid_answers(&self.questions, answers) { return Err(self); }
+        Ok(self.reply(answers.clone()))
+    }
+    fn unanswered(self) -> Self::Response { self.reply(Default::default()) }
+}
+
+pub(in crate::console) struct Questions<R: CardRequest = UserInputRequest> {
     source: Option<Arc<Source>>,
     /// The device being opened for this run. Never cut short (an abandoned
     /// grant would cost another device login); the run only stops waiting.
@@ -672,8 +730,8 @@ pub(super) struct Questions {
     records: Option<PathBuf>,
     /// The outbox of the device this run used; it outlives that device.
     outbox: Option<String>,
-    pending: Vec<Pending>,
-    delivering: Vec<Delivery>,
+    pending: Vec<Pending<R>>,
+    delivering: Vec<Delivery<R::Key>>,
     /// Retained before the first await of a send. Cancellation still owns
     /// closing a card whose response was never observed.
     posting: Option<Posting>,
@@ -684,6 +742,14 @@ pub(super) struct Questions {
     assignment: Option<String>,
     encrypted: bool,
     budget: Option<WaitBudget>,
+}
+
+impl<R: CardRequest> Default for Questions<R> {
+    fn default() -> Self {
+        Self { source: None, opening: None, records: None, outbox: None,
+            pending: Vec::new(), delivering: Vec::new(), posting: None, settled: Vec::new(),
+            asked: 0, assignment: None, encrypted: false, budget: None }
+    }
 }
 
 /// Question updates seen while a decision was being sent, in arrival order.
@@ -718,9 +784,18 @@ pub(super) fn in_order<R: Asked>(updates: Vec<QuestionUpdate<R>>) -> Vec<Questio
         .collect()
 }
 
-impl Questions {
+impl<R: CardRequest> Questions<R> {
+    pub(in crate::console) fn with_device(device: Arc<AgentDevice>, records: PathBuf) -> Self {
+        let mut questions = Self::default();
+        questions.adopt((Arc::new(Source::Device(device)), Some(records)));
+        questions
+    }
+    pub(in crate::console) fn charge_opening(&mut self, elapsed: Duration) {
+        let budget = self.budget.get_or_insert_with(|| WaitBudget::new(Duration::from_millis(protocol::ANSWER_WAIT_MS)));
+        budget.used = budget.used.saturating_add(elapsed);
+    }
     /// Work for the next maintenance pass: waiting cards or outcomes to show.
-    pub(super) fn busy(&self) -> bool {
+    pub(in crate::console) fn busy(&self) -> bool {
         !self.pending.is_empty() || !self.delivering.is_empty() || !self.settled.is_empty()
     }
 
@@ -733,12 +808,24 @@ impl Questions {
         &mut self,
         io: &Io,
         work: &SharedWorkItem,
-        request: UserInputRequest,
-    ) -> Result<Option<UserInputResponse>, NativeError> {
-        self.asked += 1;
+        request: R,
+    ) -> Result<Option<R::Response>, NativeError> {
         self.assignment = Some(work.assignment_id.clone());
         self.encrypted = work.encrypted;
-        if request.is_codex_approval() {
+        let context = QuestionContext {
+            id: work.id.clone(), room_id: work.room_id.clone(), event_id: work.event_id.clone(),
+            thread_root: work.thread_root.clone(), responders: vec![work.requester_mxid.clone()],
+        };
+        self.ask_inner(Some(io), &context, request).await
+    }
+
+    pub(in crate::console) async fn ask_on_device(&mut self, context: &QuestionContext, request: R) -> Result<Option<R::Response>, NativeError> {
+        self.ask_inner(None, context, request).await
+    }
+
+    async fn ask_inner(&mut self, io: Option<&Io>, work: &QuestionContext, request: R) -> Result<Option<R::Response>, NativeError> {
+        self.asked += 1;
+        if request.forbidden() {
             // Answering "Allow" would grant it: approvals go to the owner.
             tracing::warn!(
                 "Codex tool approval asked as a question; declined, never shown to the room"
@@ -746,25 +833,27 @@ impl Questions {
             return Ok(Some(request.unanswered()));
         }
         let now = tokio::time::Instant::now();
-        let budget = self.budget.get_or_insert_with(|| WaitBudget::new(wait(io)));
+        let budget = self.budget.get_or_insert_with(|| WaitBudget::new(io.map(wait).unwrap_or(Duration::from_millis(protocol::ANSWER_WAIT_MS))));
         let floor = budget.floor();
-        let wait = budget.next(now);
+        let wait = budget.next(now).map(|wait| request.deadline().map_or(wait, |until| wait.min(until.saturating_duration_since(now))))
+            .filter(|wait| *wait >= floor);
         let id = format!(
             "aq_{}",
             super::digest(
-                &json!({"work":work.id,"request":request.id(),"item":request.item_id()})
+                &json!({"work":work.id,"request":request.id(),"questions":request.questions().iter().map(|q| &q.id).collect::<Vec<_>>()})
             )?
         );
         // The card's expiry and this run's deadline are one instant.
         let expires_at_ms = now_ms().saturating_add(wait.unwrap_or_default().as_millis() as u64);
-        let card = (self.asked <= MAX_CARDS_PER_TURN && wait.is_some())
+        let card = (self.pending.len() < MAX_PENDING_CARDS && wait.is_some())
             .then(|| {
-                Card::ask(
+                Card::ask_questions(
                     id,
                     work.event_id.clone(),
-                    work.thread_root.clone(),
+                    work.card_thread(),
                     expires_at_ms,
-                    request.questions(),
+                    &request.questions(),
+                    work.responders.clone(),
                 )
             })
             .flatten();
@@ -869,12 +958,16 @@ impl Questions {
     /// Answers that arrived and waits that ran out, as the responses to send
     /// now. The first answer that is valid for its card wins; later answers
     /// to a settled card are never read. Never waits for a device to open.
-    pub(super) async fn collect(&mut self, io: &Io) -> Result<Vec<UserInputResponse>, NativeError> {
+    pub(super) async fn collect(&mut self, io: &Io) -> Result<Vec<R::Response>, NativeError> {
         if !self.pending.is_empty()
-            && let Err(error) = self.source_until(io, tokio::time::Instant::now()).await
+            && let Err(error) = self.source_until(Some(io), tokio::time::Instant::now()).await
         {
             tracing::debug!(code = %error.code, "Agent question room device not ready; still waiting");
         }
+        self.collect_ready().await
+    }
+
+    pub(in crate::console) async fn collect_ready(&mut self) -> Result<Vec<R::Response>, NativeError> {
         let mut ready = Vec::new();
         let mut index = 0;
         while index < self.pending.len() {
@@ -901,7 +994,7 @@ impl Questions {
                         break;
                     }
                     // No Agent answers a card, whichever device saw it.
-                    if protocol::is_agent(&candidate.sender) {
+                    if !pending.card.may_answer(&candidate.sender) {
                         continue;
                     }
                     let Some(answers) = pending
@@ -910,21 +1003,25 @@ impl Questions {
                     else {
                         continue;
                     };
-                    let runtime = answers
-                        .iter()
-                        .map(|(id, value)| (id.clone(), value.clone().into_runtime()))
-                        .collect();
-                    if let Ok(response) = pending.request.answer(&runtime) {
-                        answered = Some((candidate, answers, response));
-                        break;
-                    }
+                    answered = Some((candidate, answers));
+                    break;
                 }
             }
-            if let Some((candidate, answers, response)) = answered {
+            if let Some((candidate, answers)) = answered {
                 let pending = self.pending.remove(index);
+                let request_id = pending.request.id().clone();
+                let response = match pending.request.answer(&answers) {
+                    Ok(response) => response,
+                    Err(request) => {
+                        live(self.outbox.as_deref(), &pending.card_event, false);
+                        self.settled.push((pending.room, pending.card_event, pending.card.expired()));
+                        ready.push(request.unanswered());
+                        continue;
+                    }
+                };
                 let answered = pending.card.answered(&candidate.sender, answers);
                 self.delivering.push(Delivery {
-                    request_id: pending.request.id().clone(),
+                    request_id,
                     room: pending.room,
                     card_event: pending.card_event,
                     unanswered: pending.card,
@@ -934,7 +1031,7 @@ impl Questions {
                 ready.push(response);
                 continue;
             }
-            if tokio::time::Instant::now() >= pending.deadline {
+            if tokio::time::Instant::now() >= pending.deadline || pending.request.closed() {
                 let pending = self.pending.remove(index);
                 tracing::info!(
                     "Agent question expired without an answer; the model decides on its own"
@@ -953,7 +1050,7 @@ impl Questions {
 
     /// The runtime callback finished. Never advertise a room answer the
     /// model could not receive (including a callback it already withdrew).
-    pub(super) fn delivered(&mut self, id: &RequestId, accepted: bool) {
+    pub(in crate::console) fn delivered(&mut self, id: &R::Key, accepted: bool) {
         let Some(index) = self
             .delivering
             .iter()
@@ -993,7 +1090,7 @@ impl Questions {
     }
 
     /// Codex withdrew a question: stop waiting and close its card.
-    pub(super) fn withdrawn(&mut self, id: &RequestId) {
+    pub(super) fn withdrawn(&mut self, id: &R::Key) {
         self.delivered(id, false);
         if let Some(index) = self.pending.iter().position(|p| p.request.id() == id) {
             let pending = self.pending.remove(index);
@@ -1006,7 +1103,7 @@ impl Questions {
     }
 
     /// The turn is over: every card still waiting closes unanswered.
-    pub(super) fn close(&mut self) {
+    pub(in crate::console) fn close(&mut self) {
         self.close_posting();
         for delivery in std::mem::take(&mut self.delivering) {
             live(self.outbox.as_deref(), &delivery.card_event, false);
@@ -1027,7 +1124,7 @@ impl Questions {
     /// Hand each settled card's outcome to the Agent's outbox, which shows it
     /// in the room now if the device can, or whenever the device is next in
     /// use. Never waits: the run does not hold for an edit.
-    pub(super) async fn publish(&mut self) -> Result<(), NativeError> {
+    pub(in crate::console) async fn publish(&mut self) -> Result<(), NativeError> {
         self.publish_now();
         Ok(())
     }
@@ -1086,13 +1183,14 @@ impl Questions {
     /// its own sake, so no device login starts in the middle of a turn there.
     async fn source_until(
         &mut self,
-        io: &Io,
+        io: Option<&Io>,
         until: tokio::time::Instant,
     ) -> Result<Arc<Source>, NativeError> {
         if let Some(source) = self.source.as_ref().filter(|s| !s.revoked()) {
             return Ok(source.clone());
         }
         self.source = None;
+        let io = io.ok_or_else(|| failure(409, "question_device_unavailable"))?;
         let assignment = self.assignment.clone().ok_or_else(invalid)?;
         if self.opening.is_none() {
             if let Some(opened) = tokio::time::timeout_at(until, opened(io, &assignment))
@@ -1120,7 +1218,7 @@ impl Questions {
     }
 }
 
-impl Drop for Questions {
+impl<R: CardRequest> Drop for Questions<R> {
     fn drop(&mut self) {
         // A revoked lease or task abort can drop the driver before its
         // normal cleanup. Do not leave LIVE entries or unsettled cards behind.
@@ -1234,7 +1332,11 @@ fn now_ms() -> u64 {
 /// Agent's device from current members. Card building, answer checks, the
 /// wait, the Codex response, the outbox and the lease handling stay real.
 #[cfg(test)]
-pub(in crate::console::native) struct Fixture {
+pub(in crate::console) struct Fixture {
+    /// Names this room's outbox. An address would be reused by the next
+    /// fixture, which then inherits this one's flush time and waits out
+    /// `FLUSH_INTERVAL` before its first outcome is shown.
+    id: u64,
     posts: std::sync::Mutex<Vec<(String, String, Value)>>,
     answers: std::sync::Mutex<Vec<(String, String, Value)>>,
     /// Every answer event, readable back like the room's own.
@@ -1260,7 +1362,9 @@ pub(in crate::console::native) struct Fixture {
 #[cfg(test)]
 impl Fixture {
     pub(super) fn new(members: &[&str], wait: Duration, records: Option<PathBuf>) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             posts: Default::default(),
             answers: Default::default(),
             answer_log: Default::default(),
@@ -1508,10 +1612,84 @@ mod outbox_tests {
     }
 
     #[tokio::test]
+    async fn common_cards_bind_joined_responders_and_allow_more_than_six_sequential_requests() {
+        let fixture = Arc::new(Fixture::new(&["@requester:test", "@owner:test", "@other:test"], Duration::from_secs(60), None));
+        let mut questions: Questions = Questions::default();
+        questions.adopt((Arc::new(Source::Fixture(fixture.clone())), None));
+        let context=QuestionContext {id:"dispatch".into(),room_id:ROOM.into(),event_id:"$trigger".into(),thread_root:"$root".into(),
+            responders:vec!["@requester:test".into(),"@owner:test".into()]};
+        for index in 0..7 {
+            let request=UserInputRequest::parse(RequestId::Number(index),&json!({"threadId":"native-thread","turnId":"native-turn", "itemId":format!("item-{index}"),"isBlocking":true,
+                "questions":[{"id":"q","header":"Pick","question":"Which one?","options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}]})).unwrap();
+            assert!(questions.ask_on_device(&context,request).await.unwrap().is_none());
+            let (event,content)=fixture.cards().last().unwrap().clone();
+            let card=Card::from_content(&content).unwrap();
+            let answers=[("q".into(),protocol::AnswerValue::Option("One".into()))].into();
+            fixture.answer("@other:test",card.answer_content(&event,&answers).unwrap());
+            assert!(questions.collect_ready().await.unwrap().is_empty(),"joined membership does not confer answer authority");
+            fixture.answer(if index%2==0 {"@requester:test"}else{"@owner:test"},card.answer_content(&event,&answers).unwrap());
+            let ready=questions.collect_ready().await.unwrap();
+            assert_eq!(ready.len(),1);
+            assert_eq!(ready[0].result(),&json!({"answers":{"q":{"answers":["One"]}}}));
+            assert_eq!(fixture.edits().len(),index as usize,"no answered state before native acceptance");
+            questions.delivered(ready[0].request_id(), true);
+            questions.publish().await.unwrap();
+            eventually("native receipt closes card",||fixture.edits().len()==index as usize+1).await;
+        }
+        assert_eq!(fixture.cards().len(),7);
+        assert!(edited(&fixture).iter().all(|(_,card)|card.state==CardState::Answered));
+    }
+
+    #[tokio::test]
+    async fn a_question_outside_any_thread_is_shown_under_its_own_message() {
+        // An owner's direct conversation is not threaded: its requests name
+        // the room as their root.
+        let fixture = Arc::new(Fixture::new(&["@owner:test"], Duration::from_secs(60), None));
+        let mut questions: Questions = Questions::default();
+        questions.adopt((Arc::new(Source::Fixture(fixture.clone())), None));
+        let context = QuestionContext {
+            id: "dispatch".into(),
+            room_id: ROOM.into(),
+            event_id: "$trigger".into(),
+            thread_root: ROOM.into(),
+            responders: vec!["@owner:test".into()],
+        };
+        let request = UserInputRequest::parse(RequestId::Number(1), &json!({"threadId":"native-thread","turnId":"native-turn","itemId":"item","isBlocking":true,
+            "questions":[{"id":"q","header":"Pick","question":"Which one?","options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}]})).unwrap();
+        assert!(
+            questions.ask_on_device(&context, request).await.unwrap().is_none(),
+            "the question is asked, not answered with nothing"
+        );
+        let (event, content) = fixture.cards().last().unwrap().clone();
+        // Where the run card of the same request already is.
+        assert_eq!(content["m.relates_to"]["rel_type"], "m.thread");
+        assert_eq!(content["m.relates_to"]["event_id"], "$trigger");
+        let card = Card::from_content(&content).unwrap();
+        assert_eq!(card.trigger_event_id, "$trigger");
+        let answers = [("q".into(), protocol::AnswerValue::Option("Two".into()))].into();
+        fixture.answer("@owner:test", card.answer_content(&event, &answers).unwrap());
+        let ready = questions.collect_ready().await.unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].result(), &json!({"answers":{"q":{"answers":["Two"]}}}));
+        // Finish the card like a real run does, so that no outcome is left in
+        // the process-wide outbox when this test's runtime stops.
+        questions.delivered(ready[0].request_id(), true);
+        questions.publish().await.unwrap();
+        eventually("the answered card is shown", || fixture.edits().len() == 1).await;
+        assert_eq!(edited(&fixture)[0].1.state, CardState::Answered);
+        // Any other root that is not an event stays refused.
+        let request = UserInputRequest::parse(RequestId::Number(2), &json!({"threadId":"native-thread","turnId":"native-turn","itemId":"item-2","isBlocking":true,
+            "questions":[{"id":"q","header":"Pick","question":"Which one?","options":[{"label":"One","description":"First"},{"label":"Two","description":"Second"}]}]})).unwrap();
+        let elsewhere = QuestionContext { thread_root: "!other:test".into(), ..context };
+        assert!(questions.ask_on_device(&elsewhere, request).await.unwrap().is_some());
+        assert_eq!(fixture.cards().len(), 1);
+    }
+
+    #[tokio::test]
     async fn an_outcome_waits_for_a_device_that_can_show_it() {
         let fixture = Arc::new(Fixture::new(&[], Duration::from_secs(60), None));
         let source = Arc::new(Source::Fixture(fixture.clone()));
-        let mut questions = Questions::default();
+        let mut questions: Questions = Questions::default();
         questions.adopt((source.clone(), None));
         let card = card('a');
         let event = fixture.posted_earlier(ROOM, card.message_content());
@@ -1626,7 +1804,7 @@ mod outbox_tests {
                 None,
             ));
             let source = Arc::new(Source::Fixture(fixture.clone()));
-            let mut questions = Questions::default();
+            let mut questions: Questions = Questions::default();
             questions.adopt((source, None));
             let unanswered = card(if accepted { 'e' } else { 'f' });
             let event = fixture.posted_earlier(ROOM, unanswered.message_content());
@@ -1685,7 +1863,7 @@ mod outbox_tests {
             Some(records.clone()),
         ));
         let source = Arc::new(Source::Fixture(fixture.clone()));
-        let mut questions = Questions::default();
+        let mut questions: Questions = Questions::default();
         questions.adopt((source, Some(records.clone())));
         let card = card('1');
         let txn = format!("hagency_question_{}", &card.id[3..]);
@@ -1736,7 +1914,7 @@ mod outbox_tests {
             None,
         ));
         let source = Arc::new(Source::Fixture(fixture.clone()));
-        let mut questions = Questions::default();
+        let mut questions: Questions = Questions::default();
         questions.adopt((source, None));
         let unanswered = card('3');
         let event = fixture.posted_earlier(ROOM, unanswered.message_content());

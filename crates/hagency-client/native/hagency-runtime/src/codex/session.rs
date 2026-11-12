@@ -21,12 +21,13 @@ mod task_mcp;
 mod usage;
 pub use driver::{
     ApprovalControlPolicy, ControlUpdate, PreparedApproval, PreparedUpdate, SessionDriver,
+    RunAction, RunOutcome, RunReceipt,
 };
 pub use observation::{
-    Observation, ObservationKind, ObservationSource, ToolEvidence, ToolKind, ToolResult, TurnResult,
+    NativeTurnContext, Observation, ObservationKind, ObservationSource, ToolEvidence, ToolKind, ToolResult, TurnResult,
 };
 pub use task_mcp::{TASK_MCP_ENV, TASK_MCP_TOOLS, TaskMcp};
-pub use usage::{UsageBreakdown, UsageDiagnostics, UsageEvidence};
+pub use usage::{ContextUsage, UsageBreakdown, UsageDiagnostics, UsageEvidence};
 
 use super::transport;
 use serde_json::{Value, json};
@@ -58,6 +59,8 @@ pub enum Error {
     Policy,
     #[error("native Codex RPC was rejected with code {0}")]
     Rejected(i64),
+    #[error("native Codex confirmed that the stored thread is unavailable")]
+    ContextUnavailable,
     #[error("native Codex server request has no authority adapter")]
     UnsupportedRequest,
     #[error("native Codex notification is unsupported")]
@@ -156,6 +159,7 @@ pub struct Settings {
     room_history: bool,
     room_files: bool,
     user_input_tool: bool,
+    retain_context: bool,
 }
 impl Settings {
     pub(crate) fn room_history_enabled(&self) -> bool { self.room_history }
@@ -189,6 +193,7 @@ impl Settings {
             room_history: false,
             room_files: false,
             user_input_tool: false,
+            retain_context: false,
         })
     }
     pub(crate) fn shared_mode_matches(&self, mode: Option<&str>) -> bool {
@@ -244,7 +249,7 @@ impl Settings {
             json!({ "type": "workspaceWrite", "writableRoots": [self.cwd], "networkAccess": false })
         }
     }
-    fn thread_request(&self, resume: Option<&str>) -> Value {
+    pub(crate) fn thread_request(&self, resume: Option<&str>) -> Value {
         let mut params = json!({ "cwd": self.cwd, "model": self.model, "sandbox": self.mode(),
             "approvalPolicy": self.approval_policy(), "approvalsReviewer": "user" });
         if let Some(helper) = &self.task_mcp {
@@ -266,7 +271,9 @@ impl Settings {
             // tools are fixed when it starts, so this cannot wait for the turn.
             params["config"]["features.default_mode_request_user_input"] = true.into();
         }
-        if self.room_history {
+        // Resume restores the native thread's persisted tool definitions.
+        // The native resume protocol does not accept dynamicTools.
+        if self.room_history && resume.is_none() {
             params["dynamicTools"] = json!([room_history::definition()]);
             // Keep the model's own compaction point. A fixed 24,000-token limit
             // left only a few thousand tokens above the instructions, so every
@@ -274,7 +281,7 @@ impl Settings {
             // again without end. The host already bounds each history page by
             // the observed context window.
         }
-        if self.room_files {
+        if self.room_files && resume.is_none() {
             let mut tools = params["dynamicTools"].as_array().cloned().unwrap_or_default();
             tools.extend(room_files::definitions());
             params["dynamicTools"] = tools.into();
@@ -283,8 +290,11 @@ impl Settings {
             params["threadId"] = id.into();
             params["excludeTurns"] = true.into();
         } else {
-            params["ephemeral"] = true.into();
+            // Native fork_context subagents need the parent's retained rollout.
+            // Keep disposable storage only for the explicit text-only mode.
+            params["ephemeral"] = (self.read_only && !self.retain_context).into();
             params["serviceName"] = "hagency".into();
+            params["experimentalRawEvents"] = true.into();
         }
         params
     }

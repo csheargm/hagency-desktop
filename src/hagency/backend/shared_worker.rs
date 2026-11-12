@@ -2,7 +2,7 @@
 //! execution permission, provider handle or private work journal.
 use super::*;
 use ::hagency::native_owner::{
-    AdoptedManagementSelection, AdoptedSharedExecutor, ManagedAgentProgress, ManagedMatrixProgress,
+    CurrentProfileSelection, CurrentSharedExecutor, ManagedAgentProgress, ManagedMatrixProgress,
     ManagementPackage, SharedExecutionProgress,
 };
 use std::{
@@ -14,7 +14,7 @@ use std::{
 struct Control {
     retired: AtomicBool,
     wake: tokio::sync::Notify,
-    executor: tokio::sync::Mutex<Option<Arc<AdoptedSharedExecutor>>>,
+    executor: tokio::sync::Mutex<Option<Arc<CurrentSharedExecutor>>>,
 }
 
 #[derive(Default)]
@@ -57,7 +57,7 @@ impl Service {
             let _ = handle.await;
         }
         task.take();
-        let Ok(Some(selection)) = self.load_adopted_initialization().await else {
+        let Ok(Some(selection)) = self.load_current_initialization().await else {
             return;
         };
         if self.check().is_err() || self.0.shared.control.retired.load(Ordering::Acquire) {
@@ -75,7 +75,7 @@ impl Service {
 async fn run(
     weak: Weak<Inner>,
     owner: NativeOwner,
-    selection: AdoptedManagementSelection,
+    selection: CurrentProfileSelection,
     control: Arc<Control>,
 ) {
     // Keep every lane in the original retained task: retiring/draining still
@@ -98,7 +98,7 @@ async fn run(
 async fn run_intake(
     weak: Weak<Inner>,
     owner: NativeOwner,
-    selection: AdoptedManagementSelection,
+    selection: CurrentProfileSelection,
     control: Arc<Control>,
 ) {
     let live = || {
@@ -131,7 +131,7 @@ async fn run_intake(
 async fn run_budget(
     weak: Weak<Inner>,
     owner: NativeOwner,
-    selection: AdoptedManagementSelection,
+    selection: CurrentProfileSelection,
     control: Arc<Control>,
 ) {
     let live = || {
@@ -188,7 +188,7 @@ async fn wait_for_work(
 async fn run_maintenance(
     weak: Weak<Inner>,
     owner: NativeOwner,
-    selection: AdoptedManagementSelection,
+    selection: CurrentProfileSelection,
     control: Arc<Control>,
 ) {
     let gate_weak = weak.clone();
@@ -305,9 +305,9 @@ pub(super) fn advance(
 async fn acquire_executor(
     weak: &Weak<Inner>,
     owner: &NativeOwner,
-    selection: &AdoptedManagementSelection,
+    selection: &CurrentProfileSelection,
     control: &Arc<Control>,
-) -> Result<Arc<AdoptedSharedExecutor>, NativeError> {
+) -> Result<Arc<CurrentSharedExecutor>, NativeError> {
     let mut saved = control.executor.lock().await;
     let inner = weak
         .upgrade()
@@ -359,14 +359,14 @@ async fn acquire_executor(
 impl Service {
     pub(super) async fn shared_successor_executor(
         &self,
-    ) -> Result<Arc<AdoptedSharedExecutor>, String> {
+    ) -> Result<Arc<CurrentSharedExecutor>, String> {
         self.check()?;
         self.verify_matrix(false).await?;
         let owner = self.native_owner().await?;
         let selection = self
-            .load_adopted_initialization()
+            .load_current_initialization()
             .await?
-            .ok_or("owner_source_adoption_required")?;
+            .ok_or("current_profile_required")?;
         let executor = acquire_executor(
             &Arc::downgrade(&self.0),
             &owner,

@@ -1,194 +1,16 @@
-//! Canonical operator task history. The initializer is native-only and uses
-//! the exact active v1 empty-history or v2 staged-task contract; readers never open archives.
+//! Current canonical operator tasks bound to the current profile initializer.
 use super::*;
-use super::super::empty_initialization::{self, EmptyPlan};
 mod commands;
-use crate::management::{
-    OperatorBoardPage, OperatorBoardQuery, OperatorTaskDetail, OperatorTaskDetailQuery,
-    OperatorTaskPage, OperatorTaskQuery, TASK_COMMENT_PAGE, TASK_READ_PAGE,
-};
-use crate::{OperatorTask, OperatorTaskComment, TASK_STATUSES};
+use crate::management::{OperatorBoardPage,OperatorBoardQuery,OperatorTaskDetail,OperatorTaskDetailQuery,OperatorTaskPage,OperatorTaskQuery,TASK_COMMENT_PAGE,TASK_READ_PAGE};
+use crate::{OperatorTask,OperatorTaskComment,TASK_STATUSES};
 use std::collections::BTreeMap;
-
 #[derive(Clone)]
-pub(super) enum TaskBinding {
-    Migration(Arc<Plan>),
-    EmptyDevice(Arc<EmptyPlan>),
-}
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EmptyHistoryReceipt {
-    version: u16,
-    kind: String,
-    migration_id: String,
-    registry_id: String,
-    profile_digest: String,
-    owner_mxid: String,
-    plan_digest: String,
-    inventory_digest: String,
-    source_schema: i32,
-    source_evidence: String,
-    custody_evidence: String,
-    original_tasks: u64,
-    original_comments: u64,
-    original_projects: u64,
-    original_engagements: u64,
-}
-fn manifest(plan: &Plan, kind: &str) -> Value {
-    json!({"version":1,"kind":kind,"migrationId":plan.migration_id,
-        "registryId":plan.registry_id,"profileDigest":plan.inventory.profile,
-        "ownerMxid":plan.inventory.owner,"inventoryDigest":plan.inventory_digest,
-        "sourceSchema":plan.inventory.source_schema})
-}
-fn expected(
-    db: &Connection,
-    authority: &AdoptionAuthority,
-    original: &Plan,
-) -> Result<Option<EmptyHistoryReceipt>, Error> {
-    authority.check()?;
-    let (plan, phase) = writer::read(db, authority, &original.migration_id)?;
-    if phase != 4 || plan.digest()? != original.digest()? {
-        return Err(Error::LocalAuthority);
-    }
-    // This selects a reviewed contract, not authority from a schema number.
-    // v1 collect rejected nonempty tasks/comments/projects/engagements before
-    // producing the sealed plan and verified source/custody evidence below.
-    if plan.version != 1 || !matches!(plan.inventory.source_schema, 77..=83) {
-        return Ok(None);
-    }
-    if canonical::digest(&serde_json::to_value(&plan.inventory)?)? != plan.inventory_digest {
-        return Err(Error::Quarantined);
-    }
-    let plan_digest = plan.digest()?;
-    let source_evidence = canonical::digest(&json!({"plan":plan_digest,
-        "management":manifest(&plan,"management"),"personal":manifest(&plan,"personal")}))?;
-    let custody_evidence = canonical::digest(&json!({"plan":plan_digest,
-        "custody":plan.inventory.custody_digest,"count":plan.inventory.custody_rows}))?;
-    let (source, custody, result): (String, String, String) = db.query_row(
-        "SELECT CASE WHEN length(source_evidence)=64 THEN source_evidence END,CASE WHEN length(custody_evidence)=64 THEN custody_evidence END,CASE WHEN length(CAST(result AS BLOB))<=262144 THEN result END FROM owner_resource_adoptions WHERE id=?1",
-        [&plan.migration_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-    )?;
-    if source != source_evidence
-        || custody != custody_evidence
-        || serde_json::from_str::<Value>(&result)? != serde_json::to_value(plan.summary(4)?)?
-    {
-        return Err(Error::Quarantined);
-    }
-    authority.check()?;
-    Ok(Some(EmptyHistoryReceipt {
-        version: 1,
-        kind: "empty_resource_adoption_v1".into(),
-        migration_id: plan.migration_id,
-        registry_id: plan.registry_id,
-        profile_digest: plan.inventory.profile,
-        owner_mxid: plan.inventory.owner,
-        plan_digest,
-        inventory_digest: plan.inventory_digest,
-        source_schema: plan.inventory.source_schema,
-        source_evidence,
-        custody_evidence,
-        original_tasks: 0,
-        original_comments: 0,
-        original_projects: 0,
-        original_engagements: 0,
-    }))
-}
-fn saved(db: &Connection, receipt: &EmptyHistoryReceipt) -> Result<bool, Error> {
-    let row: Option<(String, String, String)> = db.query_row(
-        "SELECT migration_id,receipt_digest,CASE WHEN length(CAST(receipt AS BLOB))<=8192 THEN receipt END FROM owner_operator_task_histories WHERE profile=?1",
-        [&receipt.profile_digest],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-    ).optional()?;
-    let Some((migration, digest, raw)) = row else {
-        return Ok(false);
-    };
-    let actual: EmptyHistoryReceipt = serde_json::from_str(&raw)?;
-    if migration != receipt.migration_id
-        || &actual != receipt
-        || canonical::digest(&serde_json::to_value(actual)?)? != digest
-    {
-        return Err(Error::Quarantined);
-    }
-    Ok(true)
-}
-impl DomainRepository {
-    /// Called only by trusted adopted backing construction, never a script read.
-    pub(super) fn initialize_empty_operator_history(
-        &mut self,
-        authority: &AdoptionAuthority,
-        original: &Plan,
-    ) -> Result<Option<TaskBinding>, Error> {
-        authority.check()?;
-        let tx = self
-            .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // Recheck after SQLite's writer wait and again immediately pre-commit.
-        authority.check()?;
-        if matches!(original.version, 2 | 3) && original.inventory.task_history.is_some() {
-            task_transfer::authorize_active(&tx, authority, original)?;
-            task_transfer::verify(&tx, original)?;
-            tx.commit()?;
-            authority.check()?;
-            return Ok(Some(TaskBinding::Migration(Arc::new(original.clone()))));
-        }
-        let Some(receipt) = expected(&tx, authority, original)? else {
-            return Ok(None);
-        };
-        if !saved(&tx, &receipt)? {
-            let has_rows: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM owner_operator_tasks WHERE profile=?1) OR EXISTS(SELECT 1 FROM owner_operator_task_comments WHERE profile=?1)",[&receipt.profile_digest],|r|r.get(0))?;
-            if has_rows {
-                return Err(Error::Quarantined);
-            }
-            tx.execute("INSERT INTO owner_operator_task_histories(profile,migration_id,receipt_digest,receipt) VALUES(?1,?2,?3,?4)",params![receipt.profile_digest,receipt.migration_id,canonical::digest(&serde_json::to_value(&receipt)?)?,serde_json::to_string(&receipt)?])?;
-        }
-        authority.check()?;
-        tx.commit()?;
-        authority.check().map_err(|_| Error::OutcomeUnknown)?;
-        Ok(Some(TaskBinding::Migration(Arc::new(original.clone()))))
-    }
-}
-fn empty_device_receipt(
-    db: &Connection, authority: &AdoptionAuthority, original: &EmptyPlan,
-) -> Result<EmptyHistoryReceipt, Error> {
-    let (plan, phase) = empty_initialization::read_state(db, authority, &original.initialization_id)?;
-    if phase != 4 || plan.digest()? != original.digest()? { return Err(Error::LocalAuthority); }
-    Ok(EmptyHistoryReceipt {
-        version: 2,
-        kind: "empty_device_initialization_v4".into(),
-        plan_digest: plan.digest()?,
-        source_evidence: empty_initialization::source_evidence(&plan)?,
-        custody_evidence: empty_initialization::custody_evidence(&plan)?,
-        migration_id: plan.initialization_id,
-        registry_id: plan.registry_id,
-        profile_digest: plan.inventory.profile,
-        owner_mxid: plan.inventory.owner,
-        inventory_digest: plan.inventory_digest,
-        source_schema: plan.inventory.source_schema,
-        original_tasks: 0, original_comments: 0, original_projects: 0, original_engagements: 0,
-    })
-}
-impl DomainRepository {
-    pub(super) fn initialize_empty_device_operator_history(
-        &mut self, authority: &AdoptionAuthority, original: &EmptyPlan,
-    ) -> Result<TaskBinding, Error> {
-        authority.check()?;
-        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let receipt = empty_device_receipt(&tx, authority, original)?;
-        if !saved(&tx, &receipt)? {
-            let has_rows: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM owner_operator_tasks WHERE profile=?1) OR EXISTS(SELECT 1 FROM owner_operator_task_comments WHERE profile=?1)", [&receipt.profile_digest], |r| r.get(0))?;
-            if has_rows { return Err(Error::Quarantined); }
-            tx.execute("INSERT INTO owner_operator_task_histories(profile,migration_id,receipt_digest,receipt) VALUES(?1,?2,?3,?4)", params![receipt.profile_digest,receipt.migration_id,canonical::digest(&serde_json::to_value(&receipt)?)?,serde_json::to_string(&receipt)?])?;
-        }
-        authority.check()?;
-        tx.commit()?;
-        authority.check().map_err(|_| Error::OutcomeUnknown)?;
-        Ok(TaskBinding::EmptyDevice(Arc::new(original.clone())))
-    }
-}
-impl AdoptedManagementStore {
-    fn task_authority(&self, profile: &ProfileAuthority) -> Result<AdoptionAuthority, Error> {
+pub(super) struct TaskBinding(pub(super) Arc<current::CurrentPlan>);
+impl CurrentManagementStore {
+    fn task_authority(&self, profile: &ProfileAuthority) -> Result<ProfileInitializationAuthority, Error> {
         self.check(profile)?;
         let retained = self.clone();
-        AdoptionAuthority::new(
+        ProfileInitializationAuthority::new(
             self.registry.clone(),
             profile.clone(),
             Instant::now() + Duration::from_secs(30),
@@ -198,24 +20,14 @@ impl AdoptedManagementStore {
     fn task_read_proof(
         &self,
         db: &Connection,
-        authority: &AdoptionAuthority,
+        authority: &ProfileInitializationAuthority,
     ) -> Result<bool, Error> {
         let Some(binding) = &self.task_history else {
             return Ok(false);
         };
-        let receipt = match binding {
-            TaskBinding::Migration(original) if matches!(original.version, 2 | 3) => {
-                task_transfer::authorize_active(db, authority, original)?;
-                return Ok(true);
-            }
-            TaskBinding::Migration(original) => {
-                let Some(receipt) = expected(db, authority, original)? else { return Ok(false); };
-                receipt
-            }
-            TaskBinding::EmptyDevice(original) => empty_device_receipt(db, authority, original)?,
-        };
-        saved(db, &receipt)
+        current::task_history(db,authority,&binding.0)
     }
+
     pub(crate) async fn operator_task_page(
         &self,
         profile: &ProfileAuthority,

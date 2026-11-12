@@ -5,6 +5,16 @@ use hagency_runtime::claude::{
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+#[path = "claude_session/continuous.rs"]
+mod continuous;
+#[path = "claude_session/room_mcp.rs"]
+mod room_mcp;
+#[path = "claude_session/interrupt.rs"]
+mod interrupt;
+#[path = "claude_session/frames.rs"]
+mod frames;
+#[path = "claude_session/steer.rs"]
+mod steer;
 
 struct FlushProbe {
     fail: bool,
@@ -80,12 +90,223 @@ async fn initialize(driver: &mut Driver, peer: &mut Peer) {
         );
         peer.output
             .write_all(&encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":request["request_id"],"response":{}}})))
+            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.322"}}})))
             .await
             .unwrap();
     });
     result.unwrap();
     assert_eq!(driver.phase(), Phase::Ready);
+}
+fn native_ui_invalidate() -> Value {
+    serde_json::from_str(include_str!("fixtures/claude-native-ui-invalidate.json")).unwrap()
+}
+#[tokio::test]
+async fn native_claude_initialize_ignores_captured_ui_frame_without_binding_a_session() {
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = encoded(native_ui_invalidate());
+        bytes.extend(encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322", "account":{
+                "tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty"}}
+        }})));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
+    assert_eq!(driver.ignored_frames(), 1);
+    assert!(driver.session_id().is_none());
+    assert!(driver.observation_source().is_err());
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+    assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+}
+#[tokio::test(start_paused = true)]
+async fn native_claude_initialize_ui_metadata_does_not_hide_authority_or_extend_deadlines() {
+    for invalid in [
+        permission("early"),
+        json!({"type":"control_response","response":{"subtype":"success","request_id":"wrong","response":{"claude_code_version":"2.1.322"}}}),
+        init(),
+    ] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        let (result, ()) = tokio::join!(driver.initialize(), async {
+            read(&mut peer).await;
+            let mut bytes = encoded(native_ui_invalidate());
+            bytes.extend(encoded(invalid));
+            peer.output.write_all(&bytes).await.unwrap();
+        });
+        assert_eq!(result, Err(Error::Identity));
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert_eq!(driver.ignored_frames(), 1);
+    }
+    let (mut driver, mut peer) = pair(64 * 1024, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        read(&mut peer).await;
+        let bytes = encoded(native_ui_invalidate()).repeat(64);
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    assert_eq!(result, Err(Error::Capacity));
+    assert_eq!(driver.ignored_frames(), 64);
+
+    let (mut driver, mut peer) = pair(4096, limits());
+    let start = tokio::time::Instant::now();
+    let ((result, elapsed), ()) = tokio::join!(
+        async {
+            let result = driver.initialize().await;
+            (result, start.elapsed())
+        },
+        async {
+            read(&mut peer).await;
+            for _ in 0..3 {
+                peer.output
+                    .write_all(&encoded(native_ui_invalidate()))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        }
+    );
+    assert_eq!(result, Err(Error::Timeout));
+    assert_eq!(elapsed, Duration::from_millis(limits().event_wait_ms));
+}
+/// Captured from CLI 2.1.322 started with one session-start hook in the
+/// account's settings: the hook's start and result, printed before the
+/// initialize response.
+fn native_hook_reports() -> Vec<Value> {
+    serde_json::from_str(include_str!("fixtures/claude-native-hook-reports.json")).unwrap()
+}
+#[tokio::test]
+async fn native_claude_initialize_accepts_reports_of_the_accounts_own_hooks() {
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = Vec::new();
+        for report in native_hook_reports() {
+            bytes.extend(encoded(report));
+        }
+        bytes.extend(encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322"}}})));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
+    assert_eq!(driver.ignored_frames(), 2);
+    // A hook report binds no session and is no observation.
+    assert!(driver.session_id().is_none());
+    assert!(driver.observation_source().is_err());
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+    assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+}
+#[tokio::test]
+async fn native_claude_hook_report_read_with_the_initialize_response_is_passed() {
+    // A session-start hook that ends as the CLI answers `initialize`: its
+    // result is read together with the response and waits in the buffer.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        let request = read(&mut peer).await;
+        let mut bytes = encoded(json!({"type":"control_response","response":{
+            "subtype":"success","request_id":request["request_id"],
+            "response":{"claude_code_version":"2.1.322"}}}));
+        let mut report = native_hook_reports().remove(1);
+        report["session_id"] = json!("session-one");
+        bytes.extend(encoded(report));
+        peer.output.write_all(&bytes).await.unwrap();
+    });
+    result.unwrap();
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert_eq!(driver.session_id(), Some("session-one"));
+}
+
+#[tokio::test]
+async fn native_claude_hook_reports_hide_no_authority_before_initialize() {
+    for invalid in [permission("early"), init()] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        let (result, ()) = tokio::join!(driver.initialize(), async {
+            read(&mut peer).await;
+            let mut bytes = Vec::new();
+            for report in native_hook_reports() {
+                bytes.extend(encoded(report));
+            }
+            bytes.extend(encoded(invalid));
+            peer.output.write_all(&bytes).await.unwrap();
+        });
+        assert_eq!(result, Err(Error::Identity));
+        assert_eq!(driver.phase(), Phase::Closed);
+        assert_eq!(driver.ignored_frames(), 2);
+    }
+    // Another system frame is still not start-up metadata.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let (result, ()) = tokio::join!(driver.initialize(), async {
+        read(&mut peer).await;
+        let mut other = native_hook_reports().remove(0);
+        other["subtype"] = json!("hook_unknown");
+        peer.output.write_all(&encoded(other)).await.unwrap();
+    });
+    assert_eq!(result, Err(Error::Identity));
+}
+#[tokio::test]
+async fn native_claude_hook_report_before_init_belongs_to_the_session_that_follows() {
+    for other_session in [false, true] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        let mut bytes = Vec::new();
+        for mut report in native_hook_reports() {
+            report["hook_event"] = json!("UserPromptSubmit");
+            report["session_id"] = json!(if other_session {
+                "different-session"
+            } else {
+                "session-one"
+            });
+            bytes.extend(encoded(report));
+        }
+        bytes.extend(encoded(init()));
+        let (result, sent) = tokio::join!(driver.next_message(), peer.output.write_all(&bytes));
+        sent.unwrap();
+        if other_session {
+            assert!(matches!(result, Err(Error::Identity)));
+            assert_eq!(driver.phase(), Phase::Closed);
+        } else {
+            assert!(matches!(
+                result,
+                Ok(Message::Event {
+                    kind: EventKind::System,
+                    ..
+                })
+            ));
+            // Init stays observation one; the reports before it are none.
+            assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+        }
+    }
+}
+#[tokio::test]
+async fn native_claude_hook_reports_during_a_turn_are_plain_events_of_that_session() {
+    let (mut driver, mut peer) = running().await;
+    for mut report in native_hook_reports() {
+        report["hook_event"] = json!("PreToolUse");
+        report["session_id"] = json!("session-one");
+        assert!(matches!(
+            event(&mut driver, &mut peer, report).await,
+            Ok(Message::Event {
+                kind: EventKind::System,
+                ..
+            })
+        ));
+    }
+    assert_eq!(driver.phase(), Phase::Running);
+    // A report that names another session ends this one, as any event does.
+    let mut foreign = native_hook_reports().remove(0);
+    foreign["session_id"] = json!("different-session");
+    assert!(matches!(
+        event(&mut driver, &mut peer, foreign).await,
+        Err(Error::Identity)
+    ));
 }
 async fn prompt(driver: &mut Driver, peer: &mut Peer) {
     let (result, value) = tokio::join!(
@@ -121,6 +342,360 @@ async fn running() -> (Driver, Peer) {
     prompt(&mut driver, &mut peer).await;
     event(&mut driver, &mut peer, init()).await.unwrap();
     (driver, peer)
+}
+
+#[tokio::test]
+async fn native_claude_startup_metadata_keeps_init_as_the_bound_observation() {
+    for other_session in [false, true] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        let mut bytes = encoded(json!({"type":"system","subtype":"session_state_changed",
+            "state":"running","session_id":"session-one"}));
+        for state in ["queued", "started"] {
+            bytes.extend(encoded(
+                json!({"type":"command_lifecycle","command_uuid":"command-one",
+                "state":state,"session_id":"session-one"}),
+            ));
+        }
+        let mut initialization = init();
+        if other_session {
+            initialization["session_id"] = json!("different-session");
+        }
+        bytes.extend(encoded(initialization));
+        let (result, sent) = tokio::join!(driver.next_message(), peer.output.write_all(&bytes));
+        sent.unwrap();
+        if other_session {
+            assert!(matches!(result, Err(Error::Identity)));
+            assert_eq!(driver.phase(), Phase::Closed);
+        } else {
+            assert!(matches!(
+                result,
+                Ok(Message::Event {
+                    kind: EventKind::System,
+                    ..
+                })
+            ));
+            assert_eq!(driver.last_observation().unwrap().sequence(), 1);
+            assert!(driver.observation_source().is_ok());
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_claude_startup_metadata_cannot_hide_unbounded_or_unbound_input() {
+    for unexpected_assistant in [false, true] {
+        let (mut driver, mut peer) = pair(16384, limits());
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        let frame = if unexpected_assistant {
+            json!({"type":"assistant","session_id":"session-one","message":{"content":[]}})
+        } else {
+            json!({"type":"command_lifecycle","command_uuid":"command-one","state":"queued","session_id":"session-one"})
+        };
+        let bytes = encoded(frame).repeat(if unexpected_assistant { 1 } else { 64 });
+        let (result, sent) = tokio::join!(driver.next_message(), peer.output.write_all(&bytes));
+        sent.unwrap();
+        assert!(matches!(result, Err(Error::Identity | Error::Capacity)));
+        assert_eq!(driver.phase(), Phase::Closed);
+    }
+}
+
+fn state(value: &str) -> Value {
+    json!({"type":"system","subtype":"session_state_changed","state":value,"session_id":"session-one"})
+}
+fn result() -> Value {
+    json!({"type":"result","subtype":"success","is_error":false,"result":"answer","session_id":"session-one",
+        "modelUsage":{"main":{"inputTokens":1,"outputTokens":1,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}})
+}
+fn background(live: bool) -> Value {
+    json!({"type":"system","subtype":"background_tasks_changed","session_id":"session-one",
+        "tasks":if live {vec![json!({"task_id":"child-one","task_type":"local_agent"})]} else {vec![]}})
+}
+
+#[tokio::test]
+async fn native_claude_completion_requires_idle_and_result_in_either_order() {
+    for idle_first in [false, true] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        driver.enable_native_completion().unwrap();
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        event(&mut driver, &mut peer, init()).await.unwrap();
+        event(
+            &mut driver,
+            &mut peer,
+            if idle_first { state("idle") } else { result() },
+        )
+        .await
+        .unwrap();
+        assert_eq!(driver.phase(), Phase::Running);
+        event(
+            &mut driver,
+            &mut peer,
+            if idle_first { result() } else { state("idle") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert!(!driver.needs_usage_snapshot());
+    }
+}
+
+#[tokio::test]
+async fn native_claude_foreground_children_also_require_whole_tree_usage() {
+    let (mut driver, mut peer) = pair(4096, limits());
+    driver.enable_native_completion().unwrap();
+    initialize(&mut driver, &mut peer).await;
+    prompt(&mut driver, &mut peer).await;
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    event(&mut driver, &mut peer, json!({"type":"system","subtype":"task_started","session_id":"session-one","task_id":"child-one","task_type":"local_agent","is_backgrounded":false})).await.unwrap();
+    event(&mut driver, &mut peer, json!({"type":"system","subtype":"task_notification","session_id":"session-one","task_id":"child-one","status":"completed"})).await.unwrap();
+    let mut main_loop_only = result();
+    main_loop_only.as_object_mut().unwrap().remove("modelUsage");
+    event(&mut driver, &mut peer, main_loop_only).await.unwrap();
+    event(&mut driver, &mut peer, state("idle")).await.unwrap();
+    assert_eq!(driver.phase(), Phase::ResultObserved);
+    assert!(driver.needs_usage_snapshot());
+}
+
+#[tokio::test]
+async fn native_claude_background_work_keeps_approvals_live_and_refreshes_exact_call_usage() {
+    for wrong_correlation in [false, true] {
+        let (mut driver, mut peer) = pair(4096, limits());
+        driver.enable_native_completion().unwrap();
+        initialize(&mut driver, &mut peer).await;
+        prompt(&mut driver, &mut peer).await;
+        event(&mut driver, &mut peer, init()).await.unwrap();
+        event(&mut driver, &mut peer, background(true))
+            .await
+            .unwrap();
+        event(&mut driver, &mut peer, result()).await.unwrap();
+        event(&mut driver, &mut peer, state("idle")).await.unwrap();
+        assert_eq!(driver.phase(), Phase::Running);
+        assert!(matches!(
+            event(&mut driver, &mut peer, permission("child-permission"))
+                .await
+                .unwrap(),
+            Message::Permission { .. }
+        ));
+        event(
+            &mut driver,
+            &mut peer,
+            json!({"type":"control_cancel_request","request_id":"child-permission"}),
+        )
+        .await
+        .unwrap();
+        event(&mut driver, &mut peer, background(false))
+            .await
+            .unwrap();
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert!(driver.needs_usage_snapshot());
+        let (sent, request) = tokio::join!(driver.request_usage_snapshot(), read(&mut peer));
+        sent.unwrap();
+        assert_eq!(request["message"]["content"], "/usage");
+        assert_eq!(request["session_id"], "session-one");
+        let mut snapshot_init = init();
+        snapshot_init["user_message_uuids"] = json!([request["uuid"]]);
+        event(&mut driver, &mut peer, snapshot_init).await.unwrap();
+        let mut snapshot = result();
+        snapshot["user_message_uuid"] = if wrong_correlation {
+            json!("wrong-call")
+        } else {
+            request["uuid"].clone()
+        };
+        let observed = event(&mut driver, &mut peer, snapshot).await;
+        if wrong_correlation {
+            assert!(matches!(observed, Err(Error::Identity)));
+            assert_eq!(driver.phase(), Phase::Closed);
+        } else {
+            observed.unwrap();
+            assert_eq!(driver.phase(), Phase::Running);
+            event(&mut driver, &mut peer, state("idle")).await.unwrap();
+            assert_eq!(driver.phase(), Phase::ResultObserved);
+            assert!(!driver.needs_usage_snapshot());
+            assert!(driver.usage_snapshot_requested());
+            assert!(driver.request_usage_snapshot().await.is_err());
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_CLAUDE_EXECUTABLE; isolated local /usage, no model request"]
+async fn installed_claude_local_command_uses_the_real_parser_and_completion_path() {
+    let executable =
+        std::env::var_os("HAGENCY_TEST_CLAUDE_EXECUTABLE").expect("selected installed Claude");
+    let root = tempfile::tempdir().unwrap();
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args(hagency_runtime::claude::interactive_arguments("sonnet", "medium").unwrap())
+        .env_clear()
+        .env("HOME", root.path())
+        .env("CLAUDE_CONFIG_DIR", root.path().join("config"))
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("ANTHROPIC_API_KEY", "offline-contract")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
+        .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1")
+        .current_dir(root.path())
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let mut driver = SessionDriver::new(
+        child.stdout.take().unwrap(),
+        child.stdin.take().unwrap(),
+        child.stderr.take().unwrap(),
+        Limits {
+            write_timeout_ms: 1000,
+            event_wait_ms: 10000,
+            lifetime_ms: 30000,
+        },
+    )
+    .unwrap();
+    driver.enable_native_completion().unwrap();
+    driver.enable_continuous_session().unwrap();
+    driver.initialize().await.unwrap();
+    let mut previous_source = None;
+    let mut native_session: Option<String> = None;
+    for round in 0..3 {
+        if round != 0 {
+            assert!(driver.can_followup());
+            driver
+                .prepare_followup(Limits {
+                    write_timeout_ms: 1000,
+                    event_wait_ms: 10000,
+                    lifetime_ms: 30000,
+                })
+                .await
+                .unwrap();
+        }
+        driver.owner_command("/usage").await.unwrap();
+        let init = driver.next_message().await.unwrap();
+        assert!(
+            matches!(init, Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init")
+        );
+        let source = driver.observation_source().unwrap();
+        if let Some(prior) = previous_source.as_ref() {
+            assert!(source != *prior);
+            assert!(!driver.matches_observation_source(prior));
+        }
+        previous_source = Some(source);
+        if let Some(expected) = &native_session {
+            assert_eq!(driver.session_id(), Some(expected.as_str()));
+        }
+        native_session = driver.session_id().map(str::to_owned);
+        let mut measured_zero = false;
+        for _ in 0..64 {
+            driver.next_message().await.unwrap();
+            if let Some(observation) = driver.last_observation()
+                && let hagency_runtime::claude::session::ObservationKind::Result { usage, is_error } =
+                    observation.kind()
+            {
+                assert!(!is_error);
+                assert_eq!(usage.counts().input(), Some(0));
+                assert_eq!(usage.counts().output(), Some(0));
+                measured_zero = true;
+            }
+            if driver.phase() == Phase::ResultObserved {
+                break;
+            }
+        }
+        assert!(measured_zero);
+        assert_eq!(driver.phase(), Phase::ResultObserved);
+        assert!(!driver.needs_usage_snapshot());
+    }
+    driver.close();
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_claude_owner_command_is_written_as_it_is_and_a_prompt_never_is() {
+    // The owner's command: the CLI must see the slash first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(frame["type"], "user");
+    assert_eq!(frame["message"]["content"], "/cost");
+    assert_eq!(driver.phase(), Phase::Running);
+
+    // Anything that is not a command is refused here, before a write.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    assert!(driver.owner_command("cost").await.is_err());
+
+    // The same text as a prompt: the host line comes first.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.prompt("/cost").await.unwrap();
+    let frame = read(&mut peer).await;
+    assert_eq!(
+        frame["message"]["content"],
+        format!("{}/cost", hagency_runtime::claude::PROMPT_LEAD)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_owner_command_init_may_take_as_long_as_the_command() {
+    // Captured from CLI 2.1.322: a local command's init follows the command.
+    // `/cost` on a subscription sign-in took 27 s before that init.
+    fn prelude(command: &str) -> Vec<u8> {
+        let mut bytes = encoded(json!({"type":"system","subtype":"session_state_changed",
+            "state":"running","session_id":"session-one"}));
+        for state in ["queued", "started"] {
+            bytes.extend(encoded(json!({"type":"command_lifecycle","command_uuid":command,
+                "state":state,"session_id":"session-one"})));
+        }
+        bytes
+    }
+    let frame_wait = Duration::from_millis(limits().event_wait_ms);
+    let lifetime = Duration::from_millis(limits().lifetime_ms);
+
+    // The owner's command: init arrives long after the frame wait.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+        tokio::time::sleep(frame_wait * 5).await;
+        peer.output.write_all(&encoded(init())).await.unwrap();
+    });
+    assert!(matches!(
+        message.unwrap(),
+        Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init"
+    ));
+    assert_eq!(driver.session_id(), Some("session-one"));
+    // After init the command is read like any turn: the frame wait is back.
+    let started = tokio::time::Instant::now();
+    assert!(matches!(driver.next_message().await, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+
+    // A prompt keeps the frame wait before init.
+    let (mut driver, mut peer) = pair(4096, limits());
+    initialize(&mut driver, &mut peer).await;
+    prompt(&mut driver, &mut peer).await;
+    let started = tokio::time::Instant::now();
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(started.elapsed(), frame_wait);
+    assert_eq!(driver.phase(), Phase::Closed);
+
+    // A command that never reports ends with the session lifetime.
+    let (mut driver, mut peer) = pair(4096, limits());
+    let opened = tokio::time::Instant::now();
+    initialize(&mut driver, &mut peer).await;
+    driver.owner_command("/cost").await.unwrap();
+    read(&mut peer).await;
+    let (message, ()) = tokio::join!(driver.next_message(), async {
+        peer.output.write_all(&prelude("command-one")).await.unwrap();
+    });
+    assert!(matches!(message, Err(Error::Timeout)));
+    assert_eq!(opened.elapsed(), lifetime);
+    assert_eq!(driver.phase(), Phase::Closed);
 }
 
 #[tokio::test]
@@ -242,7 +817,7 @@ async fn native_claude_session_identity_and_result() {
     let (result, ()) = tokio::join!(driver.initialize(), async {
         let request = read(&mut peer).await;
         let mut bytes = encoded(json!({"type":"control_response","response":{
-            "subtype":"success","request_id":request["request_id"],"response":{}}}));
+            "subtype":"success","request_id":request["request_id"],"response":{"claude_code_version":"2.1.322"}}}));
         bytes.extend(encoded(init()));
         peer.output.write_all(&bytes).await.unwrap();
     });
@@ -416,5 +991,177 @@ async fn native_claude_session_backpressure_and_capacity() {
         let progress = driver.termination().unwrap().unconfirmed_write.unwrap();
         assert!(progress.accepted_bytes < progress.total_bytes);
         assert!(!progress.flushed);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HAGENCY_TEST_CLAUDE_EXECUTABLE; local Anthropic SSE only, no paid model"]
+async fn installed_claude_question_contract_returns_native_multiselect_and_free_text() {
+    use hagency_runtime::questions::Answer;
+    use hagency_runtime::claude::session::{ApprovalControlPolicy, PreparedUpdate};
+    let root = tempfile::tempdir().unwrap();
+    let fixture = root.path().join("fixture.py");
+    std::fs::write(&fixture, include_str!("claude_question_fixture.py")).unwrap();
+    let mut server = tokio::process::Command::new("python3")
+        .arg(&fixture)
+        .arg(root.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut address = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut address)
+        .await
+        .unwrap();
+    let executable =
+        std::env::var_os("HAGENCY_TEST_CLAUDE_EXECUTABLE").expect("installed Claude executable");
+    let mut child = tokio::process::Command::new(executable)
+        .args(hagency_runtime::claude::interactive_arguments("sonnet", "medium").unwrap())
+        .env_clear()
+        .env("HOME", root.path())
+        .env("CLAUDE_CONFIG_DIR", root.path().join("config"))
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("ANTHROPIC_API_KEY", "offline-contract")
+        .env(
+            "ANTHROPIC_BASE_URL",
+            format!("http://127.0.0.1:{}", address.trim()),
+        )
+        .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
+        .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1")
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        .current_dir(root.path())
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut driver = SessionDriver::new(
+        child.stdout.take().unwrap(),
+        child.stdin.take().unwrap(),
+        child.stderr.take().unwrap(),
+        Limits {
+            write_timeout_ms: 2000,
+            event_wait_ms: 20_000,
+            lifetime_ms: 60_000,
+        },
+    )
+    .unwrap();
+    driver.enable_native_completion().unwrap();
+    driver.initialize().await.unwrap();
+    driver
+        .prompt("Ask the four offline questions and acknowledge my choices.")
+        .await
+        .unwrap();
+    driver.next_message().await.unwrap();
+    driver
+        .enable_approval_control(ApprovalControlPolicy {
+            owner_wait_ms: 20_000,
+            response_reserve_ms: 2000,
+        })
+        .unwrap();
+    let mut asked = false;
+    for _ in 0..128 {
+        let message = driver.next_message().await.unwrap();
+        if let Message::Permission {
+            request_id,
+            tool_name,
+            ..
+        } = message
+        {
+            assert_eq!(tool_name, "AskUserQuestion");
+            assert!(!asked);
+            asked = true;
+            assert_eq!(driver.question(&request_id).unwrap().len(), 4);
+            let answers = [
+                (
+                    "q0".into(),
+                    Answer::Options(vec!["One".into(), "Two".into()]),
+                ),
+                ("q1".into(), Answer::Text("My custom answer".into())),
+                ("q2".into(), Answer::Option("One".into())),
+                ("q3".into(), Answer::Option("Two".into())),
+            ]
+            .into();
+            let mut prepared = driver.prepare_question(&request_id, &answers).unwrap();
+            loop {
+                if matches!(
+                    driver.send_prepared_approval(&mut prepared).await.unwrap(),
+                    PreparedUpdate::WriteAccepted(_)
+                ) {
+                    break;
+                }
+            }
+        }
+        if driver.phase() == Phase::ResultObserved {
+            break;
+        }
+    }
+    assert!(asked);
+    assert_eq!(driver.phase(), Phase::ResultObserved);
+    let answer = std::fs::read_to_string(root.path().join("native-answer.json")).unwrap();
+    assert!(
+        answer.contains("One, Two") && answer.contains("My custom answer"),
+        "{answer}"
+    );
+    driver.close();
+    child.kill().await.unwrap();
+    server.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_claude_protocol_version_is_checked_before_any_prompt() {
+    for version in [
+        Value::Null,
+        json!(2),
+        json!("2.1.321"),
+        json!("3.0.0"),
+        json!("2.01.321"),
+        json!("2.1.322-beta"),
+        json!("2.1"),
+        json!("2.1.x"),
+        json!("2.1.322"),
+        json!("2.2.0"),
+        // A newer build is supported whatever it appends; a build of the
+        // floor itself is too, unless it is a pre-release of it.
+        json!("2.1.400-beta.1"),
+        json!("2.1.322.1"),
+        json!("2.1.322+build7"),
+    ] {
+        let supported = [
+            "2.1.322",
+            "2.2.0",
+            "3.0.0",
+            "2.1.400-beta.1",
+            "2.1.322.1",
+            "2.1.322+build7",
+        ]
+        .iter()
+        .any(|v| version == *v);
+        let (mut driver, mut peer) = pair(8192, limits());
+        let (result, ()) = tokio::join!(driver.initialize(), async {
+            let request = read(&mut peer).await;
+            peer.output
+                .write_all(&encoded(json!({"type":"control_response","response":{
+                "subtype":"success","request_id":request["request_id"],
+                "response":{"claude_code_version":version}}})))
+                .await
+                .unwrap();
+        });
+        if supported {
+            assert_eq!(result, Ok(()));
+            assert_eq!(driver.phase(), Phase::Ready);
+        } else {
+            assert_eq!(result, Err(Error::UnsupportedVersion));
+            assert_eq!(driver.phase(), Phase::Closed);
+            let mut remaining = String::new();
+            assert_eq!(peer.input.read_line(&mut remaining).await.unwrap(), 0);
+            assert!(
+                remaining.is_empty(),
+                "unsupported CLI receives no model input"
+            );
+        }
     }
 }

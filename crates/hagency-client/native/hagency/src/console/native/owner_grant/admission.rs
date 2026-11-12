@@ -17,6 +17,18 @@ impl AdmissionRound {
         positive(self.request_revision)?;
         positive(self.contribution_revision)
     }
+    /// Two grants of one chain stand on the same admission when the request
+    /// is the same. Its revisions move on the server (a pool published before
+    /// the administrator's decision is approved afterwards), so a chain link
+    /// compares the request alone, as `check_grant_admission` does. An
+    /// unbound historical intent only continues another unbound one.
+    pub(super) fn same_request(a: &Option<Self>, b: &Option<Self>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a.request_id == b.request_id,
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 impl OwnerGrantIntents {
     pub(super) async fn check_new_admission(

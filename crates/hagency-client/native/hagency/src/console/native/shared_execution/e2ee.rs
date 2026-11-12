@@ -156,6 +156,7 @@ pub(super) async fn device(
     assignment: &str,
 ) -> Result<Arc<AgentDevice>, NativeError> {
     let device = open_device(io, b, assignment).await?;
+    crate::console::owned_runtime::run_controls::device_ready(device.clone());
     // Card outcomes this Agent still owes its rooms go out while it is in use.
     if let Ok(records) = question_records(io, b, assignment) {
         super::questions::device_ready(

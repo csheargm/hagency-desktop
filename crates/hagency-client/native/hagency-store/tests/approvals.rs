@@ -4,8 +4,6 @@ mod workspaces;
 mod execution_policy;
 #[path = "approvals/rebinding.rs"]
 mod rebinding;
-#[path = "approvals/tool_management.rs"]
-mod tool_management;
 #[path = "approvals/card.rs"]
 mod card;
 #[path = "approvals/clock.rs"]
@@ -22,6 +20,8 @@ use hagency_core::{approvals::*, replies::*, tasks::*};
 use hagency_store::{DomainRepository, DomainStore, EffectOutcome, Error};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+#[path = "approvals/owned_tree.rs"]
+mod owned_tree;
 
 struct Fixture {
     root: tempfile::TempDir,

@@ -409,6 +409,16 @@ impl MatchEvent for App {
             }
             // Agent questions: a card's click produced an answer to send, an
             // answer was sent (or not), or cards arrived from the room.
+            if let Some(request) = action.downcast_ref::<crate::hagency::run_controls::Requested>()
+            {
+                crate::hagency::run_controls::send(request.clone());
+            }
+            if let Some(sent) = action.downcast_ref::<crate::hagency::run_controls::Sent>()
+                && crate::hagency::run_controls::sent(sent)
+            {
+                cx.action(crate::hagency::pending_questions::PendingQuestionsChanged);
+                self.ui.redraw(cx);
+            }
             if let Some(request) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerRequested>() {
                 crate::hagency::pending_questions::send(request.clone());
             }
@@ -572,14 +582,6 @@ impl MatchEvent for App {
                 let modal = self.ui.modal(cx, ids!(approval_inbox_modal));
                 self.ui.approval_inbox(cx, ids!(approval_inbox_modal.content)).action(cx, modal, action, &self.app_state);
                 if matches!(action, ApprovalInboxAction::Saved) {self.persist_runtime_state(cx, "approval discovery");}
-            }
-            if let Some(found) = action.downcast_ref::<crate::agent_access::discovery::DiscoveredBots>() {
-                let bots = &mut self.app_state.agent_access.bot_settings;
-                if current_user_id().as_ref() == Some(&found.owner) && bots.enabled && bots.is_room_bound(&found.room) && bots.resolved_bot_user_id(Some(&found.owner)).ok().as_ref() == Some(&found.sender) && bots.record_known_bot_user_ids(found.users.clone()) {
-                    crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
-                    self.persist_runtime_state(cx, "BotFather discovery");
-                    cx.redraw_all();
-                }
             }
             if let Some(action) = action.downcast_ref::<AgentAccessAction>() {
                 let modal = self.ui.modal(cx, ids!(agent_access_modal));
@@ -1279,10 +1281,11 @@ impl App {
         self.ui.window(cx, ids!(main_window)).set_visible(cx, true);
     }
 
-    fn sync_upload_overlay(&self, cx: &mut Cx) {
-        let occluded = self.ui.modal(cx, ids!(file_upload_modal)).is_open()
-            || self.ui.modal(cx, ids!(reaction_picker_modal)).is_open()
-            || self.ui.modal(cx, ids!(moderation_modal)).is_open();
+    fn sync_native_browser_overlays(&self, cx: &mut Cx) {
+        let occluded = [
+            ids!(file_upload_modal), ids!(octoscript_apps_modal), ids!(hagency_management_modal),
+            ids!(reaction_picker_modal), ids!(moderation_modal),
+        ].into_iter().any(|id| self.ui.modal(cx, id).is_open());
         // Only browsers in this content host are covered. A popped-out reader
         // remains visible in its own window, and background dock tabs stay hidden.
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).reader(cx)
@@ -1520,7 +1523,7 @@ impl AppMain for App {
                     self.ui.widget(cx, id).handle_event(cx, &Event::Actions(vec![Box::new(ModalAction::Dismissed)]), &mut Scope::empty());
                     modal.close(cx);
                 }
-                self.sync_upload_overlay(cx);
+                self.sync_native_browser_overlays(cx);
                 return;
             }
         }
@@ -1528,7 +1531,7 @@ impl AppMain for App {
             self.ui.widget(cx, ids!(file_upload_modal)).handle_event(
                 cx, event, &mut Scope::with_data(&mut self.app_state),
             );
-            self.sync_upload_overlay(cx);
+            self.sync_native_browser_overlays(cx);
             return;
         }
         if (back_unhandled || escape) && self.ui.modal(cx, ids!(invite_modal)).is_open() {
@@ -1555,12 +1558,31 @@ impl AppMain for App {
                 .action(cx, modal, &ThemeStudioAction::Close);
             return;
         }
+        // Mini-app panels draw above the reader. Back must close that panel
+        // before the covered reader, preserving its live page and history.
+        let mini_modal = self.ui.modal(cx, ids!(octoscript_apps_modal));
+        if mini_modal.is_open() && event.back_pressed() {
+            self.ui.mini_apps_panel(cx, ids!(octoscript_apps_modal.content))
+                .back(cx, mini_modal);
+            self.sync_native_browser_overlays(cx);
+            return;
+        }
+        if mini_modal.is_open() && escape {
+            // Native reviews inside the mini app own Escape. Do not let the
+            // reader beneath it handle either half of that key press.
+            self.ui.widget(cx, ids!(octoscript_apps_modal)).handle_event(
+                cx, event, &mut Scope::with_data(&mut self.app_state),
+            );
+            self.sync_native_browser_overlays(cx);
+            return;
+        }
         if back_unhandled || matches!(event, Event::KeyDown(k) if k.key_code == KeyCode::Escape) {
             let management = self.ui.modal(cx, ids!(hagency_management_modal));
             if management.is_open() {
                 event.back_pressed();
                 self.ui.hagency_panel(cx, ids!(hagency_management_modal.content.management)).action(cx, &HagencyAction::Close);
                 management.close(cx);
+                self.sync_native_browser_overlays(cx);
                 return;
             }
             // Let a nested destructive-action confirmation consume Back first.
@@ -1580,15 +1602,6 @@ impl AppMain for App {
                     return;
                 }
             }
-        }
-        // A running mini app owns Back before the room/navigation widgets
-        // behind its modal. Close synchronously so a hosting shell sees that
-        // the navigation event was consumed by Rinx.
-        let mini_modal = self.ui.modal(cx, ids!(octoscript_apps_modal));
-        if mini_modal.is_open() && event.back_pressed() {
-            self.ui.mini_apps_panel(cx, ids!(octoscript_apps_modal.content))
-                .back(cx, mini_modal);
-            return;
         }
         if let Event::LiveEdit = event {
             self.app_state.app_prefs.broadcast_all(cx);
@@ -1611,12 +1624,12 @@ impl AppMain for App {
         // Forward events to the MatchEvent trait implementation.
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         self.match_event(cx, event);
-        self.sync_upload_overlay(cx);
+        self.sync_native_browser_overlays(cx);
         crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
         let scope = &mut Scope::with_data(&mut self.app_state);
         self.ui.handle_event(cx, event, scope);
         // Outside-click dismissal happens inside Modal, without a Hide action.
-        self.sync_upload_overlay(cx);
+        self.sync_native_browser_overlays(cx);
         owner_dashboard::accessibility::after_event(&self.ui, cx, event);
         // The backend may restore the next account only after every child has
         // consumed ClearAppState, including hidden settings/room widgets.
@@ -2285,9 +2298,6 @@ pub struct AppState {
     #[cfg(feature = "agent_chat")]
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub(crate) approval_markers: crate::agent_chat::approval_state::ApprovalMarkerIndex,
-    #[cfg(feature = "agent_chat")]
-    #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
-    pub(crate) approval_markers_by_namespace: HashMap<String, crate::agent_chat::approval_state::ApprovalMarkerIndex>,
 }
 
 impl AppState {
@@ -2888,5 +2898,54 @@ mod back_navigation_tests {
         assert!(!upload.is_open());
         assert_eq!(reader.browser_id(), id);
         assert_eq!(reader.session().tabs.len(), 1);
+    }
+
+    #[test]
+    fn mini_app_modal_hides_reader_and_back_restores_the_same_session() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(vec![Box::new(
+            WebBrowserAction::Open("https://example.org".parse().unwrap()),
+        )]));
+        let browser = app.ui.web_browser(&mut cx, ids!(web_browser_modal.content));
+        let browser_id = browser.browser_id();
+        assert!(!browser.overlay_occluded());
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(vec![Box::new(MiniAppsAction::Open)]));
+        assert!(app.ui.modal(&mut cx, ids!(octoscript_apps_modal)).is_open());
+        assert!(browser.overlay_occluded());
+        settle_cancel_owner(&mut cx);
+        let escape = KeyEvent {key_code: KeyCode::Escape, ..Default::default()};
+        AppMain::handle_event(&mut app, &mut cx, &Event::KeyDown(escape.clone()));
+        AppMain::handle_event(&mut app, &mut cx, &Event::KeyUp(escape));
+        assert!(app.ui.modal(&mut cx, ids!(web_browser_modal)).is_open(), "Escape belongs to the panel above the reader");
+        assert_eq!(browser.browser_id(), browser_id);
+        assert!(back(&mut cx, &mut app));
+        assert!(!app.ui.modal(&mut cx, ids!(octoscript_apps_modal)).is_open());
+        assert!(app.ui.modal(&mut cx, ids!(web_browser_modal)).is_open());
+        assert!(!browser.overlay_occluded(), "Back restores visibility before its early return");
+        assert_eq!(browser.browser_id(), browser_id);
+        assert_eq!(browser.session().tabs.len(), 1);
+    }
+
+    #[test]
+    fn closing_one_mini_app_cover_keeps_the_reader_occluded_by_the_other() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let modal = app.ui.modal(&mut cx, ids!(web_browser_modal));
+        let browser = app.ui.web_browser(&mut cx, ids!(web_browser_modal.content));
+        browser.action(&mut cx, modal, &WebBrowserAction::Open("https://example.org".parse().unwrap()));
+        let browser_id = browser.browser_id();
+        let management = app.ui.modal(&mut cx, ids!(hagency_management_modal));
+        management.open(&mut cx);
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(vec![Box::new(MiniAppsAction::Open)]));
+        assert!(browser.overlay_occluded());
+        assert!(back(&mut cx, &mut app));
+        assert!(management.is_open());
+        assert!(browser.overlay_occluded(), "Closing one panel must not show through a remaining panel");
+        assert!(back(&mut cx, &mut app));
+        assert!(!management.is_open());
+        assert!(!browser.overlay_occluded());
+        assert_eq!(browser.browser_id(), browser_id);
+        assert_eq!(browser.session().tabs.len(), 1);
     }
 }

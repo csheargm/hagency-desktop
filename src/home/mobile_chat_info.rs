@@ -333,7 +333,7 @@ fn room_service_status(service: &serde_json::Value) -> String {
     crate::hagency::ui::runtime_summary(&service["runtime"], service["agentId"].as_str().unwrap_or(""), service["bindingId"].as_str())
 }
 
-#[derive(Script, ScriptHook, Widget)]
+#[derive(Script, Widget)]
 pub struct MobileChatInfo {
     #[source]
     source: ScriptObjectRef,
@@ -363,6 +363,9 @@ pub struct MobileChatInfo {
     #[rust]
     tab: InfoTab,
     #[rust] drawn_tab: InfoTab,
+    /// The tab whose selected look the two tab buttons wear now; `None` when
+    /// they have not been styled since this widget was last applied from script.
+    #[rust] styled_tab: Option<InfoTab>,
     #[rust] rendered_rows: HashMap<WidgetUid, InfoRow>,
     #[rust] rendered_members: HashMap<WidgetUid, UserProfile>,
     #[rust] agent_request: u64,
@@ -710,6 +713,14 @@ impl MobileChatInfo {
     }
 }
 
+impl ScriptHook for MobileChatInfo {
+    fn on_after_apply(&mut self, _vm: &mut ScriptVm, _apply: &Apply, _scope: &mut Scope, _value: ScriptValue) {
+        // Applying the panel (creation, a theme or language reload) puts the
+        // template's tab colours back, so the selected look goes on again.
+        self.styled_tab = None;
+    }
+}
+
 impl Widget for MobileChatInfo {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         if self.owner.is_some() && !self.pin_is_current() {
@@ -931,10 +942,15 @@ impl Widget for MobileChatInfo {
         self.view.label(cx, ids!(summary_name)).set_text(cx, &summary_room.map_or_else(|| crate::i18n::tr("Chat information").to_owned(), |room|room.display().into_owned()));
         let count = self.data.as_ref().map_or_else(|| crate::i18n::tr("Loading members…").to_owned(), |data| crate::i18n::format("{0} members", &[("0",data.members.len().saturating_sub(data.banned_members.len()).to_string())]));
         self.view.label(cx, ids!(summary_count)).set_text(cx, &count);
-        for (id, selected) in [(ids!(overview_tab), !members), (ids!(members_tab), members)] {
-            let mut button = self.view.button(cx, id);
-            if selected {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SELECTED} draw_text +: {color: mod.widgets.RINX_ACCENT}});}
-            else {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SURFACE} draw_text +: {color: mod.widgets.RINX_INK}});}
+        // Applying a style asks for a redraw, and this runs on every draw:
+        // restyling the tabs each time kept the open panel drawing for ever.
+        if self.styled_tab != Some(self.tab) {
+            self.styled_tab = Some(self.tab);
+            for (id, selected) in [(ids!(overview_tab), !members), (ids!(members_tab), members)] {
+                let mut button = self.view.button(cx, id);
+                if selected {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SELECTED} draw_text +: {color: mod.widgets.RINX_ACCENT}});}
+                else {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SURFACE} draw_text +: {color: mod.widgets.RINX_INK}});}
+            }
         }
         self.view.button(cx,ids!(invite_my_agent)).set_enabled(cx,self.owner.is_some());
         let selected=self.view.drop_down(cx,ids!(my_agents)).selected_item().checked_sub(1).is_some_and(|i|i<self.agents.len());

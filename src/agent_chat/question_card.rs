@@ -9,7 +9,7 @@
 
 use makepad_widgets::*;
 
-use crate::hagency::pending_questions::{self, PendingQuestionsChanged, QuestionView};
+use crate::hagency::pending_questions::{self, PendingQuestionsChanged, QuestionRow, QuestionView};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -17,7 +17,7 @@ script_mod! {
 
     mod.widgets.AgentQuestionOptionButton = mod.widgets.AgentApprovalSecondaryButton {}
 
-    mod.widgets.AgentQuestionBlock = View {
+    mod.widgets.AgentQuestionBlock = #(AgentQuestionBlock::register_widget(vm)) {
         visible: false
         width: Fill, height: Fit
         flow: Down
@@ -50,6 +50,18 @@ script_mod! {
             o1 := mod.widgets.AgentQuestionOptionButton {}
             o2 := mod.widgets.AgentQuestionOptionButton {}
             o3 := mod.widgets.AgentQuestionOptionButton {}
+            o4 := mod.widgets.AgentQuestionOptionButton {}
+            o5 := mod.widgets.AgentQuestionOptionButton {}
+            o6 := mod.widgets.AgentQuestionOptionButton {}
+            o7 := mod.widgets.AgentQuestionOptionButton {}
+            o8 := mod.widgets.AgentQuestionOptionButton {}
+            o9 := mod.widgets.AgentQuestionOptionButton {}
+            o10 := mod.widgets.AgentQuestionOptionButton {}
+            o11 := mod.widgets.AgentQuestionOptionButton {}
+            o12 := mod.widgets.AgentQuestionOptionButton {}
+            o13 := mod.widgets.AgentQuestionOptionButton {}
+            o14 := mod.widgets.AgentQuestionOptionButton {}
+            o15 := mod.widgets.AgentQuestionOptionButton {}
         }
         details_label := Label {
             width: Fill, height: Fit
@@ -140,9 +152,13 @@ script_mod! {
                 }
             }
 
-            q0 := mod.widgets.AgentQuestionBlock {}
-            q1 := mod.widgets.AgentQuestionBlock {}
-            q2 := mod.widgets.AgentQuestionBlock {}
+            questions := FlatList {
+                width: Fill, height: Fit
+                flow: Down
+                spacing: 10.0
+                scroll_bars.show_scroll_y: false
+                Question := mod.widgets.AgentQuestionBlock {}
+            }
 
             footer := View {
                 width: Fill, height: Fit
@@ -169,46 +185,82 @@ script_mod! {
     }
 }
 
-/// Question blocks, in card order. A card holds at most three questions.
-const BLOCKS: [&[LiveId]; 3] = [ids!(q0), ids!(q1), ids!(q2)];
-/// Option buttons per block. A card offers at most four options a question.
-const OPTIONS: [[&[LiveId]; 4]; 3] = [
-    [
-        ids!(q0.options.o0),
-        ids!(q0.options.o1),
-        ids!(q0.options.o2),
-        ids!(q0.options.o3),
-    ],
-    [
-        ids!(q1.options.o0),
-        ids!(q1.options.o1),
-        ids!(q1.options.o2),
-        ids!(q1.options.o3),
-    ],
-    [
-        ids!(q2.options.o0),
-        ids!(q2.options.o1),
-        ids!(q2.options.o2),
-        ids!(q2.options.o3),
-    ],
-];
-const INPUTS: [&[LiveId]; 3] = [
-    ids!(q0.other_box.other_input),
-    ids!(q1.other_box.other_input),
-    ids!(q2.other_box.other_input),
+const OPTIONS: [LiveId; ::hagency::agent_questions::MAX_CARD_OPTIONS] = [
+    id!(o0), id!(o1), id!(o2), id!(o3), id!(o4), id!(o5), id!(o6), id!(o7),
+    id!(o8), id!(o9), id!(o10), id!(o11), id!(o12), id!(o13), id!(o14), id!(o15),
 ];
 
-/// A card for one Agent question, with its option buttons and "Other" input.
+/// Blocks are instantiated only for a visible card, not under every chat
+/// message. A recycled block keeps its text input and keyboard focus.
+#[derive(Script, ScriptHook, Widget)]
+pub struct AgentQuestionBlock {
+    #[deref] view: View,
+    #[rust] data: Option<(String, QuestionRow, bool)>,
+}
+#[derive(Clone, Debug)]
+struct QuestionDraftChanged(String);
+
+impl Widget for AgentQuestionBlock {
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        self.view.handle_event(cx, event, scope);
+        let Event::Actions(actions) = event else { return; };
+        let Some((key,row,_)) = &self.data else { return; };
+        let mut changed=false;
+        for (index,(label,_)) in row.options.iter().enumerate() {
+            if self.view.button(cx,&[id!(options),OPTIONS[index]]).clicked(actions) {
+                if let Some(request)=pending_questions::choose(key,&row.id,label) {cx.action(request);}
+                changed=true;
+            }
+        }
+        let input=self.view.text_input(cx,ids!(other_box.other_input));
+        if let Some(text)=input.changed(actions) {
+            pending_questions::type_text(key,&row.id,&text);
+            cx.action(QuestionDraftChanged(key.clone()));
+        }
+        if input.returned(actions).is_some() && let Some(request)=pending_questions::submit(key) {
+            cx.action(request); changed=true;
+        }
+        if changed {cx.action(PendingQuestionsChanged);}
+    }
+    fn draw_walk(&mut self,cx:&mut Cx2d,scope:&mut Scope,walk:Walk)->DrawStep {
+        self.view.draw_walk(cx,scope,walk)
+    }
+}
+impl AgentQuestionBlock {
+    fn set_row(&mut self,cx:&mut Cx,key:&str,row:&QuestionRow,open:bool) {
+        if self.data.as_ref().is_some_and(|(old_key,old_row,old_open)|old_key==key && old_row==row && *old_open==open) {return;}
+        let rebinding=self.data.as_ref().is_none_or(|(old,_,_)|old!=key);
+        self.view.set_visible(cx,true);
+        let header=self.view.label(cx,ids!(header_label));
+        header.set_visible(cx,!row.header.is_empty()); header.set_text(cx,&row.header);
+        self.view.label(cx,ids!(question_label)).set_text(cx,&row.question);
+        for (index,id) in OPTIONS.iter().enumerate() {
+            let button=self.view.button(cx,&[id!(options),*id]);
+            let Some((label,chosen))=row.options.get(index) else {button.set_visible(cx,false);continue;};
+            button.set_visible(cx,row.answer.is_none());
+            button.set_text(cx,&if *chosen {format!("✓ {label}")}else{label.clone()});
+            show_enabled(cx,&button,open);
+            if open {button.reset_hover(cx);}
+        }
+        self.view.view(cx,ids!(options)).set_visible(cx,!row.options.is_empty() && row.answer.is_none());
+        let details=self.view.label(cx,ids!(details_label));
+        details.set_visible(cx,open && !row.details.is_empty());details.set_text(cx,&row.details);
+        self.view.view(cx,ids!(other_box)).set_visible(cx,row.text.is_some());
+        let input=self.view.text_input(cx,ids!(other_box.other_input));
+        if let Some(draft)=&row.text && (rebinding || input.text()!=*draft) {input.set_text(cx,draft);}
+        let answer=self.view.label(cx,ids!(answer_label));
+        answer.set_visible(cx,row.answer.is_some());
+        if let Some(text)=&row.answer {answer.set_text(cx,&format!("→ {text}"));}
+        self.data=Some((key.into(),row.clone(),open));
+    }
+}
+
+/// A card for one native question request and its final Send action.
 #[derive(Script, ScriptHook, Widget)]
 pub struct AgentQuestionCard {
-    #[deref]
-    view: View,
-    /// The card shown, so a click maps to the store's card.
-    #[rust]
-    card_id: Option<String>,
-    /// Each block's question id and option labels, as drawn.
-    #[rust]
-    rows: Vec<(String, Vec<String>)>,
+    #[deref] view: View,
+    #[rust] card_id: Option<String>,
+    #[rust] content: Option<QuestionView>,
 }
 
 impl Widget for AgentQuestionCard {
@@ -221,25 +273,9 @@ impl Widget for AgentQuestionCard {
             return;
         };
         let mut changed = false;
-        for (index, (question, labels)) in self.rows.clone().iter().enumerate().take(BLOCKS.len()) {
-            for (slot, label) in labels.iter().enumerate().take(OPTIONS[index].len()) {
-                if self.view.button(cx, OPTIONS[index][slot]).clicked(actions) {
-                    if let Some(request) = pending_questions::choose(&card_id, question, label) {
-                        cx.action(request);
-                    }
-                    changed = true;
-                }
-            }
-            let input = self.view.text_input(cx, INPUTS[index]);
-            if let Some(text) = input.changed(actions) {
-                pending_questions::type_text(&card_id, question, &text);
-                self.refresh_send(cx, &card_id);
-            }
-            if input.returned(actions).is_some()
-                && let Some(request) = pending_questions::submit(&card_id)
-            {
-                cx.action(request);
-                changed = true;
+        for action in actions {
+            if let Some(QuestionDraftChanged(key))=action.downcast_ref() && key==&card_id {
+                self.refresh_send(cx,&card_id);
             }
         }
         if self
@@ -258,8 +294,24 @@ impl Widget for AgentQuestionCard {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        self.view.draw_walk(cx, scope, walk)
+        while let Some(item)=self.view.draw_walk(cx,scope,walk).step() {
+            let list=item.as_flat_list();
+            let Some(mut list)=list.borrow_mut() else {continue;};
+            if let Some(content)=&self.content {
+                for (index,row) in content.questions.iter().enumerate() {
+                    if let Some(item)=list.item(cx,LiveId::from_str(&format!("q{index}")),id!(Question)) {
+                        if let Some(mut block)=item.borrow_mut::<AgentQuestionBlock>() {
+                            block.set_row(cx,&content.key,row,content.open);
+                        }
+                        item.draw_all(cx,scope);
+                    }
+                }
+            }
+            list.items.retain_visible();
+        }
+        DrawStep::done()
     }
+
 }
 
 impl AgentQuestionCard {
@@ -267,12 +319,11 @@ impl AgentQuestionCard {
     pub fn set_view(&mut self, cx: &mut Cx, view: Option<&QuestionView>) {
         let Some(v) = view else {
             self.card_id = None;
-            self.rows.clear();
+            self.content = None;
             self.view.set_visible(cx, false);
             return;
         };
         // A recycled timeline item may have shown another card's draft.
-        let rebinding = self.card_id.as_deref() != Some(v.key.as_str());
         self.card_id = Some(v.key.clone());
         self.view.set_visible(cx, true);
         self.view
@@ -281,61 +332,6 @@ impl AgentQuestionCard {
         self.view
             .label(cx, ids!(header.status_badge.status_label))
             .set_text(cx, &v.status);
-        for (index, block_path) in BLOCKS.iter().enumerate() {
-            let block = self.view.view(cx, block_path);
-            let Some(row) = v.questions.get(index) else {
-                block.set_visible(cx, false);
-                continue;
-            };
-            block.set_visible(cx, true);
-            let header = block.label(cx, ids!(header_label));
-            header.set_visible(cx, !row.header.is_empty());
-            header.set_text(cx, &row.header);
-            block
-                .label(cx, ids!(question_label))
-                .set_text(cx, &row.question);
-            for (slot, path) in OPTIONS[index].iter().enumerate() {
-                let button = self.view.button(cx, path);
-                let Some((label, chosen)) = row.options.get(slot) else {
-                    button.set_visible(cx, false);
-                    continue;
-                };
-                button.set_visible(cx, row.answer.is_none());
-                button.set_text(
-                    cx,
-                    &if *chosen {
-                        format!("✓ {label}")
-                    } else {
-                        label.clone()
-                    },
-                );
-                show_enabled(cx, &button, v.open);
-                if v.open {
-                    // A recycled portal-list item may carry stale hover state.
-                    button.reset_hover(cx);
-                }
-            }
-            block
-                .view(cx, ids!(options))
-                .set_visible(cx, !row.options.is_empty() && row.answer.is_none());
-            let details = block.label(cx, ids!(details_label));
-            details.set_visible(cx, v.open && !row.details.is_empty());
-            details.set_text(cx, &row.details);
-            block
-                .view(cx, ids!(other_box))
-                .set_visible(cx, row.text.is_some());
-            let input = self.view.text_input(cx, INPUTS[index]);
-            if let Some(draft) = &row.text
-                && (rebinding || input.text() != *draft)
-            {
-                input.set_text(cx, draft);
-            }
-            let answer = block.label(cx, ids!(answer_label));
-            answer.set_visible(cx, row.answer.is_some());
-            if let Some(text) = &row.answer {
-                answer.set_text(cx, &format!("→ {text}"));
-            }
-        }
         let send = self.view.button(cx, ids!(footer.send_button));
         send.set_visible(cx, v.send_visible);
         show_enabled(cx, &send, v.can_send);
@@ -345,16 +341,7 @@ impl AgentQuestionCard {
         let hint = self.view.label(cx, ids!(hint_label));
         hint.set_visible(cx, !v.hint.is_empty());
         hint.set_text(cx, &v.hint);
-        self.rows = v
-            .questions
-            .iter()
-            .map(|row| {
-                (
-                    row.id.clone(),
-                    row.options.iter().map(|(label, _)| label.clone()).collect(),
-                )
-            })
-            .collect();
+        self.content = Some(v.clone());
         self.view.redraw(cx);
     }
 

@@ -234,6 +234,58 @@ async fn manager_capacity_unknown_and_panicked_entries_remain_sticky() {
     assert!(m.state.lock().unwrap().entries.contains_key("panic"));
 }
 
+/// Stop pauses an Agent. A paused Agent can be run again, so Stop keeps the
+/// saved session and the work folder, both for a turn that was running and
+/// for a conversation that was idle.
+#[test]
+fn owner_stop_keeps_shared_claude_sessions_and_work_folders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap().join("native");
+    let m = Manager::default();
+    let (running, idle) = ("a".repeat(64), "b".repeat(64));
+    let other_room = m
+        .claude_workspaces
+        .open(&base, &idle, "assignment", 1)
+        .unwrap();
+    let idle_path = other_room.path().to_path_buf();
+    std::fs::write(idle_path.join("config/session.jsonl"), "idle conversation").unwrap();
+    std::fs::write(idle_path.join("work/notes"), "idle work").unwrap();
+    other_room.seal_stopped().unwrap();
+    drop(other_room);
+    let turn = m
+        .claude_workspaces
+        .open(&base, &running, "assignment", 1)
+        .unwrap();
+    let path = turn.path().to_path_buf();
+    std::fs::write(path.join("config/session.jsonl"), "running conversation").unwrap();
+    std::fs::write(path.join("work/notes"), "work in progress").unwrap();
+    m.stop_assignment("assignment", 1).unwrap();
+    // The stopped process tree is sealed the same way as after a finished turn.
+    turn.seal_stopped().unwrap();
+    drop(turn);
+    m.stop_assignment("assignment", 2).unwrap();
+    for (key, path, session, work) in [
+        (&running, &path, "running conversation", "work in progress"),
+        (&idle, &idle_path, "idle conversation", "idle work"),
+    ] {
+        assert!(base.join("sealed").join(key).join("manifest").exists());
+        assert!(!path.join("config").exists());
+        let resumed = m
+            .claude_workspaces
+            .open(&base, key, "assignment", 1)
+            .unwrap();
+        assert_eq!(resumed.path(), path.as_path());
+        assert_eq!(
+            std::fs::read_to_string(path.join("config/session.jsonl")).unwrap(),
+            session
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("work/notes")).unwrap(),
+            work
+        );
+    }
+}
+
 impl Manager {
     #[cfg(feature = "shared-intake")]
     pub(in crate::console::native) fn retains_command_for_test(&self, command: &str) -> bool {

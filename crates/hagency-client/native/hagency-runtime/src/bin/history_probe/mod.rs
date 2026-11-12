@@ -10,10 +10,31 @@ use std::{
 pub(super) struct Probe {
     index: usize,
     pending: bool,
+    context: bool,
+    blocked: usize,
+    replayed: bool,
+    sample: (u64, u64),
 }
 impl Probe {
-    pub(super) fn begin(&mut self) -> io::Result<()> {
+    pub(super) fn begin(&mut self, context: bool) -> io::Result<()> {
+        self.context = context;
+        if context {
+            let usage = json!({"totalTokens":300,"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":20,"outputTokens":100,"reasoningOutputTokens":0});
+            println!(
+                "{}",
+                json!({"method":"rawResponse/completed","params":{"threadId":"text-thread","turnId":"text-turn","responseId":"history-response","usage":usage}})
+            );
+            self.capacity(60_000, 900_000);
+        }
         self.request(Value::Null)
+    }
+    fn capacity(&mut self, used: u64, total: u64) {
+        self.sample = (used, total);
+        let counters = |n| json!({"totalTokens":n,"inputTokens":n,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0});
+        println!(
+            "{}",
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"text-thread","turnId":"text-turn","tokenUsage":{"total":counters(total),"last":counters(used),"modelContextWindow":65_536}}})
+        );
     }
     fn request(&mut self, cursor: Value) -> io::Result<()> {
         self.pending = true;
@@ -53,10 +74,27 @@ impl Probe {
         self.pending = false;
         self.index += 1;
         if page["complete"] != true {
-            if self.index >= 8 || !page["nextCursor"].is_string() {
+            if self.index >= (if self.context { 128 } else { 8 }) || !page["nextCursor"].is_string()
+            {
                 return Err(io::Error::other("history did not complete"));
             }
+            if self.context && page["reason"] == "context_budget" {
+                self.blocked += 1;
+                if self.blocked > 1 && !self.replayed {
+                    // Repeated telemetry must not restore input already read.
+                    self.replayed = true;
+                    self.capacity(self.sample.0, self.sample.1);
+                } else {
+                    // Simulate native compaction, not a second model start.
+                    self.capacity(4_000, 900_000 + self.blocked as u64);
+                }
+            }
             return self.request(page["nextCursor"].clone());
+        }
+        if self.context && (self.blocked < 3 || !self.replayed) {
+            return Err(io::Error::other(
+                "context and duplicate capacity paths not exercised",
+            ));
         }
         let answer = page["messages"]
             .as_array()

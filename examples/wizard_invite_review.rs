@@ -6,6 +6,10 @@ use makepad_widgets::*;
 use rinx::app::App as RinxApp;
 use rinx::home::invite_modal::{InviteModalAction, InviteModalWidgetRefExt};
 use rinx::home::space_management::SpaceManagementPanelWidgetRefExt;
+use rinx::shared::web_browser::{WebBrowserAction, WebBrowserWidgetRefExt};
+#[cfg(target_os = "macos")]
+#[path = "support/native_webview_probe.rs"]
+mod native_webview_probe;
 
 app_main!(App);
 
@@ -53,6 +57,32 @@ impl AppMain for App {
         }
         let ui = self.app.content();
         if let Event::Custom(command) = event {
+            if command == "webview:open" {
+                let url = std::env::var("HAGENCY_DOCK_URL").unwrap().parse::<url::Url>().unwrap();
+                assert_eq!(url.host_str(), Some("127.0.0.1"));
+                cx.action(WebBrowserAction::Open(url));
+            }
+            if command == "webview:close" { cx.action(WebBrowserAction::Close); }
+            if command == "miniapp:open" { cx.action(rinx::miniapps::MiniAppsAction::Open); }
+            if command == "management:open" { cx.action(rinx::hagency::ui::HagencyAction::OpenAgents); }
+            if command == "miniapp:back" {
+                self.app.handle_event(cx, &Event::BackPressed {handled: std::cell::Cell::new(false)});
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if command == "webview:inspect-native" {
+                let windows = ui.window(cx, ids!(main_window)).window_id().into_iter().collect();
+                native_webview_probe::inspect(cx, windows,
+                    rinx::app_data_dir().join("overlay-native.json"));
+            }
+            if command == "webview:inspect" {
+                let browser = ui.web_browser(cx, ids!(web_browser_modal.content));
+                let data = serde_json::json!({"reader":browser.session(),"browser":format!("{:?}",browser.browser_id()),
+                    "reader_open":ui.modal(cx, ids!(web_browser_modal)).is_open(),
+                    "miniapp_open":ui.modal(cx, ids!(octoscript_apps_modal)).is_open(),
+                    "management_open":ui.modal(cx, ids!(hagency_management_modal)).is_open()});
+                std::fs::write(rinx::app_data_dir().join("overlay-inspection.json"), data.to_string()).unwrap();
+            }
             if matches!(command.as_str(), "theme:dark" | "theme:light") {
                 rinx::theme::select(cx, rinx::theme::Selection {
                     appearance: if command == "theme:dark" {rinx::theme::Appearance::Dark} else {rinx::theme::Appearance::Light},

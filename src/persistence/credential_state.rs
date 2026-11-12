@@ -189,7 +189,15 @@ static SERVICE: std::sync::OnceLock<std::result::Result<Arc<Service>, Error>> =
 fn global() -> std::result::Result<&'static Arc<Service>, Error> {
     SERVICE
         .get_or_init(|| {
-            Service::new(crate::app_data_dir().to_owned(), Vault::native())
+            if hagency_store::credential_vault::development::selected() {
+                // A developer's locally built app: see the store's module notes.
+                makepad_widgets::log!(
+                    "Saved sign-ins are kept in private files under this profile \
+                     (HAGENCY_NATIVE_CREDENTIAL_IO=development-files), not in the OS credential store"
+                );
+            }
+            let root = crate::app_data_dir();
+            Service::new(root.to_owned(), Vault::for_app_data(root))
                 .map(Arc::new)
                 .map_err(classify)
         })
@@ -510,7 +518,11 @@ impl Service {
             fresh.validate(&self.root, &session.client_session)?;
             None
         } else {
-            self.retained_database(&context)?
+            // `doc` is held here and has no published version (`existing` is
+            // none). A legacy retained list is migrated inside this lookup and
+            // must not open the same session document again.
+            let session_held = doc.path().file_name() == Some(std::ffi::OsStr::new("session"));
+            self.retained_database_with(&context, session_held)?
         };
         if selected_database.is_none() && fresh.is_none() && source.is_none() {
             self.validate_unreferenced_database(&context)?;

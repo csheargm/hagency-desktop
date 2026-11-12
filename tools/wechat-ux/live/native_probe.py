@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real native client through Makepad's loopback input bridge.
 
-Uses a separate ROBRIX_DATA_DIR, saves real PNGs and input/assertion traces, and
+Uses a separate HAGENCY_DESKTOP_DATA_DIR, saves real PNGs and input/assertion traces, and
 checks sends against the recipient's Matrix history. Never grants a visual score.
 """
 import argparse
@@ -119,7 +119,7 @@ class NativeApp:
         os.chmod(self.output / "native.log", 0o600)
         self.trace.append({"run": self.output.name, "binary_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest(), "at": time.time()})
         self.process = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT,
-                                        env=dict(os.environ, RINX_DATA_DIR=str(profile), ROBRIX_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), RUST_BACKTRACE="1"))
+                                        env=dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), RUST_BACKTRACE="1"))
         (self.root / "native-pid").write_text(str(self.process.pid))
         for _ in range(80):
             if self.process.poll() is not None:

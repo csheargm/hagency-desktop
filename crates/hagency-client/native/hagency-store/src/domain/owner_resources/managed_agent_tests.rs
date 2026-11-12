@@ -489,13 +489,13 @@ async fn automatic_account_quota_does_not_couple_pools_or_erase_unknown_usage() 
     let original = f.registry.resource(&f.profile, f.resource.clone()).await.unwrap();
     let child = reserve(&f, agent(&f, "first", 150)).await.agent_reservation_id.unwrap();
     let resource_id = f.resource.clone();
-    f.registry.0.store.call(4096, move |db| {
+    let original_seat=f.registry.0.store.call(4096, move |db| {
         let resource = read_resource(&db.db, &resource_id)?;
-        // Reproduce the old enrollment's inferred provider-wide quota.
-        db.db.execute("UPDATE seats SET config=json_set(config,'$.declaration',json(?2)) WHERE id=?1",
-            params![resource.seat_id, r#"{"quotaTokens":1000,"period":"monthly"}"#])?;
+        let config:String=db.db.query_row("SELECT config FROM seats WHERE id=?1",[&resource.seat_id],|r|r.get(0))?;
+        assert!(serde_json::from_str::<Seat>(&config)?.declaration.is_none(),
+            "current enrollment never infers an account quota from its first pool");
         db.db.execute("INSERT INTO owner_managed_calls(id,child_id,execution_id,immutable_digest,assignment_generation,state,reserved_tokens,known_consumed_tokens,usage_complete) VALUES('unsettled_original',?1,'execution',?2,1,'unknown',120,30,0)", params![child,"a".repeat(64)])?;
-        Ok(())
+        Ok((resource.seat_id,config))
     }).await.unwrap();
     let other = f.registry.prepare_enrollment(f.profile.clone(), "terra_pool".into(), provider(),
         "gpt-6.1-terra".into(), Some("high".into()), 2000, Instant::now()+Duration::from_secs(30))
@@ -511,9 +511,10 @@ async fn automatic_account_quota_does_not_couple_pools_or_erase_unknown_usage() 
     assert!(unchanged.budget.remaining_tokens.is_none(), "this pool's own unknown usage still blocks it");
     let saved = f.registry.recover_capacity_grant(f.profile.clone(), f.grant.executor_device_id.clone(), f.grant.grant_id.clone()).await.unwrap().unwrap();
     assert_eq!(serde_json::to_value(saved).unwrap(), serde_json::to_value(&f.grant).unwrap());
-    f.registry.0.store.call(4096, |db| {
+    f.registry.0.store.call(4096, move |db| {
         assert!(db.db.query_row("SELECT state='unknown' AND reserved_tokens=120 AND known_consumed_tokens=30 AND usage_complete=0 FROM owner_managed_calls WHERE id='unsettled_original'", [], |r| r.get::<_,bool>(0))?);
-        assert!(db.db.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE json_extract(config,'$.declaration.quotaTokens')=1000)", [], |r| r.get::<_,bool>(0))?, "original stored declaration is not rewritten");
+        let config:String=db.db.query_row("SELECT config FROM seats WHERE id=?1",[original_seat.0],|r|r.get(0))?;
+        assert_eq!(config,original_seat.1,"another pool and grant never rewrite the current account declaration");
         Ok(())
     }).await.unwrap();
     f.registry.shutdown().await.unwrap();
@@ -530,7 +531,7 @@ async fn schema75_upgrade_is_atomic_and_old_project_authority_requires_exact_evi
     let db = Connection::open(root.join("domain.sqlite3")).unwrap();
     remove_schema(&db);
     db.execute_batch(
-        "DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=74;CREATE TABLE owner_managed_agents(collision INTEGER);",
+        "DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=74;CREATE TABLE owner_managed_agents(collision INTEGER);",
     )
     .unwrap();
     drop(db);

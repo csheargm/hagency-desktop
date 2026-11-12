@@ -4758,6 +4758,7 @@ dependencies = [
  "hyper-util",
  "lopdf",
  "matrix-sdk",
+ "matrix-sdk-store-encryption",
  "percent-encoding",
  "reqwest 0.12.28",
  "rusqlite",
@@ -4772,6 +4773,7 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -4781,6 +4783,9 @@ dependencies = [
  "getrandom 0.3.4",
  "hagency-platform",
  "hagency-runtime",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rusqlite",
  "rustix",
  "serde",
@@ -10499,7 +10504,7 @@ dependencies = [
 
 [[package]]
 name = "rinx"
-version = "0.5.0-rc.5"
+version = "0.5.0-rc.6"
 dependencies = [
  "anyhow",
  "arboard",

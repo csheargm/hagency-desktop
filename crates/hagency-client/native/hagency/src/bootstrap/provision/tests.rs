@@ -305,35 +305,15 @@ async fn native_adopt_matrix_chunked_bound() {
     fake.close().await;
 }
 
-/// Board #95: a target project room bound only by the TS event
-/// (`com.hagency.admin.binding.v1`, keyed by the fleet id) still adopts — the
-/// behaviour integ already had, pinned beside the legacy fall-back.
+/// An obsolete unkeyed project binding cannot authorize adoption.
 #[tokio::test]
-async fn native_adopt_room_bound_by_the_ts_event() {
+async fn native_adopt_refuses_room_bound_only_by_the_obsolete_event() {
     let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
     let state = root.path().join("state");
     private::directory(&state).unwrap();
-    let receipt = exercise(&state, input(), None).await.unwrap();
-    assert_eq!(receipt.session_id, "direct_session");
-}
-
-/// Board #95: a target project room bound only by the LEGACY event
-/// (`com.hagency.project.binding.v1`, state_key `""`) — what an earlier Rust
-/// build wrote — adopts after the upgrade instead of failing `Error::Authority`.
-#[tokio::test]
-async fn native_adopt_room_bound_by_the_legacy_event() {
-    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-    let state = root.path().join("state");
-    private::directory(&state).unwrap();
-    let fleet = common::domain::registration().fleet_id;
-    let bindings = Bindings {
-        without_ts: true,
-        legacy_fleet: Some(fleet),
-    };
-    let receipt = exercise_bindings(&state, input(), None, bindings)
-        .await
-        .unwrap();
-    assert_eq!(receipt.session_id, "direct_session");
+    let bindings = Bindings { without_ts: true, legacy_fleet: Some(common::domain::registration().fleet_id) };
+    assert!(matches!(exercise_bindings(&state, input(), None, bindings).await, Err(Error::Authority)));
+    assert!(!state.join("domain.sqlite3").exists());
 }
 
 /// Board #95: when a room carries BOTH binding events and they disagree, the

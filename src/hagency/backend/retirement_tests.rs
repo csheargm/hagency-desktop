@@ -36,6 +36,24 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+fn current_profile_process(name: &str) -> Option<Directory> {
+    const CASE: &str = "HAGENCY_RETIREMENT_CURRENT_PROFILE_CASE";
+    if std::env::var(CASE).as_deref() != Ok(name) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture"])
+            .env(CASE, name).output().unwrap();
+        assert!(output.status.success(), "{} {}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
+    // Select both the canonical registry and writer authority before opening
+    // any owner. This child can never fall back to the installed registry.
+    let installation = Directory::new();
+    ::hagency::native_owner::initialize_resource_activation_fixture(
+        &installation.0.join("installation"),
+    ).unwrap();
+    Some(installation)
+}
 struct RevokeBarrier {
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -51,7 +69,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        ::hagency::test_support::initialize_resource_authority().unwrap();
+        if ::hagency::native_owner::resource_activation_fixture_root().is_none() {
+            ::hagency::test_support::initialize_resource_authority().unwrap();
+        }
         let directory = Directory::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}/", listener.local_addr().unwrap());
@@ -69,9 +89,9 @@ impl Fixture {
             remote: Mutex::new(None),
             native_retirement: Mutex::new(None),
             #[cfg(feature = "resource-adoption")]
-            adopted_initialization: Mutex::new(None),
+            current_initialization: Mutex::new(None),
             #[cfg(feature = "resource-adoption")]
-            adoption_pending: std::sync::atomic::AtomicBool::new(false),
+            setup_pending: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "resource-adoption")]
             activation: Default::default(),
             #[cfg(feature = "resource-adoption")]
@@ -206,6 +226,26 @@ impl Fixture {
         )
         .await
     }
+    async fn open_current_profile(&self) -> NativeOwner {
+        use ::hagency::native_owner::{ManagementPackage, ManagementPermission};
+        let source = Source::normal(&self.service);
+        let owner = self.open(source.clone()).await.unwrap();
+        let package = || ManagementPackage {
+            digest: "f".repeat(64), instance: 1, account_epoch: 1,
+            permissions: vec![ManagementPermission::ReadResources, ManagementPermission::PrepareSourceQuiescence],
+        };
+        // Explicit setup of this isolated profile creates no provider or quota.
+        let review = owner.review_device_setup(package(), None).await.unwrap();
+        let selection = owner.confirm_device_setup(review, package(), || true).await.unwrap();
+        owner.suspend().await.unwrap();
+        self.service.0.native_retirement.lock().unwrap().take();
+        drop(owner);
+        let service = &self.service;
+        selection.open_with_matrix_guarded(
+            service.root().unwrap(), &service.0.origin, &service.0.owner, source,
+            |owner| service.register_native_owner(owner).map_err(|code| source_error(&code)),
+        ).await.unwrap()
+    }
     async fn stop(self) {
         self.service.shutdown().await;
         let owner = self.service.0.native_retirement.lock().unwrap().take();
@@ -339,8 +379,11 @@ async fn desktop_retirement_during_initialization_does_not_wait_for_async_native
 #[cfg(unix)]
 #[tokio::test]
 async fn desktop_retirement_revokes_already_issued_native_management_before_cleanup() {
+    let Some(_installation) = current_profile_process(
+        "hagency::backend::retirement_tests::desktop_retirement_revokes_already_issued_native_management_before_cleanup",
+    ) else { return; };
     let f = Fixture::new().await;
-    let owner = f.open(Source::normal(&f.service)).await.unwrap();
+    let owner = f.open_current_profile().await;
     let manager = owner
         .management(::hagency::native_owner::ManagementPackage {
             digest: "c".repeat(64),
@@ -593,8 +636,11 @@ impl NativeFixture {
 
 #[tokio::test]
 async fn sdk_replacement_callback_retires_real_native_manager_before_slot_publication() {
+    let Some(_installation) = current_profile_process(
+        "hagency::backend::retirement_tests::sdk_replacement_callback_retires_real_native_manager_before_slot_publication",
+    ) else { return; };
     let f = Fixture::new().await;
-    let owner = f.open(Source::normal(&f.service)).await.unwrap();
+    let owner = f.open_current_profile().await;
     let manager = owner
         .management(::hagency::native_owner::ManagementPackage {
             digest: "e".repeat(64),
@@ -627,7 +673,7 @@ async fn desktop_adoption_drain_retains_pending_transition_across_cancelled_logo
     let f = Fixture::new().await;
     let owner = f.open(Source::normal(&f.service)).await.unwrap();
     *f.service.0.native.lock().await = Some(owner.clone());
-    f.service.0.adoption_pending.store(true, Ordering::Release);
+    f.service.0.setup_pending.store(true, Ordering::Release);
     let barrier = Arc::new(RevokeBarrier {
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
@@ -638,11 +684,11 @@ async fn desktop_adoption_drain_retains_pending_transition_across_cancelled_logo
     f.service.revoke_resumption().unwrap();
     let mut first = Box::pin(async {
         let mut slot = f.service.0.native.lock().await;
-        f.service.drain_adoption_source(&mut slot).await
+        f.service.drain_setup_owner(&mut slot).await
     });
     tokio::select! {biased; _=&mut first=>panic!("transition returned before revoke"), _=barrier.entered.notified()=>{}}
     assert!(owner.identity().await.is_err());
-    assert!(f.service.0.adoption_pending.load(Ordering::Acquire));
+    assert!(f.service.0.setup_pending.load(Ordering::Acquire));
     assert!(f.service.0.native_retirement.lock().unwrap().is_some());
     drop(first);
     assert!(f.service.0.native.lock().await.is_some());
@@ -650,10 +696,10 @@ async fn desktop_adoption_drain_retains_pending_transition_across_cancelled_logo
     let mut slot = f.service.0.native.lock().await;
     // This fixture intentionally has no global SDK. Its final account check
     // fails, after the real retained revocation/drain has completed.
-    assert!(f.service.drain_adoption_source(&mut slot).await.is_err());
+    assert!(f.service.drain_setup_owner(&mut slot).await.is_err());
     assert!(slot.is_none());
     assert!(f.service.0.native_retirement.lock().unwrap().is_none());
-    assert!(!f.service.0.adoption_pending.load(Ordering::Acquire));
+    assert!(!f.service.0.setup_pending.load(Ordering::Acquire));
     assert!(f.service.0.retired.load(Ordering::Acquire));
     assert!(f.revocations.load(Ordering::Acquire) >= 2);
     drop(slot);
@@ -683,7 +729,7 @@ async fn desktop_activation_waiter_cancellation_and_logout_keep_original_drain()
                 .finish_activation(
                     &mut slot,
                     owner,
-                    Err("source_adoption_outcome_unknown".into()),
+                    Err("current_profile_outcome_unknown".into()),
                 )
                 .await
         }));

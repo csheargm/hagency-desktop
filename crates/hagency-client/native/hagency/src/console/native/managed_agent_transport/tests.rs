@@ -78,9 +78,10 @@ async fn prepared_with_budget_lifetime(
         .unwrap();
     let r = f.state.lock().unwrap().allocation_receipt.clone().unwrap();
     let g = &p.grant_receipt;
+    let resource = f.registry.resource(&f.transport.scope(Permission::PublishGrants).await.unwrap().profile, g.resource_id.clone()).await.unwrap();
     let model = hagency_core::qualification::ModelProfile {
-        framework: "codex".into(),
-        model: "gpt-5.6-sol".into(),
+        framework: resource.framework,
+        model: resource.model,
         provider: None,
         reasoning: Some("medium".into()),
     };
@@ -153,9 +154,9 @@ async fn native_managed_agent_transport_loss_restart_recovers_original_receipt_w
     assert_eq!(f.state.lock().unwrap().agent_writes, 1);
     let original = f.state.lock().unwrap().agent_receipts[&c.command_id].clone();
     assert_eq!(original["state"], "reserved");
-    f.registry.shutdown().await.unwrap();
-    f.registry =
-        OwnerResourceRegistry::isolated_for_tests(&f._root.path().join("registry")).unwrap();
+    drop(t);
+    f = f.reopen().await;
+    let t = ManagedAgentTransport::new(f.owner.management(package(1)).await.unwrap());
     assert!(matches!(
         t.recover(&f.registry, c.command_id.clone(), digest(&c).unwrap())
             .await

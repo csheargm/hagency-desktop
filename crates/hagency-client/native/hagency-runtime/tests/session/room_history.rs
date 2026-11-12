@@ -116,6 +116,8 @@ async fn native_room_history_tool_answers_only_original_read_callback_once() {
         panic!("history callback missing")
     };
     assert!(call.cursor.is_none());
+    assert!(call.is_root());
+    assert_eq!((call.thread_id(), call.turn_id()), ("thread-one", "turn-one"));
     assert!(
         session
             .respond_room_history(&call, "x".repeat(13 * 1024))
@@ -136,6 +138,23 @@ async fn native_room_history_tool_answers_only_original_read_callback_once() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn native_room_history_callback_retains_descendant_context() {
+    let (mut session, mut peer) = ready().await;
+    update(&mut session, &mut peer, note("turn/started", json!({
+        "threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-one","status":"inProgress","items":[]}
+    }))).await.unwrap();
+    let mut message = request("child", "read_room_history");
+    message["params"]["turnId"] = "child-turn".into();
+    let Update::RoomHistory(call) = update(&mut session, &mut peer, message).await.unwrap() else {
+        panic!("child history callback missing");
+    };
+    assert!(!call.is_root());
+    assert_eq!((call.thread_id(), call.turn_id()), ("child", "child-turn"));
+    session.respond_room_history(&call, "{\"complete\":true}".into()).await.unwrap();
+    assert_eq!(read(&mut peer.stdin).await["id"], 91);
 }
 
 #[tokio::test]

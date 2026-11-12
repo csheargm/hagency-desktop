@@ -1,132 +1,66 @@
 //! Trusted native initialization selection. No script arguments or registry paths.
 use super::*;
-use ::hagency::native_owner::{AdoptedManagementSelection, ManagementPackage};
+use ::hagency::native_owner::{CurrentProfileSelection, ManagementPackage};
 use std::sync::atomic::Ordering;
-use ::hagency::daemon::bridge::{OwnerGrantAccess, AdoptedSelection, DeviceSetupReview};
+use ::hagency::daemon::bridge::{OwnerGrantAccess, CurrentSelection, DeviceSetupReview};
 
 /// Static native codes only; never log provider text, paths or credentials.
 fn activation_failure_code(code: &str) -> &'static str {
     match code {
-        "adopted_grant_device_reauthorization_required" => {
-            "adopted_grant_device_reauthorization_required"
-        }
-        "adopted_management_initializer_unavailable" => {
-            "adopted_management_initializer_unavailable"
-        }
-        "adopted_management_scope_changed" => "adopted_management_scope_changed",
-        "fixture_authority_already_open" => "fixture_authority_already_open",
-        "fixture_personal_create_failed" => "fixture_personal_create_failed",
-        "fixture_profile_outside_root" => "fixture_profile_outside_root",
-        "fixture_profile_unavailable" => "fixture_profile_unavailable",
-        "fixture_root_changed" => "fixture_root_changed",
+        "current_profile_required" => "current_profile_required",
+        "current_profile_initializer_unavailable" => "current_profile_initializer_unavailable",
+        "current_profile_scope_changed" => "current_profile_scope_changed",
+        "current_profile_outcome_unknown" => "current_profile_outcome_unknown",
+        "current_profile_not_started" => "current_profile_not_started",
+        "current_profile_review_changed" => "current_profile_review_changed",
+        "current_profile_review_expired" => "current_profile_review_expired",
+        "current_profile_permission_required" => "current_profile_permission_required",
+        "current_profile_root_changed" => "current_profile_root_changed",
+        "current_profile_storage_unavailable" => "current_profile_storage_unavailable",
+        "current_profile_already_initialized" => "current_profile_already_initialized",
         "fixture_root_unavailable" => "fixture_root_unavailable",
-        "empty_device_history_not_empty" => "empty_device_history_not_empty",
-        "empty_device_review_changed" => "empty_device_review_changed",
-        "empty_device_setup_has_no_quota" => "empty_device_setup_has_no_quota",
-        "empty_device_already_active" => "empty_device_already_active",
-        "management_" => "management_",
         "management_access_required" => "management_access_required",
-        "management_backing_changed" => "management_backing_changed",
-        "management_capacity" => "management_capacity",
-        "management_drain_outcome_unknown" => "management_drain_outcome_unknown",
-        "management_drain_unavailable" => "management_drain_unavailable",
-        "management_model_unqualified" => "management_model_unqualified",
-        "management_not_found" => "management_not_found",
         "management_outcome_unknown" => "management_outcome_unknown",
-        "management_profile_mismatch" => "management_profile_mismatch",
-        "management_resource_in_use" => "management_resource_in_use",
-        "management_revision_conflict" => "management_revision_conflict",
         "management_scope_changed" => "management_scope_changed",
         "management_state_unavailable" => "management_state_unavailable",
         "management_storage_failed" => "management_storage_failed",
         "management_unavailable" => "management_unavailable",
-        "native_original" => "native_original",
         "native_owner_state_unavailable" => "native_owner_state_unavailable",
         "native_random_unavailable" => "native_random_unavailable",
         "owner_authorization_required" => "owner_authorization_required",
-        "owner_source_adoption_required" => "owner_source_adoption_required",
-        "provider_account_changed" => "provider_account_changed",
-        "provider_choice_unavailable" => "provider_choice_unavailable",
-        "provider_closing" => "provider_closing",
-        "provider_directory_unavailable" => "provider_directory_unavailable",
-        "provider_identity_timeout" => "provider_identity_timeout",
         "provider_identity_unavailable" => "provider_identity_unavailable",
-        "provider_profile_mismatch" => "provider_profile_mismatch",
-        "source_adoption_backup_capacity" => "source_adoption_backup_capacity",
-        "source_adoption_backup_changed" => "source_adoption_backup_changed",
-        "source_adoption_backup_missing" => "source_adoption_backup_missing",
-        "source_adoption_binding_changed" => "source_adoption_binding_changed",
-        "source_adoption_busy" => "source_adoption_busy",
-        "source_adoption_custody_closed" => "source_adoption_custody_closed",
-        "source_adoption_custody_missing" => "source_adoption_custody_missing",
-        "source_adoption_custody_unknown" => "source_adoption_custody_unknown",
-        "source_adoption_history_unsupported" => "source_adoption_history_unsupported",
-        "source_adoption_inventory_unsupported" => "source_adoption_inventory_unsupported",
-        "source_adoption_not_active" => "source_adoption_not_active",
-        "source_adoption_original_ceiling_required" => "source_adoption_original_ceiling_required",
-        "source_adoption_outcome_unknown" => "source_adoption_outcome_unknown",
-        "source_adoption_platform_unqualified" => "source_adoption_platform_unqualified",
-        "source_adoption_recovery_only" => "source_adoption_recovery_only",
-        "source_adoption_review_changed" => "source_adoption_review_changed",
-        "source_adoption_preview_unavailable" => "source_adoption_preview_unavailable",
-        "source_adoption_review_expired" => "source_adoption_review_expired",
-        "source_adoption_scope_changed" => "source_adoption_scope_changed",
-        "source_adoption_storage_unavailable" => "source_adoption_storage_unavailable",
-        "source_configuration_drain_unknown" => "source_configuration_drain_unknown",
-        "source_domain_busy" => "source_domain_busy",
-        "source_domain_drain_unknown" => "source_domain_drain_unknown",
-        "source_files_changed" => "source_files_changed",
-        "source_files_unavailable" => "source_files_unavailable",
-        "source_installation_busy" => "source_installation_busy",
-        "source_installation_lease_changed" => "source_installation_lease_changed",
-        "source_inventory_adoption_not_assessed" => "source_inventory_adoption_not_assessed",
-        "source_managed_runtime_drain_unknown" => "source_managed_runtime_drain_unknown",
-        "source_personal_busy" => "source_personal_busy",
-        "source_provider_drain_unknown" => "source_provider_drain_unknown",
-        "source_quiescence_authority_changed" => "source_quiescence_authority_changed",
-        "source_quiescence_owner_mismatch" => "source_quiescence_owner_mismatch",
-        "source_quiescence_permission_required" => "source_quiescence_permission_required",
-        "source_quiescence_timeout" => "source_quiescence_timeout",
-        "source_quiescence_unknown" => "source_quiescence_unknown",
-        "source_quiescence_unproven" => "source_quiescence_unproven",
-        "source_recovery_required" => "source_recovery_required",
-        "source_registry_changed" => "source_registry_changed",
-        "source_registry_unavailable" => "source_registry_unavailable",
-        "source_root_changed" => "source_root_changed",
-        "source_runtime_drain_unknown" => "source_runtime_drain_unknown",
-        "source_schema_unavailable" => "source_schema_unavailable",
-        _ => "source_adoption_unclassified_failure",
+        "provider_identity_timeout" => "provider_identity_timeout",
+        _ => "current_profile_unclassified_failure",
     }
 }
 
 impl Service {
-    /// The migration must have completed, drained its archive and released all
-    /// retired source handles. Persist selection before any cancellation point;
-    /// a busy original root remains retryable and never falls back to legacy.
-    pub(crate) async fn select_adopted_management(
+    /// Retain the current selection before cancellation points. The existing
+    /// native owner must finish draining before its registry lock is reacquired.
+    pub(crate) async fn select_current_profile(
         &self,
-        selection: AdoptedSelection,
+        selection: CurrentSelection,
     ) -> Result<(), String> {
         self.check()?;
         let selection = match selection {
-            AdoptedSelection::Local(selection) => selection,
-            AdoptedSelection::Remote => {
+            CurrentSelection::Local(selection) => selection,
+            CurrentSelection::Remote => {
                 if self.remote_client().await?.is_none() { return Err("daemon_owner_assignment_changed".into()); }
                 return Ok(());
             }
         };
         if !selection.matches_host(self.root()?, &self.0.origin, &self.0.owner) {
-            return Err("adopted_management_scope_changed".into());
+            return Err("current_profile_scope_changed".into());
         }
         let _native = self.0.native.lock().await;
         self.check()?;
         self.local_management_only()?;
         *self
             .0
-            .adopted_initialization
+            .current_initialization
             .lock()
             .map_err(|_| "management_unavailable")? = Some(selection);
-        self.0.adoption_pending.store(true, Ordering::Release);
+        self.0.setup_pending.store(true, Ordering::Release);
         if let Some(owner) = self
             .0
             .native_retirement
@@ -140,11 +74,11 @@ impl Service {
     }
     // Caller holds native initialization lock. Retain BOTH handles until the
     // awaited shutdown completes, including cancellation/concurrent cleanup.
-    pub(super) async fn drain_adoption_source(
+    pub(super) async fn drain_setup_owner(
         &self,
         native: &mut Option<NativeOwner>,
     ) -> Result<(), String> {
-        if !self.0.adoption_pending.load(Ordering::Acquire) {
+        if !self.0.setup_pending.load(Ordering::Acquire) {
             return Ok(());
         }
         let registered = self
@@ -163,16 +97,16 @@ impl Service {
             .lock()
             .map_err(|_| "management_unavailable")?
             .take();
-        self.0.adoption_pending.store(false, Ordering::Release);
+        self.0.setup_pending.store(false, Ordering::Release);
         self.check()
     }
-    pub(super) async fn load_adopted_initialization(
+    pub(super) async fn load_current_initialization(
         &self,
-    ) -> Result<Option<AdoptedManagementSelection>, String> {
+    ) -> Result<Option<CurrentProfileSelection>, String> {
         self.local_management_only()?;
         let existing = self
             .0
-            .adopted_initialization
+            .current_initialization
             .lock()
             .map_err(|_| "management_unavailable")?
             .clone();
@@ -180,19 +114,19 @@ impl Service {
             return Ok(existing);
         }
         let selected =
-            AdoptedManagementSelection::load_for_host(self.root()?, &self.0.origin, &self.0.owner)
+            CurrentProfileSelection::load_for_host(self.root()?, &self.0.origin, &self.0.owner)
                 .await
                 .map_err(|e| e.code)?;
         self.check()?;
         self.local_management_only()?;
         *self
             .0
-            .adopted_initialization
+            .current_initialization
             .lock()
             .map_err(|_| "management_unavailable")? = selected.clone();
         Ok(selected)
     }
-    pub(crate) async fn adopted_grant_access_until(
+    pub(crate) async fn current_grant_access_until(
         &self, mut package: ManagementPackage, until: std::time::Instant,
     ) -> Result<OwnerGrantAccess, String> {
         self.verify_matrix(false).await?;
@@ -201,12 +135,12 @@ impl Service {
             return OwnerGrantAccess::remote_until(remote, package, until).await.map_err(|e|e.code);
         }
         let owner = self.native_owner().await?;
-        let selected = self.load_adopted_initialization().await?.ok_or("owner_source_adoption_required")?;
+        let selected = self.load_current_initialization().await?.ok_or("current_profile_required")?;
         let access = selected.grant_access(&owner, package).await.map_err(|e|e.code)?.restrict_to_deadline(until).map_err(|e|e.code)?;
         if let Err(error)=self.check(){access.retire();return Err(error)}
         Ok(OwnerGrantAccess::local(access))
     }
-    pub(crate) async fn adopted_grant_access(
+    pub(crate) async fn current_grant_access(
         &self,
         mut package: ManagementPackage,
     ) -> Result<OwnerGrantAccess, String> {
@@ -221,9 +155,9 @@ impl Service {
         }
         let owner = self.native_owner().await?;
         let selected = self
-            .load_adopted_initialization()
+            .load_current_initialization()
             .await?
-            .ok_or("owner_source_adoption_required")?;
+            .ok_or("current_profile_required")?;
         let access = selected
             .grant_access(&owner, package)
             .await
@@ -240,21 +174,21 @@ impl Service {
 pub(super) enum ActivationTask {
     #[default]
     Empty,
-    Running(tokio::task::JoinHandle<Result<AdoptedManagementSelection, String>>),
-    Complete(Result<AdoptedManagementSelection, String>),
+    Running(tokio::task::JoinHandle<Result<CurrentProfileSelection, String>>),
+    Complete(Result<CurrentProfileSelection, String>),
 }
 impl Service {
     pub(crate) async fn activation_context(
         &self,
         package: ManagementPackage,
         until: std::time::Instant,
-    ) -> Result<::hagency::native_owner::ResourceActivationContext, String> {
+    ) -> Result<::hagency::native_owner::DeviceSetupContext, String> {
         self.verify_matrix(false).await?;
         if let Some(remote) = self.remote_client().await? {
             return remote.device_setup_context(package, until).await.map_err(|e| e.code);
         }
         let owner = self.native_owner().await?;
-        let selected = self.load_adopted_initialization().await?;
+        let selected = self.load_current_initialization().await?;
         let value = owner
             .device_setup_context(package, selected.as_ref())
             .await
@@ -265,17 +199,16 @@ impl Service {
     pub(crate) async fn activation_review(
         &self,
         package: ManagementPackage,
-        tokens: Option<u64>,
         until: std::time::Instant,
     ) -> Result<DeviceSetupReview, String> {
         self.verify_matrix(false).await?;
         if let Some(remote) = self.remote_client().await? {
-            return remote.review_device_setup(package, tokens, until).await.map_err(|e| e.code);
+            return remote.review_device_setup(package, until).await.map_err(|e| e.code);
         }
         let owner = self.native_owner().await?;
-        let selected = self.load_adopted_initialization().await?;
+        let selected = self.load_current_initialization().await?;
         let value = owner
-            .review_device_setup(package, selected, tokens)
+            .review_device_setup(package, selected)
             .await
             .map_err(|e| e.code)?;
         self.check()?;
@@ -291,32 +224,26 @@ impl Service {
             }).await.map_err(|e| e.code);
         }
         let owner = self.native_owner().await?;
-        let selected = self.load_adopted_initialization().await?;
+        let selected = self.load_current_initialization().await?;
         let state = if let Some(selected) = selected {
-            if selected
+            selected
                 .device_setup_phase(&owner)
                 .await
                 .map_err(|e| e.code)?
-                == "active"
-            {
-                "active"
-            } else {
-                "recovery_required"
-            }
         } else {
-            "legacy"
+            "uninitialized"
         };
         self.check()?;
         Ok(state)
     }
     /// Retain one confirmed native task. Screen closure or a cancelled waiter
-    /// cannot drop physical source custody or submit another migration.
+    /// cannot drop the owner lock or submit a second initialization.
     pub(crate) async fn confirm_activation(
         &self,
         package: ManagementPackage,
         review: DeviceSetupReview,
         gate: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Result<AdoptedSelection, String> {
+    ) -> Result<CurrentSelection, String> {
         self.check()?;
         if !gate() { return Err("management_scope_changed".into()); }
         if let Some(remote) = self.remote_client().await? {
@@ -344,7 +271,7 @@ impl Service {
                     service.finish_activation(&mut native, owner, result).await
                 }));
         }
-        Self::await_activation(&mut task).await.map(AdoptedSelection::Local)
+        Self::await_activation(&mut task).await.map(CurrentSelection::Local)
     }
     // Caller holds the native initialization lock for the entire cleanup.
     // Keeping this shared with cancellation tests exercises actual native revoke.
@@ -352,14 +279,14 @@ impl Service {
         &self,
         native: &mut Option<NativeOwner>,
         owner: NativeOwner,
-        result: Result<AdoptedManagementSelection, String>,
-    ) -> Result<AdoptedManagementSelection, String> {
+        result: Result<CurrentProfileSelection, String>,
+    ) -> Result<CurrentProfileSelection, String> {
         if let Err(code) = &result {
             let code = activation_failure_code(code);
             makepad_widgets::warning!("Native resource activation failed before cleanup: {code}");
         }
         // Always retain slots until the existing owner is drained. On error the
-        // immutable descriptor/source fences drive recovery on the next opening.
+        // immutable current descriptor drives recovery on the next opening.
         self.close_native_owner(&owner).await?;
         native.take();
         self.0
@@ -371,7 +298,7 @@ impl Service {
         if let Ok(selected) = &result {
             *self
                 .0
-                .adopted_initialization
+                .current_initialization
                 .lock()
                 .map_err(|_| "management_unavailable")? = Some(selected.clone());
         }
@@ -382,22 +309,22 @@ impl Service {
     }
     pub(super) async fn await_activation(
         task: &mut ActivationTask,
-    ) -> Result<AdoptedManagementSelection, String> {
+    ) -> Result<CurrentProfileSelection, String> {
         if let ActivationTask::Running(join) = task {
             let result = join
                 .await
-                .map_err(|_| "source_adoption_outcome_unknown".to_owned())
+                .map_err(|_| "current_profile_outcome_unknown".to_owned())
                 .and_then(|v| v);
             *task = ActivationTask::Complete(result);
         }
         match task {
             ActivationTask::Complete(value) => value.clone(),
-            _ => Err("source_adoption_not_started".into()),
+            _ => Err("current_profile_not_started".into()),
         }
     }
     pub(crate) async fn recover_activation_task(
         &self,
-    ) -> Result<Option<AdoptedSelection>, String> {
+    ) -> Result<Option<CurrentSelection>, String> {
         self.check()?;
         if self.remote_client().await?.is_some() { return Ok(None); }
         let mut task = self.0.activation.lock().await;
@@ -410,7 +337,7 @@ impl Service {
         if value.is_err() {
             *task = ActivationTask::Empty;
         }
-        value.map(|value| Some(AdoptedSelection::Local(value)))
+        value.map(|value| Some(CurrentSelection::Local(value)))
     }
     pub(crate) async fn activation_handoff_complete(&self) {
         *self.0.activation.lock().await = ActivationTask::Empty;
@@ -458,14 +385,14 @@ mod tests {
     #[tokio::test]
     async fn interrupted_activation_task_never_becomes_success_or_reexecutes() {
         let join = tokio::spawn(async {
-            std::future::pending::<Result<AdoptedManagementSelection, String>>().await
+            std::future::pending::<Result<CurrentProfileSelection, String>>().await
         });
         join.abort();
         let mut task = ActivationTask::Running(join);
         for _ in 0..2 {
             assert_eq!(
                 Service::await_activation(&mut task).await.err().unwrap(),
-                "source_adoption_outcome_unknown"
+                "current_profile_outcome_unknown"
             );
         }
         assert!(matches!(task, ActivationTask::Complete(Err(_))));
@@ -478,16 +405,16 @@ mod activation_error_tests {
     fn activation_diagnostics_only_accept_explicit_static_codes() {
         for code in [
             "provider_identity_unavailable",
-            "source_adoption_custody_unknown",
-            "source_quiescence_unknown",
-            "source_adoption_binding_changed",
+            "current_profile_outcome_unknown",
+            "current_profile_review_changed",
+            "current_profile_scope_changed",
             "fixture_root_unavailable",
         ] {
             assert_eq!(super::activation_failure_code(code), code);
         }
         assert_eq!(
             super::activation_failure_code("/private/profile bearer secret"),
-            "source_adoption_unclassified_failure"
+            "current_profile_unclassified_failure"
         );
     }
 }

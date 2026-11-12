@@ -17,13 +17,15 @@ async fn native_account_preparation_recovers_effect_without_reply_after_normal_r
     let Fixture{_root,owner,transport,registry,state:_,task,current}=f;
     let path=_root.path().join("host");let origin=owner.0.expected_origin.clone();
     owner.suspend().await.unwrap();drop(session);drop(m);drop(transport);drop(owner);
-    let owner=NativeOwner::open_with_matrix(&path,&origin,"@owner:test",Arc::new(Source(current))).await.unwrap();
+    let selection=crate::native_owner::CurrentProfileSelection::load_for_isolated_tests(&path,&origin,"@owner:test",registry.clone()).unwrap().unwrap();
+    let owner=selection.open_with_matrix_guarded(&path,&origin,"@owner:test",Arc::new(Source(current)),|_|Ok(())).await.unwrap();
     let m=owner.management(account_package()).await.unwrap();
     let reply=m.retry_saved_command(input().command_id).await.unwrap();
     assert_eq!(reply["operation"],"prepare_account");assert_eq!(reply["data"]["accountId"],original.account_id);
     assert_eq!(m.prepare_account(input()).await.unwrap().account_id,original.account_id);
     let page=m.account_inventory(AccountInventoryQuery::default()).await.unwrap();
-    assert_eq!(page.accounts.len(),1);assert_eq!(page.accounts[0].readiness,"unknown");
+    let accounts=page.accounts.iter().filter(|account|account.id==original.account_id).collect::<Vec<_>>();
+    assert_eq!(accounts.len(),1);assert_eq!(accounts[0].readiness,"unknown");
     m.acknowledge_command(input().command_id).await.unwrap();assert!(m.saved_commands().await.unwrap().is_empty());
     owner.suspend().await.unwrap();registry.shutdown().await.unwrap();task.abort();
 }
@@ -38,7 +40,7 @@ async fn native_account_preparation_saved_success_requires_current_exact_permiss
     assert!(m.prepare_account(input()).await.is_err(),"cached success cannot bypass current SDK scope");
     f.current.store(true,Ordering::Release);
     assert_eq!(m.prepare_account(input()).await.unwrap().account_id,original.account_id);
-    assert_eq!(m.account_inventory(AccountInventoryQuery::default()).await.unwrap().accounts.len(),1);
+    assert_eq!(m.account_inventory(AccountInventoryQuery::default()).await.unwrap().accounts.iter().filter(|account|account.id==original.account_id).count(),1);
     f.owner.suspend().await.unwrap();f.stop().await;
 }
 

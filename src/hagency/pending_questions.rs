@@ -1,14 +1,14 @@
-//! Questions pooled Agents ask a room during a run (Codex `request_user_input`),
+//! Native questions Agents ask a room during a run,
 //! shown as cards under the message that started the run.
 //!
 //! The cards come from the room itself. The Agent's device posts each card as
 //! a message with a custom msgtype, which the timeline does not draw as a
 //! message (other clients show its text body), and edits it once it is
-//! answered or expired. Any member of the room may answer: the answer is a
+//! answered or expired. The task identifies who may answer; the answer is a
 //! custom room event, encrypted like any other in an encrypted room, which the
 //! server never treats as a chat message, so it never queues behind the run.
-//! The Agent takes the first valid answer from a current member. Nothing here
-//! decides who may answer; this module only presents cards and sends answers.
+//! The Agent takes the first valid answer from a named, authenticated current
+//! member. The UI mirrors that audience; enforcement stays with the executor.
 //!
 //! A card is drawn only when it is what an executor posts: from an Agent
 //! account of the room's own server, authenticated by Megolm in an encrypted
@@ -79,6 +79,9 @@ pub struct QuestionCard {
     pub local: LocalAnswer,
     /// Question id to the chosen option label.
     pub choices: BTreeMap<String, String>,
+    pub multiple: BTreeMap<String, Vec<String>>,
+    /// Captured from the authenticated login when this card was admitted.
+    pub may_answer: bool,
     /// Question id to typed text.
     pub texts: BTreeMap<String, String>,
 }
@@ -89,7 +92,7 @@ impl QuestionCard {
     }
     /// Buttons work only while the Agent waits and nothing was sent yet.
     pub fn open(&self, now_ms: u64) -> bool {
-        self.card.is_open(now_ms)
+        self.may_answer && self.card.is_open(now_ms)
             && matches!(self.local, LocalAnswer::None | LocalAnswer::Failed(_))
     }
     /// The answers chosen so far, in the shape the Agent accepts.
@@ -103,6 +106,8 @@ impl QuestionCard {
                 .filter(|t| !t.is_empty())
             {
                 answers.insert(q.id.clone(), AnswerValue::Text(text.to_owned()));
+            } else if let Some(labels) = self.multiple.get(&q.id).filter(|labels| !labels.is_empty()) {
+                answers.insert(q.id.clone(), AnswerValue::Options(labels.clone()));
             } else if let Some(label) = self.choices.get(&q.id) {
                 answers.insert(q.id.clone(), AnswerValue::Option(label.clone()));
             }
@@ -266,7 +271,8 @@ async fn consider(
         return false;
     };
     let relevant = value["type"] == "m.room.encrypted"
-        || (value["type"] == "m.room.message" && value["content"]["msgtype"] == protocol::MSGTYPE);
+        || (value["type"] == "m.room.message" && (value["content"]["msgtype"] == protocol::MSGTYPE
+                || value["content"]["msgtype"] == ::hagency::agent_run_controls::MSGTYPE));
     if !relevant {
         return false;
     }
@@ -323,7 +329,9 @@ fn accept_event(
         park(generation, room_id, event_id, None);
         return false;
     }
-    if value["type"] != "m.room.message" || value["content"]["msgtype"] != protocol::MSGTYPE {
+    if value["type"] != "m.room.message" || (value["content"]["msgtype"] != protocol::MSGTYPE
+            && value["content"]["msgtype"] != ::hagency::agent_run_controls::MSGTYPE)
+    {
         unpark(generation, room_id, event_id);
         return false;
     }
@@ -349,6 +357,11 @@ fn accept_event(
     }
     unpark(generation, room_id, event_id);
     let content = &value["content"];
+    if content["msgtype"] == ::hagency::agent_run_controls::MSGTYPE {
+        return super::run_controls::authenticated(
+            generation, room_id, event_id, sender, name, content,
+        );
+    }
     if content["m.relates_to"]["rel_type"] == "m.replace" {
         let Some(target) = content["m.relates_to"]["event_id"].as_str() else {
             return false;
@@ -537,6 +550,7 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
 fn reset(owner: String) -> u64 {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    super::run_controls::reset(generation, &owner);
     *state = State {
         owner,
         generation,
@@ -547,6 +561,8 @@ fn reset(owner: String) -> u64 {
 pub fn forget_identity() {
     reset(String::new());
 }
+#[cfg(feature = "onboarding-test-support")]
+pub fn review_identity(owner: &str) { reset(owner.into()); }
 
 /// A card message arrived. Returns whether anything changed. Only a card an
 /// executor posts is taken: first posted waiting, and waiting at most one
@@ -608,9 +624,11 @@ fn posted_in(
         posted_ms,
         order: state.arrivals,
         expiry_notified: false,
+        may_answer: card.may_answer(&state.owner),
         card,
         local: LocalAnswer::None,
         choices: BTreeMap::new(),
+        multiple: BTreeMap::new(),
         texts: BTreeMap::new(),
     };
     let early: Vec<_> = state
@@ -676,6 +694,8 @@ fn edited_in(generation: u64, room_id: &str, card_event: &str, sender: &str, car
 }
 fn apply_edit(entry: &mut QuestionCard, card: Card) -> bool {
     let same = card.id == entry.card.id
+        && card.version == entry.card.version
+        && card.responders == entry.card.responders
         && card.trigger_event_id == entry.card.trigger_event_id
         && card.thread_root == entry.card.thread_root
         && card.expires_at_ms == entry.card.expires_at_ms
@@ -745,8 +765,13 @@ pub fn choose(key: &str, question: &str, label: &str) -> Option<QuestionAnswerRe
             return None;
         }
         c.texts.remove(question);
-        c.choices.insert(question.into(), label.into());
-        Some(c.card.questions.len() == 1)
+        let multi = c.card.questions.iter().any(|q| q.id == question && q.multi_select);
+        if multi {
+            let labels = c.multiple.entry(question.into()).or_default();
+            if let Some(index) = labels.iter().position(|value| value == label) { labels.remove(index); }
+            else { labels.push(label.into()); }
+        } else { c.choices.insert(question.into(), label.into()); }
+        Some(c.card.questions.len() == 1 && !multi)
     })??;
     if single { submit(key) } else { None }
 }
@@ -766,6 +791,7 @@ pub fn type_text(key: &str, question: &str, text: &str) {
             c.texts.remove(question);
         } else {
             c.choices.remove(question);
+            c.multiple.remove(question);
             c.texts.insert(question.into(), text.into());
         }
     });
@@ -925,6 +951,7 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
         (_, LocalAnswer::Sending) => tr("Sending…").to_owned(),
         (_, LocalAnswer::Sent) => tr("Sent · waiting for the Agent").to_owned(),
         (_, LocalAnswer::Failed(_)) => tr("Not sent · try again").to_owned(),
+        _ if !c.may_answer => tr("Waiting for an authorized participant").to_owned(),
         _ => tr("Waiting for an answer").to_owned(),
     };
     let questions = c
@@ -933,12 +960,19 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
         .iter()
         .map(|q| QuestionRow {
             id: q.id.clone(),
-            header: q.header.clone(),
+            header: if q.multi_select {
+                if q.header.is_empty() { tr("Select multiple").into() }
+                else { format!("{} · {}",q.header,tr("Select multiple")) }
+            } else { q.header.clone() },
             question: q.question.clone(),
             options: q
                 .options
                 .iter()
-                .map(|o| (o.label.clone(), c.choices.get(&q.id) == Some(&o.label)))
+                .map(|o| {
+                    (o.label.clone(), c.choices.get(&q.id) == Some(&o.label)
+                    || c.multiple.get(&q.id).is_some_and(|labels| labels.contains(&o.label)),
+                    )
+                })
                 .collect(),
             details: q
                 .options
@@ -951,15 +985,14 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
                 .then(|| c.texts.get(&q.id).cloned().unwrap_or_default()),
             answer: (c.card.state == CardState::Answered).then(|| {
                 match c.card.answers.get(&q.id) {
-                    Some(AnswerValue::Option(label)) => label.clone(),
-                    Some(AnswerValue::Text(text)) => text.clone(),
+                    Some(value) => value.display(),
                     None => "—".to_owned(),
                 }
             }),
         })
         .collect::<Vec<_>>();
     let typed = c.card.questions.iter().any(|q| q.accepts_text());
-    let mut hint = if open {
+    let mut hint = if c.card.is_open(now_ms) {
         use chrono::TimeZone;
         // Questions in one run share one wait, so a card states its own end.
         let by = chrono::Local
@@ -967,10 +1000,19 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
             .single()
             .map(|t| t.format("%H:%M").to_string())
             .unwrap_or_default();
-        tf(
-            "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.",
+        let message = if c.card.responders.is_empty() {
+            "Any member of this room can answer. With no answer by {0}, the Agent continues on its own."
+        } else {
+            "Only the named participants can answer. With no answer by {0}, the Agent continues on its own."
+        };
+        let mut hint = tf(message,
             &[("0", by)],
-        )
+        );
+        if !c.card.responders.is_empty() { hint.push_str(&format!("\n{}", c.card.responders.join(", "))); }
+        if open && c.card.questions.iter().any(|q| q.multi_select) {
+            hint.push('\n'); hint.push_str(tr("Select one or more options, then send your answer."));
+        }
+        hint
     } else {
         String::new()
     };
@@ -987,7 +1029,7 @@ pub fn view(c: &QuestionCard, now_ms: u64) -> QuestionView {
         title: tf("{0} asks", &[("0", c.agent_name.clone())]),
         status,
         open,
-        send_visible: open && (questions.len() > 1 || typed),
+        send_visible: open && (questions.len() > 1 || typed || c.card.questions.iter().any(|q| q.multi_select)),
         can_send: open && c.ready(),
         questions,
         hint,
@@ -1028,6 +1070,7 @@ mod tests {
                 },
             ],
             other: true,
+            multi_select: false,
         };
         Card {
             version: 1,
@@ -1036,6 +1079,7 @@ mod tests {
             thread_root: "$root".into(),
             expires_at_ms: now_ms() + 600_000,
             questions: (0..questions).map(|i| question(&format!("q{i}"))).collect(),
+            responders: Vec::new(),
             withheld: 0,
             state: CardState::Pending,
             answered_by: None,
@@ -1044,6 +1088,47 @@ mod tests {
     }
     const AGENT: &str = "@_hagency_agt_one:example.test";
     const OTHER: &str = "@_hagency_agt_two:example.test";
+
+    #[test]
+    fn scoped_multiselect_requires_send_and_never_admits_other_members() {
+        let _guard = serial();
+        test_reset();
+        let mut data=card(4);
+        data.version=protocol::SCOPED_VERSION;
+        data.responders=vec!["@me:example.test".into()];
+        data.questions[0].multi_select=true;
+        assert!(posted("!room:example.test","$multi",AGENT,"Agent",now_ms(),data.clone()));
+        assert!(choose("$multi","q0","Postgres").is_none());
+        assert!(choose("$multi","q0","SQLite").is_none());
+        assert!(choose("$multi","q0","Postgres").is_none());
+        for index in 1..4 { assert!(choose("$multi",&format!("q{index}"),"Postgres").is_none()); }
+        let shown = view(&get("$multi").unwrap(), now_ms());
+        assert_eq!(shown.questions.len(), 4);
+        assert!(shown.send_visible && shown.can_send);
+        assert_eq!(shown.questions[0].options,[("Postgres".into(),false),("SQLite".into(),true)]);
+        let sent=submit("$multi").unwrap();
+        assert_eq!(sent.content["answers"]["q0"],serde_json::json!({"options":["SQLite"]}));
+        assert!(submit("$multi").is_none());
+        reset("@other:example.test".into());
+        assert!(posted("!room:example.test","$multi",AGENT,"Agent",now_ms(),data));
+        assert!(!view(&get("$multi").unwrap(),now_ms()).open);
+        assert!(choose("$multi","q1","Postgres").is_none());
+        assert!(submit("$multi").is_none());
+    }
+
+    #[test]
+    fn card_edit_cannot_change_the_authorized_answering_identity() {
+        let _guard = serial();
+        test_reset();
+        let mut data = card(1);
+        data.version=protocol::SCOPED_VERSION;
+        data.responders=vec!["@me:example.test".into()];
+        posted("!room:example.test","$scoped",AGENT,"Agent",now_ms(),data.clone());
+        let mut edit = data.expired();
+        edit.responders=vec!["@other:example.test".into()];
+        assert!(!edited("!room:example.test","$scoped",AGENT,edit));
+        assert_eq!(get("$scoped").unwrap().card.responders,data.responders);
+    }
 
     #[test]
     fn single_question_click_is_the_answer_and_sends_once() {
@@ -1596,6 +1681,37 @@ mod tests {
             accept(generation, &value, None, true),
             "known plaintext rooms still work"
         );
+    }
+
+    #[test]
+    fn run_cards_share_authenticated_late_key_recovery_and_account_generation() {
+        let _guard = serial();
+        let generation = reset("@me:example.test".into());
+        let mut card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({
+            "version":1,"id":"run_fixture","dispatchId":"dispatch","executionId":"execution",
+            "roomId":"!room:example.test","eventId":"$trigger","threadRoot":"!room:example.test",
+            "requester":"@me:example.test","owner":"@owner:example.test","runtime":"codex","state":"running","revision":0
+        })).unwrap();
+        let value = event("$run", card.content());
+        assert!(!accept(generation, &value, None, false));
+        let missing = encryption(VerificationState::Unverified(VerificationLevel::None(DeviceLinkProblem::MissingDevice)));
+        assert!(!accept(generation, &value, Some(&missing), false));
+        assert!(with_state(generation, |state| state.parked.iter().any(|parked| parked.event_id == "$run")).unwrap());
+        let trusted = encryption(VerificationState::Verified);
+        assert!(accept(generation, &value, Some(&trusted), false));
+        let room = matrix_sdk::ruma::room_id!("!room:example.test");
+        let shown = super::super::run_controls::for_event(room, "$trigger", true);
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].may_append && shown[0].may_stop);
+        assert!(super::super::run_controls::for_event(room, "$run", true).is_empty(), "the transport event must not render a duplicate interactive card");
+        card.revision = 2; card.state = ::hagency::agent_run_controls::State::Interrupted;
+        assert!(accept(generation, &event("$edit", card.edit_content("$run").unwrap()), Some(&trusted), false));
+        card.revision = 1; card.state = ::hagency::agent_run_controls::State::Running;
+        assert!(!accept(generation, &event("$stale", card.edit_content("$run").unwrap()), Some(&trusted), false));
+        assert_eq!(super::super::run_controls::for_event(room, "$trigger", true)[0].card.state, ::hagency::agent_run_controls::State::Interrupted);
+        reset("@different:example.test".into());
+        assert!(!accept(generation, &value, Some(&trusted), false));
+        assert!(super::super::run_controls::for_event(room, "$trigger", true).is_empty());
     }
 
     #[test]

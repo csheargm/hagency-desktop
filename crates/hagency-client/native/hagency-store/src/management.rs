@@ -6,7 +6,7 @@
 //! changes. Mutations retain the existing writer's finite, revocable authority.
 use crate::{
     CeilingChange, CeilingReport, DomainRepository, DomainStore, Error, ProfileChange,
-    ResourceConfigurationAccess, ResourceConfigurationResult, ResourceEngagementChange,
+    ResourceConfigurationResult,
     ResourcePublicationAccess, ResourcePublicationResult, ResourcePublicationRetirement,
     resource_publication_revision,
 };
@@ -77,7 +77,6 @@ pub enum Permission {
     ReadWebCatalog,
     ManageWebCatalog,
     ReadTasks,
-    ReadOperatorGraphHistory,
     ReadOperatorGraphs,
     CreateOperatorGraphs,
     UpdateOperatorGraphNodes,
@@ -171,7 +170,6 @@ pub enum Permission {
     // Native migration review only; no mini-app capability maps to this grant.
     PrepareSourceQuiescence,
     // Native explicit history-copy confirmation; no mini-app service.
-    ArchiveOperatorGraphHistory,
     ExecuteAllocations,
     // Native executor adapter only; no mini-app capability grants this.
     ExecuteManagedAgents,
@@ -184,8 +182,6 @@ struct Scope {
     expires: Instant,
     retired: AtomicBool,
     fence: ResourcePublicationRetirement,
-    configuration: ResourceConfigurationAccess,
-    publication: ResourcePublicationAccess,
     commands: tokio::sync::Mutex<()>,
     pending: tokio::sync::Semaphore,
 }
@@ -205,18 +201,7 @@ pub struct Session {
 }
 #[derive(Clone)]
 enum SessionStore {
-    Legacy(DomainStore),
-    #[cfg(feature = "resource-adoption")]
-    Adopted(Box<crate::owner_resources::adoption::AdoptedManagementStore>),
-}
-impl SessionStore {
-    fn legacy(&self) -> Result<&DomainStore, Error> {
-        match self {
-            Self::Legacy(store) => Ok(store),
-            #[cfg(feature = "resource-adoption")]
-            Self::Adopted(_) => Err(Error::Unqualified),
-        }
-    }
+    Current(Box<crate::owner_resources::adoption::CurrentManagementStore>),
 }
 impl Session {
     fn local_store(&self) -> Result<&SessionStore, Error> {
@@ -237,21 +222,8 @@ impl Session {
             scope: ManagementAuthority::new(context, permissions, expires)?.scope,
         })
     }
-    pub fn new(
-        store: DomainStore,
-        context: HostContext,
-        permissions: impl IntoIterator<Item = Permission>,
-        expires: Instant,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            store: Some(SessionStore::Legacy(store)),
-            server_journal: None,
-            scope: ManagementAuthority::new(context, permissions, expires)?.scope,
-        })
-    }
-    #[cfg(feature = "resource-adoption")]
-    pub fn new_adopted(
-        store: crate::owner_resources::adoption::AdoptedManagementStore,
+    pub fn new_current(
+        store: crate::owner_resources::adoption::CurrentManagementStore,
         context: HostContext,
         permissions: impl IntoIterator<Item = Permission>,
         expires: Instant,
@@ -260,15 +232,14 @@ impl Session {
             return Err(Error::LocalAuthority);
         }
         Ok(Self {
-            store: Some(SessionStore::Adopted(Box::new(store))),
+            store: Some(SessionStore::Current(Box::new(store))),
             server_journal: None,
             scope: ManagementAuthority::new(context, permissions, expires)?.scope,
         })
     }
-    #[cfg(feature = "resource-adoption")]
-    fn adopted_profile(
+    fn current_profile(
         &self,
-        store: &crate::owner_resources::adoption::AdoptedManagementStore,
+        store: &crate::owner_resources::adoption::CurrentManagementStore,
     ) -> Result<crate::owner_resources::ProfileAuthority, Error> {
         let authority = self.authority();
         let (profile, owner) = store.identity();
@@ -280,27 +251,23 @@ impl Session {
         .with_native_gate(move || authority.is_live())
     }
     /// Trusted native enrollment adapter; the mini app receives neither handle.
-    #[cfg(feature="resource-adoption")]
     pub fn namespace_enrollment_registry(&self,context:&HostContext)->Result<(crate::owner_resources::OwnerResourceRegistry,crate::owner_resources::ProfileAuthority),Error>{
         self.check(context,Permission::EnrollResources)?;
-        let SessionStore::Adopted(store) = self.local_store()? else {return Err(Error::LocalAuthority)};
-        let profile=self.adopted_profile(store)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        let profile=self.current_profile(store)?;
         let registry=store.enrollment_registry(&profile)?;
         self.check(context,Permission::EnrollResources)?;
         Ok((registry,profile))
     }
     /// Native reoffer preflight uses the already selected canonical registry.
     /// This grants no creation, editing, enrollment or provider authority.
-    #[cfg(feature = "resource-adoption")]
     pub fn contribution_registry(
         &self, context: &HostContext,
     ) -> Result<crate::owner_resources::OwnerResourceRegistry, Error> {
         self.check(context, Permission::ContributeResources)?;
         self.check(context, Permission::ReadResources)?;
-        let SessionStore::Adopted(store) = self.local_store()? else {
-            return Err(Error::LocalAuthority);
-        };
-        let profile = self.adopted_profile(store)?;
+        let SessionStore::Current(store) = self.local_store()?;
+        let profile = self.current_profile(store)?;
         let registry = store.enrollment_registry(&profile)?;
         self.check(context, Permission::ContributeResources)?;
         self.check(context, Permission::ReadResources)?;
@@ -337,10 +304,8 @@ impl Session {
         self.check(context, Permission::ReadResources)?;
         identifier(&id, 128)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => store.management_resource(id).await?,
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store.resource(&self.adopted_profile(store)?, id).await?
+            SessionStore::Current(store) => {
+                store.resource(&self.current_profile(store)?, id).await?
             }
         };
         self.check(context, Permission::ReadResources)?;
@@ -354,11 +319,9 @@ impl Session {
         self.check(context, Permission::ReadResources)?;
         query.validate()?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => store.management_resources(query).await?,
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
-                    .resources(&self.adopted_profile(store)?, query)
+                    .resources(&self.current_profile(store)?, query)
                     .await?
             }
         };
@@ -378,122 +341,30 @@ impl Session {
         identifier(&resource_id, 128)?;
         identifier(&command_id, 128)?;
         match self.local_store()? {
-            // Legacy resources never gain positive creation proof. Their
-            // existing configuration/adoption fences remain in force.
-            SessionStore::Legacy(store) => {
-                if store.management_resource(resource_id).await?.revision != expected_revision {
-                    return Err(Error::Conflict);
-                }
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store.record_contribution_attempt(
-                    &self.adopted_profile(store)?, resource_id, expected_revision, command_id,
+                    &self.current_profile(store)?, resource_id, expected_revision, command_id,
                 ).await?;
             }
         }
         self.check(context, Permission::ContributeResources)
     }
-    pub async fn configure_resource(
-        &self,
-        context: &HostContext,
-        input: ConfigureResource,
-    ) -> Result<ResourceConfigurationResult, Error> {
-        self.configure_resource_scoped(context, input, None).await
-    }
-    pub async fn configure_resource_with_legacy_lease(
-        &self,
-        context: &HostContext,
-        input: ConfigureResource,
-        lease: crate::installation_authority::LegacyResourceLease,
-    ) -> Result<ResourceConfigurationResult, Error> {
-        self.configure_resource_scoped(context, input, Some(lease))
-            .await
-    }
-    async fn configure_resource_scoped(
-        &self,
-        context: &HostContext,
-        input: ConfigureResource,
-        lease: Option<crate::installation_authority::LegacyResourceLease>,
-    ) -> Result<ResourceConfigurationResult, Error> {
-        let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
-        let _command = self.scope.commands.lock().await;
-        self.check(context, Permission::ConfigureResources)?;
-        if input.engagement.is_some() {
-            self.check(context, Permission::ContributeResources)?;
-        }
-        let receipt =
-            CommandReceipt::new(context, "resource.configure", &input.command_id, &input)?;
-        let mut command = self.scope.configuration.prepare(
-            input.resource_id,
-            input.expected_revision,
-            input.create,
-            input.profile,
-            input.ceiling,
-            Instant::now() + Duration::from_secs(2),
-        )?;
-        if let Some(engagement) = input.engagement {
-            command = command.with_engagement(engagement)?;
-        }
-        command.set_management_receipt(receipt);
-        if let Some(lease) = lease {
-            command = command.with_legacy_lease(lease)?;
-        }
-        let result = self.local_store()?.legacy()?.configure_resource(command).await?;
-        // A successful write whose authority retired before reply is uncertain
-        // to this caller. Do not expose it to a different account or retry it.
-        self.check(context, Permission::ConfigureResources)
-            .map_err(|_| Error::OutcomeUnknown)?;
-        Ok(result)
-    }
-    pub async fn publish_resource(
-        &self,
-        context: &HostContext,
-        input: PublishResource,
-    ) -> Result<ResourcePublicationResult, Error> {
-        self.publish_resource_scoped(context, input, None).await
-    }
-    pub async fn publish_resource_with_legacy_lease(
-        &self,
-        context: &HostContext,
-        input: PublishResource,
-        lease: crate::installation_authority::LegacyResourceLease,
-    ) -> Result<ResourcePublicationResult, Error> {
-        self.publish_resource_scoped(context, input, Some(lease))
-            .await
-    }
-    async fn publish_resource_scoped(
-        &self,
-        context: &HostContext,
-        input: PublishResource,
-        lease: Option<crate::installation_authority::LegacyResourceLease>,
-    ) -> Result<ResourcePublicationResult, Error> {
-        let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
-        let _command = self.scope.commands.lock().await;
-        self.check(context, Permission::PublishResources)?;
+    pub async fn publish_resource(&self, context:&HostContext, input:PublishResource)
+        -> Result<ResourcePublicationResult,Error> {
+        let _pending=self.scope.pending.try_acquire().map_err(|_|Error::Busy)?;
+        let _command=self.scope.commands.lock().await;
+        self.check(context,Permission::PublishResources)?;
         input.validate()?;
-        let receipt = CommandReceipt::new(context, "resource.publish", &input.command_id, &input)?;
-        #[cfg(feature = "resource-adoption")]
-        if let SessionStore::Adopted(store) = self.local_store()? {
-            let result = store.publish_resource(&self.adopted_profile(store)?, input, receipt).await?;
-            self.check(context, Permission::PublishResources).map_err(|_| Error::OutcomeUnknown)?;
+        {
+            let SessionStore::Current(store)=self.local_store()?;
+            let receipt=CommandReceipt::new(context,"resource.publish",&input.command_id,&input)?;
+            let result=store.publish_resource(&self.current_profile(store)?,input,receipt).await?;
+            self.check(context,Permission::PublishResources).map_err(|_|Error::OutcomeUnknown)?;
             return Ok(result);
         }
-        let mut command = self.scope.publication.prepare(
-            input.resource_id,
-            input.expected_revision,
-            input.published,
-            Instant::now() + Duration::from_secs(2),
-        )?;
-        command.receipt = Some(receipt);
-        if let Some(lease) = lease {
-            command = command.with_legacy_lease(lease)?;
-        }
-        let result = self.local_store()?.legacy()?.publish_resource(command).await?;
-        self.check(context, Permission::PublishResources)
-            .map_err(|_| Error::OutcomeUnknown)?;
-        Ok(result)
+
     }
+
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -542,17 +413,6 @@ impl ResourceQuery {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigureResource {
-    pub command_id: String,
-    pub resource_id: String,
-    pub expected_revision: String,
-    pub create: bool,
-    pub profile: ProfileChange,
-    pub ceiling: CeilingChange,
-    pub engagement: Option<ResourceEngagementChange>,
-}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublishResource {
@@ -747,7 +607,6 @@ impl DomainRepository {
     }
 }
 
-mod enrollment;
 mod alerts;
 mod approval_bindings;
 mod execution_policy;
@@ -775,11 +634,7 @@ pub use account_models::{AccountModelQuery, AccountInspection};
 pub use account_login::{AccountLoginRequest, AccountLoginStatus, AccountLoginHandle, AccountLoginReservation};
 pub use accounts::{AccountInventory, AccountInventoryQuery, AccountSummary, PrepareAccount, AccountPreparation};
 mod resource_detail;
-#[cfg(feature = "resource-adoption")]
-mod graph_history;
-#[cfg(feature = "resource-adoption")]
 mod operator_graphs;
-#[cfg(feature = "resource-adoption")]
 pub use operator_graphs::OPERATOR_GRAPH_SCOPE;
 mod operator_tasks;
 pub use operator_tasks::{
@@ -787,32 +642,21 @@ pub use operator_tasks::{
     OperatorTaskDetailQuery, OperatorTaskPage, OperatorTaskQuery, OperatorTaskSummary,
     TASK_COMMENT_PAGE, TASK_READ_PAGE,
 };
-pub use enrollment::{EnrollResource, ProviderSelection};
 pub use resource_detail::{
     CeilingAmendment, CeilingAmendmentBlocker, ResourceDetail, ResourceDetailQuery,
     ResourceEditBlocker, ResourceEditing,
 };
 mod connection;
-pub use connection::ProviderWitness;
 pub(crate) mod intents;
 pub use intents::{Intent, IntentOperation, IntentReply, PendingIntent};
 pub(crate) use intents::{JournalCommand, execute_intent};
-mod reconciliation;
-pub use reconciliation::{
-    AuditBlocker, AuditCount, AuditResource, ProfileLedgerAudit, ProfileLedgerHistory,
-};
+
 
 mod authority;
 mod server_journal;
 pub use server_journal::ServerManagementJournal;
-#[cfg(test)]
-mod legacy_lease_tests;
 pub use authority::{ManagementAuthority, WeakManagementAuthority};
-mod archive_journal;
-pub use archive_journal::{
-    ArchiveJournalBinding, ArchiveJournalSession, MANAGEMENT_ARCHIVE_APPLICATION_ID,
-    PrivateManagementJournal,
-};
+mod journal_sql;
 
 pub(crate) mod operator_task_commands;
 pub use operator_task_commands::{TaskField, CreateOperatorTask, EditOperatorTask, OperatorTaskVersion, TransitionOperatorTask, CommentOperatorTask, OperatorTaskChange, OperatorTaskCommand, OperatorTaskResult};

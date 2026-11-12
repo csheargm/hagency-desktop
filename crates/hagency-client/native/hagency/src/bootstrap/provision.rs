@@ -230,7 +230,6 @@ impl ObservedRoom {
         let mut default_power = 0;
         let mut invite_power = 0;
         let mut ts_binding = None;
-        let mut legacy_binding = None;
         let mut name = None;
         for event in events {
             let kind = event
@@ -313,17 +312,6 @@ impl ObservedRoom {
                     if key == fleet => {
                         ts_binding = Some(Value::Object(content.clone()));
                     }
-                // Board #95: rooms bound by EARLIER Rust builds carry the
-                // legacy `com.hagency.project.binding.v1` under the empty
-                // state key. Read it too so such a room keeps working after
-                // the upgrade; the TS event wins when both are present. The
-                // fleet/project field match is enforced by `verify_request`
-                // downstream — a foreign-fleet legacy binding is refused there
-                // with today's error. Native never writes this event again.
-                "com.hagency.project.binding.v1"
-                    if key.is_empty() => {
-                        legacy_binding = Some(Value::Object(content.clone()));
-                    }
                 _ => {}
             }
         }
@@ -334,9 +322,7 @@ impl ObservedRoom {
             powers,
             default_power,
             invite_power,
-            // Board #95: the TS event wins whenever it is present; the legacy
-            // event is only a fall-back for rooms an earlier Rust build bound.
-            binding: ts_binding.or(legacy_binding),
+            binding: ts_binding,
             name,
         })
     }

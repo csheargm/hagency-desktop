@@ -51,5 +51,7 @@ pub(super) fn live(
     if !bound || !qualified || parent_closed {
         return Err(Error::LocalAuthority);
     }
-    attempt_work::account_budget(db, a.sink.child(), &original)
+    // Budget availability belongs to prepare/issue. In particular, a sibling
+    // call's late overrun must not abort this call's renewal or evidence.
+    Ok(())
 }

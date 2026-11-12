@@ -9,9 +9,6 @@
     "hagency.accounts.list",
     "hagency.accounts.get",
     "hagency.accounts.prepare",
-    "hagency.providers.list",
-    "hagency.providers.connect",
-    "hagency.resources.enroll",
     "hagency.resources.list",
     "hagency.resources.get",
     "hagency.connections.list",
@@ -62,10 +59,6 @@
     "hagency.graphs.recipient.options",
     "hagency.graphs.recipient.observe",
     "hagency.graphs.bind_recipient",
-    "hagency.graph_history.archives",
-    "hagency.graph_history.list",
-    "hagency.graph_history.get",
-    "hagency.graph_history.node",
     "hagency.tasks.list",
     "hagency.tasks.get",
     "hagency.tasks.board",
@@ -170,7 +163,7 @@
   ],
   "id": "im.palpo.operations",
   "integrity": {
-    "bundle_blake3": "7e17873c31c2a051dd6e8b231ef45f64ff1f92cd4022f56a9b46a452669c417b"
+    "bundle_blake3": "b70d34e932a59fa76ad962979945f532f33626000670e61a08dc0e13842f2b6c"
   },
   "name": "Hagency",
   "requires": [

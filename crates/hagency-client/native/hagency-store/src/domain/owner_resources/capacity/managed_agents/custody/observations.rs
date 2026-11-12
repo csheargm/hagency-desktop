@@ -65,9 +65,7 @@ impl ManagedUsageObservation {
         complete_capture: bool,
         unrepresentable: bool,
     ) -> Self {
-        use hagency_metering::runtime_usage::{
-            CodexUsage, CounterBreakdown, ProjectionDiagnostics,
-        };
+        use hagency_metering::runtime_usage::{CodexUsage, CounterBreakdown, ProjectionDiagnostics};
         fn b(v: &hagency_runtime::codex::session::UsageBreakdown) -> CounterBreakdown {
             CounterBreakdown {
                 total_tokens: v.total_tokens(),
@@ -101,6 +99,53 @@ impl ManagedUsageObservation {
         }
     }
 
+    pub(super) fn shared_claude_capture(
+        id: String,
+        evidence: &hagency_runtime::claude::session::UsageEvidence,
+        terminal: bool,
+        complete_capture: bool,
+    ) -> Self {
+        use hagency_metering::{
+            TokenCounts,
+            claude_usage::{ClaudeUsage, Coverage},
+            runtime_usage::ProjectionDiagnostics,
+        };
+        use hagency_runtime::claude::session::UsageCoverage;
+        let counts = evidence.counts();
+        let diagnostics = evidence.diagnostics();
+        let coverage = match evidence.coverage() {
+            UsageCoverage::MainLoopSteps => Coverage::MainLoopSteps,
+            UsageCoverage::MainLoopResult => Coverage::MainLoopResult,
+            UsageCoverage::ReportedModelsResult => Coverage::ReportedModelsResult,
+        };
+        let numeric = ClaudeUsage {
+            counts: TokenCounts {
+                input: counts.input(),
+                output: counts.output(),
+                cache_read: counts.cache_read(),
+                cache_write: counts.cache_write(),
+            },
+            coverage,
+            steps: evidence.steps(),
+            models: evidence.models(),
+            diagnostics: ProjectionDiagnostics {
+                missing: diagnostics.has_missing_fields(),
+                invalid: diagnostics.has_invalid_fields(),
+                unsupported: diagnostics.has_unsupported_fields(),
+            },
+        };
+        // Runtime evidence already sums each native result UUID's delta
+        // exactly once for this call. Restored session totals are not billable.
+        let usage = UsageObservation::claude_runtime(numeric);
+        Self {
+            id,
+            terminal,
+            complete_capture,
+            unrepresentable: usage.is_err(),
+            usage: usage.ok(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(
         id: &str,
@@ -118,7 +163,11 @@ impl ManagedUsageObservation {
         }
     }
 }
-pub(super) fn evidence<T: Serialize>(kind: &str, target: &str, o: &T) -> Result<(String, String), Error> {
+pub(super) fn evidence<T: Serialize>(
+    kind: &str,
+    target: &str,
+    o: &T,
+) -> Result<(String, String), Error> {
     let value = json!({"kind":kind,"target":target,"observation":o});
     if serde_json::to_vec(&value)?.len() > 16 * 1024 {
         return Err(Error::Capacity);
@@ -241,7 +290,7 @@ fn amounts(o: &ManagedUsageObservation) -> Result<(u64, bool, bool, bool), Error
     let mut complete = false;
     let mut clean = false;
     if let Some(u) = &o.usage {
-        if u.framework() != Framework::Codex {
+        if !matches!(u.framework(), Framework::Codex | Framework::Claude) {
             return Err(Error::LocalAuthority);
         }
         overflow |= matches!(
@@ -256,15 +305,26 @@ fn amounts(o: &ManagedUsageObservation) -> Result<(u64, bool, bool, bool), Error
                     overflow = true;
                 }
             }
-            let valid = u.runtime_evidence().is_some_and(|e| {
-                let d = e.usage().diagnostics;
-                let n = e.normalization();
-                !d.missing
-                    && !d.invalid
-                    && !d.unsupported
-                    && !n.total_inconsistent
-                    && !n.last_inconsistent
-            });
+            let valid = match u.framework() {
+                Framework::Codex => u.runtime_evidence().is_some_and(|e| {
+                    let d = e.usage().diagnostics;
+                    let n = e.normalization();
+                    !d.missing
+                        && !d.invalid
+                        && !d.unsupported
+                        && !n.total_inconsistent
+                        && !n.last_inconsistent
+                }),
+                Framework::Claude => u.claude_runtime_evidence().is_some_and(|e| {
+                    let d = e.usage().diagnostics;
+                    !d.missing
+                        && !d.invalid
+                        && !d.unsupported
+                        && e.usage().coverage
+                            == hagency_metering::claude_usage::Coverage::ReportedModelsResult
+                }),
+                _ => false,
+            };
             clean = valid && u.failure().is_none();
             complete = o.terminal
                 && o.complete_capture
@@ -292,6 +352,34 @@ pub(super) fn usage(
     if h.issue_revision.is_none() || !matches!(h.state.as_str(), "issued" | "unknown" | "settled") {
         return Err(Error::LocalAuthority);
     }
+    if let Some(usage) = &o.usage {
+        // Use the immutable original command, not today's resource settings:
+        // late usage must remain recordable after an owner edits a resource.
+        let command: Option<String> = db
+            .query_row(
+                "SELECT command_payload FROM owner_shared_runtime_lifetimes WHERE child_id=?1",
+                [child],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let original = command
+            .as_ref()
+            .map(|raw| serde_json::from_str::<shared_execution::SharedRuntimeCommand>(raw))
+            .transpose()?;
+        // Pre-shared managed calls were Codex only; no historical row can
+        // silently become a Claude source when this adapter is installed.
+        let framework = original
+            .as_ref()
+            .map(|c| c.runtime())
+            .transpose()?
+            .unwrap_or("codex");
+        if !matches!(
+            (framework, usage.framework()),
+            ("codex", Framework::Codex) | ("claude", Framework::Claude)
+        ) {
+            return Err(Error::LocalAuthority);
+        }
+    }
     let (observed, new_complete, overflow, clean) = amounts(&o)?;
     let old_overflow: bool = db.query_row(
         "SELECT unrepresentable_usage FROM owner_managed_calls WHERE id=?1",
@@ -306,17 +394,8 @@ pub(super) fn usage(
                 && observed <= h.known_consumed_tokens
                 && !o.unrepresentable));
     let consumed = h.known_consumed_tokens.max(observed);
-    // A stopped process can't spend more, so a partial figure arriving after it
-    // is final. Reopening the call would only make it wait for evidence that
-    // can't come.
-    if !complete
-        && !overflow
-        && !old_overflow
-        && !o.unrepresentable
-        && process_stopped(db, target)?
-    {
-        complete = true;
-    }
+    // A physical stop prevents future spending; it does not prove the final
+    // bill for work already dispatched. Keep missing/partial usage unknown.
     let mut state = if complete {
         "settled"
     } else if o.terminal || h.state != "issued" {
@@ -364,12 +443,12 @@ fn process_stopped(db: &Connection, call: &str) -> Result<bool, Error> {
     )?)
 }
 
-/// Closes an Agent's open calls whose process is confirmed stopped, at
-/// their known usage. Usage that never arrived counts as zero, so nobody has to
-/// settle the call by hand. A process that may still be running stays open.
+/// Mark stopped issued calls as awaiting accounting. Preserve their known
+/// lower bound and all original receipts; a stop is never a zero-usage proof.
+/// Postpaid successor admission is independent of usage completeness.
 pub(super) fn close_stopped_calls(db: &Connection, child: &str) -> Result<(), Error> {
     let mut q = db.prepare(
-        "SELECT id FROM owner_managed_calls WHERE child_id=?1 AND state IN('issued','unknown') AND unrepresentable_usage=0 ORDER BY rowid",
+        "SELECT id FROM owner_managed_calls WHERE child_id=?1 AND state='issued' ORDER BY rowid",
     )?;
     let open = q
         .query_map([child], |r| r.get::<_, String>(0))?
@@ -380,22 +459,22 @@ pub(super) fn close_stopped_calls(db: &Connection, child: &str) -> Result<(), Er
         }
         let h = calls::history(db, child, &call)?;
         let proof = json!({
-            "source":"process_stopped_unreported_usage",
+            "source":"process_stopped_usage_incomplete",
             "knownConsumedTokens":h.known_consumed_tokens,
             "issueRevision":h.issue_revision,
         });
         let (digest, evidence) = evidence("usage", &call, &proof)?;
         db.execute(
-            "UPDATE owner_managed_calls SET state='settled',usage_complete=1,original_result_digest=COALESCE(original_result_digest,?2) WHERE id=?1",
-            params![call, digest],
+            "UPDATE owner_managed_calls SET state='unknown',usage_complete=0 WHERE id=?1 AND state='issued'",
+            params![call],
         )?;
         let receipt = ManagedObservationReceipt {
-            observation_id: format!("{call}_unreported_usage"),
+            observation_id: format!("{call}_stopped_usage_unknown"),
             target_id: call,
             kind: "usage".into(),
-            state: "settled".into(),
+            state: "unknown".into(),
             known_consumed_tokens: h.known_consumed_tokens,
-            usage_complete: true,
+            usage_complete: false,
             ledger_revision: revision(db)?,
             content_digest: digest,
         };
@@ -406,7 +485,10 @@ pub(super) fn close_stopped_calls(db: &Connection, child: &str) -> Result<(), Er
 
 /// Called only after the retained runtime atomically sealed its unstarted
 /// turn. Missing provider observations alone can never reach this path.
-pub(super) fn not_dispatched(db: &Connection, scope: &Scope) -> Result<ManagedObservationReceipt, Error> {
+pub(super) fn not_dispatched(
+    db: &Connection,
+    scope: &Scope,
+) -> Result<ManagedObservationReceipt, Error> {
     check_scope(db, scope, "usage")?;
     let id = format!("{}_not_dispatched", scope.target);
     let proof = json!({"source":"native_not_dispatched","issueRevision":scope.issued_revision,"dispatch":"sealed_before_turn"});
@@ -417,7 +499,8 @@ pub(super) fn not_dispatched(db: &Connection, scope: &Scope) -> Result<ManagedOb
     let h = calls::history(db, &scope.child, &scope.target)?;
     let observed: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM owner_managed_observations WHERE target_id=?1)",
-        [&scope.target], |r| r.get(0),
+        [&scope.target],
+        |r| r.get(0),
     )?;
     if h.state != "issued" || h.known_consumed_tokens != 0 || h.usage_complete || observed {
         return Err(Error::Conflict);
@@ -426,9 +509,14 @@ pub(super) fn not_dispatched(db: &Connection, scope: &Scope) -> Result<ManagedOb
     let grant:String=db.query_row("SELECT COALESCE(a.pool_grant_id,p.grant_id) FROM owner_managed_agents a LEFT JOIN owner_project_reservations p ON p.id=a.project_reservation_id WHERE a.id=?1",[&scope.child],|r|r.get(0))?;
     grant_floor(db, &grant)?;
     let receipt = ManagedObservationReceipt {
-        observation_id: id, target_id: scope.target.clone(), kind: "usage".into(),
-        state: "settled".into(), known_consumed_tokens: 0, usage_complete: true,
-        ledger_revision: revision(db)?, content_digest: digest,
+        observation_id: id,
+        target_id: scope.target.clone(),
+        kind: "usage".into(),
+        state: "settled".into(),
+        known_consumed_tokens: 0,
+        usage_complete: true,
+        ledger_revision: revision(db)?,
+        content_digest: digest,
     };
     save_observation(db, &scope.child, &receipt, &evidence)?;
     Ok(receipt)

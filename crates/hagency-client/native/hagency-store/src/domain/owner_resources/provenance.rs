@@ -11,14 +11,12 @@ pub(crate) enum History {
 }
 
 pub(super) enum OfferKind {
-    #[cfg(any(test, feature = "resource-adoption"))]
     Contribution,
     CapacityGrant,
 }
 impl OfferKind {
     fn name(&self) -> &'static str {
         match self {
-            #[cfg(any(test, feature = "resource-adoption"))]
             Self::Contribution => "contribution",
             Self::CapacityGrant => "capacity_grant",
         }
@@ -165,7 +163,6 @@ pub(super) fn history(
     Ok(History::NeverOffered)
 }
 
-#[cfg(any(test, feature = "resource-adoption"))]
 fn scope(registry: &OwnerResourceRegistry, profile: &ProfileAuthority) -> Result<(), Error> {
     profile.check()?;
     if registry.0.closed.load(Ordering::Acquire) {
@@ -174,7 +171,6 @@ fn scope(registry: &OwnerResourceRegistry, profile: &ProfileAuthority) -> Result
     Ok(())
 }
 
-#[cfg(any(test, feature = "resource-adoption"))]
 impl OwnerResourceRegistry {
     pub(crate) async fn record_contribution_attempt(
         &self,

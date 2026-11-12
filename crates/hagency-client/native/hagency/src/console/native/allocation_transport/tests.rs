@@ -149,12 +149,22 @@ struct State {
     unavailable_contribution: bool,
     generation: u64,
     source: Option<Arc<AtomicBool>>,
+    project_reads: usize,
+    fail_source_at_projects: Option<Arc<AtomicBool>>,
+    /// The server refuses the saved owner session; the SDK account is unchanged.
+    refuse_renewal: bool,
     invalidate_at_contribution: bool,
     invalidate_at_result: bool,
     lose_before_publication: bool,
     reject_publication: Option<&'static str>,
     changed_coordinator: bool,
     owner_coordinator: bool,
+    /// The ledger databases this device named, in order.
+    ledger_declarations: Vec<String>,
+    /// The `fresh` member of each declaration, as sent: absent, or its value.
+    ledger_fresh: Vec<Option<bool>>,
+    /// Some: the answer to a declaration, in place of a current server's.
+    ledger_reply: Option<Value>,
 }
 fn admission(g: &NativeGrantReceipt) -> Value {
     let at = now();
@@ -172,6 +182,14 @@ fn settlement_view(g: &NativeGrantReceipt, r: &NativeGrantSettlementReceipt) -> 
 // None deliberately closes the real HTTP connection after the simulated
 // central commit. Tests then recover through the production pinned adapter.
 fn management(path: &str, body: &Value, state: &mut State) -> Option<Value> {
+    if path.ends_with("/management/executor-ledger/declare") {
+        state.ledger_declarations.push(body["ledgerId"].as_str().unwrap().to_owned());
+        state.ledger_fresh.push(body.get("fresh").map(|v| v.as_bool().unwrap()));
+        assert!(body.as_object().unwrap().keys().all(|k| k == "ledgerId" || k == "fresh"));
+        return Some(state.ledger_reply.clone().unwrap_or_else(
+            || json!({"ledgerId":body["ledgerId"],"epoch":1,"observedAtMs":now()}),
+        ));
+    }
     if path.ends_with("/agent-requests/human_request/settlement") {return human_settlement::management(body,state);}
     if path.contains("/agent-settlement-executor/") { return managed_agents::settlements::management(path,body,state); }
     #[cfg(all(feature="agent-budget", feature="shared-execution"))]
@@ -406,15 +424,17 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                                 caps.push("shared-durable-demand-v1");
                             }
                             #[cfg(feature = "shared-execution")]
+                            if managed_agents::shared::claude_enabled(&state.lock().unwrap()) {
+                                caps.push("shared-claude-execution-v1");
+                            }
+                            #[cfg(feature = "shared-execution")]
                             if managed_agents::shared::demand_retry_enabled(&state.lock().unwrap()) {
                                 caps.push("shared-demand-retry-v1");
                             }
                             #[cfg(feature="shared-budget-execution")]
                             caps.push("shared-budget-execution-v1");
-                            #[cfg(feature="shared-context")]
-                            if managed_agents::shared::context_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v1");}
-                            #[cfg(feature="shared-context")]
-                            if managed_agents::shared::context_v2_enabled(&state.lock().unwrap()){caps.push("shared-thread-context-v2");}
+                            #[cfg(feature = "shared-execution")]
+                            if managed_agents::shared::context_v3_enabled(&state.lock().unwrap()){caps.push("shared-native-context-v3");}
                             json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,"capabilities":caps,"homeserver":origin,"issuer":issuer})
                         }
                         "/hagency/api/v1/sessions/pasion" => {
@@ -430,9 +450,21 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             json!({"deviceId":"device","token":"b".repeat(64),"generation":state.lock().unwrap().generation.max(1),"validUntilMs":at+30000})
                         }
                         "/hagency/api/v1/sessions/current/renew" => {
-                            json!({"validUntilMs":at+30000})
+                            if state.lock().unwrap().refuse_renewal {
+                                json!({"code":"sign_in_required","fixtureStatus":401})
+                            } else {
+                                json!({"validUntilMs":at+30000})
+                            }
                         }
                         "/hagency/api/v1/sessions/current" => json!({}),
+                        "/hagency/api/v1/projects" => {
+                            let mut state = state.lock().unwrap();
+                            state.project_reads += 1;
+                            if let Some(failed) = &state.fail_source_at_projects {
+                                failed.store(true, Ordering::Release);
+                            }
+                            json!({"projects":[]})
+                        }
                         _ => panic!("unexpected authentication route"),
                     })
                 };
@@ -520,6 +552,77 @@ async fn native_allocation_transport_late_upload_keeps_receipt_and_permission_bl
     assert_eq!(f.state.lock().unwrap().result_writes, 1);
     f.stop().await;
 }
+/// The device names its ledger database to the server once, before the first
+/// request that can lease work or carry a receipt, and does what the answer
+/// says: a current server opens the number space, an older server is used as
+/// before and asked again later, a spent database uploads nothing.
+#[tokio::test]
+async fn native_allocation_transport_names_its_ledger_before_work_and_obeys_the_answer() {
+    let f = Fixture::new().await;
+    let command = f.allocation();
+    f.state.lock().unwrap().allocation = Some(command.clone());
+    f.transport.poll_allocation(&f.registry, None).await.unwrap();
+    let recover = || async {
+        f.transport
+            .recover_allocation(
+                &f.registry,
+                command.command_id.clone(),
+                digest(&command).unwrap(),
+            )
+            .await
+    };
+    assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    let declared = |f: &Fixture| f.state.lock().unwrap().ledger_declarations.clone();
+    assert_eq!(declared(&f), vec![f.registry.ledger_id()]);
+    assert_ne!(f.registry.ledger_id(), f.registry.id());
+    assert_eq!(f.state.lock().unwrap().result_writes, 1);
+    // This database was created empty for the fixture, and says so: what the
+    // server holds for the device came from an earlier database.
+    let fresh = |f: &Fixture| f.state.lock().unwrap().ledger_fresh.clone();
+    assert!(f.registry.ledger_created_empty());
+    assert_eq!(fresh(&f), vec![Some(true)]);
+
+    // The server says this database's numbers are spent. Every request asks
+    // again and none goes further.
+    *f.owner.0.management.ledger.lock().await = LedgerDeclaration::Unknown;
+    f.state.lock().unwrap().ledger_reply =
+        Some(json!({"code":"agent_executor_ledger_retired"}));
+    for _ in 0..2 {
+        let error = recover().await.unwrap_err();
+        assert_eq!((error.status, error.code.as_str()), (409, "agent_executor_ledger_retired"));
+    }
+    assert_eq!(declared(&f).len(), 3);
+    let error = f.transport.poll_allocation(&f.registry, None).await.unwrap_err();
+    assert_eq!(error.code, "agent_executor_ledger_retired");
+    assert_eq!(declared(&f).len(), 4);
+    assert_eq!(f.state.lock().unwrap().result_writes, 1);
+    // A refused declaration sent nothing else, so the database is still new.
+    assert!(f.registry.ledger_created_empty());
+    assert_eq!(fresh(&f), vec![Some(true); 4]);
+
+    // A server from before declarations: asked once, then used as before.
+    f.state.lock().unwrap().ledger_reply =
+        Some(json!({"code":"not_found","fixtureStatus":404}));
+    for _ in 0..2 {
+        assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    }
+    assert_eq!(declared(&f).len(), 5);
+    // What followed reached that server undeclared. The database can no
+    // longer say that what a server holds for this device is not its own.
+    assert!(!f.registry.ledger_created_empty());
+
+    // Once that server is upgraded the next question opens the space.
+    *f.owner.0.management.ledger.lock().await = LedgerDeclaration::Unknown;
+    f.state.lock().unwrap().ledger_reply = None;
+    for _ in 0..2 {
+        assert!(matches!(recover().await.unwrap(), AllocationProgress::Recorded { .. }));
+    }
+    assert_eq!(declared(&f).len(), 6);
+    assert!(declared(&f).iter().all(|id| *id == f.registry.ledger_id()));
+    // The member is left out, never sent as false.
+    assert_eq!(fresh(&f)[4..], [Some(true), None]);
+    f.stop().await;
+}
 struct Fixture {
     _root: tempfile::TempDir,
     owner: NativeOwner,
@@ -574,35 +677,22 @@ impl Fixture {
         provider: &str, subject: &str, total: u64, grant_tokens: u64, lifetime_ms: u64,
         calendar: Option<hagency_core::recurring_quota::Calendar>, per_request_tokens: Option<u64>,
     ) -> Self {
-        let state = Arc::new(Mutex::new(State::default()));
-        let (origin, task) = server(state.clone()).await;
-        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
-        let current = Arc::new(AtomicBool::new(true));
-        state.lock().unwrap().source = Some(current.clone());
-        let owner = NativeOwner::open_with_matrix(
-            &root.path().join("host"),
-            &origin,
-            "@owner:test",
-            Arc::new(Source(current.clone())),
-        )
-        .await
-        .unwrap();
-        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
-        let registry =
-            OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
-        let scope = transport.scope(Permission::PublishGrants).await.unwrap();
+        let Self { _root: root, owner, transport, registry, state, task, current } =
+            Self::empty_current().await;
+        let scope=transport.scope(Permission::PublishGrants).await.unwrap();
+        let claude = provider == hagency_runtime::claude::account::PROVIDER;
         let resource = registry
             .prepare_enrollment(
                 scope.profile.clone(),
                 "enroll_fixture".into(),
                 VerifiedProviderAccount::new(
-                    "codex",
+                    if claude { "claude" } else { "codex" },
                     provider,
                     subject,
                     Instant::now() + Duration::from_secs(30),
                 )
                 .unwrap(),
-                "gpt-5.6-sol".into(),
+                if claude { "claude-opus-5" } else { "gpt-5.6-sol" }.into(),
                 Some("medium".into()),
                 total,
                 Instant::now() + Duration::from_secs(30),
@@ -660,6 +750,61 @@ impl Fixture {
             task,
             current,
         }
+    }
+    // A real initialized current profile with no business/resource evidence.
+    async fn empty_current() -> Self {
+        let state = Arc::new(Mutex::new(State::default()));
+        let (origin, task) = server(state.clone()).await;
+        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let current = Arc::new(AtomicBool::new(true));
+        state.lock().unwrap().source = Some(current.clone());
+        let owner = NativeOwner::open_with_matrix(
+            &root.path().join("host"),
+            &origin,
+            "@owner:test",
+            Arc::new(Source(current.clone())),
+        )
+        .await
+        .unwrap();
+        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        let registry =
+            OwnerResourceRegistry::isolated_for_tests(&root.path().join("registry")).unwrap();
+        let scope = transport.scope(Permission::PublishGrants).await.unwrap();
+        // Use the same canonical initializer as a fresh current account. The
+        // fixture never constructs a writable profile-domain management session.
+        let mut setup_package=package(90);
+        setup_package.permissions.push(Permission::ReadResources);
+        let setup=owner.management(setup_package).await.unwrap();
+        let journal=setup.current_setup_journal().await.unwrap();
+        let profile=crate::console::owned_agents::profile_identity(scope.device.origin(),scope.device.issuer(),scope.device.subject(),scope.device.owner_mxid()).unwrap();
+        let authority=hagency_store::owner_resources::adoption::ProfileInitializationAuthority::new(registry.clone(),scope.profile.clone(),scope.deadline,||true).unwrap();
+        registry.initialize_current_profile(authority,"current_fixture".into(),journal).await.unwrap();
+        let selection=super::super::CurrentProfileSelection::completed(&owner,registry.clone(),"current_fixture".into(),profile,scope.device.device_id().into());
+        selection.persist(&owner).unwrap();
+        drop(scope);drop(setup);drop(transport);
+        owner.suspend().await.unwrap();drop(owner);
+        let owner=selection.open_with_matrix_guarded(&root.path().join("host"),&origin,"@owner:test",Arc::new(Source(current.clone())),|_|Ok(())).await.unwrap();
+        let transport=AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        Self { _root: root, owner, transport, registry, state, task, current }
+    }
+    async fn reopen(self) -> Self {
+        let Self { _root, owner, transport, registry, state, task, current } = self;
+        let path = _root.path().join("host");
+        let origin = owner.0.expected_origin.clone();
+        owner.suspend().await.unwrap();
+        registry.shutdown().await.unwrap();
+        drop(transport);
+        drop(owner);
+        drop(registry);
+        let registry = OwnerResourceRegistry::isolated_for_tests(&_root.path().join("registry")).unwrap();
+        let selection = crate::native_owner::CurrentProfileSelection::load_for_isolated_tests(
+            &path, &origin, "@owner:test", registry.clone(),
+        ).unwrap().unwrap();
+        let owner = selection.open_with_matrix_guarded(
+            &path, &origin, "@owner:test", Arc::new(Source(current.clone())), |_| Ok(()),
+        ).await.unwrap();
+        let transport = AllocationTransport::new(owner.management(package(1)).await.unwrap());
+        Self { _root, owner, transport, registry, state, task, current }
     }
     fn allocation(&self) -> AllocationCommand {
         let grant = self.state.lock().unwrap().grant.clone().unwrap();
@@ -992,11 +1137,8 @@ async fn native_allocation_transport_committed_child_survives_restart_and_parent
         .unwrap()
         .unwrap();
     assert_eq!(receipt.state, "reserved");
-    f.registry.shutdown().await.unwrap();
-    f.registry =
-        OwnerResourceRegistry::isolated_for_tests(&f._root.path().join("registry")).unwrap();
-    f.transport.manager.retire();
-    f.transport = AllocationTransport::new(f.owner.management(package(2)).await.unwrap());
+    drop(scope);
+    f = f.reopen().await;
     let result = f
         .transport
         .recover_allocation(&f.registry, command.command_id.clone(), command_digest)

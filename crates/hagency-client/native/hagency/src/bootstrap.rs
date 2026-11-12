@@ -436,6 +436,7 @@ fn session_error_label(error: hagency_runtime::codex::session::Error) -> &'stati
         Capacity => "capacity",
         Policy => "policy",
         Rejected(_) => "rejected",
+        ContextUnavailable => "context_unavailable",
         UnsupportedRequest => "unsupported_request",
         UnsupportedEvent => "unsupported_event",
         TaskWriterStartup => "task_writer_startup",
@@ -467,6 +468,7 @@ fn transport_error_label(error: hagency_runtime::codex::transport::Error) -> &'s
             WireError::Clock => "protocol_clock",
             WireError::UnexpectedEof => "protocol_unexpected_eof",
             WireError::Transport => "protocol_transport",
+            WireError::Version => "protocol_version",
         },
     }
 }

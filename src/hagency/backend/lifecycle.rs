@@ -79,8 +79,7 @@ impl Service {
         }
         #[cfg(feature = "shared-execution")]
         self.0.shared.drain().await;
-        #[cfg(feature = "resource-adoption")]
-        self.0.allocations.drain().await;
+                self.0.allocations.drain().await;
         // Keep both handles until the original drain succeeds. Cancellation or
         // an unknown process outcome must not turn the next call into success.
         let mut native = self.0.native.lock().await;

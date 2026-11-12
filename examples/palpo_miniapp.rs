@@ -51,7 +51,7 @@ struct App {
 }
 impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
-        let profile = std::env::var_os("RINX_DATA_DIR").expect("isolated fixture profile");
+        let profile = std::env::var_os("HAGENCY_DESKTOP_DATA_DIR").expect("isolated fixture profile");
         let manifest =
             octosense_app_contract::parse(include_str!("../apps/palpo/bundle/manifest.json"))
                 .unwrap();

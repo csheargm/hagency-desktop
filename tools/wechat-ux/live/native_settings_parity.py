@@ -27,7 +27,7 @@ def launch(root, narrow):
     app.process = subprocess.Popen(
         ['target/fast/examples/settings_parity'] + (['--narrow'] if narrow else []),
         env=dict(os.environ, MAKEPAD_REMOTE=str(port), MAKEPAD_HIDE_WINDOWS='1',
-                 MAKEPAD_NO_FOCUS='1', RINX_DATA_DIR=str(profile), RUST_BACKTRACE='1'),
+                 MAKEPAD_NO_FOCUS='1', HAGENCY_DESKTOP_DATA_DIR=str(profile), RUST_BACKTRACE='1'),
         stdout=app.log, stderr=subprocess.STDOUT)
     for _ in range(120):
         if app.process.poll() is not None:

@@ -31,7 +31,7 @@ class LoginApp(NativeApp):
         os.chmod(self.output / "native.log", 0o600)
         binary = Path("target/debug/rinx")
         self.trace.append({"binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()})
-        env = dict(os.environ, RINX_DATA_DIR=str(profile), ROBRIX_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1")
+        env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile), MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1")
         env.pop("MAKEPAD_FOCUS", None)
         self.process = subprocess.Popen([str(binary)], stdout=self.log, stderr=subprocess.STDOUT, env=env)
         for _ in range(100):

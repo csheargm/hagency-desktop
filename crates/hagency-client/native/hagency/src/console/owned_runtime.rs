@@ -2,6 +2,9 @@
 mod drain;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
+pub(in crate::console) mod questions;
+mod room_tools;
+pub(in crate::console) mod run_controls;
 mod service;
 #[cfg(unix)]
 mod working_directory;
@@ -37,7 +40,6 @@ pub(super) struct StartConfig {
     pub agent_id: String,
     pub binding_id: String,
     pub profile: Profile,
-    pub mode: BudgetMode,
     pub credential_ref: String,
     pub takeover: Takeover,
     pub host_files: bool,
@@ -57,7 +59,6 @@ pub(super) struct RuntimeIntent {
     pub binding_id: String,
     pub device_id: String,
     pub consent_id: String,
-    pub reservation: u64,
     pub effort: String,
     pub host_files: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -68,7 +69,7 @@ pub(super) struct RuntimeIntent {
 impl RuntimeIntent {
     pub(super) fn start_input(&self) -> serde_json::Value {
         let mut input = serde_json::json!({"bindingId":self.binding_id,
-            "reservation":self.reservation,"effort":self.effort,"hostFiles":self.host_files,
+            "effort":self.effort,"hostFiles":self.host_files,
             "takeover":false,"recoveryDeviceId":self.device_id,"recoveryConsentId":self.consent_id});
         if self.shared_workspace { input["sharedWorkspace"] = true.into(); }
         input
@@ -80,6 +81,20 @@ struct RuntimeIntents {
     version: u8,
     profile_identity: String,
     intents: Vec<RuntimeIntent>,
+}
+const RUNTIME_STATE_VERSION: u8 = 3;
+
+/// A clean cutover never revives startup consent or preferences from an old
+/// format. The next explicit start/stop writes a fresh current document.
+fn current_runtime_state(bytes: &[u8], identity: &str) -> Result<Option<serde_json::Value>, RuntimeError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| RuntimeError::Profile)?;
+    if value.get("profileIdentity").and_then(|v| v.as_str()) != Some(identity) {
+        return Err(RuntimeError::Profile);
+    }
+    let version = value.get("version").and_then(|v| v.as_u64()).ok_or(RuntimeError::Profile)?;
+    if version < u64::from(RUNTIME_STATE_VERSION) { return Ok(None); }
+    if version != u64::from(RUNTIME_STATE_VERSION) { return Err(RuntimeError::Profile); }
+    Ok(Some(value))
 }
 fn intent_location(
     console: &Console,
@@ -113,7 +128,7 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
         Ok(file) => file,
         Err(_) if !path.exists() => {
             return Ok(RuntimeIntents {
-                version: 1,
+                version: RUNTIME_STATE_VERSION,
                 profile_identity: identity.into(),
                 intents: Vec::new(),
             });
@@ -127,15 +142,16 @@ fn read_intents(path: &std::path::Path, identity: &str) -> Result<RuntimeIntents
     if bytes.len() > 262144 {
         return Err(RuntimeError::Profile);
     }
-    let values: RuntimeIntents =
-        serde_json::from_slice(&bytes).map_err(|_| RuntimeError::Profile)?;
+    let Some(value) = current_runtime_state(&bytes, identity)? else {
+        return Ok(RuntimeIntents { version: RUNTIME_STATE_VERSION, profile_identity: identity.into(), intents: Vec::new() });
+    };
+    let values: RuntimeIntents = serde_json::from_value(value).map_err(|_| RuntimeError::Profile)?;
     let mut scopes = BTreeSet::new();
-    if values.version != 1
+    if values.version != RUNTIME_STATE_VERSION
         || values.profile_identity != identity
         || values.intents.len() > 1024
         || values.intents.iter().any(|v| {
-            v.reservation == 0
-                || v.agent_id.is_empty()
+            v.agent_id.is_empty()
                 || v.binding_id.is_empty()
                 || v.device_id.is_empty()
                 || match (v.shared_workspace, &v.shared_workspace_pin) {
@@ -224,15 +240,12 @@ fn verify_recovery_intent(
         (None, None) => Ok(()),
         (Some(expected_device), Some(consent)) if expected_device == device.device_id() => {
             let (path, identity) = intent_location(console, device)?;
-            let BudgetMode::Estimated { reservation } = config.mode else {
-                return Err(RuntimeError::StrictUnavailable);
-            };
+
             let valid = read_intents(&path, &identity)?.intents.iter().any(|v| {
                 v.agent_id == config.agent_id
                     && v.binding_id == config.binding_id
                     && v.device_id == *expected_device
                     && v.consent_id == *consent
-                    && v.reservation == reservation
                     && v.effort == config.profile.effort
                     && v.host_files == config.host_files
                     && v.shared_workspace == config.shared_workspace
@@ -271,9 +284,7 @@ fn save_intent(
     device: &AuthorizedDevice,
     config: &StartConfig,
 ) -> Result<(), RuntimeError> {
-    let BudgetMode::Estimated { reservation } = config.mode else {
-        return Err(RuntimeError::StrictUnavailable);
-    };
+
     let (path, identity) = intent_location(console, device)?;
     change_intent_checked(
         &path,
@@ -288,7 +299,6 @@ fn save_intent(
                 Some(id) => id.clone(),
                 None => new_consent_id()?,
             },
-            reservation,
             effort: config.profile.effort.clone(),
             host_files: config.host_files,
             shared_workspace: config.shared_workspace,
@@ -299,8 +309,6 @@ fn save_intent(
 }
 #[derive(Debug, thiserror::Error)]
 pub(super) enum RuntimeError {
-    #[error("strict token limits unavailable for Codex")]
-    StrictUnavailable,
     #[error("owner authorization required")]
     Authorization,
     #[error("Agent runtime already active")]
@@ -347,6 +355,14 @@ impl RuntimeStatus {
         let mut status = self.with_host_files(config.host_files || config.shared_workspace);
         status.file_replace = config.shared_workspace;
         if config.shared_workspace { status.capability_version = Some("hagency-shared-files-v1"); }
+        // A shared project is changed only through the host file tools: that
+        // session runs without native execution.
+        status.native_tools = !config.shared_workspace
+            && matches!(
+                runtime::kind(&config.credential_ref),
+                runtime::Kind::Codex | runtime::Kind::Claude
+            );
+        status.network_tools = status.native_tools;
         status.web_search = config.profile.web_search
             && runtime::kind(&config.credential_ref) == runtime::Kind::Codex;
         status
@@ -591,13 +607,6 @@ impl OwnedRuntime {
         mut config: StartConfig,
     ) -> Result<RuntimeStatus, RuntimeError> {
         let _activity = self.tasks.enter().map_err(|_| RuntimeError::Stopped)?;
-        match config.mode {
-            BudgetMode::Strict => return Err(RuntimeError::StrictUnavailable),
-            BudgetMode::Estimated { reservation: 0 } => {
-                return Err(RuntimeError::Profile);
-            }
-            _ => {}
-        }
         runtime::validate(&config.profile, &config.credential_ref)
             .map_err(|_| RuntimeError::Profile)?;
         if config.profile.executable
@@ -968,6 +977,7 @@ impl OwnedRuntime {
                     child
                 })
                 .collect();
+            status.native_tools |= status.bindings.iter().any(|child| child.native_tools);
             status
         }))
     }
@@ -1142,7 +1152,9 @@ async fn canceled(receiver: &mut watch::Receiver<bool>) {
     }
 }
 trait Transport {
-    fn supports_group_crypto(&self)->bool {false}
+    fn supports_group_crypto(&self) -> bool {
+        false
+    }
     fn approval_host(&self) -> Option<PinnedConsole> {
         None
     }
@@ -1157,7 +1169,9 @@ struct PinnedConsole {
     pin: DevicePin,
 }
 impl Transport for PinnedConsole {
-    fn supports_group_crypto(&self)->bool {true}
+    fn supports_group_crypto(&self) -> bool {
+        true
+    }
     fn approval_host(&self) -> Option<PinnedConsole> {
         Some(self.clone())
     }
@@ -1245,6 +1259,8 @@ async fn heartbeat(
     use std::sync::atomic::Ordering;
     let first_expiry = deadline(&lease).unwrap_or_else(|_| Instant::now());
     let mut next = heartbeat_next(Instant::now(), first_expiry.min(device.valid_until()));
+    // Since when the device refresh after a renewal has had no answer.
+    let mut refresh_unanswered: Option<Instant> = None;
     let reason = loop {
         let Ok(expiry) = deadline(&lease) else {
             break "lease_deadline_elapsed";
@@ -1280,9 +1296,29 @@ async fn heartbeat(
             let fresh = tokio::select! {biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(fresh_expiry.into())=>break "device_refresh_deadline", result=console.authorized_device()=>result};
             let fresh = match fresh {
                 Ok(fresh) => fresh,
-                Err(super::Error::Unavailable) => break "device_refresh_transport",
+                // No answer says nothing about the device, and the lease was
+                // just renewed under the pinned identity. Keep that pin, renew
+                // again on the next pass and ask once more. Only a refresh
+                // that stays unanswered for a lease length stops the runtime;
+                // a refusal still stops it at once.
+                Err(super::Error::Unavailable) => {
+                    let now = Instant::now();
+                    let since = *refresh_unanswered.get_or_insert(now);
+                    if device_refresh_given_up(since, now) {
+                        break "device_refresh_transport";
+                    }
+                    tracing::warn!(
+                        stage = "device_refresh",
+                        unanswered_ms = now.saturating_duration_since(since).as_millis() as u64,
+                        "Device refresh got no answer; retrying with the next renewal"
+                    );
+                    next = heartbeat_next(now, fresh_expiry);
+                    tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(next.min(fresh_expiry).into())=>{} }
+                    continue;
+                }
                 _ => break "device_authorization_required",
             };
+            refresh_unanswered = None;
             if fresh.origin() != device.origin()
                 || fresh.issuer() != device.issuer()
                 || fresh.subject() != device.subject()
@@ -1306,6 +1342,11 @@ async fn heartbeat(
     failed.store(if terminal { 1 } else { 2 }, Ordering::Release);
     stop.send_replace(true);
 }
+/// Whether a device refresh that has had no answer since `since` is given up:
+/// after the same grace as an unanswered running check.
+fn device_refresh_given_up(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= RUNNING_CHECK_GRACE
+}
 fn device_error(error: super::Error) -> RuntimeError {
     if matches!(error, super::Error::Unavailable) {
         RuntimeError::Transport
@@ -1326,6 +1367,34 @@ fn failure_code(result: &Result<(), RuntimeError>) -> Option<&'static str> {
         _ => Some("device_transport_unavailable"),
     }
 }
+/// The check before a room worker goes online: the tool starts, answers and
+/// is signed in. The owner is told to look at the account either way; the log
+/// names what actually failed, which is often not the account.
+fn startup_check_failure(error: &codex::Error) -> RuntimeError {
+    let (kind, detail) = error.diagnostic();
+    tracing::warn!(
+        kind,
+        detail,
+        event = error.diagnostic_event(),
+        "Local provider start-up check failed"
+    );
+    // An installation below the floor is not an account problem: the owner
+    // is told to update the CLI, as on the pooled path.
+    version_failure(error).unwrap_or(RuntimeError::Provider)
+}
+/// The owner-facing code of a CLI below the minimum version, if that is what
+/// failed.
+fn version_failure(error: &codex::Error) -> Option<RuntimeError> {
+    match error {
+        codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
+            Some(RuntimeError::Execution("codex_version_unsupported"))
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            Some(RuntimeError::Execution("claude_version_unsupported"))
+        }
+        _ => None,
+    }
+}
 fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
     let (kind, detail) = error.diagnostic();
     tracing::warn!(
@@ -1339,6 +1408,12 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         codex::Error::Profile("dedicated owner provider login required") => RuntimeError::Provider,
         codex::Error::Profile(_) | codex::Error::Ledger(_) => RuntimeError::Profile,
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
+        codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
+            RuntimeError::Execution("codex_version_unsupported")
+        }
+        codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED) => {
+            RuntimeError::Execution("claude_version_unsupported")
+        }
         codex::Error::Protocol(_) | codex::Error::EventScope { .. } | codex::Error::Json(_) => {
             RuntimeError::Execution("codex_protocol_mismatch")
         }
@@ -1554,8 +1629,8 @@ async fn run_host(
     let agent = initial.config.agent_id.clone();
     // Verify the owner's dedicated provider before any acquisition or explicit
     // takeover can disrupt an existing device. This is account/config only.
-    let mut provider = tokio::select! {biased;_=canceled(&mut cancel)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,runtime::spawn(&initial.config.profile,&initial.config.credential_ref))=>p.map_err(|_|RuntimeError::Provider)?};
-    let checked = tokio::select! {biased;_=canceled(&mut cancel)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|_|RuntimeError::Provider)};
+    let mut provider = tokio::select! {biased;_=canceled(&mut cancel)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn(&initial.config.profile,&initial.config.credential_ref))=>p.map_err(|_|RuntimeError::Provider)?};
+    let checked = tokio::select! {biased;_=canceled(&mut cancel)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|error|startup_check_failure(&error))};
     provider.stop().await.map_err(|_| RuntimeError::Provider)?;
     checked?;
     let mut ledger = local(Ledger::open_scoped(&path, &owner, &profile_id))?;
@@ -1605,8 +1680,8 @@ async fn run_host(
                 let Ok(completion)=completion else {return;};
                 let mut work=work;
                 let result=async {
-                    let mut provider=tokio::select! {biased;_=canceled(&mut work.receiver)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,runtime::spawn(&work.config.profile,&work.config.credential_ref))=>p.map_err(|_|RuntimeError::Profile)?};
-                    let checked=tokio::select! {biased;_=canceled(&mut work.receiver)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|_|RuntimeError::Provider)};
+                    let mut provider=tokio::select! {biased;_=canceled(&mut work.receiver)=>return Err(RuntimeError::Stopped),p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn(&work.config.profile,&work.config.credential_ref))=>p.map_err(|_|RuntimeError::Profile)?};
+                    let checked=tokio::select! {biased;_=canceled(&mut work.receiver)=>Err(RuntimeError::Stopped),r=async {provider.session.initialize().await?;provider.session.verify_host_environment().await?;provider.session.require_local_account().await}=>r.map_err(|error|startup_check_failure(&error))};
                     provider.stop().await.map_err(|_|RuntimeError::Provider)?;checked?;
                     let mut ledger=local(Ledger::open_scoped(&path,&owner,&profile_id))?;
                     let mut ready=RuntimeStatus::new(&work.config.agent_id,if models_allowed {if work.config.shared_workspace {"online"} else {"online_chat_only"}} else {"ledger_recovery_required"},if models_allowed{None}else{Some("ledger_recovery_required")}).with_capabilities(&work.config);ready.binding_id=Some(work.config.binding_id.clone());work.status.send_replace(ready);
@@ -1725,6 +1800,7 @@ async fn execution_loop_with_gate<T: Transport>(
     models_allowed: bool,
 ) -> Result<(), RuntimeError> {
     let mut reported = BTreeSet::new();
+    let mut sessions = provider_custody::Sessions::default();
     let mut reply_cursor = String::new();
     let mut finish_cursors = [String::new(), String::new(), String::new()];
     loop {
@@ -1806,7 +1882,9 @@ async fn execution_loop_with_gate<T: Transport>(
             tokio::select! {biased;_=canceled(cancel)=>return Err(RuntimeError::Stopped),_=tokio::time::sleep(Duration::from_millis(250))=>{}}
             continue;
         }
-        if console.supports_group_crypto() { e2ee::pump_candidates(console,lease,config,cancel).await?; }
+        if console.supports_group_crypto() {
+            e2ee::pump_candidates(console, lease, config, cancel).await?;
+        }
         let events = match operation(
             console,
             cancel,
@@ -1947,7 +2025,9 @@ async fn execution_loop_with_gate<T: Transport>(
             if local(ledger.inbox_available_bytes(owner))? < 65_536 {
                 return Err(RuntimeError::Profile);
             }
-            let admission = console.approval_host().map(|host| host.console.hosting_admission());
+            let admission = console
+                .approval_host()
+                .map(|host| host.console.hosting_admission());
             let turn = match admission.as_ref() {
                 Some(gate) => match gate.enter_turn() {
                     Some(turn) => Some(turn),
@@ -1976,9 +2056,10 @@ async fn execution_loop_with_gate<T: Transport>(
                     else {
                         continue;
                     };
-                    tokio::time::timeout(
-                        Duration::from_secs(1200),
-                        run_turn(
+                    // run_turn is fenced by the renewing device lease, live
+                    // dispatch checks and explicit owner stop. A long native
+                    // turn does not expire merely because twenty minutes pass.
+                    run_turn(
                             console,
                             lease,
                             ledger,
@@ -1988,15 +2069,9 @@ async fn execution_loop_with_gate<T: Transport>(
                             turn,
                             cancel,
                             status,
-                        ),
+                            &mut sessions,
                     )
                     .await
-                    .unwrap_or_else(|_| {
-                        Err(provider_failure(
-                            "agent_turn_deadline",
-                            &codex::Error::Timeout,
-                        ))
-                    })
                 }
                 Err(error) => Err(error),
                 _ => Err(RuntimeError::Transport),
@@ -2131,11 +2206,24 @@ async fn fresh_running<T: Transport>(
     execution: &str,
     cancel: &mut watch::Receiver<bool>,
 ) -> bool {
-    check_running(transport, lease, expected, execution, cancel)
-        .await
-        .is_ok()
+    // An answer decides at once. No answer says nothing about the run: one
+    // failed request here dropped a message that had been accepted and
+    // prepared, or an approval the owner had just given. It is asked again
+    // for the grace of the running check.
+    let give_up = tokio::time::Instant::now() + RUNNING_CHECK_GRACE;
+    loop {
+        match check_running(transport, lease, expected, execution, cancel).await {
+            Ok(()) => return true,
+            Err(RuntimeError::Transport) if tokio::time::Instant::now() < give_up => {}
+            Err(_) => return false,
+        }
+        tracing::warn!(
+            stage = "fresh_running_check",
+            "Running check got no answer before a step; asking again"
+        );
+        tokio::select! {biased; _=canceled(cancel)=>return false, _=tokio::time::sleep(Duration::from_secs(2))=>{}}
+    }
 }
-#[cfg(unix)]
 struct LiveToolGate {
     console: PinnedConsole,
     lease: LeaseRef,
@@ -2150,7 +2238,11 @@ impl codex::HostToolGate for LiveToolGate {
         dispatch: &'a str,
         execution: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(async move {
+        Box::pin(self.check(dispatch, execution))
+    }
+}
+impl LiveToolGate {
+    async fn check(&self, dispatch: &str, execution: &str) -> bool {
             if *self.cancel.borrow() || dispatch != self.expected.id || execution != self.execution
             {
                 return false;
@@ -2182,7 +2274,6 @@ impl codex::HostToolGate for LiveToolGate {
                 && event.dispatch_device_id == self.expected.dispatch_device_id
                 && event.execution_id.as_deref() == Some(execution)
                 && event.state == "running"
-        })
     }
 }
 /// Best-effort cancellation: 5s sampling plus at most 5s for the proof RPC.
@@ -2193,6 +2284,12 @@ async fn monitor_running<T: Transport>(
     prepared: &inbox::Prepared,
     mut cancel: watch::Receiver<bool>,
 ) -> RuntimeError {
+    // A check that gets no answer says nothing about the run. One slow
+    // request (a busy computer, an owner renewal in progress) ended a healthy
+    // turn as "outcome unknown". Only an answer ends the turn at once; no
+    // answer ends it after the grace. A server that cannot be reached is
+    // still fenced by the device lease, which the heartbeat must renew.
+    let mut unanswered_since: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {biased;_=canceled(&mut cancel)=>return RuntimeError::Stopped,_=tokio::time::sleep(Duration::from_secs(5))=>{}}
         match tokio::time::timeout(
@@ -2207,12 +2304,29 @@ async fn monitor_running<T: Transport>(
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                unanswered_since = None;
+                continue;
+            }
+            Ok(Err(RuntimeError::Transport)) | Err(_) => {}
             Ok(Err(error)) => return error,
-            Err(_) => return RuntimeError::Transport,
         }
+        let unanswered = unanswered_since
+            .get_or_insert_with(tokio::time::Instant::now)
+            .elapsed();
+        if unanswered >= RUNNING_CHECK_GRACE {
+            return RuntimeError::Transport;
+        }
+        tracing::warn!(
+            stage = "running_check",
+            unanswered_ms = unanswered.as_millis() as u64,
+            "Running check got no answer; the turn continues and the check is retried"
+        );
     }
 }
+/// How long the running check may go unanswered before the turn is given up.
+/// The same length as the device lease.
+const RUNNING_CHECK_GRACE: Duration = Duration::from_secs(30);
 /// Best effort only: this notification cannot trigger or retry provider work.
 async fn processing_notice<T: Transport>(
     transport: &T,
@@ -2320,6 +2434,7 @@ async fn run_turn<T: Transport>(
     mut admission: Option<super::hosting::TurnAdmission>,
     cancel: &mut watch::Receiver<bool>,
     status: &watch::Sender<RuntimeStatus>,
+    sessions: &mut provider_custody::Sessions,
 ) -> Result<Option<Finish>, RuntimeError> {
     let scope = prepared.dispatch.scope();
     if config.shared_workspace && config.shared_workspace_pin.as_deref() != Some(shared_workspace_pin(&config.profile.cwd)?.as_str()) {
@@ -2346,37 +2461,45 @@ async fn run_turn<T: Transport>(
     #[cfg(not(unix))]
     let profile = config.profile.clone();
     #[cfg(unix)]
-    let (profile, workspace) = working_directory::for_turn(&config.profile, owner, &scope, config.host_files, config.shared_workspace, config.shared_workspace_pin.as_deref())?;
-    let provider_tasks = transport
-        .approval_host()
-        .map(|host| host.console.0.owned_runtime.tasks.clone())
-        .unwrap_or_default();
-    let mut provider = tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,runtime::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?};
+    let (profile, workspace) = working_directory::for_turn(
+        &config.profile,
+        owner,
+        &scope,
+        config.host_files,
+        config.shared_workspace,
+        config.shared_workspace_pin.as_deref(),
+    )?;
     let (queue, mut receiver) = codex::approval_queue(1).map_err(|_| RuntimeError::Profile)?;
+    let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
+    let mut queue = queue.with_questions(question_queue);
     let host = transport.approval_host();
-    if config.host_files || config.shared_workspace {
-        #[cfg(unix)]
-        {
-            let console = host.as_ref().ok_or(RuntimeError::Profile)?;
-            let gate = Arc::new(LiveToolGate {
-                console: console.clone(),
-                lease: lease.clone(),
-                expected: prepared.dispatch.clone(),
-                execution: prepared.execution_id.clone(),
-                cancel: cancel.clone(),
-            });
-            provider
-                .session
-                .enable_host_files(workspace.ok_or(RuntimeError::Profile)?, gate)
-                .map_err(|_| RuntimeError::Profile)?;
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(RuntimeError::Profile);
-        }
-    }
+    let controls =
+        if host.is_some() && runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
+            let kind = if runtime::kind(&config.credential_ref) == runtime::Kind::Claude {
+                "claude"
+            } else {
+                "codex"
+            };
+            let card = run_controls::optional_card(
+                &prepared.dispatch,
+                &prepared.execution_id,
+                owner,
+                kind,
+            );
+            if let Some(card) = card {
+                let (sender, inbox) = hagency_agent_local::run_controls::channel(
+                    &scope, &prepared.dispatch.id, &prepared.execution_id,
+                ).map_err(|_| RuntimeError::Profile)?;
+                queue = queue.with_run_controls(inbox);
+                let controls = run_controls::Controller::new(sender, card);
+                queue = queue.with_live_text(controls.live_text());
+                Some(controls)
+            } else { None }
+        } else {
+            None
+        };
     let has_approval_host = host.is_some();
-    let bridge = host.map(|console| {
+    let bridge = host.clone().map(|console| {
         tokio::spawn(async move {
             while let Some(pending) = receiver.recv().await {
                 if console
@@ -2414,7 +2537,6 @@ async fn run_turn<T: Transport>(
         }
     };
     if !allow {
-        provider.stop().await.map_err(|_| RuntimeError::Provider)?;
         return if *cancel.borrow() {
             Err(RuntimeError::Stopped)
         } else {
@@ -2426,6 +2548,95 @@ async fn run_turn<T: Transport>(
             ))?;
             Ok(None)
         };
+    }
+    let mut room_bridge = if runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
+        if let Some(console) = host.as_ref() {
+            let gate = Arc::new(LiveToolGate { console: console.clone(), lease: lease.clone(),
+                expected: prepared.dispatch.clone(), execution: prepared.execution_id.clone(), cancel: cancel.clone() });
+            #[cfg(unix)]
+            let room_folder = working_directory::for_room_files(&config.profile, &profile, owner, &scope, config.shared_workspace)?;
+            #[cfg(not(unix))]
+            let room_folder = profile.cwd.clone();
+            let host = room_tools::Host::new(gate, config, &room_folder)?;
+            let (channel, receiver) = hagency_agent_local::room_tools::room_queue(&scope, &prepared.dispatch.id)
+                .map_err(|_| RuntimeError::Profile)?;
+            queue = queue.with_room_tools(channel);
+            Some((host, receiver))
+        } else { None }
+    } else { None };
+    let room_tools = room_bridge.is_some();
+    // The owner's slash command to their own Claude Agent reaches the CLI as
+    // written. Wrapped in room context it would be an ordinary prompt.
+    let owner_command = runtime::kind(&config.credential_ref) == runtime::Kind::Claude
+        && hagency_agent_local::runtime::owner_command(owner, &scope, &input);
+    let input = match room_bridge.as_mut() {
+        Some((host, _)) if !owner_command => host.prompt(input).await,
+        _ => input,
+    };
+    // Native extensions may execute during startup. Admit the request before
+    // opening a provider or disturbing the retained conversation.
+    let provider_tasks = transport
+        .approval_host()
+        .map(|host| host.console.0.owned_runtime.tasks.clone())
+        .unwrap_or_default();
+    let session_key = provider_custody::SessionKey::new(owner, &prepared.dispatch, &profile, config);
+    let cached = if let Some(mut provider) = sessions.take(&session_key) {
+        let prepared = tokio::select! { biased;
+            _ = canceled(cancel) => return Err(RuntimeError::Stopped),
+            result = tokio::time::timeout(Duration::from_secs(10), async {
+                provider.session.verify_host_environment().await?;
+                provider.session.require_local_account().await?;
+                provider.session.continue_context(ledger, &scope, &profile).await
+            }) => result.unwrap_or(Err(codex::Error::Timeout)),
+        };
+        if prepared.is_ok() { Some(provider) } else {
+            // No new model input or reservation has been sent. A dead cached
+            // process may be replaced for this newly admitted dispatch only.
+            provider.stop().await.map_err(|_| RuntimeError::Provider)?;
+            None
+        }
+    } else { None };
+    let retained = cached.is_some();
+    let mut provider = match cached {
+        Some(provider) => provider,
+        None => {
+            let provider = tokio::select! {biased; _=canceled(cancel)=>return Err(RuntimeError::Stopped), p=provider_custody::Provider::capture(&provider_tasks,provider_custody::spawn_for_scope(&profile,&config.credential_ref,ledger,&scope))=>p.map_err(|error|provider_failure("provider_spawn", &error))?};
+            // The only discards of a saved session: the native CLI reported
+            // its context missing before any input, or the same saved session
+            // failed to start three times in a row and a fresh one started. A
+            // notice to the room that the earlier conversation is gone would
+            // be sent from here.
+            if let Some(reason) = provider.discarded_session {
+                tracing::warn!(
+                    code = "claude_saved_session_discarded",
+                    scope = "personal",
+                    reason,
+                    "A saved Claude session was discarded; this conversation continues in a fresh one"
+                );
+            }
+            provider
+        }
+    };
+    if config.host_files || config.shared_workspace {
+        #[cfg(unix)]
+        {
+            let console = host.as_ref().ok_or(RuntimeError::Profile)?;
+            let gate = Arc::new(LiveToolGate {
+                console: console.clone(),
+                lease: lease.clone(),
+                expected: prepared.dispatch.clone(),
+                execution: prepared.execution_id.clone(),
+                cancel: cancel.clone(),
+            });
+            let workspace = workspace.ok_or(RuntimeError::Profile)?;
+            if retained { provider.session.rebind_host_files(workspace, gate) }
+            else { provider.session.enable_host_files(workspace, gate) }
+                .map_err(|_| RuntimeError::Profile)?;
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(RuntimeError::Profile);
+        }
     }
     let mut executing = RuntimeStatus::new(
         &config.agent_id,
@@ -2441,8 +2652,14 @@ async fn run_turn<T: Transport>(
     status.send_replace(executing);
     // The launch/dispatch has already passed owner, room and provider gates.
     // Keep this identity with the observer, including failed terminal turns.
-    let telemetry = transport.approval_host().as_ref().and_then(|host| host.console.0.dashboard_telemetry
-        .lock().unwrap_or_else(|e| e.into_inner()).clone());
+    let telemetry = transport.approval_host().as_ref().and_then(|host| {
+        host.console
+            .0
+            .dashboard_telemetry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    });
     let binding = hagency_metering::dashboard::ledger::ExecutionBinding {
         execution_id: prepared.execution_id.clone(),
         resource_id: format!("personal-agent:{}", config.agent_id),
@@ -2464,21 +2681,53 @@ async fn run_turn<T: Transport>(
     let usage_observer = |usage: &hagency_agent_local::Usage| {
         if let Some(telemetry) = &telemetry {
             if telemetry.personal_usage(&binding, usage).is_err() {
-                tracing::warn!(code="personal_usage_unavailable", "Personal runtime measurement could not be recorded");
+                tracing::warn!(
+                    code = "personal_usage_unavailable",
+                    "Personal runtime measurement could not be recorded"
+                );
             }
         }
     };
     let mut pre_model_cancel = cancel.clone();
     let permission_cancel = cancel.clone();
+    let question_cancel = cancel.clone();
+    let control_cancel = cancel.clone();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let result = tokio::select! {biased; _=canceled(cancel)=>Err(RuntimeError::Stopped), error=monitor_running(transport,lease,&prepared,permission_cancel)=>Err(error), r=async {
         let model = async {
-        provider.session.initialize().await.inspect_err(|error|{provider_failure("provider_initialize", error);})?;
-        provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
-        provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
-        provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
+        if !retained {
+            provider.session.initialize().await.inspect_err(|error|{provider_failure("provider_initialize", error);})?;
+            provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
+            provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
+            if room_tools {
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files()).await
+                    .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
+            }
+            provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
+        }
         if !fresh_running(transport,lease,&prepared.dispatch,&prepared.execution_id,&mut pre_model_cancel).await {return Err(codex::Error::Protocol("running dispatch authorization lost"));}
-        provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,config.mode.clone(),&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
+        provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,BudgetMode::Postpaid,&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
+            // The answer was read before the provider stream failed: it is still delivered, with unknown usage.
+            .inspect(|completed|{if let Some(error) = &completed.late_failure {provider_failure("provider_turn_after_answer", error);}})
+        };
+        let model = async {
+            tokio::select! {
+                result = model => result,
+                _ = questions::serve(transport, lease, config, owner, &prepared, question_cancel, question_receiver) => Err(codex::Error::Protocol("question bridge closed")),
+                _ = async {
+                    match room_bridge {
+                        Some((host, receiver)) => host.serve(receiver).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => Err(codex::Error::Protocol("room bridge closed")),
+                _ = async {
+                    if let Some(controls) = &controls {
+                        controls.serve(transport, lease, config, &prepared, control_cancel).await;
+                    }
+                    // An unavailable Matrix card cannot abort a paid turn.
+                    std::future::pending::<()>().await
+                } => unreachable!(),
+            }
         };
         let notice = async {
             if started_rx.await.is_ok() {
@@ -2493,17 +2742,33 @@ async fn run_turn<T: Transport>(
                 }
             }
         };
-        let (result, ()) = tokio::join!(model, notice);
-        result
+        tokio::pin!(model, notice);
+        tokio::select! {
+            result = &mut model => result,
+            _ = &mut notice => model.await,
+        }
     }=>match r {
         Ok(completed)=>Ok(Ok(completed)),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。")),
-        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 暂停处理：Token 可用额度不足，无法为本次请求预留额度。请联系 Agent 主人调整配额。本次未调用模型。")),
-        Err(codex::Error::Failed)=>{provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
+        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。")),
+        Err(codex::Error::Failed)=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
         Err(error)=>Err(provider_failure("agent_turn_result", &error)),
     }};
-    // Dropping a running turn first seals its reservation; then kill the child.
-    provider.stop().await.map_err(|_| RuntimeError::Provider)?;
+    if let Some(controls) = &controls {
+        use crate::agent_run_controls::State;
+        controls.finish(match &result {
+            Ok(Ok(completed)) if completed.status == codex::TurnStatus::Interrupted => {
+                State::Interrupted
+            }
+            Ok(Ok(_)) => State::Completed,
+            Ok(Err(_)) => State::Failed,
+            Err(_) => State::Unknown,
+        });
+    }
+    let retain = matches!(&result, Ok(Ok(completed)) if completed.usage.is_reported())
+        && provider.session.can_continue();
+    // Failed/cancelled/unknown work never enters the idle-session cache.
+    if !retain { provider.stop().await.map_err(|_| RuntimeError::Provider)?; }
     let completed = match result? {
         Ok(completed) => completed,
         Err(reason) => {
@@ -2516,7 +2781,12 @@ async fn run_turn<T: Transport>(
             return Ok(None);
         }
     };
-    if completed.text.is_empty() || completed.text.len() > 65_536 {
+    let reply = if completed.status == codex::TurnStatus::Interrupted && completed.text.is_empty() {
+        "⏹️ 本次运行已停止。"
+    } else {
+        &completed.text
+    };
+    if reply.is_empty() || reply.len() > 65_536 {
         return Err(RuntimeError::Profile);
     }
     // Like shared Agents, a chat reply is only the answer. Turn usage and the
@@ -2525,8 +2795,9 @@ async fn run_turn<T: Transport>(
         owner,
         &prepared.dispatch.id,
         &prepared.execution_id,
-        &completed.text,
+        reply,
     ))?;
+    if retain { sessions.retain(session_key, provider); }
     Ok(None)
 }
 
@@ -2672,6 +2943,10 @@ mod tests {
                 super::codex::Error::Protocol("cross-turn event"),
                 "codex_protocol_mismatch",
             ),
+            (
+                super::codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED),
+                "codex_version_unsupported",
+            ),
             (super::codex::Error::Unknown, "codex_provider_unavailable"),
             (super::codex::Error::Timeout, "codex_provider_timeout"),
             (
@@ -2753,6 +3028,16 @@ mod tests {
         assert_ne!(first, shared_workspace_pin(&project).unwrap());
     }
     #[test]
+    fn unanswered_device_refresh_is_retried_for_one_lease_length() {
+        let since = Instant::now();
+        assert!(!device_refresh_given_up(since, since));
+        assert!(!device_refresh_given_up(
+            since,
+            since + RUNNING_CHECK_GRACE - Duration::from_millis(1)
+        ));
+        assert!(device_refresh_given_up(since, since + RUNNING_CHECK_GRACE));
+    }
+    #[test]
     fn heartbeat_schedule_precedes_short_proof_deadline() {
         let now = std::time::Instant::now();
         assert_eq!(
@@ -2775,7 +3060,6 @@ mod tests {
             binding_id: binding.into(),
             device_id: device.into(),
             consent_id: new_consent_id().unwrap(),
-            reservation: 42,
             effort: "low".into(),
             host_files: false,
             shared_workspace: false,
@@ -2801,7 +3085,7 @@ mod tests {
         );
         let input = recovered[0].start_input();
         assert_eq!(input["takeover"], false);
-        assert_eq!(input["reservation"], 42);
+        assert!(input.get("reservation").is_none());
         assert_eq!(input["recoveryDeviceId"], "device-a");
         assert!(input.get("profile").is_none());
         assert!(input.get("token").is_none());
@@ -2871,6 +3155,36 @@ mod tests {
         );
     }
     #[test]
+    fn postpaid_start_intent_survives_restart_without_an_estimate() {
+        let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = tmp.path().join("runtime-intents.json");
+        let intent = intended("agent", "binding", "device");
+        change_intent(&path, "owner", "agent", "binding", Some(intent.clone())).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().intents, vec![intent.clone()]);
+        assert!(intent.start_input().get("reservation").is_none());
+        let mut old = serde_json::to_value(&intent).unwrap();
+        old["reservation"] = 42.into();
+        assert!(serde_json::from_value::<RuntimeIntent>(old).is_err());
+    }
+    #[test]
+    fn obsolete_runtime_intents_do_not_restore_or_block_a_fresh_start_or_stop() {
+        let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = tmp.path().join("runtime-intents.json");
+        let old = serde_json::json!({"version":2,"profileIdentity":"owner","intents":[{
+            "agentId":"old","bindingId":"old-room","deviceId":"old-device",
+            "consentId":"a".repeat(64),"effort":"low","hostFiles":false,"reservation":42
+        }]});
+        hagency_store::private::replace(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(read_intents(&path, "other-owner").is_err());
+        assert!(read_intents(&path, "owner").unwrap().intents.is_empty());
+        change_intent(&path, "owner", "old", "old-room", None).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().version, RUNTIME_STATE_VERSION);
+        let next = intended("current", "current-room", "current-device");
+        change_intent(&path, "owner", "current", "current-room", Some(next.clone())).unwrap();
+        assert_eq!(read_intents(&path, "owner").unwrap().intents, vec![next]);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("reservation"));
+    }
+    #[test]
     fn runtime_concurrent_intent_writer_and_malformed_consent_fail_closed() {
         let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let path = tmp.path().join("runtime-intents.json");
@@ -2882,7 +3196,7 @@ mod tests {
         drop(held);
         change_intent(&path, "owner-a", "a", "b", Some(intended("a", "b", "d"))).unwrap();
         let mut values = read_intents(&path, "owner-a").unwrap();
-        values.intents[0].reservation = 0;
+        values.intents[0].consent_id = "malformed".into();
         hagency_store::private::replace(&path, &serde_json::to_vec(&values).unwrap()).unwrap();
         assert!(read_intents(&path, "owner-a").is_err());
     }
@@ -3029,7 +3343,10 @@ mod tests {
         );
         next.requester_mxid = "@foreign:test".into();
         validate_event_context(&next, &configuration, OWNER).unwrap();
-        assert_ne!(first.scope().context_key(OWNER).unwrap(),next.scope().context_key(OWNER).unwrap());
+        assert_ne!(
+            first.scope().context_key(OWNER).unwrap(),
+            next.scope().context_key(OWNER).unwrap()
+        );
         next.requester_mxid = OWNER.into();
         next.thread_root = "!another-room:test".into();
         assert!(validate_event_context(&next, &configuration, OWNER).is_err());
@@ -3075,7 +3392,7 @@ mod tests {
                 shared_auth: false,
                 web_search: true,
             },
-            mode: BudgetMode::Estimated { reservation: 10 },
+
             credential_ref: "keychain:test".into(),
             takeover: Takeover::Never,
             host_files: false,
@@ -3212,6 +3529,7 @@ mod tests {
                     assert_eq!(record.execution_id.as_deref(), Some(execution_id.as_str()));
                     assert_eq!(record.dispatch.scope(), event().scope());
                     assert_eq!(ledger.outstanding_calls(OWNER).unwrap().len(), 1);
+                    calls.push("processing");
                     // A cosmetic notification failure must not mutate replies,
                     // release reservations, or weaken the cancellation fixture.
                     Err(RuntimeError::Transport)
@@ -3379,6 +3697,39 @@ mod tests {
             calls,
             ledger.inbox_record(OWNER, "dispatch-a").unwrap().state,
         )
+    }
+    #[tokio::test]
+    async fn unapproved_request_never_opens_native_runtime_or_reserves_budget() {
+        use hagency_agent_local::{Budget, Layer, Limit, Period, Policy, RequestPolicy, ToolPolicy};
+        for requests in [RequestPolicy::Deny, RequestPolicy::AskOwner] {
+            let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let path = root.join("ledger.db");
+            let mut ledger = setup(&path, &root);
+            ledger.set_policy(OWNER, &event().scope(), Layer::Room, 0, &Policy {
+                budget: Budget { limit: Limit::Unlimited, period: Period::Lifetime },
+                requests, high_risk: ToolPolicy::Deny,
+            }).unwrap();
+            ledger.receive_dispatch(OWNER, &event(), inbox::Limits::default(), now()).unwrap();
+            ledger.acknowledge_dispatch(OWNER, "dispatch-a").unwrap();
+            let prepared = ledger.prepare_execution(OWNER, "dispatch-a").unwrap();
+            let mut event = prepared.dispatch.clone();
+            event.state = "running".into();
+            event.execution_id = Some(prepared.execution_id.clone());
+            let permit = ledger.confirm_execution_start(OWNER, &inbox::ServerStart { dispatch: event, newly_started: true }).unwrap().unwrap();
+            let (stop, mut cancel) = watch::channel(false);
+            let fake = Fake { path, mode: Mode::AcceptedOnly, calls: StdMutex::new(vec![]), stop };
+            let (status, _rx) = watch::channel(RuntimeStatus::new("agent-a", "test", None));
+            let mut sessions = provider_custody::Sessions::default();
+            // This executable does not exist. A launch attempt would fail;
+            // denial must instead persist a reply without touching a provider.
+            assert!(run_turn(&fake, &lease(), &mut ledger, OWNER, &config(&root), permit.into_prepared(), None, &mut cancel, &status, &mut sessions).await.unwrap().is_none());
+            let saved = ledger.inbox_record(OWNER, "dispatch-a").unwrap();
+            assert_eq!(saved.state, State::ReplyReady);
+            assert!(saved.reply.unwrap().contains("未获 Agent 主人"));
+            assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
+            assert!(fake.calls.lock().unwrap().is_empty());
+        }
     }
     #[tokio::test]
     async fn last_worker_completion_consumes_already_accepted_new_binding_start() {
@@ -3629,7 +3980,6 @@ mod tests {
         let a = config(&root);
         let mut b = a.clone();
         b.binding_id = "binding-b".into();
-        b.mode = BudgetMode::Estimated { reservation: 91 };
         b.host_files = true;
         b.profile.effort = "high".into();
         let (initial, first, _) = binding_work(a);
@@ -3646,10 +3996,6 @@ mod tests {
                     work.config.binding_id.clone(),
                     work.config.host_files,
                     work.config.profile.effort.clone(),
-                    match work.config.mode {
-                        BudgetMode::Estimated { reservation } => reservation,
-                        _ => 0,
-                    },
                 ));
                 let wire = wire.clone();
                 let path = path.clone();
@@ -3681,8 +4027,8 @@ mod tests {
         assert_eq!(
             *seen.lock().unwrap(),
             vec![
-                ("binding-a".into(), false, "low".into(), 10),
-                ("binding-b".into(), true, "high".into(), 91)
+                ("binding-a".into(), false, "low".into()),
+                ("binding-b".into(), true, "high".into())
             ]
         );
         let before_b = transport
@@ -3916,7 +4262,7 @@ for raw in sys.stdin:
     frame=json.loads(raw); method=frame.get('method'); ident=frame.get('id')
     def reply(result):
         print(json.dumps({'id':ident,'result':result}),flush=True)
-    if method=='initialize': reply({})
+    if method=='initialize': reply({'userAgent':'fixture/0.167.0'})
     elif method=='initialized': pass
     elif method=='thread/name/set': reply({})
     elif method=='config/read':
@@ -3927,7 +4273,7 @@ for raw in sys.stdin:
         reply({'config':config})
     elif method=='account/read': reply({'requiresOpenaiAuth':True,'account':{'type':'chatgpt'}})
     elif method=='thread/start':
-        p=frame['params'];reply({'thread':{'id':'thread-a','cwd':p['cwd']},'cwd':p['cwd'],'model':p['model'],'approvalPolicy':'untrusted','approvalsReviewer':'user','sandbox':{'type':'readOnly','networkAccess':False}})
+        p=frame['params'];reply({'thread':{'id':'thread-a','cwd':p['cwd']},'cwd':p['cwd'],'model':p['model'],'approvalPolicy':'untrusted','approvalsReviewer':'user','sandbox':{'type':{'read-only':'readOnly','workspace-write':'workspaceWrite'}[p['sandbox']],'networkAccess':False}})
     elif method=='turn/start':
         open(marker,'w').write(str(os.getpid()))
         reply({'turn':{'id':'turn-a','status':'inProgress'}})
@@ -3944,7 +4290,7 @@ for raw in sys.stdin:
     }
     #[cfg(unix)]
     #[tokio::test]
-    async fn pure_model_room_revoke_kills_provider_releases_unreported_usage_and_keeps_other_room_running()
+    async fn pure_model_room_revoke_kills_provider_preserves_unknown_usage_and_keeps_other_room_running()
      {
         use hagency_agent_local::{Layer, Period};
         use std::os::unix::fs::PermissionsExt;
@@ -4063,6 +4409,10 @@ for raw in sys.stdin:
                 .unwrap(),
             (0, 0)
         );
+        let outstanding = ledger.outstanding_calls(OWNER).unwrap();
+        assert_eq!(outstanding.len(), 1);
+        assert_eq!(outstanding[0].state, "unknown");
+        assert_eq!(outstanding[0].reserved, 0);
         let before = fb.calls.lock().unwrap().len();
         tokio::time::timeout(Duration::from_secs(3), async {
             while fb.calls.lock().unwrap().len() <= before {
@@ -4092,10 +4442,17 @@ for raw in sys.stdin:
     }
     #[cfg(unix)]
     #[tokio::test]
-    async fn cancellation_kills_provider_and_releases_unreported_charge() {
-        use hagency_agent_local::{
-            Budget, Layer, Limit, Period, Policy, RequestPolicy, ToolPolicy,
-        };
+    async fn cancellation_kills_provider_and_preserves_unknown_charge() {
+        cancellation_provider_fixture(false).await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervised_long_silent_turn_keeps_running_until_owner_stop() {
+        cancellation_provider_fixture(true).await;
+    }
+    #[cfg(unix)]
+    async fn cancellation_provider_fixture(long: bool) {
+        use hagency_agent_local::{Budget, Layer, Limit, Period, Policy, RequestPolicy, ToolPolicy};
         use std::os::unix::fs::PermissionsExt;
         let tmp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -4146,6 +4503,26 @@ for raw in sys.stdin:
             })
             .await
             .unwrap();
+            if long {
+                // Wait for the original turn acknowledgement, not merely the
+                // child writing its marker. Then advance only Tokio's clock:
+                // this is a real supervised child but no paid model request.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !fake.calls.lock().unwrap().contains(&"processing") {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(1801)).await;
+                for _ in 0..4 { tokio::task::yield_now().await; }
+                assert!(!*stop.borrow(), "elapsed time must not finish or retry this turn");
+                let check = Ledger::open(&fake.path, OWNER).unwrap();
+                assert_eq!(check.inbox_record(OWNER, "dispatch-a").unwrap().state, State::Running);
+                assert_eq!(check.outstanding_calls(OWNER).unwrap().len(), 1);
+                assert!(fake.calls.lock().unwrap().iter().filter(|&&c| c == "authorize").count() >= 2,
+                    "the long turn still rechecks its dispatch authorization");
+                tokio::time::resume();
+            }
             stop.send_replace(true);
         };
         let reference = lease();
@@ -4162,10 +4539,12 @@ for raw in sys.stdin:
             revoke
         );
         assert!(matches!(result, Err(RuntimeError::Stopped)));
-        assert_eq!(
-            *fake.calls.lock().unwrap(),
-            vec!["poll", "ack", "start", "authorize"]
-        );
+        let calls = fake.calls.lock().unwrap().clone();
+        assert_eq!(calls.iter().filter(|&&c| c == "start").count(), 1);
+        if !long {
+            assert_eq!(calls.into_iter().filter(|&c| c != "processing").collect::<Vec<_>>(),
+                vec!["poll", "ack", "start", "authorize"]);
+        }
         assert_eq!(
             ledger.inbox_record(OWNER, "dispatch-a").unwrap().state,
             State::Unknown
@@ -4176,7 +4555,10 @@ for raw in sys.stdin:
                 .unwrap(),
             (0, 0)
         );
-        assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
+        let outstanding = ledger.outstanding_calls(OWNER).unwrap();
+        assert_eq!(outstanding.len(), 1);
+        assert_eq!(outstanding[0].state, "unknown");
+        assert_eq!(outstanding[0].reserved, 0);
     }
     #[tokio::test]
     async fn known_original_reply_reconciles_after_new_epoch_without_model_replay() {
@@ -4484,9 +4866,7 @@ for raw in sys.stdin:
     }
     #[tokio::test]
     async fn model_request_review_binds_original_request_and_rechecks_remote_and_policy() {
-        use hagency_agent_local::{
-            Budget, Layer, Limit, Period, Policy, RequestPolicy, ToolPolicy,
-        };
+        use hagency_agent_local::{Budget, Layer, Limit, Period, Policy, RequestPolicy, ToolPolicy};
         for scenario in 0..3 {
             let temp =
                 hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
@@ -5183,13 +5563,14 @@ for raw in sys.stdin:
             })
         }
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn running_monitor_preserves_transport_failure_instead_of_revoking_agent() {
         let (_stop, cancel) = watch::channel(false);
         let prepared = inbox::Prepared {
             dispatch: event(),
             execution_id: "execution-a".into(),
         };
+        let started = tokio::time::Instant::now();
         let result = monitor_running(
             &RunningFailureFake {
                 authorization: false,
@@ -5200,6 +5581,108 @@ for raw in sys.stdin:
         )
         .await;
         assert!(matches!(result, RuntimeError::Transport));
+        // Given up only after the grace, and not much later.
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(15), "{waited:?}");
+    }
+    /// What each running check returns, in order; `None` never answers.
+    struct RunningSequenceFake {
+        answers: StdMutex<std::collections::VecDeque<Option<RuntimeError>>>,
+    }
+    impl Transport for RunningSequenceFake {
+        async fn execute(&self, op: Op) -> Result<Response, RuntimeError> {
+            assert!(matches!(op, Op::AuthorizeTool { .. }));
+            let next = self.answers.lock().unwrap().pop_front();
+            match next.expect("more running checks than the test expects") {
+                Some(error) => Err(error),
+                None => std::future::pending().await,
+            }
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn running_monitor_survives_unanswered_checks_and_ends_on_an_answer() {
+        let (_stop, cancel) = watch::channel(false);
+        let prepared = inbox::Prepared {
+            dispatch: event(),
+            execution_id: "execution-a".into(),
+        };
+        // One check that hangs past its own time limit and one transport
+        // failure, as on a busy computer; then the server refuses the run.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    None,
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        let result = monitor_running(&fake, &lease(), &prepared, cancel).await;
+        assert!(matches!(result, RuntimeError::Authorization));
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+        assert!(fake.answers.lock().unwrap().is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn check_before_a_step_asks_again_when_it_gets_no_answer() {
+        let (_stop, mut cancel) = watch::channel(false);
+        // Two failed requests, then the server's refusal: all three are asked.
+        let fake = RunningSequenceFake {
+            answers: StdMutex::new(
+                [
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Transport),
+                    Some(RuntimeError::Authorization),
+                ]
+                .into(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        assert!(!fresh_running(&fake, &lease(), &event(), "execution-a", &mut cancel).await);
+        assert!(fake.answers.lock().unwrap().is_empty());
+        assert!(started.elapsed() < RUNNING_CHECK_GRACE);
+
+        // No answer for the whole grace: given up, and not much later.
+        let started = tokio::time::Instant::now();
+        assert!(
+            !fresh_running(
+                &RunningFailureFake {
+                    authorization: false
+                },
+                &lease(),
+                &event(),
+                "execution-a",
+                &mut cancel
+            )
+            .await
+        );
+        let waited = started.elapsed();
+        assert!(waited >= RUNNING_CHECK_GRACE, "{waited:?}");
+        assert!(waited < RUNNING_CHECK_GRACE + Duration::from_secs(5), "{waited:?}");
+    }
+    #[test]
+    fn a_cli_below_the_floor_is_reported_as_such_at_start_up() {
+        let codex = codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED);
+        let claude =
+            codex::Error::Protocol(hagency_agent_local::runtime::CLAUDE_VERSION_REQUIRED);
+        assert!(matches!(
+            startup_check_failure(&codex),
+            RuntimeError::Execution("codex_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            provider_failure("turn", &claude),
+            RuntimeError::Execution("claude_version_unsupported")
+        ));
+        assert!(matches!(
+            startup_check_failure(&codex::Error::Protocol("Claude initialize")),
+            RuntimeError::Provider
+        ));
     }
     struct RestartLeaseFake {
         history_calls: std::sync::atomic::AtomicUsize,

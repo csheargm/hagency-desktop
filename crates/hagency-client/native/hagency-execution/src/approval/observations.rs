@@ -207,12 +207,22 @@ impl Drive<'_> {
             receipt.map_err(|_| Failure::SettlementUnknown)?;
         }
         if let Some(key) = request {
-            let input = callbacks
-                .entries
-                .get(&key)
-                .ok_or(Failure::Protocol)?
-                .input
-                .clone();
+            let entry = callbacks.entries.get(&key).ok_or(Failure::Protocol)?;
+            let input = entry.input.clone();
+            if callbacks
+                .context
+                .as_ref()
+                .is_none_or(|root| root.id != entry.context.id)
+            {
+                let native = runner
+                    .native_turn_context(&entry.context.thread_id, &entry.context.turn_id)
+                    .map_err(|_| Failure::Protocol)?;
+                let scope = callbacks.scope.as_ref().ok_or(Failure::Admission)?;
+                self.domain
+                    .register_owned_approval_descendant(scope, entry.context.clone(), native)
+                    .await
+                    .map_err(|error| Failure::lost(crate::AuthoritySite::ApprovalBind, &error))?;
+            }
             let summary = self
                 .domain
                 .request_owner_approval(self.cap.clone(), input)

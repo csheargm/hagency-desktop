@@ -69,6 +69,7 @@ pub enum Event {
 enum Kind {
     Initialize,
     Call(String),
+    SoftCall(String),
     Interrupt(TurnScope),
 }
 struct Pending {
@@ -132,6 +133,7 @@ impl Connection {
     pub(super) fn deadline_ms(&self) -> Option<u64> {
         self.pending
             .values()
+            .filter(|p| !matches!(p.kind, Kind::SoftCall(_)))
             .map(|p| p.deadline)
             .chain(self.server_pending.values().map(|p| p.deadline))
             .chain(self.decoder.deadline_ms())
@@ -168,7 +170,7 @@ impl Connection {
         if let Err(error) = self.decoder.check_deadline(now_ms) {
             return self.fail(error);
         }
-        if self.pending.values().any(|p| p.deadline <= now_ms)
+        if self.pending.values().any(|p| !matches!(p.kind, Kind::SoftCall(_)) && p.deadline <= now_ms)
             || self
                 .server_pending
                 .values()
@@ -275,6 +277,40 @@ impl Connection {
             now_ms,
             timeout_ms,
         )
+    }
+
+    /// A typed host control, correlated until its late reply even after the
+    /// caller's steering wait expires. A lost steer never kills model work.
+    pub(super) fn run_control(
+        &mut self,
+        scope: &TurnScope,
+        input: Option<(&str, &str)>,
+        now_ms: u64,
+    ) -> Result<(RequestId, Vec<u8>), Error> {
+        self.tick(now_ms)?;
+        if self.phase != Phase::Ready {
+            return Err(Error::State);
+        }
+        let (kind, method, params) = match input {
+            Some((message, text))
+                if !text.trim().is_empty()
+                    && text.len() <= 65_536
+                    && super::text(message, 1024) =>
+            {
+                (
+                    Kind::SoftCall("turn/steer".into()),
+                    "turn/steer",
+                    json!({"threadId":scope.thread_id(),"expectedTurnId":scope.turn_id(),"clientUserMessageId":message,"input":[{"type":"text","text":text,"text_elements":[]}]}),
+                )
+            }
+            None => (
+                Kind::Call("turn/interrupt".into()),
+                "turn/interrupt",
+                json!({"threadId":scope.thread_id(),"turnId":scope.turn_id()}),
+            ),
+            _ => return Err(Error::Envelope),
+        };
+        self.issue(kind, method, params, now_ms, 10_000)
     }
 
     pub fn interrupt(
@@ -596,11 +632,21 @@ impl Connection {
                         return Err(Error::Envelope);
                     }
                 }
+                // Before `initialized`, so an older Codex is never given work.
+                if !obj
+                    .get("userAgent")
+                    .and_then(Value::as_str)
+                    .is_some_and(super::version::supported)
+                {
+                    return Err(Error::Version);
+                }
                 // These are observations, not effective sandbox/OS qualification.
                 self.phase = Phase::AwaitingInitialized;
                 Ok(Event::Initialized { result })
             }
-            Kind::Call(method) => Ok(Event::Response { id, method, result }),
+            Kind::Call(method) | Kind::SoftCall(method) => {
+                Ok(Event::Response { id, method, result })
+            }
             Kind::Interrupt(scope) => match result {
                 Ok(value) if value.as_object().is_some_and(|o| o.is_empty()) => {
                     Ok(Event::InterruptAcknowledged { scope })

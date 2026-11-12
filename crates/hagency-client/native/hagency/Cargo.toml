@@ -12,11 +12,13 @@ shared-budget-execution = ["agent-budget", "shared-context", "hagency-store/shar
 agent-budget = ["resource-adoption", "hagency-store/agent-budget"]
 shared-context = ["shared-intake", "hagency-store/shared-context", "hagency-runtime/shared-context"]
 shared-intake = ["shared-successors", "hagency-store/shared-intake"]
-default = []
+default = ["resource-adoption"]
 # Qualification/stop only; no Desktop capability, prompt or shared work route.
 managed-runtime = []
-# Explicit first text-turn opt-in; no mini-app execution capability.
-shared-execution = ["managed-runtime"]
+# Every executor uses the current native context contract. Depend on the
+# protocol features directly so the intake/successor convenience features do
+# not form a cycle back to shared-execution.
+shared-execution = ["managed-runtime", "hagency-store/shared-context", "hagency-runtime/shared-context"]
 shared-successors = ["shared-execution"]
 test-support = ["hagency-store/test-support"]
 resource-adoption = ["hagency-store/resource-adoption"]
@@ -46,12 +48,14 @@ hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 http-body-util.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "json"] }
+unicode-normalization.workspace = true
 thiserror.workspace = true
 salvo = { workspace = true, features = ["server", "server-handle", "http1", "test"] }
 clap = { workspace = true, features = ["derive"] }
 getrandom.workspace = true
 # The executor's own Agent device for encrypted owner-direct Rooms.
 matrix-sdk = { workspace = true, features = ["e2e-encryption", "markdown", "sqlite", "bundled-sqlite", "rustls-aws-lc-rs", "experimental-send-custom-to-device", "local-server"] }
+matrix-sdk-store-encryption.workspace = true
 # Shared owner-dashboard DTOs served by the owner daemon (ADR 0012).
 hagency-metering.workspace = true
 # Owner daemon peer identity checks (geteuid) for private local IPC, and the
@@ -70,10 +74,9 @@ hagency-store = { workspace = true, features = ["test-support"] }
 hagency-execution = { workspace = true, features = ["test-diagnostics"] }
 matrix-sdk-base = { workspace = true, features = ["e2e-encryption"] }
 matrix-sdk-sqlite = { workspace = true, features = ["state-store", "bundled"] }
-matrix-sdk-store-encryption.workspace = true
 matrix-sdk-crypto.workspace = true
 ruma = { workspace = true, features = ["client-api-c", "events"] }
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 tempfile.workspace = true

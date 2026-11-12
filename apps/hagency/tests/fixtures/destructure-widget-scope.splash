@@ -1,6 +1,6 @@
 use mod.std.assert
 let View={text:""}
-let state={state:"legacy"}
+let state={state:"uninitialized"}
 let root=View{
     View{
         let p=state
@@ -10,5 +10,5 @@ let root=View{
 }
 assert(root.len()==1)
 assert(root[0].len()==1)
-assert(root[0][0].text=="legacy")
+assert(root[0][0].text=="uninitialized")
 true

@@ -12,7 +12,10 @@ agent-budget = []
 shared-context = ["hagency-runtime/shared-context"]
 shared-intake = []
 test-support = ["hagency-platform/test-support"]
-resource-adoption = ["hagency-platform/resource-adoption"]
+resource-adoption = []
+# A developer's locally built test app may keep saved sign-ins in private files
+# (`HAGENCY_NATIVE_CREDENTIAL_IO=development-files`). Never in a distributed build.
+development-credential-files = []
 
 [dependencies]
 hagency-platform.workspace = true

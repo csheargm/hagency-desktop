@@ -27,9 +27,8 @@ fn failed_graph_open_releases_installation_guard_without_source_effects() {
     assert_eq!(std::fs::read_dir(source).unwrap().count(), 1);
 }
 
-#[cfg(feature = "resource-adoption")]
 #[test]
-fn graph_writer_lifetime_and_persistent_refusal_cover_all_document_effects() {
+fn graph_writer_lifetime_and_restart_cover_all_document_effects() {
     use hagency_platform::legacy_writer::{Error, ExclusiveWriterGuard, LegacyWriterAdmission, LegacyWriterGuard};
     let temp = tempfile::tempdir().unwrap();
     let authority = temp.path().join("authority");
@@ -51,11 +50,14 @@ fn graph_writer_lifetime_and_persistent_refusal_cover_all_document_effects() {
     drop(store);
     let exclusive = ExclusiveWriterGuard::isolated_for_tests(&authority).unwrap();
     assert!(matches!(LegacyWriterGuard::isolated_for_tests(&authority), Err(Error::Locked)));
-    exclusive.publish_refusal(&"a".repeat(64), "original-transfer", &"b".repeat(64)).unwrap();
     drop(exclusive);
-    // A fresh process follows this same admission path before opening documents.
-    // No removal of the marker and no alternate GraphStore constructor is exposed.
-    assert!(matches!(LegacyWriterGuard::isolated_for_tests(&authority), Err(Error::Refused)));
+    let marker = authority.join("legacy-resource-refusal.json");
+    hagency_store::private::write_new(&marker, b"obsolete migration state").unwrap();
+    let guard = LegacyWriterGuard::isolated_for_tests(&authority).unwrap();
+    let reopened = GraphStore::with_writer(&source, LegacyWriterAdmission::Covered(guard)).unwrap();
+    assert!(matches!(ExclusiveWriterGuard::isolated_for_tests(&authority), Err(Error::Locked)));
+    assert_eq!(std::fs::read(marker).unwrap(), b"obsolete migration state");
+    drop(reopened);
     for (name, bytes) in files.iter().zip(before) {
         assert_eq!(std::fs::read(source.join(name)).unwrap(), bytes);
     }

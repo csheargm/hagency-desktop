@@ -67,7 +67,7 @@ pub(super) fn management_read(command: &Command) -> bool {
         | Command::Provider {action: ProviderAction::Status | ProviderAction::Models}
         | Command::RuntimeProvider {action: ProviderAction::Status | ProviderAction::Models, ..}
         | Command::Local {action: LocalAction::AgentModel | LocalAction::AgentPolicy
-            | LocalAction::Policy | LocalAction::Model | LocalAction::Runtime
+            | LocalAction::Policy | LocalAction::Runtime
             | LocalAction::AgentServiceStatus | LocalAction::Approvals, input: None, ..}
     )
 }
@@ -252,9 +252,7 @@ static PROCESS_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 mod lifecycle;
 mod daemon_bridge;
 mod signin;
-#[cfg(feature = "resource-adoption")]
 mod adoption;
-#[cfg(feature = "resource-adoption")]
 mod allocation_worker;
 #[cfg(feature = "shared-execution")]
 mod shared_worker;
@@ -284,13 +282,9 @@ struct Inner {
     // Separate from the async initialization/cleanup lock: account transitions
     // must revoke queued ledger work before awaiting SDK or native shutdown.
     native_retirement: Mutex<Option<NativeOwner>>,
-    #[cfg(feature = "resource-adoption")]
-    adopted_initialization: Mutex<Option<::hagency::native_owner::AdoptedManagementSelection>>,
-    #[cfg(feature = "resource-adoption")]
-    adoption_pending: std::sync::atomic::AtomicBool,
-    #[cfg(feature = "resource-adoption")]
+    current_initialization: Mutex<Option<::hagency::native_owner::CurrentProfileSelection>>,
+    setup_pending: std::sync::atomic::AtomicBool,
     activation: tokio::sync::Mutex<adoption::ActivationTask>,
-    #[cfg(feature = "resource-adoption")]
     allocations: allocation_worker::Worker,
     #[cfg(feature = "shared-execution")]
     shared: shared_worker::Worker,
@@ -376,13 +370,9 @@ impl Service {
             native: tokio::sync::Mutex::new(None),
             remote: Mutex::new(None),
             native_retirement: Mutex::new(None),
-            #[cfg(feature = "resource-adoption")]
-            adopted_initialization: Mutex::new(None),
-            #[cfg(feature = "resource-adoption")]
-            adoption_pending: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(feature = "resource-adoption")]
+            current_initialization: Mutex::new(None),
+            setup_pending: std::sync::atomic::AtomicBool::new(false),
             activation: Default::default(),
-            #[cfg(feature = "resource-adoption")]
             allocations: Default::default(),
             #[cfg(feature = "shared-execution")]
             shared: Default::default(),
@@ -640,25 +630,20 @@ impl Service {
             // followed by a caller reopening the old in-process owner.
             let management_only = self.local_management_only()?;
             self.check()?;
-            #[cfg(feature = "resource-adoption")]
-            self.drain_adoption_source(&mut native).await?;
+            self.drain_setup_owner(&mut native).await?;
             if native.is_none() {
                 self.cleanup_unpublished_native_owner().await?;
                 self.check()?;
-                #[cfg(feature = "resource-adoption")]
-                let selected = self.load_adopted_initialization().await?;
-                #[cfg(feature = "resource-adoption")]
+                let selected = self.load_current_initialization().await?;
                 let opened = if let Some(selection) = &selected {
-                    selection.open_for_onboarding_with_matrix_guarded(
+                    selection.open_with_matrix_guarded(
                         self.root()?, &self.0.origin, &self.0.owner,
                         Arc::new(SdkTokens(Arc::downgrade(&self.0))),
                         |owner| self.register_native_owner(owner).map_err(|code| source_error(&code)),
                     ).await
                 } else {
-                    self.open_legacy_owner().await
+                    self.open_current_owner().await
                 };
-                #[cfg(not(feature = "resource-adoption"))]
-                let opened = self.open_legacy_owner().await;
                 let owner = match opened {
                     Ok(owner) => owner,
                     Err(error) => {
@@ -675,11 +660,8 @@ impl Service {
                 // Saved explicit consent is not authority: restoration invokes
                 // every fresh device/binding/provider/history startup gate.
                 // A failure leaves intent for review, never a blind takeover.
-                #[cfg(feature = "resource-adoption")]
-                let restore_legacy = selected.is_none();
-                #[cfg(not(feature = "resource-adoption"))]
-                let restore_legacy = true;
-                if restore_legacy && !management_only {
+                let restore_personal = selected.is_none();
+                if restore_personal && !management_only {
                     log_runtime_recovery(owner.restore_runtime_intents().await);
                 }
                 if let Err(error) = self.check() {
@@ -697,14 +679,13 @@ impl Service {
             (native.as_ref().unwrap().clone(), management_only)
         };
         if !management_only {
-            #[cfg(feature = "resource-adoption")]
             self.start_allocation_worker(&native).await;
             #[cfg(feature = "shared-execution")]
             self.start_shared_worker(&native).await;
         }
         Ok(native)
     }
-    async fn open_legacy_owner(&self) -> Result<NativeOwner, NativeError> {
+    async fn open_current_owner(&self) -> Result<NativeOwner, NativeError> {
         let root = self.root().map_err(|code| NativeError { status: 409, code })?;
         NativeOwner::open_with_matrix_guarded(
             root, &self.0.origin, &self.0.owner,
@@ -809,7 +790,6 @@ impl Service {
         self.0
             .retired
             .store(true, std::sync::atomic::Ordering::Release);
-        #[cfg(feature = "resource-adoption")]
         self.0.allocations.retire();
         #[cfg(feature = "shared-execution")]
         self.0.shared.retire();

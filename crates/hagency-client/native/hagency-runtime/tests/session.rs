@@ -32,6 +32,10 @@ mod unknown_tolerance;
 mod room_history;
 #[path = "session/user_input.rs"]
 mod user_input;
+#[path = "session/turn_tree.rs"]
+mod turn_tree;
+#[path = "session/run_controls.rs"]
+mod run_controls;
 
 type Session = SessionDriver<DuplexStream, DuplexStream, DuplexStream>;
 struct Peer {
@@ -154,7 +158,7 @@ async fn initialize(session: &mut Session, peer: &mut Peer) {
     let (result, ()) = tokio::join!(session.initialize(), async {
         let request = read(&mut peer.stdin).await;
         assert_eq!(request["method"], "initialize");
-        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.153.4", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
+        write(peer, json!({ "id": request["id"], "result": { "userAgent": "fixture/0.167.0", "platformFamily": "unix", "platformOs": "fixture", "codexHome": "/fixture" } })).await;
         assert_eq!(read(&mut peer.stdin).await["method"], "initialized");
     });
     result.unwrap();
@@ -171,7 +175,7 @@ async fn native_codex_session_identity_global_runtime_notices_grant_no_scope() {
         let request = read(&mut peer.stdin).await;
         write(&mut peer, protocol_fixture["messages"][0].clone()).await;
         write(&mut peer, notice.clone()).await;
-        write(&mut peer, json!({"id":request["id"],"result":{"userAgent":"fixture/0.154.0","platformFamily":"unix","platformOs":"linux","codexHome":"/fixture"}})).await;
+        write(&mut peer, json!({"id":request["id"],"result":{"userAgent":"fixture/0.167.0","platformFamily":"unix","platformOs":"linux","codexHome":"/fixture"}})).await;
         assert_eq!(read(&mut peer.stdin).await["method"], "initialized");
     });
     result.unwrap();
@@ -807,6 +811,65 @@ async fn native_codex_session_items_streaming_and_final_are_observations_only() 
 }
 
 #[tokio::test]
+async fn native_codex_session_items_passive_schema_types_do_not_fail_the_turn() {
+    // hookPrompt, functionCallOutput and subAgentActivity are defined by the
+    // app-server schema and not modelled: started, completed and listed in the
+    // final turn, they neither fail the turn nor count as tracked items.
+    let (mut session, mut peer) = running().await;
+    update(&mut session, &mut peer, item_event("answer", "", false))
+        .await
+        .unwrap();
+    let mut listed = Vec::new();
+    for (id, kind) in [
+        ("hook", "hookPrompt"),
+        ("output", "functionCallOutput"),
+        ("child", "subAgentActivity"),
+    ] {
+        for complete in [false, true] {
+            let mut event = item_event(id, "", complete);
+            event["params"]["item"] = json!({ "type": kind, "id": id });
+            assert!(
+                matches!(
+                    update(&mut session, &mut peer, event).await,
+                    Ok(Update::Notice)
+                ),
+                "{kind}"
+            );
+        }
+        listed.push(json!({ "type": kind, "id": id }));
+    }
+    update(&mut session, &mut peer, item_event("answer", "done", true))
+        .await
+        .unwrap();
+    assert_eq!(session.item_count(), 1);
+    listed.push(json!({ "type": "agentMessage", "id": "answer", "text": "done" }));
+    let mut completed = end("completed");
+    completed["params"]["turn"]["items"] = listed.into();
+    assert!(matches!(
+        update(&mut session, &mut peer, completed).await,
+        Ok(Update::TurnEnded)
+    ));
+    assert!(matches!(session.outcome(), Some(Outcome::Completed { text }) if text == "done"));
+
+    // A type outside the schema stays refused, and so does a modelled item
+    // that the final turn lists without the stream having announced it.
+    let (mut session, mut peer) = running().await;
+    let mut event = item_event("other", "", false);
+    event["params"]["item"] = json!({ "type": "private-peer-kind", "id": "other" });
+    assert_eq!(
+        update(&mut session, &mut peer, event).await.err(),
+        Some(Error::UnsupportedEvent)
+    );
+    let (mut session, mut peer) = running().await;
+    let mut completed = end("completed");
+    completed["params"]["turn"]["items"] = json!([{ "type": "reasoning", "id": "unseen" }]);
+    assert_eq!(
+        update(&mut session, &mut peer, completed).await.err(),
+        Some(Error::Scope)
+    );
+}
+
+#[tokio::test]
 async fn native_codex_session_items_stale_duplicate_and_malformed_items_are_refused() {
     for case in 0..9 {
         let (mut session, mut peer) = running().await;
@@ -904,13 +967,9 @@ async fn native_codex_session_items_text_identity_and_event_caps_do_not_truncate
         .unwrap();
     }
     assert_eq!(session.event_count(), MAX_EVENTS);
-    assert_eq!(
-        update(&mut session, &mut peer, note("warning", json!({})))
-            .await
-            .err(),
-        Some(Error::Capacity)
-    );
-    unknown(&session, Error::Capacity);
+    update(&mut session, &mut peer, note("warning", json!({}))).await.unwrap();
+    assert_eq!(session.event_count(), MAX_EVENTS + 1);
+    assert_eq!(session.item_count(), 0, "telemetry does not retain items");
 }
 
 #[tokio::test]

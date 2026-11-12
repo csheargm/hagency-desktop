@@ -195,8 +195,8 @@ impl ControllerClient {
     }
 }
 #[derive(Clone)]
-pub enum AdoptedSelection {
-    Local(native::AdoptedManagementSelection),
+pub enum CurrentSelection {
+    Local(native::CurrentProfileSelection),
     Remote,
 }
 pub struct DeviceSetupReview {
@@ -212,30 +212,21 @@ enum DeviceCustody {
     },
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DeviceView {
-    context: native::ResourceActivationContext,
-    monthly_tokens: Option<u64>,
-    recovering: bool,
+    context: native::DeviceSetupContext,
 }
 impl DeviceSetupReview {
     pub fn local(review: native::DeviceSetupReview) -> Self {
         Self {
             view: DeviceView {
                 context: review.context().clone(),
-                monthly_tokens: review.monthly_tokens(),
-                recovering: review.recovering(),
             },
             custody: DeviceCustody::Local(review),
         }
     }
-    pub fn context(&self) -> &native::ResourceActivationContext {
+    pub fn context(&self) -> &native::DeviceSetupContext {
         &self.view.context
-    }
-    pub fn monthly_tokens(&self) -> Option<u64> {
-        self.view.monthly_tokens
-    }
-    pub fn recovering(&self) -> bool {
-        self.view.recovering
     }
     pub fn expired(&self) -> bool {
         match &self.custody {
@@ -255,7 +246,7 @@ impl ControllerClient {
         &self,
         package: native::ManagementPackage,
         until: Instant,
-    ) -> Result<native::ResourceActivationContext, NativeError> {
+    ) -> Result<native::DeviceSetupContext, NativeError> {
         decode(
             self.owner_access(
                 Package::from(package).with_deadline(until)?,
@@ -268,7 +259,6 @@ impl ControllerClient {
     pub async fn review_device_setup(
         &self,
         package: native::ManagementPackage,
-        tokens: Option<u64>,
         until: Instant,
     ) -> Result<DeviceSetupReview, NativeError> {
         let package = Package::from(package).with_deadline(until)?;
@@ -276,7 +266,7 @@ impl ControllerClient {
             self.owner_access(
                 package.clone(),
                 OwnerOperation::ReviewDeviceSetup,
-                encode(tokens)?,
+                Value::Null,
             )
             .await?,
         )?;
@@ -303,8 +293,7 @@ impl ControllerClient {
         )?;
         match state.as_str() {
             "active" => Ok("active"),
-            "legacy" => Ok("legacy"),
-            "recovery_required" => Ok("recovery_required"),
+            "uninitialized" => Ok("uninitialized"),
             _ => Err(error(503, "daemon_bridge_invalid_reply")),
         }
     }
@@ -312,7 +301,7 @@ impl ControllerClient {
         &self,
         package: native::ManagementPackage,
         review: DeviceSetupReview,
-    ) -> Result<AdoptedSelection, NativeError> {
+    ) -> Result<CurrentSelection, NativeError> {
         let DeviceCustody::Remote {
             package: original,
             handle,
@@ -322,7 +311,7 @@ impl ControllerClient {
             return Err(error(401, "management_scope_changed"));
         };
         if until <= Instant::now() {
-            return Err(error(409, "source_adoption_review_expired"));
+            return Err(error(409, "current_profile_review_expired"));
         }
         if !same_package(&original, &package) {
             return Err(error(401, "management_scope_changed"));
@@ -333,7 +322,7 @@ impl ControllerClient {
             encode(handle)?,
         )
         .await?;
-        Ok(AdoptedSelection::Remote)
+        Ok(CurrentSelection::Remote)
     }
 }
 fn same_package(a: &Package, b: &native::ManagementPackage) -> bool {
@@ -953,7 +942,7 @@ struct RetainedSuccessor {
     controller: String,
     package: Package,
     until: Instant,
-    executor: Arc<native::AdoptedSharedExecutor>,
+    executor: Arc<native::CurrentSharedExecutor>,
     prepared: Box<native::PreparedSharedSuccessor>,
 }
 #[derive(Default)]
@@ -1105,7 +1094,7 @@ pub(super) async fn dispatch(
     origin: &str,
     owner: &str,
     native: &NativeOwner,
-    shared: Option<Arc<native::AdoptedSharedExecutor>>,
+    shared: Option<Arc<native::CurrentSharedExecutor>>,
     live: Arc<AtomicBool>,
     controller_lifetime: Arc<dyn Fn()->Option<Instant>+Send+Sync>,
     operation: OwnerOperation,
@@ -1192,7 +1181,7 @@ pub(super) async fn dispatch(
             | OwnerOperation::ConfirmDeviceSetup
     ) {
         let selected =
-            native::AdoptedManagementSelection::load_for_host(root, origin, owner).await?;
+            native::CurrentProfileSelection::load_for_host(root, origin, owner).await?;
         return match operation {
             OwnerOperation::DeviceSetupContext => {
                 let (): () = decode(arguments)?;
@@ -1205,25 +1194,19 @@ pub(super) async fn dispatch(
             OwnerOperation::DeviceSetupState => {
                 let (): () = decode(arguments)?;
                 let phase = if let Some(selected) = selected {
-                    if selected.device_setup_phase(native).await? == "active" {
-                        "active"
-                    } else {
-                        "recovery_required"
-                    }
+                    selected.device_setup_phase(native).await?
                 } else {
-                    "legacy"
+                    "uninitialized"
                 };
                 encode(phase)
             }
             OwnerOperation::ReviewDeviceSetup => {
-                let tokens: Option<u64> = decode(arguments)?;
+                let (): () = decode(arguments)?;
                 let review = native
-                    .review_device_setup(package.native(), selected, tokens)
+                    .review_device_setup(package.native(), selected)
                     .await?;
                 let view = DeviceView {
                     context: review.context().clone(),
-                    monthly_tokens: review.monthly_tokens(),
-                    recovering: review.recovering(),
                 };
                 let mut state = lock(state)?;
                 state.prune();
@@ -1272,9 +1255,9 @@ pub(super) async fn dispatch(
         if arguments != Value::Null {
             return Err(error(400, "invalid_management_arguments"));
         }
-        let selected = native::AdoptedManagementSelection::load_for_host(root, origin, owner)
+        let selected = native::CurrentProfileSelection::load_for_host(root, origin, owner)
             .await?
-            .ok_or_else(|| error(409, "owner_source_adoption_required"))?;
+            .ok_or_else(|| error(409, "current_profile_required"))?;
         let mut a = selected
             .grant_access(native, package.native())
             .await?
@@ -1579,7 +1562,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(),std::fs::Permissions::from_mode(0o700)).unwrap();
         let probe=Arc::new(Probe{controller:AtomicU64::new(0),access:AtomicU64::new(0),expire:AtomicBool::new(false)});
-        let server_controller=Controller::new(ControlStore::open(&temp.path().join("control.json")).unwrap(),probe.clone());
+        let server_controller=Controller::new(ControlStore::open(&temp.path().join(crate::daemon::CONTROL)).unwrap(),probe.clone());
         let mut server=Server::start(temp.path(),server_controller).unwrap();
         let controller=ControllerClient::new(temp.path().into(),"@owner:test".into(),"https://test/".into(),1);
         let access=OwnerGrantAccess::remote(controller,package()).await.unwrap();

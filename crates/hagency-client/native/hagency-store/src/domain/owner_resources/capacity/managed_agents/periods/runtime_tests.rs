@@ -648,7 +648,7 @@ async fn issued_call(f: &Fixture, id: &str, tokens: u64) -> ManagedCallCustody {
 
 #[tokio::test]
 #[ignore = "requires HAGENCY_TEST_RUNTIME_PROBE offline supervised fixture"]
-async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_process_stops() {
+async fn recurring_interrupted_call_keeps_unknown_usage_after_stop_without_blocking_next_event() {
     let f = fixture_kind(RenewalMode::Automatic, false, None).await;
     let (runtime, sink, mut process) = qualified_process(&f, "interrupted").await;
     let allocated = f.command.requested_tokens;
@@ -659,7 +659,8 @@ async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_p
     assert_eq!((open.retained_tokens, open.remaining_tokens), (0, allocated));
     assert!(!open.usage_complete);
 
-    // The run ends with partial usage: unresolved only while its process lives.
+    // Partial usage stays unresolved even after the process stops. Physical
+    // cleanup cannot prove that all provider usage has arrived.
     f.registry
         .record_managed_usage(&spend, observed_capture("interrupted_usage", 30, false))
         .await
@@ -681,9 +682,9 @@ async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_p
         (closed.retained_tokens, closed.remaining_tokens),
         (30, allocated - 30)
     );
-    assert!(closed.usage_complete);
+    assert!(!closed.usage_complete);
 
-    // A partial figure that arrives late still counts, and nothing reopens.
+    // Late known usage still counts without inventing a final receipt.
     f.registry
         .record_managed_usage(&spend, observed_capture("late_usage", 50, false))
         .await
@@ -693,9 +694,10 @@ async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_p
         (late.retained_tokens, late.remaining_tokens),
         (50, allocated - 50)
     );
-    assert!(late.usage_complete);
+    assert!(!late.usage_complete);
 
-    // Nobody has to settle anything, and the next event starts.
+    // Reconciliation remains visible, but postpaid admission can start the
+    // next event with the remaining known budget.
     let open_calls = f
         .registry
         .interrupted_calls(
@@ -706,7 +708,7 @@ async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_p
         )
         .await
         .unwrap();
-    assert!(open_calls.calls.is_empty());
+    assert_eq!(open_calls.calls.len(), 1);
     let next = f
         .registry
         .prepare_shared_demand(offer(&f, &runtime, "next_message"), runtime.clone(), None)
@@ -715,7 +717,7 @@ async fn recurring_interrupted_call_holds_only_known_usage_and_closes_when_its_p
     assert_eq!(next.disposition(), &SharedDemandDisposition::StartPrepared);
     let observation = &next.input().unwrap().start.budget_observation;
     assert_eq!(observation.remaining_tokens, allocated - 50);
-    assert!(observation.usage_complete);
+    assert!(!observation.usage_complete);
 }
 
 #[tokio::test]

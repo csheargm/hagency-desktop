@@ -29,7 +29,6 @@ mod periods;
 pub use periods::{ManagedAgentPeriodRenewCommand, ManagedAgentPeriodReceipt, VerifiedManagedAgentPeriodDelivery};
 mod types;
 pub(in crate::domain) use accounting::unsettled_resource;
-#[cfg(feature = "resource-adoption")]
 pub(in crate::domain) use accounting::unsettled_exact_resource;
 pub(super) use accounting::{
     Liability, MANAGED, accounted_floor, accounted_pool_liability, grant_floor,
@@ -46,12 +45,10 @@ pub use types::{
     ManagedAgentReserveCommand,
 };
 
-#[cfg(any(test, feature = "resource-adoption"))]
 struct UsageReadback {
     period: String, allocated: u64, prior: u64, call_count:u64,
     value: accounting::ChildLiability,
 }
-#[cfg(any(test, feature = "resource-adoption"))]
 fn usage_readback(db:&Connection,id:&str,command:&ManagedAgentReserveCommand,original:u64)->Result<UsageReadback,Error>{
     let mut value=accounting::child(db,id)?;
     if !periods::recurring(command) {
@@ -86,7 +83,6 @@ impl DomainRepository {
     pub(crate) fn management_web_managed_usage(&self, profile: &str) -> Result<crate::management::WebManagedUsage, Error> {
         self.management_web_managed_usage_page(profile,"",256)
     }
-    #[cfg(any(test, feature = "resource-adoption"))]
     pub(crate) fn management_web_managed_usage_page(&self, profile: &str, after: &str, limit: usize) -> Result<crate::management::WebManagedUsage, Error> {
         if !(1..=256).contains(&limit) { return Err(Error::Capacity); }
         let mut statement = self.db.prepare("SELECT a.id,a.original_command,a.allocated_tokens FROM owner_managed_agents a LEFT JOIN owner_project_reservations p ON p.id=a.project_reservation_id JOIN owner_capacity_grants g ON g.id=COALESCE(a.pool_grant_id,p.grant_id) WHERE a.profile=?1 AND g.profile=?1 AND a.request_id>?2 AND EXISTS(SELECT 1 FROM owner_resource_grants r WHERE r.resource_id=g.resource_id AND r.profile=?1 AND r.active=1) ORDER BY a.request_id LIMIT ?3")?;
@@ -105,7 +101,6 @@ impl DomainRepository {
     }
     /// Human readback of an existing immutable managed child. Only the retained
     /// profile/resource grant can join this to a provider-account alias.
-    #[cfg(any(test, feature = "resource-adoption"))]
     pub(crate) fn management_web_managed_link(&self, profile: &str, request: &str) -> Result<Option<crate::management::WebWorkforceLink>, Error> {
         let row: Option<(String, String, u64)> = self.db.query_row("SELECT a.id,a.original_command,a.allocated_tokens FROM owner_managed_agents a LEFT JOIN owner_project_reservations p ON p.id=a.project_reservation_id JOIN owner_capacity_grants g ON g.id=COALESCE(a.pool_grant_id,p.grant_id) WHERE a.profile=?1 AND a.request_id=?2 AND g.profile=?1 AND EXISTS(SELECT 1 FROM owner_resource_grants r WHERE r.resource_id=g.resource_id AND r.profile=?1 AND r.active=1)", params![profile,request], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         let Some((id, raw, original)) = row else { return Ok(None); };

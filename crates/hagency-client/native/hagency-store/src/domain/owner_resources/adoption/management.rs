@@ -1,4 +1,4 @@
-//! Canonical definitions and original private custody are separate authorities.
+//! Current canonical definitions and the profile-bound command journal.
 use super::*;
 mod resource_templates;
 mod resource_publication;
@@ -16,22 +16,26 @@ mod stopped;
 mod accounts;
 mod operator_tasks;
 use crate::management::{
-    ArchiveJournalBinding, JournalCommand, PROTOCOL, PendingIntent, PrivateManagementJournal,
+    JournalCommand, PROTOCOL, PendingIntent,
     ResourceDetail, ResourcePage, ResourceQuery, ResourceSummary,
 };
 
-/// Produced only from an active original adoption plus its actual archive
-/// worker. No path, SQL, profile or access claim can be deserialized into it.
+/// Produced from a freshly authorized current profile and its command journal.
 #[derive(Clone)]
-pub struct AdoptedManagementStore {
+pub struct CurrentManagementStore {
     registry: OwnerResourceRegistry,
     profile: String,
     owner: String,
-    journal: PrivateManagementJournal,
-    binding: ArchiveJournalBinding,
+    journal: crate::management::ServerManagementJournal,
     task_history: Option<operator_tasks::TaskBinding>,
 }
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
+    pub(super) fn from_current(registry: OwnerResourceRegistry, plan: current::CurrentPlan,
+        journal: crate::management::ServerManagementJournal) -> Self {
+        Self { registry, profile: plan.profile.clone(), owner: plan.owner.clone(),
+            journal,
+            task_history: Some(operator_tasks::TaskBinding(Arc::new(plan))) }
+    }
     pub(crate) async fn record_contribution_attempt(
         &self,
         profile: &ProfileAuthority,
@@ -55,6 +59,18 @@ impl AdoptedManagementStore {
         self.check(profile)?;
         Ok(self.registry.clone())
     }
+    /// See [`OwnerResourceRegistry::ledger_id`].
+    pub fn ledger_id(&self) -> String {
+        self.registry.ledger_id()
+    }
+    /// See [`OwnerResourceRegistry::ledger_created_empty`].
+    pub fn ledger_created_empty(&self) -> bool {
+        self.registry.ledger_created_empty()
+    }
+    /// See [`OwnerResourceRegistry::ledger_reports_undeclared`].
+    pub fn ledger_reports_undeclared(&self) -> Result<(), Error> {
+        self.registry.ledger_reports_undeclared()
+    }
     pub fn matches_registry(&self, registry: &OwnerResourceRegistry) -> bool {
         Arc::ptr_eq(&self.registry.0, &registry.0)
     }
@@ -65,7 +81,7 @@ impl AdoptedManagementStore {
         (&self.profile, &self.owner)
     }
     pub fn is_live(&self) -> bool {
-        !self.registry.0.closed.load(Ordering::Acquire) && self.journal.writer_open()
+        !self.registry.0.closed.load(Ordering::Acquire) && self.journal.is_live()
     }
     pub async fn shutdown(&self) -> Result<(), Error> {
         self.journal.shutdown().await
@@ -84,7 +100,7 @@ impl AdoptedManagementStore {
         if !self.is_live() {
             return Err(Error::LocalAuthority);
         }
-        self.journal.adopted_command(&self.binding, command).await
+        self.journal.command(command).await
     }
     pub(crate) async fn resource(
         &self,
@@ -226,48 +242,7 @@ impl AdoptedManagementStore {
         Ok(result)
     }
 }
-impl AdoptionTransfer {
-    /// History can legitimately have new pending commands or acknowledged old
-    /// replies after activation. Do not compare its mutable custody snapshot to
-    /// the pre-import digest again; require the exact permanent archive binding.
-    pub async fn adopted_management(
-        &self,
-        journal: PrivateManagementJournal,
-    ) -> Result<AdoptedManagementStore, Error> {
-        self.authority.check()?;
-        let binding = self.archive_binding()?;
-        journal.require_binding(&binding)?;
-        let authority = self.authority.clone();
-        let original = self.plan.clone();
-        let task_history = self.authority
-            .registry
-            .0
-            .store
-            .call(4096, move |db| {
-                authority.check()?;
-                let (plan, phase) = writer::read(&db.db, &authority, &original.migration_id)?;
-                if phase != 4 || plan.digest()? != original.digest()? {
-                    return Err(Error::LocalAuthority);
-                }
-                authority.check()?;
-                db.initialize_empty_operator_history(&authority, &original)
-            })
-            .await?;
-        let after = |error| if task_history.is_some() { Error::OutcomeUnknown } else { error };
-        self.authority.check().map_err(after)?;
-        journal.require_binding(&binding).map_err(after)?;
-        Ok(AdoptedManagementStore {
-            registry: self.authority.registry.clone(),
-            profile: self.plan.inventory.profile.clone(),
-            owner: self.plan.inventory.owner.clone(),
-            journal,
-            binding,
-            task_history,
-        })
-    }
-}
-
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn resource_namespace(
         &self, profile: &ProfileAuthority, id: String, revision: String,
     ) -> Result<Option<ResourceNamespace>, Error> {
@@ -278,27 +253,5 @@ impl AdoptedManagementStore {
     }
 }
 
-impl AdoptedManagementStore {
-    pub(super) async fn from_empty_device(
-        authority: &AdoptionAuthority,
-        original: &empty_initialization::EmptyPlan,
-        journal: PrivateManagementJournal,
-        binding: ArchiveJournalBinding,
-    ) -> Result<Self, Error> {
-        authority.check()?;
-        journal.require_binding(&binding)?;
-        let check = authority.clone();
-        let plan = original.clone();
-        let task_history = authority.registry.0.store.call(4096, move |db| {
-            db.initialize_empty_device_operator_history(&check, &plan)
-        }).await?;
-        authority.check().map_err(|_| Error::OutcomeUnknown)?;
-        journal.require_binding(&binding).map_err(|_| Error::OutcomeUnknown)?;
-        Ok(Self {
-            registry: authority.registry.clone(), profile: original.inventory.profile.clone(),
-            owner: original.inventory.owner.clone(), journal, binding, task_history: Some(task_history),
-        })
-    }
-}
 
 mod web_connections;

@@ -1,4 +1,5 @@
 use super::*;
+mod postpaid;
 const OWNER: &str = "@alice:example.org";
 #[test]
 fn agent_policy_before_binding_shares_runtime_budget_and_preserves_charges() {
@@ -178,7 +179,7 @@ fn requester_limits_and_cross_room_context_are_independent() {
     ));
 }
 #[test]
-fn restart_releases_unreported_usage_and_late_receipt_is_charged_once() {
+fn restart_retains_unreported_usage_and_late_receipt_is_charged_once() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("local.db");
     let mut l = setup(&path);
@@ -193,7 +194,7 @@ fn restart_releases_unreported_usage_and_late_receipt_is_charged_once() {
     assert_eq!(
         l.account(&scope(), Layer::Room, Period::UtcDay, 10)
             .unwrap(),
-        (0, 0)
+        (0, 80)
     );
     l.settle(&scope(), "c", &usage(60)).unwrap();
     l.settle(&scope(), "c", &usage(60)).unwrap();
@@ -218,6 +219,56 @@ fn restart_releases_unreported_usage_and_late_receipt_is_charged_once() {
     assert!(matches!(
         l.reserve(&scope(), "c", "other", 80, 10),
         Err(Error::Conflict)
+    ));
+}
+#[test]
+fn saved_tool_rules_do_not_preapprove_native_permission_expansion() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let s = scope();
+    ledger.register_binding(OWNER, &s).unwrap();
+    let mut p = config(1000, Period::Lifetime);
+    p.high_risk = ToolPolicy::AllowWithRules {
+        tools: vec!["codex.permissions".into()],
+        directories: vec!["/workspace".into()],
+    };
+    for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
+        ledger.set_policy(OWNER, &s, layer, 0, &p).unwrap();
+    }
+    ledger.reserve(&s, "call", "dispatch", 10, 10).unwrap();
+    let proposal = ToolProposal {
+        scope: s,
+        dispatch: "dispatch".into(),
+        tool: "codex.permissions".into(),
+        arguments: serde_json::json!({"fileSystem":{"write":["/outside"]}}),
+        canonical_directory: "/workspace".into(),
+        risk: "permission_expansion".into(),
+        policy_revision: [1, 1, 1],
+        expires: 100,
+    };
+    assert_eq!(
+        ledger.tool_disposition(&proposal, 11).unwrap(),
+        ToolPolicy::AskOwner
+    );
+    assert!(matches!(
+        ledger.authorize_tool(&proposal, 11),
+        Err(Error::Denied)
+    ));
+    assert!(matches!(
+        ledger.approve_tool("@member:test", &proposal, 11),
+        Err(Error::Unauthorized)
+    ));
+    ledger.approve_tool(OWNER, &proposal, 11).unwrap();
+    let mut changed = proposal.clone();
+    changed.arguments = serde_json::json!({"fileSystem":{"write":["/"]}});
+    assert!(matches!(
+        ledger.authorize_tool(&changed, 11),
+        Err(Error::Denied)
+    ));
+    ledger.authorize_tool(&proposal, 11).unwrap();
+    assert!(matches!(
+        ledger.authorize_tool(&proposal, 11),
+        Err(Error::Denied)
     ));
 }
 #[test]
@@ -796,7 +847,7 @@ fn retained_unset_is_unrestricted_but_does_not_widen_captured_dispatch_limits() 
 }
 
 #[test]
-fn unlimited_defaults_release_unreported_charges_after_restart() {
+fn unlimited_defaults_preserve_unreported_charges_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("unknown-unlimited.db");
     let mut ledger = Ledger::open(&path, OWNER).unwrap();
@@ -806,11 +857,11 @@ fn unlimited_defaults_release_unreported_charges_after_restart() {
     drop(ledger);
     let mut ledger = Ledger::open(path, OWNER).unwrap();
     assert_eq!(ledger.recover_interrupted(OWNER).unwrap(), 1);
-    assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
+    assert_eq!(ledger.outstanding_calls(OWNER).unwrap()[0].state, "unknown");
     for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
         assert_eq!(
             ledger.account(&s, layer, Period::Lifetime, 86410).unwrap(),
-            (0, 0)
+            (0, 40)
         );
     }
     ledger.settle(&s, "c", &usage(25)).unwrap();
@@ -826,7 +877,7 @@ fn unlimited_defaults_release_unreported_charges_after_restart() {
 }
 
 #[test]
-fn legacy_unknown_hold_is_released_once_without_replaying_or_losing_context() {
+fn legacy_unknown_hold_needs_receipt_without_replaying_or_losing_context() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("legacy.db");
     let mut l = setup(&path);
@@ -848,12 +899,12 @@ fn legacy_unknown_hold_is_released_once_without_replaying_or_losing_context() {
     );
     assert_eq!(
         l.account(&s, Layer::Room, Period::UtcDay, 10).unwrap(),
-        (0, 10)
+        (0, 90)
     );
-    assert_eq!(
-        l.reserve(&s, "old-call", "old-dispatch", 80, 10).unwrap(),
-        Reservation::AlreadySettled(unreported_usage())
-    );
+    assert!(matches!(
+        l.reserve(&s, "old-call", "old-dispatch", 80, 10),
+        Err(Error::Unknown)
+    ));
     assert_eq!(
         l.db.query_row(
             "SELECT model_session FROM contexts WHERE scope=?",
@@ -864,13 +915,13 @@ fn legacy_unknown_hold_is_released_once_without_replaying_or_losing_context() {
         "original-thread"
     );
     assert_eq!(
-        l.db.query_row(
-            "SELECT counters FROM codex_usage WHERE scope=?",
-            [&context],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "null"
+        l.outstanding_calls(OWNER)
+            .unwrap()
+            .iter()
+            .find(|c| c.id == "old-call")
+            .unwrap()
+            .state,
+        "unknown"
     );
     l.settle(&s, "old-call", &usage(25)).unwrap();
     l.settle(&s, "old-call", &usage(25)).unwrap();
@@ -887,39 +938,97 @@ fn model_profile_checked_edit_is_atomic_scoped_and_survives_restart() {
     let mut ledger = Ledger::open(&path, OWNER).unwrap();
     let empty = model_profile_digest(None).unwrap();
     assert_eq!(empty, format!("{:x}", Sha256::digest(b"null")));
-    let first = ModelProfile { model:"fixture".into(), credential_ref:"keychain:codex:owner".into(), workspace_root:tmp.path().to_string_lossy().into(), reasoning_effort:"high".into(),web_search:true };
-    assert!(matches!(ledger.set_agent_model_profile_checked("@other:test","a1",&empty,&first),Err(Error::Unauthorized)));
-    ledger.set_agent_model_profile_checked(OWNER,"a1",&empty,&first).unwrap();
+    let first = ModelProfile {
+        model: "fixture".into(),
+        credential_ref: "keychain:codex:owner".into(),
+        workspace_root: tmp.path().to_string_lossy().into(),
+        reasoning_effort: "high".into(),
+        web_search: true,
+    };
+    assert!(matches!(
+        ledger.set_agent_model_profile_checked("@other:test", "a1", &empty, &first),
+        Err(Error::Unauthorized)
+    ));
+    ledger
+        .set_agent_model_profile_checked(OWNER, "a1", &empty, &first)
+        .unwrap();
     let first_digest = model_profile_digest(Some(&first)).unwrap();
-    assert_ne!(empty,first_digest);
-    let mut changed = first.clone();changed.web_search=false;
-    assert!(matches!(ledger.set_agent_model_profile_checked(OWNER,"a1",&empty,&changed),Err(Error::Conflict)));
-    assert_eq!(ledger.agent_model_profile(OWNER,"a1").unwrap(),Some(first.clone()));
-    let mut second_handle = Ledger::open(&path,OWNER).unwrap();
-    ledger.set_agent_model_profile_checked(OWNER,"a1",&first_digest,&changed).unwrap();
-    let mut stale = first.clone();stale.workspace_root.push_str("/stale");
-    assert!(matches!(second_handle.set_agent_model_profile_checked(OWNER,"a1",&first_digest,&stale),Err(Error::Conflict)));
+    assert_ne!(empty, first_digest);
+    let mut changed = first.clone();
+    changed.web_search = false;
+    assert!(matches!(
+        ledger.set_agent_model_profile_checked(OWNER, "a1", &empty, &changed),
+        Err(Error::Conflict)
+    ));
+    assert_eq!(
+        ledger.agent_model_profile(OWNER, "a1").unwrap(),
+        Some(first.clone())
+    );
+    let mut second_handle = Ledger::open(&path, OWNER).unwrap();
+    ledger
+        .set_agent_model_profile_checked(OWNER, "a1", &first_digest, &changed)
+        .unwrap();
+    let mut stale = first.clone();
+    stale.workspace_root.push_str("/stale");
+    assert!(matches!(
+        second_handle.set_agent_model_profile_checked(OWNER, "a1", &first_digest, &stale),
+        Err(Error::Conflict)
+    ));
     let digest = model_profile_digest(Some(&changed)).unwrap();
-    let mut invalid=changed.clone();invalid.credential_ref="secret-token".into();
-    assert!(ledger.set_agent_model_profile_checked(OWNER,"a1",&digest,&invalid).is_err());
+    let mut invalid = changed.clone();
+    invalid.credential_ref = "secret-token".into();
+    assert!(
+        ledger
+            .set_agent_model_profile_checked(OWNER, "a1", &digest, &invalid)
+            .is_err()
+    );
     ledger.db.execute_batch("CREATE TRIGGER reject_model BEFORE UPDATE ON model_profiles BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
-    assert!(ledger.set_agent_model_profile_checked(OWNER,"a1",&digest,&first).is_err());
-    assert_eq!(ledger.agent_model_profile(OWNER,"a1").unwrap(),Some(changed.clone()));
-    drop(ledger);drop(second_handle);
-    assert_eq!(Ledger::open(&path,OWNER).unwrap().agent_model_profile(OWNER,"a1").unwrap(),Some(changed));
+    assert!(
+        ledger
+            .set_agent_model_profile_checked(OWNER, "a1", &digest, &first)
+            .is_err()
+    );
+    assert_eq!(
+        ledger.agent_model_profile(OWNER, "a1").unwrap(),
+        Some(changed.clone())
+    );
+    drop(ledger);
+    drop(second_handle);
+    assert_eq!(
+        Ledger::open(&path, OWNER)
+            .unwrap()
+            .agent_model_profile(OWNER, "a1")
+            .unwrap(),
+        Some(changed)
+    );
 }
 
 #[test]
 fn analytics_preserves_cache_writes_without_changing_budget_charge() {
-    let measured = Usage { input: 17, output: 3, cached_input: 5, cache_write_input: Some(2),
-        reasoning_output: 0, accounting_version: "claude-reported-v1".into() };
+    let measured = Usage {
+        input: 17,
+        output: 3,
+        cached_input: 5,
+        cache_write_input: Some(2),
+        reasoning_output: 0,
+        accounting_version: "claude-reported-v1".into(),
+    };
     assert_eq!(measured.total().unwrap(), 20);
-    assert_eq!(measured.category_counts(), (Some(10), Some(5), Some(2), Some(3)));
+    assert_eq!(
+        measured.category_counts(),
+        (Some(10), Some(5), Some(2), Some(3))
+    );
     let historical: Usage = serde_json::from_str(r#"{"input":17,"output":3,"cached_input":5,"reasoning_output":0,"accounting_version":"octos-reported-v1"}"#).unwrap();
     assert_eq!(historical.total().unwrap(), 20);
     assert_eq!(historical.category_counts(), (None, Some(5), None, Some(3)));
-    assert_eq!(unreported_usage().category_counts(), (None, None, None, None));
-    let invalid = Usage { cache_write_input: Some(13), ..measured };
+    assert_eq!(
+        unreported_usage().category_counts(),
+        (None, None, None, None)
+    );
+    let invalid = Usage {
+        cache_write_input: Some(13),
+        ..measured
+    };
     assert!(invalid.total().is_err());
     assert_eq!(invalid.category_counts().0, None);
 }

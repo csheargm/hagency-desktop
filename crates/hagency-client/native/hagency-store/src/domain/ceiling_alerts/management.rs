@@ -96,8 +96,8 @@ impl DomainRepository {
         let tx = self.db.unchecked_transaction()?;
         check(&tx)?;
         // The canonical database is shared. Both counters and page rows obey
-        // the same active resource grant and adoption-readiness boundary.
-        let visible = "EXISTS(SELECT 1 FROM resources r WHERE r.id=ceiling_alerts.resource_id AND (?1 IS NULL OR (EXISTS(SELECT 1 FROM owner_resource_grants g WHERE g.resource_id=r.id AND g.profile=?1 AND g.active=1) AND NOT EXISTS(SELECT 1 FROM owner_resource_adoptions a WHERE a.phase<4 AND json_extract(a.plan,'$.targetSeat.id')=json_extract(r.config,'$.seatId')))))";
+        // the same current-profile authority and active resource grant.
+        let visible = "EXISTS(SELECT 1 FROM resources r WHERE r.id=ceiling_alerts.resource_id AND (?1 IS NULL OR EXISTS(SELECT 1 FROM owner_resource_grants g WHERE g.resource_id=r.id AND g.profile=?1 AND g.active=1)))";
         let mut counts = WebAlertCounts {
             by_status: ALERT_STATUSES.into_iter().map(|s| (s.into(), 0)).collect(),
             open_by_severity: ALERT_SEVERITIES.into_iter().map(|s| (s.into(), 0)).collect(),

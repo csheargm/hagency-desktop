@@ -54,6 +54,8 @@ struct State {
     changed: bool,
     lose_reply: bool,
     fail_write: bool,
+    /// The code the device reports with `fail_write`.
+    fail_code: Option<&'static str>,
     invalidate_write: bool,
     drop_capability_after_post: bool,
     requests: std::collections::BTreeMap<String, Value>,
@@ -206,6 +208,7 @@ impl Fixture {
                                 assert_eq!(input["expectedGeneration"], 3);
                                 let key = input["idempotencyKey"].as_str().unwrap().to_owned();
                                 let failed = s.fail_write;
+                                let fail_code = s.fail_code.unwrap_or("local_revision_conflict");
                                 let current_policy = s.current_policy.clone();
                                 if let std::collections::btree_map::Entry::Vacant(entry) =
                                     s.requests.entry(key.clone())
@@ -230,7 +233,7 @@ impl Fixture {
                                         "executionDeviceId":"device_a","deviceGeneration":1,"operation":op,"input":input["input"],
                                         "state":if failed {"failed"}else{"succeeded"},"createdAtMs":1,"expiresAtMs":until,
                                         "claimedAtMs":1,"completedAtMs":2,"result":if failed {Value::Null}else{result.clone()},
-                                        "errorCode":if failed {json!("local_revision_conflict")}else{Value::Null}}});
+                                        "errorCode":if failed {json!(fail_code)}else{Value::Null}}});
                                     entry.insert(work);
                                     if !failed {
                                         if op == "environment" {
@@ -717,6 +720,93 @@ async fn personal_observation_http_lost_reply_recovers_original_after_generation
         "personal_agent_settings_changed"
     );
     assert_eq!(f.state.lock().unwrap().observation_effects, 1);
+    f.stop().await;
+}
+fn closed_reply(saved: &[hagency_store::management::PendingIntent]) -> Option<(u16, String)> {
+    match &saved[0].reply {
+        Some(hagency_store::management::IntentReply::Failure { status, code }) => {
+            Some((*status, code.clone()))
+        }
+        _ => None,
+    }
+}
+#[tokio::test]
+async fn personal_observation_http_device_failure_is_the_final_answer() {
+    // The device answers "failed": the request is over on the first attempt.
+    let f = Fixture::new().await;
+    let m = f.manager(true).await;
+    {
+        let mut s = f.state.lock().unwrap();
+        s.fail_write = true;
+        s.fail_code = Some("configuration_provider_unavailable");
+    }
+    let error = m.observe_personal_settings(observation()).await.unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "configuration_provider_unavailable")
+    );
+    assert_eq!(
+        closed_reply(&m.saved_commands().await.unwrap()),
+        Some((409, "configuration_provider_unavailable".into()))
+    );
+    assert_eq!(f.state.lock().unwrap().observation_effects, 0);
+    m.acknowledge_command("observation_original".into())
+        .await
+        .unwrap();
+    assert!(m.saved_commands().await.unwrap().is_empty());
+    f.stop().await;
+}
+#[tokio::test]
+async fn personal_observation_http_retry_reads_the_original_failure_and_settles() {
+    // The first reply is lost, so the request is saved without an answer.
+    // Asking again under the original key reads the device's own "failed":
+    // that settles it instead of leaving a request no retry can finish.
+    let f = Fixture::new().await;
+    let m = f.manager(true).await;
+    {
+        let mut s = f.state.lock().unwrap();
+        s.fail_write = true;
+        s.fail_code = Some("configuration_provider_unavailable");
+        s.lose_reply = true;
+    }
+    assert!(m.observe_personal_settings(observation()).await.is_err());
+    assert!(m.saved_commands().await.unwrap()[0].reply.is_none());
+    let error = m.observe_personal_settings(observation()).await.unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "configuration_provider_unavailable")
+    );
+    assert_eq!(
+        closed_reply(&m.saved_commands().await.unwrap()),
+        Some((409, "configuration_provider_unavailable".into()))
+    );
+    assert_eq!(f.state.lock().unwrap().requests.len(), 1);
+    assert_eq!(f.state.lock().unwrap().observation_effects, 0);
+    m.acknowledge_command("observation_original".into())
+        .await
+        .unwrap();
+    f.stop().await;
+}
+#[tokio::test]
+async fn personal_policy_http_retry_of_a_failed_save_stays_unknown() {
+    // A save changes the device, so the rule for a later attempt is kept:
+    // a failure seen on a retry does not prove the first attempt did nothing.
+    let f = Fixture::new().await;
+    let m = f.manager(true).await;
+    {
+        let mut s = f.state.lock().unwrap();
+        s.fail_write = true;
+        s.fail_code = Some("configuration_provider_unavailable");
+        s.lose_reply = true;
+    }
+    assert!(m.save_personal_policy(change()).await.is_err());
+    assert!(m.saved_commands().await.unwrap()[0].reply.is_none());
+    assert!(
+        m.retry_saved_command("policy_original".into())
+            .await
+            .is_err()
+    );
+    assert!(m.saved_commands().await.unwrap()[0].reply.is_none());
     f.stop().await;
 }
 #[tokio::test]

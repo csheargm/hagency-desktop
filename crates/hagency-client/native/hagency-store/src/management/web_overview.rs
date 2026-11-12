@@ -114,15 +114,9 @@ impl Session {
         }
         self.check(context, Permission::ReadResources)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(_) => WebManagedUsage {
-                supported: false,
-                complete: true,
-                items: Vec::new(),
-            },
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
-                    .web_managed_usage_page(&self.adopted_profile(store)?, after, 16)
+                    .web_managed_usage_page(&self.current_profile(store)?, after, 16)
                     .await?
             }
         };
@@ -132,15 +126,9 @@ impl Session {
     pub async fn web_managed_usage(&self, context: &HostContext) -> Result<WebManagedUsage, Error> {
         self.check(context, Permission::ReadResources)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(_) => WebManagedUsage {
-                supported: false,
-                complete: false,
-                items: Vec::new(),
-            },
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
-                    .web_managed_usage(&self.adopted_profile(store)?)
+                    .web_managed_usage(&self.current_profile(store)?)
                     .await?
             }
         };
@@ -161,11 +149,9 @@ impl Session {
         self.check(context, Permission::ReadResources)?;
         self.check(context, Permission::ReadAccounts)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(_) => Vec::new(),
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
+            SessionStore::Current(store) => {
                 store
-                    .web_workforce_links(&self.adopted_profile(store)?, ids)
+                    .web_workforce_links(&self.current_profile(store)?, ids)
                     .await?
             }
         };
@@ -182,21 +168,9 @@ impl Session {
         let _pending = self.scope.pending.try_acquire().map_err(|_| Error::Busy)?;
         self.check(context, Permission::ReadAlerts)?;
         let result = match self.local_store()? {
-            SessionStore::Legacy(store) => {
-                let authority = self.authority();
-                let original = context.clone();
+            SessionStore::Current(store) => {
                 store
-                    .call(128 * 1024, move |db| {
-                        db.management_web_alerts(None, &query, |_| {
-                            authority.authorize(&original, Permission::ReadAlerts)
-                        })
-                    })
-                    .await?
-            }
-            #[cfg(feature = "resource-adoption")]
-            SessionStore::Adopted(store) => {
-                store
-                    .web_alerts(&self.adopted_profile(store)?, query)
+                    .web_alerts(&self.current_profile(store)?, query)
                     .await?
             }
         };

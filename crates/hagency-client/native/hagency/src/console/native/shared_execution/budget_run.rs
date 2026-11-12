@@ -1,5 +1,5 @@
 //! V3 process driver; budget is pinned by native custody, never by UI numbers.
-use super::super::managed_runtime::PreparedLaunch;
+use super::launch::Launch;
 use super::budget_io::{
     Acknowledgement as SharedRuntimeAcknowledgement, AttemptAction,
     Delivery as SharedRuntimeDelivery, Reply as DeliveryReply, ResultInput as SharedProcessInput,
@@ -12,7 +12,6 @@ use tokio::sync::{oneshot, watch};
 struct Activity {
     lease: SharedActivityLease,
     until: Instant,
-    maximum: Instant,
 }
 pub(super) async fn upload_process(
     b: &Bound,
@@ -69,7 +68,6 @@ fn activity(
     observed: u64,
     started: Instant,
     b: &Bound,
-    maximum: Instant,
 ) -> Result<Activity, NativeError> {
     lease.authority.validate().map_err(store)?;
     if lease.command_digest != digest(sink.command())?
@@ -84,15 +82,13 @@ fn activity(
         observed,
         started,
         &b.scope,
-    )?
-    .min(maximum);
+    )?;
     if Instant::now() >= until {
         return Err(failure(409, "shared_execution_expired"));
     }
     Ok(Activity {
         lease,
         until,
-        maximum,
     })
 }
 async fn proof(
@@ -101,14 +97,21 @@ async fn proof(
     sink: &Arc<SharedBudgetAttemptProcessSink>,
     a: &Activity,
 ) -> Result<(Bound, VerifiedSharedActivity), NativeError> {
-    let b = io.bound().await?;
-    let e = b
-        .enrollment(r, &sink.command().original_runtime_command, true)
-        .await?;
-    let verified = sink
-        .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
-        .map_err(store)?;
-    Ok((b, verified))
+    // Read-only until it answers: a scope, the enrollment under it and a local
+    // comparison. Around a credential refresh the boundary refuses for a
+    // moment; that is waited out while the lease lasts instead of ending the
+    // turn, as the Claude driver does. A real revocation is not retried.
+    io.settled(a.until, || async {
+        let b = io.bound().await?;
+        let e = b
+            .enrollment(r, &sink.command().original_runtime_command, true)
+            .await?;
+        let verified = sink
+            .authorize_activity(e, &a.lease, a.until.min(b.scope.deadline))
+            .map_err(store)?;
+        Ok((b, verified))
+    })
+    .await
 }
 async fn renew(
     io: &Io,
@@ -117,7 +120,6 @@ async fn renew(
     control: &SharedTextActivityControl,
     a: &mut Activity,
 ) -> Result<(), NativeError> {
-    let (b, verified) = proof(io, r, sink, a).await?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| failure(503, "native_random_unavailable"))?;
     let id = format!(
@@ -127,9 +129,20 @@ async fn renew(
             .map(|v| format!("{v:02x}"))
             .collect::<String>()
     );
-    r.prepare_shared_renewal(verified, id.clone())
-        .await
-        .map_err(store)?;
+    // The proof and its local record are one retried step. A credential
+    // refresh between the two supersedes the proof, and the record's closing
+    // check then reports an unknown outcome, which ended the turn. The record
+    // is idempotent for one id, process and epoch, so the same id is recorded
+    // again under a fresh proof while the lease lasts.
+    let b = io
+        .settled(a.until, || async {
+            let (b, verified) = proof(io, r, sink, a).await?;
+            r.prepare_shared_renewal(verified, id.clone())
+                .await
+                .map_err(store)?;
+            Ok(b)
+        })
+        .await?;
     let started = Instant::now();
     let renewal = SharedActivityRenewInput {
         authority: a.lease.authority.clone(),
@@ -148,13 +161,12 @@ async fn renew(
         reply.observed,
         started,
         &b,
-        a.maximum,
     )?;
     if next.lease.authority.epoch <= a.lease.authority.epoch {
         return Err(invalid());
     }
     control
-        .renew(next.lease.authority.epoch, next.until, a.maximum)
+        .renew_lease(next.lease.authority.epoch, next.until)
         .map_err(|_| failure(409, "shared_execution_expired"))?;
     *a = next;
     Ok(())
@@ -167,7 +179,9 @@ async fn maybe_renew(
     a: &mut Activity,
 ) -> Result<(), NativeError> {
     if a.until.saturating_duration_since(Instant::now()) <= Duration::from_secs(20) {
-        renew(io, r, sink, control, a).await?
+        renew(io, r, sink, control, a).await.inspect_err(|error| {
+            tracing::warn!(code = %error.code, "Shared activity renewal failed");
+        })?
     }
     Ok(())
 }
@@ -198,7 +212,18 @@ async fn prepare_while_active<T>(
             // across later renewals without rechecking that superseded proof.
             result = &mut preparation => return result,
             _ = tokio::time::sleep_until(wake.into()) => {
-                guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)).await?;
+                // The pending provider call keeps being polled beside the
+                // renewal: the renewal that refreshes the daemon's token takes
+                // seconds, and the call's own bound ran out meanwhile.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel, a.until, || maybe_renew(io,r,sink,control,a)),
+                    preparation.as_mut(),
+                )
+                .await;
+                renewed?;
+                if let Some(result) = finished {
+                    return result;
+                }
             }
         }
     }
@@ -230,9 +255,21 @@ async fn start_while_active(
             // Begin under the exact admitted proof before advancing its epoch.
             result = &mut start => return result.map(|()| None),
             _ = tokio::time::sleep_until(wake.into()) => {
-                match guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await {
-                    Ok(()) => continue,
-                    Err(error) => error,
+                // As in `prepare_while_active`: the start acknowledgement is
+                // read while the renewal runs, not after it.
+                let (renewed, finished) = super::guarded::renew_beside(
+                    guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)),
+                    start.as_mut(),
+                )
+                .await;
+                match (renewed, finished) {
+                    (Ok(()), None) => continue,
+                    (Ok(()), Some(result)) => return result.map(|()| None),
+                    // Acknowledged while its renewal failed: the outcome of
+                    // the retained wait below, without waiting again.
+                    (Err(error), Some(Ok(()))) => return Ok(Some(error)),
+                    (Err(error), Some(Err(_))) => return Err(error),
+                    (Err(error), None) => error,
                 }
             }
         };
@@ -249,7 +286,7 @@ async fn start_while_active(
 pub(super) async fn run(
     r: OwnerResourceRegistry,
     custody: SharedBudgetAttemptCustody,
-    launch: PreparedLaunch,
+    launch: Launch,
     io: Io,
     d: SharedRuntimeDelivery,
     observed: u64,
@@ -259,6 +296,24 @@ pub(super) async fn run(
     sender: oneshot::Sender<Result<SharedExecutionProgress, NativeError>>,
     telemetry: crate::console::native::telemetry::OwnerTelemetry,
 ) -> Result<(), DrainFailure> {
+    let launch = match launch {
+        Launch::Codex(launch) => launch,
+        Launch::Claude(launch) => {
+            return super::claude_run::run(
+                r,
+                super::claude_run::Claimed::Budget(Box::new((custody, d))),
+                launch,
+                io,
+                observed,
+                started,
+                until,
+                cancel,
+                sender,
+                telemetry,
+            )
+            .await;
+        }
+    };
     let mut sender = Some(sender);
     let mut process = match launch.spawn(until) {
         Ok(v) => v,
@@ -299,18 +354,9 @@ pub(super) async fn run(
         let lease = ack
             .activity
             .ok_or_else(|| failure(409, "shared_execution_activity_missing"))?;
-        let maximum = started
-            + Duration::from_millis(
-                d.command
-                    .original_runtime_command
-                    .reserve_command
-                    .expires_at_ms
-                    .checked_sub(observed)
-                    .ok_or_else(invalid)?,
-            );
-        let active = activity(&sink, lease, at, sent, &b, maximum)?;
+        let active = activity(&sink, lease, at, sent, &b)?;
         process
-            .install_shared_text_activity(active.lease.authority.epoch, active.until, maximum)
+            .install_renewable_shared_text_activity(active.lease.authority.epoch, active.until)
             .map_err(|_| failure(409, "shared_execution_expired"))?;
         Ok(active)
     })
@@ -393,7 +439,7 @@ async fn work_loop(
             .await?;
             continue;
         };
-        let (b, verified) = proof(io, r, sink, a).await?;
+        let (b, verified) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
         let reply: Timed<WorkReply> = guarded(cancel, a.until, || {
             b.upload(
                 budget_work_io::WorkAction::Poll(a.lease.authority.clone()).into(),
@@ -413,7 +459,7 @@ async fn work_loop(
                     a.until,
                 )
                 .await?;
-                let (_, fresh) = proof(io, r, sink, a).await?;
+                let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
                 r.receive_shared_work(fresh, w.clone())
                     .await
                     .map_err(store)?;
@@ -444,7 +490,17 @@ async fn work_loop(
         .await?;
     };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let (b, p) = proof(io, r, sink, a).await?;
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
+    // Pin the exact V3 plaintext input before selecting the retained native session.
+    let plaintext_input = if !work.encrypted {
+        Some(guarded(cancel, a.until, || super::budget_context_io::prepare(
+            io, &b, r, p, &work, a.lease.authority.clone(), a.until)).await?)
+    } else { None };
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
+    let mut native_session = prepare_while_active(io, r, sink, control, a, cancel, async {
+        r.prepare_shared_native_session(p, work.clone(), process).await.map_err(store)
+    }).await?;
+    let (b, _) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let mut history = prepare_while_active(
         io,
         r,
@@ -452,46 +508,9 @@ async fn work_loop(
         control,
         a,
         cancel,
-        super::history::Reader::new(io, &b, &work),
+        super::history::Reader::new(io, &b, &work, plaintext_input.as_ref()),
     )
     .await?;
-    let input = if cfg!(feature = "shared-context") && work.encrypted {
-        let text = prepare_while_active(
-            io,
-            r,
-            sink,
-            control,
-            a,
-            cancel,
-            super::e2ee::input(io, &b, &work),
-        )
-        .await?;
-        let text = if let Some(history) = history.as_mut() {
-            prepare_while_active(io, r, sink, control, a, cancel, async {
-                Ok(history.prompt(text).await)
-            })
-            .await?
-        } else {
-            text
-        };
-        let (_, fresh) = proof(io, r, sink, a).await?;
-        Some(
-            if history.is_some() {
-                r.prepare_shared_room_input(fresh, work.clone(), text).await
-            } else {
-                r.prepare_shared_decrypted_input(fresh, work.clone(), text)
-                    .await
-            }
-            .map_err(store)?,
-        )
-    } else if cfg!(feature = "shared-context") {
-        Some(guarded(cancel,a.until,|| super::budget_context_io::prepare(io,&b,r,p,&work,a.lease.authority.clone(),a.until)).await.map_err(|error| {
-            tracing::warn!(stage = "shared_context_prepare", code = %error.code, "Shared Agent stopped before model call admission");
-            error
-        })?)
-    } else {
-        None
-    };
     // Opening a provider thread does not run the model. Finish it before
     // recording call admission, so startup failure cannot reserve the budget.
     prepare_while_active(io, r, sink, control, a, cancel, async {
@@ -503,11 +522,13 @@ async fn work_loop(
                 .map_err(|_| failure(409, "shared_history_tool_unavailable"))?;
         }
         if history.is_some() && process.shared_tools_enabled() {
-            process.enable_shared_room_files().map_err(|_|failure(409,"shared_file_tool_unavailable"))?;
+            process
+                .enable_shared_room_files()
+                .map_err(|_| failure(409, "shared_file_tool_unavailable"))?;
         }
         super::questions::offer(process);
-        process
-            .start_shared_text_thread_for_room(&work.room_id)
+        native_session
+            .open_codex(process)
             .await
             .map_err(|error| {
                 tracing::warn!(
@@ -520,33 +541,60 @@ async fn work_loop(
             .await
     })
     .await?;
+    let input = if work.encrypted {
+        let text = prepare_while_active(
+            io,
+            r,
+            sink,
+            control,
+            a,
+            cancel,
+            super::e2ee::input(io, &b, &work),
+        )
+        .await?;
+        let text = if let Some(history) = history.as_mut() {
+            prepare_while_active(io, r, sink, control, a, cancel, async {
+                Ok(if native_session.is_resuming() {
+                    history.followup_prompt(text)
+                } else {
+                    history.prompt(text).await
+                })
+            })
+            .await?
+        } else {
+            text
+        };
+        let (_, fresh) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
+        r.prepare_shared_decrypted_input(fresh, work.clone(), text).await.map_err(store)?
+    } else {
+        plaintext_input.ok_or_else(|| failure(409, "native_context_protocol_required"))?
+    };
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
-    let mut files = prepare_while_active(io,r,sink,control,a,cancel,
-        super::files::Files::new(io,&b,&work,process)).await?;
-    let (_, p) = proof(io, r, sink, a).await?;
-    let call = if let Some(input) = &input {
-        r.prepare_shared_input_call(p, work.clone(), input.clone())
-            .await
-    } else {
-        r.prepare_shared_call(p, work.clone()).await
-    }
-    .map_err(store)?;
+    let mut files = prepare_while_active(
+        io,
+        r,
+        sink,
+        control,
+        a,
+        cancel,
+        super::files::Files::new(io, &b, &work, process, Some(&input)),
+    )
+    .await?;
+    let (_, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
+    let call = r.prepare_shared_input_call(p, work.clone(), input.clone())
+        .await.map_err(store)?;
     let call_id = call.call_id.clone();
-    let (b, p) = proof(io, r, sink, a).await?;
-    let attempt = if let Some(input) = &input {
-        r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
-            .await
-    } else {
-        r.begin_shared_start(p, work.clone(), call.call_id).await
-    }
-    .map_err(store)?;
+    let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
+    let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
+    let attempt = r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
+        .await.map_err(store)?;
     let issued = match guarded(cancel, a.until, || {
         super::budget_context_io::start(
             &b,
             r,
             attempt,
             &work,
-            input.as_ref(),
+            &input,
             a.lease.authority.clone(),
             a.until,
         )
@@ -556,7 +604,7 @@ async fn work_loop(
         Ok(custody) => custody,
         Err(error) => {
             if let Ok(Some(receipt)) =
-                budget_work_io::refuse_unissued(io, r, sink.command(), &work, input.as_ref()).await
+                budget_work_io::refuse_unissued(io, r, sink.command(), &work, Some(&input)).await
             {
                 let _ = report_work(io, r, sink.command(), &work, &receipt).await;
             }
@@ -589,6 +637,9 @@ async fn work_loop(
         }
     };
     turn.started();
+    if let Some(controls) = &mut run_controls {
+        controls.activate(process);
+    }
     let mut capture = issued.bind_started_turn(process).await.map_err(store)?;
     let mut usage = telemetry.shared_turn(
         &sink.command().original_runtime_command,
@@ -602,17 +653,43 @@ async fn work_loop(
         .as_ref()
         .is_some_and(|p| p.mode == "standard");
     let mut approvals = super::approvals::Approvals::default();
-    let mut questions = super::questions::Questions::default();
+    let mut questions: super::questions::Questions = super::questions::Questions::default();
+    let mut deferred = std::collections::VecDeque::new();
+    let mut last_control_poll = Instant::now() - Duration::from_secs(1);
     let terminal_result: Result<SharedWorkReceipt, NativeError> = async {
       if approvals_enabled && start_stop.is_none() {super::approvals::enable(process)?;}
       if start_stop.is_none() {super::questions::enable(process)?;}
       let mut stop_reason = start_stop;
-      let terminal = loop {
+      let terminal = 'turn: loop {
+        macro_rules! room_wait {
+            ($future:expr) => { room_wait!(|_: &OwnedSession| true, $future) };
+            ($admissible:expr, $future:expr) => {{
+                match prepare_while_active(io, r, sink, control, a, cancel,
+                    super::cooperative::wait($future, io, &sink.command().original_runtime_command, process, &mut capture, &mut usage, &mut run_controls, &mut deferred, $admissible)).await? {
+                    super::cooperative::Waiting::Ready(value) => value,
+                    super::cooperative::Waiting::Stopped => continue 'turn,
+                    super::cooperative::Waiting::Terminal(receipt) => break 'turn receipt,
+                }
+            }};
+        }
+
+        if last_control_poll.elapsed() >= Duration::from_millis(500) {
+            last_control_poll = Instant::now();
+            if let Some(controls) = &mut run_controls {
+                prepare_while_active(io, r, sink, control, a, cancel, controls.poll(io, &sink.command().original_runtime_command, process)).await?;
+            }
+        }
+
         if let Some(error) = stop_reason.take() { return Err(error); }
         if super::stop_capture::requested(cancel) {
             return Err(failure(409, "shared_execution_closed"));
         }
-        let result = {
+        let already_observed;
+        let result = if let Some(event) = deferred.pop_front() {
+            already_observed = true;
+            Ok(Some(event))
+        } else {
+            already_observed = false;
             // Pin the actual read. Renewal branches keep polling this same
             // future. A requested stop yields cooperatively for final usage.
             let read = process.next_shared_event_or_tick();
@@ -644,21 +721,22 @@ async fn work_loop(
         };
         let Some(event)=event else {
             if stop_reason.is_some() || super::stop_capture::requested(cancel) { continue; }
+            if process.run_controls_hold_answers() { continue; }
             if questions.busy() {
                 // Answers and expiries; the lease keeps renewing meanwhile.
-                let ready=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.collect(io))).await?;
+                let ready=room_wait!(questions.collect(io))?;
                 for response in ready {
                     let id = response.request_id().clone();
                     let delivered = guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await;
                     questions.delivered(&id, delivered.as_ref().is_ok_and(|accepted| *accepted));
                     delivered?;
                 }
-                prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.publish())).await?;
+                room_wait!(questions.publish())?;
             }
             if !approvals_enabled { continue; }
             guarded(cancel,a.until,|| maybe_renew(io,r,sink,control,a)).await?;
-            let b=io.bound().await?;
-            let receipt=guarded(cancel,a.until,|| approvals.poll(io,&b,&work,&a.lease.authority,a.until,process,&mut capture,&mut usage)).await?;
+            let b=guarded(cancel,a.until,|| io.bound_running()).await?;
+            let receipt=guarded(cancel,a.until,|| approvals.poll(io,&b,&work,&a.lease.authority,a.until,process,&mut capture,&mut usage,history.as_mut())).await?;
             // Question updates that arrived while a decision was being sent.
             let updates=approvals.take_questions();
             if let Some(receipt)=receipt {break receipt;}
@@ -668,15 +746,17 @@ async fn work_loop(
                 guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
                 match call {
                     super::approvals::RoomCall::History(call) => {
+                        if !process.room_history_admissible(&call) { continue; }
                         let reader=history.as_mut().ok_or_else(invalid)?;
-                        let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read(call.cursor.as_deref())).await
+                        let content=room_wait!(|process: &OwnedSession| process.room_history_admissible(&call),reader.read_call(&call))
                             .unwrap_or_else(|e|serde_json::json!({"complete":false,"error":e.code}).to_string());
                         guarded(cancel,a.until,||async {process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed"))}).await?;
                     }
                     super::approvals::RoomCall::File(call) => {
+                        if !process.room_file_admissible(&call) { continue; }
                         let reader=history.as_ref().ok_or_else(invalid)?;
                         let files=files.as_mut().ok_or_else(invalid)?;
-                        let content=prepare_while_active(io,r,sink,control,a,cancel,async {Ok(files.handle(&call.operation,reader).await)}).await?;
+                        let content=room_wait!(|process: &OwnedSession| process.room_file_admissible(&call), files.handle(&call.operation,reader));
                         guarded(cancel,a.until,||async {process.respond_shared_room_file(&call,content).await.map_err(|_|failure(409,"shared_file_response_failed"))}).await?;
                     }
                 }
@@ -687,7 +767,8 @@ async fn work_loop(
                 match update {
                     super::questions::QuestionUpdate::Withdrawn(id) => questions.withdrawn(&id),
                     super::questions::QuestionUpdate::Asked(request) => {
-                        if let Some(response)=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.ask(io,&work,request))).await? {
+                        let question_scope = request.clone();
+            if let Some(response)=room_wait!(|process: &OwnedSession| process.user_input_waiting(&question_scope), questions.ask(io,&work,request))? {
                             guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await?;
                         }
                     }
@@ -700,12 +781,13 @@ async fn work_loop(
         let withdrawn=event.user_input_resolved().cloned();
         let history_call=event.room_history_call().cloned();
         let file_call=event.room_file_call().cloned();
-        if let (Some(history),hagency_runtime::codex::session::ObservationKind::Usage(evidence))=(history.as_mut(),event.observation().kind()) {history.observe_usage(evidence);}
+        if let (Some(history), Some(context)) = (history.as_mut(), event.observation().context_usage()) { history.observe_context(context); }
         let ended = matches!(
             event.observation().kind(),
             hagency_runtime::codex::session::ObservationKind::TurnEnded(_)
         );
-        let pending = usage.pending(&event);
+        let recorded = if already_observed { None } else {
+            let pending = usage.pending(&event);
         let recorded = match capture.observe(event).await {
             Ok(v) => v,
             Err(e) => {
@@ -714,46 +796,51 @@ async fn work_loop(
                 return Err(store(e));
             }
         };
-        // Only after the sink verified source and contiguous sequence.
-        usage.accept(pending);
-        usage.quota(process);
+            // Deferred callbacks have already crossed this exact sink once.
+            usage.accept(pending);
+        usage.quota(process); recorded
+        };
         if ended {
             break recorded.ok_or_else(invalid)?;
         }
         if stop_reason.is_some() { continue; }
-        if let Some(call)=file_call {
+        if let Some(call)=file_call && process.room_file_admissible(&call) {
             let reader=history.as_ref().ok_or_else(invalid)?;
             let files=files.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,async { Ok(files.handle(&call.operation,reader).await) }).await?;
+            let content=room_wait!(|process: &OwnedSession| process.room_file_admissible(&call), files.handle(&call.operation,reader));
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
             guarded(cancel,a.until,||async { process.respond_shared_room_file(&call,content).await.map_err(|_|failure(409,"shared_file_response_failed")) }).await?;
         }
-        if let Some(call)=history_call {
+        if let Some(call)=history_call && process.room_history_admissible(&call) {
             // No provider-selected room/URL/token is accepted. Renew and check
             // the original work before and after the SDK read, then answer the
             // same process callback exactly once.
             let reader=history.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
-            let content=prepare_while_active(io,r,sink,control,a,cancel,reader.read(call.cursor.as_deref())).await
+            let content=room_wait!(|process: &OwnedSession| process.room_history_admissible(&call),reader.read_call(&call))
                 .unwrap_or_else(|error| serde_json::json!({"complete":false,"error":error.code}).to_string());
             guarded(cancel,a.until,|| io.check_running(&sink.command().original_runtime_command)).await?;
             guarded(cancel,a.until,||async{ process.respond_shared_room_history(&call,content).await.map_err(|_|failure(409,"shared_history_response_failed")) }).await?;
         }
         if let Some(request)=approval {
-            let b=io.bound().await?;
+            let b=guarded(cancel,a.until,|| io.bound_running()).await?;
             guarded(cancel,a.until,|| approvals.register(io,&b,&work,&a.lease.authority,a.until,process,request)).await?;
         }
         if let Some(id)=withdrawn { questions.withdrawn(&id); }
         if let Some(request)=question {
             // The card goes to the room; the model waits for its answer.
-            if let Some(response)=prepare_while_active(io,r,sink,control,a,cancel,Box::pin(questions.ask(io,&work,request))).await? {
+            let question_scope = request.clone();
+            if let Some(response)=room_wait!(|process: &OwnedSession| process.user_input_waiting(&question_scope), questions.ask(io,&work,request))? {
                 guarded(cancel,a.until,||async{ super::questions::answer(process,response).await }).await?;
             }
         }
       };
       Ok(terminal)
     }.await;
+    if let Some(controls) = &mut run_controls {
+        controls.finish(process, &terminal_result).await;
+    }
     // Cards still waiting when the turn ended close unanswered.
     questions.close();
     let terminal = match terminal_result {
@@ -775,6 +862,12 @@ async fn work_loop(
             return Err(error);
         }
     };
+    if terminal.state == "completed" && terminal.usage_complete
+        && let Err(error) = capture.retain_native_session(native_session, process).await
+    {
+        tracing::warn!(?error, "Completed native context could not be retained");
+    }
+
     if questions.busy() {
         // Cosmetic only: never hold the reply back for long.
         let _ = tokio::time::timeout(
@@ -800,7 +893,7 @@ async fn work_loop(
         })
         .await
         {
-            Ok(status) => status,
+            Ok(status) => Some(status),
             // A lost acknowledgement is not a reason to fence a reply that the
             // central transaction may still deliver. Retry only saved evidence,
             // under this same live process; never repeat the model turn.
@@ -819,8 +912,9 @@ async fn work_loop(
             }
             Err(error) => return Err(error),
         };
-        if matches!(status.as_deref(), Some("sent" | "blocked"))
-            || work.encrypted && status.as_deref() == Some("unknown")
+        let reported = status.as_ref().map(|s| s.as_deref());
+        if reply_settled(reported, &terminal.state)
+            || work.encrypted && reported == Some(Some("unknown"))
         {
             return Ok(());
         }

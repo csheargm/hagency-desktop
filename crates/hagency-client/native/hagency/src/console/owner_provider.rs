@@ -5,6 +5,7 @@ mod trust_config;
 pub(in crate::console) mod managed;
 pub(crate) mod external;
 pub(super) mod identity;
+pub(in crate::console) mod claude_identity;
 use super::{
     Console, body, console, cookie, current, owned_agents::journal_profile_directory, recheck,
     server_login::OwnerOperation,
@@ -446,7 +447,15 @@ impl Process {
             until: None,
             reference: paths.credential_ref.clone(),
         };
-        p.rpc("initialize",json!({"clientInfo":{"name":"hagency-client","title":"Hagency Client","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}})).await?;
+        let started = p.rpc("initialize",json!({"clientInfo":{"name":"hagency-client","title":"Hagency Client","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}})).await?;
+        // Before `initialized`, so an older Codex is never used for an account.
+        if !started["userAgent"]
+            .as_str()
+            .is_some_and(hagency_runtime::codex::version::supported)
+        {
+            tracing::warn!("{}", hagency_runtime::codex::version::REQUIRED);
+            return Err(failure(409, "codex_version_unsupported"));
+        }
         p.write(json!({"method":"initialized"})).await?;
         if paths.shared || identity {
             let c = p.rpc("config/read", json!({"includeLayers":false})).await?;
@@ -560,7 +569,7 @@ impl Process {
             },
             auth_url: self.auth_url.clone(),
             strict_token_cap: false,
-            native_tools: false,
+            native_tools: true,
             models: None,
             default_model: None,
             workspace: None,
@@ -789,7 +798,7 @@ impl OwnerProvider {
                 credential_store: "codex_os_keyring",
                 auth_url: None,
                 strict_token_cap: false,
-                native_tools: false,
+                native_tools: true,
                 models: None,
                 default_model: None,
                 workspace: None,
@@ -828,7 +837,7 @@ impl OwnerProvider {
                 credential_store: "codex_os_keyring",
                 auth_url: None,
                 strict_token_cap: false,
-                native_tools: false,
+                native_tools: true,
                 models: None,
                 default_model: None,
                 workspace: Some(workspace.to_string_lossy().into_owned()),
@@ -1289,7 +1298,8 @@ for line in sys.stdin:
  if i is None:continue
  if m=='account/read':v={'requiresOpenaiAuth':True,'account':None}
  elif m=='account/login/start':v={'type':'chatgpt','loginId':'pending','authUrl':'https://auth.openai.com/authorize?state=test'}
- elif m in ['initialize','account/login/cancel']:v={}
+ elif m=='initialize':v={'userAgent':'fixture/0.167.0'}
+ elif m=='account/login/cancel':v={}
  else:raise Exception('no model or account credential mutation permitted')
  print(json.dumps({'id':i,'result':v}),flush=True)
 "#).unwrap();
@@ -1349,7 +1359,7 @@ home=pathlib.Path.cwd(); marker=home/'signed-in'
 for line in sys.stdin:
  req=json.loads(line); method=req.get('method'); rid=req.get('id')
  if rid is None:continue
- if method=='initialize':result={}
+ if method=='initialize':result={'userAgent':'fixture/0.167.0'}
  elif method=='account/read':result={'requiresOpenaiAuth':True,'account':({'type':'chatgpt','email':'private@example','planType':'plus'} if marker.exists() else None)}
  elif method=='account/login/start':
   assert req['params']['type']=='chatgpt'

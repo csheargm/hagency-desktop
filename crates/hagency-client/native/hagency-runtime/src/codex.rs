@@ -1,12 +1,18 @@
 //! Codex 0.153.4 App Server JSONL. Protocol observations are untrusted data.
 pub mod approval;
 mod connection;
+mod launch;
+mod rollout_usage;
 use crate::json;
 pub mod session;
 pub mod transport;
+pub mod tree;
+pub mod version;
 mod wire;
 
 pub use connection::{Connection, Event, Phase, TurnScope};
+pub use launch::{native_arguments, validate_native_configuration};
+pub use rollout_usage::Cursor as NativeUsageCursor;
 pub use wire::{Decoder, Message, RequestId, RpcError, encode};
 
 /// Includes every byte preceding LF (including CR for CRLF input).
@@ -56,10 +62,24 @@ pub enum Error {
     UnexpectedEof,
     #[error("Codex protocol transport failed")]
     Transport,
+    #[error("Codex is older than the oldest supported version")]
+    Version,
 }
 
 fn text(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+/// Text that a person reads in full and that often has several lines: a shell
+/// command, or the reason given for a request. Line breaks and tabs are part
+/// of it. Every other control character stays refused, because it could change
+/// what the owner is shown.
+fn script(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && !value
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
 }
 
 impl From<crate::json::Error> for Error {

@@ -174,38 +174,33 @@ captures whole windows and checks native errors. It does not create requests or
 seed capacity; an integrated real request is still needed to run it. The probe
 is syntax-checked only at this checkpoint.
 
-## Native resource onboarding handoff
+## Current device setup handoff
 
 ```sh
 python3 apps/hagency/tests/check_onboarding.py \
   tools/hagency-script-review/target/debug/hagency-script-review \
   --output .run/hagency-onboarding-vm
-cargo test --offline --lib --features onboarding-test-support \
-  adoption_ui -- --nocapture
 ```
 
-The 24 English/Chinese VM checks use the actual onboarding subtree and callbacks.
-They cover unavailable builds, replacement-device inventory, the original
-migration/grant recovery selectors, closed empty migration input, owner-only
-admitted connections across pages, unknown results, and the difference between a local
-reservation and server publication. They preserve the existing command and
-resource navigation. The script contains no token input, filesystem path,
-provider identity, confirmation flag or direct grant-consent permission.
+The 32 English/Chinese VM checks execute the actual current onboarding subtree
+and callbacks. Only `uninitialized` opens device setup; `active` opens provider
+accounts and resources. They cover unavailable builds, SDK owner blockers,
+original publication reviews, closed/unknown outcomes, rejection of unsupported
+status shapes, and preservation of an unrelated saved command. Setup has no
+token input, filesystem path, provider identity or script confirmation flag.
 
-The native panel owns the explicit shared monthly account ceiling and a separate
-review/confirmation. It explains worker shutdown, retains original resource
-identities/history, and does not grant project tokens or start an agent. Closing
-an in-flight operation reports an unknown result; recovery reopens its native
-original. The native tests cover bounded input, keyboard focus, close-result
-semantics and real Makepad layout bounds for long English/Chinese content at
-360×640 and 840×700. Bounds assertions are not screenshot or visual acceptance;
-root's integrated native captures and unchanged UX scoring remain required.
+Native setup checks the signed-in owner and execution device and persists the
+current initialization identity. It creates no provider account, shared quota or
+model work. Provider enrollment, server admission and publication remain separate
+reviews. These VM checks verify object construction and callbacks, not screenshots
+or live account effects. Native restart and current management coverage runs in
+the integration gate.
 
 `fixtures/destructure-widget-scope.splash` is a reduced pinned Makepad `1f3b1de`
 regression: destructuring an optional field inside a nested object constructor
 loses the outer `root` binding. The intended object is one container with one
-`legacy` text child. The runner retains the historical result without counting
-it as product acceptance. The shipped helper reads the optional field outside
+`uninitialized` text child. This independent language reproducer is not
+counted as product acceptance. The shipped helper reads the optional field outside
 the constructor; all actual onboarding subtrees must pass.
 
 ## Shared-work history

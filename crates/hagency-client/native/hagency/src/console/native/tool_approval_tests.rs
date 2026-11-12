@@ -18,28 +18,12 @@ fn package() -> ManagementPackage {
 }
 async fn fixture() -> (Fixture, ToolGrantQuery) {
     let (f, resource, room) = approval_bindings::fixture().await;
-    let login = &f.owner.0.host.console.0.server_login;
-    let device = login.authorized_device().await.unwrap();
-    let profile = crate::console::owned_agents::profile_identity(
-        device.origin(),
-        device.issuer(),
-        device.subject(),
-        device.owner_mxid(),
-    )
-    .unwrap();
-    let path = login
-        .state_directory()
-        .unwrap()
-        .join("owned-agent-owners")
-        .join(format!("management_{profile}"))
-        .join("domain.sqlite3");
-    let db = approval_bindings::repository(&f.owner).await;
+    let path = f._root.path().join("registry/domain.sqlite3");
     let sql = rusqlite::Connection::open(path).unwrap();
     // Transport/recovery fixture only. Real request/verdict-to-rule creation is
     // covered by the store approvals integration suite.
     sql.execute("INSERT INTO approval_grants(id,engagement_id,binding_generation,scope_key,scope_kind,mode,context_key) VALUES('grant_fixture',?1,1,'scope_fixture','\"exact_command\"','always','context_fixture')",[&room.engagement_id]).unwrap();
     drop(sql);
-    drop(db);
     (
         approval_bindings::reopen(f).await,
         ToolGrantQuery {
@@ -176,6 +160,24 @@ async fn native_tool_grant_conflict_does_not_settle_an_unknown_attempt() {
             .any(|r| r.command_id == input.command_id && r.reply.is_none())
     );
     assert!(!m.tool_grants(query).await.unwrap().grants[0].revoked);
+    f.owner.suspend().await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn native_tool_grant_receipt_failure_rolls_back_the_current_store() {
+    let (f, query) = fixture().await;
+    let m = f.owner.management(package()).await.unwrap();
+    let before = m.tool_grants(query.clone()).await.unwrap().grants.remove(0);
+    let input = selected(&m, query.clone(), "receipt_failure").await;
+    let (ctx, session) = m.authorized().await.unwrap();
+    let sql = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+    sql.execute_batch("CREATE TRIGGER fail_tool_receipt BEFORE INSERT ON management_commands WHEN NEW.operation='tool_grant.revoke' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END;").unwrap();
+    assert!(session.revoke_tool_grant(&ctx, input.clone()).await.is_err());
+    assert_eq!(m.tool_grants(query).await.unwrap().grants[0], before);
+    assert_eq!(sql.query_row("SELECT count(*) FROM management_commands WHERE operation='tool_grant.revoke'", [], |r| r.get::<_, u64>(0)).unwrap(), 0);
+    sql.execute_batch("DROP TRIGGER fail_tool_receipt").unwrap();
+    assert!(session.revoke_tool_grant(&ctx, input).await.unwrap().revoked);
     f.owner.suspend().await.unwrap();
     f.stop().await;
 }

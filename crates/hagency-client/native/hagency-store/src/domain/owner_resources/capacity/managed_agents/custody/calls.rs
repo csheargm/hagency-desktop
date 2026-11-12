@@ -64,13 +64,7 @@ fn live_call(db: &Connection, b: &Binding, child: &str) -> Result<(), Error> {
     if p.state != "qualified" {
         return Err(Error::LocalAuthority);
     }
-    if periods::recurring(&b.command) {
-        return shared_execution::check_period_account(db,child,b);
-    }
-    if unsettled_resource(db, &read_resource(db, &b.command.resource_id)?)? {
-        return Err(Error::Capacity);
-    }
-    Ok(())
+    shared_execution::check_period_account(db,child,b)
 }
 impl OwnerResourceRegistry {
     pub async fn prepare_managed_call(
@@ -87,8 +81,8 @@ impl OwnerResourceRegistry {
             let (id,digest)=identity(&a,&binding)?;
             if !same(&tx,&a,&id,&digest,&binding)? {
                 live_call(&tx,&b,&a.assignment.child)?;
-                let (held,unknown)=call_budget(&tx,&a.assignment.child)?;
-                if unknown || a.estimated_tokens>b.allocated.saturating_sub(held) {return Err(Error::Capacity);}
+                let (known,invalid)=postpaid_call_budget(&tx,&a.assignment.child)?;
+                if invalid || known>=b.allocated {return Err(Error::Capacity);}
                 bounded_row(&tx,"owner_managed_calls","id",&id,100_000)?;
                 tx.execute("INSERT INTO owner_managed_calls(id,child_id,execution_id,immutable_digest,assignment_generation,state,reserved_tokens,known_consumed_tokens,usage_complete) VALUES(?1,?2,?3,?4,?5,'prepared',?6,0,0)",params![id,a.assignment.child,a.execution,digest,a.assignment.generation,a.estimated_tokens])?;
                 periods::pin_call(&tx,&a.assignment.child,&id)?;
@@ -118,8 +112,8 @@ impl OwnerResourceRegistry {
             if h.state!="prepared" {a.check(&r)?;return Ok(ManagedCallClaim::History(h));}
             live_call(&tx,&b,&a.assignment.child)?;
             periods::require_call_current(&tx,&a.assignment.child,&id)?;
-            let (held,unknown)=call_budget(&tx,&a.assignment.child)?;
-            if unknown || held>=b.allocated {return Err(Error::Capacity);}
+            let (known,invalid)=postpaid_call_budget(&tx,&a.assignment.child)?;
+            if invalid || known>=b.allocated {return Err(Error::Capacity);}
             let revision=revision(&tx)?;
             tx.execute("UPDATE owner_managed_calls SET state='issued' WHERE id=?1 AND state='prepared'",[&id])?;
             tx.execute("UPDATE owner_managed_call_pins SET issue_revision=?2 WHERE call_id=?1",params![id,revision])?;

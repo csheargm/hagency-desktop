@@ -2,6 +2,7 @@ use super::*;
 use hagency_store::management::TaskField;
 use std::time::{Duration, Instant};
 
+
 fn profile(ch: char, mxid: &str) -> ProfileAuthority {
     ProfileAuthority::new(
         ch.to_string().repeat(64),

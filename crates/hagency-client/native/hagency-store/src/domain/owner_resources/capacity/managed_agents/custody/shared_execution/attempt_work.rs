@@ -27,7 +27,8 @@ pub(super) fn live(
     if !bound || !qualified || parent_closed {
         return Err(Error::LocalAuthority);
     }
-    account_budget(db, a.sink.child(), &original)?;
+    // This is also the running call's renewal gate. Quota exhaustion may
+    // reject fresh admission, never the existing process's authorization.
     Ok(())
 }
 
@@ -101,6 +102,7 @@ fn budget(
     a: &VerifiedSharedActivity,
 ) -> Result<(u64, String, successor::Calls), Error> {
     let b = authority::original(db, &a.enrollment, a.sink.child(), false)?;
+    account_budget(db, a.sink.child(), &b)?;
     let binding = canonical::digest(
         &json!({"child":a.sink.child(),"assignmentId":a.sink.original().assignment_id,"assignmentGeneration":1,"commandDigest":b.digest,"providerDigest":b.provider}),
     )?;
@@ -149,10 +151,9 @@ pub(super) async fn prepare(
         work::live(&tx,&a)?;
         context::require_input(&tx,&w,input.as_ref())?;
         if !work::exact_work(&tx,a.sink.child(),&w)? {return Err(Error::LocalAuthority)}
-        let (ceiling,binding,held)=budget(&tx,&a)?;
+        let (_,binding,_)=budget(&tx,&a)?;
         let prior:Option<u64>=tx.query_row("SELECT reserved_tokens FROM owner_managed_calls WHERE child_id=?1 AND execution_id=?2",params![a.sink.child(),w.execution_id],|r|r.get(0)).optional()?;
-        let tokens=prior.unwrap_or_else(||ceiling.saturating_sub(held.retained));
-        if tokens==0 {return Err(Error::Capacity)}
+        let tokens=prior.unwrap_or(0);
         let input=canonical::digest(&serde_json::to_value(&w)?)?;
         let digest=canonical::digest(&json!({"child":a.sink.child(),"assignmentDigest":binding,"execution":w.execution_id,"executionDigest":input,"estimatedTokens":tokens}))?;
         let id=format!("mac_{}",&canonical::digest(&json!({"child":a.sink.child(),"execution":w.execution_id}))?[..40]);

@@ -2,7 +2,7 @@
 //! quarantined populated legacy alert history or manufacture adoption evidence.
 use super::*;
 use crate::management::{CommandReceipt, ResourceAlert, ResourceAlertPage, ResourceAlertQuery, ResourceAlertDetail, ResourceAlertDetailQuery, TriageResourceAlert};
-impl AdoptedManagementStore {
+impl CurrentManagementStore {
     pub(crate) async fn web_managed_usage(&self, profile: &ProfileAuthority) -> Result<crate::management::WebManagedUsage, Error> {
         self.web_managed_usage_page(profile,None,256).await
     }

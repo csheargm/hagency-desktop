@@ -47,8 +47,8 @@ fn weak_authority_retires_all_strong_copies_without_replacing_original_deadline(
 async fn queued(retire: bool) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("domain");
-    let store = DomainStore::start(DomainRepository::open(&path).unwrap(), 8).unwrap();
-    let original = Session::new(
+    let store = ServerManagementJournal::open(&path, &"a".repeat(64), "@owner:test").unwrap();
+    let original = Session::new_server(
         store.clone(),
         context(),
         [Permission::RequestProjects],
@@ -57,7 +57,7 @@ async fn queued(retire: bool) {
     .unwrap();
     let weak = original.authority().downgrade();
     let held = original.clone();
-    let inspect = Connection::open(path.join("domain.sqlite3")).unwrap();
+    let inspect = Connection::open(path.join("server-management.sqlite3")).unwrap();
     inspect.execute_batch("BEGIN IMMEDIATE").unwrap();
     let mut pending = Box::pin(async move {
         held.prepare_intent(

@@ -11,7 +11,7 @@ sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "net"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net"] }
 tracing.workspace = true
 hagency-platform.workspace = true
 hagency-core.workspace = true
@@ -27,7 +27,7 @@ shared-context = []
 test-diagnostics = []
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 tempfile.workspace = true
 
 [lints]

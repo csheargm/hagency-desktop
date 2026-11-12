@@ -48,8 +48,6 @@ impl ManagementAuthority {
                 permissions: permissions.into_iter().collect(),
                 expires,
                 retired: AtomicBool::new(false),
-                configuration: ResourceConfigurationAccess::new(expires, fence.clone()),
-                publication: ResourcePublicationAccess::new(expires, fence.clone()),
                 commands: tokio::sync::Mutex::new(()),
                 pending: tokio::sync::Semaphore::new(8),
                 fence,

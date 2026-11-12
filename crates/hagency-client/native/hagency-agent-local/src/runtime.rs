@@ -1,16 +1,15 @@
-//! Desktop runtime bridge. Local accounts stay provider-owned; one disposable
-//! session per invocation shares the owner ledger and exact approval queue.
-use crate::codex::{
-    self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus,
-};
+//! Desktop runtime bridge. Native sessions may span many independently admitted
+//! calls. Accounts remain provider-owned; each call has its own ledger and approvals.
+use crate::codex::{self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus};
 use crate::{Ledger, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
 use hagency_runtime::{claude, octos};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use tokio::process::{Child, ChildStdin, ChildStdout};
+mod claude_controls;
+pub mod claude_turn;
 
 type Claude = hagency_runtime::owned::OwnedClaudeSession;
 type Octos = hagency_runtime::owned::OwnedOctosSession;
@@ -118,7 +117,10 @@ pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
     match kind(reference) {
         Kind::Claude
             if local_reference(Kind::Claude, &profile.codex_home, None) != reference
-                || !matches!(profile.effort.as_str(), "low" | "medium" | "high" | "max") =>
+                || !matches!(
+                    profile.effort.as_str(),
+                    "low" | "medium" | "high" | "xhigh" | "max"
+                ) =>
         {
             return Err(Error::Profile("Claude account or effort mismatch"));
         }
@@ -158,18 +160,19 @@ pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
 
 pub struct Process {
     pub session: Session,
-    child: Option<Child>,
+    /// Set when this start retired a saved native session, with the stable
+    /// reason code. The host records it; it changes nothing else.
+    pub discarded_session: Option<&'static str>,
 }
+/// The native CLI reported, before any input, that the saved context is gone.
+pub const SESSION_DISCARDED_MISSING: &str = "native_context_missing";
+/// The resumed start failed before any input `claude::resume_failures::LIMIT`
+/// times in a row without that report, and a fresh process then initialized.
+pub const SESSION_DISCARDED_RESUME_FAILED: &str = "native_resume_failed_repeatedly";
 impl Process {
     pub async fn stop(&mut self) -> Result<()> {
         match &mut self.session {
-            Session::Codex(_) => {
-                if let Some(child) = self.child.as_mut()
-                    && child.try_wait()?.is_none()
-                {
-                    child.kill().await?;
-                }
-            }
+            Session::Codex(wire) => require_stopped(wire.stop())?,
             Session::Claude { wire, .. } => require_stopped(wire.stop())?,
             Session::Octos { wire, .. } => require_stopped(wire.stop())?,
         }
@@ -185,12 +188,13 @@ fn require_stopped(cleanup: hagency_runtime::owned::Cleanup) -> Result<()> {
     }
 }
 pub enum Session {
-    Codex(Box<codex::Session<ChildStdout, ChildStdin>>),
+    Codex(Box<codex::Owned>),
     Claude {
         wire: Box<Claude>,
         profile: Profile,
         scope: Option<Scope>,
         context: String,
+        reusable: bool,
     },
     Octos {
         wire: Box<Octos>,
@@ -203,6 +207,13 @@ pub enum Session {
 
 pub async fn spawn(profile: &Profile, reference: &str) -> Result<Process> {
     spawn_inner(profile, reference, None, None).await
+}
+pub async fn spawn_with_guardian(
+    profile: &Profile,
+    reference: &str,
+    guardian: Option<&Path>,
+) -> Result<Process> {
+    spawn_inner(profile, reference, None, guardian).await
 }
 fn context_profile(profile: &Profile, reference: &str) -> Result<String> {
     crate::hash(&(reference, &profile.model, &profile.effort, &profile.cwd)).map_err(Into::into)
@@ -236,7 +247,88 @@ pub async fn spawn_for_scope_with_guardian(
         )
         .optional()
         .map_err(crate::Error::from)?;
-    spawn_inner(profile, reference, session.as_deref(), guardian).await
+    let mut process = spawn_inner(profile, reference, session.as_deref(), guardian).await?;
+    if let (Some(saved), Session::Claude { wire, .. }) = (session.as_deref(), &mut process.session)
+    {
+        wire.enable_native_completion()
+            .map_err(|_| Error::Protocol("Claude lifecycle"))?;
+        wire.enable_continuous_session()
+            .map_err(|_| Error::Protocol("Claude continuous session"))?;
+        wire.expect_resume(saved)
+            .map_err(|_| Error::Protocol("Claude resume identity"))?;
+        // Failed resumed starts are counted per saved row, for this host
+        // process only.
+        let counted = format!("personal\n{context}\n{profile_key}\n{saved}");
+        match wire.initialize().await {
+            Ok(()) => claude::resume_failures::clear(&counted),
+            // The installation, not the saved session: a fresh start meets the
+            // same thing. Keep the row; this is never counted.
+            Err(error) if error == claude::session::Error::UnsupportedVersion => {
+                return Err(claude_resume_error(error));
+            }
+            // The native CLI's own report that this context does not exist is
+            // the only single failure that retires the saved row.
+            Err(claude::session::Error::MissingResume) => {
+                if wire.pre_prompt_resume_id() != Some(saved) {
+                    return Err(Error::Protocol("Claude initialize"));
+                }
+                retire_saved_session(ledger, scope, &context, &profile_key, saved)?;
+                claude::resume_failures::clear(&counted);
+                process = spawn_inner(profile, reference, None, guardian).await?;
+                process.discarded_session = Some(SESSION_DISCARDED_MISSING);
+            }
+            // A timeout, a refusal, an exit or an unexpected frame before the
+            // prompt says nothing about the saved context: keep the row and
+            // return the failure, so that the next message resumes it. Only a
+            // session that keeps failing this way, and whose failed process is
+            // proven stopped before any prompt byte, is replaced below.
+            Err(error) => {
+                if claude::resume_failures::record(&counted) < claude::resume_failures::LIMIT
+                    || wire.failed_before_prompt_resume_id() != Some(saved)
+                {
+                    return Err(claude_resume_error(error));
+                }
+                // The saved row is retired only once a fresh process has
+                // initialized. If that fails too, the row and the count stay
+                // and the next message tries again.
+                let mut fresh = spawn_inner(profile, reference, None, guardian).await?;
+                let retired = match fresh.session.initialize().await {
+                    Ok(()) => retire_saved_session(ledger, scope, &context, &profile_key, saved),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = retired {
+                    let _ = fresh.stop().await;
+                    return Err(error);
+                }
+                claude::resume_failures::clear(&counted);
+                fresh.discarded_session = Some(SESSION_DISCARDED_RESUME_FAILED);
+                process = fresh;
+            }
+        }
+    }
+    Ok(process)
+}
+/// Remove one saved context pointer. Preserve every original usage,
+/// reservation and uncertain call; verify authority again after IO.
+fn retire_saved_session(
+    ledger: &mut Ledger,
+    scope: &Scope,
+    context: &str,
+    profile_key: &str,
+    saved: &str,
+) -> Result<()> {
+    crate::verify(&ledger.db, scope)?;
+    let removed = ledger
+        .db
+        .execute(
+            "DELETE FROM external_sessions WHERE scope=? AND profile=? AND session=?",
+            (context, profile_key, saved),
+        )
+        .map_err(crate::Error::from)?;
+    if removed != 1 {
+        return Err(Error::Protocol("Claude context changed"));
+    }
+    Ok(())
 }
 async fn spawn_inner(
     profile: &Profile,
@@ -247,10 +339,12 @@ async fn spawn_inner(
     validate(profile, reference)?;
     let kind = kind(reference);
     if kind == Kind::Codex {
-        let process = profile.spawn().await?;
+        let guardian = guardian
+            .map(Path::to_path_buf)
+            .unwrap_or(std::env::current_exe()?);
         return Ok(Process {
-            session: Session::Codex(Box::new(process.session)),
-            child: Some(process.child),
+            session: Session::Codex(Box::new(codex::Owned::spawn(profile, &guardian)?)),
+            discarded_session: None,
         });
     }
     let mut command = tokio::process::Command::new(&profile.executable);
@@ -270,32 +364,20 @@ async fn spawn_inner(
     }
     match kind {
         Kind::Claude => {
+            command
+                .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
+                .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1");
             if let Some(session) = resume {
                 crate::key(session)?;
                 command.args(["--resume", session]);
             }
-            command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
-            let settings = json!({"disableAllHooks":true,"permissions":{"ask":["Bash","Read","Write","Edit","Glob","Grep"]},"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}});
-            command
-                .args(
-                    claude::arguments(&profile.model)
-                        .map_err(|_| Error::Profile("Claude model"))?,
-                )
-                .args([
-                    "--setting-sources",
-                    "",
-                    "--settings",
-                    &settings.to_string(),
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    "{\"mcpServers\":{}}",
-                    "--tools",
-                    "Bash,Read,Write,Edit,Glob,Grep",
-                    "--disable-slash-commands",
-                    "--no-chrome",
-                    "--effort",
-                    &profile.effort,
-                ]);
+            if !claude_uses_default_config(&profile.home, &profile.codex_home) {
+                command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
+            }
+            command.args(
+                claude::interactive_arguments(&profile.model, &profile.effort)
+                    .map_err(|_| Error::Profile("Claude model or effort"))?,
+            );
         }
         Kind::Octos => {
             let digest = crate::hash(&(reference, &profile.cwd))?;
@@ -384,19 +466,13 @@ async fn spawn_inner(
     let session = match kind {
         Kind::Claude => Session::Claude {
             wire: Box::new(
-                Claude::spawn(
-                    &guardian,
-                    &launch,
-                    claude::session::Limits {
-                        event_wait_ms: 1_200_000,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|_| Error::Profile("Claude process custody unavailable"))?,
+                Claude::spawn(&guardian, &launch, claude::session::Limits::default())
+                    .map_err(|_| Error::Profile("Claude process custody unavailable"))?,
             ),
             profile: profile.clone(),
             scope: None,
             context: context_profile(profile, reference)?,
+            reusable: false,
         },
         Kind::Octos => Session::Octos {
             wire: Box::new(
@@ -422,7 +498,7 @@ async fn spawn_inner(
     };
     Ok(Process {
         session,
-        child: None,
+        discarded_session: None,
     })
 }
 
@@ -448,10 +524,16 @@ impl Session {
             Self::Codex(session) => {
                 session.initialize().await?;
             }
-            Self::Claude { wire, .. } => wire
-                .initialize()
-                .await
-                .map_err(|_| Error::Protocol("Claude initialize"))?,
+            Self::Claude { wire, .. } => {
+                if wire.phase() == claude::session::Phase::Ready {
+                    return Ok(());
+                }
+                wire.enable_native_completion()
+                    .map_err(|_| Error::Protocol("Claude lifecycle"))?;
+                wire.enable_continuous_session()
+                    .map_err(|_| Error::Protocol("Claude continuous session"))?;
+                wire.initialize().await.map_err(claude_initialize_error)?;
+            }
             Self::Octos { wire, .. } => wire
                 .hello()
                 .await
@@ -477,6 +559,21 @@ impl Session {
         }
         Ok(())
     }
+    /// Bind once after initialize, before opening/running the native context.
+    /// Every call's host authority is supplied separately by ApprovalQueue.
+    pub async fn enable_room_tools(
+        &mut self,
+        tools: hagency_runtime::room_tools::RoomTools,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.enable_room_tools(tools).await,
+            Self::Claude { wire, .. } => wire
+                .bind_room_tools(tools)
+                .await
+                .map_err(|_| Error::Protocol("Claude room tools startup")),
+            Self::Octos { .. } => Err(Error::Profile("room tools unavailable for this runtime")),
+        }
+    }
     #[cfg(unix)]
     pub fn enable_host_files(
         &mut self,
@@ -488,6 +585,74 @@ impl Session {
             _ => Err(Error::Profile("host files not released for this runtime")),
         }
     }
+    #[cfg(unix)]
+    pub fn rebind_host_files(
+        &mut self,
+        workspace: crate::room_files::Workspace,
+        gate: std::sync::Arc<dyn codex::HostToolGate>,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.rebind_host_files(workspace, gate),
+            _ => Err(Error::Profile("host files not released for this runtime")),
+        }
+    }
+    pub fn park(&mut self) {
+        if let Self::Codex(session) = self {
+            session.park();
+        }
+    }
+    pub fn can_continue(&self) -> bool {
+        match self {
+            Self::Codex(session) => session.can_continue(),
+            Self::Claude { wire, reusable, .. } => *reusable && wire.can_followup(),
+            Self::Octos { .. } => false,
+        }
+    }
+    /// Revalidate durable scope and the retained native process before a new
+    /// reservation. A failed probe has not transmitted this turn's model input.
+    pub async fn continue_context(
+        &mut self,
+        ledger: &mut Ledger,
+        scope: &Scope,
+        profile: &Profile,
+    ) -> Result<()> {
+        if !self.can_continue() {
+            return Err(Error::Protocol("native session cannot continue"));
+        }
+        match self {
+            Self::Codex(session) => session.continue_context(ledger, scope, profile).await,
+            Self::Claude {
+                wire,
+                profile: prior,
+                scope: bound,
+                context,
+                reusable,
+                ..
+            } => {
+                crate::verify(&ledger.db, scope)?;
+                if bound.as_ref() != Some(scope) || prior != profile {
+                    return Err(Error::Protocol("retained context scope or profile differs"));
+                }
+                let (saved, counters): (String, String) = ledger.db.query_row(
+                    "SELECT session,counters FROM external_sessions WHERE scope=? AND profile=?",
+                    (scope.context_key(&ledger.owner)?, context.as_str()), |row| Ok((row.get(0)?, row.get(1)?)),
+                ).map_err(crate::Error::from)?;
+                if wire.session_id() != Some(saved.as_str())
+                    || counters.is_empty()
+                    || counters == "null"
+                {
+                    return Err(Error::Protocol(
+                        "retained native session or accounting baseline differs",
+                    ));
+                }
+                *reusable = false;
+                wire.prepare_followup(claude::session::Limits::default())
+                    .await
+                    .map_err(|_| Error::Protocol("retained Claude process unavailable"))
+            }
+            Self::Octos { .. } => Err(Error::Protocol("native session cannot continue")),
+        }
+    }
     pub async fn open_context(
         &mut self,
         ledger: &mut Ledger,
@@ -496,10 +661,19 @@ impl Session {
     ) -> Result<()> {
         match self {
             Self::Codex(session) => session.open_context(ledger, scope, profile).await,
-            Self::Claude { scope: bound, .. } | Self::Octos { scope: bound, .. } => {
+            Self::Claude {
+                scope: bound,
+                profile: original,
+                ..
+            }
+            | Self::Octos {
+                scope: bound,
+                profile: original,
+                ..
+            } => {
                 crate::verify(&ledger.db, scope)?;
-                if bound.is_some() {
-                    return Err(Error::Protocol("context already open"));
+                if bound.is_some() || original != profile {
+                    return Err(Error::Protocol("context already open or profile differs"));
                 }
                 *bound = Some(scope.clone());
                 Ok(())
@@ -519,7 +693,10 @@ impl Session {
         queue: &ApprovalQueue,
         started: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<Completed> {
-        self.run_with_started_observed(ledger, owner, scope, call, dispatch, input, mode, queue, started, None).await
+        self.run_with_started_observed(
+            ledger, owner, scope, call, dispatch, input, mode, queue, started, None,
+        )
+        .await
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn run_with_started_observed(
@@ -553,11 +730,16 @@ impl Session {
         if input.is_empty() || input.len() > 65536 {
             return Err(Error::Profile("input size"));
         }
-        let BudgetMode::Estimated { reservation } = mode else {
-            return Err(Error::StrictQuotaUnsupported);
-        };
-        if ledger.reserve(scope, call, dispatch, reservation, now())? != Reservation::New {
+        let controls = queue
+            .controls
+            .as_ref()
+            .map(|inbox| inbox.claim(scope, dispatch, call))
+            .transpose()?;
+        if mode.admit(ledger, scope, call, dispatch)? != Reservation::New {
             return Err(Error::Protocol("refusing provider replay"));
+        }
+        if let Self::Claude { reusable, .. } = self {
+            *reusable = false;
         }
         let mut charge = Charge {
             ledger,
@@ -567,17 +749,25 @@ impl Session {
         };
         let began = Instant::now();
         let result = match self {
-            Self::Claude { wire, profile, .. } => {
+            Self::Claude {
+                wire,
+                profile,
+                context,
+                ..
+            } => {
                 run_claude(
                     wire,
                     profile,
                     charge.ledger,
                     owner,
                     scope,
+                    call,
+                    context,
                     dispatch,
                     input,
                     queue,
                     started,
+                    controls,
                 )
                 .await
             }
@@ -600,8 +790,30 @@ impl Session {
             }
             _ => unreachable!(),
         };
-        let (text, mut usage, failed, requests, returns, cumulative) = result?;
-        let is_octos = matches!(self, Self::Octos { .. });
+        let TurnResult {
+            text,
+            mut usage,
+            status,
+            requests,
+            returns,
+            cumulative,
+            late_failure,
+        } = result?;
+        if late_failure.is_some() {
+            // The native stream failed after this answer was read. The charge
+            // stays unsettled, so dropping it marks the call unknown exactly
+            // as when such a turn failed outright; only the answer is new.
+            return Ok(Completed {
+                text,
+                usage,
+                status,
+                elapsed_seconds: began.elapsed().as_secs(),
+                tool_requests: requests,
+                tool_returns: returns,
+                late_failure,
+            });
+        }
+        let is_claude = matches!(self, Self::Claude { .. });
         let (context, session) = match self {
             Self::Claude { wire, context, .. } => {
                 (context.as_str(), wire.session_id().ok_or(Error::Unknown)?)
@@ -611,21 +823,31 @@ impl Session {
             }
             _ => unreachable!(),
         };
-        // Persist absolute Octos counters even when this turn only exposes turn usage.
-        // This keeps a later session-total event from charging earlier turns twice.
-        let counters = if is_octos && usage.accounting_version != crate::UNREPORTED_ZERO {
+        // Claude projects UUID-deduplicated native result deltas for this
+        // admitted turn. Octos retains its distinct session counter contract.
+        let counters = if usage.is_reported() {
             use rusqlite::OptionalExtension;
-            let baseline: Option<String> = charge
+            let baseline: Option<(String, String)> = charge
                 .ledger
                 .db
                 .query_row(
-                    "SELECT counters FROM external_sessions WHERE scope=? AND profile=?",
+                    "SELECT session,counters FROM external_sessions WHERE scope=? AND profile=?",
                     (scope.context_key(owner)?, context),
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(crate::Error::from)?;
-            let baseline_missing = baseline.as_deref() == Some("null");
+            if baseline.as_ref().is_some_and(|(prior, _)| prior != session) {
+                return Err(Error::Protocol("resumed native session identity differs"));
+            }
+            let baseline = if is_claude {
+                None
+            } else {
+                baseline.map(|(_, counters)| counters)
+            };
+            let baseline_missing = baseline
+                .as_deref()
+                .is_some_and(|s| s.is_empty() || s == "null");
             let prior: Option<Usage> = baseline
                 .filter(|s| !s.is_empty() && s != "null")
                 .map(|s| serde_json::from_str(&s))
@@ -634,64 +856,102 @@ impl Session {
                 let absolute = serde_json::to_string(&usage)?;
                 if baseline_missing {
                     usage = crate::unreported_usage();
-                }
-                if let Some(prior) = prior {
-                    usage.input = usage.input.checked_sub(prior.input).ok_or(Error::Unknown)?;
-                    usage.output = usage
-                        .output
-                        .checked_sub(prior.output)
-                        .ok_or(Error::Unknown)?;
-                    usage.cached_input = usage
-                        .cached_input
-                        .checked_sub(prior.cached_input)
-                        .ok_or(Error::Unknown)?;
-                    usage.cache_write_input = match (usage.cache_write_input, prior.cache_write_input) {
-                        (Some(current), Some(prior)) => Some(current.checked_sub(prior).ok_or(Error::Unknown)?),
-                        _ => None,
-                    };
+                } else if let Some(prior) = prior {
+                    // A backwards native counter makes the charge unknown,
+                    // not the already completed answer unavailable.
+                    usage = usage_delta(&usage, &prior).unwrap_or_else(crate::unreported_usage);
                 }
                 absolute
             } else {
-                let mut absolute = usage.clone();
-                if let Some(prior) = prior {
-                    absolute.input = absolute
-                        .input
-                        .checked_add(prior.input)
-                        .ok_or(Error::Unknown)?;
-                    absolute.output = absolute
-                        .output
-                        .checked_add(prior.output)
-                        .ok_or(Error::Unknown)?;
-                    absolute.cached_input = absolute
-                        .cached_input
-                        .checked_add(prior.cached_input)
-                        .ok_or(Error::Unknown)?;
-                    absolute.cache_write_input = match (absolute.cache_write_input, prior.cache_write_input) {
-                        (Some(current), Some(prior)) => Some(current.checked_add(prior).ok_or(Error::Unknown)?),
-                        _ => None,
-                    };
+                // Claude main-loop counters exclude subagents, so they cannot
+                // establish a whole-session baseline for a future modelUsage.
+                if is_claude || baseline_missing {
+                    "null".into()
+                } else {
+                    let mut absolute = usage.clone();
+                    if let Some(prior) = prior {
+                        absolute.input = absolute
+                            .input
+                            .checked_add(prior.input)
+                            .ok_or(Error::Unknown)?;
+                        absolute.output = absolute
+                            .output
+                            .checked_add(prior.output)
+                            .ok_or(Error::Unknown)?;
+                        absolute.cached_input = absolute
+                            .cached_input
+                            .checked_add(prior.cached_input)
+                            .ok_or(Error::Unknown)?;
+                        absolute.cache_write_input =
+                            match (absolute.cache_write_input, prior.cache_write_input) {
+                                (Some(current), Some(prior)) => {
+                                    Some(current.checked_add(prior).ok_or(Error::Unknown)?)
+                                }
+                                _ => None,
+                            };
+                    }
+                    serde_json::to_string(&absolute)?
                 }
-                serde_json::to_string(&absolute)?
             }
         } else {
             String::new()
         };
-        if let Some(observer) = observer { observer(&usage); }
+        if let Some(observer) = observer {
+            observer(&usage);
+        }
         charge
             .ledger
             .settle_external(scope, call, &usage, context, session, &counters)?;
         charge.settled = true;
-        if failed {
+        if status == TurnStatus::Failed {
             return Err(Error::Failed);
+        }
+        if let Self::Claude { reusable, .. } = self {
+            *reusable = usage.is_reported() && cumulative;
         }
         Ok(Completed {
             text,
             usage,
-            status: TurnStatus::Completed,
+            status,
             elapsed_seconds: began.elapsed().as_secs(),
             tool_requests: requests,
             tool_returns: returns,
+            late_failure: None,
         })
+    }
+}
+
+fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
+    let mut delta = current.clone();
+    delta.input = current.input.checked_sub(prior.input)?;
+    delta.output = current.output.checked_sub(prior.output)?;
+    delta.cached_input = current.cached_input.checked_sub(prior.cached_input)?;
+    delta.cache_write_input = match (current.cache_write_input, prior.cache_write_input) {
+        (Some(current), Some(prior)) => Some(current.checked_sub(prior)?),
+        _ => None,
+    };
+    Some(delta)
+}
+
+/// The protocol error of a Claude Code installation below the floor. The host
+/// matches it to tell the owner to update the CLI.
+pub const CLAUDE_VERSION_REQUIRED: &str = "Claude Code 2.1.322 or newer is required";
+fn claude_initialize_error(error: claude::session::Error) -> Error {
+    match error {
+        claude::session::Error::UnsupportedVersion => Error::Protocol(CLAUDE_VERSION_REQUIRED),
+        _ => Error::Protocol("Claude initialize"),
+    }
+}
+/// A resumed launch that failed before input for any reason other than a
+/// missing context. The saved session row is kept in every one of these cases.
+fn claude_resume_error(error: claude::session::Error) -> Error {
+    use claude::session::Error as Native;
+    match error {
+        Native::UnsupportedVersion => claude_initialize_error(error),
+        Native::Timeout => Error::Protocol("Claude resume timed out before input"),
+        Native::Refused => Error::Protocol("Claude resume was refused before input"),
+        Native::PeerEof => Error::Protocol("Claude resume process ended before input"),
+        _ => Error::Protocol("Claude resume failed before input"),
     }
 }
 
@@ -736,7 +996,98 @@ async fn permission(
         _ => false,
     }
 }
-type TurnResult = (String, Usage, bool, usize, usize, bool);
+type TurnResult = claude_turn::Outcome;
+
+/// Whether this input is a slash command that the Agent's owner sent to their
+/// own local Claude Agent. The owner's CLI then runs it (`/compact`, `/cost`,
+/// a command or skill from the owner's settings). A room member who is not
+/// the owner cannot run commands of the owner's CLI: their text stays a
+/// prompt.
+pub fn owner_command(owner: &str, scope: &Scope, input: &str) -> bool {
+    scope.requester == owner && input.starts_with('/')
+}
+
+struct PersonalClaudeHost<'a> {
+    ledger: &'a mut Ledger,
+    owner: &'a str,
+    scope: &'a Scope,
+    call: &'a str,
+    context: &'a str,
+    dispatch: &'a str,
+    queue: &'a ApprovalQueue,
+}
+impl claude_turn::Host for PersonalClaudeHost<'_> {
+    async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
+        // The owner's own slash command runs as one. Anyone else's text, and
+        // any text the host wrapped, is a prompt and can never be a command.
+        let written = if owner_command(self.owner, self.scope, input) {
+            process.owner_command(input).await
+        } else {
+            process.prompt(input).await
+        };
+        written
+            .map(|_| ())
+            .map_err(|_| Error::Protocol("Claude prompt"))
+    }
+    fn bind_session(&mut self, session: &str) -> Result<()> {
+        self.ledger
+            .bind_external_session(
+                self.scope,
+                self.call,
+                self.context,
+                session,
+                &Usage {
+                    input: 0,
+                    output: 0,
+                    cached_input: 0,
+                    cache_write_input: Some(0),
+                    reasoning_output: 0,
+                    accounting_version: "claude-reported-v1".into(),
+                },
+            )
+            .map_err(Into::into)
+    }
+    async fn permission(
+        &mut self,
+        _request_id: &str,
+        tool: String,
+        arguments: Value,
+        directory: &Path,
+    ) -> bool {
+        permission(
+            self.ledger,
+            self.owner,
+            self.scope,
+            self.dispatch,
+            tool,
+            arguments,
+            directory,
+            self.queue,
+        )
+        .await
+    }
+}
+// Personal accounting is retained by its original session ledger and native
+// final model totals. Shared execution supplies its separate typed call sink.
+struct PersonalClaudeCapture;
+impl claude_turn::Capture for PersonalClaudeCapture {
+    async fn bind(&mut self, _process: &Claude) -> Result<()> {
+        Ok(())
+    }
+    async fn observe(&mut self, _observation: &claude::session::Observation) -> Result<()> {
+        Ok(())
+    }
+    async fn complete(&mut self, _process: &Claude, _text: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn complete_unaccounted(
+        &mut self,
+        _receipt: &claude::session::CompletionReceipt,
+        _text: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
 #[allow(clippy::too_many_arguments)]
 async fn run_claude(
     wire: &mut Claude,
@@ -744,181 +1095,36 @@ async fn run_claude(
     ledger: &mut Ledger,
     owner: &str,
     scope: &Scope,
+    call: &str,
+    context: &str,
     dispatch: &str,
     input: &str,
     queue: &ApprovalQueue,
     started: Option<tokio::sync::oneshot::Sender<()>>,
+    stream: Option<crate::run_controls::Stream>,
 ) -> Result<TurnResult> {
-    wire.prompt(input)
-        .await
-        .map_err(|_| Error::Protocol("Claude prompt"))?;
-    // Claude binds its session on the first system/init event after prompt.
-    let init = wire
-        .next_message()
-        .await
-        .map_err(|_| Error::Protocol("Claude session init"))?;
-    if !matches!(
-        init,
-        claude::Message::Event {
-            kind: claude::EventKind::System,
-            ..
-        }
-    ) {
-        return Err(Error::Protocol("Claude session init"));
-    }
-    wire.enable_approval_control(claude::session::ApprovalControlPolicy {
-        owner_wait_ms: 300_000,
-        response_reserve_ms: 10_000,
-    })
-    .map_err(|_| Error::Protocol("Claude control"))?;
-    if let Some(send) = started {
-        let _ = send.send(());
-    }
-    let mut requests = std::collections::BTreeSet::new();
-    let mut returns = std::collections::BTreeSet::new();
-    let mut buffered = std::collections::VecDeque::new();
-    for _ in 0..16384 {
-        let (message, observation) = if let Some(item) = buffered.pop_front() {
-            item
-        } else {
-            let message = wire
-                .next_message()
-                .await
-                .map_err(|_| Error::Protocol("Claude event"))?;
-            (message, wire.last_observation().cloned())
-        };
-        match message {
-            claude::Message::Permission {
-                request_id,
-                tool_name,
-                input,
-                ..
-            } => {
-                let directory = approval_directory(&profile.cwd, &input);
-                let decision = permission(
-                    ledger,
-                    owner,
-                    scope,
-                    dispatch,
-                    format!("claude.{tool_name}"),
-                    input,
-                    &directory,
-                    queue,
-                );
-                tokio::pin!(decision);
-                let allow = loop {
-                    match wire
-                        .next_or_control(decision.as_mut())
-                        .await
-                        .map_err(|_| Error::Protocol("Claude approval wait"))?
-                    {
-                        claude::session::ControlUpdate::Control(allow) => break Some(allow),
-                        claude::session::ControlUpdate::Message(message) => {
-                            let cancelled = matches!(&message,claude::Message::ControlCancel {request_id:id} if id==&request_id);
-                            let ended = matches!(
-                                &message,
-                                claude::Message::Event {
-                                    kind: claude::EventKind::Result,
-                                    ..
-                                }
-                            );
-                            if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
-                            }
-                            buffered.push_back((message, wire.last_observation().cloned()));
-                            if cancelled || ended {
-                                break None;
-                            }
-                        }
-                    }
-                };
-                let Some(allow) = allow else {
-                    continue;
-                };
-                let mut prepared = wire
-                    .prepare_approval(
-                        &request_id,
-                        if allow {
-                            claude::session::PermissionDecision::Allow
-                        } else {
-                            claude::session::PermissionDecision::Deny
-                        },
-                    )
-                    .map_err(|_| Error::Protocol("Claude decision"))?;
-                loop {
-                    match wire
-                        .send_prepared_approval(&mut prepared)
-                        .await
-                        .map_err(|_| Error::Protocol("Claude approval write"))?
-                    {
-                        claude::session::PreparedUpdate::WriteAccepted(_) => break,
-                        claude::session::PreparedUpdate::Message(message) => {
-                            if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
-                            }
-                            buffered.push_back((message, wire.last_observation().cloned()));
-                        }
-                    }
-                }
-            }
-            claude::Message::Event { kind, payload, .. } => {
-                if let Some(content) = payload["message"]["content"].as_array() {
-                    for block in content {
-                        if block["type"] == "tool_use"
-                            && let Some(id) = block["id"].as_str()
-                        {
-                            requests.insert(id.to_owned());
-                        }
-                        if block["type"] == "tool_result"
-                            && let Some(id) = block["tool_use_id"].as_str()
-                        {
-                            returns.insert(id.to_owned());
-                        }
-                    }
-                }
-                if kind == claude::EventKind::Result {
-                    let Some(observation) = observation else {
-                        return Err(Error::Unknown);
-                    };
-                    let claude::session::ObservationKind::Result { usage, is_error } =
-                        observation.kind()
-                    else {
-                        return Err(Error::Unknown);
-                    };
-                    let counts = usage.counts();
-                    let usage = match (
-                        counts.input(),
-                        counts.cache_read(),
-                        counts.cache_write(),
-                        counts.output(),
-                    ) {
-                        (Some(fresh), Some(cache), Some(write), Some(output)) => Usage {
-                            input: fresh
-                                .checked_add(cache)
-                                .and_then(|v| v.checked_add(write))
-                                .ok_or(Error::Unknown)?,
-                            output,
-                            cached_input: cache,
-                            cache_write_input: Some(write),
-                            reasoning_output: 0,
-                            accounting_version: "claude-reported-v1".into(),
-                        },
-                        _ => crate::unreported_usage(),
-                    };
-                    return Ok((
-                        payload["result"].as_str().unwrap_or("").into(),
-                        usage,
-                        *is_error,
-                        requests.len(),
-                        returns.len(),
-                        false,
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    Err(Error::Unknown)
+    let mut host = PersonalClaudeHost {
+        ledger,
+        owner,
+        scope,
+        call,
+        context,
+        dispatch,
+        queue,
+    };
+    claude_turn::run(
+        wire,
+        profile,
+        scope,
+        dispatch,
+        input,
+        queue,
+        started,
+        stream,
+        &mut host,
+        &mut PersonalClaudeCapture,
+    )
+    .await
 }
 #[allow(clippy::too_many_arguments)]
 async fn run_octos(
@@ -1090,14 +1296,19 @@ async fn run_octos(
                     },
                     _ => crate::unreported_usage(),
                 };
-                return Ok((
-                    idle.reply.unwrap_or_default(),
+                return Ok(TurnResult {
+                    text: idle.reply.unwrap_or_default(),
                     usage,
-                    idle.outcome != octos::Outcome::Completed,
-                    requests.len(),
-                    returns.len(),
-                    evidence.coverage() == octos::session::UsageCoverage::Session,
-                ));
+                    status: if idle.outcome == octos::Outcome::Completed {
+                        TurnStatus::Completed
+                    } else {
+                        TurnStatus::Failed
+                    },
+                    requests: requests.len(),
+                    returns: returns.len(),
+                    cumulative: evidence.coverage() == octos::session::UsageCoverage::Session,
+                    late_failure: None,
+                });
             }
             octos::session::Event::ToolCall { params } => {
                 // No task/MCP tool registration is made in the personal chat host.
@@ -1116,16 +1327,89 @@ async fn run_octos(
 
 /// Read only the CLI's public authentication verdict. Never reads credentials.
 pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result<bool> {
+    let status = if claude_uses_default_config(home, config) {
+        claude_default_account_status(binary, home).await
+    } else {
+        claude_account_status(binary, home, config).await
+    };
+    status.map(|account| account.authenticated)
+}
+
+/// The implicit native account and an explicitly selected config directory
+/// are distinct macOS Keychain namespaces, even at the same filesystem path.
+pub fn claude_uses_default_config(home: &Path, config: &Path) -> bool {
+    std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
+        && home.join(".claude").canonicalize().ok().as_deref() == Some(config)
+}
+
+/// Public native CLI metadata, not a verified provider identity or quota key.
+/// No credential fields, Debug or serialization escape this adapter.
+#[derive(PartialEq, Eq)]
+pub struct ClaudeAccountStatus {
+    authenticated: bool,
+    method: Option<String>,
+    provider: Option<String>,
+    email: Option<String>,
+    organization: Option<String>,
+}
+impl ClaudeAccountStatus {
+    pub fn oauth_metadata(&self) -> Option<(&str, &str)> {
+        if !self.authenticated
+            || self.method.as_deref() != Some("claude.ai")
+            || self.provider.as_deref() != Some("firstParty")
+        {
+            return None;
+        }
+        Some((self.email.as_deref()?, self.organization.as_deref()?))
+    }
+    /// The CLI uses an API key (true) or a bearer token (false) rather than a
+    /// claude.ai sign-in. Claude Code 2.1.322 reports these as `api_key` and
+    /// `oauth_token`; the second also covers a claude.ai token in the
+    /// environment, which the caller tells apart by the variable it finds.
+    pub fn api_credential(&self) -> Option<bool> {
+        if !self.authenticated || self.provider.as_deref() != Some("firstParty") {
+            return None;
+        }
+        match self.method.as_deref()? {
+            "api_key" => Some(true),
+            "oauth_token" => Some(false),
+            _ => None,
+        }
+    }
+}
+
+pub async fn claude_account_status(
+    binary: &Path,
+    home: &Path,
+    config: &Path,
+) -> Result<ClaudeAccountStatus> {
+    claude_account_status_in(binary, home, Some(config)).await
+}
+/// The native default login uses a distinct Keychain service from an explicit
+/// CLAUDE_CONFIG_DIR, even when both configuration paths name ~/.claude.
+pub async fn claude_default_account_status(
+    binary: &Path,
+    home: &Path,
+) -> Result<ClaudeAccountStatus> {
+    claude_account_status_in(binary, home, None).await
+}
+async fn claude_account_status_in(
+    binary: &Path,
+    home: &Path,
+    config: Option<&Path>,
+) -> Result<ClaudeAccountStatus> {
     use tokio::io::AsyncReadExt;
     let mut command = tokio::process::Command::new(binary);
     command
         .args(["auth", "status", "--json"])
         .env_clear()
         .env("HOME", home)
-        .env("CLAUDE_CONFIG_DIR", config)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    if let Some(config) = config {
+        command.env("CLAUDE_CONFIG_DIR", config);
+    }
     for name in ["USER", "PATH", "TMPDIR"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -1150,7 +1434,24 @@ pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result
         return Err(Error::Protocol("account response bound"));
     }
     let value: Value = serde_json::from_slice(&bytes)?;
-    Ok(status.success() && value["loggedIn"] == true)
+    let field = |key: &str| -> Result<Option<String>> {
+        match value.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s))
+                if !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control) =>
+            {
+                Ok(Some(s.clone()))
+            }
+            _ => Err(Error::Protocol("account metadata")),
+        }
+    };
+    Ok(ClaudeAccountStatus {
+        authenticated: status.success() && value["loggedIn"] == true,
+        method: field("authMethod")?,
+        provider: field("apiProvider")?,
+        email: field("email")?,
+        organization: field("orgId")?,
+    })
 }
 
 fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
@@ -1180,6 +1481,22 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_the_owners_own_slash_text_is_a_command() {
+        let scope = |requester: &str| Scope {
+            agent: "agent-a".into(),
+            binding: "binding-a".into(),
+            room: "!room:test".into(),
+            requester: requester.into(),
+            thread: "!room:test".into(),
+        };
+        assert!(owner_command("@owner:test", &scope("@owner:test"), "/compact"));
+        // Another room member may call the Agent, but not the owner's CLI.
+        assert!(!owner_command("@owner:test", &scope("@member:test"), "/compact"));
+        for text in ["compact", " /compact", "see /compact", ""] {
+            assert!(!owner_command("@owner:test", &scope("@owner:test"), text));
+        }
+    }
     #[test]
     fn references_require_exact_kind_hash_and_octos_profile() {
         let hash = "a".repeat(64);

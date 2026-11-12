@@ -431,7 +431,6 @@ pub(in crate::domain) fn unsettled_resource(
 /// Definition visibility/retirement does not change an account or seat budget.
 /// Inspect only this exact resource's retained children, including inactive
 /// parent grants whose issued work has not yet been fully accounted for.
-#[cfg(feature = "resource-adoption")]
 pub(in crate::domain) fn unsettled_exact_resource(db: &Connection, resource_id: &str) -> Result<bool, Error> {
     let mut q = db.prepare("SELECT id FROM owner_capacity_grants WHERE accounting_mode=?1 AND resource_id=?2")?;
     let rows = q.query_map(params![MANAGED, resource_id], |r| r.get::<_, String>(0))?;

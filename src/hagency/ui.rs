@@ -6,6 +6,18 @@ use super::{backend::Service, model::*, approvals::Notices};
 use std::{collections::HashSet, time::Instant};
 use crate::sliding_sync::spawn_async_task;
 
+/// `shared_workspace` is the project directory shown to the owner when the
+/// shared-workspace opt-in is selected; the service refuses the start when the
+/// saved directory is no longer that one.
+fn runtime_start_input(takeover: bool, effort: String, shared_workspace: Option<String>) -> Value {
+    serde_json::to_value(::hagency::native_owner::RuntimeStartRequest {
+        takeover, effort: Some(effort),
+        shared_workspace: shared_workspace.is_some(),
+        expected_workspace: shared_workspace,
+        ..Default::default()
+    }).expect("runtime start request contains only JSON values")
+}
+
 #[derive(Clone, Debug)]
 pub enum HagencyAction {
     OpenProjects,
@@ -265,7 +277,10 @@ pub(crate) fn runtime_summary(runtime:&Value,agent:&str,binding:Option<&str>)->S
 // Never render a provider's raw JSON, stderr, filesystem paths, or credentials.
 fn provider_error_message(error: &str) -> Option<&'static str> {
     Some(match error {
+        "owner_daemon_update_required" => "The resource owner's Hagency service needs an update. Update Hagency and start its service; the original message can then continue.",
+        "owner_daemon_unavailable" => "The resource owner's Hagency service is unavailable. The original message is waiting for that service to reconnect.",
         "claude_binary_unavailable" => "Claude Code is not installed or could not be started. Check the local installation.",
+        "shared_claude_version_unsupported" | "claude_version_unsupported" => "Update Claude Code to version 2.1.322 or newer, then retry.",
         "octos_binary_unavailable" => "Octos is not installed or could not be started. Check the local installation.",
         "claude_account_unavailable" | "local_provider_not_signed_in" => "Check your local Claude sign-in, then connect the account again.",
         "local_provider_home_unavailable" => "The local runtime's account directory is unavailable. Check its local setup.",
@@ -273,6 +288,7 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
         "provider_authorization_lost" => "The local runtime's account or configuration is unavailable. Check Model & resources and reconnect.",
         "local_provider_login_managed_locally" => "Sign in through the local runtime, then connect it here.",
         "codex_binary_unavailable" => "Codex is not installed or could not be started. Check the local Codex installation.",
+        "codex_version_unsupported" => "Update Codex to version 0.167.0 or newer, then retry.",
         "local_codex_home_unavailable" | "provider_directory_unavailable" | "provider_directory_not_canonical" => "Codex's local account or workspace directory is unavailable. Check its local permissions and retry.",
         "local_codex_configuration_unsupported" | "provider_file_credentials_or_config_rejected" => "This Codex configuration cannot be safely used by Hagency. Your existing account has not been changed. Check the configuration or use a separate Codex account.",
         "provider_profile_mismatch" | "provider_choice_unavailable" => "The saved local account selection is unavailable or does not match this profile. Reconnect the intended account and retry.",
@@ -289,9 +305,10 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
     })
 }
 fn visible_error(error: &str) -> String {
-        if let Some(message)=crate::host::hagency::errors::message(error){return message.to_owned();}
     if let Some(message) = provider_error_message(error) {
         format!("{} ({error})", crate::i18n::tr(message))
+    } else if let Some(message) = crate::host::hagency::errors::message(error) {
+        message.to_owned()
     } else {
         crate::i18n::tr(user_error(error)).to_owned()
     }
@@ -774,10 +791,8 @@ script_mod! {
                         runtime_chat_target := Text {draw_text.color: mod.widgets.RINX_MUTED}
                         runtime_status := Text {}
                         runtime_start_options := View {width: Fill height: Fit flow: Down spacing: 8
-                        Text {text: #(crate::i18n::tr("Estimated token accounting is used by default. Reserve tokens before each request; actual usage may exceed the estimate. Missing usage is recorded as zero and the reservation is released automatically.")) i18n_text: "Estimated token accounting is used by default. Reserve tokens before each request; actual usage may exceed the estimate. Missing usage is recorded as zero and the reservation is released automatically."}
+                        Text {text: #(crate::i18n::tr("Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens.")) i18n_text: "Usage is charged after each task. Running tasks may exceed the quota and finish normally. Missing usage remains pending measurement and does not reserve tokens."}
                         start_requirements := Text {draw_text.color: mod.widgets.RINX_MUTED}
-                        Text {text: #(crate::i18n::tr("Reservation per request (tokens)")) i18n_text: "Reservation per request (tokens)"}
-                        reservation := Input {empty_text: #(crate::i18n::tr("Positive token count")) i18n_empty_text: "Positive token count"}
                         service_advanced_toggle := Action {text: #(crate::i18n::tr("Advanced service options")) i18n_text: "Advanced service options" spacing: 6 icon_walk: Walk{width: 12 height: 12} draw_icon.svg: ICON_CHEVRON_RIGHT}
                         service_advanced := View {visible: false width: Fill height: Fit flow: Down spacing: 8
                         takeover := CheckBox {text: #(crate::i18n::tr("Explicitly take over this Agent's device lease")) i18n_text: "Explicitly take over this Agent's device lease"}
@@ -1350,7 +1365,6 @@ impl HagencyPanel {
         self.view.drop_down(cx, ids!(policy_binding)).set_selected_item(cx, index);
         self.policy = Value::Null;
         self.runtime_room_active=false;self.agent_service_state=Value::Null;self.service_row_targets.clear();self.runtime_pending_action=None;self.runtime_action_error.clear();
-        self.view.text_input(cx,ids!(reservation)).set_text(cx,"");
         self.clear_approval_state(cx);
         self.approvals.clear();
         self.labels(cx,ids!(approvals),"Select a pending approval",&self.approvals,"proposalId");
@@ -1395,7 +1409,6 @@ impl HagencyPanel {
             ids!(workspace),
             ids!(prepare_workspace),
             ids!(refresh_models),
-            ids!(reservation),
             ids!(effort),
             ids!(found_room),
             ids!(takeover),
@@ -1734,7 +1747,7 @@ impl HagencyPanel {
             && !self.credential_ref.is_empty() && string(profile,"credential_ref") == self.selected_credential(cx)
             && (string(profile,"reasoning_effort").is_empty() || self.runtime_efforts.iter().any(|e|e==string(profile,"reasoning_effort")))
             && !self.input(cx,ids!(workspace)).is_empty() && string(profile,"workspace_root") == self.input(cx,ids!(workspace));
-        let reason=if self.runtime_resources_loading {"Checking the saved model and connected local account…"} else if self.view.view(cx,ids!(runtime_section)).visible() && !self.runtime_resources_checked {"Model resources could not be verified. Refresh this Service page to retry."} else if !assigned_here {"Assign this Agent to this device in Agent and device."} else if !self.provider_authenticated {"Connect your account in Model & resources."} else if !model_ready || self.runtime_efforts.is_empty() {"Save a model in Model & resources. A private workspace is created automatically."} else {"Ready to start with a positive token reservation."};
+        let reason=if self.runtime_resources_loading {"Checking the saved model and connected local account…"} else if self.view.view(cx,ids!(runtime_section)).visible() && !self.runtime_resources_checked {"Model resources could not be verified. Refresh this Service page to retry."} else if !assigned_here {"Assign this Agent to this device in Agent and device."} else if !self.provider_authenticated {"Connect your account in Model & resources."} else if !model_ready || self.runtime_efforts.is_empty() {"Save a model in Model & resources. A private workspace is created automatically."} else {"Ready to start. Actual usage is charged after each task."};
         self.view.label(cx,ids!(start_requirements)).set_text(cx,crate::i18n::tr(reason));
         let start_ready=self.provider_authenticated && model_ready && !self.runtime_efforts.is_empty() && !self.runtime_resources_loading && self.runtime_resources_checked;
         self.view.button(cx,ids!(service_toggle)).set_enabled(cx, assigned_here && runtime_known && !self.busy && (self.runtime_room_active || start_ready));
@@ -2141,8 +2154,14 @@ impl HagencyPanel {
             });
         });
     }
-    fn model_save_input(&self, cx: &mut Cx, model: &Value, effort: &str) -> Value {
-        json!({"profile":{"model":model["model"],"credential_ref":self.selected_credential(cx),"workspace_root":self.input(cx,ids!(workspace)),"reasoning_effort":effort,"web_search":self.view.check_box(cx,ids!(web_search)).active(cx)}})
+    /// The save names the profile this screen last read, so a change made
+    /// elsewhere in between is not overwritten. `None` when that profile
+    /// cannot be read back as one.
+    fn model_save_input(&self, cx: &mut Cx, model: &Value, effort: &str) -> Option<Value> {
+        ::hagency::native_owner::model_save_request(
+            &self.policy["modelProfile"],
+            json!({"model":model["model"],"credential_ref":self.selected_credential(cx),"workspace_root":self.input(cx,ids!(workspace)),"reasoning_effort":effort,"web_search":self.view.check_box(cx,ids!(web_search)).active(cx)}),
+        )
     }
     fn render_policy(&self, cx: &mut Cx) {
         self.view.check_box(cx,ids!(web_search)).set_active(cx,self.policy["modelProfile"]["web_search"].as_bool().unwrap_or(true),Animate::No);
@@ -2735,10 +2754,6 @@ impl HagencyPanel {
                 let label=runtime_list_label(Some(&Ok(value.clone())),self.agent(cx).as_deref().unwrap_or(""));
                 self.runtime_list_timer=cx.start_timeout(if label.starts_with("Starting") || label.starts_with("Checking") {2.0} else {10.0});
                 self.agent_service_state=value.clone();
-                if self.input(cx,ids!(reservation)).is_empty() {
-                    let reservation=value["service"]["reservation"].as_u64().filter(|n|*n>0).unwrap_or(10000);
-                    self.view.text_input(cx,ids!(reservation)).set_text(cx,&reservation.to_string());
-                }
                 let height=(array(&value["service"],"rooms").len() as f64 * 88.0).clamp(48.0,352.0);
                 let mut list=self.view.portal_list(cx,ids!(service_rooms));
                 script_apply_eval!(cx,list,{height: #(height)});
@@ -3983,7 +3998,7 @@ impl Widget for HagencyPanel {
             let Some(model)=self.selected(cx,ids!(model),&self.provider_models) else {self.status(cx,"Select a model or profile from this device's catalog.");return;};
             if !self.provider_authenticated || self.credential_ref.is_empty() {self.status(cx,"Connect your local account first.");return;}
             let Some(effort)=self.runtime_efforts.get(self.view.drop_down(cx,ids!(effort)).selected_item()).cloned() else {self.status(cx,"Select a supported reasoning effort.");return;};
-            let input = self.model_save_input(cx,&model,&effort);
+            let Some(input) = self.model_save_input(cx,&model,&effort) else {self.status(cx, "Load this Agent's local resources before saving.");return;};
             self.local(cx, Target::Policy, LocalAction::SaveAgentModel, Some(input));
             return;
         }
@@ -4031,14 +4046,6 @@ impl Widget for HagencyPanel {
             if !self.local_agent(cx) {
                 self.runtime_feedback(cx,"Assign this Agent to this device before starting it here."); return;
             }
-            let Ok(reservation) = self.input(cx, ids!(reservation)).parse::<u64>() else {
-                self.runtime_feedback(cx, "Enter a positive token reservation.");
-                return;
-            };
-            if reservation == 0 {
-                self.runtime_feedback(cx,"Enter a positive token reservation.");
-                return;
-            }
             let selected_model=self.selected(cx,ids!(model),&self.provider_models);
             if selected_model.as_ref().is_none_or(|m|string(m,"model") != string(&self.policy["modelProfile"],"model")) || string(&self.policy["modelProfile"],"model").is_empty() {
                 self.runtime_feedback(cx,"Save the selected model or profile before starting this Room.");return;
@@ -4049,8 +4056,8 @@ impl Widget for HagencyPanel {
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
             let shared_workspace=self.view.check_box(cx,ids!(shared_workspace)).active(cx);
             if shared_workspace && self.provider_runtime(cx)!="codex" {self.runtime_feedback(cx,"Shared workspace editing currently supports Codex only.");return;}
-            let mut input = json!({"reservation":reservation,"takeover":self.view.check_box(cx,ids!(takeover)).active(cx),"effort":effort});
-            if shared_workspace {input["sharedWorkspace"]=true.into();input["expectedWorkspace"]=string(&self.policy["modelProfile"],"workspace_root").into();}
+            let shared_workspace=shared_workspace.then(||string(&self.policy["modelProfile"],"workspace_root").to_owned());
+            let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort, shared_workspace);
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
             return;
         }
@@ -4406,6 +4413,25 @@ impl HagencyPanelRef {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn runtime_start_button_body_matches_the_native_request_parser() {
+        for takeover in [false, true] {
+            let body = runtime_start_input(takeover, "high".into(), None);
+            let parsed: ::hagency::native_owner::RuntimeStartRequest = serde_json::from_value(body.clone()).unwrap();
+            assert_eq!(parsed.takeover, takeover);
+            assert_eq!(parsed.effort.as_deref(), Some("high"));
+            assert!(parsed.recovery_device_id.is_none() && parsed.recovery_consent_id.is_none());
+            assert!(body.get("mode").is_none() && body.get("reservation").is_none());
+            // A start without the opt-in sends the same body as before it existed.
+            assert!(!parsed.shared_workspace && parsed.expected_workspace.is_none());
+            assert!(body.get("sharedWorkspace").is_none() && body.get("expectedWorkspace").is_none());
+        }
+        let body = runtime_start_input(false, "high".into(), Some("/project".into()));
+        assert_eq!(body["sharedWorkspace"], true);
+        assert_eq!(body["expectedWorkspace"], "/project");
+        let parsed: ::hagency::native_owner::RuntimeStartRequest = serde_json::from_value(body).unwrap();
+        assert!(parsed.shared_workspace && parsed.expected_workspace.as_deref() == Some("/project"));
+    }
+    #[test]
     fn web_search_default_toggle_save_and_reload_use_the_agent_profile() {
         let mut cx=Cx::new(Box::new(|_,_|{}));
         let mut panel=cx.with_vm(|vm| {makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);let value=script_eval!(vm,{mod.widgets.HagencyPanel {}});HagencyPanel::script_from_value(vm,value)});
@@ -4413,8 +4439,18 @@ mod tests {
         panel.render_policy(&mut cx);
         assert!(panel.view.check_box(&mut cx,ids!(web_search)).active(&mut cx));
         panel.view.check_box(&mut cx,ids!(web_search)).set_active(&mut cx,false,Animate::No);
-        let saved=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low");
+        let saved=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").unwrap();
         assert_eq!(saved["profile"]["web_search"],false);
+        // The save names the profile that was read: its digest goes with it,
+        // and another one is sent once the saved profile is read back.
+        let digest=saved["expectedProfileDigest"].as_str().unwrap().to_owned();
+        assert!(digest.len()==64 && saved.as_object().unwrap().len()==2);
+        let none=std::mem::replace(&mut panel.policy["modelProfile"],Value::Null);
+        let first=panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").unwrap();
+        assert_ne!(first["expectedProfileDigest"],digest);
+        panel.policy["modelProfile"]=json!({"model":1});
+        assert!(panel.model_save_input(&mut cx,&json!({"model":"probe"}),"low").is_none());
+        panel.policy["modelProfile"]=none;
         panel.view.check_box(&mut cx,ids!(web_search)).set_active(&mut cx,true,Animate::No);
         panel.policy["modelProfile"]=saved["profile"].clone();
         panel.render_policy(&mut cx);
@@ -4455,7 +4491,7 @@ mod tests {
             assert!(!remote_configuration_command(&local(action.clone(),Some("room".into()),None)));
             assert!(!remote_configuration_command(&local(action,None,Some("member".into()))));
         }
-        for action in [LocalAction::Policy,LocalAction::Model,LocalAction::SavePolicy,LocalAction::ResetAgentPolicy,LocalAction::ResetPolicy,LocalAction::RuntimeStart,LocalAction::RuntimeStop,LocalAction::Approvals,LocalAction::StartAgentService,LocalAction::StopAgentService] {
+        for action in [LocalAction::Policy,LocalAction::SavePolicy,LocalAction::ResetAgentPolicy,LocalAction::ResetPolicy,LocalAction::RuntimeStart,LocalAction::RuntimeStop,LocalAction::Approvals,LocalAction::StartAgentService,LocalAction::StopAgentService] {
             assert!(!remote_configuration_command(&local(action,None,None)));
         }
         for action in [ProviderAction::Status,ProviderAction::Models,ProviderAction::UseLocal] {
@@ -5371,7 +5407,7 @@ mod tests {
     }
     #[test]
     fn provider_diagnostics_are_explicit_but_never_render_untrusted_details() {
-        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch"] {
+        for code in ["local_codex_configuration_unsupported", "codex_binary_unavailable", "provider_directory_not_canonical", "provider_keyring_unavailable", "codex_model_catalog_unavailable", "codex_protocol_mismatch", "codex_version_unsupported", "claude_version_unsupported", "owner_daemon_update_required", "owner_daemon_unavailable"] {
             let message = visible_error(code);
             assert!(message.contains(code), "approved static diagnostic is visible");
             assert!(!message.starts_with(code), "explain the problem before the code");
@@ -5382,6 +5418,21 @@ mod tests {
             assert!(!message.contains(unsafe_detail));
             assert!(!message.contains("secret"));
             assert!(!message.contains("/Users"));
+        }
+    }
+    #[test]
+    fn shared_protocol_errors_explain_update_or_reconnection_without_resending() {
+        for (code, expected) in [
+            ("owner_daemon_update_required", "Update Hagency and start its service"),
+            ("owner_daemon_unavailable", "waiting for that service to reconnect"),
+        ] {
+            assert!(user_error(code).contains(expected));
+            assert!(user_error(code).contains("original message"));
+            assert!(visible_error(code).contains(code));
+            assert!(!user_error(code).contains("retry"));
+            let untrusted = format!("{code} /Users/owner/private/token");
+            assert_eq!(provider_error_message(&untrusted), None);
+            assert!(!visible_error(&untrusted).contains("/Users"));
         }
     }
     #[test]

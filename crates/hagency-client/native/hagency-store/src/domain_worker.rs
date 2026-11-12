@@ -3378,17 +3378,6 @@ impl DomainStore {
         self.call(command.weight(), move |db| db.management_intent(command))
             .await
     }
-    pub(crate) async fn verify_management_resource(
-        &self,
-        id: String,
-        revision: String,
-        proof: crate::management::ProviderWitness,
-    ) -> Result<crate::management::ResourceSummary, Error> {
-        self.call(weight(&(&id, &revision))? + 4096, move |db| {
-            db.verify_management_resource(&id, &revision, proof, writer_time()?)
-        })
-        .await
-    }
     pub(crate) async fn management_resources(
         &self,
         query: crate::management::ResourceQuery,
@@ -5095,6 +5084,16 @@ impl DomainStore {
         })
         .await
     }
+    pub async fn private_approval_room_marker(
+        &self,
+        authority: ApprovalRoomAuthority,
+        device: String,
+        generation: u64,
+    ) -> Result<serde_json::Value, Error> {
+        self.call(weight(&(&authority, &device, generation))?, move |db| {
+            db.private_approval_room_marker(&authority, &device, generation)
+        }).await
+    }
     pub async fn fence_approval_room(
         &self,
         authority: ApprovalRoomAuthority,
@@ -5744,6 +5743,31 @@ mod approval_response_tests;
 
 // Separate instance-bound custody maintenance; never generic parked execution.
 impl DomainStore {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bind_owned_approval_tree_context(
+        &self,
+        cap: RunnerCapability,
+        expected: String,
+        context: hagency_core::approvals::HostApprovalContext,
+        source: hagency_runtime::codex::session::ObservationSource,
+        until: std::time::Instant,
+        expires_at: u64,
+    ) -> Result<crate::OwnedApprovalScope, Error> {
+        self.call(weight(&(&cap, &expected, &context, expires_at))?, move |db| {
+            db.bind_owned_approval_tree_clock(&cap, &expected, &context, source, until, expires_at, writer_time)
+        }).await
+    }
+    pub async fn register_owned_approval_descendant(
+        &self,
+        scope: &crate::OwnedApprovalScope,
+        context: hagency_core::approvals::HostApprovalContext,
+        native: hagency_runtime::codex::session::NativeTurnContext,
+    ) -> Result<(), Error> {
+        let proof = scope.proof();
+        self.call(weight(&(proof.weight(), &context))?, move |db| {
+            db.register_owned_approval_descendant_clock(&proof, &context, &native, writer_time)
+        }).await
+    }
     pub async fn bind_owned_approval_context(
         &self,
         cap: RunnerCapability,

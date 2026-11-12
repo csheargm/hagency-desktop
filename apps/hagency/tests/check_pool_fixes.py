@@ -286,6 +286,19 @@ let people=A.who_candidates(v)
 assert(people.len()==2 && people[0]=="@lisi:test" && people[1]=="@zhaoliu:test")
 assert(A.who_display("@zhaoliu:test")=="Zhao Liu" && A.who_source(v,"@zhaoliu:test")==A.t("In a chat with you","和你在同一个聊天里"))
 ''',
+# The owner closed a pool's server connection; the last grant the pool list knows still names
+# what was published. A closed connection publishes nothing, on every page that says so.
+'a_closed_connection_is_not_published': '''
+open(main)
+H.connection_capacity={id:"con_main" epoch:1 state:"ready" pool:grant}
+assert(A.connection_capacity_active(conn))
+assert(A.sub_connection_status(conn)==A.t("Published · ready for Agents","已发布，可以使用"))
+let closed={id:"con_main" label:"Research" resourceId:"resource_main" ownerMxid:"@owner:test" coordinatorMxid:"@owner:test" executorDeviceId:"device" state:"revoked"}
+assert(!A.connection_capacity_active(closed))
+assert(A.sub_connection_status(closed)!=A.t("Published · ready for Agents","已发布，可以使用"))
+assert(A.server_status(closed).text==A.t("Connection closed","连接已关闭"))
+assert(!A.pool_published(closed,grant))
+''',
 }
 def main():
  p=argparse.ArgumentParser();p.add_argument('vm',type=Path);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)

@@ -16,8 +16,8 @@ fn context(f: &Fixture) -> HostContext {
     )
     .unwrap()
 }
-fn session(backing: AdoptedManagementStore, context: &HostContext) -> Session {
-    Session::new_adopted(
+fn session(backing: CurrentManagementStore, context: &HostContext) -> Session {
+    Session::new_current(
         backing,
         context.clone(),
         [
@@ -298,7 +298,7 @@ async fn offered_pool_maximum_is_amended_without_its_definition_revision_or_prov
         revision
     );
     // Read-only sessions see the state but cannot amend.
-    let read_only = Session::new_adopted(
+    let read_only = Session::new_current(
         backing.clone(),
         c.clone(),
         [Permission::ReadResources],
@@ -394,17 +394,7 @@ async fn ceiling_amendment_replays_its_original_receipt_and_recovers_after_resta
     drop(backing);
     f.registry.shutdown().await.unwrap();
     f.registry = OwnerResourceRegistry::open_root(&f._root.path().join("owner")).unwrap();
-    let transfer = f
-        .registry
-        .resource_adoption_transfer(authority(&f), "name_transfer".into())
-        .await
-        .unwrap();
-    let journal = crate::management::PrivateManagementJournal::open_existing(
-        &f.source,
-        transfer.archive_binding().unwrap(),
-    )
-    .unwrap();
-    let reopened = transfer.adopted_management(journal).await.unwrap();
+    let reopened = current_backing(&f).await;
     let fresh = session(reopened.clone(), &c);
     let recovered = fresh
         .recover_local_resource_edit(&c, &original)
