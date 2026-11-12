@@ -1248,6 +1248,10 @@ pub struct RoomScreen {
     #[rust] room_name_id: Option<RoomNameId>,
     #[rust] chat_info_requested: bool,
     #[rust] chat_info_inline: bool,
+    /// The open or closed look last given to the room information toggle's icon; `None` until
+    /// the first layout and after the widget tree is applied again. Patching the icon on every
+    /// draw asks for another draw every time, so the window would never go idle.
+    #[rust] chat_info_icon_open: Option<bool>,
     /// The timeline currently displayed by this RoomScreen, if any.
     #[rust] timeline_kind: Option<TimelineKind>,
     /// The persistent UI-relevant states for the room that this widget is currently displaying.
@@ -1299,9 +1303,16 @@ impl Drop for RoomScreen {
 }
 
 impl ScriptHook for RoomScreen {
+    fn on_after_apply(&mut self, _: &mut ScriptVm, _: &Apply, _: &mut Scope, _: ScriptValue) {
+        // An apply (first build, theme change) puts the information toggle's icon back to its
+        // declared look; the next layout gives it the current one again.
+        self.chat_info_icon_open = None;
+    }
+
     fn on_after_reload(&mut self, vm: &mut ScriptVm) {
         // A script reload changes the RoomScreen's children; invalidate the ones we cached.
         self.cached_refs = None;
+        self.chat_info_icon_open = None;
         vm.with_cx_mut(|cx| {
             if let Some(tl_state) = &mut self.tl_state.as_mut() {
                 // Clear the timeline's drawn items caches and redraw it.
@@ -4119,15 +4130,20 @@ impl RoomScreen {
         if let Some(mut button) = toggle.borrow_mut() {
             button.set_tooltip_text(crate::i18n::tr(if show {"Hide room information"} else {"Show room information"}));
         }
-        let mut icon = self.view.icon(cx, ids!(desktop_chat_info_button.icon));
-        if show {
-            script_apply_eval!(cx, icon, {
-                draw_icon +: {svg: mod.widgets.ICON_PANEL_RIGHT_OPEN color: mod.widgets.RINX_ACCENT}
-            });
-        } else {
-            script_apply_eval!(cx, icon, {
-                draw_icon +: {svg: mod.widgets.ICON_PANEL_RIGHT color: mod.widgets.RINX_INK}
-            });
+        // This runs on every draw. Only a change of state patches the icon: a patch asks for a
+        // redraw, and one asked for while drawing is drawn in the next frame.
+        if self.chat_info_icon_open != Some(show) {
+            self.chat_info_icon_open = Some(show);
+            let mut icon = self.view.icon(cx, ids!(desktop_chat_info_button.icon));
+            if show {
+                script_apply_eval!(cx, icon, {
+                    draw_icon +: {svg: mod.widgets.ICON_PANEL_RIGHT_OPEN color: mod.widgets.RINX_ACCENT}
+                });
+            } else {
+                script_apply_eval!(cx, icon, {
+                    draw_icon +: {svg: mod.widgets.ICON_PANEL_RIGHT color: mod.widgets.RINX_INK}
+                });
+            }
         }
         self.view.view(cx, ids!(desktop_chat_info_panel)).set_visible(cx, show && inline);
         self.view.view(cx, ids!(compact_chat_info_panel)).set_visible(cx, show && !inline);

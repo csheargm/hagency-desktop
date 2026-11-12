@@ -1,4 +1,4 @@
 # The source checkout the JIT line builds against, one per line:
 #   <directory under .sources>  <repository>  <commit>
 # `.jit/sources.sh` puts each one in place; Cargo.toml reaches them by path.
-makepad             https://github.com/OctoSense-org/makepad.git             fd7a43b2318c899985aedc9888dc6fd592845633
+makepad             https://github.com/OctoSense-org/makepad.git             9f5ab1dbfec33ddbd253b87ec6578e0965caf90c

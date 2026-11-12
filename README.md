@@ -97,11 +97,18 @@ The repository pins Rust 1.98.0.
 Install CMake and the platform's native build dependencies, then run:
 
 ```sh
+.jit/sources.sh    # fetches the pinned makepad checkout; repeat when .jit/sources.lock changes
 cargo run --locked --bin rinx
 cargo test --locked --lib
 cargo test --locked --manifest-path crates/article-core/Cargo.toml
 python3 tools/wechat-ux/check_i18n.py
 ```
+
+The app builds against one makepad checkout under `.sources/` (git-ignored), pinned
+in `.jit/sources.lock`; no cargo command works before `.jit/sources.sh` has fetched it.
+The same sources also run under the makepad JIT runner (`makepad run`), which patches
+an edit into the running app. See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup,
+commands, memory needs and known gaps.
 
 The Cargo package/binary retains the name `rinx`; the application presents itself
 as Hagency. Default features use the standalone native application. The retired
