@@ -36,6 +36,8 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+// Hosting set-up exists on unix only; see the tests that use this.
+#[cfg(unix)]
 fn current_profile_process(name: &str) -> Option<Directory> {
     const CASE: &str = "HAGENCY_RETIREMENT_CURRENT_PROFILE_CASE";
     if std::env::var(CASE).as_deref() != Ok(name) {
@@ -226,6 +228,7 @@ impl Fixture {
         )
         .await
     }
+    #[cfg(unix)]
     async fn open_current_profile(&self) -> NativeOwner {
         use ::hagency::native_owner::{ManagementPackage, ManagementPermission};
         let source = Source::normal(&self.service);
@@ -404,15 +407,16 @@ async fn desktop_retirement_revokes_already_issued_native_management_before_clea
     f.stop().await;
 }
 
-// The native resource ledger is not qualified on Windows in this release.
-// Still exercise retirement there: failing to obtain a management lease must
-// not leave a previously opened owner authorized or registered after logout.
+// The owner resource ledger is not qualified on Windows in this release, so
+// management opens there for server administration only and hosting set-up is
+// refused. Retirement must still revoke that manager and the owner it came
+// from: neither may stay authorized or registered after logout.
 #[cfg(not(unix))]
 #[tokio::test]
-async fn desktop_retirement_revokes_owner_when_native_management_is_unavailable() {
+async fn desktop_retirement_revokes_server_management_where_resources_are_unavailable() {
     let f = Fixture::new().await;
     let owner = f.open(Source::normal(&f.service)).await.unwrap();
-    let error = owner
+    let manager = owner
         .management(::hagency::native_owner::ManagementPackage {
             digest: "c".repeat(64),
             instance: 1,
@@ -420,12 +424,13 @@ async fn desktop_retirement_revokes_owner_when_native_management_is_unavailable(
             permissions: vec![::hagency::native_owner::ManagementPermission::ReadResources],
         })
         .await
-        .err()
-        .expect("native resource management is unavailable on this platform");
-    assert_eq!(error.code, "management_unavailable");
+        .unwrap();
+    assert!(!manager.is_retired());
     let async_lock = f.service.0.native.lock().await;
     f.service.retire();
     assert!(owner.identity().await.is_err());
+    assert!(manager.is_retired());
+    assert!(manager.resources(Default::default()).await.is_err());
     assert!(f.service.register_native_owner(&owner).is_err());
     drop(async_lock);
     owner.shutdown().await;
@@ -636,11 +641,18 @@ impl NativeFixture {
 
 #[tokio::test]
 async fn sdk_replacement_callback_retires_real_native_manager_before_slot_publication() {
+    // Hosting set-up, and with it a manager that can read resources, exists on
+    // unix only. Elsewhere the same retirement order is checked on the
+    // server-administration manager.
+    #[cfg(unix)]
     let Some(_installation) = current_profile_process(
         "hagency::backend::retirement_tests::sdk_replacement_callback_retires_real_native_manager_before_slot_publication",
     ) else { return; };
     let f = Fixture::new().await;
+    #[cfg(unix)]
     let owner = f.open_current_profile().await;
+    #[cfg(not(unix))]
+    let owner = f.open(Source::normal(&f.service)).await.unwrap();
     let manager = owner
         .management(::hagency::native_owner::ManagementPackage {
             digest: "e".repeat(64),
@@ -650,7 +662,9 @@ async fn sdk_replacement_callback_retires_real_native_manager_before_slot_public
         })
         .await
         .unwrap();
+    #[cfg(unix)]
     manager.resources(Default::default()).await.unwrap();
+    assert!(!manager.is_retired());
     let slot = crate::sliding_sync::client_slot::ClientSlot::new();
     slot.replace(Some("same SDK account"), || {});
     let async_lock = f.service.0.native.lock().await;
@@ -661,6 +675,7 @@ async fn sdk_replacement_callback_retires_real_native_manager_before_slot_public
     });
     assert_eq!(previous, Some("same SDK account"));
     assert!(owner.identity().await.is_err());
+    assert!(manager.is_retired());
     assert!(manager.resources(Default::default()).await.is_err());
     drop(async_lock);
     owner.shutdown().await;

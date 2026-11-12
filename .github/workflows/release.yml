@@ -105,6 +105,9 @@ jobs:
             crates/hagency-client -> target
       - run: brew install cmake
       - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions
+        env:
+          # Fixtures inject SecretStore; tests must never reach a runner's native vault.
+          HAGENCY_NATIVE_CREDENTIAL_IO: deny
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -176,6 +179,11 @@ jobs:
           cargo install cargo-packager --version 0.10.1 --locked
           cargo install robius-packaging-commands --version 0.4.1 --locked
       - name: Test Desktop before packaging
+        env:
+          # Same setting as the main CI workflow: fixtures inject SecretStore and
+          # tests must never reach a runner's native vault. Set on the test steps
+          # only, so the packaged app started later uses the real store.
+          HAGENCY_NATIVE_CREDENTIAL_IO: deny
         run: |
           python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
