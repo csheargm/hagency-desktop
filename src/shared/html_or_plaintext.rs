@@ -327,8 +327,12 @@ impl Widget for RobrixHtmlLink {
     }
 
     fn set_text(&mut self, cx: &mut Cx, v: &str) {
-        self.text.as_mut_empty().push_str(v);
-        self.redraw(cx);
+        // Html hands each custom widget its label again on every draw. A redraw asked for
+        // while drawing is drawn in the next frame, so only a changed label may ask for one.
+        if self.text.as_ref() != v {
+            self.text.as_mut_empty().push_str(v);
+            self.redraw(cx);
+        }
     }
 }
 
@@ -789,8 +793,11 @@ impl Widget for MatrixHtmlSpan {
     }
 
     fn set_text(&mut self, cx: &mut Cx, v: &str) {
-        self.text.as_mut_empty().push_str(v);
-        self.area.redraw(cx);
+        // See RobrixHtmlLink::set_text: only a changed label asks for a redraw.
+        if self.text.as_ref() != v {
+            self.text.as_mut_empty().push_str(v);
+            self.area.redraw(cx);
+        }
     }
 }
 

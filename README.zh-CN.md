@@ -91,9 +91,15 @@ Matrix Room、别名和消息链接在应用内打开；未加入的 Room 先显
 主人引擎作为本仓库的 Rust 库维护于 [`crates/hagency-client`](crates/hagency-client/README.md)，无需单独检出 Client 或构建旧网页 UI。安装 CMake 和平台依赖后执行：
 
 ```sh
+.jit/sources.sh    # 获取固定版本的 makepad 检出；.jit/sources.lock 变化后需重新执行
 cargo run --locked --bin rinx
 cargo test --locked --lib
 ```
+
+应用基于 `.sources/` 下的一份 makepad 检出构建（已被 git 忽略，版本固定在
+`.jit/sources.lock`）；在 `.jit/sources.sh` 获取它之前，任何 cargo 命令都无法运行。
+同一份源码也可在 makepad JIT 运行器（`makepad run`）下运行，修改会直接注入正在运行的应用。
+其安装、命令、内存需求与已知差距见 [`.jit/NOTES.md`](.jit/NOTES.md)（英文）。
 
 仓库固定 Rust 1.98.0，Cargo 包／二进制仍名为 `rinx`，应用显示为 Hagency。
 默认 standalone 构建已包含原生管理，不需要开启旧 `agent_chat` 仪器功能。

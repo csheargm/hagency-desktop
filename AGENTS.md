@@ -18,6 +18,37 @@ grep -r "texture_2d" widgets/src/
 RUST_BACKTRACE=1 cargo run -p makepad-example-splash --release & PID=$!; sleep 15; kill $PID 2>/dev/null; echo "Process $PID killed"
 ```
 
+## Makepad checkout and the JIT runner
+
+This repository builds against one pinned makepad checkout, `.sources/makepad`
+(git-ignored), which `Cargo.toml` reaches by path. Until it is there no cargo
+command works:
+
+```bash
+.jit/sources.sh            # fetches the checkout pinned in .jit/sources.lock
+.jit/sources.sh --check    # only says whether an existing checkout is at the pin
+```
+
+Run it again whenever `.jit/sources.lock` changes; a pull or a rebase can move it.
+
+The same sources also run under the makepad JIT runner, `makepad run`, which
+patches an edit into the running app instead of rebuilding and restarting it.
+[`.jit/NOTES.md`](.jit/NOTES.md) has the setup, the run and test commands, the
+headless instrument, the measured memory and the known gaps. Read it before a
+JIT run. The rules that matter most:
+
+- Build the runner from the pinned checkout and rebuild it whenever the pin
+  moves: it refuses an app whose makepad tree differs from its own.
+- Give the run its own `HAGENCY_DESKTOP_DATA_DIR` and
+  `HAGENCY_OWNER_DAEMON_HOME`, and never use hosting Setup from it. Setup
+  replaces the owner-daemon LaunchAgent, which on a machine with an installed
+  Hagency Desktop is that app's service.
+- On a shared machine run `makepad run` and `relax` under a memory limit, one
+  JIT process at a time, and the app's tests with `--test-threads=1`. A JIT
+  process takes several GB, and some tests start one each.
+- The JIT cache under `target/makepad-run` grows to tens of GB; `makepad clean`
+  reclaims it.
+
 ## Build footprint
 
 The dev profile compiles incrementally unless the build host turns it off: a
