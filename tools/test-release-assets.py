@@ -54,6 +54,19 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(metadata['clientCommit'], metadata['sourceCommit'])
         self.assertEqual(metadata['clientPath'], 'crates/hagency-client')
 
+    def test_engine_commit_is_the_pinned_checkout_that_is_built(self):
+        # Without a pinned checkout, the manifest's git revision is what is built.
+        self.assertEqual(release.metadata()['makepadCommit'], 'makepad')
+        # With one, the manifest's revision is not built and must not be reported.
+        (self.root/'.jit').mkdir()
+        (self.root/'.jit'/'sources.lock').write_text(
+            '# <directory under .sources>  <repository>  <commit>\n'
+            'makepad   https://example.invalid/makepad.git   '+'e'*40+'\n')
+        self.assertEqual(release.metadata()['makepadCommit'], 'e'*40)
+        (self.root/'.jit'/'sources.lock').write_text('# nothing pinned\n')
+        with self.assertRaisesRegex(SystemExit, 'does not pin makepad'):
+            release.metadata()
+
     def test_external_client_revision_is_rejected(self):
         path = self.out/'build-windows-amd64.json'
         report = json.loads(path.read_text())

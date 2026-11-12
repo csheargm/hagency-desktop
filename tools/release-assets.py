@@ -32,14 +32,30 @@ def expected_assets(scope):
     return names
 
 
+def makepad_commit(manifest):
+    """The engine commit the installers are built from.
+
+    The engine is built from the checkout that `.jit/sources.lock` pins under
+    `.sources/`, which Cargo.toml reaches by path. The git revision that the
+    manifest still names for the optional app module is not what is built.
+    """
+    lock = ROOT/'.jit'/'sources.lock'
+    if lock.is_file():
+        for line in lock.read_text().splitlines():
+            fields = line.split()
+            if len(fields) == 3 and fields[0] == 'makepad':
+                assert re.fullmatch('[0-9a-f]{40}', fields[2]), line
+                return fields[2]
+        raise SystemExit('.jit/sources.lock does not pin makepad')
+    return re.search(r'^makepad-app-module\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', manifest, re.M)[1]
+
+
 def metadata():
     manifest = (ROOT/'Cargo.toml').read_text()
-    def revision(name):
-        return re.search(r'^'+re.escape(name)+r'\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', manifest, re.M)[1]
     return dict(version=re.search(r'^version\s*=\s*"([^"]+)"', manifest, re.M)[1],
                 sourceCommit=os.environ['GITHUB_SHA'], clientCommit=os.environ['GITHUB_SHA'],
                 clientPath='crates/hagency-client',
-                makepadCommit=revision('makepad-app-module'))
+                makepadCommit=makepad_commit(manifest))
 
 
 def sha(path):
