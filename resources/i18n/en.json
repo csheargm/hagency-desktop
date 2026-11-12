@@ -3101,5 +3101,16 @@
   "We just sent a verification request to {user}.\n\nWaiting for them to accept it…": "We just sent a verification request to {user}.\n\nWaiting for them to accept it…",
   "Do you wish to verify {user}?": "Do you wish to verify {user}?",
   "The verified identity of {name} was reset.": "The verified identity of {name} was reset.",
-  "The identity of {name} was reset.": "The identity of {name} was reset."
+  "The identity of {name} was reset.": "The identity of {name} was reset.",
+  "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.": "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.",
+  "Signed out locally. Remote token revocation remains pending.": "Signed out locally. Remote token revocation remains pending.",
+  "Signed out locally. Remote token revocation is pending and will be retried.": "Signed out locally. Remote token revocation is pending and will be retried.",
+  "Signed out locally.": "Signed out locally.",
+  "Local sign-out is durable. Local session cleanup failed; restart before signing in again. Any pending remote revocation will be retried.": "Local sign-out is durable. Local session cleanup failed; restart before signing in again. Any pending remote revocation will be retried.",
+  "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.": "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.",
+  "Continue in your browser": "Continue in your browser",
+  "Finish signing in with Pasion in your browser, then return to Hagency.": "Finish signing in with Pasion in your browser, then return to Hagency.",
+  "Logout cancelled by user": "Logout cancelled by user",
+  "Local session cleanup remains incomplete": "Local session cleanup remains incomplete",
+  "You do not have permission to invite people to this room.": "You do not have permission to invite people to this room."
 }

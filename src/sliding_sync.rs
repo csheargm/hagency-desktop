@@ -174,14 +174,10 @@ async fn build_client(
     let db_path = data_dir.join(&db_subfolder_name);
     log!("Building new client with db at: {}", db_path.display());
 
-    // Eagerly creat the db dir to avoid any issues within the matrix SDK.
-    if let Err(e) = tokio::fs::create_dir_all(&db_path).await {
-        error!(
-            "Failed to pre-create db directory at {}: {e}. Continuing anyway; \
-             matrix-sdk-sqlite will retry the create internally.",
-            db_path.display(),
-        );
-    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let fresh = persistence::credential_state::create_fresh_database(db_path.clone()).await?;
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    tokio::fs::create_dir(&db_path).await?;
 
     // Generate a random passphrase.
     let passphrase: String = {
@@ -206,17 +202,32 @@ async fn build_client(
 
     let client = builder.build().await?;
     let homeserver_url =  client.homeserver().to_string();
-    Ok((
-        client,
-        ClientSessionPersisted {
-            homeserver: homeserver_url,
-            // Store the relative subfolder name only. The absolute path is
-            // rebuilt on restore. Avoids baking in a sandbox path that goes
-            // stale on iOS (container UUID changes across reinstalls).
-            db_path: PathBuf::from(db_subfolder_name),
-            passphrase,
-        },
-    ))
+    let metadata = ClientSessionPersisted {
+        homeserver: homeserver_url,
+        db_path: PathBuf::from(db_subfolder_name),
+        passphrase,
+    };
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    persistence::credential_state::register_fresh_client(&client, metadata.clone(), fresh).await?;
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    persistence::credential_state::register_client(&client, metadata.clone()).await?;
+    Ok((client, metadata))
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+async fn build_oauth_candidate(homeserver: &str) -> Result<(Client, ClientSessionPersisted)> {
+    use rand::Rng;
+    let metadata = ClientSessionPersisted {
+        homeserver: homeserver.to_owned(),
+        db_path: PathBuf::from(format!("db_{}_{:016x}", chrono::Local::now().format("%F_%H_%M_%S_%f"), rand::random::<u64>())),
+        passphrase: rand::thread_rng().sample_iter(rand::distributions::Alphanumeric).take(32).map(char::from).collect(),
+    };
+    let client = Client::builder().homeserver_url(homeserver)
+        .sliding_sync_version_builder(VersionBuilder::DiscoverNative)
+        .request_config(RequestConfig::new().timeout(Duration::from_secs(60)))
+        .build().await?;
+    persistence::credential_state::register_preauth(&client, metadata.clone()).await?;
+    Ok((client, metadata))
 }
 
 /// Logs in to the given Matrix homeserver using the given username and password.
@@ -247,16 +258,15 @@ async fn login(
             } else { username_to_full_user_id(&cli.user_id, cli.homeserver.as_deref()) };
             let existing = if let Some(user) = existing_user.as_ref() {
                 let path = persistence::session_file_path(user);
-                match tokio::fs::read(path).await {
-                    Ok(bytes) => {
-                        let stored: persistence::FullSessionPersisted = serde_json::from_slice(&bytes)?;
+                match persistence::credential_state::load(path.clone()).await {
+                    Ok(stored) => {
                         if &stored.user_session.meta().user_id != user { bail!("Saved session belongs to another account"); }
                         if destination.trim_end_matches('/') != stored.client_session.homeserver.trim_end_matches('/') {
                             bail!("This identity is already saved on another server address. Choose it from Saved Accounts.");
                         }
                         Some(stored)
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) if !path.exists() && error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind()==std::io::ErrorKind::NotFound) => None,
                     Err(error) => return Err(error.into()),
                 }
             } else { None };
@@ -266,6 +276,7 @@ async fn login(
                     .homeserver_url(&session.homeserver)
                     .sliding_sync_version_builder(VersionBuilder::DiscoverNative)
                     .build().await?;
+                persistence::credential_state::register_client(&client, session.clone()).await?;
                 (client, session)
             } else { build_client(cli, app_data_dir()).await? };
             Cx::post_action(LoginAction::Status {
@@ -319,8 +330,7 @@ async fn login(
                 }
                 // Preserve the old encryption database for recovery when SSO
                 // necessarily issued a new device after token expiry.
-                let bytes = tokio::fs::read(persistence::session_file_path(&user)).await?;
-                let old: persistence::FullSessionPersisted = serde_json::from_slice(&bytes)?;
+                let old = persistence::credential_state::load(persistence::session_file_path(&user)).await?;
                 crate::accounts::retain_database(app_data_dir(), &user, old.client_session).await?;
             }
             persistence::save_session(&client, client_session).await?;
@@ -331,33 +341,47 @@ async fn login(
 
 
 /// Complete only a newly authorized OAuth candidate, never a restored grant.
-pub(crate) async fn finish_oauth_login(client:Client,client_session:ClientSessionPersisted,epoch:u64)->Result<(Client,Option<String>)> {
+pub(crate) async fn finish_oauth_login(client:Client,mut client_session:ClientSessionPersisted,epoch:u64)->Result<(Client,Option<String>)> {
     let saved = async {
             if epoch != crate::account_session::epoch() { bail!("Matrix account changed during sign-in"); }
             if client.oauth().full_session().is_none() { bail!("OAuth did not install an SDK session"); }
             let user = client.user_id().ok_or_else(|| anyhow!("OAuth has no Matrix identity"))?;
             let path = persistence::session_file_path(user);
             if path.exists() {
-                let old: persistence::FullSessionPersisted = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+                let old = persistence::credential_state::existing_database(path).await?;
                 if epoch!=crate::account_session::epoch(){bail!("Matrix account changed during sign-in");}
                 if old.client_session.homeserver.trim_end_matches('/') != client.homeserver().as_str().trim_end_matches('/') {
                     bail!("This Matrix identity is saved with another homeserver origin");
                 }
-                if old.user_session.meta().device_id != *client.device_id().ok_or_else(|| anyhow!("OAuth has no device"))? {
+                if old.identity.device != client.device_id().ok_or_else(|| anyhow!("OAuth has no device"))?.as_str() {
                     crate::accounts::retain_database(app_data_dir(), user, old.client_session).await?;
                     if epoch!=crate::account_session::epoch(){bail!("Matrix account changed during sign-in");}
                 }
             }
-            persistence::save_oauth_session(&client, client_session,epoch)?;
-            persistence::space_graph::delete_space_graph(user).await;
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            if let Some(retained) = persistence::credential_state::retained_session(&client).await? {
+                client_session = retained;
+            }
+            persistence::save_oauth_session(&client, client_session.clone(),epoch).await?;
         Ok::<(),anyhow::Error>(())
     }.await;
     if let Err(error)=saved {
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        if persistence::credential_state::has_owner(&client) {
+            let _ = persistence::credential_state::retire_candidate(&client).await;
+        } else {
+            let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
+        }
+        #[cfg(any(target_os = "ios", target_os = "android"))]
         let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
         return Err(error);
     }
-    OAUTH_REAUTH.lock().unwrap().take();
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let client = if persistence::credential_state::needs_handoff(&client)? {
+        persistence::credential_state::handoff_client(&client).await?
+    } else { client };
     crate::hagency::backend::Service::record_explicit_oauth_signin(&client, epoch);
+    OAUTH_REAUTH.lock().unwrap().take();
     Ok((client,None))
 }
 
@@ -2377,6 +2401,13 @@ async fn matrix_worker_task(
                             let request = if client.oauth().full_session().is_some() { LoginRequest::LoginByOAuthSuccess(client, session, epoch) } else { LoginRequest::LoginBySSOSuccess(client, session) };
                             if let Err(failure)=sender.send(request).await {
                                 if let LoginRequest::LoginByOAuthSuccess(client,..)=failure.0 {
+                                    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                                    if persistence::credential_state::has_owner(&client) {
+                                        let _ = persistence::credential_state::retire_candidate(&client).await;
+                                    } else {
+                                        let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
+                                    }
+                                    #[cfg(any(target_os = "ios", target_os = "android"))]
                                     let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
                                 }
                                 Cx::post_action(LoginAction::LoginFailure("Could not finish sign-in. Restart Rinx and try again.".into()));
@@ -3410,6 +3441,11 @@ pub(crate) fn replace_client(client: Option<Client>) -> Option<Client> {
     #[cfg(feature = "agent_chat")]
     crate::agent_chat::octos::reset();
     previous
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_current_client(client: Option<Client>) -> Option<Client> {
+    CLIENT.replace(client, || {})
 }
 
 pub fn get_client() -> Option<Client> {
@@ -4978,6 +5014,7 @@ fn is_invalid_token_error(e: &sync_service::Error) -> bool {
 /// (e.g., the token was revoked or expired), this emits a [`LoginAction::LoginFailure`]
 /// so the user is prompted to log in again.
 fn handle_session_changes(client: Client) -> JoinHandle<()> {
+    let epoch = crate::account_session::epoch();
     let mut receiver = client.subscribe_to_session_changes();
     crate::account_session::spawn(async move {
         let mut check = tokio::time::interval(Duration::from_secs(15));
@@ -4988,6 +5025,7 @@ fn handle_session_changes(client: Client) -> JoinHandle<()> {
                 change = receiver.recv() => change,
                 _ = check.tick() => {
                     if TOKEN_EXPIRED.load(Ordering::Acquire) { break }
+                    let _ = persistence::credential_state::retry_latest(&client, epoch).await;
                     let started = std::time::Instant::now();
                     match tokio::time::timeout(Duration::from_secs(8), client.whoami()).await {
                         Ok(Ok(_)) => {
@@ -5031,9 +5069,13 @@ fn handle_session_changes(client: Client) -> JoinHandle<()> {
                     break;
                 }
                 Ok(SessionChange::TokensRefreshed) => {
-                    log!("Matrix SDK credentials refreshed and persisted");
-                    // Both SDK authentication APIs save synchronously through
-                    // session callbacks before broadcasting this notification.
+                    if epoch != crate::account_session::epoch() || !crate::matrix_context::is_current(&client) { continue; }
+                    if persistence::credential_state::refresh_failed(&client, epoch) {
+                        warning!("Matrix SDK credentials refreshed; local encrypted persistence failed");
+                        crate::shared::popup_list::enqueue_scoped_popup_notification(epoch, crate::i18n::tr("Session refreshed, but credentials could not be saved. Keep this session open and check local storage.").into(), PopupKind::Error, None);
+                    } else {
+                        log!("Matrix SDK credentials refreshed and local encrypted commit confirmed");
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warning!("Session change receiver lagged, missed {n} messages.");
@@ -6310,8 +6352,28 @@ async fn run_registration(
 /// Use only provider IDs advertised by the selected homeserver.
 async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, register: bool) -> Result<(Client, ClientSessionPersisted)> {
     let reauth = OAUTH_REAUTH.lock().unwrap().clone().filter(|(origin,_)| !register && origin.trim_end_matches('/')==homeserver_url.trim_end_matches('/'));
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some((_, owner)) = reauth {
-        let stored: persistence::FullSessionPersisted = serde_json::from_slice(&tokio::fs::read(persistence::session_file_path(&owner)).await?)?;
+        let saved = persistence::credential_state::existing_database(persistence::session_file_path(&owner)).await?;
+        if let Some(id) = saved.identity.oauth_client_id.as_ref() {
+            // Public registration and expected device are sufficient for PKCE.
+            // Old access/refresh credentials never enter this memory-only SDK.
+            let client = Client::builder().homeserver_url(&homeserver_url)
+                .sliding_sync_version_builder(VersionBuilder::DiscoverNative)
+                .request_config(RequestConfig::new().timeout(Duration::from_secs(60)))
+                .build().await?;
+            persistence::credential_state::register_preauth(&client, saved.client_session.clone()).await?;
+            client.oauth().restore_registered_client(matrix_sdk::authentication::oauth::ClientId::new(id.clone()));
+            crate::login::homeserver::oauth_browser_login_expected(&client, false,
+                Some((owner, saved.identity.device.into())), |url| async move {
+                    crate::login::homeserver::open_login_url(&url)
+                }).await?;
+            return Ok((client, saved.client_session));
+        }
+    }
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    if let Some((_, owner)) = reauth {
+        let stored = persistence::credential_state::load(persistence::session_file_path(&owner)).await?;
         if matches!(stored.user_session, persistence::PersistedUserSession::OAuth { .. }) {
             let (client,_) = persistence::restore_session_for_login(owner.clone()).await?;
             crate::login::homeserver::oauth_browser_login(&client, false, |url| async move {
@@ -6326,12 +6388,19 @@ async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, regi
         title: "Connecting to your server".into(),
         status: "Checking browser sign-in support…".into(),
     });
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let (client, session) = build_oauth_candidate(&homeserver_url).await?;
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     let (client, session) = build_client(&Cli {
         homeserver: Some(homeserver_url), ..Default::default()
     }, app_data_dir()).await?;
     let methods = crate::login::homeserver::login_methods(&client).await?;
     if methods.oauth {
         crate::login::homeserver::oauth_browser_login(&client, register, |url| async move {
+            Cx::post_action(LoginAction::Status {
+                title: crate::i18n::tr("Continue in your browser").into(),
+                status: crate::i18n::tr("Finish signing in with Pasion in your browser, then return to Hagency.").into(),
+            });
             crate::login::homeserver::open_login_url(&url)
         }).await?;
         return Ok((client, session));

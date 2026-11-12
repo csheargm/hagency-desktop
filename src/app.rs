@@ -503,7 +503,7 @@ impl MatchEvent for App {
             }
 
             match action.downcast_ref() {
-                Some(LogoutAction::LogoutSuccess) => {
+                Some(LogoutAction::LogoutSuccess { epoch, .. }) if *epoch == crate::account_session::epoch() => {
                     robius_speech::cancel_all();
                     self.app_state.logged_in = false;
                     self.ui.modal(cx, ids!(logout_confirm_modal)).close(cx);
@@ -1962,6 +1962,8 @@ impl App {
                 crate::sliding_sync::set_sync_service_desired_running(true, "app foreground");
             }
             Event::Shutdown => {
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                if !crate::persistence::credential_state::shutdown() { makepad_widgets::warning!("Credential worker shutdown remains unconfirmed"); }
                 robius_speech::cancel_all();
                 self.handle_shutdown(cx);
             }

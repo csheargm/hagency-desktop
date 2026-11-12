@@ -177,7 +177,27 @@ pub(crate) fn open_login_url(url: &str) -> Result<()> {
     robius_open::Uri::new(url).open().map_err(|_| anyhow::anyhow!("Unable to open your browser"))
 }
 
-pub(crate) async fn oauth_browser_login<F, Fut>(client: &Client, register: bool, open: F) -> Result<()>
+pub(crate) async fn oauth_browser_login<F, Fut>(
+    client: &Client,
+    register: bool,
+    open: F,
+) -> Result<()>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    oauth_browser_login_expected(client, register, None, open).await
+}
+
+pub(crate) async fn oauth_browser_login_expected<F, Fut>(
+    client: &Client,
+    register: bool,
+    expected: Option<(
+        matrix_sdk::ruma::OwnedUserId,
+        matrix_sdk::ruma::OwnedDeviceId,
+    )>,
+    open: F,
+) -> Result<()>
 where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
@@ -198,8 +218,14 @@ where
         bail!("This server advertised an unexpected Pasion issuer");
     }
     // Recheck at activation: registration may have been disabled since discovery.
-    if register && !oauth_metadata.prompt_values_supported.contains(&Prompt::Create) {
-        bail!("This server does not advertise browser account creation. Try password registration if available.");
+    if register
+        && !oauth_metadata
+            .prompt_values_supported
+            .contains(&Prompt::Create)
+    {
+        bail!(
+            "This server does not advertise browser account creation. Try password registration if available."
+        );
     }
     let (redirect, server) = LocalServerBuilder::new().spawn().await?;
     let metadata = ClientMetadata {
@@ -209,20 +235,24 @@ where
             vec![OAuthGrantType::AuthorizationCode {
                 redirect_uris: vec![Url::parse("http://127.0.0.1/")?],
             }],
-            Localized::new(
-                Url::parse("https://github.com/chrislearn/hagency-desktop")?,
-                None,
-            ),
+            Localized::new(Url::parse("https://github.com/hagency-org/hagency-desktop")?, None),
         )
     };
     let data = oauth
         .login(
             redirect,
-            client.device_id().map(ToOwned::to_owned),
+            expected
+                .as_ref()
+                .map(|(_, device)| device.clone())
+                .or_else(|| client.device_id().map(ToOwned::to_owned)),
             Some(Raw::new(&metadata)?.into()),
             None,
         )
-        .prompt(vec![if register { Prompt::Create } else { Prompt::from("login") }])
+        .prompt(vec![if register {
+            Prompt::Create
+        } else {
+            Prompt::from("login")
+        }])
         .build()
         .await?;
     if let Err(e) = open(data.url.to_string()).await {
@@ -243,6 +273,15 @@ where
         oauth.finish_login(query.into()).await?;
         let identity =
             tokio::time::timeout(std::time::Duration::from_secs(8), client.whoami()).await??;
+        if let Some((owner, device)) = expected.as_ref() {
+            if &identity.user_id != owner
+                || identity.device_id.as_deref() != Some(device.as_ref())
+                || client.user_id() != Some(owner)
+                || client.device_id() != Some(device.as_ref())
+            {
+                bail!("Pasion returned another Matrix account or device");
+            }
+        }
         if identity
             .device_id
             .as_deref()

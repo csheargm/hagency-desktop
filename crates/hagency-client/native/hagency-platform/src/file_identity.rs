@@ -2,10 +2,18 @@
 //! permissions, link safety, durability, or workspace authorization.
 use std::{fs::File, io};
 
-pub fn same_file(left: &File, right: &File) -> io::Result<bool> {
-    let left_metadata = left.metadata()?;
-    let right_metadata = right.metadata()?;
-    if !left_metadata.is_file() || !right_metadata.is_file() {
+/// A local physical observation. Serialized identity is never a file grant.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileIdentity {
+    platform: String,
+    volume: String,
+    object: [u8; 16],
+}
+
+pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "regular file required",
@@ -14,8 +22,13 @@ pub fn same_file(left: &File, right: &File) -> io::Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(left_metadata.dev() == right_metadata.dev()
-            && left_metadata.ino() == right_metadata.ino())
+        let mut object = [0; 16];
+        object[8..].copy_from_slice(&metadata.ino().to_be_bytes());
+        Ok(FileIdentity {
+            platform: "unix-v1".into(),
+            volume: format!("{:016x}", metadata.dev()),
+            object,
+        })
     }
     #[cfg(windows)]
     {
@@ -23,34 +36,36 @@ pub fn same_file(left: &File, right: &File) -> io::Result<bool> {
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
         };
-        fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
-            let mut value = FILE_ID_INFO::default();
-            // SAFETY: the borrowed File retains its handle through this
-            // synchronous call. Output is initialized, aligned, and exactly
-            // FILE_ID_INFO-sized, and is inspected only after success.
-            if unsafe {
-                GetFileInformationByHandleEx(
-                    file.as_raw_handle(),
-                    FileIdInfo,
-                    (&mut value as *mut FILE_ID_INFO).cast(),
-                    std::mem::size_of::<FILE_ID_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(value)
+        let mut value = FILE_ID_INFO::default();
+        // SAFETY: the borrowed regular File retains its handle through this
+        // synchronous call. The initialized output has the exact Win32 size
+        // and alignment and is read only after successful completion.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileIdInfo,
+                (&mut value as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
         }
-        let left = identity(left)?;
-        let right = identity(right)?;
-        Ok(left.VolumeSerialNumber == right.VolumeSerialNumber
-            && left.FileId.Identifier == right.FileId.Identifier)
+        Ok(FileIdentity {
+            platform: "windows-v1".into(),
+            volume: format!("{:016x}", value.VolumeSerialNumber),
+            object: value.FileId.Identifier,
+        })
     }
     #[cfg(not(any(unix, windows)))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "regular-file identity unavailable",
     ))
+}
+
+pub fn same_file(left: &File, right: &File) -> io::Result<bool> {
+    Ok(file_identity(left)? == file_identity(right)?)
 }
 
 #[cfg(test)]
@@ -78,6 +93,20 @@ mod tests {
         std::fs::write(&other_path, b"same bytes").unwrap();
         let original = File::open(&original_path).unwrap();
         assert!(same_file(&original, &original.try_clone().unwrap()).unwrap());
+        let identity = file_identity(&original).unwrap();
+        let serialized = serde_json::to_vec(&identity).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<FileIdentity>(&serialized).unwrap(),
+            identity
+        );
+        let mut other_platform: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
+        other_platform["platform"] = "unknown-platform-v9000".into();
+        assert_ne!(
+            serde_json::from_value::<FileIdentity>(other_platform.clone()).unwrap(),
+            identity
+        );
+        other_platform["unknown"] = true.into();
+        assert!(serde_json::from_value::<FileIdentity>(other_platform).is_err());
         assert!(same_file(&original, &File::open(&original_path).unwrap()).unwrap());
         assert!(!same_file(&original, &File::open(&other_path).unwrap()).unwrap());
 
