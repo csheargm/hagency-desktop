@@ -120,8 +120,8 @@ python3 tools/wechat-ux/check_i18n.py
 The app builds against one makepad checkout under `.sources/` (git-ignored), pinned
 in `.jit/sources.lock`; no cargo command works before `.jit/sources.sh` has fetched it.
 The same sources also run under the makepad JIT runner (`makepad run`), which patches
-an edit into the running app. See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup,
-commands, memory needs and known gaps.
+an edit into the running app; for that, fetch the checkout with `.jit/sources.sh --outside`.
+See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup, commands, memory needs and known gaps.
 
 The Cargo package/binary retains the name `rinx`; the application presents itself
 as Hagency. Default features use the standalone native application. The retired
