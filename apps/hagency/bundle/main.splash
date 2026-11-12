@@ -7707,6 +7707,19 @@ A.account_pool_create=fn(row){
     // The sheet is reading the tools now; it picks this one when they arrive.
     if H.pool_create!=nil {H.pool_create.want=row.id}
 }
+// Coding Tools: the Codex sign-ins a new pool can run on.
+A.account_codex_ready=fn(groups){
+    let rows=[]
+    for group in groups.known {for member in group.members {if member.kind=="managed_namespace" && member.state=="active" {rows.push(member)}}}
+    return rows
+}
+// New Pool under Codex, as under Claude Code. One sign-in: the form picks it. Several: it asks which.
+A.account_codex_pool=fn(groups){
+    if H.busy || H.command!=nil {return}
+    let rows=A.account_codex_ready(groups)
+    A.pool_create_open()
+    if rows.len()==1 && H.pool_create!=nil {H.pool_create.want=rows[0].id}
+}
 A.read_account_page = fn(after,epoch,rows,pages){
     let args={} if after!=nil {args.after=after}
     A.request("hagency.accounts.list",args,fn(data){
@@ -11070,6 +11083,13 @@ A.render_page = fn(){
                             }
                             mod.widgets.HagencyListDivider{}
                         }}}
+                        View{visible:A.account_codex_ready(groups).len()>0 width:Fill height:Fit flow:Down
+                            mod.widgets.HagencyListRow{
+                                account_codex_pool := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.account_codex_pool(groups)}
+                                mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("New Pool","新建资源池")}}
+                            }
+                            mod.widgets.HagencyListDivider{}
+                        }
                         mod.widgets.HagencyListRow{
                             account_prepare_review := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.review_account_preparation()}
                             mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("Connect a Codex Account","接入 Codex 账号")}}
@@ -11089,7 +11109,7 @@ A.render_page = fn(){
                             }
                         }}}
                         for index, item in groups.local {let row=item View{width:Fill height:Fit flow:Down
-                            if index>0 {mod.widgets.HagencyListDivider{}}
+                            mod.widgets.HagencyListDivider{visible:index>0}
                             mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
                                 mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
                                 mod.widgets.HagencyListText{
@@ -11104,7 +11124,7 @@ A.render_page = fn(){
                             }
                         }}
                     }
-                    if groups.local.len()>0 {mod.widgets.HagencyListNote{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}}
+                    if groups.local.len()>0 {mod.widgets.HagencyListNote{text:A.t("Hagency uses Claude Code as it is set up on this computer, so there is no account to connect and no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，所以这里没有「接入账号」这一步，也没有需要管理的登录。")}}
                 }
                 if groups.unconfirmed.len()>0 {View{width:Fill height:Fit flow:Down spacing:6
                     mod.widgets.HagencyListLabel{text:A.t("OTHER RECORDS","其他记录")}
@@ -16343,9 +16363,16 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
             mod.widgets.HagencyListNote{text:A.t("Usually set up by your server administrator.","一般由服务器管理员设置。")}
         }}}
         if H.page == "connections" && H.entry_role!="owner" {
-            mod.widgets.HagencyActions{web_external_connections := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("External Matrix configuration","外部 Matrix 配置") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click:||A.web_connections_open(nil)}}
+            View{visible:H.entry_role=="admin" width:Fill height:Fit flow:Down spacing:6
+                mod.widgets.HagencyTitle{text:A.t("Pools on this server","接入本服务器的资源池")}
+                mod.widgets.HagencyHint{text:A.t("Every pool a resource owner has submitted to this server, with its state. Open one to see its details or to close its connection.","资源所有者提交到本服务器的全部资源池及其状态。点开可查看详情，或关闭它与服务器的连接。")}
+            }
+            // The external Matrix configuration is the owner's local copy of the earlier web
+            // client's settings: it reads this computer's hosting data, which an administrator's
+            // computer does not have. The owner's page keeps its own entry.
+            mod.widgets.HagencyActions{visible:H.entry_role!="admin" web_external_connections := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("External Matrix configuration","外部 Matrix 配置") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.connection on_click:||A.web_connections_open(nil)}}
             mod.widgets.HagencyHint{text: A.t("Admission and connection verification are separate. Approval alone does not make an executor ready.", "批准加入和连接检查是两个步骤，获批不代表运行 Agent 的电脑已经就绪。")}
-            if H.connections.len() == 0 {mod.widgets.HagencyCard{mod.widgets.HagencyCopy{text:A.t("No connections yet", "尚无连接")} setup := mod.widgets.RinxKeyPrimaryButton{text:A.t("Connect a resource", "连接资源") on_click: || A.begin_setup()}}}
+            if H.connections.len() == 0 {mod.widgets.HagencyCard{mod.widgets.HagencyCopy{text:A.t("No connections yet", "尚无连接")} setup := mod.widgets.RinxKeyPrimaryButton{visible:H.entry_role!="admin" text:A.t("Connect a resource", "连接资源") on_click: || A.begin_setup()}}}
             for row in H.connections {mod.widgets.HagencyCard{
                 mod.widgets.HagencyCopy{text: row.label}
                 View{width:Fill height:Fit spacing:12 align:Align{y:0.5}
@@ -17172,9 +17199,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="overview"
                 overview := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Home","首页")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.home color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.home color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("overview")}
                 }
             }
@@ -17182,9 +17209,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="agents"
                 agents := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Agents","Agent")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.person color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.person color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("agent_home")}
                 }
             }
@@ -17192,9 +17219,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="projects"
                 projects := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Pools","资源池")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.projects color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.projects color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("pools")}
                 }
             }
@@ -17202,9 +17229,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="accounts"
                 accounts := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Tools","编码工具")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.connection color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.connection color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.open_accounts(nil)}
                 }
             }
@@ -17213,9 +17240,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let badge=A.tab_badge("resources")
                 resources := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:(if badge>0 {(20+12*mod.widgets.RINX_TEXT_SCALE)} else {6}) top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Pools","资源池")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.resources color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.resources color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("resources")}
                 }
                 if badge>0 {View{width:Fill height:Fill align:Align{x:1.0 y:(if mod.widgets.RINX_TEXT_SCALE>1.2 {0.2} else {0.5})} padding:Inset{right:(4+2*mod.widgets.RINX_TEXT_SCALE)} mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if badge>99 {"99+"} else {""+badge}}}}}
@@ -17225,9 +17252,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let badge=A.tab_badge("inbox")
                 inbox := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:(if badge>0 {(20+12*mod.widgets.RINX_TEXT_SCALE)} else {6}) top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:if H.entry_role=="admin"{A.t("Review","审批")}else{A.t("Requests","申请")}
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.inbox color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.inbox color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("inbox")}
                 }
                 if badge>0 {View{width:Fill height:Fill align:Align{x:1.0 y:(if mod.widgets.RINX_TEXT_SCALE>1.2 {0.2} else {0.5})} padding:Inset{right:(4+2*mod.widgets.RINX_TEXT_SCALE)} inbox_badge := mod.widgets.HagencyCountBadge{mod.widgets.HagencyCountText{text:if badge>99 {"99+"} else {""+badge+(if H.entry_role=="admin" && H.adm.pendingMore {"+"} else {""})}}}}}
@@ -17236,9 +17263,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="devices"
                 devices := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Devices","执行")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.device color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.device color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.open_execution(nil)}
                 }
             }
@@ -17246,9 +17273,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="servers"
                 servers := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:A.t("Servers","连接")
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.connection color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.connection color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("connections")}
                 }
             }
@@ -17256,9 +17283,9 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
                 let active=parent=="work"
                 work := mod.widgets.HagencyButton{width:Fill height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {56} else {44}) flow:(if mod.widgets.RINX_TEXT_SCALE>1.2 {Flow.Down} else {Flow.Right}) spacing:(if mod.widgets.RINX_TEXT_SCALE>1.2 {2} else {6}) padding:Inset{left:6 right:6 top:0 bottom:0} align:Align{x:0.5 y:0.5} enabled:A.nav_free()
                     text:if H.entry_role=="admin"{A.t("Console","管理")}else{A.t("Work","工作")}
-                    draw_bg +: {color:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} color_hover:mod.widgets.RINX_HOVER color_focus:if active{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE}}
-                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK} color_hover:mod.widgets.RINX_INK color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_INK}}
-                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.tasks color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
+                    draw_bg +: {color:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE} color_hover:if active{mod.widgets.RINX_ACCENT_HOVER}else{mod.widgets.RINX_HOVER} color_down:if active{mod.widgets.RINX_ACCENT_DOWN}else{mod.widgets.RINX_PRESSED} color_focus:if active{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_PAGE}}
+                    draw_text +: {text_style:theme.font_regular{font_size:mod.widgets.RINX_META_SIZE} color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_hover:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_down:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK} color_focus:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_INK}}
+                    icon_walk:Walk{width:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0}) height:(if mod.widgets.RINX_TEXT_SCALE>1.2 {16} else {0})} draw_icon +: {svg:mod.rinx_icons.tasks color:if active{mod.widgets.RINX_ON_ACCENT}else{mod.widgets.RINX_MUTED}}
                     on_click:||{A.read_cancel() A.navigate("tools")}
                 }
             }
