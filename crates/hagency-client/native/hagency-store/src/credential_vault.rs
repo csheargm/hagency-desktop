@@ -3,7 +3,8 @@
 //! SDK synchronous callbacks use an already unlocked `DocumentKey`, never OS IO.
 //! There is deliberately no default or environment-selected mock backend. The
 //! one environment-selected alternative is `development`, the private-file
-//! store a developer turns on for locally built test apps.
+//! store a developer turns on for locally built test apps; it exists only in a
+//! build made with the `development-credential-files` feature.
 
 pub mod development;
 pub mod document;

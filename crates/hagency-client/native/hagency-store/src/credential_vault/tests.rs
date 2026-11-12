@@ -755,7 +755,8 @@ fn credential_vault_development_files_are_selected_only_by_their_own_word() {
     if std::env::var_os("HAGENCY_CREDENTIAL_GUARD_CHILD").as_deref()
         == Some(std::ffi::OsStr::new("development"))
     {
-        assert!(development::selected());
+        // The word selects the files only in a build that has them.
+        assert_eq!(development::selected(), development::COMPILED);
         return;
     }
     // This process: unset, or `deny` under the automation guard.

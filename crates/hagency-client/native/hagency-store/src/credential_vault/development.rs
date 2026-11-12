@@ -20,9 +20,15 @@ use zeroize::Zeroizing;
 /// The value of `HAGENCY_NATIVE_CREDENTIAL_IO` that selects this store.
 pub const SELECTOR: &str = "development-files";
 
+/// Whether this build has the file store at all. A distributed build is made
+/// without the `development-credential-files` feature: the selector then
+/// selects nothing and saved sign-ins stay in the OS store.
+pub const COMPILED: bool = cfg!(feature = "development-credential-files");
+
 pub fn selected() -> bool {
-    std::env::var_os("HAGENCY_NATIVE_CREDENTIAL_IO").as_deref()
-        == Some(std::ffi::OsStr::new(SELECTOR))
+    COMPILED
+        && std::env::var_os("HAGENCY_NATIVE_CREDENTIAL_IO").as_deref()
+            == Some(std::ffi::OsStr::new(SELECTOR))
 }
 
 pub struct DevelopmentFileStore {
