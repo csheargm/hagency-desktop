@@ -10,7 +10,7 @@ license = "Apache-2.0"
 readme = "README.md"
 categories = ["gui"]
 repository = "https://github.com/hagency-org/hagency-desktop"
-version = "0.5.0-rc.5"
+version = "0.5.0-rc.6"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
