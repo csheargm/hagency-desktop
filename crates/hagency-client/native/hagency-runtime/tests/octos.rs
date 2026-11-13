@@ -144,11 +144,28 @@ fn native_octos_frames_read_the_projection_the_driver_needs() {
             "params":envelope(json!({"type":"turn_terminal","data":{"outcome":"abandoned"}}))})),
         Err(Error::Unsupported)
     ));
+    // A completed background task carries the IDs and text used for delivery.
+    assert!(matches!(
+        notification(
+            "projection/envelope",
+            envelope(json!({"type":"background/spawn_complete","data":{
+                "parent_turn_id":"turn-1", "task_id":"task-1", "message_id":"m-1", "content":"done"
+            }}))
+        ),
+        Notification::Envelope(e) if matches!(&e.payload, Payload::BackgroundComplete {
+            parent_turn_id, task_id, message_id, text
+        } if parent_turn_id == "turn-1" && task_id == "task-1" && message_id == "m-1" && text == "done")
+    ));
+    assert!(matches!(
+        frame(json!({"jsonrpc":"2.0","method":"projection/envelope",
+            "params":envelope(json!({"type":"background/spawn_complete","data":{}}))})),
+        Err(Error::Envelope)
+    ));
     // A future payload is ignored, but the envelope's routing stays strict.
     assert!(matches!(
         notification(
             "projection/envelope",
-            envelope(json!({"type":"background/spawn_complete","data":{}}))
+            envelope(json!({"type":"future/vendor_event","data":{}}))
         ),
         Notification::Envelope(e) if matches!(e.payload, Payload::Other)
     ));
