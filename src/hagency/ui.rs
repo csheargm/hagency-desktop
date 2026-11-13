@@ -118,6 +118,16 @@ type ConfigurationKeys = std::collections::HashMap<String, String>;
 type RuntimeStates = std::collections::HashMap<String,Result<Value,String>>;
 #[derive(Debug)]
 struct RuntimeListCompleted { identity:String, request:u64, states:Vec<(String,Result<Value,String>)> }
+/// Why no local Agent of this account can run on this computer, worded for
+/// the person; `None` where one can.
+pub(crate) fn no_local_host_text(host: super::backend::LocalAgentHost) -> Option<&'static str> {
+    use super::backend::LocalAgentHost::*;
+    match host {
+        Here => None,
+        OtherAccount => Some("This computer hosts another account, so local Agents of this account can't run here."),
+        HostingNotSetUp => Some("Set up resource hosting on this computer first. Local Agents run through it."),
+    }
+}
 pub(crate) fn runtime_list_label(runtime:Option<&Result<Value,String>>,agent:&str)->&'static str {
     let Some(runtime)=runtime else {return "Checking local processing…";};
     let Ok(value)=runtime else {return "Local processing could not be verified. Refresh to retry.";};
@@ -1699,15 +1709,8 @@ impl HagencyPanel {
             self.local_host = Some(host);
         }
     }
-    /// Why no local Agent of this account can run on this computer, worded
-    /// for the person; `None` where one can.
     fn no_local_host(&self) -> Option<&'static str> {
-        use super::backend::LocalAgentHost::*;
-        match self.local_host? {
-            Here => None,
-            OtherAccount => Some("This computer hosts another account, so local Agents of this account can't run here."),
-            HostingNotSetUp => Some("Set up resource hosting on this computer first. Local Agents run through it."),
-        }
+        no_local_host_text(self.local_host?)
     }
     fn sync_navigation(&self, cx: &mut Cx) {
         self.render_owner_direct(cx);
