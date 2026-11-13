@@ -1,6 +1,8 @@
 //! One isolated Octos process, one original admitted call, and its Matrix bridge.
 use super::*;
-use super::claude_run::{authority::{Active, Authority, Claimed}, bridge::Matrix};
+use super::claude_run::{authority::{Active, Claimed}, bridge::Matrix};
+#[cfg(feature = "shared-budget-execution")]
+use super::claude_run::authority::Authority;
 use crate::console::lifecycle::DrainFailure;
 use hagency_agent_local::runtime::octos_turn;
 use hagency_runtime::owned::{ManagedProcessState, OwnedOctosSession};

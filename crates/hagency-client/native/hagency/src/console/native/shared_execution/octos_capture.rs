@@ -5,7 +5,7 @@ use hagency_agent_local::{codex, runtime::octos_turn};
 use hagency_runtime::{octos::session::Observation, owned::{OwnedOctosSession, SharedOctosPolicy, SharedOctosShell}};
 use super::claude_run::{authority::Live, bridge};
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 
 pub(super) struct Host {
     pending: Option<SharedCallCustody>,
@@ -19,13 +19,12 @@ pub(super) struct Capture {
     receive: Option<oneshot::Receiver<SharedCallCustody>>,
     sink: Option<SharedCallSink>,
     receipt: Option<SharedWorkReceipt>,
-    progress: watch::Sender<tokio::time::Instant>,
 }
 pub(super) fn capture(live: Live, policy: SharedOctosPolicy, pending: SharedCallCustody) -> (Host, Capture) {
     let work = pending.work().clone();
     let (send, receive) = oneshot::channel();
     (Host { pending:Some(pending), send:Some(send), live, policy, work, shell:None }, Capture {
-        receive:Some(receive), sink:None, receipt:None, progress:watch::channel(tokio::time::Instant::now()).0,
+        receive:Some(receive), sink:None, receipt:None,
     })
 }
 impl Host {
@@ -165,13 +164,11 @@ impl octos_turn::Host for Host {
 }
 impl octos_turn::Capture for Capture {
     async fn bind(&mut self, process: &OwnedOctosSession) -> codex::Result<()> {
-        self.progress.send_replace(tokio::time::Instant::now());
         let custody = self.receive.take().ok_or(codex::Error::Unknown)?.await.map_err(|_| codex::Error::Unknown)?;
         self.sink = Some(custody.bind_started_octos_turn(process).await.map_err(|_| codex::Error::Unknown)?);
         Ok(())
     }
     async fn observe(&mut self, observation: &Observation) -> codex::Result<()> {
-        self.progress.send_replace(tokio::time::Instant::now());
         if let Some(receipt) = self.sink.as_mut().ok_or(codex::Error::Unknown)?
             .observe_octos(observation).await.map_err(|_| codex::Error::Unknown)? {
             self.receipt = Some(receipt);
@@ -185,7 +182,6 @@ impl octos_turn::Capture for Capture {
     }
 }
 impl Capture {
-    pub fn progress(&self) -> watch::Receiver<tokio::time::Instant> { self.progress.subscribe() }
     /// Retain the original failure or unknown usage before stopping the child.
     pub async fn finish(&mut self, host: &mut Host) -> Result<Option<SharedWorkReceipt>, NativeError> {
         if let Some(sink) = &mut self.sink {

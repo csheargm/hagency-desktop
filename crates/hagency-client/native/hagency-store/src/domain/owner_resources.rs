@@ -575,7 +575,7 @@ impl OwnerResourceRegistry {
     }
 }
 fn authorize_resource(db: &Connection, profile: &ProfileAuthority, id: &str) -> Result<(), Error> {
-    let seat: String = db.query_row(
+    let _seat: String = db.query_row(
         "SELECT json_extract(config,'$.seatId') FROM resources WHERE id=?1",
         [id],
         |r| r.get(0),
@@ -786,7 +786,7 @@ impl DomainRepository {
                 (resource, true)
             }
             Action::Link { resource } => {
-                let target = read_resource(&tx, resource)?;
+                read_resource(&tx, resource)?;
                 (resource.clone(), true)
             }
             Action::Revoke { resource } => {

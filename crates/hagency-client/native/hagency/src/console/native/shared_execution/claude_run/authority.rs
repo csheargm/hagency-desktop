@@ -42,14 +42,6 @@ impl Claimed {
             }
         })
     }
-    pub(in crate::console::native::shared_execution) fn command_digest(&self) -> &str {
-        match self {
-            Self::Root(c) => &c.1.command_digest,
-            Self::Attempt(c) => &c.1.command_digest,
-            #[cfg(feature = "shared-budget-execution")]
-            Self::Budget(c) => &c.1.command_digest,
-        }
-    }
 }
 impl Authority {
     pub fn root(&self) -> &SharedRuntimeCommand {

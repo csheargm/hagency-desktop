@@ -7,7 +7,7 @@
 use crate::{
     CeilingChange, CeilingReport, DomainRepository, DomainStore, Error, ProfileChange,
     ResourceConfigurationResult,
-    ResourcePublicationAccess, ResourcePublicationResult, ResourcePublicationRetirement,
+    ResourcePublicationResult, ResourcePublicationRetirement,
     resource_publication_revision,
 };
 use hagency_core::{allocation::Budget, project::identifier};
