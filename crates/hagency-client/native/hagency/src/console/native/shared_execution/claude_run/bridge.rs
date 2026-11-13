@@ -473,6 +473,12 @@ async fn serve_questions(
             pending=receiver.recv()=>{
                 let Some(pending)=pending else{break};
                 if pending.scope!=*scope||pending.dispatch!=work.id||pending.is_closed(){continue;}
+                #[cfg(test)]
+                if !host.is_open()
+                    && let Some(room) = live.io.crypto_fixture.as_ref().and_then(|f| f.questions.clone())
+                {
+                    host.open_fixture(room);
+                }
                 if !host.is_open(){
                     let began=Instant::now();
                     let result=tokio::time::timeout_at(pending.deadline,async{live.io.check_running(live.authority.root()).await?;let b=live.io.bound().await?;super::super::e2ee::device(&live.io,&b,&work.assignment_id).await}).await;

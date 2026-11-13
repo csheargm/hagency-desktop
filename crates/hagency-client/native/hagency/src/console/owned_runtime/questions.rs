@@ -18,6 +18,13 @@ impl Host {
         questions.charge_opening(elapsed);
         self.questions = Some(questions);
     }
+    #[cfg(test)]
+    pub(in crate::console) fn open_fixture(
+        &mut self,
+        room: Arc<super::super::native::shared_execution::questions::Fixture>,
+    ) {
+        self.questions = Some(Questions::with_fixture(room));
+    }
     pub(in crate::console) async fn ask(
         &mut self,
         context: &QuestionContext,
