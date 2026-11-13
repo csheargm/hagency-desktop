@@ -22,6 +22,10 @@ Matrix chat, Project workspaces and locally executed AI Agents in one applicatio
 Sign in to a **Hagency server** through its Pasion browser authorization. Ordinary
 Matrix servers are not supported by the current login flow.
 
+In documentation, the project name is **Hagency Desktop** (or **Desktop** for
+short). Identifiers such as `hagency-desktop`, `rinx` and
+`HAGENCY_DESKTOP_DATA_DIR` retain their existing spelling.
+
 ## What is managed where
 
 - A Project binds one Matrix Space. Its discussion Rooms keep their own membership.
