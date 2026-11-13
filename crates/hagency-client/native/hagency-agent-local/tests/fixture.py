@@ -146,6 +146,11 @@ if kind == 'claude':
             send({'type':'conversation_reset','new_conversation_id':'conversation-two','uuid':'conversation-two',
                 'trigger':'clear','user_message_uuid':prompt['uuid'],'timestamp':'2026-11-13T02:37:07.395Z','session_id':old})
             send({'type':'system','subtype':'background_tasks_changed','tasks':[],'session_id':old})
+            # An account with a session-start hook: the CLI runs it for the
+            # opened conversation and reports it under the new id, before init.
+            for subtype in ('hook_started', 'hook_response'):
+                send({'type':'system','subtype':subtype,'hook_id':'hook-one','hook_name':'SessionStart:clear',
+                    'hook_event':'SessionStart','session_id':new})
             send({'type':'system','subtype':'init','session_id':new,'user_message_uuids':[prompt['uuid']]})
             send({'type':'result','subtype':'success','is_error':False,'num_turns':0,'duration_api_ms':0,'stop_reason':None,
                 'session_id':new,'total_cost_usd':0,'usage':zero,'modelUsage':{},'model_usage_since_last_result':{},

@@ -102,6 +102,9 @@ pub struct SessionDriver<R, W, E> {
     owner_command: bool,
     /// That command reported that it emptied the conversation.
     conversation_reset: bool,
+    /// The session a frame before init named after that report: the
+    /// conversation the reset opened.
+    opened_session_id: Option<String>,
     prompt_id: Option<String>,
     prompt_started: bool,
     control: control::State,
@@ -178,6 +181,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             awaiting_init: false,
             owner_command: false,
             conversation_reset: false,
+            opened_session_id: None,
             prompt_id: None,
             prompt_started: false,
             control: control::State::default(),
@@ -281,6 +285,15 @@ impl<R, W, E> SessionDriver<R, W, E> {
                                 .prelude_session_id
                                 .as_ref()
                                 .is_some_and(|id| id != session_id)
+                        {
+                            return Err(Error::Identity);
+                        }
+                        // Frames before this init already named the
+                        // conversation the reset opened: init is its init.
+                        if self
+                            .opened_session_id
+                            .as_ref()
+                            .is_some_and(|id| id != session_id)
                         {
                             return Err(Error::Identity);
                         }
@@ -550,6 +563,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.awaiting_init = true;
         self.owner_command = command;
         self.conversation_reset = false;
+        self.opened_session_id = None;
         self.wire.read_resets(command);
         // Set before entering the writer: even a cancelled partial write can
         // have delivered model input and must never authorize fresh replay.
@@ -633,13 +647,33 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         || hook_report(payload)
                         || (command && payload["subtype"] != "init"))))
         {
+            if let Some(opened) = &self.opened_session_id {
+                // Once a frame named the new conversation, the old one is
+                // over: nothing more is read under it.
+                if opened != session_id || *kind == EventKind::ConversationReset {
+                    return Err(Error::Identity);
+                }
+                return Ok(true);
+            }
             if self
                 .prelude_session_id
                 .as_ref()
                 .is_some_and(|id| id != session_id)
                 || self.session_id.as_ref().is_some_and(|id| id != session_id)
             {
-                return Err(Error::Identity);
+                // After the owner's reset the CLI already speaks for the
+                // conversation it opened: a session-start hook of the
+                // account's own settings is reported under the new id, before
+                // init (CLI 2.1.323, offline capture 2026-11-13). The reset
+                // itself comes under the session it ends, and without a reset
+                // another session is a fault as before.
+                if !(command && self.conversation_reset)
+                    || *kind == EventKind::ConversationReset
+                {
+                    return Err(Error::Identity);
+                }
+                self.opened_session_id = Some(session_id.clone());
+                return Ok(true);
             }
             self.prelude_session_id = Some(session_id.clone());
             self.conversation_reset |= *kind == EventKind::ConversationReset;

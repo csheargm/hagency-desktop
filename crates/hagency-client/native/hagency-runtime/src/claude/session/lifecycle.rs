@@ -440,6 +440,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             ..Default::default()
         };
         self.prelude_session_id = None;
+        self.opened_session_id = None;
         self.prompt_id = None;
         self.phase = Phase::Ready;
         Ok(())

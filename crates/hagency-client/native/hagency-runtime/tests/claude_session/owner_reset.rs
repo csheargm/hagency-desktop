@@ -226,3 +226,114 @@ async fn native_claude_owner_command_status_before_init_is_not_a_fault() {
         Err(Error::Identity)
     ));
 }
+
+fn hook(subtype: &str, session: &str) -> Value {
+    json!({"type":"system","subtype":subtype,"hook_id":"hook-one",
+        "hook_name":"SessionStart:clear","hook_event":"SessionStart","session_id":session})
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_claude_owner_clear_reads_the_opened_conversations_hook_before_init() {
+    // An account whose settings have a session-start hook: CLI 2.1.323 runs
+    // it for the conversation `/clear` opens and reports it under the new id,
+    // after the reset and before init (offline capture 2026-11-13). Live,
+    // this ended the owner's `/clear` as a protocol fault.
+    let (mut driver, mut peer) = resumed().await;
+    let (sent, prompt) = tokio::join!(driver.owner_command("/clear"), read(&mut peer));
+    sent.unwrap();
+    let message = frames(
+        &mut driver,
+        &mut peer,
+        vec![
+            state("running"),
+            command("queued", &prompt),
+            command("started", &prompt),
+            reset(&prompt),
+            background(false),
+            hook("hook_started", "session-two"),
+            hook("hook_response", "session-two"),
+            tied(on("session-two", init()), &prompt),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(is_init(&message));
+    assert_eq!(driver.session_id(), Some("session-two"));
+    assert!(driver.conversation_reset());
+    event(&mut driver, &mut peer, tied(cleared(), &prompt))
+        .await
+        .unwrap();
+    event(
+        &mut driver,
+        &mut peer,
+        on("session-two", command("completed", &prompt)),
+    )
+    .await
+    .unwrap();
+    event(&mut driver, &mut peer, on("session-two", state("idle")))
+        .await
+        .unwrap();
+    assert_eq!(driver.phase(), Phase::ResultObserved);
+
+    // Once a frame named the opened conversation, that is the only session
+    // left: not a third one at init, not the old one again, no second reset.
+    for label in ["init under a third id", "the ended session again", "a second reset"] {
+        let (mut driver, mut peer) = resumed().await;
+        let (sent, prompt) = tokio::join!(driver.owner_command("/clear"), read(&mut peer));
+        sent.unwrap();
+        let last = match label {
+            "init under a third id" => tied(on("session-three", init()), &prompt),
+            "the ended session again" => background(false),
+            _ => on("session-two", reset(&prompt)),
+        };
+        assert!(
+            matches!(
+                frames(
+                    &mut driver,
+                    &mut peer,
+                    vec![
+                        state("running"),
+                        reset(&prompt),
+                        hook("hook_started", "session-two"),
+                        last,
+                    ],
+                )
+                .await,
+                Err(Error::Identity)
+            ),
+            "{label}"
+        );
+        assert_eq!(driver.phase(), Phase::Closed, "{label}");
+    }
+
+    // Without this command's reset no frame may speak for another session:
+    // the owner's other commands, and every prompt.
+    let (mut driver, mut peer) = resumed().await;
+    let (sent, _) = tokio::join!(driver.owner_command("/cost"), read(&mut peer));
+    sent.unwrap();
+    assert!(matches!(
+        frames(
+            &mut driver,
+            &mut peer,
+            vec![state("running"), hook("hook_started", "session-two")],
+        )
+        .await,
+        Err(Error::Identity)
+    ));
+    let (mut driver, mut peer) = resumed().await;
+    let (sent, prompt) = tokio::join!(driver.prompt("hello"), read(&mut peer));
+    sent.unwrap();
+    assert!(matches!(
+        frames(
+            &mut driver,
+            &mut peer,
+            vec![
+                state("running"),
+                reset(&prompt),
+                hook("hook_started", "session-two"),
+            ],
+        )
+        .await,
+        Err(Error::Identity)
+    ));
+}
