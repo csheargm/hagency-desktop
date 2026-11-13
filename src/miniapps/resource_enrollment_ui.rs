@@ -20,6 +20,7 @@ impl ProviderReview {
             Self::Personal(v)=>v.words(),
             Self::Connection(v)=>v.words(),
             Self::Retire(_)=>("Retire this account space","Hagency will stop using this account space on this device. It must have no associated resources or sign-in in progress.","This cannot be undone here. Provider sign-out is not performed, and credentials are not deleted. Existing resources and agents are not removed.","Retire account space"),
+            Self::Enroll(v) if v.octos()=>("Enroll this Octos profile",crate::host::hagency::enrollment::octos_review_text(crate::i18n::language()),crate::host::hagency::enrollment::octos_limit_text(crate::i18n::language()),"Enroll resource"),
             // Claude Code keeps this sign-in, not Codex; the line has both languages in source like the review's first line.
             Self::Enroll(v) if v.claude()=>("Enroll this account’s resource",crate::host::hagency::enrollment::claude_review_text(crate::i18n::language()),"The monthly limit is your declaration, not a provider balance. Resources using the same provider account share one limit. Enrollment does not publish capacity or start an agent.","Enroll resource"),
             Self::Enroll(_)=>("Enroll this account’s resource","Hagency will verify this account and model again, then save an unpublished resource on this device. Credentials stay with Codex.","The monthly limit is your declaration, not a provider balance. Resources using the same provider account share one limit. Enrollment does not publish capacity or start an agent.","Enroll resource"),
@@ -69,7 +70,39 @@ mod tests {
                 assert!(rect.size.x>0. && rect.size.y>=40. && rect.pos.y>=0. && rect.pos.y+rect.size.y<=height && rect.pos.x>=0. && rect.pos.x+rect.size.x<=width,"{rect:?}");
             }
         }
-    }    #[test]
+    }
+    #[test]
+    fn octos_enrollment_review_keeps_actions_visible_in_both_languages() {
+        for (width,height,language) in [(360.,640.,Language::English),(360.,640.,Language::Chinese),(840.,700.,Language::English),(840.,700.,Language::Chinese)] {
+            let mut cx=Cx::new(Box::new(|_,_|{}));
+            let mut panel=cx.with_vm(|vm|{
+                makepad_widgets::script_mod(vm);crate::i18n::install(vm);makepad_code_editor::script_mod(vm);crate::shared::script_mod(vm);
+                vm.bx.captured_errors=Some(Vec::new());crate::miniapps::script_mod(vm);
+                let value=vm.eval(script!{use mod.prelude.widgets.* use mod.widgets.* MiniAppsPanel{}});
+                let panel=MiniAppsPanel::script_from_value(vm,value);assert!(vm.take_errors().is_empty());panel
+            });
+            for path in [ids!(catalog),ids!(import_form),ids!(hagency_review),ids!(app_content),ids!(notice),ids!(approval)] {panel.view.widget(&cx,path).set_visible(&mut cx,false);}
+            panel.view.widget(&cx,ids!(provider_confirmation)).set_visible(&mut cx,true);
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,"Enroll this Octos profile"));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(&mut cx,"@owner:matrix.example");
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(&mut cx,&format!("Octos · {}\n{}\n1 M", "long-profile-name-".repeat(3), "local-model-with-a-long-name-".repeat(3)));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.explanation)).set_text(&mut cx,crate::host::hagency::enrollment::octos_review_text(language));
+            panel.view.label(&cx,ids!(provider_confirmation.sheet_scroll.warning)).set_text(&mut cx,crate::host::hagency::enrollment::octos_limit_text(language));
+            panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,"Enroll resource"));
+            panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));
+            let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(width,height));let mut list=DrawList2d::new(&mut cx);
+            panel.request_confirmation_redraw(&mut cx);let event=std::mem::take(&mut cx.new_draw_event);assert!(event.will_redraw());
+            let mut draw=CxDraw::new(&mut cx,&event);let mut c=Cx2d::new(&mut draw);c.begin_pass(&pass,None);
+            if list.begin(&mut c,Walk::default()).is_redrawing(){c.begin_root_turtle(dvec2(width,height),Layout::flow_overlay());panel.draw_all(&mut c,&mut Scope::empty());c.end_pass_sized_turtle();list.end(&mut c);}
+            c.end_pass(&pass);drop(c);drop(draw);
+            for path in [ids!(provider_confirmation.buttons.cancel),ids!(provider_confirmation.buttons.connect)] {
+                let button=panel.view.button(&cx,path);let rect=button.area().rect(&cx);
+                assert!(button.visible() && button.area().is_valid(&cx));
+                assert!(rect.size.x>0. && rect.size.y>=40. && rect.pos.y>=0. && rect.pos.y+rect.size.y<=height && rect.pos.x>=0. && rect.pos.x+rect.size.x<=width,"{rect:?}");
+            }
+        }
+    }
+    #[test]
     fn native_hagency_retirement_footer_survives_long_account_details() {
         for (width,height,language) in [(360.,640.,Language::English),(360.,640.,Language::Chinese),(840.,700.,Language::English),(840.,700.,Language::Chinese)] {
             let mut cx=Cx::new(Box::new(|_,_|{}));

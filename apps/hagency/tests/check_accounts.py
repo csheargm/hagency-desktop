@@ -11,6 +11,8 @@ def main():
     helpers=source[source.index('A.begin_setup = fn('):source.index('A.fields_changed = fn(')]
     start=source.index('        if H.page == "provider_accounts" {View{')
     pages=source[start:source.index('        if A.sub_page() &&',start)]
+    pool_start=source.index('        if H.page == "pool_create" && H.pool_create!=nil')
+    pool_page=source[pool_start:source.index('        if H.page=="web_connections"',pool_start)]
     fixture='''
 let Down=3
 mod.widgets.RINX_FIELD=1
@@ -22,6 +24,8 @@ let Inset={} let Align={}
 mod.widgets.HagencyColumn=base mod.widgets.HagencyLargeTitle=base mod.widgets.HagencyListNote=base mod.widgets.HagencyListLabel=base
 mod.widgets.HagencyListRow=base mod.widgets.HagencyListBody=base mod.widgets.HagencyListValue=base mod.widgets.HagencyListDivider=base
 mod.widgets.HagencyListTap=base mod.widgets.HagencyListTitle=base mod.widgets.HagencyAccentText=base mod.widgets.RINX_MUTED=1
+mod.widgets.HagencyListTall=base mod.widgets.HagencyListSubtitle=base mod.widgets.HagencyCheck=base
+mod.widgets.HagencyPreset=base mod.widgets.HagencyPresetOn=base
 mod.widgets.RINX_SPACING=1 mod.rinx_icons.connection=1 mod.rinx_icons.close=1
 H.ux.accountId="" H.ux.resourceJourney=false
 H.owner={accountId:"" accountLabel:"" accountTab:"login" creatingPool:false setupOpen:false}
@@ -44,6 +48,8 @@ let inventory={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[row]
 let detail={protocol:"hagency-management-v1" observedAtMs:1000 accounts:[] account:row resources:[{id:"resource_original" model:"Coding model"}] nextAfter:nil}
 let second={id:"account_second" identityKey:"identity_one" kind:"managed_namespace" runtime:"codex" state:"active" ordinal:2 revision:"revision" profile:"codex-default-namespace-v1" readiness:"subscription" resourceCount:0}
 let claude={id:"account_claude_code" kind:"local_configuration" runtime:"claude" state:"active" revision:"revision_claude" readiness:"subscription" resourceCount:1}
+let octos={id:"account_octos_coding" kind:"local_configuration" runtime:"octos" state:"active" revision:"revision_octos" profile:"coding" readiness:"unknown" resourceCount:0}
+A.open_personal_agents=fn(after,page){H.page="personal_agents"}
 H.pool_create=nil H.pool_create_seq=0
 '''
     cases={
@@ -78,6 +84,11 @@ H.pool_create=nil H.pool_create_seq=0
       'claude_code_listed':('H.account_inventory=inventory inventory.accounts=[row,claude]','let g=A.account_groups()\nassert(g.local.len()==1 && g.unconfirmed.len()==0 && g.known.len()==1)\nassert(has("Claude Code"))\nassert(has(A.pool_login_text(claude)))\nassert(button("account_local_pool").enabled)'),
       'claude_code_new_pool':('H.account_inventory=inventory inventory.accounts=[row,claude]','button("account_local_pool").on_click()\nassert(H.page=="pool_create" && H.pool_create.account==nil && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")\nH.host_callback({is_ok:true data:{accounts:[row,claude]}})\nassert(H.pool_create.account.id=="account_claude_code" && H.pool_create.accounts.len()==2)\nassert(H.calls.len()==2 && H.calls[1].service=="hagency.accounts.get" && H.calls[1].args.id=="account_claude_code")'),
       'claude_code_pending':('H.account_inventory=inventory inventory.accounts=[row,claude] H.command={service:"original"}','assert(!button("account_local_pool").enabled)\nbutton("account_local_pool").on_click()\nassert(H.page=="provider_accounts" && H.calls.len()==0)'),
+      'octos_is_a_distinct_local_profile':('H.account_inventory=inventory inventory.accounts=[octos]','let g=A.account_groups()\nassert(g.octos.len()==1 && g.local.len()==0 && g.unconfirmed.len()==0)\nassert(has("OCTOS") && has("Octos · coding") && has(A.t("Local Octos profile","本机 Octos 配置")))\nassert(!has("claude.ai") && button("account_local_pool")==nil && button("octos_new_pool")!=nil)\nassert(has(A.t("Use an Octos profile for a personal Agent or a pool. Each profile has its own monthly limit.","Octos 配置可用于个人 Agent 或资源池。每个配置都有独立的每月上限。")))\nbutton("octos_personal_agents").on_click()\nassert(H.page=="personal_agents")'),
+      'octos_existing_pool_opens_details':('H.account_inventory=inventory inventory.accounts=[octos] octos.resourceCount=1','assert(button("octos_new_pool")!=nil && button("octos_view_pool")!=nil)\nbutton("octos_view_pool").on_click()\nassert(H.calls.len()==1 && H.calls[0].service=="hagency.accounts.get" && H.calls[0].args.id==octos.id)'),
+      'octos_pool_creation_selects_exact_profile':('H.account_inventory=inventory inventory.accounts=[octos]','button("octos_new_pool").on_click()\nassert(H.page=="pool_create" && H.calls[0].service=="hagency.accounts.list")\nH.host_callback({is_ok:true data:{accounts:[octos] nextAfter:nil}})\nassert(H.calls[1].service=="hagency.accounts.get" && H.calls[1].args.id==octos.id)\nH.host_callback({is_ok:true data:{protocol:"hagency-management-v1" account:octos resources:[]}})\nassert(H.calls[2].service=="hagency.accounts.models" && H.calls[2].args.accountId==octos.id)\nH.host_callback({is_ok:true data:{protocol:"hagency-management-v1" accountId:octos.id revision:octos.revision enrollmentReady:true provider:{runtime:"octos" connected:true models:[{id:"coding" model:"local-model" label:"coding · local-model" sharedReasoning:[nil] sharedDefaultReasoning:nil}]}}})\nassert(A.pool_create_ready() && A.pool_create_valid() && H.enrollment_draft.reasoning==nil)\nA.pool_create_preset(2000000)\nA.pool_create_submit()\nassert(H.calls.len()==4 && H.calls[3].service=="hagency.accounts.enroll" && H.calls[3].args.account.accountId==octos.id && H.calls[3].args.monthlyTokens==2000000 && H.calls[3].args.reasoning==nil)'),
+      'pool_create_reads_all_tool_pages':('H.account_inventory=inventory','A.pool_create_open()\nH.host_callback({is_ok:true data:{accounts:[row] nextAfter:row.id}})\nassert(H.calls.len()==2 && H.calls[1].service=="hagency.accounts.list" && H.calls[1].args.after==row.id && H.pool_create.accounts==nil)\nH.host_callback({is_ok:true data:{accounts:[octos] nextAfter:nil}})\nassert(H.pool_create.accounts.len()==2 && H.pool_create.accounts[1].id==octos.id)'),
+      'pool_create_refuses_repeated_tool_pages':('H.account_inventory=inventory','A.pool_create_open()\nH.host_callback({is_ok:true data:{accounts:[row] nextAfter:row.id}})\nH.host_callback({is_ok:true data:{accounts:[row] nextAfter:nil}})\nassert(H.pool_create.accounts==nil && H.pool_create.error!="")'),
       # Codex ends in the same New Pool row as Claude Code; with one sign-in the form picks it.
       'codex_new_pool':('H.account_inventory=inventory inventory.accounts=[row,claude]','assert(A.account_codex_ready(A.account_groups()).len()==1 && button("account_codex_pool").enabled)\nbutton("account_codex_pool").on_click()\nassert(H.page=="pool_create" && H.pool_create.account==nil && H.calls.len()==1 && H.calls[0].service=="hagency.accounts.list")\nH.host_callback({is_ok:true data:{accounts:[row,claude]}})\nassert(H.pool_create.account.id=="account_original" && H.pool_create.accounts.len()==2)'),
       'codex_new_pool_needs_a_sign_in':('H.account_inventory=inventory row.state="retired" inventory.accounts=[row,claude]','assert(A.account_codex_ready(A.account_groups()).len()==0)'),
@@ -105,6 +116,54 @@ H.pool_create=nil H.pool_create_seq=0
         for name,(state,checks) in cases.items():
             tab='H.owner.accountTab="pools"\n' if name.startswith('models_') or name in {'detail','detail_pagination'} else ''
             run(name+'-'+lang,base+state+'\n'+tab+'let root=View{'+pages+'}\ncollect(root)\n'+checks)
+        run('octos_pool_form_ready-'+lang,base+'''
+H.page="pool_create" H.pool_create={epoch:1 account:octos accounts:[octos] error:"" models:{enrollmentReady:true provider:{models:[{id:"coding" model:"local-model" label:"coding · local-model" sharedReasoning:[nil] sharedDefaultReasoning:nil}]}} modelsError:"" loadingModels:false}
+H.enrollment_draft={account:{accountId:octos.id expectedRevision:octos.revision} model:H.pool_create.models.provider.models[0] reasoning:nil tokens:"1000000" name:"coding"}
+let root=View{'''+pool_page+'''}
+collect(root)
+assert(has("Octos · coding"))
+assert(has(A.t("Models in one Octos profile share its monthly limit. Local models and custom endpoints are supported.","同一 Octos 配置中的模型共用每月上限，支持本地模型和自定义端点。")))
+assert(has(A.t("Octos uses the reasoning settings in this profile.","Octos 使用该配置中的推理设置。")))
+assert(A.pool_create_ready() && A.pool_create_valid())
+assert(button("pool_create_model")!=nil && button("pool_create_effort")==nil && button("pool_create_setup")==nil)
+''')
+        run('octos_pool_existing-'+lang,base+'''
+octos.resourceCount=1 H.page="pool_create" H.pool_create={epoch:1 account:octos accounts:[octos] error:"" models:{enrollmentReady:true provider:{models:[{id:"coding" model:"local-model" label:"coding · local-model" enrolled:true sharedReasoning:[nil] sharedDefaultReasoning:nil}]}} modelsError:"" loadingModels:false}
+let root=View{'''+pool_page+'''}
+collect(root)
+assert(A.pool_create_duplicate() && !A.pool_create_ready() && !A.pool_create_valid())
+assert(has(A.t("All configured models already have pools. Add another model in Octos to share it.","已为所有已配置模型创建资源池。请先在 Octos 中添加模型，再共享它。")))
+assert(!button("pool_create_model").enabled && button("pool_create_setup")==nil)
+''')
+        run('octos_add_second_model_shared_limit-'+lang,base+'''
+octos.resourceCount=1 H.account_inventory=inventory inventory.accounts=[octos]
+let root=View{'''+pages+'''} collect(root)
+button("octos_new_pool").on_click()
+H.host_callback({is_ok:true data:{accounts:[octos] nextAfter:nil}})
+H.host_callback({is_ok:true data:{protocol:"hagency-management-v1" account:octos resources:[{id:"first" model:"qwen"}]}})
+H.host_callback({is_ok:true data:{protocol:"hagency-management-v1" accountId:octos.id revision:octos.revision enrollmentReady:true provider:{runtime:"octos" connected:true sharedQuota:1000 models:[
+    {id:"qwen" model:"qwen" label:"local · qwen" enrolled:true sharedReasoning:[nil] sharedDefaultReasoning:nil},
+    {id:"deepseek" model:"deepseek" label:"local · deepseek" enrolled:false sharedReasoning:[nil] sharedDefaultReasoning:nil}]}}})
+assert(!A.pool_create_duplicate() && A.pool_create_ready() && H.enrollment_draft.model.model=="deepseek")
+assert(H.enrollment_draft.tokens=="1000" && A.pool_create_quota()==1000 && A.pool_create_valid())
+A.pool_create_model(H.pool_create.models.provider.models[0])
+assert(H.enrollment_draft.model.model=="deepseek")
+A.pool_create_preset(1001) assert(!A.pool_create_valid())
+A.pool_create_preset(1000) A.pool_create_submit()
+assert(H.calls[3].service=="hagency.accounts.enroll" && H.calls[3].args.model=="deepseek" && H.calls[3].args.monthlyTokens==1000)
+''')
+        switch_base=PREFIX+'H.rendered_name=""\nlet ui={pool_create_name:{set_text:fn(value){H.rendered_name=value}}}\n'+helpers+fixture+('A.t=fn(en,zh){return zh}\n' if lang=='zh' else '')
+        run('octos_model_switch_updates_visible_default_name-'+lang,switch_base+'''
+let one={model:"deepseek" label:"local · deepseek" enrolled:false sharedReasoning:[nil] sharedDefaultReasoning:nil}
+let two={model:"llama" label:"local · llama" enrolled:false sharedReasoning:[nil] sharedDefaultReasoning:nil}
+H.page="pool_create" H.pool_create={account:octos models:{enrollmentReady:true provider:{models:[one,two]}}}
+H.enrollment_draft={account:{accountId:octos.id} model:one models:[one,two] reasoning:nil tokens:"1000" name:one.label named:false}
+A.pool_create_model(two)
+assert(H.enrollment_draft.model.model=="llama" && H.enrollment_draft.name==two.label && H.rendered_name==two.label)
+H.enrollment_draft.name="Custom" H.enrollment_draft.named=true
+A.pool_create_model(one)
+assert(H.enrollment_draft.model.model=="deepseek" && H.enrollment_draft.name=="Custom" && H.rendered_name==two.label)
+''')
         for name,checks in {
           'late_list':'A.open_accounts(nil)\nH.page="overview"\nH.callback(inventory)\nassert(H.account_inventory==nil)',
           'late_detail':'A.open_account("account_original",nil)\nH.account_id="other"\nH.callback(detail)\nassert(H.account_detail==nil)',

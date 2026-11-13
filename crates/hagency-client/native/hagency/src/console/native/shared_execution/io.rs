@@ -5,7 +5,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::Weak;
 
-pub(in crate::console::native) struct ServerOperation(Box<Action>, bool);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PollVersion { Legacy, Claude, Octos }
+pub(in crate::console::native) struct ServerOperation(Box<Action>, PollVersion);
 pub(super) enum Action {
     SessionRoute { id: String, input: SharedSessionRouteInput },
     Crypto(super::e2ee::CryptoAction),
@@ -145,7 +147,7 @@ impl ServerOperation {
                 hash(&input.token)?;
             }
         }
-        Ok(Self(Box::new(action), false))
+        Ok(Self(Box::new(action), PollVersion::Legacy))
     }
     pub(in crate::console::native) fn request(
         self,
@@ -221,8 +223,7 @@ impl ServerOperation {
                 code: "invalid_shared_execution_payload".into(),
             });
         }
-        if self.1
-            && matches!(
+        if matches!(
                 path.as_str(),
                 "runtime/poll"
                     | "attempts/poll"
@@ -231,7 +232,11 @@ impl ServerOperation {
                     | "budget-demands/poll"
             )
         {
-            path.push_str("-v4");
+            match self.1 {
+                PollVersion::Legacy => {},
+                PollVersion::Claude => path.push_str("-v4"),
+                PollVersion::Octos => path.push_str("-v5"),
+            }
         }
         Ok((
             if read {
@@ -253,7 +258,7 @@ pub(super) struct Io {
     host_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
     provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
-    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, bool)>>>,
+    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, PollVersion)>>>,
     #[cfg(test)]
     pub(super) crypto_fixture: Option<Arc<super::e2ee::CryptoFixture>>,
 }
@@ -263,7 +268,7 @@ pub(super) struct Bound {
     pub scope: Scope,
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
     provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
-    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, bool)>>>,
+    claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, PollVersion)>>>,
 }
 impl Io {
     pub(super) fn hosting_admission(
@@ -549,12 +554,15 @@ impl Bound {
                         {
                             return Err(invalid());
                         }
-                        discovery
-                            .capabilities
-                            .iter()
-                            .any(|c| c == "shared-claude-execution-v1")
+                        if cfg!(target_os = "macos") && discovery.capabilities.iter().any(|c| c == "shared-octos-execution-v1") {
+                            PollVersion::Octos
+                        } else if discovery.capabilities.iter().any(|c| c == "shared-claude-execution-v1") {
+                            PollVersion::Claude
+                        } else {
+                            PollVersion::Legacy
+                        }
                     }
-                    Err(error) if error.status == 404 => false,
+                    Err(error) if error.status == 404 => PollVersion::Legacy,
                     Err(error) => return Err(error),
                 };
                 *cached = Some((Instant::now(), supported));
@@ -859,13 +867,26 @@ mod claude_protocol_tests {
             3
         };
         for kind in 0..count {
+            if kind == 2 && !cfg!(feature = "shared-intake") {
+                let error = ServerOperation::new(poll(kind))
+                    .err()
+                    .expect("demand polling requires shared intake");
+                assert_eq!(error.code, "shared_intake_disabled");
+                continue;
+            }
             let legacy = ServerOperation::new(poll(kind)).unwrap().request().unwrap();
             let mut opted = ServerOperation::new(poll(kind)).unwrap();
-            opted.1 = true;
+            opted.1 = PollVersion::Claude;
             let opted = opted.request().unwrap();
             assert_eq!(legacy.0, opted.0);
             assert_eq!(legacy.2, opted.2);
             assert_eq!(format!("{}-v4", legacy.1), opted.1);
+            let mut octos = ServerOperation::new(poll(kind)).unwrap();
+            octos.1 = PollVersion::Octos;
+            let octos = octos.request().unwrap();
+            assert_eq!(legacy.0, octos.0);
+            assert_eq!(legacy.2, octos.2);
+            assert_eq!(format!("{}-v5", legacy.1), octos.1);
         }
         fn recovery() -> Action {
             Action::Recover {
@@ -876,7 +897,7 @@ mod claude_protocol_tests {
         }
         let legacy = ServerOperation::new(recovery()).unwrap().request().unwrap();
         let mut opted = ServerOperation::new(recovery()).unwrap();
-        opted.1 = true;
+        opted.1 = PollVersion::Octos;
         assert_eq!(
             legacy,
             opted.request().unwrap(),

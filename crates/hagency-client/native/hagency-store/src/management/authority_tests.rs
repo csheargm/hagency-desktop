@@ -1,4 +1,5 @@
 use super::*;
+use crate::ResourcePublicationAccess;
 use std::future::Future;
 
 fn context() -> HostContext {

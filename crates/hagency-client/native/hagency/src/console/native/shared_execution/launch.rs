@@ -5,7 +5,8 @@ use crate::console::{AuthorizedDevice, owner_provider};
 use hagency_agent_local::{codex::Profile, runtime::Kind};
 use hagency_runtime::{
     claude::account::{AccountBinding, SharedCredential},
-    owned::{OwnedClaudeSession, SharedClaudePolicy},
+    octos::profile_binding::ProfileBinding,
+    owned::{OwnedClaudeSession, OwnedOctosSession, SharedClaudePolicy, SharedOctosPolicy},
 };
 use std::{
     collections::BTreeMap,
@@ -15,6 +16,7 @@ use std::{
 pub(super) enum Launch {
     Codex(PreparedLaunch),
     Claude(ClaudeLaunch),
+    Octos(OctosLaunch),
 }
 impl From<PreparedLaunch> for Launch {
     fn from(value: PreparedLaunch) -> Self {
@@ -29,6 +31,7 @@ struct Selection {
     subject: String,
     owner: String,
     paths: owner_provider::ProviderPaths,
+    kind: Kind,
     #[cfg(test)]
     fixture_mode: Option<String>,
 }
@@ -44,7 +47,7 @@ impl Selection {
             &self.issuer,
             &self.subject,
             &self.owner,
-            Kind::Claude,
+            self.kind,
         )
         .is_ok_and(|p| {
             p.home == self.paths.home
@@ -53,6 +56,24 @@ impl Selection {
                 && p.shared == self.paths.shared
         })
     }
+}
+pub(super) struct OctosLaunch {
+    selection: Arc<Selection>,
+    profile_authority: ProfileAuthority,
+    registry: OwnerResourceRegistry,
+    resource: String,
+    revision: String,
+    profile_id: String,
+    model: String,
+    executable: PathBuf,
+    base: PathBuf,
+    running_guard: Arc<std::sync::OnceLock<OctosRunningGuard>>,
+    binding: Option<VerifiedOwnerResourceBinding>,
+    workspaces: Option<super::claude_workspace::Workspaces>,
+    workspace: Option<super::claude_workspace::Lease>,
+    pub policy: SharedOctosPolicy,
+    #[cfg(test)]
+    fixture_guardian: Option<PathBuf>,
 }
 pub(super) struct ClaudeLaunch {
     selection: Arc<Selection>,
@@ -79,6 +100,33 @@ impl Launch {
             return PreparedLaunch::for_resource(root, device, registry, profile, resource, true)
                 .await
                 .map(Self::Codex);
+        }
+        if resource.framework == "octos" {
+            let profile_id = registry.octos_profile_for_resource(
+                profile.clone(), resource.id.clone(), resource.revision.clone(),
+            ).await.map_err(store)?;
+            let paths = owner_provider::external::connected_paths(
+                root, device.origin(), device.issuer(), device.subject(), device.owner_mxid(), Kind::Octos,
+            ).map_err(|e| failure(e.status, e.code))?;
+            let base = crate::console::owned_agents::journal_profile_directory(
+                root, device.origin(), device.issuer(), device.subject(), device.owner_mxid(),
+            ).map_err(|_| failure(409, "shared_execution_launch_unavailable"))?.join("managed-octos");
+            hagency_store::private::directory(&base).map_err(store)?;
+            let selection = Selection {
+                root: root.into(), origin: device.origin().into(), issuer: device.issuer().into(),
+                subject: device.subject().into(), owner: device.owner_mxid().into(), paths,
+                kind: Kind::Octos,
+                #[cfg(test)] fixture_mode: None,
+            };
+            return Ok(Self::Octos(OctosLaunch {
+                selection: Arc::new(selection), profile_authority: profile.clone(),
+                registry: registry.clone(), resource: resource.id.clone(), revision: resource.revision.clone(),
+                profile_id, model: resource.model.clone(), executable: owner_provider::external::executable(Kind::Octos)
+                    .map_err(|e| failure(e.status, e.code))?, base,
+                running_guard: Arc::new(std::sync::OnceLock::new()), binding: None,
+                workspaces: None, workspace: None, policy: SharedOctosPolicy::Text,
+                #[cfg(test)] fixture_guardian: None,
+            }));
         }
         if resource.framework != "claude"
             || registry
@@ -119,6 +167,7 @@ impl Launch {
             subject: device.subject().into(),
             owner: device.owner_mxid().into(),
             paths: paths.clone(),
+            kind: Kind::Claude,
             #[cfg(test)]
             fixture_mode: None,
         };
@@ -157,6 +206,10 @@ impl Launch {
                 v.profile.web_search = web;
                 Ok(Self::Claude(v))
             }
+            Self::Octos(mut v) => {
+                v.policy = SharedOctosPolicy::from_options(web, None).map_err(|_| invalid())?;
+                Ok(Self::Octos(v))
+            }
         }
     }
     pub fn with_agent_workspace(self, agent: &str) -> Result<Self, NativeError> {
@@ -176,6 +229,11 @@ impl Launch {
                 .map_err(|_| failure(409, "shared_execution_launch_unavailable"))?;
                 Ok(Self::Claude(v))
             }
+            Self::Octos(mut v) => {
+                super::super::key(agent)?;
+                v.policy = SharedOctosPolicy::from_options(v.policy.web(), mode).map_err(|_| invalid())?;
+                Ok(Self::Octos(v))
+            }
         }
     }
     pub fn io(&self, io: &Io) -> Io {
@@ -184,6 +242,11 @@ impl Launch {
             Self::Claude(v) => {
                 let selection = v.selection.clone();
                 io.with_provider_gate(Arc::new(move || selection.check()))
+            }
+            Self::Octos(v) => {
+                let selection = v.selection.clone();
+                let guard = v.running_guard.clone();
+                io.with_provider_gate(Arc::new(move || selection.check() && guard.get().is_none_or(|g| g.check().is_ok())))
             }
         }
     }
@@ -251,7 +314,115 @@ impl Launch {
                 v.credential = Some(credential);
                 Ok(Self::Claude(v))
             }
+            Self::Octos(mut v) => {
+                check().await?;
+                if !v.selection.check() { return Err(failure(409, "provider_account_changed")); }
+                let expires = until.min(Instant::now() + Duration::from_secs(30));
+                let witness = ProfileBinding::observe_model(&v.selection.paths.codex_home, &v.profile_id, &v.model, expires)
+                    .map_err(|_| failure(409, "provider_account_changed"))?;
+                let observed = v.registry.observe_octos_profile(witness).await.map_err(store)?;
+                let binding = v.registry.verify_octos_resource(v.profile_authority.clone(), v.resource.clone(), observed).await.map_err(store)?;
+                if binding.resource_revision() != v.revision || !v.selection.check() {
+                    return Err(failure(409, "provider_account_changed"));
+                }
+                let guard = binding.octos_running_guard().map_err(store)?;
+                v.running_guard.set(guard).map_err(|_| invalid())?;
+                v.binding = Some(binding);
+                v.workspaces = Some(manager.owner.0.shared_execution.claude_workspaces.clone());
+                check().await?;
+                Ok(Self::Octos(v))
+            }
         }
+    }
+}
+impl OctosLaunch {
+    #[cfg(test)]
+    pub(in crate::console::native) fn fixture(
+        registry: OwnerResourceRegistry,
+        authority: ProfileAuthority,
+        resource: &hagency_store::management::ResourceSummary,
+        home: PathBuf,
+        root: PathBuf,
+        profile_id: String,
+    ) -> Self {
+        let base = root.join("managed-octos");
+        hagency_store::private::directory(&base).unwrap();
+        let paths = owner_provider::ProviderPaths {
+            home: home.clone(), codex_home: home.clone(), shared: true,
+            credential_ref: hagency_agent_local::runtime::local_reference(Kind::Octos, &home, None),
+        };
+        Self {
+            selection: Arc::new(Selection {
+                root, origin: String::new(), issuer: String::new(), subject: String::new(), owner: String::new(),
+                paths, kind: Kind::Octos, fixture_mode: Some("octos".into()),
+            }),
+            profile_authority: authority, registry, resource: resource.id.clone(), revision: resource.revision.clone(),
+            profile_id, model: resource.model.clone(), executable: PathBuf::from(std::env::var_os("HAGENCY_TEST_OCTOS_EXECUTABLE").unwrap()), base,
+            running_guard: Arc::new(std::sync::OnceLock::new()), binding: None, workspaces: None, workspace: None,
+            policy: SharedOctosPolicy::Text,
+            fixture_guardian: Some(PathBuf::from(std::env::var_os("HAGENCY_TEST_OCTOS_GUARDIAN").unwrap())),
+        }
+    }
+    pub fn check(&self) -> Result<(), NativeError> {
+        if !self.selection.check() || !self.running_guard.get().is_some_and(|g| g.check().is_ok()) {
+            return Err(failure(409, "provider_account_changed"));
+        }
+        Ok(())
+    }
+    pub fn session_settings_digest(&self) -> Result<String, NativeError> {
+        digest(&serde_json::json!({"version":1,"runtime":"octos","executable":self.executable,
+            "profile":self.profile_id,"model":self.model,"resource":self.resource,"revision":self.revision,
+            "isolation":"host-owned-room-v1","nativeSession":"fresh","policy":self.policy.name()}))
+    }
+    pub fn bind_scope(&mut self, root: &SharedRuntimeCommand, scope: &str) -> Result<(), NativeError> {
+        self.check()?;
+        hash(scope)?;
+        if self.workspace.is_some() || root.runtime().map_err(store)? != "octos" {
+            return Err(invalid());
+        }
+        // A route selects exactly one conversation; without one the original
+        // command digest is a private bootstrap scope.
+        self.workspace = Some(self.workspaces.as_ref().ok_or_else(invalid)?.open(
+            &self.base, scope, &root.assignment_id, root.assignment_generation,
+        )?);
+        Ok(())
+    }
+    pub fn profile_id(&self) -> &str { &self.profile_id }
+    pub fn workspace(&self) -> Result<PathBuf, NativeError> {
+        Ok(self.workspace.as_ref().ok_or_else(invalid)?.path().join("work"))
+    }
+    pub fn spawn(&self, until: Instant) -> Result<OwnedOctosSession, NativeError> {
+        self.check()?;
+        let expires = until.min(Instant::now() + Duration::from_secs(30));
+        let witness = ProfileBinding::observe_model(&self.selection.paths.codex_home, &self.profile_id, &self.model, expires)
+            .map_err(|_| failure(409, "provider_account_changed"))?;
+        let guardian = std::env::current_exe().map_err(|_| failure(409, "shared_execution_launch_unavailable"))?;
+        #[cfg(test)]
+        let guardian = self.fixture_guardian.clone().unwrap_or(guardian);
+        let auth_home = match () {
+            #[cfg(test)]
+            _ if self.fixture_guardian.is_some() => None,
+            _ => Some(hagency_runtime::octos::profile_binding::auth_home_for_owner(&self.selection.paths.home)
+                .map_err(|_| failure(409, "shared_execution_launch_unavailable"))?),
+        };
+        OwnedOctosSession::spawn_shared_isolated_with_auth(
+            &guardian, &self.executable, self.workspace.as_ref().ok_or_else(invalid)?.path(),
+            witness, hagency_runtime::octos::session::Limits { event_wait_ms: 180_000, ..Default::default() }, self.policy,
+            auth_home.as_deref(),
+        ).map_err(|_| failure(409, "shared_execution_launch_unavailable"))
+    }
+    pub fn qualify(&self, process: &mut OwnedOctosSession) -> Result<hagency_runtime::owned::SharedTextProcessObservation, NativeError> {
+        self.check()?;
+        self.binding.as_ref().ok_or_else(invalid)?.qualify_octos_process(process).map_err(store)
+    }
+    pub fn bind_admitted_scope(&self, session: &SharedOctosSession) -> Result<(), NativeError> {
+        self.workspace.as_ref().ok_or_else(invalid)?.bind_admitted_scope(session.storage_scope())
+    }
+    pub fn seal_stopped(&self) -> Result<(), NativeError> {
+        self.workspace.as_ref().ok_or_else(invalid)?.seal_stopped()
+    }
+    pub fn retire_plaintext(&self) {
+        if let Some(workspace) = &self.workspace { workspace.retire(); }
     }
 }
 impl ClaudeLaunch {
@@ -303,6 +474,7 @@ impl ClaudeLaunch {
                 subject: String::new(),
                 owner: String::new(),
                 paths,
+                kind: Kind::Claude,
                 fixture_mode: Some(mode.into()),
             }),
             profile_authority: authority,

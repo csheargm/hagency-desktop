@@ -2,8 +2,19 @@
 //! or accounting authority, and a slow UI never blocks native inference.
 use std::sync::{Arc, Mutex};
 pub const MAX_PREVIEW_BYTES: usize = 4096;
+/// A complete native message is separate from the lossy presentation preview.
+/// The host binds this sink to one authorized conversation and must durably
+/// accept the message before returning. The identifier is native to this run.
+pub trait MessageSink: Send + Sync {
+    fn record(&self, id: &str, text: &str) -> Result<(), MessageError>;
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageError;
 #[derive(Clone, Default)]
-pub struct LiveText(Arc<Mutex<State>>);
+pub struct LiveText {
+    state: Arc<Mutex<State>>,
+    messages: Option<Arc<dyn MessageSink>>,
+}
 #[derive(Default)]
 struct State {
     item: String,
@@ -28,8 +39,25 @@ fn bounded(value: &str) -> String {
 }
 
 impl LiveText {
+    pub fn with_messages(messages: Arc<dyn MessageSink>) -> Self {
+        Self { state: Default::default(), messages: Some(messages) }
+    }
+    pub fn has_messages(&self) -> bool { self.messages.is_some() }
+    /// Returns whether a host accepted the message. An absent sink preserves
+    /// the existing preview-only behavior for hosts that have not opted in.
+    pub fn message(&self, id: &str, text: &str) -> Result<bool, MessageError> {
+        let Some(messages) = &self.messages else { return Ok(false) };
+        if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)
+            || text.len() > 1024 * 1024
+        {
+            return Err(MessageError);
+        }
+        if text.is_empty() { return Ok(false); }
+        messages.record(id, text)?;
+        Ok(true)
+    }
     pub fn append(&self, item: &str, delta: &str) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.item != item {
             state.item = item.into();
             state.text.clear();
@@ -44,7 +72,7 @@ impl LiveText {
     }
     pub fn complete(&self, item: &str, text: &str) {
         let text = bounded(text);
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.text != text || state.item != item {
             state.item = item.into();
             state.text = text;
@@ -52,7 +80,7 @@ impl LiveText {
         }
     }
     pub fn since(&self, previous: u64) -> Option<(u64, String)> {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (state.revision > previous).then(|| (state.revision, state.text.clone()))
     }
 }

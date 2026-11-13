@@ -79,6 +79,11 @@ A.submit=fn(service,args){sent={service:service args:args}}
 A.toggle_policy_web()
 assert(sent.service=="hagency.execution_policy.edit" && sent.args.webSearch==true && !sent.args.executionPolicy.yolo && sent.args.expectedRevision==revision)
 let other={sharedMode:"standard" webSearch:false resourceId:"pool" engagementId:"agent" agent:"Reviewer" projectId:"" framework:"octos" executionPolicy:{yolo:false} appliesTo:"next_dispatch" revision:revision}
+assert(A.policy_valid(other,"pool","agent"))
+sent=nil H.policy_detail=other
+A.toggle_policy_web()
+assert(sent.service=="hagency.execution_policy.edit" && sent.args.webSearch==true && !sent.args.executionPolicy.yolo && sent.args.expectedRevision==revision)
+other.framework="unsupported"
 assert(!A.policy_valid(other,"pool","agent"))
 sent=nil H.policy_detail=other
 A.toggle_policy_web()

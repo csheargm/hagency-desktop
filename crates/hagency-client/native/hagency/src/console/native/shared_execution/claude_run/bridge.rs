@@ -227,11 +227,17 @@ impl Capture {
         Ok(self.receipt.clone())
     }
 }
-async fn permission(
+pub(in crate::console::native::shared_execution) async fn permission(
     live: &Live,
     work: &SharedWorkItem,
     request: Value,
 ) -> Result<bool, NativeError> {
+    #[cfg(test)]
+    if let Some(fixture) = live.io.crypto_fixture.as_ref().and_then(|f| f.approvals.as_ref()) {
+        live.proof().await?;
+        fixture.requests.lock().unwrap().push(request);
+        return Ok(fixture.allow);
+    }
     let id = format!(
         "sap_{}",
         digest(&json!({"work":work.id,"request":request["id"]}))?
@@ -341,7 +347,7 @@ async fn permission(
     }
 }
 
-pub(super) struct Matrix {
+pub(in crate::console::native::shared_execution) struct Matrix {
     live: Live,
     work: SharedWorkItem,
     scope: hagency_agent_local::Scope,
@@ -363,13 +369,19 @@ impl Matrix {
         work: SharedWorkItem,
         scope: hagency_agent_local::Scope,
         call: &str,
+        message_root: &std::path::Path,
         history: Option<super::super::history::Reader<super::super::history::Source>>,
         files: Option<super::super::files::Files<super::super::files::Source>>,
     ) -> Result<Self, NativeError> {
         let mut card = Card::for_shared(&work, call).map_err(|_| invalid())?;
-        card.runtime = "claude".into();
+        card.runtime = match live.authority.root().runtime().map_err(store)? {
+            "claude" => "claude",
+            "octos" => "octos",
+            _ => return Err(invalid()),
+        }.into();
         card.validate().map_err(|_| invalid())?;
-        let card = Arc::new(CardHost::new(card));
+        let card = Arc::new(CardHost::with_messages(card, message_root)
+            .map_err(|_| failure(503, "shared_message_storage_unavailable"))?);
         let (sender, controls) =
             controls::channel(&scope, &work.id, call).map_err(|_| invalid())?;
         let (questions, qrx) = hagency_agent_local::questions::question_queue();
@@ -406,7 +418,17 @@ impl Matrix {
         );
         let questions = serve_questions(&self.live, &self.work, &self.scope, &mut self.questions);
         let controls = serve_controls(&self.live, &self.card, &self.sender);
-        tokio::join!(room, questions, controls);
+        let messages = serve_messages(&self.live, &self.work, &self.card);
+        tokio::join!(room, questions, controls, messages);
+    }
+    pub async fn flush_messages(&self) -> Result<(), NativeError> {
+        let Some(messages) = self.card.messages() else { return Ok(()); };
+        if messages.next().map_err(|_| invalid())?.is_none() { return Ok(()); }
+        while messages.next().map_err(|_| invalid())?.is_some() {
+            let (b, _, _) = self.live.proof().await?;
+            super::super::e2ee::send_message(&self.live.io, &b, &self.work, &messages).await?;
+        }
+        Ok(())
     }
     pub fn finish(&self, result: &Result<claude_turn::Outcome, NativeError>) {
         self.card.finish(match result {
@@ -417,6 +439,17 @@ impl Matrix {
             },
             Err(_) => State::Unknown,
         });
+    }
+}
+async fn serve_messages(live: &Live, work: &SharedWorkItem, card: &Arc<CardHost>) {
+    let Some(messages) = card.messages() else { return; };
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        if messages.next().ok().flatten().is_none() { continue; }
+        let Ok((bound, _, _)) = live.proof().await else { continue; };
+        let _ = super::super::e2ee::send_message(&live.io, &bound, work, &messages).await;
     }
 }
 impl Drop for Matrix {
@@ -451,21 +484,42 @@ async fn serve_room(
         pending.reply(result);
     }
 }
+#[derive(Default)]
+struct SharedQuestionHost {
+    questions: super::super::questions::Questions<PendingQuestion>,
+    receipts: Vec<hagency_agent_local::questions::Delivery>,
+}
+
+impl SharedQuestionHost {
+    fn settle(&mut self) {
+        self.receipts.retain_mut(|receipt| {
+            if let Some(accepted) = receipt.status() {
+                self.questions.delivered(&receipt.id, accepted);
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+impl Drop for SharedQuestionHost {
+    fn drop(&mut self) {
+        // The run can finish before the next poll. Settle any confirmed
+        // native write before Questions closes the remaining cards on drop.
+        self.settle();
+    }
+}
+
 async fn serve_questions(
     live: &Live,
     work: &SharedWorkItem,
     scope: &hagency_agent_local::Scope,
     receiver: &mut tokio::sync::mpsc::Receiver<PendingQuestion>,
 ) {
-    use crate::console::owned_runtime::questions::Host as QuestionHost;
-    let context = super::super::questions::QuestionContext {
-        id: work.id.clone(),
-        room_id: work.room_id.clone(),
-        event_id: work.event_id.clone(),
-        thread_root: work.thread_root.clone(),
-        responders: vec![work.requester_mxid.clone()],
-    };
-    let mut host = QuestionHost::default();
+    // Use the shared room source so production uses the authenticated Agent
+    // device and offline tests can substitute only the Matrix boundary.
+    let mut host = SharedQuestionHost::default();
     let mut poll = tokio::time::interval(Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -473,20 +527,23 @@ async fn serve_questions(
             pending=receiver.recv()=>{
                 let Some(pending)=pending else{break};
                 if pending.scope!=*scope||pending.dispatch!=work.id||pending.is_closed(){continue;}
-                #[cfg(test)]
-                if !host.is_open()
-                    && let Some(room) = live.io.crypto_fixture.as_ref().and_then(|f| f.questions.clone())
-                {
-                    host.open_fixture(room);
+                if live.io.check_running(live.authority.root()).await.is_err() {
+                    let _ = pending.reply(Default::default());
+                    continue;
                 }
-                if !host.is_open(){
-                    let began=Instant::now();
-                    let result=tokio::time::timeout_at(pending.deadline,async{live.io.check_running(live.authority.root()).await?;let b=live.io.bound().await?;super::super::e2ee::device(&live.io,&b,&work.assignment_id).await}).await;
-                    if let Ok(Ok(device))=result{host.open(device,began.elapsed());}
+                if let Ok(Some(delivery)) = host.questions.ask(&live.io, work, pending).await {
+                    host.receipts.push(delivery);
                 }
-                host.ask(&context,pending).await;
             },
-            _=poll.tick()=>host.poll().await,
+            _=poll.tick()=>{
+                host.settle();
+                if live.io.check_running(live.authority.root()).await.is_err() {
+                    host.questions.close();
+                    break;
+                }
+                if let Ok(ready) = host.questions.collect(&live.io).await { host.receipts.extend(ready); }
+                let _ = host.questions.publish().await;
+            },
         }
     }
 }
@@ -508,7 +565,7 @@ async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Se
     else {
         return;
     };
-    if card.open(device).is_err() {
+    if card.open(device.clone()).is_err() {
         std::future::pending::<()>().await;
         return;
     }

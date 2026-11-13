@@ -110,31 +110,7 @@ pub(super) async fn device<T: Transport>(
     // Use the account's private namespace, independent of provider HOME or
     // per-binding lease epochs. All bindings share this agent's one device.
     // The normal provider directory already lived here, preserving its store.
-    let (directory, identity) = if let Some(host) = transport.approval_host() {
-        let root = host
-            .console
-            .0
-            .server_login
-            .state_directory()
-            .ok_or(RuntimeError::Profile)?;
-        let p = &host.pin;
-        let directory = crate::console::owned_agents::journal_profile_directory(
-            &root, &p.origin, &p.issuer, &p.subject, &p.owner,
-        )
-        .map_err(|_| RuntimeError::Profile)?;
-        let identity = serde_json::to_string(p).map_err(|_| RuntimeError::Profile)?;
-        (directory, identity)
-    } else {
-        (
-            config
-                .profile
-                .home
-                .parent()
-                .ok_or(RuntimeError::Profile)?
-                .to_path_buf(),
-            lease.epoch.to_string(),
-        )
-    };
+    let (directory, identity) = namespace(transport, lease, config)?;
     let key = format!("{}:{}:{identity}", directory.display(), config.agent_id);
     let mut devices = DEVICES.lock().await;
     if let Some(device) = devices.get(&key)
@@ -159,6 +135,50 @@ pub(super) async fn device<T: Transport>(
     super::run_controls::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
+}
+
+fn namespace<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
+    -> Result<(std::path::PathBuf, String), RuntimeError>
+{
+    if let Some(host) = transport.approval_host() {
+        let root = host
+            .console
+            .0
+            .server_login
+            .state_directory()
+            .ok_or(RuntimeError::Profile)?;
+        let p = &host.pin;
+        let directory = crate::console::owned_agents::journal_profile_directory(
+            &root, &p.origin, &p.issuer, &p.subject, &p.owner,
+        )
+        .map_err(|_| RuntimeError::Profile)?;
+        let identity = serde_json::to_string(p).map_err(|_| RuntimeError::Profile)?;
+        Ok((directory, identity))
+    } else {
+        Ok((
+            config
+                .profile
+                .home
+                .parent()
+                .ok_or(RuntimeError::Profile)?
+                .to_path_buf(),
+            lease.epoch.to_string(),
+        ))
+    }
+}
+pub(in crate::console) fn agent_root(directory: &Path, agent: &str) -> Result<std::path::PathBuf, RuntimeError> {
+    private_directory(directory)?;
+    let devices = directory.join("agent-devices");
+    private_directory(&devices)?;
+    let root = devices.join(format!("{:x}", Sha256::digest(agent.as_bytes())));
+    private_directory(&root)?;
+    Ok(root)
+}
+pub(super) fn message_root<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
+    -> Result<std::path::PathBuf, RuntimeError>
+{
+    let (directory, _) = namespace(transport, lease, config)?;
+    agent_root(&directory, &config.agent_id)
 }
 
 /// Addressing is checked before the server creates a dispatch or a local call
@@ -389,10 +409,7 @@ impl AgentDevice {
     ) -> Result<Self, RuntimeError> {
         let user_id =
             OwnedUserId::try_from(grant.user_id.as_str()).map_err(|_| RuntimeError::Transport)?;
-        let devices = directory.join("agent-devices");
-        private_directory(&devices)?;
-        let root = devices.join(format!("{:x}", Sha256::digest(agent.as_bytes())));
-        private_directory(&root)?;
+        let root = agent_root(directory, agent)?;
         let passphrase = store_passphrase(&root)?;
         // A new execution device generation is a new Matrix device and account.
         let store = root.join(&grant.device_id);
@@ -536,17 +553,22 @@ impl AgentDevice {
         txn: &str,
         content: serde_json::Value,
     ) -> Result<String, RuntimeError> {
+        self.send_room_message_checked(room, txn, content, false).await
+    }
+
+    pub(in crate::console) async fn send_room_message_checked(
+        &self, room: &str, txn: &str, content: serde_json::Value, require_encrypted: bool,
+    ) -> Result<String, RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let room = self
             .client
             .get_room(&room_id)
             .ok_or(RuntimeError::Transport)?;
-        if room
+        let security = room
             .latest_encryption_state()
             .await
-            .map_err(|_| RuntimeError::Transport)?
-            .is_unknown()
-        {
+            .map_err(|_| RuntimeError::Transport)?;
+        if security.is_unknown() || (require_encrypted && !security.is_encrypted()) {
             return Err(RuntimeError::Transport);
         }
         let txn: OwnedTransactionId = txn.into();
@@ -560,7 +582,7 @@ impl AgentDevice {
                 if unknown_token(&error) {
                     self.revoked.store(true, Ordering::Release);
                 }
-                tracing::warn!(stage = "agent_device", %error, "Question card send failed");
+                tracing::warn!(stage = "agent_device", %error, "Room message send failed");
                 Err(RuntimeError::Transport)
             }
         }
@@ -780,6 +802,23 @@ pub(in crate::console) fn reply_content(
         content.relates_to = Some(Relation::Thread(Thread::plain(root.clone(), root)));
     }
     Ok(content)
+}
+
+/// A native message is already a complete provider item. Do not apply the
+/// final-reply truncation here: each item must remain one complete room event.
+pub(in crate::console) fn native_message_content(
+    room: &str, thread: &str, body: &str,
+) -> Result<serde_json::Value, RuntimeError> {
+    let mut content = if body.len() <= MARKDOWN_BYTES {
+        RoomMessageEventContent::text_markdown(body)
+    } else {
+        RoomMessageEventContent::text_plain(body)
+    };
+    if thread != room {
+        let root = OwnedEventId::try_from(thread).map_err(|_| RuntimeError::Request)?;
+        content.relates_to = Some(Relation::Thread(Thread::plain(root.clone(), root)));
+    }
+    serde_json::to_value(content).map_err(|_| RuntimeError::Request)
 }
 
 fn request_text(decrypted: &DecryptedRoomEvent, requester: &str) -> Option<String> {

@@ -628,6 +628,7 @@ impl Service {
     }
     /// Exact retained reference selection only. A missing key/schema is an
     /// error, never a miss that permits issuing a replacement database key.
+    #[cfg(test)]
     pub(super) fn retained_database(&self, identity: &Identity) -> Result<Option<Database>> {
         self.retained_database_with(identity, false)
     }

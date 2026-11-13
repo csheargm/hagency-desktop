@@ -790,14 +790,6 @@ impl<R: CardRequest> Questions<R> {
         questions.adopt((Arc::new(Source::Device(device)), Some(records)));
         questions
     }
-    /// A test's room in place of the Agent's device.
-    #[cfg(test)]
-    pub(in crate::console) fn with_fixture(fixture: Arc<Fixture>) -> Self {
-        let mut questions = Self::default();
-        let records = fixture.records.clone();
-        questions.adopt((Arc::new(Source::Fixture(fixture)), records));
-        questions
-    }
     pub(in crate::console) fn charge_opening(&mut self, elapsed: Duration) {
         let budget = self.budget.get_or_insert_with(|| WaitBudget::new(Duration::from_millis(protocol::ANSWER_WAIT_MS)));
         budget.used = budget.used.saturating_add(elapsed);

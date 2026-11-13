@@ -2,7 +2,7 @@
 //! byte-exact write progress and prepared frames, on Octos frames.
 use super::Error;
 use crate::octos::{Decoder, Frame};
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     time::Instant,
@@ -13,6 +13,9 @@ const MAX_QUEUED: usize = 16;
 const MAX_QUEUED_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DURATION_MS: u64 = 1_200_000;
 const STDERR_BYTES: usize = 16 * 1024;
+// A revoked lease has no independent wakeup channel. Recheck it even while
+// the peer is silent, rather than waiting until its previous expiration.
+const ACTIVITY_RECHECK_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -98,6 +101,7 @@ pub(super) struct Wire<R, W, E> {
     limits: Limits,
     origin: Instant,
     lifetime: Instant,
+    activity: Option<Arc<dyn Fn() -> Option<Instant> + Send + Sync>>,
     input: [u8; READ_BYTES],
     start: usize,
     end: usize,
@@ -125,6 +129,7 @@ impl<R, W, E> Wire<R, W, E> {
             limits,
             origin,
             lifetime: origin + Duration::from_millis(limits.lifetime_ms),
+            activity: None,
             input: [0; READ_BYTES],
             start: 0,
             end: 0,
@@ -141,6 +146,21 @@ impl<R, W, E> Wire<R, W, E> {
     }
     pub fn event_deadline(&self) -> Instant {
         Instant::now() + Duration::from_millis(self.limits.event_wait_ms)
+    }
+    /// Adds a restriction to this wire. It cannot create a lease or extend
+    /// the lifetime of an operation, and can only be installed once.
+    pub fn restrict_activity(
+        &mut self,
+        activity: Arc<dyn Fn() -> Option<Instant> + Send + Sync>,
+    ) -> Result<(), Error> {
+        if self.activity.is_some()
+            || self.termination.is_some()
+            || activity().is_none_or(|until| until <= Instant::now())
+        {
+            return Err(Error::State);
+        }
+        self.activity = Some(activity);
+        Ok(())
     }
     /// The fixed end of this wire's life; no wait outlasts it.
     pub fn lifetime(&self) -> Instant {
@@ -215,7 +235,13 @@ impl<R, W, E> Wire<R, W, E> {
             return Err(Error::Closed);
         }
         self.decoder.check_deadline(self.now_ms())?;
-        if Instant::now() >= until.min(self.lifetime) {
+        let now = Instant::now();
+        if now >= until.min(self.lifetime)
+            || self
+                .activity
+                .as_ref()
+                .is_some_and(|activity| activity().is_none_or(|deadline| now >= deadline))
+        {
             return Err(Error::Timeout);
         }
         Ok(())
@@ -226,7 +252,14 @@ impl<R, W, E> Wire<R, W, E> {
             .deadline_ms()
             .and_then(|ms| self.origin.checked_add(Duration::from_millis(ms)))
             .unwrap_or(self.lifetime);
-        until.min(self.lifetime).min(partial)
+        let mut deadline = until.min(self.lifetime).min(partial);
+        if let Some(activity) = &self.activity {
+            let now = Instant::now();
+            deadline = deadline
+                .min(activity().unwrap_or(now))
+                .min(now + Duration::from_millis(ACTIVITY_RECHECK_MS));
+        }
+        deadline
     }
     fn parse(&mut self) -> Result<(), Error> {
         let before = self.decoder.buffered_bytes();
@@ -378,8 +411,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 return Ok(Some(output));
             }
             Observed::Deadline => {
+                // A live lease can renew while this very read is waiting.
+                // Preserve the in-flight read/write and evaluate it again.
                 self.check(until)?;
-                return Err(Error::Timeout);
+                return Ok(None);
             }
             Observed::Write(Ok(0)) => return Err(Error::Io("stdin write zero")),
             Observed::Read(Ok(0)) => {
@@ -468,5 +503,57 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             }
             self.step(until, true, true).await?;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[tokio::test(start_paused = true)]
+    async fn renewed_activity_keeps_the_original_pending_read() {
+        let (stdout, mut peer) = tokio::io::duplex(1024);
+        let mut wire = Wire::new(stdout, tokio::io::sink(), tokio::io::empty(), Limits::default()).unwrap();
+        let started = Instant::now();
+        let lease = Arc::new(Mutex::new(Some(started + Duration::from_millis(250))));
+        let observed = lease.clone();
+        wire.restrict_activity(Arc::new(move || *observed.lock().unwrap())).unwrap();
+        assert_eq!(wire.restrict_activity(Arc::new(|| Some(Instant::now() + Duration::from_secs(1)))), Err(Error::State));
+        let updater = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            *lease.lock().unwrap() = Some(Instant::now() + Duration::from_millis(600));
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            peer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"reply\",\"result\":{}}\n").await.unwrap();
+        });
+        let received = wire.next(started + Duration::from_secs(2)).await.unwrap();
+        assert!(matches!(received.message, Frame::Response { ref id, .. } if id == "reply"));
+        assert!(Instant::now() >= started + Duration::from_millis(350));
+        updater.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn revoked_activity_interrupts_a_silent_peer() {
+        let (stdout, _peer) = tokio::io::duplex(1024);
+        let mut wire = Wire::new(stdout, tokio::io::sink(), tokio::io::empty(), Limits::default()).unwrap();
+        let started = Instant::now();
+        let lease = Arc::new(Mutex::new(Some(started + Duration::from_secs(5))));
+        let observed = lease.clone();
+        wire.restrict_activity(Arc::new(move || *observed.lock().unwrap())).unwrap();
+        let updater = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            *lease.lock().unwrap() = None;
+        });
+        assert!(matches!(wire.next(started + Duration::from_secs(10)).await, Err(Error::Timeout)));
+        assert!(Instant::now() <= started + Duration::from_millis(300));
+        updater.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_activity_is_not_installed() {
+        let (stdout, _peer) = tokio::io::duplex(1024);
+        let mut wire = Wire::new(stdout, tokio::io::sink(), tokio::io::empty(), Limits::default()).unwrap();
+        assert_eq!(wire.restrict_activity(Arc::new(|| Some(Instant::now()))), Err(Error::State));
+        assert!(wire.restrict_activity(Arc::new(|| Some(Instant::now() + Duration::from_secs(1)))).is_ok());
     }
 }

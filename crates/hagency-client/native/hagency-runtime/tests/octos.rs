@@ -26,6 +26,16 @@ fn envelope(payload: Value) -> Value {
 }
 
 #[test]
+fn native_octos_reads_routed_plan_snapshots() {
+    let plan = json!({"items":[{"title":"Inspect","status":"in_progress"}],"updated_at_ms":1});
+    assert!(matches!(notification("plan/updated", json!({"session_id":"coding:local:one",
+        "turn_id":"turn-1","plan":plan})), Notification::PlanUpdated { session_id, turn_id: Some(turn_id), plan }
+        if session_id == "coding:local:one" && turn_id == "turn-1" && plan["items"][0]["title"] == "Inspect"));
+    assert!(matches!(notification("plan/updated", json!({"session_id":"coding:local:one",
+        "plan":{"items":[]}})), Notification::PlanUpdated { turn_id: None, .. }));
+}
+
+#[test]
 fn native_octos_frames_answer_string_ids_only() {
     let Frame::Response { id, outcome } =
         frame(json!({"jsonrpc":"2.0","id":"hagency-1","result":{"accepted":true}})).unwrap()
@@ -85,7 +95,7 @@ fn native_octos_frames_read_the_projection_the_driver_needs() {
         ("coding:local:one", "main", 4, "turn-1")
     );
     assert!(
-        matches!(persisted.payload, Payload::AssistantPersisted { text } if text == "答复 reply")
+        matches!(persisted.payload, Payload::AssistantPersisted { text, .. } if text == "答复 reply")
     );
     let Notification::Envelope(terminal) = notification(
         "projection/envelope",
@@ -134,11 +144,28 @@ fn native_octos_frames_read_the_projection_the_driver_needs() {
             "params":envelope(json!({"type":"turn_terminal","data":{"outcome":"abandoned"}}))})),
         Err(Error::Unsupported)
     ));
+    // A completed background task carries the IDs and text used for delivery.
+    assert!(matches!(
+        notification(
+            "projection/envelope",
+            envelope(json!({"type":"background/spawn_complete","data":{
+                "parent_turn_id":"turn-1", "task_id":"task-1", "message_id":"m-1", "content":"done"
+            }}))
+        ),
+        Notification::Envelope(e) if matches!(&e.payload, Payload::BackgroundComplete {
+            parent_turn_id, task_id, message_id, text
+        } if parent_turn_id == "turn-1" && task_id == "task-1" && message_id == "m-1" && text == "done")
+    ));
+    assert!(matches!(
+        frame(json!({"jsonrpc":"2.0","method":"projection/envelope",
+            "params":envelope(json!({"type":"background/spawn_complete","data":{}}))})),
+        Err(Error::Envelope)
+    ));
     // A future payload is ignored, but the envelope's routing stays strict.
     assert!(matches!(
         notification(
             "projection/envelope",
-            envelope(json!({"type":"background/spawn_complete","data":{}}))
+            envelope(json!({"type":"future/vendor_event","data":{}}))
         ),
         Notification::Envelope(e) if matches!(e.payload, Payload::Other)
     ));
@@ -228,6 +255,13 @@ fn native_octos_requests_and_launch_arguments_are_bounded() {
             "/state/octos/agent/config.json"
         ]
     );
+    let scoped = hagency_runtime::octos::serve_arguments_scoped(
+        "/work/space", "/state/octos/agent", "/state/octos/agent/config.json", "coding",
+    ).unwrap();
+    assert_eq!(&scoped[scoped.len()-2..], &["--host-scoped-profile", "coding"]);
+    assert!(hagency_runtime::octos::serve_arguments_scoped(
+        "/work/space", "/state/octos/agent", "/state/octos/agent/config.json", "../escape",
+    ).is_err());
     for (workspace, instance, config) in [
         ("work", "/state", "/state/c.json"),
         ("/work", "state", "/state/c.json"),

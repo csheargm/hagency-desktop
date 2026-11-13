@@ -12,6 +12,7 @@ const GRAPH_CREATE_INPUT_LIMIT: usize = 64 * 1024 + 4096;
 const GRAPH_UPDATE_INPUT_LIMIT: usize = 128 * 1024 + 4096;
 const GRAPH_BIND_INPUT_LIMIT: usize = 32 * 1024 + 4096;
 pub(crate) const MAX_INTENT_INPUT: usize = GRAPH_UPDATE_INPUT_LIMIT;
+#[cfg(test)]
 pub(crate) const MAX_INTENT_OUTPUT: usize = 2 * 1024 * 1024;
 /// Stored operation is the JSON encoding of the enum. Keep ordinary operation
 /// limits unchanged; only these explicit graph variants admit large input.
@@ -192,9 +193,6 @@ impl Intent {
     pub fn require_unused_grant_publication(mut self) -> Self {
         self.require_unused_publication = true;
         self
-    }
-    pub(super) fn permission(&self) -> Permission {
-        self.operation.permission()
     }
     pub fn new(
         operation: IntentOperation,

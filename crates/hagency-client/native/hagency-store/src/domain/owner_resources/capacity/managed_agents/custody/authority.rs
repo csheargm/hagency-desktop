@@ -48,8 +48,13 @@ pub(super) fn original(
         return Err(Error::Conflict);
     }
     let resource = read_resource(db, &c.resource_id)?;
-    let provider:String=db.query_row("SELECT provider_digest FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind='verified_provider'",[&resource.seat_id],|r|r.get(0))?;
+    // Retain the original seat identity for late cleanup, even if the owner
+    // has since withdrawn consent. New execution separately checks the full
+    // current mapping and re-observes the profile before qualification.
+    let identity_kind = if resource.framework == "octos" { "explicit_owner_mapping" } else { "verified_provider" };
+    let provider:String=db.query_row("SELECT provider_digest FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind=?2",params![resource.seat_id,identity_kind],|r|r.get(0))?;
     if !cleanup {
+        if !super::super::reserve::admitted_account(db, &resource)? { return Err(Error::LocalAuthority); }
         let (state, mode): (String, String) = if c.pool_grant.is_some() {
             ("reserved".into(), MANAGED.into())
         } else { db.query_row(

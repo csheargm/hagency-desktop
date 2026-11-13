@@ -9,6 +9,7 @@ use crate::{
 use hagency_core::qualification;
 
 impl DomainRepository {
+    #[cfg(test)]
     pub(crate) fn management_resource_detail(
         &self,
         id: &str,

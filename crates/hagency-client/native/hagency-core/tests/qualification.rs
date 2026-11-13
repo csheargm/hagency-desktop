@@ -146,12 +146,24 @@ fn a_model_on_the_owners_own_claude_endpoint_is_medium_whatever_its_name() {
             .collect();
         assert_eq!(roles, ["coding", "testing", "integration", "documentation"]);
     }
-    // Only Claude Code has such a provider, and an empty name is still no model.
+    // The selected Octos profile follows the same conservative owner-declared
+    // endpoint rule, including local models and custom endpoint names.
+    for name in ["local-model", "claude-opus-5"] {
+        let profile = ModelProfile { reasoning: None, ..own(name, "octos") };
+        assert_eq!(qualification::model(&profile), (Some(Tier::Medium), None));
+        let roles: Vec<_> = qualification::roles()
+            .filter(|role| qualification::qualifies(&profile, role, None)).collect();
+        assert_eq!(roles, ["coding", "testing", "integration", "documentation"]);
+    }
+    // Codex does not use this marker, and an empty name is still no model.
     assert_eq!(qualification::model(&own("glm-4.6", "codex")), (None, None));
     assert_eq!(qualification::model(&own("", "claude")), (None, None));
+    assert_eq!(qualification::model(&own("", "octos")), (None, None));
     // Without the marker an unknown name stays unqualified.
     let plain = ModelProfile { provider: None, ..own("glm-4.6", "claude") };
     assert_eq!(qualification::model(&plain), (None, None));
+    let plain_octos = ModelProfile { provider: None, ..own("local-model", "octos") };
+    assert_eq!(qualification::model(&plain_octos), (None, None));
 }
 
 #[test]

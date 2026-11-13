@@ -40,6 +40,7 @@ impl Drop for Request {
 }
 pub(super) struct Controls {
     card: Arc<CardHost>,
+    work: SharedWorkItem,
     pending: BTreeMap<String, Request>,
     send: Option<(mpsc::Sender<Request>, mpsc::Sender<Request>)>,
     stop: mpsc::Receiver<Request>,
@@ -48,12 +49,14 @@ pub(super) struct Controls {
     active: bool,
 }
 impl Controls {
-    pub fn new(work: &SharedWorkItem, call: &str) -> Result<Self, NativeError> {
+    pub fn new(work: &SharedWorkItem, call: &str, root: &std::path::Path) -> Result<Self, NativeError> {
         let card = Card::for_shared(work, call).map_err(|_| invalid())?;
         let (stop_tx, stop) = mpsc::channel(1);
         let (steer_tx, steer) = mpsc::channel(16);
         Ok(Self {
-            card: Arc::new(CardHost::new(card)),
+            card: Arc::new(CardHost::with_messages(card, root)
+                .map_err(|_| failure(503, "shared_message_storage_unavailable"))?),
+            work: work.clone(),
             pending: BTreeMap::new(),
             send: Some((stop_tx, steer_tx)),
             stop,
@@ -86,8 +89,9 @@ impl Controls {
             let io = io.clone();
             let command = command.clone();
             let card = self.card.clone();
+            let work = self.work.clone();
             self.task = Some(tokio::spawn(async move {
-                serve(io, command, card, stop, steer).await;
+                serve(io, command, work, card, stop, steer).await;
             }));
         }
         self.receipts(process);
@@ -162,6 +166,17 @@ impl Controls {
         };
         self.card.finish(state);
     }
+    pub async fn flush_messages(&self, io: &Io, command: &SharedRuntimeCommand) -> Result<(), NativeError> {
+        let Some(messages) = self.card.messages() else { return Ok(()); };
+        if messages.next().map_err(|_| invalid())?.is_none() { return Ok(()); }
+        io.check_running(command).await?;
+        while messages.next().map_err(|_| invalid())?.is_some() {
+            io.check_running(command).await?;
+            let b = io.bound().await?;
+            super::e2ee::send_message(io, &b, &self.work, &messages).await?;
+        }
+        Ok(())
+    }
 }
 impl Drop for Controls {
     fn drop(&mut self) {
@@ -175,6 +190,7 @@ impl Drop for Controls {
 async fn serve(
     io: Io,
     command: SharedRuntimeCommand,
+    work: SharedWorkItem,
     card: Arc<CardHost>,
     stop_tx: mpsc::Sender<Request>,
     steer_tx: mpsc::Sender<Request>,
@@ -202,9 +218,7 @@ async fn serve(
     else {
         return;
     };
-    if card.open(device).is_err() {
-        return;
-    }
+    let _ = card.open(device.clone());
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -214,6 +228,13 @@ async fn serve(
         }
         card.drain_receipts(false);
         let _ = card.publish().await;
+        if let Some(messages) = card.messages()
+            && messages.next().ok().flatten().is_some()
+            && io.check_running(&command).await.is_ok()
+            && super::files::authorize(&io, &work.id).await.is_ok()
+        {
+            let _ = messages.send_next(&device, work.encrypted).await;
+        }
         for (received, action) in card.actions().await.unwrap_or_default() {
             // Current server identity, assignment and command; native submission
             // additionally checks the same process's unexpired activity lease.

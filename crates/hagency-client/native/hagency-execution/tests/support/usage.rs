@@ -11,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 #[path = "claude_usage.rs"]
 mod claude;
+#[path = "octos_usage.rs"]
+mod octos;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -36,6 +38,12 @@ impl Fixture {
         if family == "claude" {
             pool.model = "claude-sonnet-5".into();
             pool.reasoning = None;
+        }
+        if family == "octos" {
+            pool.model = "test-model".into();
+            pool.reasoning = None;
+            pool.provider = Some(hagency_core::qualification::OWNER_ENDPOINT.into());
+            pool.octos_profile = Some("coding".into());
         }
         db.put_resource(&pool).unwrap();
         let proof = proof(&request("allocation", "Worker", &pool, 100));

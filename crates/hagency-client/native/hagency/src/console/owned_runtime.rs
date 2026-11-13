@@ -1,5 +1,6 @@
 //! Explicit owner-started, chat-only Codex host. No legacy execution fallback.
 mod drain;
+pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
 pub(in crate::console) mod questions;
@@ -1850,6 +1851,13 @@ async fn execution_loop_with_gate<T: Transport>(
                     continue;
                 }
                 if let Some(execution) = record.execution_id {
+                    // A crashed or failed native run can already have emitted
+                    // room messages. Settle those original messages while the
+                    // dispatch still has authority, before closing it.
+                    let current = local(ledger.inbox_record(owner, &record.dispatch.id))?;
+                    if !flush_record_messages(console, lease, cancel, config, &current).await? {
+                        continue;
+                    }
                     let outcome = operation(
                         console,
                         cancel,
@@ -2103,7 +2111,8 @@ async fn execution_loop_with_gate<T: Transport>(
                     Finish::Failed => Outcome::Failed,
                     Finish::Unknown => Outcome::Unknown,
                 };
-                let reported_outcome = operation(
+                let record = local(ledger.inbox_record(owner, &prepared.dispatch.id))?;
+                let reported_outcome = if flush_record_messages(console, lease, cancel, config, &record).await? { operation(
                     console,
                     cancel,
                     Op::Finish {
@@ -2113,7 +2122,7 @@ async fn execution_loop_with_gate<T: Transport>(
                         outcome,
                     },
                 )
-                .await;
+                .await } else { Err(RuntimeError::Transport) };
                 if matches!(reported_outcome, Err(RuntimeError::Stopped)) {
                     return Err(RuntimeError::Stopped);
                 }
@@ -2129,7 +2138,8 @@ async fn execution_loop_with_gate<T: Transport>(
                 if *cancel.borrow() {
                     return Err(RuntimeError::Stopped);
                 }
-                let reported_outcome = operation(
+                let record = local(ledger.inbox_record(owner, &prepared.dispatch.id))?;
+                let reported_outcome = if flush_record_messages(console, lease, cancel, config, &record).await? { operation(
                     console,
                     cancel,
                     Op::Finish {
@@ -2139,7 +2149,7 @@ async fn execution_loop_with_gate<T: Transport>(
                         outcome: Outcome::Unknown,
                     },
                 )
-                .await;
+                .await } else { Err(RuntimeError::Transport) };
                 if authorization_lost {
                     return Err(RuntimeError::Authorization);
                 }
@@ -2474,27 +2484,32 @@ async fn run_turn<T: Transport>(
     let mut queue = queue.with_questions(question_queue);
     let host = transport.approval_host();
     let controls =
-        if host.is_some() && runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
-            let kind = if runtime::kind(&config.credential_ref) == runtime::Kind::Claude {
-                "claude"
-            } else {
-                "codex"
-            };
+        if host.is_some() {
+            let kind = runtime::kind(&config.credential_ref).name();
             let card = run_controls::optional_card(
                 &prepared.dispatch,
                 &prepared.execution_id,
                 owner,
                 kind,
             );
-            if let Some(card) = card {
+            let controls = if let Some(card) = card {
                 let (sender, inbox) = hagency_agent_local::run_controls::channel(
                     &scope, &prepared.dispatch.id, &prepared.execution_id,
                 ).map_err(|_| RuntimeError::Profile)?;
                 queue = queue.with_run_controls(inbox);
-                let controls = run_controls::Controller::new(sender, card);
-                queue = queue.with_live_text(controls.live_text());
+                let root = e2ee::message_root(transport, lease, config)?;
+                let controls = run_controls::Controller::new(sender, card, &root)
+                    .map_err(|_| RuntimeError::Profile)?;
                 Some(controls)
-            } else { None }
+            } else if let Some(route) = messages::Route::personal(&prepared.dispatch, &prepared.execution_id) {
+                let root = e2ee::message_root(transport, lease, config)?;
+                Some(run_controls::Controller::messages_only(route, &root)
+                    .map_err(|_| RuntimeError::Profile)?)
+            } else { None };
+            if let Some(controls) = &controls {
+                queue = queue.with_live_text(controls.live_text());
+            }
+            controls
         } else {
             None
         };
@@ -2549,8 +2564,7 @@ async fn run_turn<T: Transport>(
             Ok(None)
         };
     }
-    let mut room_bridge = if runtime::kind(&config.credential_ref) != runtime::Kind::Octos {
-        if let Some(console) = host.as_ref() {
+    let mut room_bridge = if let Some(console) = host.as_ref() {
             let gate = Arc::new(LiveToolGate { console: console.clone(), lease: lease.clone(),
                 expected: prepared.dispatch.clone(), execution: prepared.execution_id.clone(), cancel: cancel.clone() });
             #[cfg(unix)]
@@ -2562,7 +2576,6 @@ async fn run_turn<T: Transport>(
                 .map_err(|_| RuntimeError::Profile)?;
             queue = queue.with_room_tools(channel);
             Some((host, receiver))
-        } else { None }
     } else { None };
     let room_tools = room_bridge.is_some();
     // The owner's slash command to their own Claude Agent reaches the CLI as
@@ -2755,6 +2768,11 @@ async fn run_turn<T: Transport>(
         Err(error)=>Err(provider_failure("agent_turn_result", &error)),
     }};
     if let Some(controls) = &controls {
+        if !matches!(tokio::time::timeout(Duration::from_secs(30),
+            controls.flush_messages(transport, lease, config, &prepared, cancel)).await, Ok(Ok(())))
+        {
+            tracing::warn!(code = "agent_message_delivery_pending", "Native messages remain in encrypted local custody");
+        }
         use crate::agent_run_controls::State;
         controls.finish(match &result {
             Ok(Ok(completed)) if completed.status == codex::TurnStatus::Interrupted => {
@@ -2801,6 +2819,43 @@ async fn run_turn<T: Transport>(
     Ok(None)
 }
 
+/// Recover only this exact dispatch's immutable outgoing messages. A
+/// transient device/room failure leaves them pending for the next scan.
+async fn flush_record_messages<T: Transport>(
+    console: &T,
+    lease: &LeaseRef,
+    cancel: &mut watch::Receiver<bool>,
+    config: &StartConfig,
+    record: &inbox::Record,
+) -> Result<bool, RuntimeError> {
+    if console.approval_host().is_some() {
+        // Older dispatches without an execution ID or a valid Matrix route
+        // cannot have created an outbox and still need their final reply.
+        let Some(execution) = record.execution_id.as_deref() else { return Ok(true) };
+        let Some(route) = messages::Route::personal(&record.dispatch, execution) else { return Ok(true) };
+        let root = e2ee::message_root(console, lease, config)?;
+        if messages::Outbox::exists_for_route(&root, &route) {
+            let messages = messages::Outbox::open_route(&root, route).map_err(|_| RuntimeError::Profile)?;
+            if messages.next().map_err(|_| RuntimeError::Profile)?.is_some() {
+                let device = match e2ee::device(console, lease, config, cancel).await {
+                    Ok(device) => device,
+                    Err(RuntimeError::Stopped) => return Err(RuntimeError::Stopped),
+                    Err(_) => return Ok(false),
+                };
+                while messages.next().map_err(|_| RuntimeError::Profile)?.is_some() {
+                    if !fresh_running(console, lease, &record.dispatch, execution, cancel).await
+                        || messages.send_next(&device, record.dispatch.body.is_empty()).await.is_err()
+                    {
+                        tracing::warn!(code = "agent_message_delivery_pending", "Native message awaits its original room authority");
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
 // A historical delivery failure is scoped to its immutable reply. Retry on a
 // later pass, leaving polling and later requests free to make progress.
 async fn retry_reply<T: Transport>(
@@ -2812,6 +2867,9 @@ async fn retry_reply<T: Transport>(
     config: &StartConfig,
     record: &inbox::Record,
 ) -> Result<(), RuntimeError> {
+    // Never rerun the provider to recover a lost message; deliver its original
+    // local outbox before the final answer for this dispatch.
+    if !flush_record_messages(console, lease, cancel, config, record).await? { return Ok(()); }
     let sent = if record.dispatch.body.is_empty() {
         send_encrypted_reply(console, owner, ledger, lease, cancel, config, record).await
     } else {

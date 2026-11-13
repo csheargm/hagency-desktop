@@ -34,7 +34,7 @@ fn inner() -> io::Result<()> {
     {
         return Err(invalid());
     }
-    respond(&mut out, &init, json!({}))?;
+    respond(&mut out, &init, json!({"claude_code_version":"2.1.322"}))?;
     let before = control(&mut input, "mcp_status")?;
     respond(&mut out, &before, json!({"mcpServers":[]}))?;
     let binding = control(&mut input, "mcp_set_servers")?;

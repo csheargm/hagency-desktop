@@ -10,14 +10,14 @@ pub(in crate::console::native::shared_execution) enum Claimed {
     #[cfg(feature = "shared-budget-execution")]
     Budget(Box<(SharedBudgetAttemptCustody, budget_io::Delivery)>),
 }
-pub(super) enum Authority {
+pub(in crate::console::native::shared_execution) enum Authority {
     Root(Arc<SharedProcessSink>, SharedRuntimeDelivery),
     Attempt(Arc<SharedAttemptProcessSink>, attempt_io::Delivery),
     #[cfg(feature = "shared-budget-execution")]
     Budget(Arc<SharedBudgetAttemptProcessSink>, budget_io::Delivery),
 }
 impl Claimed {
-    pub(super) fn root(&self) -> &SharedRuntimeCommand {
+    pub(in crate::console::native::shared_execution) fn root(&self) -> &SharedRuntimeCommand {
         match self {
             Self::Root(c) => &c.1.command,
             Self::Attempt(c) => &c.1.command.original_runtime_command,
@@ -25,7 +25,7 @@ impl Claimed {
             Self::Budget(c) => &c.1.command.original_runtime_command,
         }
     }
-    pub(super) fn bind(self, source: SharedTextProcessSource) -> Result<Authority, NativeError> {
+    pub(in crate::console::native::shared_execution) fn bind(self, source: SharedTextProcessSource) -> Result<Authority, NativeError> {
         Ok(match self {
             Self::Root(claimed) => {
                 let (c, d) = *claimed;
@@ -204,7 +204,7 @@ impl Authority {
     }
 }
 #[derive(Clone)]
-pub(super) struct Lease {
+pub(in crate::console::native::shared_execution) struct Lease {
     pub lease: SharedActivityLease,
     pub until: Instant,
     renew_at: Instant,
@@ -241,14 +241,14 @@ impl Lease {
         })
     }
 }
-pub(super) struct Active {
+pub(in crate::console::native::shared_execution) struct Active {
     pub live: Live,
     control: SharedTextActivityControl,
     send: watch::Sender<Lease>,
     renewal: Option<SharedActivityRenewInput>,
 }
 #[derive(Clone)]
-pub(super) struct Live {
+pub(in crate::console::native::shared_execution) struct Live {
     pub io: Io,
     pub registry: OwnerResourceRegistry,
     pub authority: Arc<Authority>,
@@ -268,6 +268,24 @@ impl Live {
     }
 }
 impl Active {
+    pub async fn new_octos(
+        io: Io,
+        r: OwnerResourceRegistry,
+        authority: Arc<Authority>,
+        process: &mut hagency_runtime::owned::OwnedOctosSession,
+        lease: SharedActivityLease,
+        observed: (u64, Instant),
+    ) -> Result<Self, NativeError> {
+        let b = io.bound().await?;
+        let state = Lease::new(&authority, lease, observed.0, observed.1, &b)?;
+        process.install_renewable_shared_activity(state.lease.authority.epoch, state.until).map_err(|_| invalid())?;
+        let control = process.shared_activity_control().map_err(|_| invalid())?;
+        let (send, lease) = watch::channel(state);
+        Ok(Self {
+            live: Live { io, registry: r, authority, lease },
+            control, send, renewal: None,
+        })
+    }
     pub async fn new(
         io: Io,
         r: OwnerResourceRegistry,

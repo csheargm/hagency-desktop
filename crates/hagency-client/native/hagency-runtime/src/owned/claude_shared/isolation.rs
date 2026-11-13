@@ -5,16 +5,39 @@ use hagency_platform::Launch;
 use std::path::Path;
 
 pub(super) fn confine(launch: &mut Launch, scope: &Path) -> Result<(), StartError> {
+    confine_paths(launch, scope, &["HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "CLAUDE_CODE_TMPDIR"])
+}
+
+/// Octos runs with a private, ephemeral copy of exactly one selected
+/// profile. The caller still has to bind pool custody and a live lease.
+#[cfg(target_os = "macos")]
+pub(in crate::owned) fn confine_octos(launch: &mut Launch, scope: &Path) -> Result<(), StartError> {
+    if launch.directory.canonicalize().ok().as_deref() != Some(&launch.directory) {
+        return Err(StartError::Settings);
+    }
+    // The short spelling avoids the Unix socket path limit; its resolved
+    // target remains inside the confined room. It grants no extra filesystem
+    // access, including to the private parent of the alias.
+    let runtime = launch.environment.get(std::ffi::OsStr::new("XDG_RUNTIME_DIR"))
+        .map(Path::new).ok_or(StartError::Settings)?;
+    if !runtime.starts_with("/private/tmp")
+        || runtime.canonicalize().ok().as_deref() != Some(scope.join("tmp").as_path()) {
+        return Err(StartError::Settings);
+    }
+    confine_paths(launch, scope, &["HOME", "OCTOS_HOME", "TMPDIR", "XDG_CONFIG_HOME"])
+}
+
+fn confine_paths(launch: &mut Launch, scope: &Path, names: &[&str]) -> Result<(), StartError> {
     if !scope.is_absolute()
         || scope.canonicalize().ok().as_deref() != Some(scope)
         || !launch.directory.starts_with(scope)
     {
         return Err(StartError::Settings);
     }
-    for name in ["HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "CLAUDE_CODE_TMPDIR"] {
+    for name in names {
         let value = launch
             .environment
-            .get(std::ffi::OsStr::new(name))
+            .get(std::ffi::OsStr::new(*name))
             .ok_or(StartError::Settings)?;
         let path = Path::new(value);
         if !path.starts_with(scope) || path.canonicalize().ok().as_deref() != Some(path) {

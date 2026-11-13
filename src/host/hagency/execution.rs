@@ -214,7 +214,6 @@ impl Host {
                         code.as_str(),
                         "shared_successors_disabled"
                             | "current_profile_required"
-                            | "current_profile_required"
                             | "adopted_executor_device_reauthorization_required"
                     ) =>
                 {

@@ -36,7 +36,7 @@ pub use start_inventory::{SharedSuccessorPage, SharedSuccessorSummary};
 pub use start_selection::SharedSuccessorSelection;
 pub use start_intent::{SharedAttemptStartInput,SharedAttemptStartIntent};
 mod work;
-pub use capture::{SharedCallSink, SharedNativeSession, SharedClaudeSession};
+pub use capture::{SharedCallSink, SharedNativeSession, SharedClaudeSession, SharedOctosSession};
 pub use process::SharedProcessSink;
 pub use recovery::SharedSavedWork;
 pub use successor::{SharedSuccessorBudget, SharedSuccessorBudgetState};

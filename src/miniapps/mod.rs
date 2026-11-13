@@ -57,6 +57,7 @@ pub mod surface;
 pub mod window;
 pub use crate::host::octos::ContextProvider;
 pub use ui::{MiniAppsAction, MiniAppsPanelWidgetRefExt};
+pub use crate::host::hagency::tool_approvals::ToolApprovalTarget;
 
 pub fn script_mod(vm: &mut makepad_widgets::ScriptVm) {
     static ONCE: std::sync::Once = std::sync::Once::new();

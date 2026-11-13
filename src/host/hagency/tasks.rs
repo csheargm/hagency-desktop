@@ -2,7 +2,7 @@
 use super::*;
 use ::hagency::native_owner::{
     OperatorTaskQuery, OperatorTaskDetailQuery, OperatorBoardQuery, };
-use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
+use ::hagency::daemon::bridge::ManagementClient as NativeManagement;
 pub(super) const LIST: &str = "hagency.tasks.list";
 pub(super) const GET: &str = "hagency.tasks.get";
 pub(super) const BOARD: &str = "hagency.tasks.board";

@@ -442,7 +442,9 @@ async fn host_round(
         stop.clone(),
         status,
     ));
-    let wait_seconds = if state.lock().unwrap().continuous { 50 } else { 20 };
+    // Both modes run multiple six-second fake provider turns. Allow enough
+    // time for device bootstrap, delivery retry and lease renewals as well.
+    let wait_seconds = if state.lock().unwrap().continuous || unknown { 50 } else { 20 };
     let ready = tokio::time::timeout(Duration::from_secs(wait_seconds), async {
         loop {
             let done = {
@@ -490,7 +492,7 @@ async fn host_round(
         .unwrap();
     assert!(
         matches!(ready, Ok(true)),
-        "runtime ended before completion: {result:?}; binding={:?}; paths={:?}",
+        "runtime did not complete: ready={ready:?}; result={result:?}; binding={:?}; paths={:?}",
         _binding_handle.status.borrow(),
         state.lock().unwrap().paths
     );

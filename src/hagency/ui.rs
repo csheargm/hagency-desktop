@@ -59,6 +59,7 @@ enum Target {
     Agents,
     Bindings,
     BindingChanged,
+    #[cfg(test)]
     ReplyPolicyChanged,
     RoomRoster,
     ScopeState,
@@ -803,7 +804,7 @@ script_mod! {
                         host_files := CheckBox {visible: false text: #(crate::i18n::tr("Enable this Room's scoped host files (list/read/create)")) i18n_text: "Enable this Room's scoped host files (list/read/create)"}
                         shared_workspace_path := Text {draw_text.color: mod.widgets.RINX_MUTED}
                         shared_workspace := CheckBox {text: #(crate::i18n::tr("Allow this Agent to edit the selected workspace in all current and future connected Rooms")) i18n_text: "Allow this Agent to edit the selected workspace in all current and future connected Rooms"}
-                        Text {text: #(crate::i18n::tr("Codex only; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten.")) i18n_text: "Codex only; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten." draw_text.color: mod.widgets.RINX_MUTED}
+                        Text {text: #(crate::i18n::tr("Codex and Octos; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten.")) i18n_text: "Codex and Octos; UTF-8 files up to 128 KiB. File changes require tool permissions and may require approval. Updates preserve mode bits but not extended attributes or ACLs; concurrent external edits may be overwritten." draw_text.color: mod.widgets.RINX_MUTED}
                         }
                         }
                         runtime_model_settings := Text {draw_text.color: mod.widgets.RINX_MUTED}
@@ -2583,6 +2584,7 @@ impl HagencyPanel {
             }
             Target::ListService => {self.refresh_runtime_list(cx);}
             Target::ServiceRoomChanged => {self.local(cx,Target::Runtime,LocalAction::AgentServiceStatus,None);}
+            #[cfg(test)]
             Target::ReplyPolicyChanged => {
                 let updated = &value["binding"];
                 if let Some(binding) = self.bindings.iter_mut().find(|b| string(b, "id") == string(updated, "id")) {
@@ -2746,7 +2748,7 @@ impl HagencyPanel {
                     let installation=if value["installed"]==true {crate::i18n::tr("Installed")} else {crate::i18n::tr("Not installed")};
                     let version=value["version"].as_str().unwrap_or(crate::i18n::tr("Version unknown"));
                     let readiness=match string(value,"state") {"ready"=>crate::i18n::tr("Ready"),"unsupported"=>crate::i18n::tr("Unsupported"),"disconnected"=>crate::i18n::tr("Disconnected"),_=>crate::i18n::tr("Unavailable")};
-                    let verified=if value["accountVerified"]==true {crate::i18n::tr("Account verified")} else {crate::i18n::tr("Account verification unavailable")};
+                    let verified=if string(value,"runtime")=="octos" {crate::i18n::tr("Local Octos profile")} else if value["accountVerified"]==true {crate::i18n::tr("Account verified")} else {crate::i18n::tr("Account verification unavailable")};
                     self.view.label(cx,ids!(provider_status)).set_text(cx,&format!("{installation} · {version} · {readiness} · {verified}"));
                     self.view.label(cx,ids!(runtime_provider_note)).set_text(cx,crate::i18n::tr("Connect uses the owner's provider on the execution device and affects that owner's other Agents. Sign-in and credentials stay on that device."));
                     for id in [ids!(provider_login),ids!(provider_logout),ids!(provider_cancel),ids!(provider_open),ids!(disconnect_provider)] {self.view.button(cx,id).set_visible(cx,false);}
@@ -4059,7 +4061,7 @@ impl Widget for HagencyPanel {
             let saved_effort=string(&self.policy["modelProfile"],"reasoning_effort");
             if !saved_effort.is_empty() && saved_effort!=effort {self.runtime_feedback(cx,"Save the selected reasoning effort in model settings before starting.");return;}
             let shared_workspace=self.view.check_box(cx,ids!(shared_workspace)).active(cx);
-            if shared_workspace && self.provider_runtime(cx)!="codex" {self.runtime_feedback(cx,"Shared workspace editing currently supports Codex only.");return;}
+            if shared_workspace && !matches!(self.provider_runtime(cx), "codex" | "octos") {self.runtime_feedback(cx,"Shared workspace editing currently supports Codex and Octos.");return;}
             let shared_workspace=shared_workspace.then(||string(&self.policy["modelProfile"],"workspace_root").to_owned());
             let input = runtime_start_input(self.view.check_box(cx,ids!(takeover)).active(cx), effort, shared_workspace);
             self.local(cx, Target::Runtime, LocalAction::StartAgentService, Some(input));
@@ -4533,7 +4535,9 @@ mod tests {
         assert_eq!(panel.view.text_input(&mut cx,ids!(workspace)).text(),"/A/workspace");
         assert!(panel.view.label(&mut cx,ids!(workspace_label)).text().contains("Execution workstation"));
         assert!(panel.view.label(&mut cx,ids!(configuration_notice)).text().contains("Cached observation"));
-        assert!(panel.view.label(&mut cx,ids!(provider_status)).text().contains("1.2.3"));
+        let status=panel.view.label(&mut cx,ids!(provider_status)).text();
+        assert!(status.contains("1.2.3") && status.contains("Local Octos profile"),"{status}");
+        assert!(!status.contains("Account verification unavailable"),"{status}");
         for id in [ids!(save_model),ids!(save_policy),ids!(prepare_workspace),ids!(use_local_provider),ids!(runtime_tab)] {
             assert!(!panel.view.button(&mut cx,id).borrow().unwrap().enabled());
         }

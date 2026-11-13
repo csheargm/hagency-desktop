@@ -1,6 +1,7 @@
 //! Immutable, private-constructor receipts from one admitted Octos session.
 //! Numeric projection only; no provider, task, source or billing authority.
-use super::{Error, Event, Phase, SessionDriver, Usage};
+use super::{Error, Event, Outcome, Phase, SessionDriver, Usage};
+use sha2::{Digest, Sha256};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -21,6 +22,28 @@ impl Eq for ObservationSource {}
 impl ObservationSource {
     pub fn is_retired(&self) -> bool {
         !self.live.load(Ordering::Acquire)
+    }
+}
+
+/// The final answer and outcome observed on this original session. The
+/// digest binds the text without exposing it in a serializable receipt.
+/// Completion alone is not proof of complete or billable usage.
+#[derive(Clone)]
+pub struct CompletionReceipt {
+    source: ObservationSource,
+    sequence: u64,
+    outcome: Outcome,
+    text_digest: [u8; 32],
+}
+impl CompletionReceipt {
+    pub(super) fn new(source: ObservationSource, sequence: u64, outcome: Outcome, text: &str) -> Self {
+        Self { source, sequence, outcome, text_digest: Sha256::digest(text.as_bytes()).into() }
+    }
+    pub fn source(&self) -> &ObservationSource { &self.source }
+    pub fn sequence(&self) -> u64 { self.sequence }
+    pub fn outcome(&self) -> Outcome { self.outcome }
+    pub fn matches_text(&self, text: &str) -> bool {
+        self.text_digest == <[u8; 32]>::from(Sha256::digest(text.as_bytes()))
     }
 }
 
@@ -121,6 +144,7 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn last(&self) -> Option<&Observation> { self.last.as_ref() }
     pub(super) fn retire(&self) {
         self.live.store(false, Ordering::Release);
     }
@@ -149,16 +173,17 @@ impl State {
             turns: self.turns,
         }
     }
-    /// The session's totals when they cover at least what the turns reported;
-    /// a ledger that has not caught up keeps the turns' own sums.
+    /// The session's totals when every turn reported complete usage and the
+    /// ledger covers those reports. Totals alone do not prove that a missing
+    /// turn was included: the ledger may contain earlier calls.
     fn final_evidence(&self) -> UsageEvidence {
         let s = self.sums;
+        if self.unknown { return self.turn_evidence(); }
         match self.totals.filter(|t| {
-            self.unknown
-                || (t.input >= s.input
-                    && t.output >= s.output
-                    && t.cache_read >= s.cache_read
-                    && t.cache_write >= s.cache_write)
+            t.input >= s.input
+                && t.output >= s.output
+                && t.cache_read >= s.cache_read
+                && t.cache_write >= s.cache_write
         }) {
             Some(t) if bounded(&t) => UsageEvidence {
                 input: Some(t.input),
@@ -216,6 +241,10 @@ fn bounded(usage: &Usage) -> bool {
         && usage.reasoning <= MAX
 }
 impl<R, W, E> SessionDriver<R, W, E> {
+    pub fn completion_receipt(&self) -> Option<&CompletionReceipt> {
+        (self.phase == Phase::Idle).then_some(self.completion.as_ref()).flatten()
+            .filter(|receipt| !receipt.source.is_retired())
+    }
     /// Taken once the dispatch's turn is accepted, before any event is read:
     /// the baseline is sequence 0. Late attachment is refused.
     pub fn observation_source(&self) -> Result<ObservationSource, Error> {

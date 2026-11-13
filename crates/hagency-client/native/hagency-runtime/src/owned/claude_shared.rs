@@ -12,7 +12,7 @@ use crate::claude::{
 };
 use hagency_platform::Launch;
 use std::{path::Path, sync::Arc, time::Instant};
-mod isolation;
+pub(super) mod isolation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SharedClaudePolicy {

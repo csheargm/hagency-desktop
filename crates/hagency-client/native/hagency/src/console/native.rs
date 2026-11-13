@@ -131,6 +131,7 @@ mod account_login;
 mod account_models;
 mod account_enrollment;
 mod claude_account;
+mod octos_account;
 pub use hagency_store::owner_resources::NamespaceEnrollment;
 pub use account_login::AccountLoginAuthorization;
 mod resource_onboarding;
@@ -860,6 +861,7 @@ enum MatrixStartup {
     },
 }
 impl NativeOwner {
+    #[cfg(unix)]
     pub(crate) fn set_hosting_admission(&self, admission: Arc<super::hosting::Admission>) {
         *self.0.host.console.0.hosting.lock().unwrap_or_else(|p| p.into_inner()) = admission;
     }

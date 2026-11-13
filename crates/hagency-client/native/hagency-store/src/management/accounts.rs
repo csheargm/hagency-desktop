@@ -49,6 +49,43 @@ pub struct AccountInventory {
 }
 
 impl Session {
+    /// Native-only read projection; the profile witness is not deserializable
+    /// by a miniapp and the lookup has no enrollment side effect.
+    pub async fn octos_account_resource_id(
+        &self, context:&HostContext, binding:hagency_runtime::octos::profile_binding::ProfileBinding,
+    )->Result<Option<String>,Error> {
+        self.check(context,Permission::ReadAccounts)?;
+        let SessionStore::Current(store)=self.local_store()?;
+        let profile=self.current_profile(store)?;
+        let registry=store.enrollment_registry(&profile)?;
+        let result=registry.find_octos_account_resource(profile,binding).await?;
+        self.check(context,Permission::ReadAccounts)?;
+        Ok(result)
+    }
+    pub async fn octos_account_resources(
+        &self, context:&HostContext, binding:hagency_runtime::octos::profile_binding::ProfileBinding,
+    )->Result<Vec<(String,String)>,Error> {
+        self.check(context,Permission::ReadAccounts)?;
+        let SessionStore::Current(store)=self.local_store()?;
+        let profile=self.current_profile(store)?;
+        let registry=store.enrollment_registry(&profile)?;
+        let result=registry.find_octos_account_resources(profile,binding).await?;
+        self.check(context,Permission::ReadAccounts)?;
+        Ok(result)
+    }
+    /// Model picker projection; only local profile owners and their visible
+    /// resource mappings are exposed, with the shared profile ceiling.
+    pub async fn octos_model_overview(
+        &self, context:&HostContext, binding:hagency_runtime::octos::profile_binding::ProfileBinding,
+    )->Result<(Vec<(String,String)>,Option<u64>),Error> {
+        self.check(context,Permission::ReadAccountModels)?;
+        let SessionStore::Current(store)=self.local_store()?;
+        let profile=self.current_profile(store)?;
+        let registry=store.enrollment_registry(&profile)?;
+        let result=registry.octos_account_overview(profile,binding).await?;
+        self.check(context,Permission::ReadAccountModels)?;
+        Ok(result)
+    }
     pub async fn account_inventory(
         &self,
         context: &HostContext,

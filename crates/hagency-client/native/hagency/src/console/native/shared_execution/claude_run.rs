@@ -5,10 +5,10 @@ use crate::console::lifecycle::DrainFailure;
 use hagency_agent_local::runtime::claude_turn;
 use hagency_runtime::owned::{ManagedProcessState, OwnedClaudeSession};
 use tokio::sync::{oneshot, watch};
-mod authority;
-mod bridge;
+pub(super) mod authority;
+pub(super) mod bridge;
 mod policy;
-mod session_route;
+pub(super) mod session_route;
 pub(super) use authority::Claimed;
 use authority::{Active, Live};
 #[cfg(feature = "shared-budget-execution")]
@@ -446,11 +446,14 @@ async fn work(
         requester: work.requester_mxid.clone(),
         thread: work.thread_root.clone(),
     };
+    let (message_bound, _, _) = live.proof().await?;
+    let message_root = super::e2ee::message_root(&live.io, &message_bound, &work.assignment_id)?;
     let mut matrix = bridge::Matrix::new(
         live.clone(),
         work.clone(),
         scope.clone(),
         &call_id,
+        &message_root,
         history,
         files,
     )?;
@@ -563,6 +566,11 @@ async fn work(
     };
     // Always retain original failure/unknown accounting before physical stop.
     let receipt = capture.finish(&mut host).await;
+    if !matches!(tokio::time::timeout(Duration::from_secs(30),
+        active.wait(cancel, matrix.flush_messages())).await, Ok(Ok(())))
+    {
+        tracing::warn!(code = "shared_message_delivery_pending", "Native messages remain in encrypted local custody");
+    }
     matrix.finish(&result);
     if let Ok(outcome) = &result
         && let Some(error) = &outcome.late_failure
@@ -607,7 +615,7 @@ async fn work(
     result.map(|_| ())
 }
 
-async fn finish_after_stop<F: std::future::Future>(
+pub(in crate::console::native::shared_execution) async fn finish_after_stop<F: std::future::Future>(
     future: F,
     deadline: Instant,
     mut interrupt: impl FnMut() -> bool,

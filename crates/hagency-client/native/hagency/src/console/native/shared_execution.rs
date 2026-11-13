@@ -3,6 +3,8 @@
 mod context_io;
 mod launch;
 mod claude_run;
+mod octos_capture;
+mod octos_run;
 mod claude_workspace;
 mod e2ee;
 pub(in crate::console) mod history;
@@ -170,6 +172,16 @@ impl SharedExecutionTransport {
         let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
         let launch = launch::ClaudeLaunch::fixture(r.clone(), b.scope.profile, &resource, root, binding, mode);
         self.process(r, Action::Poll { after: None }, None, Some(launch::Launch::Claude(launch))).await
+    }
+    #[cfg(all(test, feature = "shared-execution"))]
+    pub(super) async fn poll_octos_fixture(
+        &self, r: &OwnerResourceRegistry, resource_id: String, home: std::path::PathBuf,
+        root: std::path::PathBuf, profile_id: String,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
+        let launch = launch::OctosLaunch::fixture(r.clone(), b.scope.profile, &resource, home, root, profile_id);
+        self.process(r, Action::Poll { after: None }, None, Some(launch::Launch::Octos(launch))).await
     }
     /// Historical accounting upload only. Neither missing evidence nor a server
     /// recovery response can authorize another process or model turn.

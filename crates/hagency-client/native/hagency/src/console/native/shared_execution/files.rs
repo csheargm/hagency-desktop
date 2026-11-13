@@ -86,7 +86,7 @@ impl FileIo for Source {
     }
 }
 
-async fn authorize(io: &Io, work: &str) -> Result<()> {
+pub(super) async fn authorize(io: &Io, work: &str) -> Result<()> {
     let b = io
         .bound()
         .await

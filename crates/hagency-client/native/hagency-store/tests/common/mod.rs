@@ -198,13 +198,17 @@ pub fn remove_upload_schema(db: &rusqlite::Connection) {
         .unwrap();
 }
 
-/// Remove schema99–111 additions before older fixtures alter their parent tables.
+/// Remove schema99–113 additions before older fixtures alter their parent tables.
 pub fn remove_owner_resource_additions_after_schema98(db: &rusqlite::Connection) {
     // These two triggers belong to older tables, so dropping only their newer
     // referenced tables would leave invalid schema during a later ALTER TABLE.
     db.execute_batch(
         "DROP TRIGGER IF EXISTS owner_managed_agent_fence_time;
          DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;
+         DROP TABLE IF EXISTS owner_octos_model_resources;
+         DROP TABLE IF EXISTS owner_octos_enrollments;
+         DROP TABLE IF EXISTS owner_octos_profiles;
+         DROP TABLE IF EXISTS owner_octos_key;
          DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;
          DROP TABLE IF EXISTS owner_resource_calendars;
          DROP TABLE IF EXISTS owner_managed_call_periods;

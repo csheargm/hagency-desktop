@@ -80,9 +80,9 @@ async fn prepared_with_budget_lifetime(
     let g = &p.grant_receipt;
     let resource = f.registry.resource(&f.transport.scope(Permission::PublishGrants).await.unwrap().profile, g.resource_id.clone()).await.unwrap();
     let model = hagency_core::qualification::ModelProfile {
+        provider: (resource.framework == "octos").then(|| hagency_core::qualification::OWNER_ENDPOINT.into()),
         framework: resource.framework,
         model: resource.model,
-        provider: None,
         reasoning: Some("medium".into()),
     };
     let role = hagency_core::qualification::roles()

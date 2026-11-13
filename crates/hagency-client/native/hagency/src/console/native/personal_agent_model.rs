@@ -40,6 +40,8 @@ pub struct SavePersonalModel {
     pub expected_profile_digest: String,
     pub runtime: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     pub reasoning_effort: String,
     pub web_search: bool,
     pub workspace: String,
@@ -52,6 +54,7 @@ impl SavePersonalModel {
             || !digest(&self.expected_profile_digest)
             || !matches!(self.runtime.as_str(), "codex" | "claude" | "octos")
             || !text(&self.model, 512)
+            || self.profile_id.as_ref().is_some_and(|id| self.runtime != "octos" || !hagency_runtime::octos::profile_id(id))
             || self.reasoning_effort.len() > 32
             || self.reasoning_effort.chars().any(char::is_control)
             || !matches!(self.workspace.as_str(), "preserve" | "default")
@@ -66,6 +69,8 @@ impl SavePersonalModel {
 pub struct PersonalModelView {
     pub runtime: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     pub reasoning_effort: String,
     pub web_search: bool,
 }
@@ -74,6 +79,8 @@ pub struct PersonalModelView {
 pub struct PersonalModelChoice {
     pub runtime: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
 }
@@ -128,9 +135,36 @@ pub(super) fn view(profile: &ModelProfile) -> PersonalModelView {
             .name()
             .into(),
         model: profile.model.clone(),
+        profile_id: hagency_agent_local::runtime::managed_reference(&profile.credential_ref)
+            .and_then(|(kind,id)| (kind == hagency_agent_local::runtime::Kind::Octos).then_some(id).flatten())
+            .map(str::to_owned),
         reasoning_effort: profile.reasoning_effort.clone(),
         web_search: profile.web_search,
     }
+}
+/// The public ID must match the native, owner-connected credential reference.
+/// Only the ID is projected to the miniapp, never the reference itself.
+fn choice_profile<'a>(runtime: &str, row: &'a Value) -> Result<Option<&'a str>, NativeError> {
+    if runtime != "octos" { return Ok(None); }
+    let reference = row["credentialRef"].as_str().ok_or_else(invalid)?;
+    let (kind, id) = hagency_agent_local::runtime::managed_reference(reference).ok_or_else(invalid)?;
+    let id = id.filter(|_| kind == hagency_agent_local::runtime::Kind::Octos).ok_or_else(invalid)?;
+    if row.get("profileId").is_some_and(|value| value.as_str() != Some(id)) { return Err(invalid()); }
+    Ok(Some(id))
+}
+fn selected_model<'a>(provider: &'a Value, input: &SavePersonalModel) -> Result<&'a Value, NativeError> {
+    let rows = provider["models"].as_array().ok_or_else(|| failure(409, "configuration_model_unavailable"))?;
+    let mut selected = None;
+    for row in rows {
+        if row["model"] != input.model || !row["supportedReasoningEfforts"].as_array().is_some_and(|e| e.iter().any(|e| e["reasoningEffort"] == input.reasoning_effort)) { continue; }
+        let profile = choice_profile(&input.runtime, row)?;
+        if input.profile_id.as_deref().is_some_and(|expected| profile != Some(expected)) { continue; }
+        // A legacy request without a profile must never guess between two
+        // Octos configurations with the same model and reasoning effort.
+        if selected.is_some() && input.runtime == "octos" { return Err(failure(409, "configuration_model_unavailable")); }
+        if selected.is_none() { selected = Some(row); }
+    }
+    selected.ok_or_else(|| failure(409, "configuration_model_unavailable"))
 }
 pub(super) fn known_failure(e: &NativeError) -> bool {
     super::personal_agent_policy::known_failure(e)
@@ -247,6 +281,7 @@ impl NativeManagement {
                     models.push(PersonalModelChoice {
                         runtime: runtime.into(),
                         model: model.into(),
+                        profile_id: choice_profile(runtime, row)?.map(str::to_owned),
                         display_name: row["displayName"].as_str().unwrap_or(model).into(),
                         reasoning_efforts: efforts,
                     });
@@ -288,18 +323,7 @@ impl NativeManagement {
             .iter()
             .find(|p| p["runtime"] == input.runtime && p["authenticated"] == true)
             .ok_or_else(|| failure(409, "configuration_provider_unavailable"))?;
-        let row = provider["models"]
-            .as_array()
-            .and_then(|rows| {
-                rows.iter().find(|m| {
-                    m["model"] == input.model
-                        && m["supportedReasoningEfforts"].as_array().is_some_and(|e| {
-                            e.iter()
-                                .any(|e| e["reasoningEffort"] == input.reasoning_effort)
-                        })
-                })
-            })
-            .ok_or_else(|| failure(409, "configuration_model_unavailable"))?;
+        let row = selected_model(provider, input)?;
         let reference = row
             .get("credentialRef")
             .unwrap_or(&provider["credentialRef"])
@@ -405,6 +429,47 @@ impl NativeManagement {
             if recorded.model!=saved.profile.model||recorded.credential_ref!=saved.profile.credential_ref||recorded.reasoning_effort!=saved.profile.reasoning_effort||recorded.web_search!=saved.profile.web_search||(!saved.profile.workspace_root.is_empty()&&recorded.workspace_root!=saved.profile.workspace_root)||recorded.workspace_root.is_empty(){return Err(failure(409,"management_outcome_unknown"))}
             Ok(json!({"protocol":"hagency-personal-settings-v1","agentId":saved.input.agent_id,"commandId":saved.command_id,"profileDigest":model_profile_digest(Some(&recorded)).map_err(|_|failure(409,"management_outcome_unknown"))?,"saved":true}))
         }).await
+    }
+}
+
+#[cfg(test)]
+mod octos_profile_tests {
+    use super::*;
+
+    fn row(id: &str) -> Value {
+        json!({"model":"local-model","profileId":id,
+            "credentialRef":format!("octos-managed:shared-home:{}:{id}","a".repeat(64)),
+            "supportedReasoningEfforts":[{"reasoningEffort":"none"}]})
+    }
+    fn input() -> Value {
+        json!({"commandId":"original","agentId":"agent_a","expectedGeneration":3,
+            "expectedProfileDigest":"b".repeat(64),"runtime":"octos","model":"local-model",
+            "reasoningEffort":"none","webSearch":false,"workspace":"preserve"})
+    }
+    #[test]
+    fn same_model_selects_exact_profile_and_old_ambiguous_request_fails_closed() {
+        let provider=json!({"models":[row("first"),row("second")]});
+        let legacy: SavePersonalModel=serde_json::from_value(input()).unwrap();
+        legacy.validate().unwrap();
+        assert_eq!(serde_json::to_value(&legacy).unwrap(),input(),"old saved request must remain byte-compatible");
+        assert_eq!(selected_model(&provider,&legacy).unwrap_err().code,"configuration_model_unavailable");
+        let mut selected=legacy.clone();selected.profile_id=Some("second".into());
+        selected.validate().unwrap();
+        assert_eq!(selected_model(&provider,&selected).unwrap()["profileId"],"second");
+        selected.profile_id=Some("missing".into());
+        assert_eq!(selected_model(&provider,&selected).unwrap_err().code,"configuration_model_unavailable");
+        let one=json!({"models":[row("first")]});
+        assert_eq!(selected_model(&one,&legacy).unwrap()["profileId"],"first");
+    }
+    #[test]
+    fn public_profile_id_must_match_the_native_reference() {
+        let mut altered=row("first");altered["profileId"]="second".into();
+        assert!(choice_profile("octos",&altered).is_err());
+        altered["credentialRef"]="provider-secret".into();
+        assert!(choice_profile("octos",&altered).is_err());
+        let mut input: SavePersonalModel=serde_json::from_value(input()).unwrap();
+        input.profile_id=Some("../other".into());assert!(input.validate().is_err());
+        input.runtime="codex".into();input.profile_id=Some("first".into());assert!(input.validate().is_err());
     }
 }
 

@@ -10,46 +10,6 @@ pub(in crate::console) struct Host {
     receipts: Vec<hagency_agent_local::questions::Delivery>,
 }
 impl Host {
-    pub(in crate::console) fn is_open(&self) -> bool {
-        self.questions.is_some()
-    }
-    pub(in crate::console) fn open(&mut self, device: Arc<e2ee::AgentDevice>, elapsed: Duration) {
-        let mut questions = Questions::with_device(device.clone(), device.question_records.clone());
-        questions.charge_opening(elapsed);
-        self.questions = Some(questions);
-    }
-    #[cfg(test)]
-    pub(in crate::console) fn open_fixture(
-        &mut self,
-        room: Arc<super::super::native::shared_execution::questions::Fixture>,
-    ) {
-        self.questions = Some(Questions::with_fixture(room));
-    }
-    pub(in crate::console) async fn ask(
-        &mut self,
-        context: &QuestionContext,
-        pending: PendingQuestion,
-    ) {
-        let delivery = match self.questions.as_mut() {
-            Some(questions) => questions
-                .ask_on_device(context, pending)
-                .await
-                .ok()
-                .flatten(),
-            None => Some(pending.reply(Default::default())),
-        };
-        if let Some(delivery) = delivery {
-            self.receipts.push(delivery);
-        }
-    }
-    pub(in crate::console) async fn poll(&mut self) {
-        self.settle();
-        if let Some(questions) = &mut self.questions {
-            self.receipts
-                .extend(questions.collect_ready().await.unwrap_or_default());
-            let _ = questions.publish().await;
-        }
-    }
     fn settle(&mut self) {
         self.receipts.retain_mut(|receipt| {
             let Some(accepted) = receipt.status() else {

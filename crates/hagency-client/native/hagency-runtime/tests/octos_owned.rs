@@ -23,6 +23,29 @@ use std::{
 const TURN: &str = "0192f0c1-0000-7000-8000-000000000001";
 const SESSION: &str = "coding:local:hagency-dispatch-1";
 
+#[tokio::test]
+async fn shared_octos_tool_surface_requires_the_kernel_to_acknowledge_the_exact_restriction() {
+    use hagency_runtime::octos::session::HostTool;
+    for (mode, has_tool, accepted) in [("normal", true, true), ("normal", false, true), ("ignore-generic-tools", true, false)] {
+        let mut run = spawn(mode);
+        run.runner.hello().await.unwrap();
+        run.runner.open(SESSION, "coding", &run.workspace, Permissions::ReadOnly).await.unwrap();
+        let tool = HostTool {
+            name: "hagency.read_room_history".into(),
+            description: "Read room history".into(),
+            input_schema: json!({"type":"object","properties":{}}),
+            read_only: true,
+        };
+        let tools = if has_tool { vec![tool] } else { Vec::new() };
+        let result = run.runner.register_shared_text_tools(&tools).await;
+        assert_eq!(result.is_ok(), accepted);
+        let requests = run.requests();
+        assert_eq!(requests[3]["params"]["generic_tools"], json!(["ask_user_question", "discover_tools", "run_tool"]));
+        assert_eq!(requests[3]["params"]["tools"].as_array().unwrap().len(), usize::from(has_tool));
+        if accepted { assert!(matches!(run.runner.stop(), Cleanup::Observed(report) if report.scope.leader_exited)); }
+    }
+}
+
 fn binary() -> PathBuf {
     env!("CARGO_BIN_EXE_hagency-runtime-probe").into()
 }
@@ -146,6 +169,12 @@ async fn native_octos_owned_session_sends_the_fixed_handshake() {
     assert_eq!(idle.reply.as_deref(), Some("octos fixture reply"));
     assert_eq!(idle.turns, 1);
     assert_eq!(run.runner.phase(), Phase::Idle);
+    let receipt = run.runner.completion_receipt().expect("original idle receipt");
+    assert_eq!(receipt.outcome(), Outcome::Completed);
+    assert!(receipt.matches_text("octos fixture reply"));
+    assert!(!receipt.matches_text("different reply"));
+    assert_eq!(receipt.sequence(), run.runner.last_observation().unwrap().sequence());
+    assert!(run.runner.matches_observation_source(receipt.source()));
     let requests = run.requests();
     let methods: Vec<_> = requests.iter().map(|r| r["method"].clone()).collect();
     assert_eq!(
@@ -169,11 +198,14 @@ async fn native_octos_owned_session_sends_the_fixed_handshake() {
             "hagency-5"
         ]
     );
-    // No user question can block a turn: its feature is never offered.
+    // Interactive questions and the guarded steer extension are opt-in.
     assert_eq!(
         requests[0]["params"],
         json!({"transport":"stdio","client":"hagency","supported_features":[
-            "projection.envelope.v2","approval.typed.v1","session.workspace_cwd.v1"]})
+            "projection.envelope.v2","approval.typed.v1","session.workspace_cwd.v1",
+            "user_question.v1","turn.steer_active_only.v1","event.turn_steer_dropped.v1",
+            "runtime.host_scoped_profile.v1", "runtime.host_scoped_workspace_io.v1", "runtime.host_scoped_search.v1", "runtime.host_scoped_vision.v1", "runtime.host_patch_worker.v1",
+            "runtime.host_scoped_web.v1", "plan.todos.v1"]})
     );
     assert_eq!(
         requests[1]["params"],
@@ -190,6 +222,7 @@ async fn native_octos_owned_session_sends_the_fixed_handshake() {
             "input":[{"kind":"text","text":"do the offline work"}]})
     );
     cleanup(run.runner.stop());
+    assert!(run.runner.completion_receipt().is_none());
 }
 
 #[tokio::test]
@@ -308,6 +341,22 @@ async fn native_octos_owned_absent_usage_stays_unknown() {
         panic!("usage at the terminal and at idle");
     };
     // Never zero: an absent object and an empty total are unknown.
+    assert_eq!(counts(turn), [None; 5]);
+    assert!(idle.coverage() == UsageCoverage::Turns);
+    assert_eq!(counts(idle), [None; 5]);
+    cleanup(run.runner.stop());
+}
+
+#[tokio::test]
+async fn native_octos_owned_missing_turn_usage_cannot_be_closed_by_partial_session_totals() {
+    // The ledger may contain successful earlier calls while this turn has no
+    // usage receipt. Its nonempty counters do not prove coverage of this turn.
+    let mut run = spawn("unknown-usage-with-totals");
+    run.start().await;
+    let (_, kinds, _) = run.until_idle().await;
+    let [ObservationKind::Usage(turn), ObservationKind::Idle(idle)] = kinds.as_slice() else {
+        panic!("usage at the terminal and at idle");
+    };
     assert_eq!(counts(turn), [None; 5]);
     assert!(idle.coverage() == UsageCoverage::Turns);
     assert_eq!(counts(idle), [None; 5]);

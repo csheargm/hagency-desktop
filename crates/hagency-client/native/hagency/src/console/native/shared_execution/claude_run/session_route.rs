@@ -52,7 +52,7 @@ impl Claimed {
         .map_err(store)
     }
 }
-async fn route(
+pub(in crate::console::native::shared_execution) async fn route(
     io: &Io,
     root: &SharedRuntimeCommand,
     id: &str,

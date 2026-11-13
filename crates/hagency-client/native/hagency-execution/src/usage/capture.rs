@@ -2,19 +2,22 @@
 use hagency_metering::{
     MeteringError, TokenCounts,
     claude_usage::{ClaudeUsage, Coverage},
+    octos_usage::{OctosUsage, Coverage as OctosCoverage},
     observation::UsageObservation,
     runtime_usage::{CodexUsage, ProjectionDiagnostics},
 };
 use hagency_runtime::{
     claude::session as claude,
     codex::session as codex,
-    owned::{OwnedClaudeSession, OwnedSession},
+    octos::session as octos,
+    owned::{OwnedClaudeSession, OwnedOctosSession, OwnedSession},
 };
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Source {
     Codex(codex::ObservationSource),
     Claude(claude::ObservationSource),
+    Octos(octos::ObservationSource),
 }
 impl From<codex::ObservationSource> for Source {
     fn from(s: codex::ObservationSource) -> Self {
@@ -26,23 +29,29 @@ impl From<claude::ObservationSource> for Source {
         Self::Claude(s)
     }
 }
+impl From<octos::ObservationSource> for Source {
+    fn from(s: octos::ObservationSource) -> Self { Self::Octos(s) }
+}
 impl Source {
     pub(super) fn is_retired(&self) -> bool {
         match self {
             Self::Codex(s) => s.is_retired(),
             Self::Claude(s) => s.is_retired(),
+            Self::Octos(s) => s.is_retired(),
         }
     }
     pub(super) fn baseline(&self) -> u64 {
         match self {
             Self::Codex(_) => 0,
             Self::Claude(_) => 1,
+            Self::Octos(_) => 0,
         }
     }
     pub(super) fn family(&self) -> &str {
         match self {
             Self::Codex(_) => "codex",
             Self::Claude(_) => "claude",
+            Self::Octos(_) => "octos",
         }
     }
 }
@@ -65,10 +74,16 @@ impl OwnedCapture for OwnedClaudeSession {
             .map(Into::into)
     }
 }
+impl OwnedCapture for OwnedOctosSession {
+    fn capture_source(&self) -> Option<Source> {
+        self.observation_source().ok().filter(|s| self.matches_observation_source(s)).map(Into::into)
+    }
+}
 #[derive(Clone)]
 pub(crate) enum Evidence {
     Codex(codex::UsageEvidence),
     Claude(claude::UsageEvidence),
+    Octos(octos::UsageEvidence),
 }
 impl Evidence {
     pub(super) fn normalize(&self) -> Result<UsageObservation, MeteringError> {
@@ -111,18 +126,31 @@ impl Evidence {
                     },
                 })
             }
+            Self::Octos(e) => UsageObservation::octos_runtime(OctosUsage {
+                counts: TokenCounts { input: e.input(), output: e.output(),
+                    cache_read: e.cache_read(), cache_write: e.cache_write() },
+                reasoning: e.reasoning(),
+                coverage: match e.coverage() {
+                    octos::UsageCoverage::Turns => OctosCoverage::Turns,
+                    octos::UsageCoverage::Session => OctosCoverage::Session,
+                },
+                turns: e.turns(),
+                diagnostics: ProjectionDiagnostics { missing: false, invalid: false, unsupported: false },
+            }),
         }
     }
 }
 pub(crate) enum EvidenceRef<'a> {
     Codex(&'a codex::UsageEvidence),
     Claude(&'a claude::UsageEvidence),
+    Octos(&'a octos::UsageEvidence),
 }
 impl EvidenceRef<'_> {
     pub(super) fn retain(self) -> Evidence {
         match self {
             Self::Codex(e) => Evidence::Codex(e.clone()),
             Self::Claude(e) => Evidence::Claude(e.clone()),
+            Self::Octos(e) => Evidence::Octos(e.clone()),
         }
     }
 }
@@ -181,6 +209,18 @@ impl CapturedEvent for claude::Observation {
                 terminal: false,
             },
             claude::ObservationKind::Ignored => Kind::Ignored,
+        }
+    }
+}
+impl CapturedEvent for octos::Observation {
+    fn source(&self) -> Source { self.source().clone().into() }
+    fn sequence(&self) -> u64 { self.sequence() }
+    fn kind(&self) -> Kind<'_> {
+        match self.kind() {
+            octos::ObservationKind::Invalidated => Kind::Invalidated,
+            octos::ObservationKind::Usage(e) => Kind::Usage { evidence: EvidenceRef::Octos(e), terminal: false },
+            octos::ObservationKind::Idle(e) => Kind::Usage { evidence: EvidenceRef::Octos(e), terminal: true },
+            octos::ObservationKind::Ignored => Kind::Ignored,
         }
     }
 }

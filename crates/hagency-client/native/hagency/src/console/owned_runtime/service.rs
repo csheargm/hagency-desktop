@@ -276,8 +276,9 @@ impl OwnedRuntime {
         }
         config.binding_id = ALL_ROOMS.into();
         // Agent-wide starts do not inherit private Room file access. Shared
-        // workspace access is separately selected and applies only to Codex.
-        if config.host_files || (config.shared_workspace && runtime::kind(&config.credential_ref) != runtime::Kind::Codex) {
+        // workspace access is separately selected and applies only to
+        // runtimes using Hagency's scoped, owner-approved host file tools.
+        if config.host_files || (config.shared_workspace && !matches!(runtime::kind(&config.credential_ref), runtime::Kind::Codex | runtime::Kind::Octos)) {
             return Err(RuntimeError::Profile);
         }
         let root = console

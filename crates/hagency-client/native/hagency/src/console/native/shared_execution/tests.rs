@@ -13,6 +13,9 @@ mod encrypted;
 mod question_runs;
 #[path = "claude_tests.rs"]
 mod claude_runs;
+#[cfg(all(feature = "shared-context", target_os = "macos"))]
+#[path = "octos_tests.rs"]
+mod octos_runs;
 #[cfg(feature = "shared-successors")]
 #[path = "attempt_tests.rs"]
 mod attempts;
@@ -99,6 +102,9 @@ pub(crate) fn idle_boundary_delay(path: &str, s: &State) -> Option<Duration> {
 pub(crate) fn claude_enabled(s: &super::State) -> bool {
     s.shared.command.as_ref().is_some_and(|c| c.version == 4)
 }
+pub(crate) fn octos_enabled(s: &super::State) -> bool {
+    s.shared.command.as_ref().is_some_and(|c| c.version == 5)
+}
 pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Option<Value> {
     #[cfg(feature = "shared-successors")]
     if path.ends_with("/session-route") {
@@ -149,7 +155,7 @@ pub(crate) fn management(path: &str, body: &Value, s: &mut super::State) -> Opti
     let at = now();
     let c = s.shared.command.clone().unwrap();
     let h = digest(&c).unwrap();
-    if path.ends_with("/runtime/poll") || path.ends_with("/runtime/poll-v4") || path.contains("/runtime/") && path.ends_with("/recover") {
+    if path.ends_with("/runtime/poll") || path.ends_with("/runtime/poll-v4") || path.ends_with("/runtime/poll-v5") || path.contains("/runtime/") && path.ends_with("/recover") {
         let history = path.ends_with("/recover");
         if history {
             assert_eq!(body["commandDigest"], h);

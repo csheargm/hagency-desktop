@@ -6,19 +6,29 @@ use serde_json::{Value, json};
 
 pub mod session;
 pub mod task_tools;
+pub mod profile_binding;
 
 pub const PROTOCOL: &str = "octos-ui/v1alpha1";
 /// OUP's own frame bound (`MAX_TEXT_FRAME_BYTES`).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub const PARTIAL_FRAME_MS: u64 = 10_000;
-/// The features Hagency negotiates: the canonical projection, typed
-/// approvals and a per-session workspace. Never `user_question.v1`, so no
-/// question can block a turn (ADR-193 decision 2).
-pub const FEATURES: [&str; 3] = [
+/// Features understood by this connection. Older kernels may ignore an
+/// optional feature; they then use their non-blocking question fallback.
+pub const FEATURES: [&str; 13] = [
     "projection.envelope.v2",
     "approval.typed.v1",
     "session.workspace_cwd.v1",
+    "user_question.v1",
+    "turn.steer_active_only.v1",
+    "event.turn_steer_dropped.v1",
+    "runtime.host_scoped_profile.v1",
+    "runtime.host_scoped_workspace_io.v1",
+    "runtime.host_scoped_search.v1",
+    "runtime.host_scoped_vision.v1",
+    "runtime.host_patch_worker.v1",
+    "runtime.host_scoped_web.v1",
+    "plan.todos.v1",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -148,7 +158,21 @@ impl Usage {
 
 /// One canonical projection payload (spec §14). Only what the host reads.
 pub enum Payload {
+    AssistantDelta {
+        text: String,
+        segment_id: String,
+    },
     AssistantPersisted {
+        text: String,
+        segment_id: Option<String>,
+        message_id: Option<String>,
+    },
+    /// A separately persisted, user-facing background result on its own
+    /// child stream. Its parent must belong to the admitted session.
+    BackgroundComplete {
+        parent_turn_id: String,
+        task_id: String,
+        message_id: String,
         text: String,
     },
     /// A tool started: its call ID and name when Octos gives them.
@@ -196,13 +220,37 @@ pub enum Notification {
         session_id: String,
         approval_id: String,
     },
+    QuestionRequested {
+        session_id: String,
+        question_id: String,
+        turn_id: String,
+        params: Value,
+    },
+    QuestionCancelled {
+        session_id: String,
+        question_id: String,
+        turn_id: String,
+    },
+    SteerDropped {
+        session_id: String,
+        turn_id: String,
+        inputs: Vec<String>,
+    },
     Orchestration {
         session_id: String,
         active: bool,
     },
+    PlanUpdated {
+        session_id: String,
+        turn_id: Option<String>,
+        plan: Value,
+    },
     /// `peer/tool/call` for a host tool (ADR-193 decision 5).
     ToolCall {
         params: Value,
+    },
+    ToolCancelled {
+        call_id: String,
     },
     /// Every other notification: ignored (OUP's additive rule).
     Other,
@@ -290,6 +338,18 @@ impl Notification {
                 session_id: routed_session(&params)?,
                 turn_id: field(&params, "turn_id")?.to_owned(),
             },
+            "turn/steer_dropped" => {
+                let inputs = params.get("inputs").and_then(Value::as_array).ok_or(Error::Envelope)?;
+                if inputs.len() > 16 { return Err(Error::Capacity); }
+                let inputs = inputs.iter().map(|input| input.as_str()
+                    .filter(|text| !text.is_empty() && text.len() <= MAX_TEXT_BYTES)
+                    .map(str::to_owned).ok_or(Error::Envelope)).collect::<Result<_, _>>()?;
+                Self::SteerDropped {
+                    session_id: routed_session(&params)?,
+                    turn_id: field(&params, "turn_id")?.to_owned(),
+                    inputs,
+                }
+            }
             "projection/envelope" => {
                 let session_id = routed_session(&params)?;
                 let thread_id = field(&params, "thread_id")?.to_owned();
@@ -301,12 +361,28 @@ impl Notification {
                 let payload = params.get("payload").ok_or(Error::Envelope)?;
                 let data = payload.get("data").unwrap_or(&Value::Null);
                 let payload = match payload.get("type").and_then(Value::as_str) {
+                    Some("assistant_delta") => Payload::AssistantDelta {
+                        text: data.get("text").and_then(Value::as_str)
+                            .filter(|text| text.len() <= MAX_FRAME_BYTES)
+                            .ok_or(Error::Envelope)?.to_owned(),
+                        segment_id: field(data, "assistant_segment_id")?.to_owned(),
+                    },
                     Some("assistant_persisted") => Payload::AssistantPersisted {
                         text: data
                             .get("text")
                             .and_then(Value::as_str)
                             .ok_or(Error::Envelope)?
                             .to_owned(),
+                        segment_id: text_field(data, "assistant_segment_id"),
+                        message_id: text_field(&data["meta"], "message_id"),
+                    },
+                    Some("background/spawn_complete") => Payload::BackgroundComplete {
+                        parent_turn_id: field(data, "parent_turn_id")?.to_owned(),
+                        task_id: field(data, "task_id")?.to_owned(),
+                        message_id: field(data, "message_id")?.to_owned(),
+                        text: data.get("content").and_then(Value::as_str)
+                            .filter(|text| text.len() <= MAX_FRAME_BYTES)
+                            .ok_or(Error::Envelope)?.to_owned(),
                     },
                     Some("tool_start") => Payload::ToolStart {
                         tool_call_id: text_field(data, "tool_call_id"),
@@ -357,6 +433,17 @@ impl Notification {
                     approval_id: field(&params, "approval_id")?.to_owned(),
                 }
             }
+            "user_question/requested" => Self::QuestionRequested {
+                session_id: routed_session(&params)?,
+                question_id: field(&params, "question_id")?.to_owned(),
+                turn_id: field(&params, "turn_id")?.to_owned(),
+                params,
+            },
+            "user_question/cancelled" => Self::QuestionCancelled {
+                session_id: routed_session(&params)?,
+                question_id: field(&params, "question_id")?.to_owned(),
+                turn_id: field(&params, "turn_id")?.to_owned(),
+            },
             "session/orchestration" => Self::Orchestration {
                 session_id: routed_session(&params)?,
                 active: params
@@ -364,7 +451,15 @@ impl Notification {
                     .and_then(Value::as_bool)
                     .ok_or(Error::Envelope)?,
             },
+            "plan/updated" => Self::PlanUpdated {
+                session_id: routed_session(&params)?,
+                turn_id: params.get("turn_id").and_then(Value::as_str).filter(|id| identifier(id)).map(str::to_owned),
+                plan: params.get("plan").cloned().unwrap_or(Value::Null),
+            },
             "peer/tool/call" => Self::ToolCall { params },
+            "peer/tool/cancel" => Self::ToolCancelled {
+                call_id: field(&params, "call_id")?.to_owned(),
+            },
             _ => Self::Other,
         })
     }
@@ -501,22 +596,34 @@ pub fn serve_arguments(
     .to_vec())
 }
 
+/// Require an Octos binary that accepts the scoped-host startup flag. Older
+/// binaries reject the flag before they can start unrelated profile extensions.
+pub fn serve_arguments_scoped(
+    workspace: &str,
+    instance_dir: &str,
+    config: &str,
+    profile: &str,
+) -> Result<Vec<String>, Error> {
+    if !profile_id(profile) { return Err(Error::Input); }
+    let mut args = serve_arguments(workspace, instance_dir, config)?;
+    args.extend(["--host-scoped-profile".to_owned(), profile.to_owned()]);
+    Ok(args)
+}
+
 /// The most of one Octos profile file Hagency reads (ADR-193 decision 7).
 pub const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
-/// The model one of the user's Octos profiles runs: its primary's provider
-/// family and model (`config.llm.primary`, ADR-193 decision 7). An Octos
-/// resource names the same pair as its provider and model.
+/// A configured model and its provider family. The original profile retains
+/// the route and credentials; these values are safe for the owner's inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileModel {
     pub family: String,
     pub model: String,
 }
-/// Read one profile file's own ID and primary model, nothing else. The file
-/// may hold the user's provider keys: every other field is skipped unread
-/// and none of it is kept. `None` unless the file is the profile `id` with a
-/// primary of its own; a sub-account inherits its parent's model, which its
-/// file does not show, so Hagency runs no sub-account.
-pub fn profile_model(id: &str, bytes: &[u8]) -> Option<ProfileModel> {
+/// Read the profile's configured primary and unambiguous alternatives, not
+/// the global catalog or provider credentials. A model ID repeated in two
+/// fallback routes is omitted because the enrollment contract names a model
+/// but does not yet carry a route identifier. The primary remains selectable.
+pub fn profile_models(id: &str, bytes: &[u8]) -> Option<Vec<ProfileModel>> {
     #[derive(serde::Deserialize)]
     struct Profile {
         id: String,
@@ -533,6 +640,8 @@ pub fn profile_model(id: &str, bytes: &[u8]) -> Option<ProfileModel> {
     struct Llm {
         #[serde(default)]
         primary: Option<Primary>,
+        #[serde(default)]
+        fallbacks: Vec<Primary>,
     }
     #[derive(serde::Deserialize)]
     struct Primary {
@@ -545,19 +654,33 @@ pub fn profile_model(id: &str, bytes: &[u8]) -> Option<ProfileModel> {
         return None;
     }
     let profile: Profile = serde_json::from_slice(bytes).ok()?;
-    let primary = profile.config.llm?.primary?;
+    if profile.id != id || profile.parent_id.is_some() { return None; }
+    let llm = profile.config.llm?;
+    if llm.fallbacks.len() > 64 { return None; }
+    let primary = llm.primary?;
     let named = |value: &str, max: usize| {
         !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
     };
-    match (primary.family_id, primary.model_id) {
-        (Some(family), Some(model))
-            if profile.id == id
-                && profile.parent_id.is_none()
-                && named(&family, 128)
-                && named(&model, 256) =>
-        {
-            Some(ProfileModel { family, model })
-        }
+    let parse = |value: Primary| match (value.family_id, value.model_id) {
+        (Some(family), Some(model)) if named(&family, 128) && named(&model, 256) => Some(ProfileModel { family, model }),
         _ => None,
+    };
+    let primary = parse(primary)?;
+    let alternatives: Vec<_> = llm.fallbacks.into_iter().filter_map(parse).collect();
+    let mut models = vec![primary.clone()];
+    for candidate in &alternatives {
+        if candidate.model != primary.model
+            && alternatives.iter().filter(|other| other.model == candidate.model).count() == 1 {
+            models.push(candidate.clone());
+        }
     }
+    // Enrollment and its read projection are bounded to 64 models per
+    // profile. Never expose a choice which cannot be inventoried later.
+    if models.len() > 64 { return None; }
+    Some(models)
+}
+
+/// Backward-compatible primary model projection for personal Octos sessions.
+pub fn profile_model(id: &str, bytes: &[u8]) -> Option<ProfileModel> {
+    profile_models(id, bytes)?.into_iter().next()
 }

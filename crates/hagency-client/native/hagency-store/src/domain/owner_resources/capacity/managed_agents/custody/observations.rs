@@ -146,6 +146,24 @@ impl ManagedUsageObservation {
         }
     }
 
+    pub(super) fn shared_octos_capture(
+        id: String,
+        evidence: &hagency_runtime::octos::session::UsageEvidence,
+        terminal: bool,
+        complete_capture: bool,
+    ) -> Self {
+        use hagency_metering::{TokenCounts, octos_usage::{OctosUsage, Coverage}, runtime_usage::ProjectionDiagnostics};
+        use hagency_runtime::octos::session::UsageCoverage;
+        let usage = UsageObservation::octos_runtime(OctosUsage {
+            counts: TokenCounts { input:evidence.input(), output:evidence.output(),
+                cache_read:evidence.cache_read(), cache_write:evidence.cache_write() },
+            reasoning:evidence.reasoning(), turns:evidence.turns(),
+            coverage:match evidence.coverage() { UsageCoverage::Turns => Coverage::Turns, UsageCoverage::Session => Coverage::Session },
+            diagnostics:ProjectionDiagnostics { missing:false, invalid:false, unsupported:false },
+        });
+        Self { id, terminal, complete_capture, unrepresentable:usage.is_err(), usage:usage.ok() }
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(
         id: &str,
@@ -290,7 +308,7 @@ fn amounts(o: &ManagedUsageObservation) -> Result<(u64, bool, bool, bool), Error
     let mut complete = false;
     let mut clean = false;
     if let Some(u) = &o.usage {
-        if !matches!(u.framework(), Framework::Codex | Framework::Claude) {
+        if !matches!(u.framework(), Framework::Codex | Framework::Claude | Framework::Octos) {
             return Err(Error::LocalAuthority);
         }
         overflow |= matches!(
@@ -323,7 +341,11 @@ fn amounts(o: &ManagedUsageObservation) -> Result<(u64, bool, bool, bool), Error
                         && e.usage().coverage
                             == hagency_metering::claude_usage::Coverage::ReportedModelsResult
                 }),
-                _ => false,
+                Framework::Octos => u.octos_runtime_evidence().is_some_and(|e| {
+                    let d = e.usage().diagnostics;
+                    !d.missing && !d.invalid && !d.unsupported && e.usage().turns > 0
+                        && e.usage().coverage == hagency_metering::octos_usage::Coverage::Session
+                }),
             };
             clean = valid && u.failure().is_none();
             complete = o.terminal
@@ -337,6 +359,28 @@ fn amounts(o: &ManagedUsageObservation) -> Result<(u64, bool, bool, bool), Error
         }
     }
     Ok((known, complete, overflow, clean))
+}
+
+#[cfg(test)]
+mod octos_accounting_tests {
+    use super::*;
+    use hagency_metering::{TokenCounts, octos_usage::{Coverage, OctosUsage}, runtime_usage::ProjectionDiagnostics};
+
+    fn report(counts: TokenCounts, coverage: Coverage, terminal: bool) -> ManagedUsageObservation {
+        let usage = UsageObservation::octos_runtime(OctosUsage { counts, reasoning:None, coverage, turns:1,
+            diagnostics:ProjectionDiagnostics { missing:false, invalid:false, unsupported:false } }).unwrap();
+        ManagedUsageObservation::fixture("fixture", Some(usage), terminal, true, false)
+    }
+    #[test]
+    fn octos_pool_counts_a_known_lower_bound_but_only_complete_session_totals_settle() {
+        let known = TokenCounts { input:Some(10), output:Some(7), cache_read:Some(20), cache_write:Some(30) };
+        // Cache reads are reported but are not charged a second time.
+        assert_eq!(amounts(&report(known, Coverage::Turns, true)).unwrap(), (47, false, false, false));
+        assert_eq!(amounts(&report(known, Coverage::Session, false)).unwrap(), (47, false, false, true));
+        assert_eq!(amounts(&report(known, Coverage::Session, true)).unwrap(), (47, true, false, true));
+        let partial = TokenCounts { input:None, output:Some(7), cache_read:None, cache_write:Some(30) };
+        assert_eq!(amounts(&report(partial, Coverage::Session, true)).unwrap(), (37, false, false, false));
+    }
 }
 pub(super) fn usage(
     db: &Connection,
@@ -375,7 +419,7 @@ pub(super) fn usage(
             .unwrap_or("codex");
         if !matches!(
             (framework, usage.framework()),
-            ("codex", Framework::Codex) | ("claude", Framework::Claude)
+            ("codex", Framework::Codex) | ("claude", Framework::Claude) | ("octos", Framework::Octos)
         ) {
             return Err(Error::LocalAuthority);
         }

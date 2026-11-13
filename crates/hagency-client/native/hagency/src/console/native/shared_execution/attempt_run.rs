@@ -372,6 +372,9 @@ pub(super) async fn run(
 ) -> Result<(), DrainFailure> {
     let launch = match launch {
         Launch::Codex(launch) => launch,
+        Launch::Octos(launch) => {
+            return super::octos_run::run(r, super::claude_run::Claimed::Attempt(Box::new((custody, d))), launch, io, until, cancel, sender).await;
+        }
         Launch::Claude(launch) => {
             return super::claude_run::run(
                 r,
@@ -655,7 +658,8 @@ async fn work_loop(
     let call = r.prepare_shared_input_call(p, work.clone(), input.clone())
         .await.map_err(store)?;
     let call_id = call.call_id.clone();
-    let mut run_controls = super::run_controls::Controls::new(&work, &call_id).ok();
+    let message_root = super::e2ee::message_root(io, &b, &work.assignment_id)?;
+    let mut run_controls = Some(super::run_controls::Controls::new(&work, &call_id, &message_root)?);
     let (b, p) = guarded(cancel, a.until, || proof(io, r, sink, a)).await?;
     let attempt = r.begin_shared_input_start(p, work.clone(), call.call_id, input.clone())
         .await.map_err(store)?;
@@ -897,6 +901,12 @@ async fn work_loop(
     }.await;
     if let Some(controls) = &mut run_controls {
         controls.finish(process, &terminal_result).await;
+        if !matches!(tokio::time::timeout(Duration::from_secs(30),
+            prepare_while_active(io, r, sink, control, a, cancel,
+                controls.flush_messages(io, &sink.command().original_runtime_command))).await, Ok(Ok(())))
+        {
+            tracing::warn!(code = "shared_message_delivery_pending", "Native messages remain in encrypted local custody");
+        }
     }
     // Cards still waiting when the turn ended close unanswered.
     questions.close();
@@ -958,6 +968,7 @@ async fn work_loop(
                 if matches!(
                     error.code.as_str(),
                     "server_unavailable"
+                        | "shared_message_delivery_pending"
                         | "server_request_failed"
                         | "management_outcome_unknown"
                         | "allocation_ticket_expired"

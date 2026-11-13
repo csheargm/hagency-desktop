@@ -8,6 +8,9 @@ impl NativeManagement {
         if input.account_id == super::claude_account::ACCOUNT {
             return self.claude_account_models(input).await;
         }
+        if super::octos_account::is_octos_account(&input.account_id) {
+            return self.octos_account_models(input).await;
+        }
         // Bound concurrent provider children per owner; check authority after waiting.
         let _guard = self.owner.0.calls.lock().await;
         let (context, session) = self.authorized().await?;

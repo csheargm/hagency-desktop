@@ -276,9 +276,15 @@ pub fn describe(row: &Value) -> (String, String) {
             }
             format!("{name} wants to change files / 想修改文件")
         }
-        Some("claude/can_use_tool") => {
+        Some("claude/can_use_tool" | "octos/can_use_tool") => {
             let tool=params["toolName"].as_str().unwrap_or("tool");
-            lines.push(short_json(&params["input"]));
+            if request["method"] == "octos/can_use_tool" && tool == "shell" {
+                lines.push(params["input"]["command"].as_str()
+                    .or_else(|| params["input"]["cmd"].as_str())
+                    .or_else(|| params["input"]["body"].as_str()).unwrap_or("" ).to_owned());
+            } else {
+                lines.push(short_json(&params["input"]));
+            }
             format!("{name} wants to use {tool} / 想调用 {tool}")
         }
         Some("item/permissions/requestApproval") => {
@@ -343,6 +349,10 @@ mod tests {
         let mut pending = row("sap_1", "!r:x", "$e", true);
         pending["encryptedPending"] = json!(true);
         assert!(describe(&pending).0.contains("on its way"));
+        pending["encryptedPending"] = json!(false);
+        pending["approval"]["request"] = json!({"method":"octos/can_use_tool",
+            "params":{"toolName":"shell","input":{"cmd":"printf PTY_READY; read answer","tty":true}}});
+        assert!(describe(&pending).1.contains("printf PTY_READY; read answer"));
     }
 
     #[test]
