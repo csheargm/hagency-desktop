@@ -1,5 +1,7 @@
-//! Remember only a verified built-in Palpo package's reviewed grant, per account.
-//! The current package digest binds every requested operation and its UI bytes.
+//! Records, per account, which exact version of the verified built-in panel
+//! this account has started. The panel starts without a review step, so this
+//! is a record of use, not of consent. The package digest binds every
+//! requested operation and its UI bytes.
 use std::path::PathBuf;
 
 fn path(account: &str) -> PathBuf {

@@ -82,8 +82,8 @@ impl ActionRoomBoard {
         // bundle, which froze the window for seconds under a real-time scanner.
         let Some(digest) = room_lookup_digest(crate::system_apps::get(APP_ID)) else { return };
         let Some(account) = crate::sliding_sync::current_user_id().map(|id| id.to_string()) else { return };
-        // Loading and inspecting a bundle is not consent. Probe only after this
-        // account has reviewed this exact installed version's requested grants.
+        // Loading and inspecting a bundle starts nothing. Probe only after this
+        // account has started this exact installed version of the panel.
         // That record is a file, so a worker reads it and `consented` goes on.
         let (tx, rx) = mpsc::sync_channel(1);
         let (reader, digest) = (account.clone(), digest.to_owned());
