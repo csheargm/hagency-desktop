@@ -112,6 +112,9 @@ pub(super) struct Wire<R, W, E> {
     stderr_total: u64,
     queue: VecDeque<(Received, usize)>,
     queued_bytes: usize,
+    /// Reset reports are queued only while the owner's command awaits its
+    /// init. At any other time such a frame is not read, as before it was known.
+    resets: bool,
     writing: Option<Writing>,
     // Each refusal is a whole frame of its own. It is written between host
     // frames, never inside one, and is neither a host write nor an authority:
@@ -146,6 +149,7 @@ impl<R, W, E> Wire<R, W, E> {
             stderr_total: 0,
             queue: VecDeque::new(),
             queued_bytes: 0,
+            resets: false,
             writing: None,
             refusals: VecDeque::new(),
             refusing: None,
@@ -288,6 +292,9 @@ impl<R, W, E> Wire<R, W, E> {
     pub fn ignored_metadata(&mut self) {
         self.decoder.ignored_metadata();
     }
+    pub fn read_resets(&mut self, read: bool) {
+        self.resets = read;
+    }
     fn now_ms(&self) -> u64 {
         Instant::now()
             .duration_since(self.origin)
@@ -342,6 +349,16 @@ impl<R, W, E> Wire<R, W, E> {
             self.refusals
                 .push_back(crate::claude::unsupported_reply(&id)?);
         }
+        let message = match message {
+            Some(crate::claude::Message::Event {
+                kind: crate::claude::EventKind::ConversationReset,
+                ..
+            }) if !self.resets => {
+                self.decoder.ignored_metadata();
+                None
+            }
+            other => other,
+        };
         if let Some(message) = message {
             let charge = before.checked_add(consumed).ok_or(Error::Capacity)?;
             let total = self
@@ -487,6 +504,27 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.refusing = self.refusals.pop_front().map(|bytes| (bytes, 0));
         }
         let refusing = !writing && !flushing && !host_started && self.refusing.is_some();
+        if flushing {
+            // A frame whose every byte has left is confirmed before the peer's
+            // reply to it is read. A peer that answers and then fails in that
+            // same instant would otherwise turn a delivered frame into a
+            // failed write, and the answer it gave would be lost with it. One
+            // poll only: a flush that has to wait still waits beside the read.
+            let early = tokio::select! {
+                biased;
+                result=streams.stdin.flush()=>Some(result),
+                _=std::future::ready(())=>None,
+            };
+            match early {
+                Some(Ok(())) => {
+                    self.writing.as_mut().ok_or(Error::Closed)?.flushed = true;
+                    self.check(until)?;
+                    return Ok(None);
+                }
+                Some(Err(_)) => return Err(Error::Io("stdin flush")),
+                None => {}
+            }
+        }
         let observed = tokio::select! {
             biased;
             _=deadline.wait()=>Observed::Deadline,

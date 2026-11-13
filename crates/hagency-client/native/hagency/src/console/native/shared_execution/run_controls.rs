@@ -200,24 +200,23 @@ async fn serve(
     // A device that is not ready yet is asked for again while the run lasts,
     // so a long run still gets its Stop. A new grant is a Matrix login and the
     // homeserver limits those, so the pauses grow.
-    let mut pause = crate::console::owned_runtime::run_controls::DEVICE_RETRY_FIRST;
-    let device = loop {
-        let opened = tokio::time::timeout(Duration::from_secs(10), async {
-            io.check_running(&command).await?;
-            let bound = io.bound().await?;
-            let device = super::e2ee::device(&io, &bound, &command.assignment_id).await?;
-            io.check_running(&command).await?;
-            Ok::<_, NativeError>(device)
-        })
-        .await;
-        if let Ok(Ok(device)) = opened {
-            break device;
-        }
-        tokio::time::sleep(pause).await;
-        if stop_tx.is_closed() || steer_tx.is_closed() {
-            return;
-        }
-        pause = (pause * 3).min(crate::console::owned_runtime::run_controls::DEVICE_RETRY_MAX);
+    let Some(device) = crate::console::owned_runtime::run_controls::open_while_running(
+        Duration::from_secs(10),
+        || {
+            let (io, command) = (&io, &command);
+            async move {
+                io.check_running(command).await?;
+                let bound = io.bound().await?;
+                let device = super::e2ee::device(io, &bound, &command.assignment_id).await?;
+                io.check_running(command).await?;
+                Ok::<_, NativeError>(device)
+            }
+        },
+        || stop_tx.is_closed() || steer_tx.is_closed(),
+    )
+    .await
+    else {
+        return;
     };
     let _ = card.open(device.clone());
     let mut tick = tokio::time::interval(Duration::from_millis(500));

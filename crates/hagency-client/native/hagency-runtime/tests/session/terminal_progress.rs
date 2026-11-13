@@ -163,3 +163,74 @@ async fn native_codex_session_turn_completes_with_a_command_still_running() {
         "an unfinished answer still contradicts a completed turn"
     );
 }
+
+fn plain_item(kind: &str, id: &str, complete: bool) -> Value {
+    note(
+        if complete { "item/completed" } else { "item/started" },
+        json!({
+            "threadId": "thread-one", "turnId": "turn-one",
+            if complete { "completedAtMs" } else { "startedAtMs" }: 10,
+            "item": { "type": kind, "id": id }
+        }),
+    )
+}
+
+/// Live 2026-11-13, pooled Codex Agent on Codex 0.167: an instruction added
+/// from the run card while the answer was streaming ended the run as
+/// interrupted. Measured offline on 0.167.2: on `turn/steer` the app server
+/// drops the model request it had open, never completes the answer or
+/// reasoning item that request had started, and completes the turn with the
+/// new answer only. That abandoned item must not contradict the completion,
+/// and its text is not part of the answer.
+#[tokio::test]
+async fn native_codex_session_output_cut_short_by_added_input_does_not_contradict_completion() {
+    for abandoned in ["agentMessage", "reasoning"] {
+        let (mut session, mut peer) = running().await;
+        update(&mut session, &mut peer, plain_item("userMessage", "first", false)).await.unwrap();
+        update(&mut session, &mut peer, plain_item("userMessage", "first", true)).await.unwrap();
+        if abandoned == "agentMessage" {
+            update(&mut session, &mut peer, item_event("draft", "", false)).await.unwrap();
+            update(&mut session, &mut peer, delta("draft", "PARTIAL ")).await.unwrap();
+        } else {
+            update(&mut session, &mut peer, plain_item("reasoning", "draft", false)).await.unwrap();
+        }
+        update(&mut session, &mut peer, plain_item("userMessage", "added", false)).await.unwrap();
+        update(&mut session, &mut peer, plain_item("userMessage", "added", true)).await.unwrap();
+        update(&mut session, &mut peer, item_event("answer", "", false)).await.unwrap();
+        update(&mut session, &mut peer, item_event("answer", "FINAL", true)).await.unwrap();
+        assert!(
+            matches!(
+                update(&mut session, &mut peer, end("completed")).await.unwrap(),
+                Update::TurnEnded
+            ),
+            "{abandoned}"
+        );
+        assert!(
+            matches!(session.outcome(), Some(Outcome::Completed { text }) if text == "FINAL"),
+            "{abandoned}: the abandoned text is not part of the answer"
+        );
+    }
+
+    // An answer that started after the added input and never completed is not
+    // covered: nothing cut it short.
+    let (mut session, mut peer) = running().await;
+    update(&mut session, &mut peer, plain_item("userMessage", "added", false)).await.unwrap();
+    update(&mut session, &mut peer, plain_item("userMessage", "added", true)).await.unwrap();
+    update(&mut session, &mut peer, item_event("answer", "partial", false)).await.unwrap();
+    assert_eq!(
+        update(&mut session, &mut peer, end("completed")).await.err(),
+        Some(Error::State)
+    );
+
+    // A command that was running when the input was added is not model output
+    // and stays under its own rule; an abandoned answer beside it is fine.
+    let (mut session, mut peer) = running().await;
+    update(&mut session, &mut peer, plain_item("fileChange", "edit", false)).await.unwrap();
+    update(&mut session, &mut peer, plain_item("userMessage", "added", false)).await.unwrap();
+    update(&mut session, &mut peer, plain_item("userMessage", "added", true)).await.unwrap();
+    assert_eq!(
+        update(&mut session, &mut peer, end("completed")).await.err(),
+        Some(Error::State),
+        "added input does not excuse an unfinished file change"
+    );
+}

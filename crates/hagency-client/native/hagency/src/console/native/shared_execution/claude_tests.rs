@@ -5,6 +5,8 @@ use hagency_runtime::claude::account::{AccountBinding, PROVIDER};
 mod stop_tests;
 #[path = "claude_archive_tests.rs"]
 mod archive_tests;
+#[path = "claude_question_tests.rs"]
+mod question_tests;
 
 /// The shared executor's session holds `ExecuteManagedAgents` and nothing
 /// else (`current_profile/shared_executor.rs`). The fixtures below hand the

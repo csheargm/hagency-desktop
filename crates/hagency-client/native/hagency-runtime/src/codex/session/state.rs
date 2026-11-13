@@ -10,6 +10,10 @@ struct Item {
     phase: ItemPhase,
     text: String,
     message_phase: Option<String>,
+    /// The model was still producing this item when input was added to the
+    /// running turn. Codex then drops the model request and never completes
+    /// the item, so it may be left active when the turn completes.
+    superseded: bool,
 }
 pub(super) struct State {
     pub phase: Phase,
@@ -393,6 +397,19 @@ impl State {
                 Error::Capacity
             });
         }
+        if !complete && kind == "userMessage" {
+            // Input added to a running turn (`turn/steer`). Measured on Codex
+            // 0.167.2: the app server closes the model request it had open and
+            // starts another with the added input; an answer or reasoning item
+            // that request had started is never completed and is absent from
+            // `turn/completed`. Its text is not part of the answer. The first
+            // user message of a turn finds nothing active here.
+            for item in self.items.values_mut() {
+                if item.phase == ItemPhase::Active && model_output_item(&item.kind) {
+                    item.superseded = true;
+                }
+            }
+        }
         let existing = self.items.get(item_id);
         if complete
             && existing.is_none_or(|item| item.phase != ItemPhase::Active || item.kind != kind)
@@ -451,6 +468,7 @@ impl State {
                 phase,
                 text,
                 message_phase,
+                superseded: false,
             },
         );
         if let Some(text) = completed_text {
@@ -528,11 +546,21 @@ impl State {
                 // server the model started to preview a site: Codex completes
                 // the turn without completing that item. It cannot change the
                 // answer, and the runner's process tree is stopped after the
-                // run. Any other item still active contradicts the completion.
+                // run. Model output that added input cut short was dropped by
+                // Codex itself. Any other item still active contradicts the
+                // completion.
+                let superseded = self
+                    .items
+                    .values()
+                    .filter(|item| item.phase == ItemPhase::Active && item.superseded)
+                    .count();
+                if superseded > 0 {
+                    tracing::info!(superseded, "Codex turn completed without the output that added input cut short");
+                }
                 let running: Vec<&str> = self
                     .items
                     .values()
-                    .filter(|item| item.phase == ItemPhase::Active)
+                    .filter(|item| item.phase == ItemPhase::Active && !item.superseded)
                     .map(|item| item.kind.as_str())
                     .collect();
                 if running.iter().any(|kind| *kind != "commandExecution") {
@@ -577,6 +605,12 @@ impl State {
 }
 
 /// Item types of the app-server schema that the turn state leaves untracked.
+/// Items the model streams in one request, which Codex abandons with that
+/// request. `plan` streams the same way; only the other two were measured.
+fn model_output_item(kind: &str) -> bool {
+    matches!(kind, "agentMessage" | "reasoning" | "plan")
+}
+
 fn passive_item(kind: &str) -> bool {
     matches!(kind, "hookPrompt" | "functionCallOutput" | "subAgentActivity")
 }

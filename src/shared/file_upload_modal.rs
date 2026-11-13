@@ -731,9 +731,64 @@ pub fn handle_picked_file(
             return;
         }
     };
-    let upload_and_preview = picked
+    let local_file = picked
         .into_local_file()
-        .map_err(|e| format!("Failed to read selected file: {e}"))
+        .map_err(|e| format!("Failed to read selected file: {e}"));
+    show_local_file(epoch, local_file, into_upload);
+}
+
+/// Shows the upload modal for an image that the user pasted from the clipboard.
+///
+/// The image is written to a temporary PNG file, which is then handled exactly
+/// like a picked file: the user confirms (or cancels) the upload in the modal,
+/// and the temporary file is deleted once nothing refers to it anymore.
+///
+/// Note: do not run this on the main UI thread, for the same reasons as
+///       [`handle_picked_file()`].
+pub fn handle_pasted_image(
+    epoch: u64,
+    image: makepad_widgets::makepad_platform::clipboard_read::ClipboardImage,
+    into_upload: impl FnOnce(FileUploadMetadata) -> Result<PendingUpload, String>,
+) {
+    if epoch != crate::account_session::epoch() { return; }
+    let name = format!("pasted-image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    show_local_file(epoch, pasted_image_file(&name, &image), into_upload);
+}
+
+/// Writes a clipboard image to a temporary PNG file named `name`.
+fn pasted_image_file(
+    name: &str,
+    image: &makepad_widgets::makepad_platform::clipboard_read::ClipboardImage,
+) -> Result<robius_file_picker::LocalFile, String> {
+    use makepad_widgets::makepad_platform::clipboard_read::ClipboardImage;
+    let encoded;
+    let png: &[u8] = match image {
+        ClipboardImage::Png(png) => png,
+        ClipboardImage::Rgba { width, height, rgba } => {
+            let pixels = ::image::RgbaImage::from_raw(*width, *height, rgba.to_vec())
+                .ok_or("The pasted image has an unexpected size.")?;
+            let mut out = std::io::Cursor::new(Vec::new());
+            pixels
+                .write_to(&mut out, ::image::ImageFormat::Png)
+                .map_err(|e| format!("Failed to encode the pasted image: {e}"))?;
+            encoded = out.into_inner();
+            &encoded
+        }
+    };
+    if png.is_empty() {
+        return Err("The pasted image is empty.".into());
+    }
+    robius_file_picker::LocalFile::from_bytes(name, Some("image/png"), png)
+        .map_err(|e| format!("Failed to save the pasted image: {e}"))
+}
+
+/// Shows the upload modal for a local file, or a popup with the reason it can't be shown.
+fn show_local_file(
+    epoch: u64,
+    local_file: Result<robius_file_picker::LocalFile, String>,
+    into_upload: impl FnOnce(FileUploadMetadata) -> Result<PendingUpload, String>,
+) {
+    let upload_and_preview = local_file
         .and_then(load_file_metadata)
         .and_then(|(file_data, preview_source)| {
             into_upload(file_data).map(|upload| (upload, preview_source))

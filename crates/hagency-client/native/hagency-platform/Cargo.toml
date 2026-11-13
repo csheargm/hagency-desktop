@@ -8,6 +8,10 @@ publish.workspace = true
 
 [features]
 test-support = ["dep:tempfile"]
+# A developer's run of this program under the Makepad JIT runner starts its
+# helper processes from a native build named in HAGENCY_NATIVE_HELPER (see
+# `helper_executable`). Never part of a distributed build.
+development-native-helper = []
 
 [dependencies]
 tempfile = { workspace = true, optional = true }

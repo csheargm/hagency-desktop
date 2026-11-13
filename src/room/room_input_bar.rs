@@ -27,7 +27,7 @@ use matrix_sdk::room::reply::{EnforceThread, Reply};
 use ruma::events::room::message::AddMentions;
 use matrix_sdk_ui::timeline::{EmbeddedEvent, EventTimelineItem, TimelineEventItemId};
 use ruma::{events::room::message::{LocationMessageEventContent, MessageType, ReplyWithinThread, RoomMessageEventContent}, OwnedEventId, OwnedRoomId, OwnedTransactionId};
-use crate::{block_user_modal::{BlockUserModalAction, BlockUserRequest}, home::{editing_pane::{EditingPaneState, EditingPaneWidgetExt, EditingPaneWidgetRefExt}, location_preview::{LocationPreviewWidgetExt, LocationPreviewWidgetRefExt}, room_screen::{MessageAction, populate_preview_of_timeline_item}, rooms_list::RoomsListRef, tombstone_footer::{SuccessorRoomDetails, TombstoneFooterWidgetExt}, upload_progress::{UploadProgressViewWidgetRefExt, UploadState}}, join_leave_room_modal::{JoinLeaveModalKind, JoinLeaveRoomModalAction}, location::init_location_subscriber, profile::user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId}, room::BasicRoomDetails, settings::app_preferences::{AppPreferencesAction, AppPreferencesGlobal}, shared::{avatar::{AvatarState, AvatarWidgetRefExt}, file_upload_modal::{AttachmentUpload, FileUploadAttemptId, PendingUpload, handle_picked_file, handle_picker_launch_errors}, html_or_plaintext::HtmlOrPlaintextWidgetRefExt, mentionable_text_input::{MentionableTextInputWidgetExt, MentionableTextInputWidgetRefExt, MentionableTextInputState}, popup_list::{PopupKind, enqueue_popup_notification}, room_input_popup_menu::RoomInputPopupMenuAction, slash_commands::{SlashCommandAction, SlashCommandOutcome}}, sliding_sync::{MatrixRequest, TimelineKind, UserPowerLevels, submit_async_request}, utils};
+use crate::{block_user_modal::{BlockUserModalAction, BlockUserRequest}, home::{editing_pane::{EditingPaneState, EditingPaneWidgetExt, EditingPaneWidgetRefExt}, location_preview::{LocationPreviewWidgetExt, LocationPreviewWidgetRefExt}, room_screen::{MessageAction, populate_preview_of_timeline_item}, rooms_list::RoomsListRef, tombstone_footer::{SuccessorRoomDetails, TombstoneFooterWidgetExt}, upload_progress::{UploadProgressViewWidgetRefExt, UploadState}}, join_leave_room_modal::{JoinLeaveModalKind, JoinLeaveRoomModalAction}, location::init_location_subscriber, profile::user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId}, room::BasicRoomDetails, settings::app_preferences::{AppPreferencesAction, AppPreferencesGlobal}, shared::{avatar::{AvatarState, AvatarWidgetRefExt}, file_upload_modal::{AttachmentUpload, FileUploadAttemptId, PendingUpload, handle_picked_file, handle_picker_launch_errors, handle_pasted_image}, html_or_plaintext::HtmlOrPlaintextWidgetRefExt, mentionable_text_input::{MentionableTextInputWidgetExt, MentionableTextInputWidgetRefExt, MentionableTextInputState}, popup_list::{PopupKind, enqueue_popup_notification}, room_input_popup_menu::RoomInputPopupMenuAction, slash_commands::{SlashCommandAction, SlashCommandOutcome}}, sliding_sync::{MatrixRequest, TimelineKind, UserPowerLevels, submit_async_request}, utils};
 use crate::room::reply_preview::CollapsiblePreviewWidgetRefExt;
 use crate::home::editing_pane::EditingPaneRef;
 use crate::shared::mentionable_text_input::MentionableTextInputRef;
@@ -451,6 +451,8 @@ pub struct RoomInputBar {
     #[rust] is_emoji_picker_expanded: bool,
     /// Children used on each input event or draw.
     #[rust] child_refs: Option<InputBarChildRefs>,
+    /// The clipboard read asked for by the latest paste keystroke in the composer.
+    #[rust] paste_request: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -559,6 +561,25 @@ impl Widget for RoomInputBar {
 
         if let Event::Actions(actions) = event {
             self.handle_actions(cx, actions);
+        }
+
+        // A paste keystroke in the composer. Pasted text is the text input's own
+        // business; here we also ask what else the clipboard holds, so that an
+        // image (a screen capture, say) can be attached.
+        if let Event::KeyDown(KeyEvent { key_code: KeyCode::KeyV, modifiers, is_repeat: false, .. }) = event
+            && modifiers.is_primary()
+            && !modifiers.alt
+        {
+            let input = self.child_refs(cx).mentionable_text_input.text_input_ref();
+            if cx.has_key_focus(input.area()) {
+                self.paste_request = Some(cx.read_clipboard());
+            }
+        }
+        if let Event::Clipboard(reply) = event
+            && self.paste_request == Some(reply.request)
+        {
+            self.paste_request = None;
+            self.attach_pasted_image(cx, &reply.content);
         }
 
         self.view.handle_event(cx, event, scope);
@@ -1498,6 +1519,46 @@ impl RoomInputBar {
         handle_picker_launch_errors(
             robius_file_picker::FileDialog::new().pick_image_or_video(on_picked)
         );
+    }
+
+    /// Offers an image pasted into the composer as an attachment, through the
+    /// same confirmation modal a picked file gets.
+    ///
+    /// Does nothing when the clipboard also holds text: that paste already went
+    /// into the text input, and one keystroke should not do two things.
+    fn attach_pasted_image(
+        &mut self,
+        cx: &mut Cx,
+        content: &makepad_widgets::makepad_platform::clipboard_read::ClipboardContent,
+    ) {
+        if content.text.as_deref().is_some_and(|text| !text.is_empty()) {
+            return;
+        }
+        let Some(image) = content.image.clone() else { return };
+        let Some(timeline_kind) = self.timeline_kind.clone() else { return };
+        let refs = self.child_refs(cx).clone();
+        if !refs.input_bar.visible() || refs.editing_pane.is_currently_shown(cx) {
+            return;
+        }
+        if self.check_if_upload_in_progress() {
+            return;
+        }
+        let in_reply_to = self.replying_to
+            .as_ref()
+            .and_then(|(event_tl_item, _embedded_event)| event_tl_item.event_id().map(ToOwned::to_owned));
+        #[cfg(feature = "tsp")]
+        let sign_with_tsp = self.is_tsp_signing_enabled(cx);
+        let epoch = crate::account_session::epoch();
+        // Encoding and writing the image must stay off the UI thread.
+        std::thread::spawn(move || handle_pasted_image(epoch, image, move |file_data| {
+            Ok(PendingUpload::Attachment(AttachmentUpload {
+                timeline_kind,
+                file_data,
+                in_reply_to,
+                #[cfg(feature = "tsp")]
+                sign_with_tsp,
+            }))
+        }));
     }
 
     fn upload_picker_callback(

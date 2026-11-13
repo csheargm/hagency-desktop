@@ -1,6 +1,6 @@
 //! Real scoped Octos and durable host custody; Matrix and model use local fixtures.
 use super::*;
-use crate::agent_questions::{AnswerValue, Card};
+use crate::agent_questions::{AnswerValue, Card, CardState};
 use hagency_runtime::octos::profile_binding::ProfileBinding;
 use std::{collections::BTreeMap, fs, process::Stdio};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -135,6 +135,17 @@ async fn native_shared_octos_encrypted_fixture_answers_question_and_settles_orig
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }).await.expect("the first original process stops");
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(edit) = room.edits().into_iter().find(|edit| edit["m.relates_to"]["event_id"] == event) {
+                break Card::from_content(&edit["m.new_content"]).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.expect("the last Octos question shows its outcome");
+    assert_eq!(closed.state, CardState::Answered);
+    assert_eq!(closed.answered_by.as_deref(), Some("@manager:test"));
+    assert_eq!(closed.answers, answer);
     assert!(!history_reads.lock().unwrap().is_empty());
     assert!(sent.lock().unwrap().iter().any(|(_, text)| text == "Offline integration complete."));
     let requests: Vec<Value> = serde_json::from_slice(&fs::read(root.join("offline-model-requests.json")).unwrap()).unwrap();

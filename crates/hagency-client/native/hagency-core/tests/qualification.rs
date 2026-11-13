@@ -167,6 +167,61 @@ fn a_model_on_the_owners_own_claude_endpoint_is_medium_whatever_its_name() {
 }
 
 #[test]
+fn a_claude_model_newer_than_the_table_is_rated_by_its_line() {
+    let named = |model: &str, provider: Option<&str>, framework: &str| ModelProfile {
+        framework: framework.into(),
+        model: model.into(),
+        provider: provider.map(str::to_owned),
+        reasoning: Some("medium".into()),
+    };
+    // Names a current CLI offers, a dated one and earlier versions among
+    // them; the table lists none of them.
+    for (name, tier) in [
+        ("claude-opus-5-5", Tier::Strong),
+        ("claude-fable-5-2", Tier::Strong),
+        ("claude-sonnet-5-5", Tier::Medium),
+        ("claude-haiku-5-5", Tier::Lightweight),
+        ("claude-haiku-4-5-20251001", Tier::Lightweight),
+        ("claude-opus-4-6", Tier::Strong),
+        ("claude-sonnet-4-6", Tier::Medium),
+    ] {
+        for provider in [None, Some("anthropic")] {
+            let profile = named(name, provider, "claude");
+            assert_eq!(qualification::model(&profile), (Some(tier), Some("claude")), "{name}");
+        }
+    }
+    // A row of the table still wins over the line.
+    assert_eq!(
+        qualification::model(&named("claude-fable-5", None, "claude")).0,
+        Some(Tier::Lightweight)
+    );
+    // A lightweight model rated by its line stays out of the roles the table
+    // keeps its own lightweight Claude models out of, at any requested tier.
+    let haiku = named("claude-haiku-5-5", None, "claude");
+    for role in ["architect", "review"] {
+        assert!(!qualification::qualifies(&haiku, role, Some(Tier::Lightweight)), "{role}");
+    }
+    assert!(qualification::roles().any(|role| qualification::qualifies(&haiku, role, None)));
+    let sonnet = named("claude-sonnet-5-5", None, "claude");
+    assert!(qualification::qualifies(&sonnet, "architect", Some(Tier::Medium)));
+    // Not a line, not a version, another provider, another framework: unrated.
+    for profile in [
+        named("claude-opus", None, "claude"),
+        named("claude-opus-latest", None, "claude"),
+        named("claude-mystery-5", None, "claude"),
+        named("opus-5-5", None, "claude"),
+        named("claude-opus-5-5", Some("other"), "claude"),
+        named("claude-opus-5-5", None, "codex"),
+    ] {
+        assert_eq!(qualification::model(&profile), (None, None), "{}", profile.model);
+        assert!(!qualification::roles().any(|role| qualification::qualifies(&profile, role, None)));
+    }
+    // The owner's own endpoint keeps its own rule whatever the name says.
+    let own = named("claude-opus-5-5", Some(qualification::OWNER_ENDPOINT), "claude");
+    assert_eq!(qualification::model(&own), (Some(Tier::Medium), None));
+}
+
+#[test]
 fn qualification_matches_javascript() {
     let fixtures: Value =
         serde_json::from_str(include_str!("../../fixtures/qualification.json")).unwrap();

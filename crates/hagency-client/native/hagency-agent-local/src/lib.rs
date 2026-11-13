@@ -810,6 +810,44 @@ impl Ledger {
         tx.commit()?;
         Ok(())
     }
+    /// The owner's own `/clear` ended the saved conversation and the CLI
+    /// opened another session: this context now points at that one. Only the
+    /// owner's own admitted call can move the pointer. Every usage record,
+    /// reservation and call of the old conversation stays as it is, and the
+    /// CLI keeps the old conversation's file.
+    pub(crate) fn replace_external_session(
+        &mut self,
+        scope: &Scope,
+        call: &str,
+        profile: &str,
+        session: &str,
+        initial: &Usage,
+    ) -> Result<()> {
+        verify(&self.db, scope)?;
+        key(profile)?;
+        key(session)?;
+        if scope.requester != self.owner {
+            return Err(Error::Unauthorized);
+        }
+        let context = scope.context_key(&self.owner)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM calls WHERE id=? AND scope=? AND state='pending')",
+            (call, json(scope)?),
+            |r| r.get(0),
+        )?;
+        if !active {
+            return Err(Error::Unauthorized);
+        }
+        tx.execute(
+            "INSERT INTO external_sessions VALUES (?,?,?,?) ON CONFLICT(scope,profile) DO UPDATE SET session=excluded.session,counters=excluded.counters",
+            (&context, profile, session, json(initial)?),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn mark_unknown(&mut self, scope: &Scope, call: &str) -> Result<()> {
         verify(&self.db, scope)?;
         let tx = self

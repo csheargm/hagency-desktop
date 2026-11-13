@@ -87,6 +87,15 @@ impl OwnedClaudeSession {
     pub fn session_id(&self) -> Option<&str> {
         self.session.session_id()
     }
+    /// The owner's command of this turn emptied the conversation; the
+    /// session id is the new conversation's (see `SessionDriver`).
+    pub fn conversation_reset(&self) -> bool {
+        self.session.conversation_reset()
+    }
+    /// The input of this turn was written as the owner's own command.
+    pub fn owner_command_turn(&self) -> bool {
+        self.session.owner_command_turn()
+    }
     pub fn expect_resume(&mut self, id: &str) -> Result<(), Error> {
         self.session.expect_resume(id)
     }

@@ -409,6 +409,11 @@ impl MatchEvent for App {
                     self.ui.redraw(cx);
                 }
             }
+            if let Some(update) = action.downcast_ref::<crate::hagency::pending_admissions::PendingAdmissionsUpdate>() {
+                if crate::hagency::pending_admissions::apply(cx, update) {
+                    self.ui.redraw(cx);
+                }
+            }
             if let Some(decided) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>() {
                 crate::hagency::pending_approvals::apply_decided(decided);
                 self.ui.redraw(cx);
@@ -1513,6 +1518,8 @@ impl AppMain for App {
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
+            // On the same timer; the module spaces its own reads.
+            crate::hagency::pending_admissions::poll();
             self.resume_hosting_paused_at_quit();
         }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back
@@ -2311,6 +2318,7 @@ pub struct AppState {
 impl AppState {
     fn clear_for_session_end(&mut self) {
         crate::hagency::pending_approvals::forget_identity();
+        crate::hagency::pending_admissions::forget_identity();
         crate::hagency::pending_questions::forget_identity();
         *self = Self::default();
     }

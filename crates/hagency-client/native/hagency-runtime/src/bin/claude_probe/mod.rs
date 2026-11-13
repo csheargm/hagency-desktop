@@ -4,6 +4,7 @@ mod shared_session;
 mod shared_history;
 mod shared_interrupt;
 mod shared_answer;
+mod shared_question;
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -60,6 +61,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             | "shared-error-exit"
             | "shared-snapshot-again"
             | "shared-stop-after-answer"
+            | "shared-question"
     ) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -204,6 +206,9 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
         }
         if mode == "shared-history" {
             shared_history::read_all(&mut stdin, marker)?;
+        }
+        if mode == "shared-question" {
+            shared_question::run(&mut stdin, marker, &prompt)?;
         }
         if matches!(
             mode,
