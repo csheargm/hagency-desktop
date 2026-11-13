@@ -15,10 +15,14 @@ use tokio::{
 
 const MAX_CALLBACKS: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
-/// What the model reads when a tool call was refused: by the Agent's rules,
-/// by its owner, or because the owner did not answer in time. It must not
-/// keep asking for the same thing in other words.
+/// What the model reads when a tool call was refused, by the Agent's rules or
+/// by its owner. It must not keep asking for the same thing in other words.
 pub const DENIED: &str = "This tool call was not allowed by the Agent's owner or its rules. Do not retry it or work around it. Tell the requester what was not allowed and finish with what you can do without it.";
+/// What the model reads when the owner did not answer in time. Nobody refused:
+/// told as a refusal, the model declines the same tool for the rest of the
+/// saved conversation, also when the requester asks again with the owner
+/// ready. It still must not ask again within this turn.
+pub const UNANSWERED: &str = "The Agent's owner did not answer this permission request in time, so the tool call did not run. Nobody refused it. Do not retry it or work around it in this turn. Tell the requester that the owner has not decided yet and that they can ask again; a later request is put to the owner again.";
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApprovalControlPolicy {
@@ -30,6 +34,8 @@ pub struct ApprovalControlPolicy {
 pub enum PermissionDecision {
     Allow,
     Deny,
+    /// The owner was asked and did not answer within the wait.
+    Unanswered,
 }
 pub enum ControlUpdate<T> {
     Message(Message),
@@ -270,6 +276,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             // allowed. `interrupt: true` made the CLI abort the turn, which
             // reached the room as a failed request with no reply.
             PermissionDecision::Deny => Ok(json!({"behavior":"deny","message":DENIED,"interrupt":false})),
+            PermissionDecision::Unanswered => Ok(json!({"behavior":"deny","message":UNANSWERED,"interrupt":false})),
         })
     }
 

@@ -126,7 +126,11 @@ async fn native_claude_many_sequential_tools_keep_replay_protection() {
 }
 #[tokio::test]
 async fn native_claude_permission_exact_response() {
-    for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
+    for decision in [
+        PermissionDecision::Allow,
+        PermissionDecision::Deny,
+        PermissionDecision::Unanswered,
+    ] {
         let (mut driver, mut peer) = running(4096, true).await;
         let original = json!({"command":"printf '%s' 'literal 中文'","nested":{"x":[1,null,true]}});
         let mut observed = event(
@@ -155,6 +159,11 @@ async fn native_claude_permission_exact_response() {
                 // The model is told and the turn goes on: the CLI aborts a
                 // turn whose refusal says `interrupt: true`.
                 json!({"behavior":"deny","message":hagency_runtime::claude::session::DENIED,"interrupt":false})
+            }
+            PermissionDecision::Unanswered => {
+                // Not a refusal: the model reads that nobody decided, so a
+                // later request for the same tool is asked again.
+                json!({"behavior":"deny","message":hagency_runtime::claude::session::UNANSWERED,"interrupt":false})
             }
         };
         assert_eq!(

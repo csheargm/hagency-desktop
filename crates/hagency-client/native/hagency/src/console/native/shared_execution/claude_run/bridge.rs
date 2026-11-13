@@ -88,7 +88,8 @@ impl claude_turn::Host for Host {
         tool: String,
         arguments: Value,
         _directory: &Path,
-    ) -> bool {
+    ) -> claude_turn::ToolAnswer {
+        use claude_turn::ToolAnswer;
         let tool = tool.strip_prefix("claude.").unwrap_or(&tool);
         // These modes come from the resource owner's signed successor policy.
         if self
@@ -98,26 +99,37 @@ impl claude_turn::Host for Host {
             .await
             .is_err()
         {
-            return false;
+            return ToolAnswer::Deny;
         }
         match self.policy {
-            SharedClaudePolicy::Text => false,
-            SharedClaudePolicy::LiveWeb => matches!(tool, "WebSearch" | "WebFetch"),
-            SharedClaudePolicy::Yolo { web } => web || !matches!(tool, "WebSearch" | "WebFetch"),
+            SharedClaudePolicy::Text => ToolAnswer::Deny,
+            SharedClaudePolicy::LiveWeb => {
+                ToolAnswer::allowed(matches!(tool, "WebSearch" | "WebFetch"))
+            }
+            SharedClaudePolicy::Yolo { web } => {
+                ToolAnswer::allowed(web || !matches!(tool, "WebSearch" | "WebFetch"))
+            }
             SharedClaudePolicy::Standard { web } => {
                 if !web && matches!(tool, "WebSearch" | "WebFetch") {
-                    return false;
+                    return ToolAnswer::Deny;
                 }
                 let Some(session) = &self.session else {
-                    return false;
+                    return ToolAnswer::Deny;
                 };
                 let request = json!({"id":id,"method":"claude/can_use_tool","params":{"sessionId":session,"toolName":tool,"input":arguments},"sessionAllowed":false,"managerCanDecide":false});
-                tokio::time::timeout(
+                match tokio::time::timeout(
                     Duration::from_secs(120),
                     permission(&self.live, &self.work, request),
                 )
                 .await
-                .is_ok_and(|v| v.unwrap_or(false))
+                {
+                    // The owner never answered: nobody refused. The server
+                    // ends its own record a little before this wait does
+                    // and then answers the next read with `approval_expired`.
+                    Err(_) => ToolAnswer::Unanswered,
+                    Ok(Err(e)) if e.code == "approval_expired" => ToolAnswer::Unanswered,
+                    Ok(decided) => ToolAnswer::allowed(decided.unwrap_or(false)),
+                }
             }
         }
     }
