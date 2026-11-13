@@ -149,6 +149,7 @@ pub enum Service {
 
 /// The program a LaunchAgent property list starts: the first string of its
 /// `ProgramArguments`, unescaped.
+#[cfg(any(target_os = "macos", test))]
 fn plist_program(plist: &str) -> Option<String> {
     let after = &plist[plist.find("<key>ProgramArguments</key>")?..];
     let array = &after[after.find("<array>")? + "<array>".len()..after.find("</array>")?];
@@ -157,6 +158,7 @@ fn plist_program(plist: &str) -> Option<String> {
     Some(array[start..end].replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn service_at(plist: &Path, exe: &Path) -> Service {
     match std::fs::read_to_string(plist) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Service::NotInstalled,
@@ -559,11 +561,13 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
 
 #[cfg(unix)]
 mod daemon {
+    #[cfg(target_os = "macos")]
     use owner_dashboard::dto::HostingState;
     use owner_dashboard::transport::{
-        API_VERSION, Command, DaemonConnection, DaemonEndpoint, Hello, OutcomeState, READ_TIMEOUT, Request,
-        TransportError, new_request_id,
+        API_VERSION, Command, DaemonConnection, DaemonEndpoint, Hello, READ_TIMEOUT, Request, new_request_id,
     };
+    #[cfg(target_os = "macos")]
+    use owner_dashboard::transport::{OutcomeState, TransportError};
     use std::{path::Path, time::Duration};
 
     pub fn hello(home: &Path, timeout: Duration) -> Option<(DaemonConnection, Hello)> {
@@ -573,12 +577,14 @@ mod daemon {
         Some((connection, hello))
     }
 
+    #[cfg(target_os = "macos")]
     fn request(owner: &str, command: Command) -> Request {
         Request { version: API_VERSION, request_id: new_request_id("odq"), owner_id: Some(owner.into()), expected_revision: None, command }
     }
 
     /// Pause hosting of `owner` before Desktop exits. True when this call
     /// paused it (or may have), so the next start resumes it.
+    #[cfg(target_os = "macos")]
     pub fn pause_for_quit(home: &Path, owner: &str, timeout: Duration) -> bool {
         let Some((mut connection, hello)) = hello(home, Duration::from_secs(3)) else { return false };
         if hello.owner_id.as_deref() != Some(owner) || !matches!(hello.hosting, HostingState::Running | HostingState::Starting) {
@@ -593,6 +599,7 @@ mod daemon {
 
     /// Resume hosting that Desktop paused when it quit. `false` asks to retry
     /// later: the service is not reachable or busy yet.
+    #[cfg(target_os = "macos")]
     pub fn resume_after_start(home: &Path, owner: &str) -> bool {
         let Some((mut connection, hello)) = hello(home, READ_TIMEOUT) else { return false };
         if hello.owner_id.as_deref() != Some(owner) {
