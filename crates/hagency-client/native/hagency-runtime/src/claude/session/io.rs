@@ -504,6 +504,27 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
             self.refusing = self.refusals.pop_front().map(|bytes| (bytes, 0));
         }
         let refusing = !writing && !flushing && !host_started && self.refusing.is_some();
+        if flushing {
+            // A frame whose every byte has left is confirmed before the peer's
+            // reply to it is read. A peer that answers and then fails in that
+            // same instant would otherwise turn a delivered frame into a
+            // failed write, and the answer it gave would be lost with it. One
+            // poll only: a flush that has to wait still waits beside the read.
+            let early = tokio::select! {
+                biased;
+                result=streams.stdin.flush()=>Some(result),
+                _=std::future::ready(())=>None,
+            };
+            match early {
+                Some(Ok(())) => {
+                    self.writing.as_mut().ok_or(Error::Closed)?.flushed = true;
+                    self.check(until)?;
+                    return Ok(None);
+                }
+                Some(Err(_)) => return Err(Error::Io("stdin flush")),
+                None => {}
+            }
+        }
         let observed = tokio::select! {
             biased;
             _=deadline.wait()=>Observed::Deadline,

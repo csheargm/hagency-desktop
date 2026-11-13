@@ -17,6 +17,8 @@ mod frames;
 mod steer;
 #[path = "claude_session/owner_reset.rs"]
 mod owner_reset;
+#[path = "claude_session/prompt_reply_race.rs"]
+mod prompt_reply_race;
 
 struct FlushProbe {
     fail: bool,
