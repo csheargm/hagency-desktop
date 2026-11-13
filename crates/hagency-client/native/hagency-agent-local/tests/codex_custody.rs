@@ -12,6 +12,20 @@ async fn wait_for(path: &Path) {
     .expect("offline process reached checkpoint");
 }
 
+async fn wait_for_heartbeat_change(path: &Path, previous: &[u8]) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let current = fs::read(path).unwrap();
+            if !current.is_empty() && current.as_slice() != previous {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("descendant did not advance its heartbeat before cleanup");
+}
+
 #[tokio::test]
 async fn codex_stop_and_drop_reap_native_children_after_leader_exit() {
     for (exit_leader, drop_owner) in [(true, false), (true, true), (false, false), (false, true)] {
@@ -68,12 +82,8 @@ else:
         let heartbeat = root.join("heartbeat");
         if !exit_leader {
             let before = fs::read(&heartbeat).unwrap();
-            tokio::time::sleep(Duration::from_millis(80)).await;
-            assert_ne!(
-                before,
-                fs::read(&heartbeat).unwrap(),
-                "descendant is still running"
-            );
+            // Scheduling a timer is not evidence that the child was scheduled.
+            wait_for_heartbeat_change(&heartbeat, &before).await;
         }
         if !drop_owner {
             process.stop().await.expect("observed whole-tree cleanup");
