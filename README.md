@@ -22,6 +22,33 @@ Matrix chat, Project workspaces and locally executed AI Agents in one applicatio
 Sign in to a **Hagency server** through its Pasion browser authorization. Ordinary
 Matrix servers are not supported by the current login flow.
 
+## Run locally
+
+For ongoing development, use [hagency-client](https://github.com/hagency-org/hagency-client).
+To run this historical desktop checkout, install [Rust via rustup](https://rustup.rs/)
+(the toolchain file pins Rust 1.98.0), Git, CMake and your platform's build tools:
+
+- **macOS:** Xcode command-line tools (`xcode-select --install`) and CMake
+  (`brew install cmake`).
+- **Windows:** Visual Studio Build Tools with **Desktop development with C++**
+  (including the Windows SDK), and CMake on `PATH`.
+- **Linux:** a C/C++ compiler, Clang/libclang, OpenSSL, SQLite, pkg-config and
+  X11/Wayland and ALSA/PulseAudio development libraries. See the
+  [Debian/Ubuntu package list](docs/robrix-upstream-readme.md#building--running-robrix-on-desktop).
+
+From this checkout's root, run:
+
+```sh
+cargo run --locked --bin rinx
+```
+
+The binary is named `rinx`, but the app is Hagency Desktop; default features suffice.
+Signing in requires an account on a **Hagency server with Pasion browser sign-in**,
+not an ordinary Matrix homeserver. For local testing, start a development or Compose
+Hagency server and enter its origin (for example, `http://127.0.0.1:8088`). See
+[local development](docs/local-development.md) for server setup pointers, isolated
+profiles (`HAGENCY_DESKTOP_DATA_DIR`), macOS launcher notes and acceptance checks.
+
 ## What is managed where
 
 - A Project binds one Matrix Space. Its discussion Rooms keep their own membership.
