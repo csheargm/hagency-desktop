@@ -547,6 +547,13 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
     false
 }
 
+/// Tests that replace the signed-in owner also replace the run-controls
+/// store. A test elsewhere that fills that store holds this lock meanwhile.
+#[cfg(test)]
+pub(super) fn test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+    tests::serial()
+}
+
 fn reset(owner: String) -> u64 {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
