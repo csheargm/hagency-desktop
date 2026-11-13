@@ -24,7 +24,8 @@ jobs:
   libraries:
     name: Hagency library workspace
     runs-on: macos-15
-    timeout-minutes: 120
+    # The serial all-target and feature-enabled suites can exceed two hours.
+    timeout-minutes: 180
     env:
       CARGO_BUILD_JOBS: 4
       # Debug schema/fixture construction must not consume another test's
