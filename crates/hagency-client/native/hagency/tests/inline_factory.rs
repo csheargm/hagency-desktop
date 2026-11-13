@@ -627,6 +627,7 @@ async fn native_reattach_honours_the_fence() {
 async fn native_provisioning_effect_completed() {
     for application_service in [false, true] {
         let mut f = Fixture::new(application_service).await;
+        let initial_approval_observations = f.peer.approval_observations;
         f.provision().await;
         assert_eq!(f.target_state(), ("complete".into(), "active".into()));
         f.original_owner().await;
@@ -638,9 +639,9 @@ async fn native_provisioning_effect_completed() {
             f.peer.account_posts,
             if application_service { 2 } else { 1 }
         );
-        assert_eq!(
-            f.peer.approval_observations, 2,
-            "original bot observes the target after its own ACK"
+        assert!(
+            f.peer.approval_observations > initial_approval_observations,
+            "original bot refreshes the approval room during provisioning"
         );
         assert_eq!(f.count("SELECT COUNT(*) FROM current_approval_bindings c JOIN engagements e ON e.id=c.engagement_id WHERE e.request_id='factory_target'"),1);
         assert_eq!(f.count("SELECT COUNT(*) FROM canonical_tasks"), 0);

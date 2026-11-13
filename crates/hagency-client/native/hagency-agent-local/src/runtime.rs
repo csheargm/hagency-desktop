@@ -1208,6 +1208,7 @@ async fn octos_wait<F: std::future::Future + ?Sized>(
 
 /// Keep processing the original turn while a host tool waits on an owner or
 /// a fresh server authorization. Dropping the wait withdraws its local request.
+#[cfg(unix)]
 async fn octos_wait_tool<F: std::future::Future + ?Sized>(
     wire: &mut Octos,
     mut host: std::pin::Pin<&mut F>,
@@ -1322,8 +1323,12 @@ async fn run_octos(
     started: Option<tokio::sync::oneshot::Sender<()>>,
     mut controls: Option<crate::run_controls::Stream>,
     room_tools: Option<hagency_runtime::room_tools::RoomTools>,
-    mut files: Option<&mut OctosHostFiles>,
+    files: Option<&mut OctosHostFiles>,
 ) -> Result<TurnResult> {
+    #[cfg(unix)]
+    let mut files = files;
+    #[cfg(not(unix))]
+    let _ = (execution, files);
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| Error::Unknown)?;
     let hex = random
