@@ -58,6 +58,8 @@ pub enum Requests {
 pub enum HighRisk {
     Deny,
     AskOwner,
+    /// Every tool without asking; see `ToolPolicy::full_trust`.
+    FullTrust,
 }
 impl SavePersonalPolicy {
     pub fn validate(&self) -> Result<(), NativeError> {
@@ -99,6 +101,7 @@ impl PersonalPolicy {
             high_risk: match self.high_risk_tools {
                 HighRisk::Deny => ToolPolicy::Deny,
                 HighRisk::AskOwner => ToolPolicy::AskOwner,
+                HighRisk::FullTrust => ToolPolicy::full_trust(),
             },
         })
     }
@@ -223,5 +226,35 @@ impl NativeManagement {
             Ok(json!({"protocol":"hagency-personal-settings-v1","agentId":saved.input.agent_id,
                 "commandId":saved.command_id,"policyRevision":revision,"saved":true}))
         }).await
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// The owner's full-trust choice is saved as the full-trust rule, and
+    /// the form knows that rule again when it reads the policy back.
+    #[test]
+    fn the_full_trust_choice_saves_the_full_trust_rule() {
+        let save = |risk: &str| -> SavePersonalPolicy {
+            serde_json::from_value(json!({"commandId":"command_a","agentId":"agent_a",
+                "expectedGeneration":1,"expectedRevision":0,
+                "policy":{"budget":{"kind":"unlimited","tokens":null,"period":"lifetime"},
+                    "requests":"allow","highRiskTools":risk}}))
+            .unwrap()
+        };
+        let trusted = save("full_trust");
+        trusted.validate().unwrap();
+        let policy = trusted.policy.native().unwrap();
+        assert!(policy.high_risk.is_full_trust());
+        let rule = serde_json::to_value(&policy.high_risk).unwrap();
+        assert_eq!(rule, crate::native_owner::full_trust_rule());
+        assert!(crate::native_owner::is_full_trust_rule(&rule));
+        for (risk, expected) in [("ask_owner", ToolPolicy::AskOwner), ("deny", ToolPolicy::Deny)] {
+            let policy = save(risk).policy.native().unwrap();
+            assert_eq!(policy.high_risk, expected);
+            assert!(!crate::native_owner::is_full_trust_rule(
+                &serde_json::to_value(&policy.high_risk).unwrap()
+            ));
+        }
     }
 }

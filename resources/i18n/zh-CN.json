@@ -3163,5 +3163,7 @@
   "Couldn't read \"{name}\": {error}": "无法读取“{name}”：{error}",
   "Couldn't crop \"{name}\". Please choose a different image.": "无法裁剪“{name}”，请选择其他图片。",
   "\"{name}\" changed after it was opened. Please choose it again.": "“{name}”在打开后已被更改，请重新选择。",
-  "Couldn't save the cropped avatar: {error}": "无法保存裁剪后的头像：{error}"
+  "Couldn't save the cropped avatar: {error}": "无法保存裁剪后的头像：{error}",
+  "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.": "完全信任：Agent 在这台电脑上运行命令、读写文件和联网都不再询问你，也不限于它的工作文件夹。设在“整个 Agent”上时，覆盖你自己在所有房间里的消息；其他人只有在你把那个房间和他们本人也设为完全信任时才有。单独保存过设置的房间或成员仍按各自的设置。",
+  "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.": "“所有工具、所有目录”就是完全信任，请改选“完全信任（不受限）”。"
 }

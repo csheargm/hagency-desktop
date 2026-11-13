@@ -131,6 +131,7 @@ fn settings(value: Value, agent: &Agent) -> Result<Value, NativeError> {
         let (tools, tool_count, directory_count) = match policy.policy.high_risk {
             ToolPolicy::Deny => ("deny", 0, 0),
             ToolPolicy::AskOwner => ("ask_owner", 0, 0),
+            ref trusted if trusted.is_full_trust() => ("full_trust", 0, 0),
             ToolPolicy::AllowWithRules { tools, directories } => {
                 if tools.len() > 1024 || directories.len() > 1024 {
                     return Err(invalid());
@@ -273,6 +274,21 @@ mod tests {
         let mut missing = snapshot();
         missing["configuration"]["observedAtMs"] = Value::Null;
         assert!(settings(missing, &agent()).is_err());
+    }
+    /// Full trust reads as its own setting, not as a list of rules.
+    #[test]
+    fn personal_settings_report_full_trust_as_its_own_choice() {
+        let mut trusted = snapshot();
+        trusted["configuration"]["environment"]["configuration"]["policy"]["policy"]["high_risk"] =
+            crate::native_owner::full_trust_rule();
+        let value = settings(trusted, &agent()).unwrap();
+        assert_eq!(value["observation"]["highRiskTools"], "full_trust");
+        assert_eq!(value["observation"]["toolRuleCount"], 0);
+        assert_eq!(value["observation"]["directoryRuleCount"], 0);
+        assert_eq!(
+            settings(snapshot(), &agent()).unwrap()["observation"]["highRiskTools"],
+            "rules"
+        );
     }
     #[test]
     fn personal_settings_absent_observation_does_not_invent_zero() {

@@ -221,6 +221,221 @@ fn restart_retains_unreported_usage_and_late_receipt_is_charged_once() {
         Err(Error::Conflict)
     ));
 }
+fn tool(s: &Scope, revisions: [i64; 3], risk: &str) -> ToolProposal {
+    ToolProposal {
+        scope: s.clone(),
+        dispatch: "dispatch".into(),
+        tool: "Bash".into(),
+        arguments: serde_json::json!({"command":"ls"}),
+        canonical_directory: "/any/folder".into(),
+        risk: risk.into(),
+        policy_revision: revisions,
+        expires: 100,
+    }
+}
+/// Full trust on the Agent is the owner's trust in their own messages: for
+/// those a Room or member layer the owner never saved adds no rule, and one the
+/// owner saved still applies.
+#[test]
+fn full_trust_on_the_agent_covers_layers_the_owner_never_saved() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let mut s = scope();
+    s.requester = OWNER.into();
+    ledger.register_binding(OWNER, &s).unwrap();
+    let mut trusted = config(1000, Period::Lifetime);
+    trusted.high_risk = ToolPolicy::full_trust();
+    ledger
+        .set_policy(OWNER, &s, Layer::Agent, 0, &trusted)
+        .unwrap();
+    ledger.reserve(&s, "call", "dispatch", 10, 10).unwrap();
+    assert!(ledger.fully_trusts(&s, "dispatch"));
+    assert!(!ledger.fully_trusts(&s, "another dispatch"));
+    let any = tool(&s, [1, 0, 0], "high");
+    assert!(matches!(
+        ledger.tool_disposition(&any, 11).unwrap(),
+        ToolPolicy::AllowWithRules { .. }
+    ));
+    ledger.authorize_tool(&any, 11).unwrap();
+    // A native request for wider permissions is still the owner's to answer.
+    assert_eq!(
+        ledger
+            .tool_disposition(&tool(&s, [1, 0, 0], "permission_expansion"), 11)
+            .unwrap(),
+        ToolPolicy::AskOwner
+    );
+    // The owner saves "ask" for this member: that layer applies again.
+    ledger
+        .set_policy(
+            OWNER,
+            &s,
+            Layer::Requester,
+            0,
+            &config(1000, Period::Lifetime),
+        )
+        .unwrap();
+    assert!(!ledger.fully_trusts(&s, "dispatch"));
+    assert_eq!(
+        ledger
+            .tool_disposition(&tool(&s, [1, 0, 1], "high"), 11)
+            .unwrap(),
+        ToolPolicy::AskOwner
+    );
+    let mut denied = config(1000, Period::Lifetime);
+    denied.high_risk = ToolPolicy::Deny;
+    ledger
+        .set_policy(OWNER, &s, Layer::Requester, 1, &denied)
+        .unwrap();
+    assert!(matches!(
+        ledger.tool_disposition(&tool(&s, [1, 0, 2], "high"), 11),
+        Err(Error::Denied)
+    ));
+}
+/// Another member's messages meet every layer under the Agent's full trust: an
+/// unsaved Room or member layer still denies, and they are fully trusted only
+/// where the owner also saved full trust on that Room and on that member.
+#[test]
+fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let member = scope();
+    assert_ne!(member.requester, OWNER);
+    ledger.register_binding(OWNER, &member).unwrap();
+    let mut trusted = config(1000, Period::Lifetime);
+    trusted.high_risk = ToolPolicy::full_trust();
+    ledger
+        .set_policy(OWNER, &member, Layer::Agent, 0, &trusted)
+        .unwrap();
+    ledger.reserve(&member, "call", "dispatch", 10, 10).unwrap();
+    assert!(!ledger.fully_trusts(&member, "dispatch"));
+    let first = tool(&member, [1, 0, 0], "high");
+    assert!(matches!(
+        ledger.tool_disposition(&first, 11),
+        Err(Error::Denied)
+    ));
+    assert!(matches!(
+        ledger.authorize_tool(&first, 11),
+        Err(Error::Denied)
+    ));
+    // The owner's own message in the same Room is covered.
+    let mut own = member.clone();
+    own.requester = OWNER.into();
+    ledger.reserve(&own, "own call", "own", 10, 12).unwrap();
+    assert!(ledger.fully_trusts(&own, "own"));
+    // Full trust saved on the Room but not on this member: still denied.
+    ledger
+        .set_policy(OWNER, &member, Layer::Room, 0, &trusted)
+        .unwrap();
+    ledger.reserve(&member, "second", "room only", 10, 13).unwrap();
+    assert!(!ledger.fully_trusts(&member, "room only"));
+    let mut room_only = tool(&member, [1, 1, 0], "high");
+    room_only.dispatch = "room only".into();
+    assert!(matches!(
+        ledger.tool_disposition(&room_only, 14),
+        Err(Error::Denied)
+    ));
+    // Saved on this member too: now they are fully trusted.
+    ledger
+        .set_policy(OWNER, &member, Layer::Requester, 0, &trusted)
+        .unwrap();
+    ledger.reserve(&member, "third", "every layer", 10, 15).unwrap();
+    assert!(ledger.fully_trusts(&member, "every layer"));
+    let mut every = tool(&member, [1, 1, 1], "high");
+    every.dispatch = "every layer".into();
+    ledger.authorize_tool(&every, 16).unwrap();
+    // A native request for wider permissions is still the owner's to answer.
+    let mut wider = tool(&member, [1, 1, 1], "permission_expansion");
+    wider.dispatch = "every layer".into();
+    assert_eq!(
+        ledger.tool_disposition(&wider, 16).unwrap(),
+        ToolPolicy::AskOwner
+    );
+}
+/// Without full trust on the Agent an unsaved layer keeps its default, which
+/// denies, and full trust on a Room or member alone opens nothing.
+#[test]
+fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let s = scope();
+    ledger.register_binding(OWNER, &s).unwrap();
+    let mut trusted = config(1000, Period::Lifetime);
+    trusted.high_risk = ToolPolicy::full_trust();
+    ledger
+        .set_policy(OWNER, &s, Layer::Room, 0, &trusted)
+        .unwrap();
+    ledger
+        .set_policy(OWNER, &s, Layer::Requester, 0, &trusted)
+        .unwrap();
+    ledger.reserve(&s, "call", "dispatch", 10, 10).unwrap();
+    // The Agent layer was never saved: it denies.
+    assert!(!ledger.fully_trusts(&s, "dispatch"));
+    assert!(matches!(
+        ledger.tool_disposition(&tool(&s, [0, 1, 1], "high"), 11),
+        Err(Error::Denied)
+    ));
+    // The Agent asks its owner: trusted layers below add nothing to that.
+    ledger
+        .set_policy(OWNER, &s, Layer::Agent, 0, &config(1000, Period::Lifetime))
+        .unwrap();
+    ledger.reserve(&s, "next", "later", 10, 12).unwrap();
+    let mut later = tool(&s, [1, 1, 1], "high");
+    later.dispatch = "later".into();
+    assert!(!ledger.fully_trusts(&s, "later"));
+    assert_eq!(
+        ledger.tool_disposition(&later, 13).unwrap(),
+        ToolPolicy::AskOwner
+    );
+    // An Agent that asks, with a Room nobody saved, still denies there.
+    let mut other = s.clone();
+    other.binding = "b2".into();
+    other.room = "!other:example.org".into();
+    ledger.register_binding(OWNER, &other).unwrap();
+    ledger.reserve(&other, "third", "elsewhere", 10, 14).unwrap();
+    let mut elsewhere = tool(&other, [1, 0, 0], "high");
+    elsewhere.dispatch = "elsewhere".into();
+    assert!(matches!(
+        ledger.tool_disposition(&elsewhere, 15),
+        Err(Error::Denied)
+    ));
+}
+/// Only the one rule that names every tool in every directory is full trust;
+/// any other rule is matched exactly, as before.
+#[test]
+fn a_rule_that_only_resembles_full_trust_is_matched_exactly() {
+    assert!(ToolPolicy::full_trust().is_full_trust());
+    for (tools, directories) in [
+        (vec!["*"], vec!["/workspace"]),
+        (vec!["Bash"], vec!["/"]),
+        (vec!["*", "Bash"], vec!["/"]),
+        (vec!["*"], vec!["/", "/workspace"]),
+    ] {
+        let rule = ToolPolicy::AllowWithRules {
+            tools: tools.into_iter().map(str::to_owned).collect(),
+            directories: directories.into_iter().map(str::to_owned).collect(),
+        };
+        assert!(!rule.is_full_trust(), "{rule:?}");
+    }
+    assert!(!ToolPolicy::AskOwner.is_full_trust() && !ToolPolicy::Deny.is_full_trust());
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let s = scope();
+    ledger.register_binding(OWNER, &s).unwrap();
+    let mut partial = config(1000, Period::Lifetime);
+    partial.high_risk = ToolPolicy::AllowWithRules {
+        tools: vec!["*".into()],
+        directories: vec!["/any/folder".into()],
+    };
+    for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
+        ledger.set_policy(OWNER, &s, layer, 0, &partial).unwrap();
+    }
+    ledger.reserve(&s, "call", "dispatch", 10, 10).unwrap();
+    assert!(!ledger.fully_trusts(&s, "dispatch"));
+    assert!(matches!(
+        ledger.tool_disposition(&tool(&s, [1, 1, 1], "high"), 11),
+        Err(Error::Denied)
+    ));
+}
 #[test]
 fn saved_tool_rules_do_not_preapprove_native_permission_expansion() {
     let temp = tempfile::tempdir().unwrap();

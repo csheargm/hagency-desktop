@@ -151,6 +151,51 @@ pub enum ToolPolicy {
         directories: Vec<String>,
     },
 }
+impl ToolPolicy {
+    const EVERY_TOOL: &'static str = "*";
+    const EVERY_DIRECTORY: &'static str = "/";
+    /// Full trust: every tool, in every directory, without asking the owner.
+    /// It travels as the one rule that names no exact tool, because the
+    /// server relays only the rule forms it knows. A program that matches
+    /// rules exactly finds no tool called `*` and allows nothing.
+    pub fn full_trust() -> Self {
+        Self::AllowWithRules {
+            tools: vec![Self::EVERY_TOOL.into()],
+            directories: vec![Self::EVERY_DIRECTORY.into()],
+        }
+    }
+    pub fn is_full_trust(&self) -> bool {
+        matches!(self, Self::AllowWithRules { tools, directories }
+            if matches!(tools.as_slice(), [tool] if tool == Self::EVERY_TOOL)
+                && matches!(directories.as_slice(), [directory] if directory == Self::EVERY_DIRECTORY))
+    }
+}
+/// One layer's high-risk rule for a dispatch: the rule the dispatch was
+/// admitted under and the rule saved now, each with whether the owner saved
+/// that layer at all.
+type ToolLayer<'a> = [(bool, &'a ToolPolicy); 2];
+/// Full trust on the Agent is the owner's trust in their own messages. For
+/// those, a Room or member layer the owner never saved adds no rule of its
+/// own; one the owner saved still applies. Anyone else, and the owner without
+/// it, meets every layer, and an unsaved layer keeps its default, which is to
+/// deny: another member is fully trusted only where the owner saved full trust
+/// on the Agent, on that Room and on that member.
+fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPolicy> {
+    let agent_trusts = from_owner
+        && layers
+            .first()
+            .is_some_and(|agent| agent.iter().all(|(_, rule)| rule.is_full_trust()));
+    layers
+        .iter()
+        .enumerate()
+        .flat_map(|(index, layer)| {
+            layer
+                .iter()
+                .filter(move |(saved, _)| index == 0 || *saved || !agent_trusts)
+                .map(|(_, rule)| *rule)
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -1088,12 +1133,46 @@ impl Ledger {
         tx.commit()?;
         Ok(())
     }
+    /// Whether every rule that applies to this dispatch, as admitted and as
+    /// saved now, is full trust: its native tools may then run unconfined and
+    /// unasked. Which rules apply depends on who sent it (see `applicable`).
+    /// Anything unreadable is not trust.
+    pub fn fully_trusts(&self, scope: &Scope, dispatch: &str) -> bool {
+        let read = || -> Result<bool> {
+            verify(&self.db, scope)?;
+            let stored: Option<(String, String)> = self
+                .db
+                .query_row(
+                    "SELECT scope,policies FROM dispatches WHERE id=?",
+                    [dispatch],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (stored_scope, policies) = stored.ok_or(Error::Denied)?;
+            if stored_scope != json(scope)? {
+                return Err(Error::Denied);
+            }
+            let original: Vec<(i64, Policy)> = serde_json::from_str(&policies)?;
+            let mut current = Vec::with_capacity(3);
+            for (index, k) in scope.layers()?.iter().enumerate() {
+                current.push(saved_policy(&self.db, k, index)?);
+            }
+            Ok(original.len() == current.len()
+                && current
+                    .iter()
+                    .all(|(_, p)| !matches!(p.requests, RequestPolicy::Deny))
+                && applicable(&tool_layers(&original, &current), scope.requester == self.owner)
+                    .iter()
+                    .all(|rule| rule.is_full_trust()))
+        };
+        read().unwrap_or(false)
+    }
     /// Read the effective current+dispatch-initial policy without consuming confirmation.
     pub fn tool_disposition(&mut self, proposal: &ToolProposal, now: i64) -> Result<ToolPolicy> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let effective = validate_tool(&tx, proposal, now)?;
+        let effective = validate_tool(&tx, &self.owner, proposal, now)?;
         tx.commit()?;
         Ok(effective.high_risk)
     }
@@ -1107,7 +1186,7 @@ impl Ledger {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        validate_tool(&tx, proposal, now)?;
+        validate_tool(&tx, &self.owner, proposal, now)?;
         let digest = hash(proposal)?;
         tx.execute(
             "INSERT INTO approvals VALUES (?,?,?,?,0) ON CONFLICT(digest) DO NOTHING",
@@ -1125,7 +1204,7 @@ impl Ledger {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let p = validate_tool(&tx, proposal, now)?;
+        let p = validate_tool(&tx, &self.owner, proposal, now)?;
         let result = match p.high_risk {
             ToolPolicy::Deny => Err(Error::Denied),
             ToolPolicy::AllowWithRules { tools, directories }
@@ -1253,7 +1332,12 @@ fn settle_transaction(
     Ok(())
 }
 
-fn validate_tool(db: &Connection, proposal: &ToolProposal, now: i64) -> Result<Policy> {
+fn validate_tool(
+    db: &Connection,
+    owner: &str,
+    proposal: &ToolProposal,
+    now: i64,
+) -> Result<Policy> {
     verify(db, &proposal.scope)?;
     if now < 0 || proposal.expires <= now || proposal.expires - now > 3600 {
         return Err(Error::Denied);
@@ -1289,33 +1373,29 @@ fn validate_tool(db: &Connection, proposal: &ToolProposal, now: i64) -> Result<P
             directories: vec![proposal.canonical_directory.clone()],
         },
     };
+    let mut current = Vec::with_capacity(3);
     for (index, k) in proposal.scope.layers()?.iter().enumerate() {
-        let record: Option<(i64, String)> = db
-            .query_row(
-                "SELECT revision,config FROM policies WHERE scope=?",
-                [k],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let (revision, p) = match record {
-            Some((r, c)) => (r, serde_json::from_str::<Policy>(&c)?),
-            None => (0, policy(db, k, index)?),
-        };
+        let (revision, p) = saved_policy(db, k, index)?;
         if revision != proposal.policy_revision[index] || matches!(p.requests, RequestPolicy::Deny)
         {
             return Err(Error::Denied);
         }
-        let old = &original.get(index).ok_or(Error::Conflict)?.1;
-        for tool_policy in [&old.high_risk, &p.high_risk] {
-            match tool_policy {
-                ToolPolicy::Deny => return Err(Error::Denied),
-                ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,
-                ToolPolicy::AllowWithRules { tools, directories } => {
-                    if !tools.contains(&proposal.tool)
-                        || !directories.contains(&proposal.canonical_directory)
-                    {
-                        return Err(Error::Denied);
-                    }
+        current.push((revision, p));
+    }
+    if original.len() < current.len() {
+        return Err(Error::Conflict);
+    }
+    let from_owner = proposal.scope.requester == owner;
+    for tool_policy in applicable(&tool_layers(&original, &current), from_owner) {
+        match tool_policy {
+            ToolPolicy::Deny => return Err(Error::Denied),
+            ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,
+            trusted if trusted.is_full_trust() => {}
+            ToolPolicy::AllowWithRules { tools, directories } => {
+                if !tools.contains(&proposal.tool)
+                    || !directories.contains(&proposal.canonical_directory)
+                {
+                    return Err(Error::Denied);
                 }
             }
         }
@@ -1376,6 +1456,33 @@ fn verify(db: &Connection, scope: &Scope) -> Result<()> {
     } else {
         Ok(())
     }
+}
+/// A layer's saved revision and policy; revision 0 with the default policy
+/// when the owner saved nothing for it.
+fn saved_policy(db: &Connection, k: &str, index: usize) -> Result<(i64, Policy)> {
+    let record: Option<(i64, String)> = db
+        .query_row(
+            "SELECT revision,config FROM policies WHERE scope=?",
+            [k],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match record {
+        Some((revision, config)) => (revision, serde_json::from_str::<Policy>(&config)?),
+        None => (0, policy(db, k, index)?),
+    })
+}
+/// Pairs each layer's rule at admission with its rule now. A stored revision
+/// starts at 1, so 0 marks a layer the owner never saved.
+fn tool_layers<'a>(
+    original: &'a [(i64, Policy)],
+    current: &'a [(i64, Policy)],
+) -> Vec<ToolLayer<'a>> {
+    original
+        .iter()
+        .zip(current)
+        .map(|(old, new)| [(old.0 != 0, &old.1.high_risk), (new.0 != 0, &new.1.high_risk)])
+        .collect()
 }
 fn policy(db: &Connection, k: &str, _index: usize) -> Result<Policy> {
     let record: Option<String> = db
