@@ -248,9 +248,12 @@ pub struct ProjectSetupTransport {
     manager: Arc<NativeManagement>,
 }
 enum Action<'a> {
+    #[cfg(any(unix, test))]
     RetryTerminal(String, &'a std::sync::atomic::AtomicBool),
+    #[cfg(any(unix, test))]
     ResumeBeginPinned(String, Box<dyn FnOnce(String) -> Result<(), NativeError> + Send + 'a>),
-    Read(String),
+    // Keep the action lifetime valid when daemon-only variants are absent.
+    Read(String, std::marker::PhantomData<&'a ()>),
     Apply(Command),
     ResumeBegin(String),
     Retry(String),
@@ -263,7 +266,7 @@ impl ProjectSetupTransport {
     }
     pub async fn progress(&self, project: String) -> Result<SetupProgress, NativeError> {
         key(&project)?;
-        self.run(Action::Read(project)).await
+        self.run(Action::Read(project, std::marker::PhantomData)).await
     }
     pub async fn begin_create(&self, input: BeginSetup) -> Result<SetupProgress, NativeError> {
         self.run(Action::Apply(Command::new(
@@ -330,10 +333,12 @@ impl ProjectSetupTransport {
         key(&project)?;
         self.run(Action::ResumeBegin(project)).await
     }
+    #[cfg(any(unix, test))]
     pub(crate) async fn retry_command_terminal(&self, command:String, terminal:&std::sync::atomic::AtomicBool)->Result<SetupProgress,NativeError> {
         key(&command)?;
         self.run(Action::RetryTerminal(command,terminal)).await
     }
+    #[cfg(any(unix, test))]
     pub(crate) async fn resume_begin_pinned(&self, project: String, pin: impl FnOnce(String) -> Result<(), NativeError> + Send) -> Result<SetupProgress, NativeError> {
         key(&project)?;
         self.run(Action::ResumeBeginPinned(project, Box::new(pin))).await
@@ -406,9 +411,10 @@ impl ProjectSetupTransport {
             io,
         };
         match action {
-            Action::Read(p) => driver.progress(&p).await,
+            Action::Read(p, _) => driver.progress(&p).await,
             Action::Apply(c) => driver.apply(c).await,
             Action::ResumeBegin(p) => driver.resume_begin(&p).await,
+            #[cfg(any(unix, test))]
             Action::ResumeBeginPinned(p, pin) => {
                 let n = driver.history.index(&p).ok_or_else(history_error)?;
                 let k = driver.history.data.records[n].commands.iter().rposition(|c| matches!(c.mutation, Mutation::Begin { .. })).ok_or_else(history_error)?;
@@ -416,6 +422,7 @@ impl ProjectSetupTransport {
                 driver.execute(n,k).await
             },
             Action::Retry(c) => driver.retry(&c).await,
+            #[cfg(any(unix, test))]
             Action::RetryTerminal(c,terminal)=>{
                 let result=driver.retry(&c).await;
                 let failed=driver.history.data.records.iter().flat_map(|r|&r.commands).any(|command|command.id==c && matches!(command.outcome,Outcome::Failed{..}));

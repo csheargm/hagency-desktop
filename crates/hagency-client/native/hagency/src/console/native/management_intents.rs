@@ -321,6 +321,7 @@ impl NativeManagement {
         self.finish(&context, result, false).await
     }
     /// Exact native custody lookup, retaining current scope and operation grants.
+    #[cfg(any(unix, test))]
     pub(crate) async fn original_command_receipt(&self, command_id: String) -> Result<Option<PendingIntent>, NativeError> {
         let (context, session) = self.authorized().await?;
         let result = session.intent(&context, command_id).await;

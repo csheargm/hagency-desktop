@@ -1,17 +1,19 @@
 //! Sealed grant and setup custody across the native daemon boundary.
 use super::{ControllerClient, Package, decode, encode, error};
-use crate::native_owner::{self as native, NativeError, NativeOwner};
+use crate::native_owner::{self as native, NativeError};
+#[cfg(any(unix, test))]
+use crate::native_owner::NativeOwner;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+#[cfg(any(unix, test))]
+use std::{collections::HashMap, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -917,27 +919,32 @@ access_reads! {
     observe_publication(id:String)->Option<native::OwnerGrantPublicationProgress>=ObservePublication;
 }
 
+#[cfg(any(unix, test))]
 enum Retained {
     Grant(native::OwnerGrantReview),
     Publication(native::OwnerGrantPublicationReview),
     Cancellation(native::OwnerGrantCancellationReview),
 }
+#[cfg(any(unix, test))]
 struct RetainedAccess {
     controller: String,
     package: Package,
     access: native::OwnerGrantAccess,
 }
+#[cfg(any(unix, test))]
 struct RetainedReview {
     access: String,
     until: Instant,
     review: Retained,
 }
+#[cfg(any(unix, test))]
 struct RetainedDevice {
     controller: String,
     package: Package,
     until: Instant,
     review: native::DeviceSetupReview,
 }
+#[cfg(any(unix, test))]
 struct RetainedSuccessor {
     controller: String,
     package: Package,
@@ -946,12 +953,14 @@ struct RetainedSuccessor {
     prepared: Box<native::PreparedSharedSuccessor>,
 }
 #[derive(Default)]
+#[cfg(any(unix, test))]
 pub(super) struct GrantState {
     accesses: HashMap<String, RetainedAccess>,
     reviews: HashMap<String, RetainedReview>,
     devices: HashMap<String, RetainedDevice>,
     successors: HashMap<String, RetainedSuccessor>,
 }
+#[cfg(any(unix, test))]
 impl GrantState {
     pub(super) fn revoke_all(&mut self) {
         for (_, a) in self.accesses.drain() {
@@ -1045,11 +1054,13 @@ impl GrantState {
         Ok(self.reviews.remove(handle).unwrap().review)
     }
 }
+#[cfg(any(unix, test))]
 fn lock(state: &Mutex<GrantState>) -> Result<std::sync::MutexGuard<'_, GrantState>, NativeError> {
     state
         .lock()
         .map_err(|_| error(503, "daemon_bridge_unavailable"))
 }
+#[cfg(any(unix, test))]
 fn offer_grant(
     state: &Mutex<GrantState>,
     access: &str,
@@ -1062,6 +1073,7 @@ fn offer_grant(
     };
     lock(state)?.offer(access, Retained::Grant(r), view)
 }
+#[cfg(any(unix, test))]
 fn offer_publication(
     state: &Mutex<GrantState>,
     access: &str,
@@ -1075,6 +1087,7 @@ fn offer_publication(
     };
     lock(state)?.offer(access, Retained::Publication(r), view)
 }
+#[cfg(any(unix, test))]
 fn offer_cancellation(
     state: &Mutex<GrantState>,
     access: &str,
@@ -1086,6 +1099,7 @@ fn offer_cancellation(
     };
     lock(state)?.offer(access, Retained::Cancellation(r), view)
 }
+#[cfg(any(unix, test))]
 pub(super) async fn dispatch(
     state: &Mutex<GrantState>,
     controller: &str,

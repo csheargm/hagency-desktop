@@ -146,6 +146,7 @@ pub(in crate::console) async fn inspect_resource(
 
 /// Read current plan/quota in the attested resource namespace, without login
 /// or a model turn. Keep child custody until termination is observed.
+#[cfg(any(unix, test))]
 pub(in crate::console) async fn inspect_quota(
     launch: &ManagedLaunch, provider: &OwnerProvider, executable: &Path,
     deadline: std::time::Instant,
@@ -160,6 +161,7 @@ pub(in crate::console) async fn inspect_quota(
 
 /// The caller supplies the original authenticated profile selection and checks
 /// it again after this probe. This function never discovers an ambient home.
+#[cfg(any(unix, test))]
 pub(in crate::console) async fn inspect_original_quota(
     paths: &ProviderPaths, provider: &OwnerProvider, executable: &Path,
     deadline: std::time::Instant,
@@ -168,6 +170,7 @@ pub(in crate::console) async fn inspect_original_quota(
         || selected_reference(&paths.codex_home,paths.shared).map(|_|())).await
 }
 
+#[cfg(any(unix, test))]
 async fn inspect_quota_inner(
     paths: &ProviderPaths, provider: &OwnerProvider, executable: &Path,
     deadline: std::time::Instant,

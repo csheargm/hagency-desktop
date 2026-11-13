@@ -861,6 +861,7 @@ enum MatrixStartup {
     },
 }
 impl NativeOwner {
+    #[cfg(unix)]
     pub(crate) fn set_hosting_admission(&self, admission: Arc<super::hosting::Admission>) {
         *self.0.host.console.0.hosting.lock().unwrap_or_else(|p| p.into_inner()) = admission;
     }

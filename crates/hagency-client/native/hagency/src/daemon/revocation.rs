@@ -39,6 +39,7 @@ pub fn request(home: &Path, origin: &str, owner: &str) -> Result<(), &'static st
     hagency_store::private::replace(&home.join(FILE), &raw)
         .map_err(|_| "daemon_logout_storage_unavailable")
 }
+#[cfg(unix)]
 pub(super) fn finish(home: &Path) -> Result<(), &'static str> {
     match std::fs::remove_file(home.join(FILE)) {
         Ok(()) => std::fs::File::open(home)
