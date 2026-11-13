@@ -15,6 +15,8 @@ mod interrupt;
 mod frames;
 #[path = "claude_session/steer.rs"]
 mod steer;
+#[path = "claude_session/owner_reset.rs"]
+mod owner_reset;
 
 struct FlushProbe {
     fail: bool,

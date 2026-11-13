@@ -20,6 +20,12 @@ pub trait Host: Send {
         input: &str,
     ) -> impl Future<Output = Result<()>> + Send;
     fn bind_session(&mut self, session: &str) -> Result<()>;
+    /// The owner's own command emptied the conversation (`/clear`) and the
+    /// CLI opened another session: the saved pointer moves to it. Only a host
+    /// whose caller can be the owner's own command implements this.
+    fn replace_session(&mut self, _session: &str) -> Result<()> {
+        Err(Error::Protocol("Claude context changed"))
+    }
     fn permission(
         &mut self,
         request_id: &str,
@@ -175,7 +181,12 @@ pub async fn run<H: Host, C: Capture>(
         return Err(Error::Protocol("Claude session init"));
     }
     capture.bind(wire).await?;
-    host.bind_session(wire.session_id().ok_or(Error::Unknown)?)?;
+    let session = wire.session_id().ok_or(Error::Unknown)?;
+    if wire.conversation_reset() {
+        host.replace_session(session)?;
+    } else {
+        host.bind_session(session)?;
+    }
     wire.supervise_turn()
         .map_err(|_| Error::Protocol("Claude turn supervision"))?;
     wire.enable_approval_control(claude::session::ApprovalControlPolicy {
@@ -209,7 +220,34 @@ pub async fn run<H: Host, C: Capture>(
     .await;
     match driven {
         Err(error) => kept_answer(wire, &mut controls, requests.len(), returns.len(), error).await,
+        // A command of the owner's CLI may print nothing (`/clear`). The room
+        // still gets an answer: which command ran.
+        Ok(mut done)
+            if done.text.is_empty()
+                && done.status == TurnStatus::Completed
+                && wire.owner_command_turn() =>
+        {
+            done.text = command_notice(input, wire.conversation_reset());
+            Ok(done)
+        }
         done => done,
+    }
+}
+
+/// The reply for an owner's command that printed nothing. Only the command's
+/// own name is repeated, never its arguments.
+fn command_notice(input: &str, reset: bool) -> String {
+    let name: String = input
+        .split_whitespace()
+        .next()
+        .unwrap_or("/")
+        .chars()
+        .take(64)
+        .collect();
+    if reset {
+        format!("✅ 已执行 {name}：对话已清空，下一条消息开始新的对话。")
+    } else {
+        format!("✅ 已执行 {name}。")
     }
 }
 

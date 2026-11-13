@@ -1047,6 +1047,24 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             )
             .map_err(Into::into)
     }
+    fn replace_session(&mut self, session: &str) -> Result<()> {
+        self.ledger
+            .replace_external_session(
+                self.scope,
+                self.call,
+                self.context,
+                session,
+                &Usage {
+                    input: 0,
+                    output: 0,
+                    cached_input: 0,
+                    cache_write_input: Some(0),
+                    reasoning_output: 0,
+                    accounting_version: "claude-reported-v1".into(),
+                },
+            )
+            .map_err(Into::into)
+    }
     async fn permission(
         &mut self,
         _request_id: &str,

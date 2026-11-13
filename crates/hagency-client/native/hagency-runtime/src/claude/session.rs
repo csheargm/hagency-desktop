@@ -100,6 +100,8 @@ pub struct SessionDriver<R, W, E> {
     awaiting_init: bool,
     /// The input being run is the owner's slash command, not a prompt.
     owner_command: bool,
+    /// That command reported that it emptied the conversation.
+    conversation_reset: bool,
     prompt_id: Option<String>,
     prompt_started: bool,
     control: control::State,
@@ -175,6 +177,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             continuous: false,
             awaiting_init: false,
             owner_command: false,
+            conversation_reset: false,
             prompt_id: None,
             prompt_started: false,
             control: control::State::default(),
@@ -260,7 +263,12 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 let init = *kind == EventKind::System && payload["subtype"] == "init";
                 match &self.session_id {
                     bound if init && self.awaiting_init => {
-                        if bound.as_ref().is_some_and(|id| id != session_id)
+                        // The owner's `/clear` ends the conversation: the CLI
+                        // said so under the session it was resumed with, and
+                        // this init opens the next one. Nothing else may
+                        // change the session a turn is bound to.
+                        let reset = self.conversation_reset;
+                        if (!reset && bound.as_ref().is_some_and(|id| id != session_id))
                             || self
                                 .prompt_id
                                 .as_ref()
@@ -268,15 +276,17 @@ impl<R, W, E> SessionDriver<R, W, E> {
                         {
                             return Err(Error::Identity);
                         }
-                        if self
-                            .prelude_session_id
-                            .as_ref()
-                            .is_some_and(|id| id != session_id)
+                        if !reset
+                            && self
+                                .prelude_session_id
+                                .as_ref()
+                                .is_some_and(|id| id != session_id)
                         {
                             return Err(Error::Identity);
                         }
                         self.session_id = Some(session_id.clone());
                         self.awaiting_init = false;
+                        self.wire.read_resets(false);
                     }
                     Some(bound) if bound == session_id && !init && !self.awaiting_init => {}
                     Some(bound) if bound == session_id && init && !self.awaiting_init => {
@@ -539,6 +549,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         };
         self.awaiting_init = true;
         self.owner_command = command;
+        self.conversation_reset = false;
+        self.wire.read_resets(command);
         // Set before entering the writer: even a cancelled partial write can
         // have delivered model input and must never authorize fresh replay.
         self.prompt_started = true;
@@ -583,15 +595,43 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     // A hook of the account's own settings may be reported here too, bound to
     // the same session as the init that follows.
     fn observe_prelude(&mut self, message: &Message) -> Result<bool, Error> {
+        let Message::Event {
+            session_id,
+            kind,
+            payload,
+        } = message
+        else {
+            return Ok(false);
+        };
+        let command = self.awaiting_init && self.owner_command;
+        if *kind == EventKind::ConversationReset {
+            if !command {
+                // Read for the owner's command only. Anywhere else it stays
+                // what it was before this frame was known: not read. A
+                // session that then changes still ends at its init.
+                self.wire.ignored_metadata();
+                return Ok(true);
+            }
+            // This command's reset of this session, or not a reset to act on.
+            if self
+                .prompt_id
+                .as_ref()
+                .is_some_and(|id| payload["user_message_uuid"] != id.as_str())
+            {
+                return Err(Error::Identity);
+            }
+        }
+        // A local command reports its own progress before init (`/compact`:
+        // status frames; `/clear`: the emptied task list). For the owner's
+        // command such a frame is metadata like the ones below: no usage, no
+        // approval and no answer can precede init.
         if self.awaiting_init
-            && let Message::Event {
-                session_id,
-                kind,
-                payload,
-            } = message
             && (*kind == EventKind::CommandLifecycle
+                || *kind == EventKind::ConversationReset
                 || (*kind == EventKind::System
-                    && (payload["subtype"] == "session_state_changed" || hook_report(payload))))
+                    && (payload["subtype"] == "session_state_changed"
+                        || hook_report(payload)
+                        || (command && payload["subtype"] != "init"))))
         {
             if self
                 .prelude_session_id
@@ -602,8 +642,19 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 return Err(Error::Identity);
             }
             self.prelude_session_id = Some(session_id.clone());
+            self.conversation_reset |= *kind == EventKind::ConversationReset;
             return Ok(true);
         }
         Ok(false)
+    }
+    /// The owner's command of this turn emptied the conversation, and the
+    /// session id is now the new conversation's. The host must move its saved
+    /// pointer; true until the next input is written.
+    pub fn conversation_reset(&self) -> bool {
+        self.conversation_reset && !self.awaiting_init
+    }
+    /// The input of this turn was written as the owner's own command.
+    pub fn owner_command_turn(&self) -> bool {
+        self.owner_command
     }
 }
