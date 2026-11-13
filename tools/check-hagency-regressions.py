@@ -83,6 +83,9 @@ def main():
         (output / "report.json").write_text(json.dumps(results, indent=2) + "\n")
         print(name, "PASS" if passed else "FAIL", flush=True)
         if not passed:
+            # A CI machine keeps no files, so the end of the failed check's own
+            # output goes to the job log.
+            print("\n".join(log.read_text().splitlines()[-150:]), flush=True)
             raise SystemExit(f"Inspect {log}; no release until this check passes")
         return text
 
