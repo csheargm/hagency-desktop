@@ -251,6 +251,7 @@ static CURRENT: LazyLock<Mutex<Option<Service>>> = LazyLock::new(|| Mutex::new(N
 static PROCESS_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 mod lifecycle;
 mod daemon_bridge;
+pub use daemon_bridge::LocalAgentHost;
 mod signin;
 mod adoption;
 mod allocation_worker;
