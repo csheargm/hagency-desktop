@@ -241,6 +241,10 @@ palpo-instrument = []
 # A developer's locally built test app: saved sign-ins may be kept in private
 # files instead of the OS credential store. Never part of a distributed build.
 development-credential-files = ["hagency-store/development-credential-files"]
+# A developer's run under the Makepad JIT runner: helper processes (the
+# guardian of every Agent run) come from a native build named in
+# HAGENCY_NATIVE_HELPER. Never part of a distributed build.
+development-native-helper = ["hagency-platform/development-native-helper"]
 # Ordinary Hagency Desktop builds include the native management and worker flow.
 # Instrumentation and isolated fixture support remain explicit opt-ins above.
 default = ["standalone", "agent_chat", "shared-budget-execution"]
@@ -565,7 +569,7 @@ used_underscore_binding = "allow"
 # Includes PR #132's Windows multi-window fixes and the software-device startup fix.
 # Redirect older source URLs to this exact revision while upstream merge is pending.
 
-# The JIT line (makepad `work`, HAL + relax): OctoSense-org/makepad `hagency-jit`, checked
+# The JIT line (makepad `work`, HAL + relax): OctoSense-org/makepad `main`, checked
 # out at .sources/makepad by `.jit/sources.sh` at the commit `.jit/sources.lock` pins
 # (git-ignored; compat/ keeps the fork crate names). Every URL the graph names makepad by
 # resolves to that one checkout. It is a checkout, not a git dependency, because the JIT

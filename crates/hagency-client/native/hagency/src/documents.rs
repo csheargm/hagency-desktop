@@ -50,7 +50,8 @@ pub(crate) async fn pdf(bytes: Vec<u8>) -> Result<Text, &'static str> {
         return Err("file_size_limit");
     }
     let _permit = ACTIVE.try_acquire().map_err(|_| "document_reader_busy")?;
-    let executable = std::env::current_exe().map_err(|_| "document_reader_unavailable")?;
+    let executable =
+        hagency_platform::helper_executable().map_err(|_| "document_reader_unavailable")?;
     pdf_with(bytes, executable, Duration::from_secs(20)).await
 }
 

@@ -151,6 +151,10 @@ fn runtime_diagnostic(code: &str) -> String {
         "agent_execution_device_required" => "Assign this Agent to this device before starting it here.",
         "ledger_recovery_required" => "Restore this owner's complete ledger before new requests. Only known original replies may be recovered.",
         "room_worker_stopped" | "runtime_start_failed" => "A Room worker stopped before becoming ready. The service will retry automatically.",
+        // The engine reports a failed run of any local tool (Codex, Claude Code, Octos) under one code family.
+        // An Agent's own run must not be told to check Codex when it runs another tool.
+        "codex_provider_timeout" | "codex_provider_unavailable" => "The Agent's coding tool did not respond. Check that it can run on this computer, then retry.",
+        "codex_protocol_mismatch" => "The Agent's coding tool returned a response Hagency could not use. Check its installed version and retry.",
         _ => return visible_error(code),
     };
     format!("{} ({code})", crate::i18n::tr(message))
@@ -4710,6 +4714,11 @@ mod tests {
         assert!(description.contains("provider_authorization_lost"));
         assert!(description.contains("8s"));
         assert!(!runtime_diagnostic("secret /private/provider-stderr token=123").contains("secret"));
+        // A Claude or Octos Agent's failed run is not worded as a Codex fault.
+        for code in ["codex_protocol_mismatch", "codex_provider_timeout", "codex_provider_unavailable"] {
+            let message = runtime_diagnostic(code);
+            assert!(message.contains(code) && !message.replace(code, "").contains("Codex"), "{message}");
+        }
     }
     #[test]
     fn service_detail_does_not_claim_readiness_and_preserves_action_failure() {

@@ -85,6 +85,19 @@ impl Plan {
         directory(root)?.remove_file(self.name())?;
         Ok(())
     }
+    /// The identity this intent was made for no longer exists: remove the intent of this
+    /// session whatever its state. Only an identity reset calls this.
+    pub fn void(root: &Path, client: &Client) -> Result<()> {
+        let filename = name(
+            client.homeserver().as_str(),
+            client.user_id().context("No user")?.as_str(),
+            client.device_id().context("No device")?.as_str(),
+        );
+        match directory(root)?.remove_file(filename) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
     pub fn load(root: &Path, client: &Client) -> Result<Option<Self>> {
         let dir = directory(root)?;
         let filename = name(

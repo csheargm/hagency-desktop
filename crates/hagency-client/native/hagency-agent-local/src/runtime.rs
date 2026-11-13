@@ -352,9 +352,10 @@ async fn spawn_inner(
     validate(profile, reference)?;
     let kind = kind(reference);
     if kind == Kind::Codex {
-        let guardian = guardian
-            .map(Path::to_path_buf)
-            .unwrap_or(std::env::current_exe()?);
+        let guardian = match guardian {
+            Some(path) => path.to_path_buf(),
+            None => hagency_platform::helper_executable()?,
+        };
         return Ok(Process {
             session: Session::Codex(Box::new(codex::Owned::spawn(profile, &guardian)?)),
             discarded_session: None,
@@ -458,9 +459,10 @@ async fn spawn_inner(
         }
         Kind::Codex => unreachable!(),
     }
-    let guardian = guardian
-        .map(Path::to_path_buf)
-        .unwrap_or(std::env::current_exe()?);
+    let guardian = match guardian {
+        Some(path) => path.to_path_buf(),
+        None => hagency_platform::helper_executable()?,
+    };
     let launch = hagency_platform::Launch {
         executable: profile.executable.clone(),
         arguments: command
@@ -1065,6 +1067,24 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
     fn bind_session(&mut self, session: &str) -> Result<()> {
         self.ledger
             .bind_external_session(
+                self.scope,
+                self.call,
+                self.context,
+                session,
+                &Usage {
+                    input: 0,
+                    output: 0,
+                    cached_input: 0,
+                    cache_write_input: Some(0),
+                    reasoning_output: 0,
+                    accounting_version: "claude-reported-v1".into(),
+                },
+            )
+            .map_err(Into::into)
+    }
+    fn replace_session(&mut self, session: &str) -> Result<()> {
+        self.ledger
+            .replace_external_session(
                 self.scope,
                 self.call,
                 self.context,
@@ -1808,6 +1828,139 @@ async fn claude_account_status_in(
     })
 }
 
+/// A model the native CLI offers under the configuration it runs with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeModelChoice {
+    /// The model id the CLI would send, not its alias.
+    pub model: String,
+    /// The effort levels the CLI says this model takes; empty when it names none.
+    pub efforts: Vec<String>,
+}
+
+/// The models the native CLI itself offers for this configuration: its answer
+/// to the `initialize` control request. No prompt is sent, so no model is
+/// called and nothing is billed. `config` is `None` for the implicit native
+/// account, as for [`claude_default_account_status`]. The CLI's safe mode
+/// keeps its sign-in and model selection (the model names of the owner's
+/// settings included) and leaves out the owner's hooks, plugins and MCP
+/// servers, so asking runs nothing of the owner's and saves no session.
+pub async fn claude_models(
+    binary: &Path,
+    home: &Path,
+    config: Option<&Path>,
+) -> Result<Vec<ClaudeModelChoice>> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    const REQUEST: &str = "hagency_models";
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .args([
+            "--print",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--strict-mcp-config",
+            "--safe-mode",
+            "--no-session-persistence",
+        ])
+        .env_clear()
+        .env("HOME", home)
+        // No project of the owner's: only the user-level configuration counts.
+        .current_dir(std::env::temp_dir())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(config) = config {
+        command.env("CLAUDE_CONFIG_DIR", config);
+    }
+    for name in ["USER", "PATH", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let mut child = command.spawn()?;
+    let mut input = child.stdin.take().ok_or(Error::Profile("models stdin"))?;
+    let output = child.stdout.take().ok_or(Error::Profile("models stdout"))?;
+    let work = async {
+        let request = serde_json::json!({"type":"control_request","request_id":REQUEST,
+            "request":{"subtype":"initialize"}});
+        input.write_all(format!("{request}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut lines = tokio::io::BufReader::new(output).lines();
+        let mut read = 0usize;
+        while let Some(line) = lines.next_line().await? {
+            read = read.saturating_add(line.len());
+            if read > 1024 * 1024 {
+                return Err(Error::Protocol("models response bound"));
+            }
+            let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if frame["type"] == "control_response" && frame["response"]["request_id"] == REQUEST {
+                return Ok(claude_models_from(&frame));
+            }
+        }
+        Err(Error::Protocol("models response"))
+    };
+    let result = tokio::time::timeout(Duration::from_secs(10), work)
+        .await
+        .map_err(|_| Error::Timeout)
+        .and_then(|found| found);
+    // The answer is all that was wanted: the session is not used further.
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    result
+}
+
+/// The model ids of an `initialize` answer, each once, in the CLI's order.
+fn claude_models_from(frame: &Value) -> Vec<ClaudeModelChoice> {
+    let named = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 200
+            && name.as_bytes()[0].is_ascii_alphanumeric()
+            && name.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(b, b'.' | b'_' | b'-' | b':' | b'/' | b'@' | b'[' | b']')
+            })
+    };
+    let mut choices: Vec<ClaudeModelChoice> = Vec::new();
+    let rows = frame["response"]["response"]["models"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for row in rows.iter().take(64) {
+        // An alias row names what it stands for; a custom row is its own name.
+        let Some(model) = row["resolvedModel"]
+            .as_str()
+            .or_else(|| row["value"].as_str())
+            .filter(|name| named(name))
+        else {
+            continue;
+        };
+        if choices.iter().any(|known| known.model == model) {
+            continue;
+        }
+        let efforts = row["supportedEffortLevels"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|level| matches!(*level, "low" | "medium" | "high" | "xhigh" | "max"))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        choices.push(ClaudeModelChoice {
+            model: model.to_owned(),
+            efforts,
+        });
+    }
+    choices
+}
+
 fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
     let target = arguments["typed_details"]["command"]["cwd"]
         .as_str()
@@ -1873,6 +2026,83 @@ mod tests {
         for text in ["compact", " /compact", "see /compact", ""] {
             assert!(!owner_command("@owner:test", &scope("@owner:test"), text));
         }
+    }
+    #[test]
+    fn the_clis_model_list_is_read_once_per_model_in_its_order() {
+        let frame = serde_json::json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":"hagency_models","response":{"models":[
+                {"value":"default","resolvedModel":"claude-opus-5-5","supportsEffort":true,
+                    "supportedEffortLevels":["low","medium","high","xhigh","max","made-up"]},
+                // The alias of the default names the same model: listed once.
+                {"value":"opus","resolvedModel":"claude-opus-5-5","supportedEffortLevels":["low"]},
+                {"value":"haiku","resolvedModel":"claude-haiku-5-5"},
+                // A custom row is its own name.
+                {"value":"open-model/a:1"},
+                {"value":"has space"},
+                {"value":"-flag"},
+                {"value":7},
+                {"value":"x".repeat(201)},
+            ]}}});
+        let choice = |model: &str, efforts: &[&str]| ClaudeModelChoice {
+            model: model.into(),
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+        };
+        assert_eq!(
+            claude_models_from(&frame),
+            [
+                choice("claude-opus-5-5", &["low", "medium", "high", "xhigh", "max"]),
+                choice("claude-haiku-5-5", &[]),
+                choice("open-model/a:1", &[]),
+            ]
+        );
+        for frame in [
+            serde_json::json!({}),
+            serde_json::json!({"response":{"response":{"models":"none"}}}),
+        ] {
+            assert!(claude_models_from(&frame).is_empty());
+        }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_cli_is_asked_for_its_models_without_a_prompt() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let fake = |name: &str, body: &str| {
+            let binary = root.path().join(name);
+            std::fs::write(&binary, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            binary
+        };
+        // Answers the one request it is sent, after other output, then waits
+        // for more input as the real CLI does: it must be ended, not waited for.
+        let answering = fake(
+            "answering",
+            r#"read line
+case "$line" in *'"subtype":"initialize"'*) ;; *) exit 3 ;; esac
+case "$*" in *--strict-mcp-config*--safe-mode*--no-session-persistence*) ;; *) exit 4 ;; esac
+[ "$CLAUDE_CONFIG_DIR" = "$HOME/../config" ] || exit 5
+echo 'starting'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_response","response":{"request_id":"other","response":{"models":[{"value":"wrong"}]}}}'
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"hagency_models","response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5","supportedEffortLevels":["low","high"]}]}}}'
+read rest"#,
+        );
+        let config = home.join("../config");
+        let started = std::time::Instant::now();
+        let models = claude_models(&answering, &home, Some(&config)).await.unwrap();
+        assert_eq!(
+            models,
+            [ClaudeModelChoice {
+                model: "claude-sonnet-5-5".into(),
+                efforts: vec!["low".into(), "high".into()],
+            }]
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // A CLI that ends without the answer is an error, not an empty list.
+        let silent = fake("silent", "read line\necho '{\"type\":\"system\"}'");
+        assert!(claude_models(&silent, &home, None).await.is_err());
     }
     #[test]
     fn references_require_exact_kind_hash_and_octos_profile() {

@@ -484,6 +484,33 @@ async fn serve_room(
         pending.reply(result);
     }
 }
+#[derive(Default)]
+struct SharedQuestionHost {
+    questions: super::super::questions::Questions<PendingQuestion>,
+    receipts: Vec<hagency_agent_local::questions::Delivery>,
+}
+
+impl SharedQuestionHost {
+    fn settle(&mut self) {
+        self.receipts.retain_mut(|receipt| {
+            if let Some(accepted) = receipt.status() {
+                self.questions.delivered(&receipt.id, accepted);
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+impl Drop for SharedQuestionHost {
+    fn drop(&mut self) {
+        // The run can finish before the next poll. Settle any confirmed
+        // native write before Questions closes the remaining cards on drop.
+        self.settle();
+    }
+}
+
 async fn serve_questions(
     live: &Live,
     work: &SharedWorkItem,
@@ -492,8 +519,7 @@ async fn serve_questions(
 ) {
     // Use the shared room source so production uses the authenticated Agent
     // device and offline tests can substitute only the Matrix boundary.
-    let mut questions = super::super::questions::Questions::<PendingQuestion>::default();
-    let mut receipts: Vec<hagency_agent_local::questions::Delivery> = Vec::new();
+    let mut host = SharedQuestionHost::default();
     let mut poll = tokio::time::interval(Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -505,39 +531,38 @@ async fn serve_questions(
                     let _ = pending.reply(Default::default());
                     continue;
                 }
-                if let Ok(Some(delivery)) = questions.ask(&live.io, work, pending).await {
-                    receipts.push(delivery);
+                if let Ok(Some(delivery)) = host.questions.ask(&live.io, work, pending).await {
+                    host.receipts.push(delivery);
                 }
             },
             _=poll.tick()=>{
-                receipts.retain_mut(|receipt| {
-                    if let Some(accepted)=receipt.status() {
-                        questions.delivered(&receipt.id, accepted);
-                        false
-                    } else { true }
-                });
+                host.settle();
                 if live.io.check_running(live.authority.root()).await.is_err() {
-                    questions.close();
+                    host.questions.close();
                     break;
                 }
-                if let Ok(ready) = questions.collect(&live.io).await { receipts.extend(ready); }
-                let _ = questions.publish().await;
+                if let Ok(ready) = host.questions.collect(&live.io).await { host.receipts.extend(ready); }
+                let _ = host.questions.publish().await;
             },
         }
     }
-    for receipt in &mut receipts {
-        if let Some(accepted) = receipt.status() { questions.delivered(&receipt.id, accepted); }
-    }
 }
 async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Sender) {
-    let opened = tokio::time::timeout(Duration::from_secs(10), async {
-        live.io.check_running(live.authority.root()).await?;
-        let b = live.io.bound().await?;
-        super::super::e2ee::device(&live.io, &b, &live.authority.root().assignment_id).await
-    })
-    .await;
-    let Ok(Ok(device)) = opened else {
-        std::future::pending::<()>().await;
+    // The card needs the Agent's device. One that is not ready yet is asked
+    // for again while the run lasts, as on the Codex path, so a long run still
+    // gets its Stop and its added instructions. The run's end drops this
+    // future, which ends the waiting.
+    let Some(device) = crate::console::owned_runtime::run_controls::open_while_running(
+        Duration::from_secs(10),
+        || async move {
+            live.io.check_running(live.authority.root()).await?;
+            let b = live.io.bound().await?;
+            super::super::e2ee::device(&live.io, &b, &live.authority.root().assignment_id).await
+        },
+        || false,
+    )
+    .await
+    else {
         return;
     };
     if card.open(device.clone()).is_err() {

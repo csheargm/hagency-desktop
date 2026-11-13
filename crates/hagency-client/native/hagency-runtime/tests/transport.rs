@@ -471,6 +471,64 @@ async fn native_codex_transport_pressure_stderr_tail_during_blocked_write() {
     assert_eq!(driver.termination().unwrap().pending_requests, 1);
 }
 
+/// Live 2026-11-13: Stop on a pooled Codex run that was streaming its answer
+/// ended the run with "Codex transport event queue is full". One read had
+/// brought in more text-delta frames than the queue holds, and the send of
+/// the stop parsed them all before writing although the peer was reading.
+#[tokio::test(start_paused = true)]
+async fn native_codex_transport_send_does_not_parse_a_backlog_the_peer_is_not_waiting_on() {
+    let (mut driver, mut peer) = fixture(65536, limits());
+    ready(&mut driver, &mut peer).await;
+    let frames = 3 * MAX_EVENTS;
+    let mut burst = Vec::new();
+    for index in 0..frames {
+        burst.extend(line(json!({ "method": "item/agentMessage/delta", "params": {
+            "threadId": "fixture", "turnId": "fixture", "itemId": "answer", "delta": format!("word-{index} ")
+        } })));
+    }
+    assert!(
+        burst.len() < hagency_runtime::codex::transport::READ_BYTES,
+        "one read brings in every frame"
+    );
+    peer.stdout.write_all(&burst).await.unwrap();
+    // The first event leaves the other frames received but not yet parsed.
+    assert!(matches!(
+        driver.next_event().await,
+        Ok(Event::Notification { .. })
+    ));
+    let receipt = driver.send(request(64, 1000)).await.unwrap();
+    assert_eq!(receipt.bytes, read_line(&mut peer.stdin).await.len());
+    assert!(driver.termination().is_none());
+    assert!(driver.queued_events() <= MAX_EVENTS);
+    for index in 1..frames {
+        match driver.next_event().await {
+            Ok(Event::Notification {
+                params: Some(params),
+                ..
+            }) => {
+                assert_eq!(params["delta"], format!("word-{index} "), "order kept")
+            }
+            Ok(_) => panic!("frame {index}: another event"),
+            Err(error) => panic!("frame {index}: {error:?}"),
+        }
+    }
+    peer.stdout
+        .write_all(&line(
+            json!({ "id": 1, "result": { "turn": { "id": "fixture" } } }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        driver.next_event().await,
+        Ok(Event::Response {
+            id: RequestId::Number(1),
+            result: Ok(_),
+            ..
+        })
+    ));
+    driver.close();
+}
+
 #[tokio::test(start_paused = true)]
 async fn native_codex_transport_pressure_event_count_and_bytes() {
     // Two events of just over half the queue's byte bound overflow it, while

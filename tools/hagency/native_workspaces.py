@@ -71,7 +71,7 @@ class Workspaces(App):
             self.click("entry_switch");self.click("entry_admin")
             self.wait(lambda:self.nav()=={"overview","inbox","servers","work"})
             self.req("/event",data="ux:violet");time.sleep(.3);self.shot("06-admin-violet")
-            self.click("inbox");self.wait(lambda:any("up to date" in r.get("t","") or "暂无待处理" in r.get("t","") for r in self.snap()))
+            self.click("inbox");self.wait(lambda:any("No admission requests yet" in r.get("t","") or "还没有资源加入申请" in r.get("t","") for r in self.snap()))
             self.shot("07-admin-admission")
         self.click("entry_switch");self.click("entry_manager")
         self.wait(lambda:self.nav()=={"overview","agents","projects","work"})

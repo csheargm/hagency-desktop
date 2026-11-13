@@ -640,13 +640,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
     async fn step(&mut self, operation_deadline: impl Into<Deadline>) -> Result<(), Error> {
         let operation_deadline = operation_deadline.into();
         self.check(operation_deadline)?;
-        if self.input_start < self.input_end {
-            self.parse_input()?;
-            self.check(operation_deadline)?;
-            return Ok(());
-        }
-        let deadline = self.next_deadline(operation_deadline);
-        let streams = self.streams.as_mut().ok_or(Error::Closed)?;
         enum Observed {
             Write(std::io::Result<usize>),
             Flush(std::io::Result<()>),
@@ -662,18 +655,56 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
             .writing
             .as_ref()
             .is_some_and(|w| w.offset == w.bytes.len() && !w.flushed);
-        let observed = tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => Observed::Deadline,
-            result = async {
-                if write_active {
-                    match self.writing.as_ref() {
-                        Some(writing) => Observed::Write(streams.stdin.write(&writing.bytes[writing.offset..]).await),
-                        None => Observed::Write(Err(std::io::Error::other("no write"))),
-                    }
-                } else { Observed::Flush(streams.stdin.flush().await) }
-            }, if write_active || flush_active => result,
-            result = streams.stdout.read(&mut self.input) => Observed::Read(result),
-            result = streams.stderr.read(&mut self.stderr_buffer), if self.stderr_open => Observed::Stderr(result),
+        // A frame of ours that the peer can take right now goes out before any
+        // received input is parsed. Nothing pops the event queue during a
+        // send, and one read holds more frames than the queue has places when
+        // the answer is streaming (16 KiB of text deltas against 16 events):
+        // parsing that backlog first ended the run with a full queue although
+        // the peer was reading and one write would have finished the send.
+        // Seen live 2026-11-13 on Stop of a pooled Codex run. Only while the
+        // peer does not take our frame is input read and parsed meanwhile, so
+        // that neither side waits on the other, bounded by the queue as before.
+        let first = if write_active || flush_active {
+            let streams = self.streams.as_mut().ok_or(Error::Closed)?;
+            tokio::select! {
+                biased;
+                result = async {
+                    if write_active {
+                        match self.writing.as_ref() {
+                            Some(writing) => Observed::Write(streams.stdin.write(&writing.bytes[writing.offset..]).await),
+                            None => Observed::Write(Err(std::io::Error::other("no write"))),
+                        }
+                    } else { Observed::Flush(streams.stdin.flush().await) }
+                } => Some(result),
+                _ = std::future::ready(()) => None,
+            }
+        } else {
+            None
+        };
+        let observed = match first {
+            Some(observed) => observed,
+            None => {
+                if self.input_start < self.input_end {
+                    self.parse_input()?;
+                    self.check(operation_deadline)?;
+                    return Ok(());
+                }
+                let deadline = self.next_deadline(operation_deadline);
+                let streams = self.streams.as_mut().ok_or(Error::Closed)?;
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => Observed::Deadline,
+                    result = async {
+                        if write_active {
+                            match self.writing.as_ref() {
+                                Some(writing) => Observed::Write(streams.stdin.write(&writing.bytes[writing.offset..]).await),
+                                None => Observed::Write(Err(std::io::Error::other("no write"))),
+                            }
+                        } else { Observed::Flush(streams.stdin.flush().await) }
+                    }, if write_active || flush_active => result,
+                    result = streams.stdout.read(&mut self.input) => Observed::Read(result),
+                    result = streams.stderr.read(&mut self.stderr_buffer), if self.stderr_open => Observed::Stderr(result),
+                }
+            }
         };
         match observed {
             Observed::Deadline => {

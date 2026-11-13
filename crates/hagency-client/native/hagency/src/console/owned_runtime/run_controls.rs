@@ -419,6 +419,32 @@ pub(super) struct Controller {
 /// refill of about one login per 5.5 minutes.
 pub(in crate::console) const DEVICE_RETRY_FIRST: Duration = Duration::from_secs(20);
 pub(in crate::console) const DEVICE_RETRY_MAX: Duration = Duration::from_secs(360);
+/// Opens what a shared run's card needs. A device that is not ready yet is
+/// asked for again while the run lasts, so a long run still gets its Stop and
+/// its added instructions. Each attempt has `wait`; the pauses between
+/// attempts grow as above. `None` once `ended` reports the run over; dropping
+/// the future ends the waiting too.
+pub(in crate::console) async fn open_while_running<T, E, F, Fut>(
+    wait: Duration,
+    mut open: F,
+    ended: impl Fn() -> bool,
+) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut pause = DEVICE_RETRY_FIRST;
+    loop {
+        if let Ok(Ok(opened)) = tokio::time::timeout(wait, open()).await {
+            return Some(opened);
+        }
+        tokio::time::sleep(pause).await;
+        if ended() {
+            return None;
+        }
+        pause = (pause * 3).min(DEVICE_RETRY_MAX);
+    }
+}
 pub(super) fn optional_card(
     dispatch: &inbox::Dispatch,
     execution: &str,
@@ -756,6 +782,46 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn a_card_device_that_is_not_ready_is_asked_for_again_with_growing_pauses() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let began = tokio::time::Instant::now();
+        let opened = open_while_running(
+            Duration::from_secs(10),
+            || {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    match call {
+                        // Never answers: the attempt's own limit ends it.
+                        0 => std::future::pending::<Result<u8, ()>>().await,
+                        1 => Err(()),
+                        _ => Ok(7),
+                    }
+                }
+            },
+            || false,
+        )
+        .await;
+        assert_eq!(opened, Some(7));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // 10 s attempt limit and a 20 s pause, then a refusal and a 60 s pause.
+        assert_eq!(began.elapsed(), Duration::from_secs(90));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_a_card_device_ends_with_the_run() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let opened = open_while_running(
+            Duration::from_secs(10),
+            || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { Err::<u8, ()>(()) }
+            },
+            || true,
+        )
+        .await;
+        assert_eq!(opened, None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
     #[test]
     fn closed_card_receipts_distinguish_unseen_actions_from_uncertain_native_claims() {
         let directory =

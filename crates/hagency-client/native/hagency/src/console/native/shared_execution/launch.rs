@@ -601,7 +601,7 @@ impl ClaudeLaunch {
             environment,
             require_crash_containment: false,
         };
-        let guardian = std::env::current_exe()
+        let guardian = hagency_platform::helper_executable()
             .map_err(|_| failure(409, "shared_execution_launch_unavailable"))?;
         #[cfg(test)]
         let guardian = if self.selection.fixture_mode.is_some() {

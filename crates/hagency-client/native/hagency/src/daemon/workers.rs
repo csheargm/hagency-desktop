@@ -147,6 +147,9 @@ pub struct PassReport {
     pub last_error: Option<String>,
 }
 
+/// A step that takes this long is logged.
+const SLOW_STEP: Duration = Duration::from_secs(5);
+
 pub async fn pass(
     io: &(impl PassIo + ?Sized),
     cursors: &mut Cursors,
@@ -172,8 +175,16 @@ pub async fn pass(
         } else {
             None
         };
+        let started = std::time::Instant::now();
         let result = io.run(step, cursors.get(step)).await;
         drop(guard);
+        // The steps of a pass run one after another: a slow one delays every
+        // later step, and a pooled message waits for the pass that reaches
+        // its demand. Say which step it was.
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW_STEP {
+            tracing::info!(?step, elapsed_ms = elapsed.as_millis() as u64, "Owner daemon executor step was slow");
+        }
         report.ran += 1;
         // A retired host records nothing from a late reply.
         if !live() {
