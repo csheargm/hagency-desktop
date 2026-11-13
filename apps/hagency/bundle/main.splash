@@ -2859,7 +2859,7 @@ A.submit_personal_observation = fn(){
     A.submit("hagency.personal_agents.observe",{agentId:d.agentId expectedGeneration:d.expectedGeneration})
 }
 A.personal_observation_received = fn(data){
-    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil}
+    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil H.local_model_current=nil}
     H.personal_id=data.agentId H.personal_observed=data H.personal_mode="detail" H.personal_draft=nil H.page="personal_agent"
 }
 A.personal_can_edit = fn(){
@@ -2902,7 +2902,7 @@ A.submit_personal_policy = fn(){
         policy:{budget:{kind:d.kind tokens:if d.kind == "tokens" {d.tokens.trim().to_f64()} else {nil} period:d.period} requests:d.requests highRiskTools:d.highRiskTools}})
 }
 A.personal_saved = fn(data){
-    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil}
+    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil H.local_model_current=nil}
     H.personal_observed=nil
     H.personal_id=data.agentId H.personal_result=data H.personal_mode="detail" H.personal_draft=nil H.page="personal_agent"
 }
@@ -3027,7 +3027,7 @@ A.personal_config_op=fn(service){
     return "personal_agent_rules"
 }
 A.personal_config_recorded=fn(data){
-    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil}
+    if H.personal_id!=data.agentId {H.personal_detail=nil H.local_status=nil H.local_models=nil H.local_model_current=nil}
     H.personal_config.result=data H.personal_config.draft=nil H.personal_config.choices=nil
     H.personal_observed=nil H.personal_result=nil H.personal_id=data.agentId H.personal_mode="detail" H.personal_draft=nil H.page="personal_agent"
 }
@@ -8326,7 +8326,7 @@ A.load_local_list=fn(){
 }
 A.local_status_load=fn(id){
     H.local_confirm="" H.local_error="" H.local_discard=""
-    H.local_models=nil H.local_model_current=nil H.local_model_epoch+=1 let model_epoch=H.local_model_epoch
+    H.local_model_epoch+=1 let model_epoch=H.local_model_epoch
     host.request("hagency.personal_agents.model.choices",{id:id},fn(r){if H.personal_id==id && H.local_model_epoch==model_epoch && r.is_ok {H.local_models=r.data.models H.local_model_current=r.data.current A.redraw()}})
     host.request("hagency.personal_agents.status",{id:id},fn(r){
         if H.personal_id!=id {return}
