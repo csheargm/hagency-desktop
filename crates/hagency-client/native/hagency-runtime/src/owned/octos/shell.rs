@@ -3,7 +3,9 @@
 //! the host starts the shell under its own stricter sandbox and tracks it.
 use super::super::SharedTextProcessSource;
 use crate::octos::profile_binding::RunningProfileGuard;
-use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{Duration, Instant}};
+use std::{path::PathBuf, sync::{Arc, atomic::AtomicUsize}, time::Duration};
+#[cfg(target_os = "macos")]
+use std::{collections::BTreeMap, path::Path, sync::atomic::Ordering, time::Instant};
 
 #[cfg(target_os = "macos")]
 mod interactive;
@@ -48,12 +50,19 @@ mod toolchain_tests {
 
 #[derive(Clone)]
 pub struct SharedOctosShell {
+    #[cfg(target_os = "macos")]
     guardian: PathBuf,
+    #[cfg(target_os = "macos")]
     workspace: PathBuf,
+    #[cfg(target_os = "macos")]
     source: SharedTextProcessSource,
+    #[cfg(target_os = "macos")]
     profile: Arc<RunningProfileGuard>,
+    #[cfg(target_os = "macos")]
     pending: Arc<AtomicUsize>,
+    #[cfg(target_os = "macos")]
     executable: PathBuf,
+    #[cfg(target_os = "macos")]
     patch_supported: bool,
     #[cfg(target_os = "macos")]
     sessions: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<interactive::Session>>>>,
@@ -80,11 +89,19 @@ impl SharedOctosShell {
     pub(super) fn new(guardian: PathBuf, workspace: PathBuf, source: SharedTextProcessSource,
         profile: Arc<RunningProfileGuard>, pending: Arc<AtomicUsize>, executable: PathBuf,
         patch_supported: bool) -> Self {
+        #[cfg(target_os = "macos")]
+        {
         Self { guardian, workspace, source, profile, pending, executable, patch_supported,
-            #[cfg(target_os = "macos")]
             sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (guardian, workspace, source, profile, pending, executable, patch_supported);
+            Self {}
+        }
     }
+    #[cfg(target_os = "macos")]
     fn active(&self) -> bool {
         self.source.has_live_activity() && self.profile.check().is_ok()
             && self.workspace.canonicalize().ok().as_deref() == Some(self.workspace.as_path())

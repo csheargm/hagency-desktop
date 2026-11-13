@@ -10,6 +10,7 @@ pub(super) fn confine(launch: &mut Launch, scope: &Path) -> Result<(), StartErro
 
 /// Octos runs with a private, ephemeral copy of exactly one selected
 /// profile. The caller still has to bind pool custody and a live lease.
+#[cfg(target_os = "macos")]
 pub(in crate::owned) fn confine_octos(launch: &mut Launch, scope: &Path) -> Result<(), StartError> {
     if launch.directory.canonicalize().ok().as_deref() != Some(&launch.directory) {
         return Err(StartError::Settings);

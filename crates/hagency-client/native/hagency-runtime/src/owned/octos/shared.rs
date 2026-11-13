@@ -1,6 +1,8 @@
 //! Scoped process construction only. A pool still needs an authenticated
 //! custody record, renewable server activity and durable usage accounting.
-use super::{Error, Limits, OwnedOctosSession, Operation, Phase, SharedScope, StartError};
+use super::{Error, Limits, OwnedOctosSession, Operation, Phase, StartError};
+#[cfg(target_os = "macos")]
+use super::SharedScope;
 use crate::octos::profile_binding::ProfileBinding;
 use std::path::Path;
 
