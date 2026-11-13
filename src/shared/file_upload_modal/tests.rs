@@ -57,3 +57,47 @@ fn upload_preview_fits_content_and_keeps_actions_inside_the_window() {
     }
 }
 
+
+#[test]
+fn a_pasted_image_becomes_a_temporary_png_that_is_removed_when_dropped() {
+    use makepad_widgets::makepad_platform::clipboard_read::ClipboardImage;
+
+    // PNG bytes from the clipboard are written as they are.
+    let mut png = std::io::Cursor::new(Vec::new());
+    ::image::RgbaImage::from_pixel(3, 2, ::image::Rgba([10, 20, 30, 255]))
+        .write_to(&mut png, ::image::ImageFormat::Png)
+        .unwrap();
+    let png = png.into_inner();
+    let file = pasted_image_file("pasted-image-test-a.png", &ClipboardImage::Png(Arc::new(png.clone()))).unwrap();
+    let path = file.path().to_owned();
+    assert_eq!(path.file_name().unwrap(), "pasted-image-test-a.png");
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+    assert_eq!(file.mime_type(), Some("image/png"));
+    assert!(file.is_temporary());
+
+    // The metadata the upload modal shows: a PNG of that size, named after the file.
+    let (metadata, _preview) = load_file_metadata(file.clone()).unwrap();
+    assert_eq!(metadata.mime_type, "image/png");
+    assert_eq!(metadata.size, png.len() as u64);
+    assert_eq!(metadata.file_name(), "pasted-image-test-a.png");
+
+    // The file lives as long as something refers to it, and no longer.
+    drop(file);
+    assert!(path.exists());
+    drop(metadata);
+    drop(_preview);
+    assert!(!path.exists());
+    assert!(!path.parent().unwrap().exists());
+
+    // Raw pixels (the Windows clipboard form) are encoded to a PNG of the same size.
+    let rgba = ClipboardImage::Rgba { width: 4, height: 3, rgba: Arc::new(vec![200; 4 * 3 * 4]) };
+    let file = pasted_image_file("pasted-image-test-b.png", &rgba).unwrap();
+    let decoded = ::image::load_from_memory(&std::fs::read(file.path()).unwrap()).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (4, 3));
+
+    // Pixel data that does not match its stated size, or no data at all, is refused.
+    let short = ClipboardImage::Rgba { width: 4, height: 3, rgba: Arc::new(vec![0; 5]) };
+    assert_eq!(pasted_image_file("x.png", &short).unwrap_err(), "The pasted image has an unexpected size.");
+    let empty = ClipboardImage::Png(Arc::new(Vec::new()));
+    assert_eq!(pasted_image_file("x.png", &empty).unwrap_err(), "The pasted image is empty.");
+}
