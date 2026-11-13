@@ -963,6 +963,9 @@ script_mod! {
             emit_scroll_actions: true,
             // Prefetch older history shortly before the user actually hits the top.
             reached_start_margin: 2,
+            // A message row is expensive to build (its cards, its text). The rows near the
+            // view stay alive, so reading back and forth does not build each one again.
+            keep_invisible_rows: 30,
             // TODO: enable `reuse_items: true` once Makepad's Html/TextFlow widget
             //   properly resets all internal state during `script_apply(Reload)`.
             //   Currently, stale TextFlow layout state (particularly related to
