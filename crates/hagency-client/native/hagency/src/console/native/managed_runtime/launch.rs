@@ -73,7 +73,7 @@ impl PreparedLaunch {
             let (guardian, provider) = match executables {
                 Some((guardian, provider)) => (guardian, Some(provider)),
                 None => (
-                    std::env::current_exe()
+                    hagency_platform::helper_executable()
                         .map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?,
                     None,
                 ),
@@ -130,7 +130,7 @@ impl PreparedLaunch {
         .map_err(|_| failure(409, "managed_runtime_provider_profile_unavailable"))?;
         Self::from_paths(
             paths,
-            std::env::current_exe()
+            hagency_platform::helper_executable()
                 .map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?,
         )
     }
@@ -148,7 +148,7 @@ impl PreparedLaunch {
             device.owner_mxid(),
         )
         .map_err(|_| failure(409, "managed_runtime_provider_profile_unavailable"))?;
-        let guardian = std::env::current_exe()
+        let guardian = hagency_platform::helper_executable()
             .map_err(|_| failure(409, "managed_runtime_launch_unavailable"))?;
         Self::from_paths_policy(
             paths,

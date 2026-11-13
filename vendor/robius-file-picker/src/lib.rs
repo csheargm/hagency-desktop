@@ -621,6 +621,47 @@ pub struct LocalFile {
 }
 
 impl LocalFile {
+    /// Writes `bytes` to a new temporary file named `file_name` and returns it as a
+    /// [`LocalFile`] that deletes that file once the last reference is dropped.
+    ///
+    /// This is for content that did not come from a picker, such as an image
+    /// pasted from the clipboard. Only the final component of `file_name` is used.
+    /// The file sits in a folder of its own that only the current user can open.
+    ///
+    /// This performs blocking I/O, so don't call it on the main UI thread.
+    pub fn from_bytes(file_name: &str, mime_type: Option<&str>, bytes: &[u8]) -> Result<Self> {
+        let name = Path::new(file_name)
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| std::ffi::OsString::from("attachment"));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = sys::app_temp_dir()?
+            .join(format!("robius-file-picker-{}-{now}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&dir)?;
+        let path = dir.join(name);
+        // Take cleanup ownership before writing, so a failed write leaves nothing behind.
+        let cleanup = Arc::new(TempPathCleanup { path: path.clone() });
+        std::fs::write(&path, bytes)?;
+        Ok(LocalFile {
+            path,
+            display_name: None,
+            mime_type: mime_type.filter(|m| !m.is_empty()).map(ToOwned::to_owned),
+            size: Some(bytes.len() as u64),
+            cleanup: Some(cleanup),
+        })
+    }
+
     /// The local filesystem path to the file.
     pub fn path(&self) -> &Path {
         &self.path
@@ -659,5 +700,40 @@ impl Drop for TempPathCleanup {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::remove_dir(parent);
         }
+    }
+}
+
+#[cfg(test)]
+mod local_file_tests {
+    use super::LocalFile;
+
+    #[test]
+    fn bytes_become_a_temporary_file_that_is_removed_with_its_folder() {
+        // Only the final component of the name is used.
+        let file = LocalFile::from_bytes("../outside/shot.png", Some("image/png"), b"png bytes").unwrap();
+        let path = file.path().to_owned();
+        let dir = path.parent().unwrap().to_owned();
+        assert_eq!(path.file_name().unwrap(), "shot.png");
+        assert!(dir.starts_with(std::env::temp_dir()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"png bytes");
+        assert_eq!(file.mime_type(), Some("image/png"));
+        assert_eq!(file.size(), Some(9));
+        assert!(file.is_temporary());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let second = file.clone();
+        drop(file);
+        assert!(path.exists(), "a clone keeps the file");
+        drop(second);
+        assert!(!path.exists());
+        assert!(!dir.exists());
+
+        // No usable name falls back to a fixed one.
+        let file = LocalFile::from_bytes("", None, b"x").unwrap();
+        assert_eq!(file.path().file_name().unwrap(), "attachment");
+        assert_eq!(file.mime_type(), None);
     }
 }

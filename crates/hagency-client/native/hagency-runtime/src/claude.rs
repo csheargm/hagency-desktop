@@ -86,6 +86,7 @@ fn known_type(kind: &str) -> bool {
             | "auth_status"
             | "rate_limit_event"
             | "command_lifecycle"
+            | "conversation_reset"
     )
 }
 fn ignorable_type(kind: &str) -> bool {
@@ -160,6 +161,10 @@ pub enum EventKind {
     AuthStatus,
     RateLimit,
     CommandLifecycle,
+    /// The CLI's report that a command emptied the conversation (`/clear`).
+    /// The init that follows opens another session. Only the session driver
+    /// reads it, and only for the owner's own command.
+    ConversationReset,
 }
 impl Message {
     fn parse(value: Value) -> Result<Self, Error> {
@@ -297,6 +302,7 @@ impl Message {
                         field(&value, "state")?;
                         EventKind::CommandLifecycle
                     }
+                    "conversation_reset" => EventKind::ConversationReset,
                     _ => return Err(Error::Unsupported),
                 };
                 // Binding this observation to an owned turn is the future Host's

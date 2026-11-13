@@ -119,14 +119,73 @@ python3 tools/wechat-ux/check_i18n.py
 
 The app builds against one makepad checkout under `.sources/` (git-ignored), pinned
 in `.jit/sources.lock`; no cargo command works before `.jit/sources.sh` has fetched it.
-The same sources also run under the makepad JIT runner (`makepad run`), which patches
-an edit into the running app; for that, fetch the checkout with `.jit/sources.sh --outside`.
-See [`.jit/NOTES.md`](.jit/NOTES.md) for its setup, commands, memory needs and known gaps.
+The same sources also run under the makepad JIT runner without a cargo build of the app;
+see [JIT mode](#jit-mode) below.
 
 The Cargo package/binary retains the name `rinx`; the application presents itself
 as Hagency. Default features use the standalone native application. The retired
 `agent_chat` instrumentation is not needed to enable current Project/Agent management.
 Mobile packaging requires platform signing and device validation.
+
+### JIT mode
+
+The app window, the unit tests and the owner daemon all run from source under the makepad
+JIT runner. Nothing of the app is built by cargo first, and a saved edit is patched into the
+running program in 0.1 to 0.3 s instead of a rebuild and restart. This is a development mode,
+checked on Apple silicon macOS; a packaged release is still a cargo release build.
+
+Set up once, and again whenever `.jit/sources.lock` changes:
+
+```sh
+.jit/sources.sh --outside    # for the JIT the makepad checkout must lie outside this folder
+(cd .sources/makepad && cargo build --release -p makepad-run -p relax-runner)
+export MAKEPAD_RUN_ALLOW_C=1 MAKEPAD_RUN_TRUST_PROC_MACROS=1
+```
+
+Then, from this folder:
+
+```sh
+# The app window. Save an edit and the running window takes it.
+.sources/makepad/target/release/makepad run --allow-c rinx
+
+# Unit tests. Add --live to keep the session warm: it reruns the affected tests on each edit.
+.sources/makepad/target/release/makepad test --allow-c rinx --lib -- <test name filter>
+
+# The owner daemon (the process that runs Agents).
+cargo build --bin rinx       # once: a native binary for the daemon's helper processes
+HAGENCY_NATIVE_HELPER="$PWD/target/debug/rinx" MAKEPAD_RUN_INSPECT=0 \
+  .sources/makepad/target/release/makepad run --no-live --allow-c rinx \
+  --features development-native-helper -- daemon run --home <daemon home>
+```
+
+What to know before relying on it:
+
+- **The daemon's helper stays native.** Every Agent run is watched by a `guardian` helper
+  that the daemon starts from its own executable. Under the JIT that executable is the
+  runner, so the helper comes from the native binary named in `HAGENCY_NATIVE_HELPER`. The
+  `development-native-helper` feature that reads the variable is never part of a
+  distributed build.
+- **A daemon that serves real Agents** should run with `MAKEPAD_RUN_INSPECT=0` and
+  `--no-live`, as above: the runner's debug socket and live reload can both change running
+  code. Run it from a source folder nobody edits (a separate git worktree), because the
+  runner reads the sources after start too. A fix is then a new commit in that folder and a
+  daemon restart.
+- **It is not a macOS service.** A JIT daemon is an ordinary process: after a logout or
+  restart the installed app's service is what comes back. Do not use hosting Setup from a
+  JIT window; Setup replaces the installed app's owner-daemon service.
+- **Keep development state apart** from an installed Hagency Desktop: give a JIT run its own
+  `HAGENCY_DESKTOP_DATA_DIR` and `HAGENCY_OWNER_DAEMON_HOME` unless you mean to share them.
+- **Time and memory.** The first run compiles everything (1.5 to 3 minutes). After that a
+  window starts in under a minute and the daemon in 30 to 60 s. A running window holds
+  2 to 5 GB of memory and the daemon 8 to 11 GB. The cache under `target/makepad-run` grows to
+  tens of GB; `makepad clean` reclaims it.
+- **One run per folder.** Runs from one folder share the cache, so a second window (another
+  profile) runs from a copy of the folder.
+- **Still cargo:** the unit tests of the `hagency` and `hagency-agent-local` crates in
+  `crates/hagency-client`, CI, and release packaging.
+
+[`.jit/NOTES.md`](.jit/NOTES.md) has the details: signed-in test profiles, headless runs,
+what was measured, and the known gaps.
 
 Built-in native and OctoScript apps are declared in `system-apps.json`; the article
 editor is under `apps/article-editor/`. See the [app development guide](apps/README.md)

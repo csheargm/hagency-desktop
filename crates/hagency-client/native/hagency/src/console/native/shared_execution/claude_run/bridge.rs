@@ -473,6 +473,12 @@ async fn serve_questions(
             pending=receiver.recv()=>{
                 let Some(pending)=pending else{break};
                 if pending.scope!=*scope||pending.dispatch!=work.id||pending.is_closed(){continue;}
+                #[cfg(test)]
+                if !host.is_open()
+                    && let Some(room) = live.io.crypto_fixture.as_ref().and_then(|f| f.questions.clone())
+                {
+                    host.open_fixture(room);
+                }
                 if !host.is_open(){
                     let began=Instant::now();
                     let result=tokio::time::timeout_at(pending.deadline,async{live.io.check_running(live.authority.root()).await?;let b=live.io.bound().await?;super::super::e2ee::device(&live.io,&b,&work.assignment_id).await}).await;
@@ -485,14 +491,21 @@ async fn serve_questions(
     }
 }
 async fn serve_controls(live: &Live, card: &Arc<CardHost>, sender: &controls::Sender) {
-    let opened = tokio::time::timeout(Duration::from_secs(10), async {
-        live.io.check_running(live.authority.root()).await?;
-        let b = live.io.bound().await?;
-        super::super::e2ee::device(&live.io, &b, &live.authority.root().assignment_id).await
-    })
-    .await;
-    let Ok(Ok(device)) = opened else {
-        std::future::pending::<()>().await;
+    // The card needs the Agent's device. One that is not ready yet is asked
+    // for again while the run lasts, as on the Codex path, so a long run still
+    // gets its Stop and its added instructions. The run's end drops this
+    // future, which ends the waiting.
+    let Some(device) = crate::console::owned_runtime::run_controls::open_while_running(
+        Duration::from_secs(10),
+        || async move {
+            live.io.check_running(live.authority.root()).await?;
+            let b = live.io.bound().await?;
+            super::super::e2ee::device(&live.io, &b, &live.authority.root().assignment_id).await
+        },
+        || false,
+    )
+    .await
+    else {
         return;
     };
     if card.open(device).is_err() {

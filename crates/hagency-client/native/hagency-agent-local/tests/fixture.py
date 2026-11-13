@@ -113,6 +113,9 @@ if kind == 'claude':
             send({'type':'stream_event','session_id':session,'event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'streamed text '}}})
         (root / marker).write_text('flushed')
     process_count = 0
+    # The owner's `/clear` opens another session; a later launch resumes it.
+    resumed = sys.argv[sys.argv.index('--resume') + 1] if '--resume' in sys.argv else ''
+    native_session = [resumed if resumed.startswith('cleared-session') else 'offline-session']
     while True:
         prompt = read()
         if prompt.get('type') == 'control_request':
@@ -128,6 +131,35 @@ if kind == 'claude':
                 assert subtype == 'mcp_status' and (continuous or mode.startswith('room'))
                 response = {'mcpServers':[{'name':'hagency_matrix','status':'connected','transport':'sdk','scope':'dynamic','source':'sdk','tools':[{'name':t['name']} for t in room_tools]}] if room_bound else []}
             send({'type':'control_response','response':{'subtype':'success','request_id':prompt['request_id'],'response':response}})
+            continue
+        if mode == 'local_command' and prompt['message']['content'] == '/clear':
+            # Captured CLI 2.1.323 (offline, 2026-11-13): the reset and the
+            # emptied task list come under the old session; init, an empty
+            # result, the command's end and idle come under a new one.
+            old, new = native_session[0], 'cleared-session'
+            assert prompt['session_id'] == old, prompt
+            native_session[0] = new
+            zero = {'input_tokens':0,'output_tokens':0,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}
+            send({'type':'system','subtype':'session_state_changed','state':'running','session_id':old})
+            for state in ('queued', 'started'):
+                send({'type':'command_lifecycle','command_uuid':prompt['uuid'],'state':state,'session_id':old})
+            send({'type':'conversation_reset','new_conversation_id':'conversation-two','uuid':'conversation-two',
+                'trigger':'clear','user_message_uuid':prompt['uuid'],'timestamp':'2026-11-13T02:37:07.395Z','session_id':old})
+            send({'type':'system','subtype':'background_tasks_changed','tasks':[],'session_id':old})
+            # An account with a session-start hook: the CLI runs it for the
+            # opened conversation and reports it under the new id, before init.
+            for subtype in ('hook_started', 'hook_response'):
+                send({'type':'system','subtype':subtype,'hook_id':'hook-one','hook_name':'SessionStart:clear',
+                    'hook_event':'SessionStart','session_id':new})
+            send({'type':'system','subtype':'init','session_id':new,'user_message_uuids':[prompt['uuid']]})
+            send({'type':'result','subtype':'success','is_error':False,'num_turns':0,'duration_api_ms':0,'stop_reason':None,
+                'session_id':new,'total_cost_usd':0,'usage':zero,'modelUsage':{},'model_usage_since_last_result':{},
+                'permission_denials':[],'result':'','user_message_uuid':prompt['uuid'],'user_message_uuids':[prompt['uuid']],
+                'local_command':'clear','queued_turn_count':0,'result_index':0})
+            send({'type':'command_lifecycle','command_uuid':prompt['uuid'],'state':'completed','session_id':new})
+            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':new})
+            if not continuous:
+                break
             continue
         if mode == 'local_command' and prompt['message']['content'].startswith('/'):
             # Captured CLI 2.1.322, input `/cost`: init follows the command,
@@ -154,7 +186,8 @@ if kind == 'claude':
                 break
             continue
         process_count += 1
-        session = 'offline-session'
+        session = native_session[0]
+        assert prompt.get('session_id') in ('', session), prompt
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})

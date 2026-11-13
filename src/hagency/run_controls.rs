@@ -592,6 +592,8 @@ mod tests {
 
     #[test]
     fn claude_input_joins_the_running_turn_and_waits_for_its_receipt_like_codex() {
+        // The entry below sits in the shared store until `request` has read it.
+        let _guard = super::super::pending_questions::test_serial();
         for runtime in ["codex", "claude"] {
             let mut e = entry();
             e.key = format!("$card-{runtime}");

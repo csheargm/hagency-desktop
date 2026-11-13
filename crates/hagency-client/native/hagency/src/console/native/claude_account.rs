@@ -8,6 +8,7 @@ use super::{
     NativeManagement, ResourceQuery, failure, management::store_error,
 };
 use crate::console::owner_provider::{self, ProviderPaths};
+use hagency_agent_local::runtime::ClaudeModelChoice;
 use hagency_runtime::claude::account::SharedCredential;
 use hagency_store::{
     management::{HostContext, Permission, Session},
@@ -30,17 +31,36 @@ fn revision(paths: &ProviderPaths) -> Result<String, NativeError> {
     .map_err(|_| failure(503, "management_unavailable"))
 }
 
-/// What the configuration can be shared as. On Anthropic's own endpoint the
-/// names are the ones the capacity table rates. On the owner's own endpoint
-/// they are the names the owner's settings give, and the table's when the
-/// settings give none.
-fn catalog(credential: &SharedCredential) -> (Option<&'static str>, Value) {
+/// What the configuration can be shared as. On the owner's own endpoint the
+/// names are the ones the owner's settings give. Otherwise, and when those
+/// settings give none, they are the models the owner's own CLI offers
+/// (`offered`), as far as one can be rated for a role. The capacity table's
+/// names are the fallback when the CLI could not be asked or offers nothing
+/// that can be rated.
+fn catalog(
+    credential: &SharedCredential,
+    offered: &[ClaudeModelChoice],
+) -> (Option<&'static str>, Value) {
     let own = credential.binding().own_endpoint();
+    let provider = own.then_some(hagency_core::qualification::OWNER_ENDPOINT);
     let mut names: Vec<String> = if own {
         credential.model_names().into_iter().map(str::to_owned).collect()
     } else {
         Vec::new()
     };
+    if names.is_empty() {
+        for choice in offered {
+            let profile = hagency_core::qualification::ModelProfile {
+                framework: "claude".into(),
+                model: choice.model.clone(),
+                provider: provider.map(str::to_owned),
+                reasoning: None,
+            };
+            if hagency_core::qualification::model(&profile).0.is_some() && !names.contains(&choice.model) {
+                names.push(choice.model.clone());
+            }
+        }
+    }
     if names.is_empty() {
         let profile = hagency_core::qualification::ModelProfile {
             framework: "claude".into(),
@@ -52,34 +72,54 @@ fn catalog(credential: &SharedCredential) -> (Option<&'static str>, Value) {
             }
         }
     }
-    let efforts: Vec<Value> = EFFORTS
-        .iter()
-        .map(|effort| json!({"reasoningEffort":effort,"description":""}))
-        .collect();
+    // The efforts this version shares, less the ones the CLI says a model does not take.
+    let efforts = |name: &str| -> Vec<Value> {
+        let known = offered
+            .iter()
+            .find(|choice| choice.model == name)
+            .map(|choice| choice.efforts.as_slice())
+            .unwrap_or_default();
+        let taken: Vec<&str> = EFFORTS
+            .iter()
+            .copied()
+            .filter(|effort| known.iter().any(|level| level == effort))
+            .collect();
+        let listed = if taken.is_empty() { EFFORTS.to_vec() } else { taken };
+        listed
+            .into_iter()
+            .map(|effort| json!({"reasoningEffort":effort,"description":""}))
+            .collect()
+    };
     let models: Vec<Value> = names
         .iter()
         .take(32)
         .enumerate()
         .map(|(index, name)| {
+            let efforts = efforts(name);
+            let default = efforts[0]["reasoningEffort"].clone();
             json!({"id":name,"model":name,"displayName":name,"isDefault":index==0,
-                "defaultReasoningEffort":EFFORTS[0],"supportedReasoningEfforts":efforts})
+                "defaultReasoningEffort":default,"supportedReasoningEfforts":efforts})
         })
         .collect();
     (
-        own.then_some(hagency_core::qualification::OWNER_ENDPOINT),
+        provider,
         json!({"state":"connected","authenticated":true,"accountVerified":true,"models":models}),
     )
 }
 
-fn projected(credential: &SharedCredential) -> Value {
-    let (provider, catalog) = catalog(credential);
+fn projected(credential: &SharedCredential, offered: &[ClaudeModelChoice]) -> Value {
+    let (provider, catalog) = catalog(credential, offered);
     let mut result = super::resource_onboarding::projection_for("claude", provider, &catalog);
     result["ownEndpoint"] = json!(provider.is_some());
     result
 }
 
-fn validate_model(input: &NamespaceEnrollment, credential: &SharedCredential) -> Result<(), NativeError> {
-    let projected = projected(credential);
+fn validate_model(
+    input: &NamespaceEnrollment,
+    credential: &SharedCredential,
+    offered: &[ClaudeModelChoice],
+) -> Result<(), NativeError> {
+    let projected = projected(credential, offered);
     let row = projected["models"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["model"].as_str() == Some(input.model.as_str())))
@@ -127,6 +167,17 @@ impl NativeManagement {
             )
             .map_err(|error| failure(error.status, error.code))
         }
+    }
+
+    /// The models the owner's own CLI offers for the connected configuration,
+    /// asked now. Empty when it cannot be asked: the rated table then stands in.
+    async fn claude_offered_models(&self, context: &HostContext) -> Vec<ClaudeModelChoice> {
+        let Ok(paths) = self.claude_paths(context).await else {
+            return Vec::new();
+        };
+        owner_provider::claude_identity::models(&paths)
+            .await
+            .unwrap_or_default()
     }
 
     /// The sign-in of the connected configuration, observed now. The caller
@@ -305,13 +356,14 @@ impl NativeManagement {
         let observed = self
             .claude_credential(&context, Some(&input.expected_revision), deadline)
             .await;
+        let offered = self.claude_offered_models(&context).await;
         let (fresh, live) = self.authorized().await?;
         if fresh != context {
             return Err(failure(401, "management_scope_changed"));
         }
         live.authorize(&context, Permission::ReadAccountModels)
             .map_err(store_error)?;
-        let provider = projected(&observed?);
+        let provider = projected(&observed?, &offered);
         Ok(json!({"protocol":hagency_store::management::PROTOCOL,"accountId":input.account_id,
             "revision":input.expected_revision,"enrollmentReady":self.account_enrollment_ready(),
             "provider":provider}))
@@ -347,6 +399,9 @@ impl NativeManagement {
             let observed = self
                 .claude_credential(&context, Some(&input.account.expected_revision), deadline)
                 .await;
+            // The same question the form asked: a model the CLI offered then
+            // and no longer offers is refused as changed.
+            let offered = self.claude_offered_models(&context).await;
             let (fresh, live) = self.authorized().await?;
             if fresh != context {
                 return Err(failure(401, "management_scope_changed"));
@@ -354,7 +409,7 @@ impl NativeManagement {
             live.authorize(&context, Permission::EnrollResources)
                 .map_err(store_error)?;
             let credential = observed?;
-            validate_model(&input, &credential)?;
+            validate_model(&input, &credential, &offered)?;
             if Instant::now() >= confirmed_until {
                 return Err(failure(403, "provider_confirmation_expired"));
             }
@@ -408,7 +463,7 @@ mod tests {
     #[test]
     fn anthropic_key_offers_the_rated_models_with_their_own_roles() {
         let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
-        let provider = projected(&key);
+        let provider = projected(&key, &[]);
         assert_eq!(provider["runtime"], "claude");
         assert_eq!(provider["connected"], true);
         assert_eq!(provider["ownEndpoint"], false);
@@ -418,12 +473,76 @@ mod tests {
             assert_eq!(row["sharedReasoning"], json!(EFFORTS), "{row}");
             assert_eq!(row["sharedDefaultReasoning"], "medium");
         }
-        validate_model(&input("claude-opus-5", Some("high")), &key).unwrap();
+        validate_model(&input("claude-opus-5", Some("high")), &key, &[]).unwrap();
         // The owner's mapping does not add names Anthropic's endpoint is not rated for.
         let mapped = [("ANTHROPIC_MODEL".to_string(), "open-model".to_string())];
         let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &mapped, soon()).unwrap();
-        assert!(!names(&projected(&key)).contains(&"open-model"));
-        assert_eq!(validate_model(&input("open-model", Some("medium")), &key).unwrap_err().code, "provider_model_changed");
+        assert!(!names(&projected(&key, &[])).contains(&"open-model"));
+        assert_eq!(validate_model(&input("open-model", Some("medium")), &key, &[]).unwrap_err().code, "provider_model_changed");
+    }
+
+    fn offered(rows: &[(&str, &[&str])]) -> Vec<ClaudeModelChoice> {
+        rows.iter()
+            .map(|(model, efforts)| ClaudeModelChoice {
+                model: (*model).into(),
+                efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_models_the_cli_offers_replace_the_table_on_anthropics_endpoint() {
+        let key = SharedCredential::from_api_settings(None, "sk-ant-api03-example".into(), true, &[], soon()).unwrap();
+        let all: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+        // What a current CLI answers, plus a custom name and a name of no known line.
+        let cli = offered(&[
+            ("claude-opus-5-5", all),
+            ("claude-fable-5-2", all),
+            ("claude-sonnet-5-5", &["low", "medium"]),
+            ("claude-haiku-5-5", &[]),
+            ("open-model", all),
+            ("claude-mystery-9", all),
+        ]);
+        let provider = projected(&key, &cli);
+        assert_eq!(provider["ownEndpoint"], false);
+        // The CLI's names in the CLI's order; what cannot be rated is left out.
+        assert_eq!(
+            names(&provider),
+            ["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"]
+        );
+        assert_eq!(provider["models"][0]["default"], true);
+        // Shared efforts are this version's, less what the CLI says a model does not take.
+        assert_eq!(provider["models"][0]["sharedReasoning"], json!(EFFORTS));
+        assert_eq!(provider["models"][2]["sharedReasoning"], json!(["medium", "low"]));
+        assert_eq!(provider["models"][3]["sharedReasoning"], json!(EFFORTS));
+        validate_model(&input("claude-fable-5-2", Some("high")), &key, &cli).unwrap();
+        for (model, reasoning, code) in [
+            // The table's name is not offered by this CLI.
+            ("claude-opus-5", Some("medium"), "provider_model_changed"),
+            ("open-model", Some("medium"), "provider_model_changed"),
+            ("claude-sonnet-5-5", Some("high"), "management_model_unqualified"),
+            ("claude-opus-5-5", Some("max"), "management_model_unqualified"),
+        ] {
+            assert_eq!(validate_model(&input(model, reasoning), &key, &cli).unwrap_err().code, code, "{model}");
+        }
+        // Nothing the CLI offers can be rated: the table stands in.
+        let odd = offered(&[("open-model", all)]);
+        assert!(names(&projected(&key, &odd)).contains(&"claude-opus-5"));
+    }
+
+    #[test]
+    fn the_owners_own_endpoint_keeps_the_names_of_its_settings() {
+        let all: &[&str] = &["low", "medium", "high"];
+        let cli = offered(&[("claude-opus-5-5", all), ("open-model-a", &["low"]), ("glm-5", all)]);
+        let mapped = [("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(), "open-model-a".to_string())];
+        let gateway = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &mapped, soon()).unwrap();
+        let provider = projected(&gateway, &cli);
+        assert_eq!(provider["ownEndpoint"], true);
+        assert_eq!(names(&provider), ["open-model-a"]);
+        assert_eq!(provider["models"][0]["sharedReasoning"], json!(["low"]));
+        // No model named in the settings: what the CLI would send to that endpoint.
+        let plain = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &[], soon()).unwrap();
+        assert_eq!(names(&projected(&plain, &cli)), ["claude-opus-5-5", "open-model-a", "glm-5"]);
     }
 
     #[test]
@@ -433,20 +552,20 @@ mod tests {
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), "open-model-b".to_string()),
         ];
         let gateway = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &mapped, soon()).unwrap();
-        let provider = projected(&gateway);
+        let provider = projected(&gateway, &[]);
         assert_eq!(provider["ownEndpoint"], true);
         assert_eq!(names(&provider), ["open-model-a", "open-model-b"]);
         assert_eq!(provider["models"][0]["sharedReasoning"], json!(EFFORTS));
-        validate_model(&input("open-model-b", Some("low")), &gateway).unwrap();
+        validate_model(&input("open-model-b", Some("low")), &gateway, &[]).unwrap();
         for (model, reasoning, code) in [
             ("claude-opus-5", Some("medium"), "provider_model_changed"),
             ("open-model-a", Some("max"), "management_model_unqualified"),
             ("open-model-a", None, "management_model_unqualified"),
         ] {
-            assert_eq!(validate_model(&input(model, reasoning), &gateway).unwrap_err().code, code);
+            assert_eq!(validate_model(&input(model, reasoning), &gateway, &[]).unwrap_err().code, code);
         }
         let plain = SharedCredential::from_api_settings(Some("https://gateway.example"), "token-one".into(), false, &[], soon()).unwrap();
-        let provider = projected(&plain);
+        let provider = projected(&plain, &[]);
         assert!(names(&provider).contains(&"claude-sonnet-5"));
         assert_eq!(provider["models"][0]["sharedReasoning"], json!(EFFORTS));
     }
