@@ -22,6 +22,24 @@ Matrix chat, Project workspaces and locally executed AI Agents in one applicatio
 Sign in to a **Hagency server** through its Pasion browser authorization. Ordinary
 Matrix servers are not supported by the current login flow.
 
+## Run locally
+
+For active development, use [hagency-client](https://github.com/hagency-org/hagency-client)
+and its setup instructions. To run this historical Desktop checkout, install the
+pinned Rust 1.98.0 toolchain, CMake and your platform's native build dependencies
+(see [local development](docs/local-development.md#checkout-and-build)), then run
+from the repository root:
+
+```sh
+cargo run --locked --bin rinx
+```
+
+The binary is named `rinx`, but opens Hagency Desktop; default features are sufficient.
+Signing in requires a running **Hagency server with Pasion**, not an ordinary Matrix
+homeserver. See the [local development guide](docs/local-development.md) for server
+setup pointers and isolated test profiles using an absolute `HAGENCY_DESKTOP_DATA_DIR`.
+Do not run two instances against the same data directory.
+
 ## What is managed where
 
 - A Project binds one Matrix Space. Its discussion Rooms keep their own membership.
