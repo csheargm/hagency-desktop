@@ -867,6 +867,13 @@ mod claude_protocol_tests {
             3
         };
         for kind in 0..count {
+            if kind == 2 && !cfg!(feature = "shared-intake") {
+                let error = ServerOperation::new(poll(kind))
+                    .err()
+                    .expect("demand polling requires shared intake");
+                assert_eq!(error.code, "shared_intake_disabled");
+                continue;
+            }
             let legacy = ServerOperation::new(poll(kind)).unwrap().request().unwrap();
             let mut opted = ServerOperation::new(poll(kind)).unwrap();
             opted.1 = PollVersion::Claude;
