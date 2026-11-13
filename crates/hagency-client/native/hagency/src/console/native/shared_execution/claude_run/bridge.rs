@@ -92,28 +92,33 @@ impl claude_turn::Host for Host {
         use claude_turn::ToolAnswer;
         let tool = tool.strip_prefix("claude.").unwrap_or(&tool);
         // These modes come from the resource owner's signed successor policy.
-        if self
+        // Every refusal is logged with codes and the tool's name only.
+        if let Err(e) = self
             .live
             .io
             .check_running(self.live.authority.root())
             .await
-            .is_err()
         {
+            tracing::warn!(tool, status = e.status, code = %e.code, "Shared Claude tool request refused: the run's authority check failed");
             return ToolAnswer::Deny;
         }
+        let web_tool = matches!(tool, "WebSearch" | "WebFetch");
+        let refused = |reason: &'static str| {
+            tracing::info!(tool, reason, "Shared Claude tool request refused by the pool's policy");
+            ToolAnswer::Deny
+        };
         match self.policy {
-            SharedClaudePolicy::Text => ToolAnswer::Deny,
-            SharedClaudePolicy::LiveWeb => {
-                ToolAnswer::allowed(matches!(tool, "WebSearch" | "WebFetch"))
-            }
-            SharedClaudePolicy::Yolo { web } => {
-                ToolAnswer::allowed(web || !matches!(tool, "WebSearch" | "WebFetch"))
-            }
+            SharedClaudePolicy::Text => refused("text_only"),
+            SharedClaudePolicy::LiveWeb if !web_tool => refused("web_only"),
+            SharedClaudePolicy::LiveWeb => ToolAnswer::allowed(true),
+            SharedClaudePolicy::Yolo { web } if !web && web_tool => refused("web_off"),
+            SharedClaudePolicy::Yolo { .. } => ToolAnswer::allowed(true),
             SharedClaudePolicy::Standard { web } => {
-                if !web && matches!(tool, "WebSearch" | "WebFetch") {
-                    return ToolAnswer::Deny;
+                if !web && web_tool {
+                    return refused("web_off");
                 }
                 let Some(session) = &self.session else {
+                    tracing::warn!(tool, "Shared Claude tool request refused: no native session is bound yet");
                     return ToolAnswer::Deny;
                 };
                 // The person who sent the message decides. The whole CLI runs
