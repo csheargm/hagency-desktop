@@ -1,8 +1,9 @@
 # Hagency Desktop on the makepad JIT line: port notes
 
 The desktop app (package `rinx`) builds against the makepad JIT line: upstream makepad `work`
-(the HAL rewrite with the relax JIT) plus the fixes on OctoSense-org/makepad branch `hagency-jit`.
-It runs two ways from the same sources:
+(the HAL rewrite with the relax JIT) plus the fixes on OctoSense-org/makepad branch `main`.
+That branch was named `hagency-jit` until 13 Nov 2026; the fork's earlier line is now
+`legacy-main`. It runs two ways from the same sources:
 
 - under the JIT runner, `makepad run`, where an edit is patched into the running app in about
   0.1 s instead of a 10–37 s cargo rebuild and restart;
@@ -23,7 +24,7 @@ and Windows (see "Platforms the build was run on").
 
     .jit/sources.sh            # fetches the pinned makepad checkout into .sources/ (git-ignored)
 
-`.jit/sources.lock` pins one checkout, `.sources/makepad` (OctoSense-org/makepad `hagency-jit`),
+`.jit/sources.lock` pins one checkout, `.sources/makepad` (OctoSense-org/makepad `main`),
 and `Cargo.toml` reaches it by path; every URL the dependency graph names makepad by resolves
 to it. `compat/` there keeps the fork's `makepad-markdown` and `makepad-markdown-widgets` crate
 names. The Octoscript-Makepad kits are an ordinary git dependency, pinned on that repository's
@@ -356,9 +357,9 @@ not tried on Windows.
 
 ## Fixed in makepad after the port
 
-In the pin since 13 Nov 2026 (branch `hagency-desktop-main-20261113`: `hagency-jit`, which now
-holds #146, #147 and #148, plus OctoSense-org/makepad#143, not merged there yet). All from
-#148:
+In the pin since 13 Nov 2026 (branch `hagency-desktop-main-20261113`: the fork's `main`, then
+still named `hagency-jit`, which holds #146, #147 and #148, plus OctoSense-org/makepad#143,
+not merged there yet). All from #148:
 
 - JIT runner: a program's signal handler runs in the domain that set it. A signal comes to
   whatever thread takes it, and one that reached a thread outside the program (the main
@@ -379,8 +380,8 @@ holds #146, #147 and #148, plus OctoSense-org/makepad#143, not merged there yet)
 - Widgets: a render builds an anonymous child anew where another declaration stood. Before,
   a row that moved into the place a divider had kept the divider's margin.
 
-In the pin since 0.5.0-rc.6 (branch `hagency-desktop-0.5.0-rc.6`: `hagency-jit` plus
-OctoSense-org/makepad#143, #146 and #147, not merged there yet):
+In the pin since 0.5.0-rc.6 (branch `hagency-desktop-0.5.0-rc.6`: the fork's `hagency-jit` of
+that day plus OctoSense-org/makepad#143, #146 and #147, which were not merged there yet):
 
 - A word committed by a composing input method (pinyin) was passed to the text field as a
   preview: it stayed underlined and the next word typed overwrote it (#146).
