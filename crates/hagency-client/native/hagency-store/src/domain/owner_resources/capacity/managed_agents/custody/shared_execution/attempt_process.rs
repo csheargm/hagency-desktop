@@ -70,7 +70,11 @@ impl SharedAttemptProcessSink {
         if qualified {
             self.custody.check()?;
             if !self.source.is_live()
-                || observation.provider_digest() != Some(&self.custody.provider)
+                || !provider_accepted(
+                    self.custody.command.original_runtime_command.runtime()?,
+                    &self.custody.provider,
+                    observation.provider_digest(),
+                )
                 || observation.policy_digest()
                     != Some(canonical::digest(&json!({"policy":self.custody.command.original_runtime_command.execution_policy(self.custody.command.web_search,self.custody.command.tool_policy.as_ref().map(|p|p.mode.as_str()))?}))?.as_str())
             {

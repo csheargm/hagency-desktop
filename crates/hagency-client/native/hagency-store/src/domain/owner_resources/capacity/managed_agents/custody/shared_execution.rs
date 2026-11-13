@@ -4,6 +4,18 @@ use super::*;
 pub(super) fn check_period_account(db:&Connection, child:&str, binding:&Binding)->Result<(),Error>{
     attempt_work::account_budget(db,child,binding)
 }
+/// Whether a qualified process ran on an acceptable provider account. A Codex
+/// process must run on the resource's recorded account. A pooled Claude
+/// process runs on whichever verified Claude account the owner's Claude Code
+/// is signed in to now (owners switch between their accounts); custody,
+/// receipts and pins keep the resource's recorded identity.
+fn provider_accepted(runtime: &str, recorded: &str, observed: Option<&str>) -> bool {
+    match observed {
+        Some(observed) if observed == recorded => true,
+        Some(observed) => runtime == "claude" && types::valid_digest(observed),
+        None => false,
+    }
+}
 // V2 claim and actual-process evidence. Its model-call adapter remains separate.
 mod tool_policy;
 pub use tool_policy::SharedAgentToolPolicy;
@@ -117,3 +129,15 @@ pub use budget_demand::SharedBudgetDemandIntent;
 pub use budget_demand::VerifiedSharedBudgetDemand;
 #[cfg(feature="shared-budget-execution")]
 pub use budget_demand::SharedBudgetDemandSubmission;
+#[cfg(test)]
+#[test]
+fn claude_runs_on_any_verified_account_and_codex_on_its_own() {
+    let (a, b) = ("a".repeat(64), "b".repeat(64));
+    assert!(provider_accepted("codex", &a, Some(&a)));
+    assert!(!provider_accepted("codex", &a, Some(&b)));
+    assert!(provider_accepted("claude", &a, Some(&a)));
+    assert!(provider_accepted("claude", &a, Some(&b)));
+    assert!(!provider_accepted("claude", &a, Some("not-a-digest")));
+    assert!(!provider_accepted("claude", &a, None));
+    assert!(!provider_accepted("codex", &a, None));
+}

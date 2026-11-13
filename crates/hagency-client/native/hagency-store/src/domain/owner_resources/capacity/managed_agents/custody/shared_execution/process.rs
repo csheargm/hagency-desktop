@@ -59,7 +59,11 @@ impl SharedProcessSink {
         if qualified {
             self.custody.check()?;
             if !self.source.is_live()
-                || o.provider_digest() != Some(&self.custody.provider)
+                || !provider_accepted(
+                    self.custody.command.runtime()?,
+                    &self.custody.provider,
+                    o.provider_digest(),
+                )
                 || o.policy_digest()
                     != Some(
                         canonical::digest(&json!({"policy":self.custody.command.policy}))?.as_str(),
