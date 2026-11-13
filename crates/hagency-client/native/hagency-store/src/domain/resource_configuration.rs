@@ -152,9 +152,6 @@ impl ResourceConfigurationCommand {
         self.gate = self.gate.with_legacy_lease(lease)?;
         Ok(self)
     }
-    pub(crate) fn set_management_receipt(&mut self, receipt: crate::management::CommandReceipt) {
-        self.receipt = Some(receipt);
-    }
     pub fn with_engagement(mut self, change: ResourceEngagementChange) -> Result<Self, Error> {
         if change.eligible_managers.is_empty()
             || change.eligible_managers.len() > 64
@@ -355,81 +352,6 @@ impl DomainRepository {
             .check_resource(&self.db, &resource)
             .map_err(|_| Error::OutcomeUnknown)?;
         check(clock()).map_err(|_| Error::OutcomeUnknown)?;
-        Ok(result)
-    }
-}
-
-/// First resource on an embedded owner profile. Never constructed from wire
-/// Resource data; the native provider selection and package grant precede it.
-pub(crate) struct SourceCommand {
-    gate: ResourcePublicationCommand,
-    resource: hagency_core::project::Resource,
-    receipt: crate::management::CommandReceipt,
-}
-impl SourceCommand {
-    pub(crate) fn with_legacy_lease(
-        mut self,
-        lease: crate::installation_authority::LegacyResourceLease,
-    ) -> Result<Self, Error> {
-        self.gate = self.gate.with_legacy_lease(lease)?;
-        Ok(self)
-    }
-}
-impl ResourceConfigurationAccess {
-    pub(crate) fn prepare_source(
-        &self,
-        resource: hagency_core::project::Resource,
-        receipt: crate::management::CommandReceipt,
-        deadline: Instant,
-    ) -> Result<SourceCommand, Error> {
-        let revision = resource_publication_revision(&resource)?;
-        let gate = self.0.prepare(resource.id(), revision, false, deadline)?;
-        Ok(SourceCommand {
-            gate,
-            resource,
-            receipt,
-        })
-    }
-}
-impl DomainRepository {
-    pub(crate) fn enroll_management_resource(
-        &mut self,
-        command: SourceCommand,
-    ) -> Result<ResourceConfigurationResult, Error> {
-        let tx = self
-            .db
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let gate = &command.gate;
-        let revoked = gate.access.revoked.try_lock().map_err(lock_error)?;
-        let check = || gate.check_at(*revoked, Instant::now());
-        check()?;
-        if let Some(result) = command.receipt.lookup(&tx)? {
-            return Ok(result);
-        }
-        let resource = prepare_resource_write(&tx, &command.resource, Some(false), true)?;
-        if !resource.seat_id.starts_with("seat_embedded_") {
-            return Err(Error::Unqualified);
-        }
-        let seat = hagency_core::project::Seat {
-            id: resource.seat_id.clone(),
-            declaration: None,
-        };
-        super::bounded_row(&tx, "seats", "id", &seat.id, 2048)?;
-        tx.execute(
-            "INSERT INTO seats(id,config) VALUES(?1,?2) ON CONFLICT(id) DO NOTHING",
-            rusqlite::params![seat.id, serde_json::to_string(&seat)?],
-        )?;
-        write_resource_configuration(&tx, &resource, true)?;
-        let result = ResourceConfigurationResult {
-            resource_id: resource.id(),
-            revision: resource_publication_revision(&resource)?,
-            published: false,
-            ceiling_amendment: None,
-        };
-        command.receipt.record(&tx, &result)?;
-        check()?;
-        tx.commit().map_err(|_| Error::OutcomeUnknown)?;
-        check().map_err(|_| Error::OutcomeUnknown)?;
         Ok(result)
     }
 }

@@ -2,7 +2,7 @@
 //! paths, provider URLs or generic engine/HTTP entry point.
 use ::hagency::native_owner::{
     ManagementCommand, ManagementPackage, ManagementPermission, };
-use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
+use ::hagency::daemon::bridge::ManagementClient as NativeManagement;
 use crate::miniapps::{InstanceId, Lease};
 use serde::Deserialize;
 use serde_json::{Value, json};

@@ -140,6 +140,7 @@ impl Service {
         if let Err(error)=self.check(){access.retire();return Err(error)}
         Ok(OwnerGrantAccess::local(access))
     }
+    #[cfg(test)]
     pub(crate) async fn current_grant_access(
         &self,
         mut package: ManagementPackage,
@@ -178,6 +179,7 @@ pub(super) enum ActivationTask {
     Complete(Result<CurrentProfileSelection, String>),
 }
 impl Service {
+    #[cfg(test)]
     pub(crate) async fn activation_context(
         &self,
         package: ManagementPackage,

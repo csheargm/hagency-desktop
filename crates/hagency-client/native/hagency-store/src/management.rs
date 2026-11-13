@@ -24,7 +24,6 @@ use std::{
 
 pub const PROTOCOL: &str = "hagency-management-v1";
 pub const MAX_PAGE: usize = 16;
-const MAX_SCAN: usize = 100;
 const MAX_SESSION: Duration = Duration::from_secs(300);
 
 /// Host-derived identity. No Serialize/Deserialize: scripts cannot supply this.
@@ -542,67 +541,6 @@ impl DomainRepository {
             budget,
             usage,
             local_name: None,
-        })
-    }
-    /// One bounded writer job: configuration, revision, reservations and usage
-    /// are observed together. No per-row asynchronous reads can mix versions.
-    pub(crate) fn management_resources(
-        &self,
-        query: &ResourceQuery,
-        at: u64,
-    ) -> Result<ResourcePage, Error> {
-        query.validate()?;
-        let scanned = self.resource_configurations(&query.after, MAX_SCAN)?;
-        let has_more = scanned.len() == MAX_SCAN;
-        let mut resources = Vec::with_capacity(query.limit);
-        let mut next_after = None;
-        for (i, row) in scanned.into_iter().enumerate() {
-            let config = row.config;
-            let capabilities = resource_capabilities(&config);
-            let matches = query
-                .framework
-                .as_ref()
-                .is_none_or(|f| *f == config.framework)
-                && query
-                    .capability
-                    .as_ref()
-                    .is_none_or(|r| capabilities.contains(r))
-                && query.published.is_none_or(|p| p == config.published);
-            if matches {
-                if resources.len() == query.limit {
-                    // Keep the previous cursor: this matching row must appear
-                    // on the next page instead of being skipped.
-                    break;
-                }
-                let (budget, usage) = self.resource_headroom(&row.id, at)?;
-                resources.push(ResourceSummary {
-                    revision: resource_publication_revision(&config)?,
-                    id: row.id.clone(),
-                    framework: config.framework,
-                    model: config.model,
-                    reasoning: config.reasoning,
-                    capabilities,
-                    published: config.published,
-                    budget,
-                    usage,
-            local_name: None,
-                });
-            }
-            next_after = Some(row.id);
-            if i + 1 == MAX_SCAN && has_more {
-                break;
-            }
-        }
-        // A cursor may lead to an empty terminal page; it never silently drops
-        // matches after a bounded scan, even for sparse capability filters.
-        if resources.len() < query.limit && !has_more {
-            next_after = None;
-        }
-        Ok(ResourcePage {
-            protocol: PROTOCOL,
-            observed_at_ms: at,
-            resources,
-            next_after,
         })
     }
 }
