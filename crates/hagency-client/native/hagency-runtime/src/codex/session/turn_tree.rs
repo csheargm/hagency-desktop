@@ -100,7 +100,7 @@ impl Streams {
             // Keep tool evidence and approval correlation; the child's private
             // text and turn completion do not become the root's answer/end.
             match update {
-                Update::TextDelta { .. } | Update::TurnEnded | Update::TurnStarted => (
+                Update::TextDelta { .. } | Update::Commentary { .. } | Update::TurnEnded | Update::TurnStarted => (
                     Update::Progress,
                     if matches!(observation, ObservationKind::Invalidated) {
                         observation

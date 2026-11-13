@@ -253,6 +253,27 @@ async fn completed_message_forwards_only_text_not_already_streamed() {
 }
 
 #[tokio::test]
+async fn root_commentary_is_a_complete_item_but_child_commentary_stays_private() {
+    let (mut s, mut p) = running().await;
+    observed(&mut s, &mut p, child_start()).await;
+    for is_child in [false, true] {
+        let mut started = item_event("note", "", false);
+        started["params"]["item"]["phase"] = "commentary".into();
+        let mut completed = item_event("note", "public progress", true);
+        completed["params"]["item"]["phase"] = "commentary".into();
+        if is_child { started = child(started); completed = child(completed); }
+        observed(&mut s, &mut p, started).await;
+        let (update, _) = observed(&mut s, &mut p, completed).await;
+        if is_child {
+            assert!(matches!(update, Update::Progress));
+        } else {
+            assert!(matches!(update, Update::Commentary { item_id, text, .. }
+                if item_id == "note" && text == "public progress"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn prepared_child_grant_becomes_unsendable_after_that_child_ends() {
     let (mut s, mut p) = running().await;
     s.enable_approval_control(ApprovalControlPolicy {

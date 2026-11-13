@@ -35,6 +35,8 @@ mod future_frames;
 mod resume_kept;
 #[path = "runtime/owner_command.rs"]
 mod owner_command;
+#[path = "runtime/messages.rs"]
+mod messages;
 
 struct Fixture {
     root: tempfile::TempDir,

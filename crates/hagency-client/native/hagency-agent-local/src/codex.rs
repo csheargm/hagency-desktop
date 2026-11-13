@@ -677,14 +677,15 @@ pub enum TurnStatus {
     Interrupted,
 }
 /// The reply of one personal turn, collected from its completed messages.
-/// Progress notes (phase `commentary`) are shown live but are not the answer;
-/// they stand in only when the turn produced nothing else. Messages are
+/// Progress notes (phase `commentary`) are not the answer; a preview-only
+/// host may use them as a fallback when the turn produced nothing else. Messages are
 /// separated by a blank line, and text beyond the reply bound is cut at a
 /// character boundary instead of failing a turn that has already run.
 #[derive(Default)]
 struct ReplyText {
     answer: String,
     notes: String,
+    notes_delivered: bool,
 }
 impl ReplyText {
     const LIMIT: usize = 65536;
@@ -712,7 +713,10 @@ impl ReplyText {
     fn finish(&mut self) -> String {
         let notes = std::mem::take(&mut self.notes);
         let answer = std::mem::take(&mut self.answer);
-        if answer.is_empty() { notes } else { answer }
+        if !answer.is_empty() { answer }
+        else if self.notes_delivered && !notes.is_empty() {
+            "本次运行已结束，未提供最终答复。".into()
+        } else { notes }
     }
 }
 #[derive(Debug)]
@@ -1806,6 +1810,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         collected.push(message, item["phase"] == "commentary");
                         if let Some(output) = &queue.live_text {
                             output.complete(id, message);
+                            if item["phase"] == "commentary" {
+                                collected.notes_delivered |= output.message(&format!("codex:{event_thread}:{event_turn}:{id}"), message)
+                                    .map_err(|_| Error::Protocol("message delivery custody"))?;
+                            }
                         }
                     }
                 }
@@ -2692,6 +2700,12 @@ mod tests {
                             "missing_usage_turn" => emit(&mut w, value!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-a","tokenUsage":{}}})).await,
                             _ => {}
                         }
+                        if kind == "commentary" {
+                            for (id, text) in [("note-a", "first progress"), ("note-b", "second progress")] {
+                                emit(&mut w, value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a",
+                                    "item":{"id":id,"type":"agentMessage","phase":"commentary","text":text}}})).await;
+                            }
+                        }
                         emit(&mut w,value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a","item":{"id":"message-a","type":"agentMessage","text":"hello"}}})).await;
                         emit(&mut w,value!({"method":"turn/completed","params":{"threadId":"thread-a","turn":{"id":"turn-a","status":if kind=="failed"{"failed"}else{"completed"}}}})).await;
                         if kind == "child_eof" {
@@ -3540,6 +3554,13 @@ mod tests {
         reply.push("Stopping here.", true);
         assert_eq!(reply.finish(), "Still working.\n\nStopping here.");
 
+        // When those notes already became room messages, the fallback must
+        // not replay them as another combined answer.
+        let mut reply = ReplyText::default();
+        reply.push("Already sent.", true);
+        reply.notes_delivered = true;
+        assert_eq!(reply.finish(), "本次运行已结束，未提供最终答复。");
+
         // A message without a phase (older app-servers) is part of the answer.
         let mut reply = ReplyText::default();
         reply.push("hello", false);
@@ -3557,6 +3578,29 @@ mod tests {
         // One byte, the separator, then whole two-byte characters only.
         assert_eq!(cut.len(), ReplyText::LIMIT - 1);
         assert!(cut.ends_with('é'));
+    }
+    #[tokio::test]
+    async fn codex_commentary_items_are_separate_from_the_final_reply() {
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<(String, String)>>);
+        impl hagency_runtime::live_text::MessageSink for Sink {
+            fn record(&self, id: &str, text: &str) -> std::result::Result<(), hagency_runtime::live_text::MessageError> {
+                self.0.lock().unwrap().push((id.into(), text.into()));
+                Ok(())
+            }
+        }
+        let (_temp, mut ledger, profile) = setup(false);
+        let (mut session, _, peer) = fake(profile.cwd.to_str().unwrap().into(), false, true, 10, "commentary");
+        session.initialize().await.unwrap();
+        session.open_context(&mut ledger, &scope(), &profile).await.unwrap();
+        let sink = std::sync::Arc::new(Sink::default());
+        let (queue, _) = approval_queue(1).unwrap();
+        let queue = queue.with_live_text(hagency_runtime::live_text::LiveText::with_messages(sink.clone()));
+        let completed = session.run(&mut ledger, "@alice:test", &scope(), "call", "dispatch", "hello", BudgetMode::Postpaid, &queue).await.unwrap();
+        assert_eq!(completed.text, "hello");
+        assert_eq!(&*sink.0.lock().unwrap(), &[("codex:thread-a:turn-a:note-a".into(), "first progress".into()),
+            ("codex:thread-a:turn-a:note-b".into(), "second progress".into())]);
+        peer.abort();
     }
     #[tokio::test]
     async fn resumed_context_without_response_receipts_retains_unresolved_usage() {
