@@ -1313,6 +1313,8 @@
   "Codex could not load its model list. Check the account and connection, then refresh the models.": "Codex could not load its model list. Check the account and connection, then refresh the models.",
   "Codex did not respond. Check that it can run locally, then retry.": "Codex did not respond. Check that it can run locally, then retry.",
   "This Codex version returned an unsupported response. Check the installed Codex version and retry.": "This Codex version returned an unsupported response. Check the installed Codex version and retry.",
+  "The Agent's coding tool did not respond. Check that it can run on this computer, then retry.": "The Agent's coding tool did not respond. Check that it can run on this computer, then retry.",
+  "The Agent's coding tool returned a response Hagency could not use. Check its installed version and retry.": "The Agent's coding tool returned a response Hagency could not use. Check its installed version and retry.",
   "Codex rejected this request. Check the local account and configuration before retrying.": "Codex rejected this request. Check the local account and configuration before retrying.",
   "The separate Codex sign-in could not be started safely. Retry or connect your signed-in local Codex account.": "The separate Codex sign-in could not be started safely. Retry or connect your signed-in local Codex account.",
   "This account is managed by your local Codex. Use Disconnect here to keep your everyday Codex signed in.": "This account is managed by your local Codex. Use Disconnect here to keep your everyday Codex signed in.",
