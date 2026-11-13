@@ -976,7 +976,13 @@ async fn native_claude_session_backpressure_and_capacity() {
     assert_eq!(stderr.tail, vec![b'e'; 16 * 1024]);
 
     for large in [false, true] {
-        let (mut driver, mut peer) = pair(512, limits());
+        // The queue must fill before the write limit runs out, however slow
+        // the machine: megabytes cross a 512-byte pipe here.
+        let patient = Limits {
+            write_timeout_ms: 20_000,
+            ..limits()
+        };
+        let (mut driver, mut peer) = pair(512, patient);
         initialize(&mut driver, &mut peer).await;
         let bytes = if large {
             encoded(
