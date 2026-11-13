@@ -1,5 +1,7 @@
 # Hagency Desktop
 
+The app is called **Hagency Desktop**, with both words capitalised.
+
 **Development has moved to [hagency-client](https://github.com/hagency-org/hagency-client).**
 The native application now lives in
 [`crates/hagency-desktop`](https://github.com/hagency-org/hagency-client/tree/main/crates/hagency-desktop).
