@@ -113,6 +113,7 @@ fn observed_quota(account: AccountSnapshot, value: &Value) -> Result<ObservedQuo
 }
 /// Five read-only RPCs bracket the quota with unchanged account metadata.
 /// No credential data or private account metadata escapes this function.
+#[cfg(test)]
 pub(super) async fn observe_quota(
     process: &mut Process,
     paths: &ProviderPaths,

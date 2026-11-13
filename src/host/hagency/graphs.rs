@@ -1,7 +1,7 @@
 //! Closed graph services. Parse and validate before opening the native manager;
 //! saved commands accept only their original native-generated command identity.
-use ::hagency::native_owner::{ManagementPermission, };
-use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
+use ::hagency::native_owner::ManagementPermission;
+use ::hagency::daemon::bridge::ManagementClient as NativeManagement;
 #[cfg(feature = "resource-adoption")]
 use ::hagency::native_owner::{
     OperatorGraphCancel, OperatorGraphCreate, OperatorGraphDetailQuery, OperatorGraphNodeQuery,

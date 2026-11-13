@@ -30,7 +30,7 @@ const AGE_REFRESH_SECONDS: f64 = 30.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderTarget { None, Notice, Command, Connection, Inventory, Refresh }
-struct HeaderStatus { status: Status, target: HeaderTarget, detail: Option<String> }
+struct HeaderStatus { status: Status, target: HeaderTarget, #[cfg(feature = "native-accessibility")] detail: Option<String> }
 
 fn compact_navigation(width: f64, scale: f64) -> bool {
     // Four translated labels need more than four equal 90-point segments
@@ -1215,7 +1215,9 @@ impl OwnerDashboard {
         }
     }
 
+    #[cfg(feature = "native-accessibility")]
     pub(crate) fn owner_controls_expanded(&self) -> bool { self.header_expanded }
+    #[cfg(feature = "native-accessibility")]
     pub(crate) fn header_notice_text(&self) -> Option<String> { self.header_status(&self.state.present(self.clock())).detail }
 
     fn label(&self, cx: &mut Cx, path: &[LiveId], text: &str) {
@@ -1262,7 +1264,7 @@ impl OwnerDashboard {
             };
             Status::new(status.tone, status.glyph, t(msg))
         };
-        let (status, detail) = match target {
+        let (status, _detail) = match target {
             HeaderTarget::Notice => {
                 let notice = self.notice.as_ref().unwrap();
                 (compact(notice), Some(notice.text.clone()))
@@ -1287,7 +1289,7 @@ impl OwnerDashboard {
             HeaderTarget::Refresh => (Status::new(Tone::Caution, Glyph::Clock, t(Msg::AccountStale)), None),
             HeaderTarget::None => (Status::new(if self.state.refreshing { Tone::Progress } else { Tone::Neutral }, Glyph::Clock, &p.sync_line), None),
         };
-        HeaderStatus { status, target, detail }
+        HeaderStatus { status, target, #[cfg(feature = "native-accessibility")] detail: _detail }
     }
 
     /// Push the whole presentation into the widget tree, in place.

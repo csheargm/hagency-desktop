@@ -48,17 +48,6 @@ impl OperatorTaskQuery {
         }
         Ok(())
     }
-    pub(crate) fn filters(&self) -> crate::TaskFilters {
-        let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.is_empty());
-        crate::TaskFilters {
-            assignee: nonempty(&self.assignee),
-            status: nonempty(&self.status),
-            priority: nonempty(&self.priority),
-            label: nonempty(&self.label),
-            offset: self.offset,
-            limit: Some(TASK_READ_PAGE + 1),
-        }
-    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

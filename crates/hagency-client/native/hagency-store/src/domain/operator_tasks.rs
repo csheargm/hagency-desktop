@@ -798,32 +798,6 @@ const UNAVAILABLE_BOARD: [&str; 8] = [
     "activity",
 ];
 
-impl DomainRepository {
-    pub(crate) fn management_operator_task_page(
-        &self,
-        query: crate::management::OperatorTaskQuery,
-        at: u64,
-    ) -> Result<crate::management::OperatorTaskPage, Error> {
-        let tx = self.db.unchecked_transaction()?;
-        let ids = list_rows(&tx, &query.filters())?;
-        let more = ids.len() > crate::management::TASK_READ_PAGE;
-        let mut tasks = Vec::new();
-        for id in ids.into_iter().take(crate::management::TASK_READ_PAGE) {
-            let stored = tx.query_row(&format!("{SELECT} WHERE id=?1"), [id], row)?;
-            tasks.push(task_row(stored, Vec::new())?.into());
-        }
-        tx.commit()?;
-        Ok(crate::management::OperatorTaskPage {
-            write_supported: false, write_operations: vec![],
-            supported: true,
-            reason: None,
-            next_offset: more.then_some(query.offset + tasks.len() as u64),
-            tasks,
-            observed_at_ms: at,
-            unavailable: vec!["health"],
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {

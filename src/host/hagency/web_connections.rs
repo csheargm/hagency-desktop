@@ -4,7 +4,7 @@ use super::{Host, Lease, ManagementPermission, NativeManagement, Value, parse, v
 use ::hagency::native_owner::{
     WebConnectionEdit, WebConnectionProbeInput, NativeConnectionRegistration,
 };
-use ::hagency::daemon::bridge::{WebConnectionReview};
+use ::hagency::daemon::bridge::WebConnectionReview;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 

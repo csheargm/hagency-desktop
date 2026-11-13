@@ -322,13 +322,3 @@ impl Session {
         Ok(result)
     }
 }
-fn require_tool_resource(db: &Connection, id: &str) -> Result<(), Error> {
-    if !db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
-        [id],
-        |row| row.get::<_, bool>(0),
-    )? {
-        return Err(Error::NotFound);
-    }
-    Ok(())
-}

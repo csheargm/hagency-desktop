@@ -193,6 +193,7 @@ impl Bridge {
             .ok_or_else(|| error(401, "daemon_bridge_lease_expired"))?;
         Ok((manager.native.clone(), manager.package.clone()))
     }
+    #[cfg(test)]
     pub async fn handle(
         &self,
         request_id: &str,

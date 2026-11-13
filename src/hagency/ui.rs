@@ -59,6 +59,7 @@ enum Target {
     Agents,
     Bindings,
     BindingChanged,
+    #[cfg(test)]
     ReplyPolicyChanged,
     RoomRoster,
     ScopeState,
@@ -2579,6 +2580,7 @@ impl HagencyPanel {
             }
             Target::ListService => {self.refresh_runtime_list(cx);}
             Target::ServiceRoomChanged => {self.local(cx,Target::Runtime,LocalAction::AgentServiceStatus,None);}
+            #[cfg(test)]
             Target::ReplyPolicyChanged => {
                 let updated = &value["binding"];
                 if let Some(binding) = self.bindings.iter_mut().find(|b| string(b, "id") == string(updated, "id")) {

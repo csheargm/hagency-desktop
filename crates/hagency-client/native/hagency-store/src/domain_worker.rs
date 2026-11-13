@@ -3346,48 +3346,6 @@ impl DomainStore {
         })
         .await
     }
-    pub(crate) async fn enroll_management_resource(
-        &self,
-        command: crate::domain::resource_configuration::SourceCommand,
-    ) -> Result<crate::ResourceConfigurationResult, Error> {
-        self.call(4096, move |db| db.enroll_management_resource(command))
-            .await
-    }
-    pub(crate) async fn management_resource(
-        &self,
-        id: String,
-    ) -> Result<crate::management::ResourceSummary, Error> {
-        self.call(weight(&id)?, move |db| {
-            db.management_resource(&id, writer_time()?)
-        })
-        .await
-    }
-    pub(crate) async fn management_resource_detail(
-        &self,
-        id: String,
-    ) -> Result<crate::management::ResourceDetail, Error> {
-        self.call(weight(&id)?, move |db| {
-            db.management_resource_detail(&id, writer_time()?)
-        })
-        .await
-    }
-    pub(crate) async fn management_intent(
-        &self,
-        command: crate::management::JournalCommand,
-    ) -> Result<Vec<crate::management::PendingIntent>, Error> {
-        self.call(command.weight(), move |db| db.management_intent(command))
-            .await
-    }
-    pub(crate) async fn management_resources(
-        &self,
-        query: crate::management::ResourceQuery,
-    ) -> Result<crate::management::ResourcePage, Error> {
-        query.validate()?;
-        self.call(weight(&query)?, move |db| {
-            db.management_resources(&query, writer_time()?)
-        })
-        .await
-    }
     pub async fn seats(&self, after: String, limit: usize) -> Result<Vec<Seat>, Error> {
         self.call(weight(&after)?, move |db| db.seats(&after, limit))
             .await

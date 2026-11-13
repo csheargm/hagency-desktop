@@ -1041,6 +1041,7 @@ async fn local_resources(
 /// Owner's own pools from the server catalog. Token counts stay unknown
 /// here: measured consumption comes from the telemetry ledger, never from
 /// a published grant or a plan name.
+#[cfg(test)]
 pub(crate) fn resources(pools: &[Value], requests: Option<&[Value]>, owner: &str) -> Vec<ResourceUsage> {
     pools
         .iter()

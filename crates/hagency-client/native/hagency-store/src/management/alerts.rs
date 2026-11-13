@@ -139,10 +139,6 @@ impl Session {
         self.check(context,Permission::TriageAlerts).map_err(|_|Error::OutcomeUnknown)?;Ok(result)
     }
 }
-fn require_alert_resource(db:&Connection,id:&str)->Result<(),Error>{
-    if db.query_row("SELECT 1 FROM resources WHERE id=?1",[id],|r|r.get::<_,u8>(0)).optional()?.is_none(){return Err(Error::NotFound);}
-    Ok(())
-}
 #[cfg(test)]
 mod tests {
     use super::*;

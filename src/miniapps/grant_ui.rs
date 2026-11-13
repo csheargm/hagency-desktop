@@ -948,6 +948,7 @@ fn choose_people(s: &GrantState) -> Vec<Person> {
 }
 /// A person typed into the add field, as the full account the form commits:
 /// "lisi", "@lisi" or "@lisi:server" on the owner's own server.
+#[cfg(any(test, feature = "onboarding-test-support"))]
 pub(super) fn applicant_from_input(text: &str, account: &str, current: &[String]) -> Result<String, String> {
     let tr = crate::i18n::tr;
     let server = account.split_once(':').map_or("", |(_, server)| server);

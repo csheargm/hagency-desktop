@@ -76,7 +76,6 @@ pub use execution::{
 };
 pub use messages::{CorpusSweepOutcome, MESSAGE_RETENTION_FLOOR, RetentionStatus};
 mod notice_custody;
-mod operator_task_views;
 mod operator_tasks;
 pub use operator_tasks::{
     MAX_TASK_COMMENTS, MAX_TASK_PAGE, OperatorTask, OperatorTaskComment, TASK_GRANULARITIES,
@@ -409,12 +408,6 @@ const DOMAIN_MIGRATIONS: &[(i32, &str)] = &[
 ];
 
 impl DomainRepository {
-    pub(crate) fn management_intent(
-        &mut self,
-        command: crate::management::JournalCommand,
-    ) -> Result<Vec<crate::management::PendingIntent>, Error> {
-        crate::management::execute_intent(&mut self.db, command)
-    }
     pub(super) fn drop_observed(self, probe: &std::sync::Arc<crate::shutdown::Probe>) {
         use crate::shutdown::{Phase, SqliteCloseScope};
         // Match the declared field drop order. Ownership is still a local
