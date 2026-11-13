@@ -8,6 +8,10 @@ It runs two ways from the same sources:
   0.1 s instead of a 10–37 s cargo rebuild and restart;
 - as a plain `cargo build`, which is what CI and release packaging use.
 
+STATUS 13 Nov 2026: the window, the unit tests and the owner daemon run under the JIT (see
+"Owner daemon under the JIT"); signed-in windows and a daemon serving real Agents were run that
+way on an Apple silicon Mac. A packaged release is still a cargo release build.
+
 STATUS 11 Nov 2026: runs signed in, `html_preview` included. Since the pin of makepad#142 the
 JIT run lists the same rooms as the cargo build; before it, an account with many rooms got an
 empty room list under the JIT (a JIT compiler fault). The JIT run is checked on an Apple
@@ -91,6 +95,22 @@ Headless: add `MAKEPAD_HIDE_WINDOWS=1 MAKEPAD_NO_FOCUS=1`, read the pid from the
 
 ## Tests
 
+    makepad=.sources/makepad/target/release/makepad
+    $makepad test --allow-c rinx --lib -- <filter>             # one shot; several filters may follow
+    $makepad test --live --allow-c rinx --lib -- <filter>      # warm session: reruns on each edit
+
+Each run ends with a `testverdict group=N ran= passed= failed=` line, and a failing test's
+message is in a `report: {json}` line. A warm session applies an edit in about 2 s and reruns
+only the affected tests, where cargo rebuilt the test program for 45 to 120 s per edit
+(measured 12 Nov 2026). In `crates/hagency-client` the `hagency-runtime` integration tests run
+the same way (`$makepad test --allow-c hagency-runtime --test transport --test session --test
+claude_session`, about 30 s). Two crates there still need cargo for their tests: `hagency`
+(the runner reports E0283 "cannot satisfy `?N: Sized`" on a `#[tokio::test]` and on an
+`include!`; cargo builds both) and `hagency-agent-local` (its tests start a helper binary
+through `CARGO_BIN_EXE_...`).
+
+The whole suite, and the checks that compile every function:
+
     relax=.sources/makepad/target/release/relax
     $relax check --allow-c rinx                                # type and borrow check
     $relax selftest rinx --allow-c                             # compiles every reachable fn
@@ -163,6 +183,54 @@ std changes. A cold run also takes three `article_app::preview` tests past their
 A JIT compiler fault can take tens of GB before it stops: a single-file test with
 `#[derive(Debug)]` on a 300-variant enum reached 69 GB before makepad#138 fixed that one (it now
 takes 0.2 s). On a shared machine run `relax` and `makepad run` experiments under a memory limit.
+
+## Owner daemon under the JIT
+
+The owner daemon (`rinx daemon run`: it holds the owner database and runs the Agents) runs
+under the runner like the window does:
+
+    cargo build --bin rinx          # once: a native binary for the helper processes
+    export MAKEPAD_RUN_ALLOW_C=1 MAKEPAD_RUN_TRUST_PROC_MACROS=1 RUST_MIN_STACK=16777216
+    export HAGENCY_NATIVE_HELPER=$PWD/target/debug/rinx MAKEPAD_RUN_INSPECT=0
+    ulimit -n 10240
+    run=".sources/makepad/target/release/makepad run --no-live --allow-c rinx
+         --features development-native-helper --"
+    $run daemon run --home <daemon home>
+    $run daemon status --home <daemon home>      # the daemon's own commands, same runner
+
+- The helper is native. The daemon starts a `guardian` copy of its own executable for every
+  provider process, with a cleared environment and a 15 s limit. Under the JIT the executable
+  is the runner, and a guardian started through it is a whole JIT instance: it took 39 s and
+  the Agent run failed to start. A build with the `development-native-helper` feature takes
+  the helper from `HAGENCY_NATIVE_HELPER` instead, an absolute path to a native build of this
+  program (a cargo build of this folder, or an installed app of the same line). Without the
+  feature the variable is never read; distributed builds are made without it.
+- `MAKEPAD_RUN_INSPECT=0` switches the runner's debug socket off. That socket accepts changes
+  to running code (`eval`, a probe with `mutate=1`), and the sandbox of a shared run does not
+  keep a process from local sockets. A daemon that serves other people's runs must not have it.
+- `--no-live` switches hot reload off. For a daemon that serves real Agents, run it from a
+  source folder nobody edits (a git worktree of its own, at the commit to run): the runner
+  reads the sources after start too. A fix is then a new commit there and a restart. On a
+  test installation live reload of the daemon works for plain functions (the first edit of a
+  file with a derive takes about 3 s, later ones 45 to 110 ms); an edit to an `async fn` still
+  needs a restart.
+- `ulimit -n 10240` is what the macOS service sets. With the shell's default of 256 a busy
+  daemon runs out of file handles and reports `source_root_changed` on every step.
+- It is not a service. The JIT daemon is an ordinary process, so after a logout or a restart
+  the installed app's LaunchAgent is what comes back. To hand the daemon home over, stop
+  hosting, stop the LaunchAgent (`launchctl bootout`; its plist stays), start the JIT daemon
+  and resume hosting; the way back is the same with `launchctl bootstrap`. One daemon per
+  home at a time.
+- It needs the pin of 13 Nov 2026 or later (OctoSense-org/makepad#148): before it, a signal
+  to the process (SIGTERM for a stop, SIGCHLD when a provider process ends) could abort the
+  run with "We shall be set up already".
+
+Measured on 13 Nov 2026, Apple silicon Mac, on an owner's own daemon home against an HTTPS
+Hagency server, with the installed app's service stopped: from start to hosting online 27 to
+52 s on a warm cache, resident memory 8 to 11 GB. Local Claude Code and Codex Agents answered,
+and pooled Agents of both kinds ran for another account: start, an instruction added to a
+running turn, Stop, a question card, and the owner's `/clear` to a local Claude Agent. The
+windows that talked to it were JIT runs too.
 
 ## Signed-in session test
 
@@ -287,6 +355,29 @@ not opened, and x86 SIMD is incomplete (see "Gaps against the fork build"). The 
 not tried on Windows.
 
 ## Fixed in makepad after the port
+
+In the pin since 13 Nov 2026 (branch `hagency-desktop-main-20261113`: `hagency-jit`, which now
+holds #146, #147 and #148, plus OctoSense-org/makepad#143, not merged there yet). All from
+#148:
+
+- JIT runner: a program's signal handler runs in the domain that set it. A signal comes to
+  whatever thread takes it, and one that reached a thread outside the program (the main
+  thread in the event loop) ran the handler on statics nothing had set up: "We shall be set
+  up already" from signal-hook, and the process aborted. A window that started a child
+  process (adding a local Agent) and a daemon that got SIGTERM both ended that way.
+- JIT runner, live reload: the first live edit of a file with a derive rebuilds the macro
+  world while the program runs. That rebuild hung ("patching" for good), and once it went
+  through, its statics were written over the program's own, so a tokio program lost its
+  runtime context ("there is no reactor running", bus errors). Both are fixed; a static is
+  copied into its own unit's blocks only.
+- Widgets: `PortalList` has `keep_invisible_rows: N`, which keeps the rows within N of the
+  ones on screen alive. The chat timeline sets 30: a message row with its cards costs tens of
+  milliseconds to build, and reading back and forth built each one again (frames of 40 to
+  90 ms while scrolling, against 10 ms for rows redrawn in place).
+- Widgets: a modal that its own content closes lets go of the wheel. Before, the modal's
+  scroll block stayed and every scroll in the window was refused from then on.
+- Widgets: a render builds an anonymous child anew where another declaration stood. Before,
+  a row that moved into the place a divider had kept the divider's margin.
 
 In the pin since 0.5.0-rc.6 (branch `hagency-desktop-0.5.0-rc.6`: `hagency-jit` plus
 OctoSense-org/makepad#143, #146 and #147, not merged there yet):
@@ -418,12 +509,16 @@ Marked `JIT PORT` in the source.
   section).
 - iOS and Android: not built (see the mobile packaging gap above).
 - Release packaging (`release.yml`, `release-verify.yml`) on this line.
-- Hagency services behind sign-in (owner daemon, Pasion, Agents): the test front serves only
-  discovery and OAuth, so the app shows "Could not confirm permission status; retrying."
+- Hagency services behind sign-in on the local test front: it serves only discovery and
+  OAuth, so the app shows "Could not confirm permission status; retrying." Against a real
+  Hagency server the Agent panel, the owner daemon and Agent runs were exercised under the
+  JIT on macOS arm64 (see "Owner daemon under the JIT").
 - TLS under the JIT against a real homeserver needs the pin of 0.5.0-rc.6 or later
   (OctoSense-org/makepad#147): before it a signed-in run parked on "foreign function
   `ring_core_..._x25519_sc_mask` is not available on this host" at the first HTTPS request, and
   could die later with "failed to normalize body for codegen". With it, signed-in windows on
   three profiles ran against an HTTPS homeserver on macOS arm64 (sync, rooms, threads, the Agent
-  panel, a popped-out mini app). Still open: a warm run hung once at its third live edit.
-- LaunchAgent install from a JIT run.
+  panel, a popped-out mini app). A warm run hung once at its third live edit; the pin of
+  13 Nov 2026 fixes one cause of such a hang (see "Fixed in makepad after the port").
+- LaunchAgent install from a JIT run, and the owner daemon under the JIT on anything but
+  macOS arm64.
