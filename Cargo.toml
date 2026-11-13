@@ -234,6 +234,10 @@ palpo-instrument = []
 # A developer's locally built test app: saved sign-ins may be kept in private
 # files instead of the OS credential store. Never part of a distributed build.
 development-credential-files = ["hagency-store/development-credential-files"]
+# A developer's run under the Makepad JIT runner: helper processes (the
+# guardian of every Agent run) come from a native build named in
+# HAGENCY_NATIVE_HELPER. Never part of a distributed build.
+development-native-helper = ["hagency-platform/development-native-helper"]
 # Ordinary Hagency Desktop builds include the native management and worker flow.
 # Instrumentation and isolated fixture support remain explicit opt-ins above.
 default = ["standalone", "agent_chat", "shared-budget-execution"]

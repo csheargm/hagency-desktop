@@ -21,6 +21,56 @@ pub use file_identity::{same_file, file_identity, FileIdentity};
 mod supervisor;
 #[cfg(unix)]
 pub use supervisor::run_guardian;
+
+/// The executable that implements this program's private helper roles (the
+/// `guardian` of every provider process, the document reader): this program
+/// itself.
+///
+/// A developer's run under the Makepad JIT runner is the one exception. There
+/// the running executable is the runner, and a helper started through it is
+/// another JIT instance: it cannot start in the guardian's sealed environment
+/// (no HOME, an empty PATH, a 15 s limit; measured 2026-11-13: 39 s and a
+/// failed start). A build with `development-native-helper` therefore takes
+/// the helper from HAGENCY_NATIVE_HELPER, a native build of this same program.
+/// Without that feature the variable is never read, so no distributed build
+/// can be pointed at another helper.
+pub fn helper_executable() -> std::io::Result<std::path::PathBuf> {
+    #[cfg(feature = "development-native-helper")]
+    if let Some(named) = std::env::var_os("HAGENCY_NATIVE_HELPER") {
+        return named_helper(named.into());
+    }
+    std::env::current_exe()
+}
+
+/// A named helper is used as given or refused: never searched for on PATH,
+/// never resolved against the working folder.
+#[cfg(any(feature = "development-native-helper", test))]
+fn named_helper(path: std::path::PathBuf) -> std::io::Result<std::path::PathBuf> {
+    if !path.is_absolute() || !path.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "HAGENCY_NATIVE_HELPER is not an absolute path to a file",
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::named_helper;
+
+    #[test]
+    fn a_named_helper_is_an_absolute_path_to_an_existing_file() {
+        let own = std::env::current_exe().unwrap();
+        assert_eq!(named_helper(own.clone()).unwrap(), own);
+        // A bare name would be looked up on PATH by the spawn; a folder or a
+        // missing file would fail every Agent run with an unrelated error.
+        for refused in ["rinx", "./rinx", "/", "/nonexistent/hagency/rinx"] {
+            let error = named_helper(refused.into()).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{refused}");
+        }
+    }
+}
 pub use supervisor::{
     LiveRow, StopCause, StopDetail, StopRefusal, SupervisedProcess, SupervisedReport,
 };

@@ -339,9 +339,10 @@ async fn spawn_inner(
     validate(profile, reference)?;
     let kind = kind(reference);
     if kind == Kind::Codex {
-        let guardian = guardian
-            .map(Path::to_path_buf)
-            .unwrap_or(std::env::current_exe()?);
+        let guardian = match guardian {
+            Some(path) => path.to_path_buf(),
+            None => hagency_platform::helper_executable()?,
+        };
         return Ok(Process {
             session: Session::Codex(Box::new(codex::Owned::spawn(profile, &guardian)?)),
             discarded_session: None,
@@ -443,9 +444,10 @@ async fn spawn_inner(
         }
         Kind::Codex => unreachable!(),
     }
-    let guardian = guardian
-        .map(Path::to_path_buf)
-        .unwrap_or(std::env::current_exe()?);
+    let guardian = match guardian {
+        Some(path) => path.to_path_buf(),
+        None => hagency_platform::helper_executable()?,
+    };
     let launch = hagency_platform::Launch {
         executable: profile.executable.clone(),
         arguments: command
