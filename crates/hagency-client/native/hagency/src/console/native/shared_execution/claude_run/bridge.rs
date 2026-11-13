@@ -116,16 +116,19 @@ impl claude_turn::Host for Host {
                 let Some(session) = &self.session else {
                     return ToolAnswer::Deny;
                 };
-                let request = json!({"id":id,"method":"claude/can_use_tool","params":{"sessionId":session,"toolName":tool,"input":arguments},"sessionAllowed":false,"managerCanDecide":false});
+                // The person who sent the message decides. The whole CLI runs
+                // in the sandbox that keeps it writing only in its own folder.
+                let request = json!({"id":id,"method":"claude/can_use_tool","params":{"sessionId":session,"toolName":tool,"input":arguments},"sessionAllowed":false,"managerCanDecide":true});
                 match tokio::time::timeout(
                     Duration::from_secs(120),
                     permission(&self.live, &self.work, request),
                 )
                 .await
                 {
-                    // The owner never answered: nobody refused. The server
-                    // ends its own record a little before this wait does
-                    // and then answers the next read with `approval_expired`.
+                    // The person who asked never answered: nobody refused.
+                    // The server ends its own record a little before this
+                    // wait does and then answers the next read with
+                    // `approval_expired`.
                     Err(_) => ToolAnswer::Unanswered,
                     Ok(Err(e)) if e.code == "approval_expired" => ToolAnswer::Unanswered,
                     Ok(decided) => ToolAnswer::allowed(decided.unwrap_or(false)),
@@ -298,6 +301,7 @@ pub(in crate::console::native::shared_execution) async fn permission(
     if row["approval"]["id"] != id
         || row["approval"]["workId"] != work.id
         || row["approval"]["request"] != wire
+        || row["approval"]["deciderMxid"] != work.requester_mxid.as_str()
         || digest(&row["approval"])? != hash_value
     {
         return Err(invalid());
@@ -353,7 +357,8 @@ pub(in crate::console::native::shared_execution) async fn permission(
             {
                 return Ok(false);
             }
-            return Ok(decision == "approve_once" && reply.value["ownerApproved"] == true);
+            return Ok(decision == "approve_once"
+                && reply.value["decidedByMxid"] == work.requester_mxid.as_str());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

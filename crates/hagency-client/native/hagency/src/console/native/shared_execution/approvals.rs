@@ -21,6 +21,9 @@ struct Pending {
     digest: String,
     deadline: tokio::time::Instant,
     encrypted: Option<EncryptedPending>,
+    /// Refused here without asking anyone: the request would leave the
+    /// Agent's folder or its sandbox on the owner's computer.
+    refused: bool,
 }
 pub(super) enum RoomCall {
     History(hagency_runtime::codex::session::RoomHistoryCall),
@@ -67,6 +70,20 @@ impl Approvals {
         let deadline = process
             .approval_deadline(request.id())
             .map_err(|_| invalid())?;
+        // The person who sent the message decides requests inside the
+        // Agent's folder. Anything else would run outside the sandbox on the
+        // owner's computer: it is refused at once, and nobody is asked.
+        if !within_workspace(request.method(), request.params(), process.shared_workspace()) {
+            self.pending.push(Pending {
+                request,
+                id: String::new(),
+                digest: String::new(),
+                deadline,
+                encrypted: None,
+                refused: true,
+            });
+            return Ok(());
+        }
         let remaining = deadline
             .saturating_duration_since(tokio::time::Instant::now())
             .as_millis()
@@ -75,7 +92,7 @@ impl Approvals {
             "sap_{}",
             super::digest(&json!({"work":work.id,"request":request.id()}))?
         );
-        let request_json = json!({"id":request.id(),"method":request.method(),"params":request.params(),"sessionAllowed":request.session_response().is_ok(),"managerCanDecide":within_workspace(request.method(),request.params(),process.shared_workspace())});
+        let request_json = json!({"id":request.id(),"method":request.method(),"params":request.params(),"sessionAllowed":request.session_response().is_ok(),"managerCanDecide":true});
         let private = if work.encrypted {
             Some((
                 super::e2ee::device(io, b, &work.assignment_id).await?,
@@ -131,6 +148,7 @@ impl Approvals {
         if reply.value["approval"]["id"] != id
             || reply.value["approval"]["workId"] != work.id
             || reply.value["approval"]["request"] != wire
+            || reply.value["approval"]["deciderMxid"] != work.requester_mxid.as_str()
         {
             return Err(invalid());
         }
@@ -170,6 +188,7 @@ impl Approvals {
             digest,
             deadline,
             encrypted,
+            refused: false,
         });
         Ok(())
     }
@@ -196,7 +215,9 @@ impl Approvals {
             }
             let p = &mut self.pending[i];
             let mut expired = false;
-            let decision = if tokio::time::Instant::now() >= p.deadline {
+            let decision = if p.refused {
+                Some("deny".to_owned())
+            } else if tokio::time::Instant::now() >= p.deadline {
                 process
                     .expire_approval(p.request.id())
                     .map_err(|_| invalid())?;

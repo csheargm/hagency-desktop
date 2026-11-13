@@ -22,7 +22,9 @@ pub const DENIED: &str = "This tool call was not allowed by the Agent's owner or
 /// told as a refusal, the model declines the same tool for the rest of the
 /// saved conversation, also when the requester asks again with the owner
 /// ready. It still must not ask again within this turn.
-pub const UNANSWERED: &str = "The Agent's owner did not answer this permission request in time, so the tool call did not run. Nobody refused it. Do not retry it or work around it in this turn. Tell the requester that the owner has not decided yet and that they can ask again; a later request is put to the owner again.";
+/// Local Agents put the request to their owner, pooled Agents to the person
+/// who sent the message; the text names neither.
+pub const UNANSWERED: &str = "Nobody answered this permission request in time, so the tool call did not run. Nobody refused it. Do not retry it or work around it in this turn. Tell the requester that the permission request was not answered and that they can ask again; a later request asks for permission again.";
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApprovalControlPolicy {

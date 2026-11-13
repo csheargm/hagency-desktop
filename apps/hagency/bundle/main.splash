@@ -1165,8 +1165,8 @@ A.full_trust_tool = fn(framework){return framework=="codex" || framework=="claud
 // A pooled Agent of either tool has its own web search switch.
 A.shared_web_tool = fn(framework){return framework=="codex" || framework=="claude" || framework=="octos"}
 A.standard_hint = fn(framework){
-    if framework=="codex" {return A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
-    if framework=="claude" {return A.t("Works in its own work folder; asks you before it runs a command or changes a file","在自己的工作文件夹内工作；运行命令或修改文件前会先请求你批准")}
+    if framework=="codex" {return A.t("Works inside its workspace; the person who sent the message approves changes there, and anything beyond is refused","在工作区内工作；工作区内的修改由发消息的人批准，超出范围的请求直接拒绝")}
+    if framework=="claude" {return A.t("Works in its own work folder; asks the person who sent the message before it runs a command or changes a file","在自己的工作文件夹内工作；运行命令或修改文件前会先请求发消息的人批准")}
     if framework=="octos" {return A.t("Works in its own folder; asks before each command, including interactive terminal sessions","在自己的文件夹内工作；运行命令（包括交互式终端）前会先请求你批准")}
     return A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")
 }
@@ -13423,7 +13423,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         }
                     }
                 }}
-                if op=="default_policy" && change.yolo {mod.widgets.HagencyListNote{text:A.t("Agents created later can use files outside their workspace and the network without asking you first.","以后新建的 Agent 能读写工作区以外的文件、访问网络，而且不会先请求你批准。") draw_text.color:mod.widgets.RINX_WARNING_FG}}
+                if op=="default_policy" && change.yolo {mod.widgets.HagencyListNote{text:A.t("Agents created later can use files outside their workspace and the network without asking anyone first.","以后新建的 Agent 能读写工作区以外的文件、访问网络，而且不会先请求任何人批准。") draw_text.color:mod.widgets.RINX_WARNING_FG}}
                 if op=="retire" {mod.widgets.HagencyListNote{text:A.t("It leaves your pools and cannot accept new requests. History and unresolved usage records are kept.","资源池会从列表中移除，并停止接受新申请。历史和未结清的用量记录都会保留。")}}
                 if w.phase=="saved" {View{width:Fill height:Fit flow:Right spacing:12 padding:Inset{top:10}
                     web_command_cancel := mod.widgets.HagencyWideTinted{text:if op=="retire" {A.t("Cancel","取消")} else {A.t("Discard Change","放弃更改")} enabled:!H.busy on_click: || A.web_cancel()}
@@ -17616,7 +17616,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
             let name=H.policy_detail.agent
             let full=H.policy_draft.executionPolicy.yolo
             mod.widgets.HagencyAlertTitle{text:if full && H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("Automatically Approve Commands?","自动批准命令？")} else if full {A.t("Fully Trust “"+name+"”?","要完全信任「"+name+"」吗？")} else {A.t("Use Standard Permissions?","改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("It can run commands without asking. Commands remain confined to its work folder and cannot use the network.","它运行命令时不会先请求批准。命令仍限制在工作文件夹内，不能联网。")} else if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking you first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求你批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("It can run commands without asking. Commands remain confined to its work folder and cannot use the network.","它运行命令时不会先请求批准。命令仍限制在工作文件夹内，不能联网。")} else if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking anyone first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求任何人批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking anyone first.","它将能读写工作区以外的文件、访问网络，而且不会先请求任何人批准。")} else if H.policy_detail.framework=="octos" {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。") else {A.t("Its next task works inside its workspace. The person who sent the message approves its tool use, requests beyond the workspace are refused, and you are not asked.","它的下一个任务会在工作区内运行：工具使用由发消息的人批准，超出工作区的请求直接拒绝，不会再问你。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this for an Agent you trust. It applies to its next task.","请只对你信任的 Agent 开启。下一个任务开始时生效。")} else {A.t("It applies to its next task.","下一个任务开始时生效。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17668,7 +17668,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         }}
         if kind=="create_trust" {View{width:Fill height:Fit flow:Down
             mod.widgets.HagencyAlertTitle{text:A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if H.resource_detail!=nil && H.resource_detail.resource.framework=="claude" {A.t("Agents created in this pool use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","这个资源池里新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else {A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking you first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if H.resource_detail!=nil && H.resource_detail.resource.framework=="claude" {A.t("Agents created in this pool use their tools, shell commands included, without asking anyone first. They still cannot read or change files outside their own work folders.","这个资源池里新建的 Agent 使用工具（包括运行命令）时不会先请求任何人批准；仍然不能读写各自工作文件夹以外的文件。")} else {A.t("Agents created in this pool can read and change files outside their workspace and use the network, without asking anyone first.","这个资源池里新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求任何人批准。")}}
             mod.widgets.HagencyAlertMessage{text:A.t("Only do this if you trust everyone who can request this pool. You can change it later.","请只在你信任所有申请者时开启。以后可以再改。")}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
@@ -17680,7 +17680,7 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         if kind=="default_policy" {View{width:Fill height:Fit flow:Down
             let full=H.dpol.ask==true
             mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust New Agents?","新 Agent 默认完全信任？")} else {A.t("Use Standard Permissions?","新 Agent 改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && A.dpol_framework()=="claude" {A.t("Agents created from now on use their tools, shell commands included, without asking you first. They still cannot read or change files outside their own work folders.","以后新建的 Agent 使用工具（包括运行命令）时不会先请求你批准；仍然不能读写各自工作文件夹以外的文件。")} else if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking you first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Agents created from now on work inside their workspace and ask before doing more.","以后新建的 Agent 会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && A.dpol_framework()=="claude" {A.t("Agents created from now on use their tools, shell commands included, without asking anyone first. They still cannot read or change files outside their own work folders.","以后新建的 Agent 使用工具（包括运行命令）时不会先请求任何人批准；仍然不能读写各自工作文件夹以外的文件。")} else if full {A.t("Agents created from now on can read and change files outside their workspace and use the network, without asking anyone first.","以后新建的 Agent 将能读写工作区以外的文件、访问网络，而且不会先请求任何人批准。")} else {A.t("Agents created from now on work inside their workspace. The person who sent the message approves their tool use, and you are not asked.","以后新建的 Agent 会在工作区内运行，工具使用由发消息的人批准，不会再问你。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this if you trust everyone who can request this pool. Existing Agents keep their own permissions.","请只在你信任所有申请者时开启。现有 Agent 保持各自的权限。")} else {A.t("Existing Agents keep their own permissions.","现有 Agent 保持各自的权限。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
