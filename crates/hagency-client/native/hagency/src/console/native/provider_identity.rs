@@ -135,6 +135,7 @@ impl NativeManagement {
 
 impl NativeManagement {
     #[cfg(feature="resource-adoption")]
+    #[cfg(any(unix, test))]
     async fn original_quota_paths(
         &self, context:&hagency_store::management::HostContext,
     )->Result<super::super::owner_provider::ProviderPaths,NativeError> {
@@ -152,6 +153,7 @@ impl NativeManagement {
 
     /// Daemon-only read observation, bound to the current local resource and
     /// its original managed account namespace. Never opens an ambient home.
+    #[cfg(any(unix, test))]
     pub(crate) async fn refresh_resource_quota(
         &self, resource:&hagency_store::management::ResourceSummary,
     )->Result<(),NativeError> {

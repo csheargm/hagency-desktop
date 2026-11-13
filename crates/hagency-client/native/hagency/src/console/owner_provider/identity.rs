@@ -85,17 +85,20 @@ impl QuotaIdentity {
 }
 /// Sanitized, native-only provider report. It is never a credential or an
 /// authority proof. Missing public account identity stays resource-scoped.
+#[cfg(any(unix, test))]
 pub(in crate::console) struct ObservedQuota {
     pub(in crate::console) subject_digest: Option<String>,
     pub(in crate::console) plan: String,
     pub(in crate::console) limits: hagency_metering::dashboard::quota::CodexRateLimitsRead,
 }
+#[cfg(any(unix, test))]
 fn quota_identity(value: &Value) -> Result<Option<QuotaIdentity>, ProviderError> {
     if value.get("accountId").is_none_or(Value::is_null) {
         return Ok(None);
     }
     QuotaIdentity::read(value).map(Some)
 }
+#[cfg(any(unix, test))]
 fn observed_quota(account: AccountSnapshot, value: &Value) -> Result<ObservedQuota, ProviderError> {
     if !value["rateLimits"].is_object() { return Err(unavailable()); }
     let subject_digest = quota_identity(value)?.map(|id| {
@@ -124,6 +127,7 @@ pub(super) async fn observe_quota(
 
 /// A canonical resource must match the public quota identity recorded at
 /// enrollment. The report and proof come from the same bracketed observation.
+#[cfg(any(unix, test))]
 pub(super) async fn observe_bound_quota(
     process: &mut Process,
     paths: &ProviderPaths,
@@ -133,6 +137,7 @@ pub(super) async fn observe_bound_quota(
     Ok((report, proof.ok_or_else(unavailable)?))
 }
 
+#[cfg(any(unix, test))]
 async fn observe_quota_with_identity(
     process: &mut Process,
     paths: &ProviderPaths,

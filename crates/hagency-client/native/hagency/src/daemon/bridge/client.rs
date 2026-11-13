@@ -1,4 +1,6 @@
-use super::{Call, Failure, Lease, Operation, Package, decode, encode, error, journal::Journal};
+use super::{Call, Lease, Operation, Package, decode, encode, error, journal::Journal};
+#[cfg(unix)]
+use super::Failure;
 use crate::native_owner::*;
 #[cfg(feature = "resource-adoption")]
 use hagency_store::management as service;

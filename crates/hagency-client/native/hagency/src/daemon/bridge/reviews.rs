@@ -1,17 +1,22 @@
 //! Wire reviews contain only display data and an opaque, expiring handle.
 //! The original non-serializable native review never leaves daemon custody.
 use super::client::ManagementClient;
+#[cfg(any(unix, test))]
 use super::server::Bridge;
-use super::{Operation, decode, encode, error};
-use crate::native_owner::{self as native, NativeError, NativeManagement};
+use super::{Operation, decode, error};
+#[cfg(any(unix, test))]
+use super::encode;
+use crate::native_owner::{self as native, NativeError};
+#[cfg(any(unix, test))]
+use crate::native_owner::NativeManagement;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
     path::PathBuf,
-    sync::Arc,
     time::{Duration, Instant},
 };
+#[cfg(any(unix, test))]
+use std::{collections::HashMap, sync::Arc};
 
 pub enum Custody<T> {
     Local(T),
@@ -61,13 +66,16 @@ struct Offered<T> {
     handle: String,
     view: T,
 }
+#[cfg(any(unix, test))]
 enum Retained {
     Model(native::PersonalModelReview),
     Rules(native::PersonalRulesReview),
     Web(native::WebConnectionReview),
 }
 #[derive(Default)]
+#[cfg(any(unix, test))]
 pub(super) struct Reviews(HashMap<String, (String, Instant, Retained)>);
+#[cfg(any(unix, test))]
 impl Reviews {
     pub(super) fn clear(&mut self) {
         self.0.clear();
@@ -114,6 +122,7 @@ fn wire_deadline(until: Instant) -> Result<u64, NativeError> {
     let duration = duration.min(Duration::from_secs(120));
     origin.checked_add(duration.as_millis() as u64).ok_or_else(|| error(403,"native_confirmation_expired"))
 }
+#[cfg(any(unix, test))]
 fn deadline(ms: u64) -> Result<Instant, NativeError> {
     let origin = Instant::now();
     let left = ms.checked_sub(monotonic_ms()?).filter(|left| (1..=120000).contains(left))
@@ -411,6 +420,7 @@ deadline_methods! {
     edit_local_resource(input:native::EditLocalResource)->native::ResourceConfigurationResult;
     enroll_account_resource(input:native::NamespaceEnrollment)->hagency_store::owner_resources::OwnerResourceReceipt;
 }
+#[cfg(any(unix, test))]
 impl Bridge {
     fn offer<T: Serialize>(
         &self,

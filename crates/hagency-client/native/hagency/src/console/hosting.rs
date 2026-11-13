@@ -16,6 +16,7 @@ impl Admission {
         gate.open();
         gate
     }
+    #[cfg(any(unix, test))]
     pub(crate) fn with_fence(fence: impl Fn() -> bool + Send + Sync + 'static) -> Self { Self { fence: Some(Arc::new(fence)), ..Self::default() } }
     pub fn is_open(&self) -> bool { self.open.load(Ordering::Acquire) && self.fence.as_ref().is_none_or(|f| f()) }
     pub fn open(&self) { self.open.store(true, Ordering::Release); }
@@ -34,6 +35,7 @@ impl Admission {
         self.is_open().then(|| TurnAdmission { gate: self.clone(), barrier: Some(barrier), active: false })
     }
     pub fn active_turns(&self) -> u64 { self.active.load(Ordering::Acquire) }
+    #[cfg(any(unix, test))]
     pub(crate) fn is_quiescent(&self) -> bool {
         !self.is_open() && self.barrier.try_write().is_ok()
     }

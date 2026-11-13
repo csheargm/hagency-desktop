@@ -836,6 +836,7 @@ impl OwnerGrantIntents {
     }
 }
 impl OwnerGrantAccess {
+    #[cfg(any(unix, test))]
     pub(crate) fn bind_controller_lifetime(self, lifetime: Arc<dyn Fn()->Option<Instant>+Send+Sync>)->Result<Self,NativeError> {
         self.manager.bind_controller_lifetime(lifetime)?;
         Ok(self)

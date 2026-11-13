@@ -665,6 +665,7 @@ struct Shared {
     reading: bool,
     read_at: Option<std::time::Instant>,
     /// One job at a time, whichever account started it.
+    #[cfg(unix)]
     running: bool,
     #[cfg(unix)]
     cancel: Option<std::sync::Arc<helper::Cancellation>>,
