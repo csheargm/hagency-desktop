@@ -133,6 +133,13 @@ pub enum Update {
         item_id: String,
         delta: String,
     },
+    /// A complete root commentary item. The suffix also preserves the live
+    /// preview when the peer did not stream the whole item first.
+    Commentary {
+        item_id: String,
+        text: String,
+        unseen: Option<String>,
+    },
     Progress,
     Retrying,
     TurnEnded,

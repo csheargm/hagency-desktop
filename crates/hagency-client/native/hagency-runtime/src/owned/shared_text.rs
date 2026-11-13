@@ -598,13 +598,19 @@ impl OwnedSession {
         if hosted_web {
             tracing::info!("shared hosted web search event observed");
         }
-        let delta = if let crate::codex::session::Update::TextDelta { item_id, delta } = update {
-            if let Some(output) = &self.live_text {
-                output.append(&item_id, &delta);
+        let delta = match update {
+            crate::codex::session::Update::TextDelta { item_id, delta } => {
+                if let Some(output) = &self.live_text { output.append(&item_id, &delta); }
+                Some((item_id, delta))
             }
-            Some((item_id, delta))
-        } else {
-            None
+            crate::codex::session::Update::Commentary { item_id, text, unseen } => {
+                if let Some(output) = &self.live_text {
+                    output.complete(&item_id, &text);
+                    output.message(&format!("codex:{item_id}"), &text).map_err(|_| Error::Capacity)?;
+                }
+                unseen.map(|delta| (item_id, delta))
+            }
+            _ => None,
         };
         Ok(SharedTextEvent {
             history_call,

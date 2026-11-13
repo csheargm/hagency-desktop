@@ -442,6 +442,8 @@ impl State {
         } else {
             ItemPhase::Active
         };
+        let commentary = complete && kind == "agentMessage" && message_phase.as_deref() == Some("commentary");
+        let completed_text = commentary.then(|| text.clone());
         self.items.insert(
             item_id.into(),
             Item {
@@ -451,6 +453,9 @@ impl State {
                 message_phase,
             },
         );
+        if let Some(text) = completed_text {
+            return Ok(Update::Commentary { item_id: item_id.into(), text, unseen });
+        }
         Ok(match unseen {
             Some(delta) => Update::TextDelta { item_id: item_id.into(), delta },
             None => Update::Item { id: item_id.into(), kind: kind.into(), phase },

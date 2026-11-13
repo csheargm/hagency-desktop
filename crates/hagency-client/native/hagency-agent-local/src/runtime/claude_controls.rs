@@ -75,6 +75,7 @@ pub(super) fn defer(
 /// later failure of the native stream cannot discard a clean final answer.
 pub(super) struct Answer {
     pub text: String,
+    id: String,
     /// A successful result that the native peer did not abort.
     pub clean: bool,
 }
@@ -107,6 +108,7 @@ pub(super) struct Controls<'a, C: super::claude_turn::Capture> {
     accepted: bool,
     output: Option<hagency_runtime::live_text::LiveText>,
     message_id: String,
+    pending_message: Option<(String, String, bool)>,
     answer: Option<Answer>,
 }
 impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
@@ -127,28 +129,40 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             accepted: false,
             output,
             message_id: String::new(),
+            pending_message: None,
             answer: None,
         }
     }
     pub fn take_answer(&mut self) -> Option<Answer> {
         self.answer.take()
     }
-    fn observe_answer(&mut self, wire: &Claude, message: &Message) {
+    fn observe_answer(&mut self, wire: &Claude, message: &Message) -> Result<()> {
         let Message::Event {
             kind: hagency_runtime::claude::EventKind::Result,
             payload,
             ..
         } = message
         else {
-            return;
+            return Ok(());
         };
         // The accounting query's own result is never the answer.
         let Some(observation) = wire
             .last_observation()
             .filter(|observation| !observation.is_usage_snapshot())
         else {
-            return;
+            return Ok(());
         };
+        let next = payload["result"].as_str().unwrap_or("");
+        if !observation.continues_answer()
+            && let (Some(output), Some(previous)) = (&self.output, &self.answer)
+            && previous.text != next
+        {
+            // A correlated background result supersedes the original answer
+            // in the native completion receipt. Keep that earlier answer as
+            // a separate message before accepting the later result.
+            output.message(&previous.id, &previous.text)
+                .map_err(|_| Error::Protocol("message delivery custody"))?;
+        }
         // A steer that ran as a cycle of its own continues the answer read so
         // far, as the driver's receipt does. Any other result replaces it.
         let mut text = match self.answer.take() {
@@ -158,16 +172,22 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
         join_answer(&mut text, payload["result"].as_str().unwrap_or(""));
         self.answer = Some(Answer {
             text,
+            id: payload["uuid"].as_str().filter(|id| !id.is_empty())
+                .map(|id| format!("claude:result:{id}"))
+                .unwrap_or_else(|| format!("claude:result:observation:{}", observation.sequence())),
             clean: payload["is_error"] == false
                 && payload["terminal_reason"] != "aborted_streaming",
         });
+        Ok(())
     }
     pub async fn observe_message(&mut self, wire: &Claude, message: &Message) -> Result<()> {
-        self.observe_answer(wire, message);
+        // Keep an already-observed final answer even if the independent usage
+        // capture fails afterwards, as the original recovery path requires.
+        self.observe_answer(wire, message)?;
         if let Some(observation) = wire.last_observation() {
             self.capture.observe(observation).await?;
         }
-        self.observe_output(message);
+        self.observe_output(wire, message)?;
         Ok(())
     }
     pub async fn complete(&mut self, wire: &Claude, text: &str) -> Result<()> {
@@ -180,15 +200,15 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
     ) -> Result<()> {
         self.capture.complete_unaccounted(receipt, text).await
     }
-    fn observe_output(&mut self, message: &Message) {
+    fn observe_output(&mut self, wire: &Claude, message: &Message) -> Result<()> {
         let Some(output) = &self.output else {
-            return;
+            return Ok(());
         };
         let Message::Event { kind, payload, .. } = message else {
-            return;
+            return Ok(());
         };
         if !payload["parent_tool_use_id"].is_null() {
-            return;
+            return Ok(());
         }
         if *kind == hagency_runtime::claude::EventKind::Stream {
             let event = &payload["event"];
@@ -210,20 +230,49 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
                 payload["message"]["content"].as_array(),
             )
         {
-            // The assistant snapshot replaces its streamed deltas, avoiding
-            // a second copy of the same model text in the live card.
-            let completed = hagency_runtime::live_text::LiveText::default();
+            // A completed snapshot replaces its deltas. A snapshot that
+            // starts a tool is certainly intermediate and can go out now;
+            // otherwise keep the newest one until its role is known.
+            let mut completed = String::new();
             for block in blocks {
                 if block["type"] == "text"
                     && let Some(text) = block["text"].as_str()
                 {
-                    completed.append(id, text);
+                    completed.push_str(text);
                 }
             }
-            if let Some((_, text)) = completed.since(0) {
-                output.complete(id, &text);
+            let mut delivered = false;
+            if let Some((previous_id, previous_text, previous_delivered)) = self.pending_message.take() {
+                if previous_id != id {
+                    if !previous_delivered {
+                        output.message(&format!("claude:assistant:{previous_id}"), &previous_text)
+                            .map_err(|_| Error::Protocol("message delivery custody"))?;
+                    }
+                } else if completed.is_empty() {
+                    self.pending_message = Some((previous_id, previous_text, previous_delivered));
+                    return Ok(());
+                } else if previous_delivered {
+                    if previous_text != completed { return Err(Error::Protocol("Claude message changed")); }
+                    delivered = true;
+                }
             }
+            if !completed.is_empty() {
+                if !delivered && blocks.iter().any(|block| block["type"] == "tool_use") {
+                    delivered = output.message(&format!("claude:assistant:{id}"), &completed)
+                        .map_err(|_| Error::Protocol("message delivery custody"))?;
+                }
+                output.complete(id, &completed);
+                self.pending_message = Some((id.into(), completed, delivered));
+            }
+        } else if *kind == hagency_runtime::claude::EventKind::Result
+            && wire.last_observation().is_some_and(|o| !o.is_usage_snapshot())
+            && let Some((id, text, false)) = self.pending_message.take()
+            && payload["result"].as_str() != Some(text.as_str())
+        {
+            output.message(&format!("claude:assistant:{id}"), &text)
+                .map_err(|_| Error::Protocol("message delivery custody"))?;
         }
+        Ok(())
     }
     pub fn accepted(&self) -> bool {
         self.accepted
