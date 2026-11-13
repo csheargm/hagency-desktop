@@ -83,6 +83,11 @@ def main():
         (output / "report.json").write_text(json.dumps(results, indent=2) + "\n")
         print(name, "PASS" if passed else "FAIL", flush=True)
         if not passed:
+            # CI runners are ephemeral; the named file disappears when a job
+            # fails, so retain the end of the failing fixture's output there.
+            if env.get("CI") == "true":
+                print(f"Last 200 lines of {log.name}:", flush=True)
+                print("\n".join(text.splitlines()[-200:]), flush=True)
             raise SystemExit(f"Inspect {log}; no release until this check passes")
         return text
 
