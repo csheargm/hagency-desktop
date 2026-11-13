@@ -261,13 +261,22 @@ impl PersonalConsent {
                         })
                         .into()
                     });
+                let runtime = match &s.model.profile_id {
+                    Some(id) => format!("{} · {}", s.model.runtime, id),
+                    None => s.model.runtime.clone(),
+                };
+                let reasoning = if s.model.runtime == "octos" && s.model.reasoning_effort == "none" {
+                    tr("Use profile settings")
+                } else {
+                    &s.model.reasoning_effort
+                };
                 format!(
                     "{}\n{} · {}\n{}: {}\n{}: {}\n{}: {}",
                     s.agent_id,
-                    s.model.runtime,
+                    runtime,
                     s.model.model,
                     tr("Reasoning"),
-                    s.model.reasoning_effort,
+                    reasoning,
                     tr("Web search"),
                     tr(if s.model.web_search {
                         "Enabled"

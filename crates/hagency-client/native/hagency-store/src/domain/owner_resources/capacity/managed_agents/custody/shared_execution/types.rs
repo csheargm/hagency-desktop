@@ -22,6 +22,8 @@ pub const SHARED_EXECUTION_CAPABILITY: &str = "hagency.managed_agents.execution.
 pub const SHARED_TEXT_POLICY: &str = "codex_text_v1";
 pub const SHARED_CLAUDE_CAPABILITY: &str = "hagency.managed_agents.execution.v4";
 pub const SHARED_CLAUDE_POLICY: &str = "claude_text_v1";
+pub const SHARED_OCTOS_CAPABILITY: &str = "hagency.managed_agents.execution.v5";
+pub const SHARED_OCTOS_POLICY: &str = "octos_text_v1";
 pub const MAX_SHARED_TEXT: usize = 4096;
 pub const MAX_SHARED_REPLY: usize = 32 * 1024;
 fn exact(n: u64) -> bool {
@@ -55,6 +57,7 @@ impl SharedRuntimeCommand {
         match (self.version, self.capability.as_str(), self.policy.as_str()) {
             (1, SHARED_EXECUTION_CAPABILITY, SHARED_TEXT_POLICY) => Ok("codex"),
             (4, SHARED_CLAUDE_CAPABILITY, SHARED_CLAUDE_POLICY) => Ok("claude"),
+            (5, SHARED_OCTOS_CAPABILITY, SHARED_OCTOS_POLICY) => Ok("octos"),
             _ => Err(invalid()),
         }
     }
@@ -63,7 +66,11 @@ impl SharedRuntimeCommand {
             "claude" => hagency_runtime::owned::SharedClaudePolicy::from_options(web, mode)
                 .map_err(|_| invalid())?
                 .name(),
-            _ => hagency_runtime::owned::shared_execution_policy(web, mode),
+            "codex" => hagency_runtime::owned::shared_execution_policy(web, mode),
+            "octos" => hagency_runtime::owned::SharedOctosPolicy::from_options(web, mode)
+                .map_err(|_| invalid())?
+                .name(),
+            _ => return Err(invalid()),
         })
     }
     pub fn validate(&self, server: &str) -> Result<()> {

@@ -19,6 +19,9 @@ hagency-core.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [features]
 shared-context = []
 # An offline pin for a stop the guardian could not prove (ADR-182). Enabled

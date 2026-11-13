@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Offline stdio actor for the Desktop bridge; no provider or network calls.
-import json, sys, pathlib, os
+import json, sys, pathlib, os, time
 mode = __MODE__
 kind = __KIND__
 root = pathlib.Path(__ROOT__)
@@ -160,6 +160,23 @@ if kind == 'claude':
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
         aborted = False
+        if mode == 'spontaneous_messages':
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'progress-a','content':[{'type':'text','text':'First finding'},
+                    {'type':'tool_use','id':'progress-tool-a','name':'Read','input':{}}]}})
+            deadline = time.monotonic() + 5
+            while not (root / 'progress-observed').exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert (root / 'progress-observed').exists(), 'first message must arrive while the tool is running'
+            send({'type':'user','session_id':session,'message':{'content':[{'type':'tool_result','tool_use_id':'progress-tool-a','content':'done'}]}})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':'child-private',
+                'message':{'id':'child-message','content':[{'type':'text','text':'private child text'}]}})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'progress-b','content':[{'type':'text','text':'Second finding'},
+                    {'type':'tool_use','id':'progress-tool-b','name':'Read','input':{}}]}})
+            send({'type':'user','session_id':session,'message':{'content':[{'type':'tool_result','tool_use_id':'progress-tool-b','content':'done'}]}})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'final','content':[{'type':'text','text':'offline reply'}]}})
         if mode in ('long_stream', 'long_stream_unknown'):
             long_stream(session, 'stream-drained')
         if mode == 'long_usage':
@@ -408,20 +425,102 @@ else:
     def notify(method, params):
         send({'jsonrpc': '2.0', 'method': method, 'params': params})
     request = read()
-    answer(request, {'type': 'server_hello', 'capabilities': {'version': {'protocol': 'octos-ui/v1alpha1'}}})
+    features = ['projection.envelope.v2', 'approval.typed.v1', 'session.workspace_cwd.v1', 'user_question.v1']
+    if mode != 'octos_scope_legacy':
+        features.append('runtime.host_scoped_profile.v1')
+    if mode != 'octos_steer_legacy':
+        features.append('turn.steer_active_only.v1')
+        features.append('event.turn_steer_dropped.v1')
+    answer(request, {'type': 'server_hello', 'capabilities': {'version': {'protocol': 'octos-ui/v1alpha1'}, 'supported_features': features}})
     request = read()
     answer(request, {'current': {'mode': 'read_only', 'network': 'deny'}})
     request = read()
     session = request['params']['session_id']
     answer(request, {'opened': {'session_id': session, 'workspace_root': request['params']['cwd'], 'active_profile_id': 'coding'}})
     request = read()
+    if request['method'] == 'peer/tools/register':
+        tools = request['params']['tools']
+        assert request['params']['generic_tools'] == ['ask_user_question', 'discover_tools', 'run_tool']
+        (root / 'room-tools').write_text(json.dumps(tools))
+        answer(request, {'session_id':session, 'tools':[{'name':tool['name'], 'model_name':tool['name'].replace('.', '_')} for tool in tools], 'generic_tools':request['params']['generic_tools'], 'applies':'next_turn'})
+        request = read()
     turn = request['params']['turn_id']
+    if mode in ('octos_files', 'octos_files_revoke', 'octos_files_cancel', 'octos_files_traversal', 'octos_room', 'octos_progress'):
+        (root / 'turn-input').write_text(request['params']['input'][0]['text'])
     answer(request, {'accepted': True})
     seq = 0
     def envelope(tag, data):
         global seq
         seq += 1
         notify('projection/envelope', {'session_id': session, 'thread_id': 'main', 'seq': seq, 'turn_id': turn, 'payload': {'type': tag, 'data': data}})
+    interrupted = False
+    if mode == 'octos_progress':
+        assert any(tool['name'] == 'hagency.report_progress' for tool in tools)
+        for call_id, text in [('progress-1', 'first finding'), ('progress-2', 'second finding')]:
+            notify('peer/tool/call', {'session_id':session, 'turn_id':turn, 'call_id':call_id,
+                'name':'hagency.report_progress', 'args':{'text':text}})
+            reply = read()
+            assert reply['method'] == 'peer/tool/result' and reply['params']['call_id'] == call_id
+            assert reply['params']['ok'] is True and reply['params']['data']['delivery'] == 'queued'
+            answer(reply, {'call_id':call_id, 'accepted':True})
+    if mode in ('octos_question', 'octos_question_steer', 'octos_question_steer_drop', 'octos_question_two_steers', 'octos_question_stop', 'octos_steer_legacy', 'octos_question_cancel'):
+        notify('user_question/requested', {'session_id':session, 'question_id':'question-1', 'turn_id':turn,
+            'title':'Choose', 'body':'Choose an answer', 'questions':[
+                {'header':'First','question':'Which options?','multi_select':True,'allow_free_text':True,
+                 'options':[{'label':'One','description':'First'},{'label':'Two','description':'Second'}]},
+                {'header':'Second','question':'What else?','multi_select':False,'allow_free_text':True,
+                 'options':[{'label':'Yes','description':'Yes'},{'label':'No','description':'No'}]}]})
+        if mode == 'octos_question_cancel':
+            notify('user_question/cancelled', {'session_id':session, 'question_id':'question-1', 'turn_id':turn, 'reason':'waiter_dropped'})
+        else:
+            request = read()
+            if mode == 'octos_question_stop':
+                assert request['method'] == 'turn/interrupt' and request['params']['turn_id'] == turn
+                answer(request, {'interrupted':True})
+                notify('user_question/cancelled', {'session_id':session, 'question_id':'question-1', 'turn_id':turn, 'reason':'turn_interrupted'})
+                interrupted = True
+            else:
+                if mode in ('octos_question_steer', 'octos_question_steer_drop', 'octos_question_two_steers'):
+                    for _ in range(2 if mode == 'octos_question_two_steers' else 1):
+                        assert request['method'] == 'turn/steer' and request['params']['require_active'] is True
+                        assert request['params']['expected_turn_id'] == turn
+                        (root / 'steer').write_text(json.dumps(request['params']))
+                        answer(request, {'turn_id':turn, 'steered':True})
+                        request = read()
+                assert request['method'] == 'user_question/respond' and request['params']['question_id'] == 'question-1'
+                (root / 'question-answer').write_text(json.dumps(request['params']['answers']))
+                answer(request, {'question_id':'question-1', 'accepted':True, 'runtime_resumed':True})
+                if mode in ('octos_question_steer_drop', 'octos_question_two_steers'):
+                    notify('turn/steer_dropped', {'session_id':session, 'turn_id':turn,
+                        'inputs':['also test'], 'reason':'turn_ended'})
+    if mode == 'octos_room_cancel':
+        notify('peer/tool/call', {'session_id':session, 'turn_id':turn, 'call_id':'room-cancel', 'name':'hagency.read_room_history', 'args':{'cursor':None}})
+        deadline = time.monotonic() + 5
+        while not (root / 'room-ready').exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        notify('peer/tool/cancel', {'call_id':'room-cancel', 'reason':'turn_interrupted'})
+    if mode == 'octos_room':
+        for call_id, name, args in [('room-1','hagency.read_room_history',{'cursor':None}), ('room-2','hagency.list_received_files',{})]:
+            notify('peer/tool/call', {'session_id':session, 'turn_id':turn, 'call_id':call_id, 'name':name, 'args':args})
+            request = read()
+            assert request['method'] == 'peer/tool/result' and request['params']['call_id'] == call_id
+            with (root / 'room-results').open('a') as result:
+                result.write(json.dumps(request['params']) + '\n')
+            answer(request, {'call_id':call_id, 'accepted':True})
+    if mode in ('octos_files', 'octos_files_revoke', 'octos_files_cancel', 'octos_files_traversal'):
+        path = '../outside/escape.txt' if mode == 'octos_files_traversal' else 'plan.txt'
+        notify('peer/tool/call', {'session_id':session, 'turn_id':turn, 'call_id':'file-1',
+            'name':'hagency.file_create', 'args':{'path':path, 'content':'owner-approved code'}})
+        if mode == 'octos_files_cancel':
+            deadline = time.monotonic() + 5
+            while not (root / 'file-ready').exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            notify('peer/tool/cancel', {'call_id':'file-1', 'reason':'turn_interrupted'})
+        else:
+            request = read()
+            assert request['method'] == 'peer/tool/result' and request['params']['call_id'] == 'file-1'
+            (root / 'file-result').write_text(json.dumps(request['params']))
+            answer(request, {'call_id':'file-1', 'accepted':True})
     if mode in ('approval', 'cancel', 'hold'):
         envelope('tool_start', {'tool_call_id': 'tool-1', 'name': 'shell'})
         notify('approval/requested', {'session_id': session, 'approval_id': 'approval-1', 'turn_id': turn, 'tool_name': 'shell', 'title': 'Run a command', 'body': 'offline', 'approval_kind': 'command', 'risk': 'high', 'typed_details': {'kind': 'command', 'command': {'command_line': 'offline', 'cwd': str(root / 'outside'), 'tool_call_id': 'tool-1'}}})
@@ -434,9 +533,15 @@ else:
                 (root / 'effect').write_text('one')
             answer(response, {'accepted': True})
         envelope('tool_end', {'tool_call_id': 'tool-1'})
-    envelope('assistant_persisted', {'text': 'offline reply'})
-    tokens = {} if mode == 'unknown' else {'token_usage': {'input_tokens': 10, 'output_tokens': 7, 'cache_read_tokens': 3, 'cache_write_tokens': 4, 'reasoning_tokens': 2}}
-    envelope('turn_terminal', {'outcome': 'errored' if mode == 'failed' else 'completed', **tokens})
+    if mode == 'octos_long_stream':
+        for _ in range(20000):
+            envelope('assistant_delta', {'text':'a', 'assistant_segment_id':'segment-1'})
+    elif mode.startswith('octos_'):
+        envelope('assistant_delta', {'text':'offline ', 'assistant_segment_id':'segment-1'})
+        envelope('assistant_delta', {'text':'reply', 'assistant_segment_id':'segment-1'})
+    envelope('assistant_persisted', {'text': 'offline reply', 'assistant_segment_id':'segment-1'})
+    tokens = {} if mode in ('unknown', 'octos_missing_with_totals') else {'token_usage': {'input_tokens': 10, 'output_tokens': 7, 'cache_read_tokens': 3, 'cache_write_tokens': 4, 'reasoning_tokens': 2}}
+    envelope('turn_terminal', {'outcome': 'interrupted' if interrupted else ('errored' if mode == 'failed' else 'completed'), **tokens})
     notify('session/orchestration', {'session_id': session, 'active': False})
     request = read()
     count_file = root / 'count'

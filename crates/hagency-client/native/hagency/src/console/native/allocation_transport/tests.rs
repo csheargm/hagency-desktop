@@ -11,6 +11,9 @@ mod execution_policy;
 mod account_retirement;
 #[path = "../account_preparation_tests.rs"]
 mod account_preparation;
+#[cfg(all(unix,feature="resource-adoption"))]
+#[path = "../octos_account_http_tests.rs"]
+mod octos_account_http;
 #[cfg(unix)]
 #[path = "../account_login_tests.rs"]
 mod account_login;
@@ -426,6 +429,10 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             #[cfg(feature = "shared-execution")]
                             if managed_agents::shared::claude_enabled(&state.lock().unwrap()) {
                                 caps.push("shared-claude-execution-v1");
+                            }
+                            #[cfg(feature = "shared-execution")]
+                            if managed_agents::shared::octos_enabled(&state.lock().unwrap()) {
+                                caps.push("shared-octos-execution-v1");
                             }
                             #[cfg(feature = "shared-execution")]
                             if managed_agents::shared::demand_retry_enabled(&state.lock().unwrap()) {

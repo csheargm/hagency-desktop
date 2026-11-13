@@ -144,7 +144,7 @@ pub struct DomainRepository {
     _legacy_writer: Option<hagency_platform::legacy_writer::LegacyWriterAdmission>,
 }
 /// Current domain schema version (the last sequential migration).
-pub const DOMAIN_SCHEMA_VERSION: i32 = 111;
+pub const DOMAIN_SCHEMA_VERSION: i32 = 113;
 const DOMAIN_MIGRATIONS: &[(i32, &str)] = &[
     (2, include_str!("migrations/002-role-publication.sql")),
     (3, include_str!("migrations/003-task-dispatch.sql")),
@@ -404,6 +404,8 @@ const DOMAIN_MIGRATIONS: &[(i32, &str)] = &[
     (109, include_str!("migrations/111-owner-period-starts.sql")),
     (110, include_str!("migrations/112-owner-unstarted-runtimes.sql")),
     (111, include_str!("migrations/113-owner-shared-native-sessions.sql")),
+    (112, include_str!("migrations/114-owner-octos-profiles.sql")),
+    (113, include_str!("migrations/115-owner-octos-model-resources.sql")),
 ];
 
 impl DomainRepository {
@@ -1357,6 +1359,7 @@ impl DomainRepository {
                     "SELECT singleton,profile_digest FROM management_identity LIMIT 0",
                     "SELECT singleton,id,root_identity,revision FROM owner_resource_identity LIMIT 0",
                     "SELECT provider_digest,seat_id FROM owner_resource_accounts LIMIT 0",
+                    "SELECT profile_digest,model,resource_id,configuration_digest FROM owner_octos_model_resources LIMIT 0",
                     "SELECT profile,resource_id,revision,active FROM owner_resource_grants LIMIT 0",
                     "SELECT command_id,digest,result FROM owner_resource_receipts LIMIT 0",
                     "SELECT resource_id,registry_id,creation_command_id,creation_digest,creation_profile,first_offer_kind,first_offer_profile,first_offer_command_id,first_offer_revision,first_offer_at_ms FROM owner_resource_provenance LIMIT 0",

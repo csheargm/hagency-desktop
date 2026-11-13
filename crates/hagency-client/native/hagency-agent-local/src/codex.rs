@@ -91,7 +91,7 @@ fn scope_error(boundary: &'static str, method: &str) -> Error {
     Error::EventScope { boundary, event }
 }
 #[cfg(unix)]
-mod host_files;
+pub(crate) mod host_files;
 #[cfg(not(unix))]
 mod host_files {
     use super::*;

@@ -40,15 +40,15 @@ CASES={
 'more_than_256_models_refused':'A.open_personal_model() let model=choices.models[0] choices.models=[] for i in 0..257{choices.models.push(model)} replies[0]({is_ok:true data:choices}) assert(p.choices==nil)',
 'more_than_16_efforts_refused':'A.open_personal_model() choices.models[0].reasoningEfforts=[] for i in 0..17{choices.models[0].reasoningEfforts.push("low")} replies[0]({is_ok:true data:choices}) assert(p.choices==nil)',
 'page_only_16_models':'let model=choices.models[0] choices.models=[] for i in 0..33{choices.models.push({runtime:"codex" model:"m"+i displayName:"Model "+i reasoningEfforts:["low"]})} start() RENDER assert(count("personal_model_choice")==16) find("personal_models_next").on_click() assert(p.offset==16)',
-'no_models_honest':'choices.models=[] start() RENDER assert(find("personal_model_submit")!=nil && !find("personal_model_submit").enabled && has(A.t("The execution device reported no qualified model choices.","执行设备未上报可用模型。")))',
+'no_models_honest':'choices.models=[] start() RENDER assert(!A.personal_model_valid() && has(A.t("No models reported","设备未上报可用模型")))',
 'current_unqualified_requires_choice':'choices.current.model="stale" start() assert(p.draft.model=="" && !A.personal_model_valid())',
-'invented_model_refused':'start() A.personal_model_pick("codex","invented") assert(p.draft.model=="qualified") p.draft.model="invented" A.submit_personal_model() assert(calls.len()==1 && H.command==nil)',
+'invented_model_refused':'start() A.personal_model_pick("codex","invented",nil) assert(p.draft.model=="qualified") p.draft.model="invented" A.submit_personal_model() assert(calls.len()==1 && H.command==nil)',
 'invented_reasoning_refused':'start() A.personal_model_effort("invented") assert(p.draft.reasoningEffort=="low") p.draft.reasoningEffort="invented" assert(!A.personal_model_valid())',
-'selection_requires_explicit_effort':'start() RENDER find("personal_model_choice").on_click() assert(p.draft.reasoningEffort=="" && !A.personal_model_valid()) A.personal_model_effort("high") assert(A.personal_model_valid())',
+'selection_requires_explicit_effort':'choices.models.push({runtime:"codex" model:"other" displayName:"Other" reasoningEfforts:["high"]}) start() A.personal_model_pick("codex","other",nil) assert(p.draft.reasoningEffort=="" && !A.personal_model_valid()) A.personal_model_effort("high") assert(A.personal_model_valid())',
 'callbacks_web_and_workspace':'start() RENDER find("personal_model_search").on_click() find("personal_workspace_default").on_click() assert(!p.draft.webSearch && p.draft.workspace=="default")',
 'absent_workspace_defaults':'choices.workspaceConfigured=false start() RENDER assert(p.draft.workspace=="default" && find("personal_workspace_preserve")==nil) p.draft.workspace="preserve" assert(!A.personal_model_valid())',
 'no_script_path_or_credentials':'start() send() assert(calls[2].service=="hagency.personal_agents.model.save") assert(calls[2].args.to_json()=={agentId:"agent_a" expectedGeneration:3 expectedProfileDigest:"digest-original" runtime:"codex" model:"qualified" reasoningEffort:"low" webSearch:true workspace:"preserve" commandId:"original"}.to_json()) assert(H.command.nativeRecover)',
-'valid_receipt_ack_original':'start() send() replies[2]({is_ok:true data:receipt}) assert(H.command==nil && p.result==receipt && calls[3].service=="hagency.intent.acknowledge" && calls[3].args.commandId=="original" && calls[4].service=="hagency.personal_agents.get")',
+'valid_receipt_ack_original':'start() send() replies[2]({is_ok:true data:receipt}) let refreshed=false for call in calls {if call.service=="hagency.personal_agents.get" && call.args.id=="agent_a" {refreshed=true}} assert(H.command==nil && p.result==receipt && calls[3].service=="hagency.intent.acknowledge" && calls[3].args.commandId=="original" && refreshed)',
 'mismatched_receipt_retains_original':'start() send() receipt.agentId="other" replies[2]({is_ok:true data:receipt}) assert(H.command.args.commandId=="original" && H.command.nativeRecover && p.result==nil && calls.len()==3)',
 'uncertain_retries_only_original_id':'start() send() replies[2]({is_ok:false error:"management_outcome_unknown"}) A.retry_command() assert(calls[3].service=="hagency.intent.retry" && calls[3].args.to_json()=={commandId:"original"}.to_json()) replies[3]({is_ok:true data:{operation:"personal_agent_model" data:receipt}}) assert(H.command==nil && p.result==receipt)',
 'restart_recovery_no_editor':'start() send() H.busy=false A.retry_command() assert(calls[3].service=="hagency.intent.retry")',
@@ -61,7 +61,36 @@ CASES={
 'workspace_native_args_only':'A.submit_personal_native("hagency.personal_agents.workspace.prepare") replies[0]({is_ok:true data:{commandId:"original"}}) assert(calls[1].args.to_json()=={agentId:"agent_a" expectedGeneration:3 commandId:"original"}.to_json()) replies[1]({is_ok:true data:{protocol:"hagency-personal-settings-v1" agentId:"agent_a" commandId:"original" workspacePrepared:true}}) assert(H.command==nil && p.result.workspacePrepared)',
 'rules_result_accepted':'assert(A.personal_config_result_valid({protocol:"hagency-personal-settings-v1" agentId:"agent_a" commandId:"original" saved:true policyRevision:5},"original","agent_a","personal_agent_rules"))',
 'local_device_error_translated':'assert(A.personal_config_reason("personal_execution_device_required")!="personal_execution_device_required")',
-'busy_does_not_replace_draft':'start() H.busy=true A.personal_model_pick("codex","qualified") A.submit_personal_model() assert(p.draft.reasoningEffort=="low" && calls.len()==1)',
+'busy_does_not_replace_draft':'start() H.busy=true A.personal_model_pick("codex","qualified",nil) A.submit_personal_model() assert(p.draft.reasoningEffort=="low" && calls.len()==1)',
+'same_octos_model_keeps_the_selected_profile':'''choices.current={runtime:"octos" model:"local-model" profileId:"first" reasoningEffort:"none" webSearch:false}
+choices.models=[{runtime:"octos" model:"local-model" profileId:"first" displayName:"first · local-model" reasoningEfforts:["none"]},{runtime:"octos" model:"local-model" profileId:"second" displayName:"second · local-model" reasoningEfforts:["none"]}]
+start() assert(p.draft.profileId=="first" && A.personal_model_choice().profileId=="first") RENDER
+assert(has(A.t("Use profile settings","使用配置中的设置")))
+assert(has(A.t("Octos uses the reasoning settings in this profile.","Octos 使用该配置中的推理设置。")))
+assert(!A.local_model_changed())
+let picks=[] for row in widgets{if row.name=="personal_model_choice" {picks.push(row.value)}}
+assert(picks.len()==2) picks[1].on_click()
+assert(p.draft.profileId=="second" && A.personal_model_choice().profileId=="second" && A.local_model_changed())
+send() assert(calls[2].args.profileId=="second" && calls[2].args.model=="local-model")
+assert(calls[2].args.to_json().search("credential")<0)
+''',
+'octos_without_profile_identifier_is_not_selectable':'''choices.current={runtime:"octos" model:"local-model" reasoningEffort:"none" webSearch:false}
+choices.models=[{runtime:"octos" model:"local-model" displayName:"old response" reasoningEfforts:["none"]}]
+start() assert(A.personal_model_choice()==nil && !A.personal_model_valid())
+A.personal_model_pick("octos","local-model",nil) assert(A.personal_model_choice()==nil)
+''',
+'octos_summary_uses_current_profile_and_ignores_late_results':'''let first={runtime:"octos" model:"local-model" profileId:"first" displayName:"first · local-model"}
+let second={runtime:"octos" model:"local-model" profileId:"second" displayName:"second · local-model"}
+A.local_status_load("agent_a") A.local_status_load("agent_a")
+replies[2]({is_ok:true data:{models:[first,second] current:{runtime:"octos" model:"local-model" profileId:"second"}}})
+assert(A.local_model_name("local-model")=="second · local-model")
+assert(A.local_reasoning_label({model:"local-model" reasoningEffort:"none"})==A.t("Use profile settings","使用配置中的设置"))
+replies[0]({is_ok:true data:{models:[first,second] current:{runtime:"octos" model:"local-model" profileId:"first"}}})
+assert(A.local_model_name("local-model")=="second · local-model")
+H.local_model_current=nil assert(A.local_model_name("local-model")=="local-model")
+H.local_models=[first] assert(A.local_model_name("local-model")=="local-model")
+H.local_model_current={runtime:"octos" model:"local-model" profileId:"removed"} assert(A.local_model_name("local-model")=="local-model")
+''',
 }
 def main():
  p=argparse.ArgumentParser();p.add_argument('vm',type=Path);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False)

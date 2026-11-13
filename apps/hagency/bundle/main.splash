@@ -59,8 +59,8 @@ H.who_list=who_list
 let {who_people=nil}=H
 if who_people==nil {who_people={rid:"" known:[] knownState:"idle" query:"" found:[] exact:nil state:"idle" epoch:0}}
 H.who_people=who_people
-let {local_list=nil,local_status=nil,local_pending="",local_confirm="",local_error="",local_discard="",local_models=nil,local_after="",local_effort_note="",bar_past=false,local_epoch=0,local_failure="",local_failure_reason="",local_failure_code="",local_kept=nil,local_rechecked=false}=H
-H.local_list=local_list H.local_status=local_status H.local_pending=local_pending H.local_confirm=local_confirm H.local_error=local_error H.local_discard=local_discard H.local_models=local_models
+let {local_list=nil,local_status=nil,local_pending="",local_confirm="",local_error="",local_discard="",local_models=nil,local_model_current=nil,local_model_epoch=0,local_after="",local_effort_note="",bar_past=false,local_epoch=0,local_failure="",local_failure_reason="",local_failure_code="",local_kept=nil,local_rechecked=false}=H
+H.local_list=local_list H.local_status=local_status H.local_pending=local_pending H.local_confirm=local_confirm H.local_error=local_error H.local_discard=local_discard H.local_models=local_models H.local_model_current=local_model_current H.local_model_epoch=local_model_epoch
 H.local_after=local_after H.local_effort_note=local_effort_note H.bar_past=bar_past H.local_epoch=local_epoch H.local_failure=local_failure H.local_failure_reason=local_failure_reason H.local_failure_code=local_failure_code H.local_kept=local_kept H.local_rechecked=local_rechecked
 let {account_inventory=nil,account_detail=nil,account_id="",account_after=nil,account_resource_after=nil}=H
 H.account_list_epoch=0 H.account_pending_open=false
@@ -1149,17 +1149,20 @@ A.workspace_reply=fn(command,r){
 
 H.shared_approvals=[]
 A.shared_mode = fn(row){let {sharedMode=nil}=row return sharedMode}
-A.policy_mode_label = fn(row){return if A.shared_mode(row)=="chat" {A.t("Chat only","仅聊天")}else{A.policy_label(row.executionPolicy.yolo)}}
+A.policy_mode_label = fn(row){return if A.shared_mode(row)=="chat" {A.t("Chat only","仅聊天")}else{A.policy_choice_label(row,row.executionPolicy.yolo)}}
 A.policy_label = fn(yolo){return if yolo {A.t("Full trust (unrestricted)","完全信任（不受限）")}else{A.t("Standard permissions","标准权限")}}
+A.policy_choice_label = fn(row,yolo){return if yolo && A.shared_mode(row)!=nil && row.framework=="octos" {A.t("Automatic approvals","自动批准")} else {A.policy_label(yolo)}}
+A.policy_auto_available = fn(row){return A.full_trust_tool(row.framework) || (A.shared_mode(row)!=nil && row.framework=="octos")}
 // Full trust exists for the two tools whose shared runs implement it, and means something
 // different for each: Codex leaves its workspace sandbox; Claude Code stops asking before it
 // uses a tool but stays inside its own work folder.
 A.full_trust_tool = fn(framework){return framework=="codex" || framework=="claude"}
 // A pooled Agent of either tool has its own web search switch.
-A.shared_web_tool = fn(framework){return framework=="codex" || framework=="claude"}
+A.shared_web_tool = fn(framework){return framework=="codex" || framework=="claude" || framework=="octos"}
 A.standard_hint = fn(framework){
     if framework=="codex" {return A.t("Works inside its workspace; asks before doing more","在工作区内工作，超出范围前会先请求批准")}
     if framework=="claude" {return A.t("Works in its own work folder; asks you before it runs a command or changes a file","在自己的工作文件夹内工作；运行命令或修改文件前会先请求你批准")}
+    if framework=="octos" {return A.t("Works in its own folder; asks before each command, including interactive terminal sessions","在自己的文件夹内工作；运行命令（包括交互式终端）前会先请求你批准")}
     return A.t("Keeps this runtime’s normal approval rules","沿用此运行环境的常规审批规则")
 }
 A.full_trust_hint = fn(framework,codex_text){
@@ -1180,7 +1183,7 @@ A.policy_valid = fn(data,resource,engagement){
     if resourceId!=resource || engagementId!=engagement || !agent.is_string() || !projectId.is_string() || !framework.is_string() || !revision.is_string() || revision.len()!=64 || appliesTo!="next_dispatch" || !executionPolicy.is_object() {return false}
     let {yolo=nil}=executionPolicy
     let {webSearch=nil}=data
-    return (yolo==true || yolo==false) && (!yolo || A.full_trust_tool(framework)) && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && A.shared_web_tool(framework)))
+    return (yolo==true || yolo==false) && (!yolo || A.policy_auto_available(data)) && (webSearch==nil || ((webSearch==true || webSearch==false) && A.shared_mode(data)!=nil && A.shared_web_tool(framework)))
 }
 // Permission requests are part of the Tools & Permissions hub's Pending tab.
 A.open_shared_approvals = fn(){
@@ -1234,7 +1237,7 @@ A.open_policy_grants = fn(){
 A.choose_policy = fn(yolo){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_detail==nil || (H.policy_mode!="detail" && H.policy_mode!="result") {return}
     let row=H.policy_detail
-    if yolo && !A.full_trust_tool(row.framework) {return}
+    if yolo && !A.policy_auto_available(row) {return}
     H.policy_draft={resourceId:row.resourceId engagementId:row.engagementId expectedRevision:row.revision executionPolicy:{yolo:yolo}}
     H.policy_mode="edit" H.notice="" A.redraw()
 }
@@ -1247,7 +1250,7 @@ A.review_policy = fn(){
 A.submit_policy = fn(){
     if H.busy || H.command!=nil || H.page!="execution_policy" || H.policy_mode!="review" || H.policy_draft==nil || H.policy_detail==nil {return}
     let d=H.policy_draft let row=H.policy_detail
-    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && !A.full_trust_tool(row.framework)) {return}
+    if d.resourceId!=H.policy_resource || d.engagementId!=H.policy_engagement || d.expectedRevision!=row.revision || (d.executionPolicy.yolo && !A.policy_auto_available(row)) {return}
     A.submit("hagency.execution_policy.edit",d.to_json().parse_json())
 }
 A.valid_policy_result = fn(data,args){
@@ -2830,7 +2833,7 @@ A.open_personal_agents = fn(after,page){
 }
 A.open_personal_agent = fn(id){
     if H.busy {return}
-    if H.personal_id != id {H.personal_result=nil H.personal_observed=nil H.personal_config.result=nil H.personal_detail=nil H.local_status=nil H.local_models=nil}
+    if H.personal_id != id {H.personal_result=nil H.personal_observed=nil H.personal_config.result=nil H.personal_detail=nil H.local_status=nil H.local_models=nil H.local_model_current=nil}
     H.personal_id=id H.page="personal_agent" H.personal_mode="detail" H.personal_draft=nil
     A.local_status_load(id)
     A.request("hagency.personal_agents.get",{id:id},fn(data){
@@ -2935,8 +2938,9 @@ A.open_personal_model=fn(){
         p.choices=data p.draft={agentId:id expectedGeneration:generation expectedProfileDigest:data.profileDigest runtime:"" model:"" reasoningEffort:"" webSearch:false workspace:if data.workspaceConfigured{"preserve"}else{"default"}}
         if data.current!=nil{
             p.draft.webSearch=data.current.webSearch
-            for choice in data.models{if choice.runtime==data.current.runtime && choice.model==data.current.model{
+            for choice in data.models{if choice.runtime==data.current.runtime && choice.model==data.current.model && A.recipient_optional(choice,"profileId")==A.recipient_optional(data.current,"profileId") && (choice.runtime!="octos" || A.recipient_optional(choice,"profileId")!=nil){
                 p.draft.runtime=choice.runtime p.draft.model=choice.model
+                p.draft.profileId=A.recipient_optional(choice,"profileId")
                 for effort in choice.reasoningEfforts{if effort==data.current.reasoningEffort{p.draft.reasoningEffort=effort}}
             }}
         }
@@ -2946,8 +2950,12 @@ A.open_personal_model=fn(){
 A.personal_model_choice=fn(){
     let p=H.personal_config
     if p.choices==nil || p.draft==nil{return nil}
-    for row in p.choices.models{if row.runtime==p.draft.runtime && row.model==p.draft.model{return row}}
+    for row in p.choices.models{if row.runtime==p.draft.runtime && row.model==p.draft.model && A.recipient_optional(row,"profileId")==A.recipient_optional(p.draft,"profileId") && (row.runtime!="octos" || A.recipient_optional(row,"profileId")!=nil){return row}}
     return nil
+}
+A.personal_model_effort_label=fn(row,effort){
+    if row.runtime=="octos" && effort=="none" {return A.t("Use profile settings","使用配置中的设置")}
+    return A.reasoning_label(effort)
 }
 A.effort_rank=fn(effort){
     if effort=="none" {return 0}
@@ -2960,10 +2968,10 @@ A.effort_rank=fn(effort){
     if effort=="ultra" {return 7}
     return -1
 }
-A.personal_model_pick=fn(runtime,model){
+A.personal_model_pick=fn(runtime,model,profileId){
     if H.busy || H.command!=nil || H.personal_config.choices==nil{return}
     let p=H.personal_config
-    for row in p.choices.models{if row.runtime==runtime && row.model==model{
+    for row in p.choices.models{if row.runtime==runtime && row.model==model && A.recipient_optional(row,"profileId")==profileId && (runtime!="octos" || profileId!=nil){
         let s={pick:"" rank:-1}
         let current=A.effort_rank(p.draft.reasoningEffort)
         for effort in row.reasoningEfforts{
@@ -2972,7 +2980,7 @@ A.personal_model_pick=fn(runtime,model){
         }
         let before=p.draft.reasoningEffort
         H.local_effort_note=if before=="" || s.pick==before {""} else if s.pick=="" {A.t(row.displayName+" doesn’t offer "+A.reasoning_label(before)+". Choose a reasoning level.",row.displayName+" 不支持"+A.reasoning_label(before)+"推理强度，请重新选择。")} else {A.t(row.displayName+" doesn’t offer "+A.reasoning_label(before)+", so it now uses "+A.reasoning_label(s.pick)+".",row.displayName+" 不支持"+A.reasoning_label(before)+"推理强度，已改为"+A.reasoning_label(s.pick)+"。")}
-        p.draft.runtime=runtime p.draft.model=model p.draft.reasoningEffort=s.pick A.redraw() return
+        p.draft.runtime=runtime p.draft.model=model p.draft.profileId=profileId p.draft.reasoningEffort=s.pick A.redraw() return
     }}
 }
 A.personal_model_effort=fn(value){
@@ -2993,7 +3001,10 @@ A.personal_model_valid=fn(){
 A.submit_personal_model=fn(){
     if H.busy || H.command!=nil || H.page!="personal_model"{return}
     if !A.personal_model_valid(){H.notice=A.personal_config_reason("invalid_personal_model") A.redraw() return}
-    A.submit("hagency.personal_agents.model.save",H.personal_config.draft.to_json().parse_json())
+    let d=H.personal_config.draft
+    let input={agentId:d.agentId expectedGeneration:d.expectedGeneration expectedProfileDigest:d.expectedProfileDigest runtime:d.runtime model:d.model reasoningEffort:d.reasoningEffort webSearch:d.webSearch workspace:d.workspace}
+    if d.runtime=="octos" {input.profileId=A.recipient_optional(d,"profileId")}
+    A.submit("hagency.personal_agents.model.save",input)
 }
 A.submit_personal_native=fn(service){
     if !A.personal_can_edit() || (service!="hagency.personal_agents.workspace.prepare" && service!="hagency.personal_agents.rules.edit"){return}
@@ -7347,13 +7358,27 @@ A.pool_create_accounts=fn(){
     let c=H.pool_create
     if c==nil || H.busy {return}
     c.error=""
-    A.pool_call("hagency.accounts.list",{},fn(r){
+    A.pool_create_account_page(c,nil,[],0)
+}
+A.pool_create_account_page=fn(c,after,rows,pages){
+    if c==nil || H.busy || pages>=32 {return}
+    let args={} if after!=nil {args.after=after}
+    A.pool_call("hagency.accounts.list",args,fn(r){
         if H.page!="pool_create" || H.pool_create==nil || H.pool_create.epoch!=c.epoch {return}
         if !r.is_ok {c.error=A.error_text(r.error) return}
-        let {accounts=nil}=r.data
+        let {accounts=nil,nextAfter=nil}=r.data
         if accounts==nil {c.error=A.t("The coding tools couldn’t be read. Try again.","暂时无法读取编码工具，请重试。") return}
-        let rows=[] for row in accounts {if (row.kind=="managed_namespace" || row.kind=="local_configuration") && row.state=="active" {rows.push(row)}}
-        c.accounts=rows
+        for row in accounts {
+            for previous in rows {if previous.id==row.id {c.error=A.t("The coding tools changed. Try again.","编码工具列表已变化，请重试。") return}}
+            rows.push(row)
+        }
+        if rows.len()>256 {c.error=A.t("Too many coding tools to list safely.","编码工具过多，暂无法完整列出。") return}
+        if nextAfter!=nil {
+            if accounts.len()==0 || nextAfter!=accounts[accounts.len()-1].id || nextAfter==after || pages>=31 {c.error=A.t("The complete coding tool list couldn’t be read. Try again.","无法读取完整编码工具列表，请重试。") return}
+            A.pool_create_account_page(c,nextAfter,rows,pages+1) return
+        }
+        let usable=[] for row in rows {if (row.kind=="managed_namespace" || row.kind=="local_configuration") && row.state=="active" {usable.push(row)}}
+        rows=usable c.accounts=rows
         let {want=nil}=c
         if want!=nil {c.want=nil for row in rows {if row.id==want {A.pool_create_account(row) return}}}
         if c.account!=nil {for row in rows {if row.id==c.account.id {c.account=row}} return}
@@ -7380,21 +7405,26 @@ A.pool_create_account=fn(row){
             if d.protocol!="hagency-management-v1" || d.accountId!=row.id || d.revision!=row.revision || d.provider.runtime!=row.runtime || d.provider.connected!=true {c.modelsError=A.t("The model list doesn’t match this tool. Try again.","模型结果与此工具不匹配，请重试。") return}
             c.models=d H.account_models=d
             let draft=H.enrollment_draft
-            if draft!=nil && draft.account.accountId==row.id {return}
-            for model in d.provider.models {if H.enrollment_draft==nil && model.sharedReasoning.len()>0 {A.pool_create_model(model)}}
+            if draft!=nil && draft.account.accountId==row.id {
+                let found=false for model in d.provider.models {if model.model==draft.model.model && !A.pool_model_enrolled(model) {found=true}}
+                if found {return} H.enrollment_draft=nil
+            }
+            for model in d.provider.models {if H.enrollment_draft==nil && model.sharedReasoning.len()>0 && !A.pool_model_enrolled(model) {A.pool_create_model(model)}}
         })
     })
 }
 A.pool_create_model=fn(model){
     let c=H.pool_create
-    if c==nil || c.account==nil || c.models==nil || H.command!=nil || model.sharedReasoning.len()==0 {return}
+    if c==nil || c.account==nil || c.models==nil || H.command!=nil || model.sharedReasoning.len()==0 || A.pool_model_enrolled(model) {return}
     let draft=H.enrollment_draft
     if draft!=nil && draft.account.accountId==c.account.id {A.enrollment_model_pick(model.model) return}
     let row=c.account
     let {resourceCount=0}=H.pool_create.account
     let resources=if H.account_detail==nil {[]} else {H.account_detail.resources}
     // Only a Codex sign-in folder makes further pools from an existing one.
-    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:"1000000" sourceRequired:resourceCount>0 && row.kind=="managed_namespace" source:nil name:A.pool_model_label(model) named:false}
+    let {sharedQuota=nil}=c.models.provider
+    let initial=if row.runtime=="octos" && sharedQuota!=nil && sharedQuota<1000000 {sharedQuota} else {1000000}
+    let d={account:{accountId:row.id expectedRevision:row.revision} model:model models:c.models.provider.models reasoning:model.sharedDefaultReasoning tokens:""+initial sourceRequired:resourceCount>0 && row.kind=="managed_namespace" source:nil name:A.pool_model_label(model) named:false}
     H.enrollment_draft=d A.redraw()
     if d.sourceRequired && resources.len()>0 {
         let id=resources[0].id
@@ -7408,15 +7438,16 @@ A.pool_create_model=fn(model){
     }
 }
 A.pool_account_name=fn(account,many){
-    let {runtime="",ordinal=nil}=account
-    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude Code"} else {runtime}
+    let {runtime="",ordinal=nil,profile=nil}=account
+    let name=if runtime=="codex" {"Codex"} else if runtime=="claude" {"Claude Code"} else if runtime=="octos" {"Octos"+if profile!=nil && profile!="" {" · "+profile} else {""}} else {runtime}
     return if many && ordinal!=nil {name+" #"+ordinal} else {name}
 }
 A.pool_login_text=fn(account){
-    let {readiness=nil,resourceCount=0,kind=""}=account
+    let {readiness=nil,resourceCount=0,kind="",runtime=""}=account
     let login=if readiness=="subscription" {A.t("Signed in · subscription","已登录 · 订阅账号")} else if readiness=="api_key" {A.t("Signed in · API key","已登录 · API 密钥")} else {A.t("Sign-in not checked yet","尚未确认登录")}
     // The owner's own Claude Code on this computer: a pool runs on whichever sign-in it has.
-    if kind=="local_configuration" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点凭据")} else if readiness=="subscription" {A.t("This computer’s settings · claude.ai sign-in","本机配置 · claude.ai 订阅登录")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
+    if kind=="local_configuration" && runtime=="claude" {login=if readiness=="api_key" {A.t("This computer’s settings · API key or endpoint token","本机配置 · API 密钥或端点凭据")} else if readiness=="subscription" {A.t("This computer’s settings · claude.ai sign-in","本机配置 · claude.ai 订阅登录")} else {A.t("This computer’s settings · not signed in","本机配置 · 尚未登录")}}
+    if kind=="local_configuration" && runtime=="octos" {login=A.t("Local Octos profile","本机 Octos 配置")}
     return login+if resourceCount>0 {A.t(" · pools: "," · 已有 ")+resourceCount+A.t(""," 个资源池")} else {""}
 }
 // Why the models of a tool can't be listed; Claude Code has its own reasons.
@@ -7449,8 +7480,16 @@ A.pool_list_unknown=fn(){
 }
 A.pool_create_tokens=fn(text){if H.enrollment_draft==nil || H.busy || H.command!=nil {return} H.enrollment_draft.tokens=text ui.pool_create_submit.set_enabled(A.pool_create_valid())}
 A.pool_create_preset=fn(amount){if H.enrollment_draft==nil || H.busy || H.command!=nil {return} H.enrollment_draft.tokens=""+amount A.redraw()}
+A.pool_model_enrolled=fn(model){let {enrolled=false}=model return enrolled==true}
+A.pool_create_duplicate=fn(){
+    if H.pool_create==nil || H.pool_create.account==nil || H.pool_create.models==nil || H.pool_create.account.runtime!="octos" {return false}
+    let models=H.pool_create.models.provider.models
+    if models.len()==0 {return false}
+    for model in models {if !A.pool_model_enrolled(model) {return false}}
+    return true
+}
 A.pool_create_ready=fn(){
-    if H.pool_create==nil || H.pool_create.models==nil {return false}
+    if H.pool_create==nil || H.pool_create.account==nil || H.pool_create.models==nil || A.pool_create_duplicate() {return false}
     let {enrollmentReady=false}=H.pool_create.models
     return enrollmentReady==true
 }
@@ -7459,8 +7498,9 @@ A.pool_create_valid=fn(){
     if d==nil || H.busy || H.command!=nil || !A.pool_create_ready() {return false}
     let fine=false for effort in d.model.sharedReasoning {if effort==d.reasoning {fine=true}}
     let tokens=A.pool_whole(d.tokens)
+    let quota=A.pool_create_quota()
     let {sourceRequired=false,source=nil}=H.enrollment_draft
-    return fine && tokens>=1 && (!sourceRequired || source!=nil)
+    return fine && !A.pool_model_enrolled(d.model) && tokens>=1 && (quota<0 || tokens<=quota) && (!sourceRequired || source!=nil)
 }
 A.pool_create_submit=fn(){if !A.pool_create_valid() {return} A.enroll_account()}
 // A model as owners read it: its label, else its ID.
@@ -7480,6 +7520,10 @@ A.pool_name_apply=fn(data){
 A.pool_created_name=fn(model){let p=H.pool_name_after return if p!=nil && p.name!="" {p.name} else {model}}
 A.pool_create_quota=fn(){
     if H.enrollment_draft==nil {return -1}
+    if H.pool_create!=nil && H.pool_create.account!=nil && H.pool_create.account.runtime=="octos" && H.pool_create.models!=nil {
+        let {sharedQuota=nil}=H.pool_create.models.provider
+        return if sharedQuota!=nil && sharedQuota>0 {sharedQuota} else {-1}
+    }
     let {sourceRequired=false,source=nil}=H.enrollment_draft
     if !sourceRequired || source==nil || H.resource_detail==nil || H.resource_detail.resource.id!=source.id {return -1}
     let b=A.pool_budget(H.resource_detail.resource)
@@ -7545,7 +7589,10 @@ A.enrollment_model_pick=fn(name){
         let keep=false for effort in model.sharedReasoning{if effort==d.reasoning{keep=true}}
         d.model=model if !keep{d.reasoning=model.sharedDefaultReasoning}
         let {named=false}=H.enrollment_draft
-        if named!=true {d.name=A.pool_model_label(model)}
+        if named!=true {
+            d.name=A.pool_model_label(model)
+            if H.page=="pool_create" {ui.pool_create_name.set_text(d.name)}
+        }
         H.enrollment_models_open=false H.notice="" A.redraw() return
     }}
 }
@@ -7647,12 +7694,13 @@ A.account_prepared = fn(data){
     H.page="provider_account" H.account_id=data.accountId H.account_resource_after=nil H.account_detail=nil H.ux.accountId=data.accountId A.save()
 }
 A.account_groups = fn(){
-    let result={known:[] unconfirmed:[] local:[]}
+    let result={known:[] unconfirmed:[] local:[] octos:[]}
     if H.account_inventory==nil {return result}
     for row in H.account_inventory.accounts {
-        let {identityKey=nil,kind=""}=row
+        let {identityKey=nil,kind="",runtime=""}=row
         // Claude Code as this computer has it set up: a coding tool of its own, not a sign-in record to confirm.
-        if kind=="local_configuration" {result.local.push(row)}
+        if kind=="local_configuration" && runtime=="claude" {result.local.push(row)}
+        else if kind=="local_configuration" && runtime=="octos" {result.octos.push(row)}
         else if identityKey==nil || identityKey=="" {result.unconfirmed.push(row)} else {
             let found=false
             for group in result.known {if group.key==identityKey && group.runtime==row.runtime {
@@ -8278,7 +8326,8 @@ A.load_local_list=fn(){
 }
 A.local_status_load=fn(id){
     H.local_confirm="" H.local_error="" H.local_discard=""
-    host.request("hagency.personal_agents.model.choices",{id:id},fn(r){if H.personal_id==id && r.is_ok {H.local_models=r.data.models A.redraw()}})
+    H.local_models=nil H.local_model_current=nil H.local_model_epoch+=1 let model_epoch=H.local_model_epoch
+    host.request("hagency.personal_agents.model.choices",{id:id},fn(r){if H.personal_id==id && H.local_model_epoch==model_epoch && r.is_ok {H.local_models=r.data.models H.local_model_current=r.data.current A.redraw()}})
     host.request("hagency.personal_agents.status",{id:id},fn(r){
         if H.personal_id!=id {return}
         if r.is_ok {H.local_status=r.data} else {H.local_error="status_unavailable"}
@@ -8400,7 +8449,7 @@ A.local_model_changed=fn(){
     let c=p.choices.current let d=p.draft
     if c==nil {return true}
     let keep=if p.choices.workspaceConfigured {"preserve"} else {"default"}
-    return d.runtime!=c.runtime || d.model!=c.model || d.reasoningEffort!=c.reasoningEffort || d.webSearch!=c.webSearch || d.workspace!=keep
+    return d.runtime!=c.runtime || d.model!=c.model || A.recipient_optional(d,"profileId")!=A.recipient_optional(c,"profileId") || d.reasoningEffort!=c.reasoningEffort || d.webSearch!=c.webSearch || d.workspace!=keep
 }
 A.local_cancel_model=fn(){
     if A.local_model_changed() {H.local_discard="model" A.redraw()} else {A.open_personal_agent(H.personal_id)}
@@ -8465,10 +8514,18 @@ A.local_discard_changes=fn(){
     A.redraw()
 }
 A.local_model_name=fn(id){
-    if H.local_models!=nil {for row in H.local_models {if row.model==id {return row.displayName}}}
     let p=H.personal_config
-    if p.choices!=nil && p.choices.agentId==H.personal_id {for row in p.choices.models {if row.model==id {return row.displayName}}}
+    let rows=if H.local_models!=nil {H.local_models} else if p.choices!=nil && p.choices.agentId==H.personal_id {p.choices.models} else {[]}
+    let current=if H.local_models!=nil {H.local_model_current} else if p.choices!=nil {p.choices.current} else {nil}
+    if current!=nil && current.model==id {for row in rows {if row.model==id && row.runtime==current.runtime && A.recipient_optional(row,"profileId")==A.recipient_optional(current,"profileId") {return row.displayName}} return id}
+    let found=nil let count=0 let profiled=false for row in rows {if row.model==id {found=row.displayName count+=1 if A.recipient_optional(row,"profileId")!=nil {profiled=true}}}
+    if count==1 && !profiled {return found}
     return id
+}
+A.local_reasoning_label=fn(model){
+    let current=H.local_model_current
+    if current!=nil && current.runtime=="octos" && current.model==model.model && model.reasoningEffort=="none" {return A.t("Use profile settings","使用配置中的设置")}
+    return A.reasoning_label(model.reasoningEffort)
 }
 A.local_pool_state=fn(r){
     if r.state=="pending_approval" {return A.t("Awaiting approval","等待审批")}
@@ -10172,6 +10229,7 @@ A.render_page = fn(){
                     }
                 }}}
             }
+            if c.account!=nil && c.account.runtime=="octos" {mod.widgets.HagencyListNote{text:if A.pool_create_duplicate() {A.t("All configured models already have pools. Add another model in Octos to share it.","已为所有已配置模型创建资源池。请先在 Octos 中添加模型，再共享它。")} else {A.t("Models in one Octos profile share its monthly limit. Local models and custom endpoints are supported.","同一 Octos 配置中的模型共用每月上限，支持本地模型和自定义端点。")}}}
             if c.account!=nil {View{width:Fill height:Fit flow:Down spacing:6
                 mod.widgets.HagencyListLabel{text:A.t("MODEL","模型")}
                 mod.widgets.HagencyList{
@@ -10184,21 +10242,24 @@ A.render_page = fn(){
                             mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Try Again","重试")}}
                         }
                     }}
-                    if c.models!=nil {for index item in c.models.provider.models {let model=item let usable=model.sharedReasoning.len()>0 View{width:Fill height:Fit flow:Down
+                    if c.models!=nil {for index item in c.models.provider.models {let model=item let usable=model.sharedReasoning.len()>0 && !A.pool_model_enrolled(model) View{width:Fill height:Fit flow:Down
                         if index>0 {mod.widgets.HagencyListDivider{margin:Inset{left:14}}}
                         mod.widgets.HagencyListTall{
                             pool_create_model := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil && usable on_click:||A.pool_create_model(model)}
                             mod.widgets.HagencyListBody{
                                 mod.widgets.HagencyListText{
                                     mod.widgets.HagencyListTitle{text:model.label draw_text.color:if usable {mod.widgets.RINX_INK} else {mod.widgets.RINX_MUTED}}
-                                    mod.widgets.HagencyListSubtitle{text:if usable {model.model} else {A.t("Can’t be shared","不能共享")}}
+                                    mod.widgets.HagencyListSubtitle{text:if usable {model.model} else if A.pool_model_enrolled(model) {A.t("Already has a pool","已有资源池")} else {A.t("Can’t be shared","不能共享")}}
                                 }
                                 if d!=nil && d.model.model==model.model {mod.widgets.HagencyCheck{}}
                             }
                         }
                     }}}
                 }
-                if c.models!=nil && !ready {View{width:Fill height:Fit flow:Down spacing:6 padding:Inset{top:4}
+                if c.models!=nil && !ready && !A.pool_create_duplicate() {View{width:Fill height:Fit flow:Down spacing:6 padding:Inset{top:4}
+                    let {unavailableReason=nil}=c.models
+                    if unavailableReason=="unsupported_platform" {mod.widgets.HagencyListNote{text:A.t("Sharing Octos pools currently requires macOS.","目前共享 Octos 资源池需要 macOS。")}}
+                    if unavailableReason!="unsupported_platform" {
                     mod.widgets.HagencyList{
                         View{width:Fill height:Fit flow:Right spacing:12 padding:Inset{left:14 right:14 top:12 bottom:12} align:Align{y:0.5}
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
@@ -10210,6 +10271,7 @@ A.render_page = fn(){
                             mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Open This Computer","打开「这台电脑」")} mod.widgets.HagencyChevron{}}
                         }
                     }
+                    }
                 }}
             }}
             if d!=nil && c.account!=nil && d.account.accountId==c.account.id {View{width:Fill height:Fit flow:Down spacing:6
@@ -10218,6 +10280,7 @@ A.render_page = fn(){
                     pool_create_name := mod.widgets.HagencyInput{width:Fill text:A.pool_create_name_text(d) empty_text:A.pool_model_label(d.model) on_change:|text| A.pool_create_name(text)}
                 }}
                 mod.widgets.HagencyListNote{text:A.t("Shown only on this computer. It starts as the model’s name.","只在这台电脑上显示，默认是模型的名称。")}
+                if c.account.runtime!="octos" {View{width:Fill height:Fit flow:Down spacing:6
                 mod.widgets.HagencyListLabel{text:A.t("REASONING","推理强度")}
                 mod.widgets.HagencyList{View{width:Fill height:Fit padding:12
                     mod.widgets.HagencySegments{for effort in d.model.sharedReasoning {let value=effort View{width:Fill height:Fit
@@ -10226,6 +10289,8 @@ A.render_page = fn(){
                     }}}
                 }}
                 mod.widgets.HagencyListNote{text:A.t("Higher reasoning thinks longer and uses more of the pool.","推理强度越高，思考越久，也更耗额度。")}
+                }}
+                if c.account.runtime=="octos" {mod.widgets.HagencyListNote{text:A.t("Octos uses the reasoning settings in this profile.","Octos 使用该配置中的推理设置。")}}
                 mod.widgets.HagencyListLabel{text:A.t("MONTHLY MAXIMUM","每月上限")}
                 mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:8 padding:Inset{left:16 right:16 top:12 bottom:12}
                     pool_create_tokens := mod.widgets.HagencyNumberInput{minimum:1 maximum:quota text:d.tokens empty_text:A.t("e.g. 1.5","例如 1.5") on_change:|text| A.pool_create_tokens(text)}
@@ -10236,7 +10301,7 @@ A.render_page = fn(){
                         }}
                     }
                 }}
-                mod.widgets.HagencyListNote{text:(if quota>0 {A.t("Pools on this account share its limit of "+A.tokens(quota)+". ","此账号的资源池共用账号上限 "+A.tokens(quota)+"；")} else {""})+A.t("Next, connect it to a server and publish it from its page.","创建后在资源池页面连接服务器并发布。")}
+                mod.widgets.HagencyListNote{text:(if quota>0 {A.t("Pools on this account share its limit of "+A.tokens(quota)+". ","此账号的资源池共用账号上限 "+A.tokens(quota)+"；")} else if c.account.runtime=="octos" {A.t("This first pool also sets the total limit shared by this Octos profile. ","第一个资源池的上限也将作为此 Octos 配置的共享总上限；")} else {""})+A.t("Next, connect it to a server and publish it from its page.","创建后在资源池页面连接服务器并发布。")}
             }}
         }}}
         if H.page=="web_connections"{mod.widgets.HagencyDetailCard{
@@ -10959,6 +11024,37 @@ A.render_page = fn(){
                     }
                     if groups.local.len()>0 {mod.widgets.HagencyListNote{text:A.t("Hagency uses Claude Code as it is set up on this computer. There is no sign-in to manage here.","Hagency 直接使用这台电脑上配置好的 Claude Code，这里没有需要管理的登录。")}}
                 }
+                View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyListLabel{text:"OCTOS"}
+                    mod.widgets.HagencyList{
+                        for index, item in groups.octos {let row=item View{width:Fill height:Fit flow:Down
+                            if index>0 {mod.widgets.HagencyListDivider{}}
+                            mod.widgets.HagencyFitRow{mod.widgets.HagencyRowBody{
+                                mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.connection}}
+                                mod.widgets.HagencyListText{
+                                    mod.widgets.HagencyWrapTitle{text:A.pool_account_name(row,false)}
+                                    mod.widgets.HagencyWrapSubtitle{text:A.pool_login_text(row)}
+                                }
+                            }}
+                            mod.widgets.HagencyListDivider{}
+                            let {resourceCount=0}=row
+                            mod.widgets.HagencyListRow{
+                                    octos_new_pool := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click:||A.account_pool_create(row)}
+                                    mod.widgets.HagencyListBody{mod.widgets.HagencyRowIcon{mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.add}} mod.widgets.HagencyAccentText{text:A.t("New Pool","新建资源池")}}
+                            }
+                            if resourceCount>0 {mod.widgets.HagencyListDivider{} mod.widgets.HagencyListRow{
+                                    octos_view_pool := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click:||A.open_account(row.id,nil)}
+                                    mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("View Pools","查看资源池")} mod.widgets.HagencyChevron{}}
+                            }}
+                        }}
+                        if groups.octos.len()>0 {mod.widgets.HagencyListDivider{}}
+                        mod.widgets.HagencyListRow{
+                            octos_personal_agents := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click:||A.open_personal_agents(nil,1)}
+                            mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Open My Agents","前往我的 Agent")} mod.widgets.HagencyChevron{}}
+                        }
+                    }
+                    mod.widgets.HagencyListNote{text:A.t("Use an Octos profile for a personal Agent or a pool. Each profile has its own monthly limit.","Octos 配置可用于个人 Agent 或资源池。每个配置都有独立的每月上限。")}
+                }
                 if groups.unconfirmed.len()>0 {View{width:Fill height:Fit flow:Down spacing:6
                     mod.widgets.HagencyListLabel{text:A.t("OTHER RECORDS","其他记录")}
                     mod.widgets.HagencyList{
@@ -11651,7 +11747,7 @@ A.render_page = fn(){
                     mod.widgets.HagencyHeroName{text:row.agent}
                     mod.widgets.HagencyPill{draw_bg.color:if full {mod.widgets.RINX_WARNING_BG} else {mod.widgets.RINX_SUCCESS_BG}
                         mod.widgets.HagencyPillDot{draw_bg.color:if full {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_SUCCESS_FG}}
-                        mod.widgets.HagencyPillText{text:if chat {A.t("Chat only","仅聊天")} else if full {A.t("Full trust (unrestricted)","完全信任（不受限）")} else {A.t("Standard permissions","标准权限")} draw_text.color:if full {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_SUCCESS_FG}}
+                        mod.widgets.HagencyPillText{text:if chat {A.t("Chat only","仅聊天")} else {A.policy_choice_label(row,full)} draw_text.color:if full {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_SUCCESS_FG}}
                     }
                     if project!="" {mod.widgets.HagencyHint{width:Fit text:A.t("In project chat ","所在项目（聊天）：")+project}}
                 }
@@ -11678,12 +11774,12 @@ A.render_page = fn(){
                         mod.widgets.HagencyListFitBody{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                             mod.widgets.HagencyListText{
-                                mod.widgets.HagencyListTitle{text:A.t("Full trust (unrestricted)","完全信任（不受限）") draw_text.color:if A.full_trust_tool(row.framework) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
-                                mod.widgets.HagencyWrapSubtitle{text:A.full_trust_hint(row.framework,A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置"))}
+                                mod.widgets.HagencyListTitle{text:A.policy_choice_label(row,true) draw_text.color:if A.policy_auto_available(row) {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
+                                mod.widgets.HagencyWrapSubtitle{text:if row.framework=="octos" && A.shared_mode(row)!=nil {A.t("Runs commands without asking; files and commands remain confined to this work folder and cannot access the network","运行命令时不再请求批准；文件和命令仍限制在此工作文件夹内，命令不能联网")} else {A.full_trust_hint(row.framework,A.t("Can run commands, use files and access the network without asking; web search is controlled separately","运行命令、读写文件和命令联网无需审批；联网搜索单独设置"))}}
                             }
                             if full {mod.widgets.HagencyCheck{draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                         }
-                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.full_trust_tool(row.framework) && !full on_click: || A.choose_policy(true)}
+                        policy_unrestricted := mod.widgets.HagencyListFitTap{enabled:can && A.policy_auto_available(row) && !full on_click: || A.choose_policy(true)}
                     }
                 }
                 mod.widgets.HagencyListNote{text:A.t("Changes apply when its next task starts; a task that is already running isn’t affected.","修改在下一个任务开始时生效，正在运行的任务不受影响。")}
@@ -14835,13 +14931,13 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                     for index row in p.choices.models{if index>=p.offset && index<p.offset+16{View{width:Fill height:Fit flow:Down
                         if index>p.offset {mod.widgets.HagencyListDivider{margin:Inset{left:14}}}
                         mod.widgets.HagencyListTall{
-                            personal_model_choice := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.personal_model_pick(row.runtime,row.model)}
+                            personal_model_choice := mod.widgets.HagencyListTap{enabled:!H.busy && H.command==nil on_click: || A.personal_model_pick(row.runtime,row.model,A.recipient_optional(row,"profileId"))}
                             mod.widgets.HagencyListBody{
                                 mod.widgets.HagencyListText{
                                     mod.widgets.HagencyListTitle{text:row.displayName}
                                     mod.widgets.HagencyListSubtitle{text:row.model}
                                 }
-                                if d.runtime==row.runtime && d.model==row.model {mod.widgets.HagencyCheck{}}
+                                if d.runtime==row.runtime && d.model==row.model && A.recipient_optional(d,"profileId")==A.recipient_optional(row,"profileId") {mod.widgets.HagencyCheck{}}
                             }
                         }
                     }}}
@@ -14864,9 +14960,9 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                     let row=A.personal_model_choice()
                     mod.widgets.HagencyListLabel{text:A.t("REASONING","推理强度")}
                     mod.widgets.HagencyList{View{width:Fill height:Fit padding:14
-                        mod.widgets.HagencySegments{for effort in row.reasoningEfforts{if d.reasoningEffort==effort {mod.widgets.HagencySegmentOn{text:A.reasoning_label(effort) enabled:!H.busy && H.command==nil on_click: || A.personal_model_effort(effort)}} else {mod.widgets.HagencySegment{text:A.reasoning_label(effort) enabled:!H.busy && H.command==nil on_click: || A.personal_model_effort(effort)}}}}
+                        mod.widgets.HagencySegments{for effort in row.reasoningEfforts{if d.reasoningEffort==effort {mod.widgets.HagencySegmentOn{text:A.personal_model_effort_label(row,effort) enabled:!H.busy && H.command==nil on_click: || A.personal_model_effort(effort)}} else {mod.widgets.HagencySegment{text:A.personal_model_effort_label(row,effort) enabled:!H.busy && H.command==nil on_click: || A.personal_model_effort(effort)}}}}
                     }}
-                    mod.widgets.HagencyListNote{text:if H.local_effort_note!="" {H.local_effort_note} else if d.reasoningEffort=="" {A.t("Choose a reasoning level for this model.","请为此模型选择推理强度。")} else {A.t("Higher reasoning answers more carefully but uses more tokens.","推理强度越高，回答越仔细，但消耗更多 token。")}}
+                    mod.widgets.HagencyListNote{text:if row.runtime=="octos" {A.t("Octos uses the reasoning settings in this profile.","Octos 使用该配置中的推理设置。")} else if H.local_effort_note!="" {H.local_effort_note} else if d.reasoningEffort=="" {A.t("Choose a reasoning level for this model.","请为此模型选择推理强度。")} else {A.t("Higher reasoning answers more carefully but uses more tokens.","推理强度越高，回答越仔细，但消耗更多 token。")}}
                     mod.widgets.HagencyListLabel{text:A.t("TOOLS","工具")}
                     mod.widgets.HagencyList{
                         mod.widgets.HagencySwitchRow{
@@ -15046,7 +15142,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                                 mod.widgets.HagencySwitchRow{
                                     mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.bulb draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                                     mod.widgets.HagencyListTitle{text:A.t("Reasoning","推理强度")}
-                                    mod.widgets.HagencyListValue{text:A.reasoning_label(o.model.reasoningEffort)}
+                                    mod.widgets.HagencyListValue{text:A.local_reasoning_label(o.model)}
                                 }
                                 mod.widgets.HagencyListDivider{}
                                 mod.widgets.HagencySwitchRow{
@@ -17304,15 +17400,15 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
         if kind=="policy_change" {View{width:Fill height:Fit flow:Down
             let name=H.policy_detail.agent
             let full=H.policy_draft.executionPolicy.yolo
-            mod.widgets.HagencyAlertTitle{text:if full {A.t("Fully Trust “"+name+"”?","要完全信任「"+name+"」吗？")} else {A.t("Use Standard Permissions?","改为标准权限？")}}
-            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking you first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求你批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
+            mod.widgets.HagencyAlertTitle{text:if full && H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("Automatically Approve Commands?","自动批准命令？")} else if full {A.t("Fully Trust “"+name+"”?","要完全信任「"+name+"」吗？")} else {A.t("Use Standard Permissions?","改为标准权限？")}}
+            mod.widgets.HagencyAlertMessage{padding:Inset{left:16 right:16 top:6 bottom:0} text:if full && H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("It can run commands without asking. Commands remain confined to its work folder and cannot use the network.","它运行命令时不会先请求批准。命令仍限制在工作文件夹内，不能联网。")} else if full && H.policy_detail.framework=="claude" {A.t("It uses its tools, shell commands included, without asking you first. It still cannot read or change files outside its own work folder.","它使用工具（包括运行命令）时不会先请求你批准；仍然不能读写自己工作文件夹以外的文件。")} else if full {A.t("It can read and change files outside its workspace and use the network, without asking you first.","它将能读写工作区以外的文件、访问网络，而且不会先请求你批准。")} else {A.t("Its next task works inside its workspace and asks before doing more.","它的下一个任务会在工作区内运行，超出范围前会先请求批准。")}}
             mod.widgets.HagencyAlertMessage{text:if full {A.t("Only do this for an Agent you trust. It applies to its next task.","请只对你信任的 Agent 开启。下一个任务开始时生效。")} else {A.t("It applies to its next task.","下一个任务开始时生效。")}}
             mod.widgets.HagencyDivider{}
             View{width:Fill height:44 flow:Right
                 if full {policy_cancel := mod.widgets.HagencyAlertBold{text:A.t("Cancel","取消") enabled:!H.busy on_click: || {H.policy_draft=nil H.policy_mode="detail" A.redraw()}}}
                 if !full {policy_cancel := mod.widgets.HagencyAlertButton{text:A.t("Cancel","取消") enabled:!H.busy on_click: || {H.policy_draft=nil H.policy_mode="detail" A.redraw()}}}
                 mod.widgets.HagencyVDivider{}
-                if full {policy_save := mod.widgets.HagencyAlertDanger{text:A.t("Trust Fully","完全信任") enabled:!H.busy && H.command==nil on_click: || {A.review_policy() A.submit_policy()}}}
+                if full {policy_save := mod.widgets.HagencyAlertDanger{text:if H.policy_detail.framework=="octos" && A.shared_mode(H.policy_detail)!=nil {A.t("Enable","启用")} else {A.t("Trust Fully","完全信任")} enabled:!H.busy && H.command==nil on_click: || {A.review_policy() A.submit_policy()}}}
                 if !full {policy_save := mod.widgets.HagencyAlertBold{text:A.t("Use Standard","改为标准") enabled:!H.busy && H.command==nil on_click: || {A.review_policy() A.submit_policy()}}}
             }
         }}

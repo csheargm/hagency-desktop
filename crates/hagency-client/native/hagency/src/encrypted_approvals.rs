@@ -99,11 +99,12 @@ fn validate_details(a: &Value, request: &Value, nonce: &str) -> Result<()> {
                     | "item/fileChange/requestApproval"
                     | "item/permissions/requestApproval"
                     | "claude/can_use_tool"
+                    | "octos/can_use_tool"
             )
         )
         || !request["params"].is_object()
-        || request["method"] == "claude/can_use_tool"
-            && (a["sessionScope"] != "current_claude_session"
+        || matches!(request["method"].as_str(), Some("claude/can_use_tool" | "octos/can_use_tool"))
+            && (a["sessionScope"] != if request["method"] == "octos/can_use_tool" { "current_octos_session" } else { "current_claude_session" }
                 || request["sessionAllowed"] != false
                 || request["managerCanDecide"] != false
                 || request.as_object().is_none_or(|v| {
@@ -471,6 +472,30 @@ mod tests {
         let mut changed=request;changed["params"]["threadId"]=json!("codex-thread");
         let mut approval=row["approval"].clone();approval["request"]=metadata(&changed,&salt,"HAGE2EEAGENT").unwrap();
         assert!(validate_details(&approval,&changed,&salt).is_err());
+    }
+    #[tokio::test]
+    async fn shared_octos_encrypted_approval_binds_owner_and_session_scope() {
+        let (mut row, _, salt) = fixture();
+        let request = json!({"id":"approval-1","method":"octos/can_use_tool",
+            "params":{"sessionId":"session-1","toolName":"shell","input":{"body":"private command"}},
+            "sessionAllowed":false,"managerCanDecide":false});
+        row["approval"]["request"] = metadata(&request, &salt, "HAGE2EEAGENT").unwrap();
+        row["approval"]["sessionScope"] = json!("current_octos_session");
+        row["digest"] = json!(hash(&row["approval"]).unwrap());
+        let (agent, owner) = pair().await;
+        let mut msg = message(&row).unwrap();
+        msg.request = Some(request.clone());
+        msg.nonce = Some(salt.clone());
+        let (raw, info) = roundtrip(&agent, &owner, REQUEST, &msg).await;
+        let card = inbox().await;
+        card.entries.lock().unwrap().push(receive(&raw, Some(&info)).unwrap());
+        assert_eq!(card.details(&row).unwrap(), Some(request.clone()));
+        assert!(may_decide(&row["approval"], "@owner:test.local", "approve_once"));
+        assert!(!may_decide(&row["approval"], "@manager:test.local", "approve_once"));
+        assert!(!may_decide(&row["approval"], "@owner:test.local", "approve_session"));
+        let mut wrong = row["approval"].clone();
+        wrong["sessionScope"] = json!("current_claude_session");
+        assert!(validate_details(&wrong, &request, &salt).is_err());
     }
     async fn inbox() -> Inbox {
         Inbox::attach(

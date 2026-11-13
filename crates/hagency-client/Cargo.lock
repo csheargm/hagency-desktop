@@ -2000,6 +2000,7 @@ version = "0.1.0"
 dependencies = [
  "hagency-core",
  "hagency-platform",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",

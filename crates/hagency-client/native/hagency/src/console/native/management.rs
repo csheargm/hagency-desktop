@@ -8,6 +8,41 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+fn paginate_accounts(page:&mut service::AccountInventory,after:Option<&str>)->Result<(),NativeError> {
+    if page.accounts.len()>256 {return Err(failure(503,"management_capacity"));}
+    page.accounts.sort_by(|a,b|a.id.cmp(&b.id));
+    if page.accounts.windows(2).any(|w|w[0].id==w[1].id) {return Err(failure(409,"management_revision_conflict"));}
+    if let Some(after)=after {page.accounts.retain(|row|row.id.as_str()>after);}
+    if page.accounts.len()>16 {
+        page.accounts.truncate(16);
+        page.next_after=page.accounts.last().map(|row|row.id.clone());
+    } else {page.next_after=None;}
+    Ok(())
+}
+
+#[cfg(test)]
+mod account_page_tests {
+    use super::*;
+    fn page(ids:&[String])->service::AccountInventory {
+        service::AccountInventory {protocol:service::PROTOCOL,observed_at_ms:1,account:None,resources:vec![],next_after:None,
+            accounts:ids.iter().map(|id|service::AccountSummary {id:id.clone(),kind:"local_configuration",runtime:"octos".into(),state:"active".into(),ordinal:None,revision:None,profile:None,readiness:"unknown",identity_key:None,resource_count:0}).collect()}
+    }
+    #[test]
+    fn merged_account_pages_neither_drop_nor_repeat_profiles() {
+        let mut ids=(0..40).map(|n|if n%2==0 {format!("account_octos_{n:02}")} else {format!("account_{n:02}")}).collect::<Vec<_>>();
+        ids.reverse();let mut expected=ids.clone();expected.sort();
+        let mut seen=Vec::new();let mut after=None;
+        loop {let mut value=page(&ids);paginate_accounts(&mut value,after.as_deref()).unwrap();
+            assert!(value.accounts.len()<=16);
+            if let Some(next)=&value.next_after {assert_eq!(value.accounts.last().map(|r|&r.id),Some(next));}
+            seen.extend(value.accounts.into_iter().map(|r|r.id));
+            match value.next_after {Some(next)=>after=Some(next),None=>break}
+        }
+        assert_eq!(seen,expected);
+        ids.push(ids[0].clone());assert_eq!(paginate_accounts(&mut page(&ids),None).unwrap_err().code,"management_revision_conflict");
+    }
+}
+
 #[cfg(test)]
 #[path = "management_shutdown_tests.rs"]
 mod shutdown_tests;
@@ -605,20 +640,40 @@ impl NativeManagement {
         if query.id.as_deref() == Some(super::claude_account::ACCOUNT) {
             return self.claude_account_detail(&context, &session, query.after).await;
         }
-        let list = query.id.is_none();
-        let first = list && query.after.is_none();
-        let result = session.account_inventory(&context, query).await;
-        let mut page = self.finish(&context, result, false).await?;
-        if list {
-            self.add_claude_account(&context, &session, &mut page, first).await;
-            // The sign-in check above takes time; the answer is for the
-            // authority that asked.
-            let (fresh, live) = self.authorized().await?;
-            if fresh != context {
-                return Err(failure(401, "management_scope_changed"));
+        if let Some(id)=query.id.as_deref() {
+            if super::octos_account::is_octos_account(id) {
+                return self.octos_account_detail(&context,&session,id,query.after).await;
             }
-            live.authorize(&context, service::Permission::ReadAccounts).map_err(store_error)?;
+            let result=session.account_inventory(&context,query).await;
+            return self.finish(&context,result,false).await;
         }
+        // Virtual local configurations and stored accounts share one ordered
+        // cursor. Read all bounded stored pages before merging: otherwise an
+        // inserted profile could advance past unseen stored accounts.
+        let after=query.after;
+        let mut cursor=after.clone();
+        let mut all=Vec::new();
+        let mut observed_at_ms=None;
+        for _ in 0..32 {
+            let result=session.account_inventory(&context,service::AccountInventoryQuery{id:None,after:cursor.clone()}).await;
+            let page=self.finish(&context,result,false).await?;
+            observed_at_ms.get_or_insert(page.observed_at_ms);
+            let next=page.next_after;
+            if next.as_ref().is_some_and(|id|page.accounts.last().map(|r|&r.id)!=Some(id) || cursor.as_ref()==Some(id)) {
+                return Err(failure(409,"management_revision_conflict"));
+            }
+            all.extend(page.accounts);
+            if all.len()>256 {return Err(failure(503,"management_capacity"));}
+            if let Some(next)=next {cursor=Some(next);} else {cursor=None;break;}
+        }
+        if cursor.is_some() {return Err(failure(503,"management_capacity"));}
+        let mut page=service::AccountInventory {protocol:service::PROTOCOL,observed_at_ms:observed_at_ms.unwrap_or_default(),accounts:all,account:None,resources:Vec::new(),next_after:None};
+        self.add_claude_account(&context,&session,&mut page,true).await;
+        page.accounts.extend(self.octos_accounts(&context,&session).await?);
+        paginate_accounts(&mut page,after.as_deref())?;
+        let (fresh, live) = self.authorized().await?;
+        if fresh != context {return Err(failure(401, "management_scope_changed"));}
+        live.authorize(&context, service::Permission::ReadAccounts).map_err(store_error)?;
         Ok(page)
     }
     pub async fn resource_detail(

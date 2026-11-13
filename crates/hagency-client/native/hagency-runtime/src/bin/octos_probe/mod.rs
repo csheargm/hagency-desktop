@@ -9,13 +9,14 @@ use std::{
 
 /// The kernel's continuation turn in `background` (a fixed UUID).
 const CONTINUATION: &str = "0192f0c1-0000-7000-8000-00000000c0de";
-const MODES: [&str; 15] = [
+const MODES: [&str; 17] = [
     "normal",
     "host-tools",
     "quiet",
     "duplicate",
     "error",
     "unknown-usage",
+    "unknown-usage-with-totals",
     "background",
     "approval",
     "approval-answer",
@@ -25,6 +26,7 @@ const MODES: [&str; 15] = [
     "malformed",
     "stall",
     "late-totals",
+    "ignore-generic-tools",
 ];
 
 fn emit(value: Value) -> io::Result<()> {
@@ -242,10 +244,12 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
                     "model_name":tool["name"].as_str().unwrap_or_default().replace('.', "_")})
             })
             .collect();
+        let generic = if mode == "ignore-generic-tools" { Value::Null }
+            else { register["params"]["generic_tools"].clone() };
         answer(
             &register,
             json!({"session_id":register["params"]["session_id"],"version":1,"previous_version":0,
-                "tools":registered,"applies":"next_turn"}),
+                "tools":registered,"generic_tools":generic,"applies":"next_turn"}),
         )?;
         next = request(&mut stdin)?;
     }
@@ -364,7 +368,7 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
                     "token_usage":usage(10, 7)}),
             )?;
         }
-        "unknown-usage" => {
+        "unknown-usage" | "unknown-usage-with-totals" => {
             stream.terminal(&turn, json!({"outcome":"completed"}))?;
         }
         _ => {

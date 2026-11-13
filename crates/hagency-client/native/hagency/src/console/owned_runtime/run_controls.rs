@@ -136,6 +136,7 @@ async fn publish(device: &e2ee::AgentDevice, record: &mut Record) -> Result<(), 
 pub(in crate::console) struct CardHost {
     initial: Card,
     text: hagency_runtime::live_text::LiveText,
+    messages: Option<Arc<super::messages::Outbox>>,
     text_seen: StdMutex<(u64, Instant)>,
     state: StdMutex<Option<(Arc<e2ee::AgentDevice>, PathBuf, Record)>>,
     receipts: StdMutex<Vec<PendingReceipt>>,
@@ -151,10 +152,21 @@ impl CardHost {
         Self {
             initial: card,
             text: Default::default(),
+            messages: None,
             text_seen: StdMutex::new((0, Instant::now())),
             state: StdMutex::new(None),
             receipts: StdMutex::new(Vec::new()),
         }
+    }
+    pub(in crate::console) fn with_messages(card: Card, root: &Path) -> Result<Self, ()> {
+        let messages = Arc::new(super::messages::Outbox::open(root, card.clone())?);
+        let mut host = Self::new(card);
+        host.text = hagency_runtime::live_text::LiveText::with_messages(messages.clone());
+        host.messages = Some(messages);
+        Ok(host)
+    }
+    pub(in crate::console) fn messages(&self) -> Option<Arc<super::messages::Outbox>> {
+        self.messages.clone()
     }
     pub(in crate::console) fn live_text(&self) -> hagency_runtime::live_text::LiveText {
         self.text.clone()
@@ -397,8 +409,10 @@ impl Drop for CardHost {
 }
 
 pub(super) struct Controller {
-    sender: native::Sender,
-    card: CardHost,
+    sender: Option<native::Sender>,
+    card: Option<CardHost>,
+    messages: Arc<super::messages::Outbox>,
+    text: hagency_runtime::live_text::LiveText,
 }
 /// Pauses between attempts to open the Agent device for a run card: 20 s,
 /// 60 s, 180 s, then every 6 minutes, which stays under the homeserver's
@@ -420,17 +434,25 @@ pub(super) fn optional_card(
     }
 }
 impl Controller {
-    pub(super) fn new(sender: native::Sender, card: Card) -> Self {
-        Self {
-            sender,
-            card: CardHost::new(card),
-        }
+    pub(super) fn new(sender: native::Sender, card: Card, root: &Path) -> Result<Self, ()> {
+        let card = CardHost::with_messages(card, root)?;
+        Ok(Self {
+            sender: Some(sender),
+            messages: card.messages().ok_or(())?,
+            text: card.live_text(),
+            card: Some(card),
+        })
+    }
+    pub(super) fn messages_only(route: super::messages::Route, root: &Path) -> Result<Self, ()> {
+        let messages = Arc::new(super::messages::Outbox::open_route(root, route)?);
+        let text = hagency_runtime::live_text::LiveText::with_messages(messages.clone());
+        Ok(Self { sender: None, card: None, messages, text })
     }
     pub(super) fn finish(&self, state: CardState) {
-        self.card.finish(state);
+        if let Some(card) = &self.card { card.finish(state); }
     }
     pub(super) fn live_text(&self) -> hagency_runtime::live_text::LiveText {
-        self.card.live_text()
+        self.text.clone()
     }
     pub(super) async fn serve<T: Transport>(
         &self,
@@ -442,7 +464,7 @@ impl Controller {
     ) {
         let mut tick = tokio::time::interval(Duration::from_millis(500));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        while !self.sender.is_active() {
+        while self.sender.as_ref().is_some_and(|sender| !sender.is_active()) {
             tokio::select! { _ = canceled(&mut cancel) => return, _ = tick.tick() => {} }
         }
         // The card needs the Agent's device. One that is not ready yet is
@@ -464,17 +486,25 @@ impl Controller {
             tokio::select! { _ = canceled(&mut cancel) => return, _ = tokio::time::sleep(pause) => {} }
             pause = (pause * 3).min(DEVICE_RETRY_MAX);
         };
-        if self.card.open(device).is_err() {
-            return;
-        }
+        // A damaged optional control card must not discard the independent
+        // message outbox; its own scope and authorization are checked below.
+        if let Some(card) = &self.card { let _ = card.open(device.clone()); }
         loop {
             tokio::select! { _ = canceled(&mut cancel) => return, _ = tick.tick() => {} }
-            self.card.drain_receipts(false);
-            let _ = self.card.publish().await;
-            if self.card.pending_receipts() >= 16 {
+            if let Some(card) = &self.card {
+                card.drain_receipts(false);
+                let _ = card.publish().await;
+            }
+            if self.messages.next().ok().flatten().is_some()
+                && fresh_running(transport, lease, &prepared.dispatch, &prepared.execution_id, &mut cancel).await
+            {
+                let _ = self.messages.send_next(&device, prepared.dispatch.body.is_empty()).await;
+            }
+            let (Some(card), Some(sender)) = (&self.card, &self.sender) else { continue; };
+            if card.pending_receipts() >= 16 {
                 continue;
             }
-            for (received, action) in self.card.actions().await.unwrap_or_default() {
+            for (received, action) in card.actions().await.unwrap_or_default() {
                 if !fresh_running(
                     transport,
                     lease,
@@ -490,7 +520,7 @@ impl Controller {
                     Action::Steer { text } => (native::Action::Steer { text }, false),
                     Action::Interrupt {} => (native::Action::Interrupt, true),
                     Action::Queue { .. } => {
-                        let _ = self.card.receipt(
+                        let _ = card.receipt(
                             &received.event_id,
                             &received.sender,
                             "unsupported",
@@ -499,8 +529,8 @@ impl Controller {
                         continue;
                     }
                 };
-                match self.sender.submit(action) {
-                    Ok(submission) => self.card.track(
+                match sender.submit(action) {
+                    Ok(submission) => card.track(
                         received.event_id,
                         received.sender,
                         stop,
@@ -508,7 +538,7 @@ impl Controller {
                         outcome_name,
                     ),
                     Err(error) => {
-                        let _ = self.card.receipt(
+                        let _ = card.receipt(
                             &received.event_id,
                             &received.sender,
                             if error == native::SubmitError::Busy {
@@ -522,6 +552,21 @@ impl Controller {
                 }
             }
         }
+    }
+    pub(super) async fn flush_messages<T: Transport>(
+        &self, transport: &T, lease: &LeaseRef, config: &StartConfig,
+        prepared: &inbox::Prepared, cancel: &mut watch::Receiver<bool>,
+    ) -> Result<(), ()> {
+        let messages = &self.messages;
+        if messages.next()?.is_none() { return Ok(()); }
+        let device = e2ee::device(transport, lease, config, cancel).await.map_err(|_| ())?;
+        while messages.next()?.is_some() {
+            if !fresh_running(transport, lease, &prepared.dispatch, &prepared.execution_id, cancel).await {
+                return Err(());
+            }
+            messages.send_next(&device, prepared.dispatch.body.is_empty()).await?;
+        }
+        Ok(())
     }
 }
 fn outcome_name(outcome: NativeOutcome) -> &'static str {
@@ -936,6 +981,23 @@ mod tests {
         dispatch.thread_root = "unsupported presentation root".into();
         assert!(optional_card(&dispatch, "execution", "@owner:test", "claude").is_none());
         assert_eq!(dispatch.body, "original answer wanted");
+    }
+    #[test]
+    fn agent_requester_has_message_delivery_without_control_authority() {
+        let dispatch: inbox::Dispatch = serde_json::from_value(serde_json::json!({
+            "id":"dispatch","bindingId":"binding","agentId":"agent", "eventId":"$trigger", "roomId":"!room:test",
+            "requesterMxid":"@_hagency_agt_test:test","threadRoot":"$thread:test","body":"question", "state":"running",
+            "bindingGeneration":1,"dispatchEpoch":1,"dispatchDeviceId":"device","executionId":"execution","outcome":null
+        })).unwrap();
+        assert!(optional_card(&dispatch, "execution", "@owner:test", "claude").is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let route = super::super::messages::Route::personal(&dispatch, "execution").unwrap();
+        let controller = Controller::messages_only(route, directory.path()).unwrap();
+        assert!(controller.card.is_none());
+        assert!(controller.sender.is_none());
+        assert!(controller.live_text().message("claude:one", "progress").unwrap());
+        assert_eq!(controller.messages.next().unwrap().unwrap().text, "progress");
+        controller.finish(CardState::Completed);
     }
     #[test]
     fn durable_action_claim_is_unique_across_reopening_and_concurrent_delivery() {

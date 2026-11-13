@@ -1,5 +1,51 @@
 use super::*;
 
+/// Octos pools bind one explicitly owner-selected local configuration. This
+/// proves only the persisted mapping, not a third-party provider identity;
+/// the original profile and private key are rechecked before process startup.
+pub(super) fn admitted_account(db: &Connection, resource: &hagency_core::project::Resource) -> Result<bool, Error> {
+    if resource.framework == "octos" {
+        let Some(profile) = resource.octos_profile.as_deref() else { return Ok(false); };
+        if resource.provider.as_deref() != Some(hagency_core::qualification::OWNER_ENDPOINT) {
+            return Ok(false);
+        }
+        return Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_accounts a JOIN owner_octos_profiles p ON p.profile_digest=a.provider_digest JOIN owner_octos_model_resources m ON m.profile_digest=p.profile_digest JOIN owner_octos_key k ON k.singleton=1 WHERE a.seat_id=?1 AND a.identity_kind='explicit_owner_mapping' AND p.profile_id=?2 AND m.model=?3 AND m.resource_id=?4 AND length(m.configuration_digest)=64 AND length(k.commitment)=64)",
+            params![resource.seat_id, profile, resource.model, resource.id()], |r| r.get(0))?);
+    }
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind='verified_provider')",
+        [&resource.seat_id], |r| r.get(0))?)
+}
+
+#[cfg(test)]
+mod octos_account_tests {
+    use super::*;
+    #[test]
+    fn octos_reservation_requires_its_own_explicit_profile_mapping_and_key_commitment() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE owner_resource_accounts(provider_digest TEXT, seat_id TEXT, identity_kind TEXT);
+            CREATE TABLE owner_octos_profiles(profile_digest TEXT, profile_id TEXT, model TEXT, configuration_digest TEXT);
+            CREATE TABLE owner_octos_model_resources(profile_digest TEXT, model TEXT, resource_id TEXT, configuration_digest TEXT);
+            CREATE TABLE owner_octos_key(singleton INTEGER, commitment TEXT);").unwrap();
+        let resource: hagency_core::project::Resource = serde_json::from_value(json!({"presetId":"preset", "seatId":"seat",
+            "framework":"octos", "model":"local-model", "provider":"owner_endpoint", "octosProfile":"coding"})).unwrap();
+        db.execute("INSERT INTO owner_resource_accounts VALUES('profile','seat','explicit_owner_mapping')", []).unwrap();
+        db.execute("INSERT INTO owner_octos_profiles VALUES('profile','coding','local-model',?1)", [&"a".repeat(64)]).unwrap();
+        db.execute("INSERT INTO owner_octos_model_resources VALUES('profile','local-model',?1,?2)", params![resource.id(), "a".repeat(64)]).unwrap();
+        assert!(!admitted_account(&db, &resource).unwrap());
+        db.execute("INSERT INTO owner_octos_key VALUES(1,?1)", [&"b".repeat(64)]).unwrap();
+        assert!(admitted_account(&db, &resource).unwrap());
+        let mut wrong = resource.clone();
+        wrong.octos_profile = Some("other".into());
+        assert!(!admitted_account(&db, &wrong).unwrap());
+        wrong = resource.clone(); wrong.model = "other-model".into();
+        assert!(!admitted_account(&db, &wrong).unwrap());
+        wrong = resource.clone(); wrong.provider = None;
+        assert!(!admitted_account(&db, &wrong).unwrap());
+        wrong = resource.clone(); wrong.framework = "codex".into(); wrong.octos_profile = None;
+        assert!(!admitted_account(&db, &wrong).unwrap());
+    }
+}
+
 /// Write only an already checked original project command. Never overwrite an
 /// existing authority row or reconstruct a missing native reservation.
 pub(in super::super) fn save_project_authority(
@@ -141,8 +187,7 @@ fn authority(
         return Ok(Some("unsettled_usage"));
     }
     let resource = read_resource(db, &e.resource_id)?;
-    let verified: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind='verified_provider')",[&resource.seat_id],|r| r.get(0))?;
-    if !verified
+    if !admitted_account(db, &resource)?
         || !hagency_core::qualification::qualifies(
             &resource.profile(),
             &c.definition.capability,
@@ -211,9 +256,7 @@ fn pool_authority(db: &Connection, d: &VerifiedManagedAgentDelivery, now: u64) -
         return Ok(Some("authority_changed"));
     }
     let resource = read_resource(db,&e.resource_id)?;
-    let verified: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind='verified_provider')",
-        [&resource.seat_id], |r| r.get(0))?;
-    if !verified || !hagency_core::qualification::qualifies(&resource.profile(),&c.definition.capability,None) {
+    if !admitted_account(db, &resource)? || !hagency_core::qualification::qualifies(&resource.profile(),&c.definition.capability,None) {
         return Ok(Some("resource_unavailable"));
     }
     let unsettled = if periods::recurring(c) {

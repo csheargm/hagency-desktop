@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn claude_input_joins_the_running_turn_and_waits_for_its_receipt_like_codex() {
-        for runtime in ["codex", "claude"] {
+        for runtime in ["codex", "claude", "octos"] {
             let mut e = entry();
             e.key = format!("$card-{runtime}");
             e.card.runtime = runtime.into();

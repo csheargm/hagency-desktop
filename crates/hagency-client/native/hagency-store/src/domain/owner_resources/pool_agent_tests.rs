@@ -527,7 +527,7 @@ async fn pool_agent_schema_upgrade_preserves_populated_legacy_holds_and_rolls_ba
                 .unwrap();
         }
     }
-    db.execute_batch("DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=99;CREATE INDEX owner_managed_pool_children ON owner_capacity_grants(id);").unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS owner_octos_model_resources;DROP TABLE IF EXISTS owner_octos_enrollments;DROP TABLE IF EXISTS owner_octos_profiles;DROP TABLE IF EXISTS owner_octos_key;DROP TABLE IF EXISTS owner_shared_native_checkpoints;DROP TABLE IF EXISTS owner_shared_native_turns;DROP TABLE IF EXISTS owner_shared_unstarted_runtimes;DROP TABLE IF EXISTS owner_shared_decrypted_inputs;DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_unstarted_attempts;DROP TABLE IF EXISTS owner_shared_budget_demand_terminals;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=99;CREATE INDEX owner_managed_pool_children ON owner_capacity_grants(id);").unwrap();
     drop(db);
     assert!(OwnerResourceRegistry::open_root(&root).is_err());
     let db = Connection::open(root.join("domain.sqlite3")).unwrap();
@@ -613,14 +613,15 @@ async fn shared_agent_execution_policy_names_the_pools_tool_and_claude_takes_ful
         let ctx=HostContext::new(owner,1,"a".repeat(64),1,"policy_device".into(),1)?;
         let enabled=db.management_edit_execution_policy(&input,CommandReceipt::new(&ctx,"edit_execution_policy",&input.command_id,&input)?,|_|Ok(()))?;
         assert_eq!((enabled.framework.as_str(),enabled.shared_mode.as_deref(),enabled.execution_policy.yolo),("claude",Some("yolo"),true));
-        // A tool without a full-trust mode is still refused.
+        // Octos auto-approval is confined to the shared work folder.
         let mut standard=input.clone();standard.command_id="claude_standard".into();standard.execution_policy.yolo=false;standard.expected_revision=enabled.revision;
         db.management_edit_execution_policy(&standard,CommandReceipt::new(&ctx,"edit_execution_policy",&standard.command_id,&standard)?,|_|Ok(()))?;
         assert_eq!(db.db.execute("UPDATE resources SET config=json_set(config,'$.framework','octos') WHERE id=?1",[&a.resource_id])?,1);
         let other=db.management_execution_policy(&query,|_|Ok(()))?;
         assert_eq!((other.framework.as_str(),other.shared_mode.as_deref()),("octos",Some("standard")));
-        let mut refused=input.clone();refused.command_id="octos_yolo".into();refused.expected_revision=other.revision;
-        assert!(matches!(db.management_edit_execution_policy(&refused,CommandReceipt::new(&ctx,"edit_execution_policy",&refused.command_id,&refused)?,|_|Ok(())),Err(Error::Invalid(_))));
+        let mut allowed=input.clone();allowed.command_id="octos_yolo".into();allowed.expected_revision=other.revision;
+        let saved=db.management_edit_execution_policy(&allowed,CommandReceipt::new(&ctx,"edit_execution_policy",&allowed.command_id,&allowed)?,|_|Ok(()))?;
+        assert_eq!((saved.framework.as_str(),saved.shared_mode.as_deref()),("octos",Some("yolo")));
         Ok(())
     }).await.unwrap();
     f.registry.shutdown().await.unwrap();

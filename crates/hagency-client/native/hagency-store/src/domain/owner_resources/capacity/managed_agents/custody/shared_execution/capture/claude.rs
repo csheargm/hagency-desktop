@@ -84,7 +84,7 @@ impl SharedCallSink {
         {
             return Err(Error::LocalAuthority);
         }
-        self.claude_unaccounted = true;
+        self.usage_unaccounted = true;
         self.terminal = Some(if receipt.interrupted() {
             TurnResult::Interrupted
         } else if receipt.is_error() {
@@ -121,7 +121,7 @@ impl SharedCallSink {
             native::ObservationKind::Ignored => return Ok(None),
             // Numeric evidence can be unusable while result/idle remains
             // authentic. Keep the answer and any earlier known lower bound.
-            native::ObservationKind::Invalidated => self.claude_unaccounted = true,
+            native::ObservationKind::Invalidated => self.usage_unaccounted = true,
             native::ObservationKind::Usage(evidence) => {
                 self.usage = Some(Usage::Claude(evidence.clone()))
             }

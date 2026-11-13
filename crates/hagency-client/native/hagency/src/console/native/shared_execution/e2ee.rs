@@ -106,6 +106,41 @@ fn root(io: &Io, b: &Bound) -> Result<PathBuf, NativeError> {
     hagency_store::private::directory(&root).map_err(store)?;
     Ok(root)
 }
+pub(super) fn message_root(io: &Io, b: &Bound, assignment: &str) -> Result<PathBuf, NativeError> {
+    crate::console::owned_runtime::e2ee::agent_root(&root(io, b)?, assignment)
+        .map_err(|_| failure(503, "shared_message_storage_unavailable"))
+}
+pub(super) async fn send_message(
+    io: &Io, b: &Bound, work: &SharedWorkItem,
+    outbox: &crate::console::owned_runtime::messages::Outbox,
+) -> Result<bool, NativeError> {
+    let Some(pending) = outbox.next().map_err(|_| invalid())? else { return Ok(false); };
+    super::files::authorize(io, &work.id).await
+        .map_err(|_| failure(503, "shared_message_delivery_pending"))?;
+    // Only the Matrix boundary is substituted in supervised-process tests.
+    #[cfg(test)]
+    if let Some(fixture) = &io.crypto_fixture {
+        let event = format!("$progress_{}:test", sha(&pending.txn));
+        let mut txns = fixture.message_transactions.lock().unwrap();
+        if let Some((previous_work, previous_text)) = txns.get(&pending.txn) {
+            if previous_work != &work.id || previous_text != &pending.text { return Err(invalid()); }
+        } else {
+            txns.insert(pending.txn.clone(), (work.id.clone(), pending.text.clone()));
+            fixture.sent.lock().unwrap().push((work.id.clone(), pending.text));
+        }
+        drop(txns);
+        if fixture.lose_message_response.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(failure(503, "shared_message_delivery_pending"));
+        }
+        outbox.sent(pending.sequence, &event)
+            .map_err(|_| invalid())?;
+        return Ok(true);
+    }
+    let _ = pending;
+    let device = device(io, b, &work.assignment_id).await?;
+    outbox.send_next(&device, work.encrypted).await
+        .map_err(|_| failure(503, "shared_message_delivery_pending"))
+}
 pub(super) fn file_records(io: &Io, b: &Bound, assignment: &str) -> Result<PathBuf, NativeError> {
     let parent = root(io,b)?.join("chat-file-receipts");
     hagency_store::private::directory(&parent).map_err(store)?;
@@ -391,9 +426,21 @@ pub(super) struct CryptoFixture {
     input: Option<String>,
     input_delay: Duration,
     sent: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    message_transactions: std::sync::Mutex<std::collections::BTreeMap<String, (String, String)>>,
+    lose_message_response: std::sync::atomic::AtomicBool,
     pub(super) history: Option<Arc<super::history::Fixture>>,
     pub(super) files: Option<Arc<super::files::tests::Endpoint>>,
     pub(super) questions: Option<Arc<super::questions::Fixture>>,
+    pub(super) approvals: Option<Arc<ApprovalFixture>>,
+}
+#[cfg(test)]
+pub(in crate::console::native) struct ApprovalFixture {
+    pub(super) allow: bool,
+    pub(super) requests: std::sync::Mutex<Vec<Value>>,
+}
+#[cfg(test)]
+impl ApprovalFixture {
+    pub(in crate::console::native) fn requests(&self) -> Vec<Value> { self.requests.lock().unwrap().clone() }
 }
 #[cfg(test)]
 impl SharedExecutionTransport {
@@ -406,11 +453,27 @@ impl SharedExecutionTransport {
             input,
             input_delay: Duration::ZERO,
             sent: sent.clone(),
+            message_transactions: Default::default(),
+            lose_message_response: std::sync::atomic::AtomicBool::new(false),
             history: None,
             files: None,
             questions: None,
+            approvals: None,
         }));
         (self, sent)
+    }
+    /// The fake homeserver accepts one event but loses its HTTP response.
+    /// A retry of that transaction must return the same event, not post twice.
+    pub(in crate::console::native) fn with_lost_message_response(self) -> Self {
+        self.io.crypto_fixture.as_ref().unwrap().lose_message_response
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+    /// A local decision fixture; no live Matrix device or owner is contacted.
+    pub(in crate::console::native) fn with_approval_fixture(mut self, allow: bool) -> (Self, Arc<ApprovalFixture>) {
+        let fixture = Arc::new(ApprovalFixture { allow, requests: std::sync::Mutex::new(Vec::new()) });
+        Arc::get_mut(self.io.crypto_fixture.as_mut().unwrap()).unwrap().approvals = Some(fixture.clone());
+        (self, fixture)
     }
     pub(in crate::console::native) fn with_crypto_input_delay(mut self, delay: Duration) -> Self {
         Arc::get_mut(self.io.crypto_fixture.as_mut().unwrap())
@@ -525,6 +588,19 @@ pub(super) async fn wire_receipt(
     w: &SharedWorkItem,
     r: &SharedWorkReceipt,
 ) -> Result<SharedWorkReceipt, NativeError> {
+    // Recovery reuses the original native identities and Matrix transactions;
+    // the provider process and its already-accounted call are never repeated.
+    let card = crate::agent_run_controls::Card::for_shared(w, &r.call_id).map_err(|_| invalid())?;
+    let message_directory = message_root(io, b, &w.assignment_id)?;
+    if crate::console::owned_runtime::messages::Outbox::exists(&message_directory, &card) {
+        let messages = crate::console::owned_runtime::messages::Outbox::open(&message_directory, card)
+            .map_err(|_| failure(503, "shared_message_storage_unavailable"))?;
+        if messages.next().map_err(|_| invalid())?.is_some() {
+            while messages.next().map_err(|_| invalid())?.is_some() {
+                send_message(io, b, w, &messages).await?;
+            }
+        }
+    }
     if !w.encrypted {
         return Ok(r.clone());
     }

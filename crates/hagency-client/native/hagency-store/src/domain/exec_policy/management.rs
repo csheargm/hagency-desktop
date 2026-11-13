@@ -139,10 +139,13 @@ impl DomainRepository {
         if current.revision != input.expected_revision {
             return Err(Error::Conflict);
         }
-        let policy = normalize_policy(
-            Some(&serde_json::to_value(input.execution_policy)?),
-            &current.framework,
-        )?;
+        let policy = if current.shared_mode.is_some() && current.framework == "octos" {
+            // Shared Octos auto-approval stays inside its isolated workspace;
+            // it does not grant the personal runner full host trust.
+            hagency_core::execution::ExecutionPolicy { yolo: input.execution_policy.yolo }
+        } else {
+            normalize_policy(Some(&serde_json::to_value(input.execution_policy)?), &current.framework)?
+        };
         if let Some(enabled) = input.web_search {
             if current.shared_mode.is_none() || input.execution_policy != current.execution_policy {
                 return Err(Error::LocalAuthority);

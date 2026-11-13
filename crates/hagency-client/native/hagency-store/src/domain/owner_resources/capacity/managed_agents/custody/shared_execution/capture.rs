@@ -4,6 +4,9 @@ use hagency_runtime::{
     owned::{OwnedSession, SharedTextEvent},
 };
 mod claude;
+mod octos;
+mod octos_native_session;
+pub use octos_native_session::SharedOctosSession;
 mod native_session;
 pub use native_session::SharedNativeSession;
 mod claude_native_session;
@@ -12,18 +15,21 @@ pub use claude_native_session::SharedClaudeSession;
 enum Source {
     Codex(ObservationSource),
     Claude(hagency_runtime::claude::session::ObservationSource),
+    Octos(hagency_runtime::octos::session::ObservationSource),
 }
 impl Source {
     fn is_retired(&self) -> bool {
         match self {
             Self::Codex(s) => s.is_retired(),
             Self::Claude(s) => s.is_retired(),
+            Self::Octos(s) => s.is_retired(),
         }
     }
 }
 enum Usage {
     Codex(UsageEvidence),
     Claude(hagency_runtime::claude::session::UsageEvidence),
+    Octos(hagency_runtime::octos::session::UsageEvidence),
 }
 
 /// Bounded, original-process capture. Numerical usage is never accepted without
@@ -36,7 +42,8 @@ pub struct SharedCallSink {
     terminal: Option<TurnResult>,
     usage: Option<Usage>,
     claude_result: Option<bool>,
-    claude_unaccounted: bool,
+    usage_unaccounted: bool,
+    octos_idle: bool,
     output: String,
     output_overflow: bool,
     last_text_item: Option<String>,
@@ -91,7 +98,8 @@ impl SharedCallCustody {
             terminal: None,
             usage: None,
             claude_result: None,
-            claude_unaccounted: false,
+            usage_unaccounted: false,
+            octos_idle: false,
             output: String::new(),
             output_overflow: false,
             last_text_item: None,
@@ -184,7 +192,7 @@ impl SharedCallSink {
         let complete = self.clean
             && !self.source.is_retired()
             && self.terminal.is_some()
-            && !self.claude_unaccounted;
+            && !self.usage_unaccounted;
         let state = if forced_unknown || !self.clean {
             "unknown"
         } else {
@@ -206,6 +214,9 @@ impl SharedCallSink {
                 evidence,
                 terminal,
                 complete,
+            ),
+            Some(Usage::Octos(evidence)) => ManagedUsageObservation::shared_octos_capture(
+                format!("{id}_usage"), evidence, terminal, complete,
             ),
             evidence => ManagedUsageObservation::shared_capture(
                 format!("{id}_usage"),

@@ -174,7 +174,7 @@ impl Card {
             || !(event(&self.thread_root) || self.thread_root == self.room_id)
             || !person(&self.requester)
             || !person(&self.owner)
-            || !matches!(self.runtime.as_str(), "codex" | "claude")
+            || !matches!(self.runtime.as_str(), "codex" | "claude" | "octos")
             || self.preview.len() > hagency_runtime::live_text::MAX_PREVIEW_BYTES
             || self
                 .preview

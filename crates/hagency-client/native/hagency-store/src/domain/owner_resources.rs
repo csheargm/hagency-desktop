@@ -11,6 +11,8 @@ mod edit_binding;
 pub use edit_binding::ResourceEditBinding;
 mod provider_binding;
 pub use provider_binding::VerifiedOwnerResourceBinding;
+mod octos_profile;
+pub use octos_profile::{OctosRunningGuard, OwnerOctosProfile};
 mod previous_build;
 #[cfg(test)]
 mod tests;
@@ -236,6 +238,11 @@ enum Action {
         monthly_tokens: u64,
         namespace: Option<Box<ResourceAccountSelection>>,
     },
+    EnrollOctos {
+        proof: OwnerOctosProfile,
+        monthly_tokens: u64,
+        input: Option<Box<NamespaceEnrollment>>,
+    },
     Link {
         resource: String,
     },
@@ -260,6 +267,7 @@ impl OwnerResourceConsent {
         let fence = self.registry.0.clone();
         let expires = match &self.action {
             Action::Enroll { proof, .. } => self.expires.min(proof.expires),
+            Action::EnrollOctos { proof, .. } => self.expires.min(proof.expires()),
             _ => self.expires,
         };
         let result = store
@@ -283,6 +291,9 @@ impl OwnerResourceConsent {
             && Instant::now() >= proof.expires
         {
             return Err(Error::LocalAuthority);
+        }
+        if let Action::EnrollOctos { proof, .. } = &self.action {
+            proof.check(self.registry.id())?;
         }
         Ok(())
     }
@@ -473,6 +484,38 @@ impl OwnerResourceRegistry {
             expires,
         )
     }
+    /// A local configuration has its own explicitly owner-selected budget;
+    /// it is not proof of a provider quota account. Only native code may
+    /// supply the original fresh profile observation.
+    pub fn prepare_octos_enrollment(
+        &self,
+        profile: ProfileAuthority,
+        command: String,
+        proof: OwnerOctosProfile,
+        monthly_tokens: u64,
+        expires: Instant,
+    ) -> Result<OwnerResourceConsent, Error> {
+        if monthly_tokens == 0 || monthly_tokens > JSON_SAFE_MAX {
+            return Err(InvalidInput("invalid owner resource selection").into());
+        }
+        proof.check(self.id())?;
+        self.consent(profile, command, Action::EnrollOctos { proof, monthly_tokens, input: None }, expires)
+    }
+    /// An account-form enrollment retains its original input for lost-reply
+    /// recovery. The public ID names the profile but supplies no path or proof.
+    pub fn prepare_octos_account_enrollment(
+        &self, profile: ProfileAuthority, input: NamespaceEnrollment,
+        proof: OwnerOctosProfile, expires: Instant,
+    ) -> Result<OwnerResourceConsent, Error> {
+        input.validate()?;
+        if input.account.account_id.strip_prefix("account_octos_") != Some(proof.profile_id())
+            || input.model != proof.model() || input.reasoning.is_some()
+        { return Err(InvalidInput("invalid Octos resource selection").into()); }
+        proof.check(self.id())?;
+        let command=input.command_id.clone();
+        let monthly_tokens=input.monthly_tokens;
+        self.consent(profile,command,Action::EnrollOctos {proof,monthly_tokens,input:Some(Box::new(input))},expires)
+    }
     /// A trusted owner consciously shares an existing resource with another
     /// authenticated profile. This adds access only; never another ceiling.
     pub fn prepare_link(
@@ -606,6 +649,13 @@ impl DomainRepository {
                 if let Some(selection)=namespace { selection.check_on(&self.db)?; action["namespace"]=selection.key(); }
                 action
             }
+            Action::EnrollOctos { proof, monthly_tokens, input } => {
+                let mut action=json!({"kind":"enroll_octos", "configuration":proof.digest(),
+                    "version":proof.version(), "profile":proof.profile_id(),
+                    "model":proof.model(), "tokens":monthly_tokens});
+                if let Some(input)=input {action["input"]=json!(canonical::digest(&serde_json::to_value(input)?)?);}
+                action
+            },
             Action::Link { resource } => json!({"kind":"link","resource":resource}),
             Action::Revoke { resource } => json!({"kind":"revoke","resource":resource}),
         };
@@ -730,6 +780,11 @@ impl DomainRepository {
                 }
                 (r.id(), true)
             }
+            Action::EnrollOctos { proof, monthly_tokens, .. } => {
+                let (resource, created) = octos_profile::enroll(&tx, proof, *monthly_tokens)?;
+                created_resource = created;
+                (resource, true)
+            }
             Action::Link { resource } => {
                 let target = read_resource(&tx, resource)?;
                 (resource.clone(), true)
@@ -786,6 +841,10 @@ impl DomainRepository {
             let input=NamespaceEnrollment {command_id:consent.command.clone(), account:selection.query.clone(), model:model.clone(), reasoning:reasoning.clone(), monthly_tokens:*monthly_tokens};
             tx.execute("INSERT INTO owner_namespace_enrollments VALUES(?1,?2,?3,?4)",params![consent.command,consent.profile.digest,canonical::digest(&serde_json::to_value(input)?)?,receipt.resource_id])?;
             selection.check_on(&tx)?;
+        }
+        if let Action::EnrollOctos { input: Some(input), .. }=&consent.action {
+            tx.execute("INSERT INTO owner_octos_enrollments VALUES(?1,?2,?3,?4)",
+                params![consent.command,consent.profile.digest,canonical::digest(&serde_json::to_value(input)?)?,receipt.resource_id])?;
         }
         consent.check()?;
         tx.commit()?;

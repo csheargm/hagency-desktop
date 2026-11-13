@@ -92,3 +92,27 @@ fn shared_claude_root_cannot_relabel_legacy_codex_or_broaden_owner_policy() {
         assert!(serde_json::from_value::<SharedRuntimeCommand>(mixed).unwrap().validate(&original.reserve_command.manager_mxid).is_err(),"{field}");
     }
 }
+
+#[test]
+fn shared_octos_root_has_a_distinct_closed_policy() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("management-shared-execution-v1.json")).unwrap();
+    let original: SharedRuntimeCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    let mut octos = original.clone();
+    octos.version = 5;
+    octos.capability = SHARED_OCTOS_CAPABILITY.into();
+    octos.policy = SHARED_OCTOS_POLICY.into();
+    octos.validate(&octos.reserve_command.manager_mxid).unwrap();
+    assert_eq!(octos.runtime().unwrap(), "octos");
+    assert_eq!(octos.execution_policy(false, None).unwrap(), SHARED_OCTOS_POLICY);
+    assert_eq!(octos.execution_policy(true, None).unwrap(), "octos_text_live_web_v1");
+    assert_eq!(octos.execution_policy(false, Some("standard")).unwrap(), "octos_tools_standard_v1");
+    assert_eq!(octos.execution_policy(true, Some("yolo")).unwrap(), "octos_tools_yolo_web_v1");
+    assert!(octos.execution_policy(false, Some("arbitrary")).is_err());
+    for field in ["version", "capability", "policy"] {
+        let mut mixed = serde_json::to_value(&octos).unwrap();
+        mixed[field] = fixture["command"][field].clone();
+        assert!(serde_json::from_value::<SharedRuntimeCommand>(mixed).unwrap()
+            .validate(&original.reserve_command.manager_mxid).is_err());
+    }
+    assert_eq!(canonical::digest(&serde_json::to_value(&original).unwrap()).unwrap(), fixture["commandDigest"]);
+}

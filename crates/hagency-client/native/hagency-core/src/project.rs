@@ -152,8 +152,9 @@ pub struct Resource {
     pub model: String,
     pub provider: Option<String>,
     pub reasoning: Option<String>,
-    /// The user's Octos profile an `octos` resource runs: its primary model is
-    /// the resource's model (ADR-193 decision 7). No other framework names one.
+    /// The user's Octos profile an `octos` resource runs. Its model is an
+    /// owner-selected configured route, pinned in a private process snapshot.
+    /// No other framework names an Octos profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub octos_profile: Option<String>,
     /// Inherited once when a new agent is provisioned. Absence keeps the

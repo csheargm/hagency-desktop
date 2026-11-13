@@ -98,7 +98,7 @@ impl UsageRun {
     }
     pub(super) fn attach(&mut self, runner: &impl OwnedCapture) {
         // Only the original owned adapter can supply this source: after fresh
-        // Codex start_turn or Claude system/init, before later stream messages.
+        // Codex or Octos start_turn, or Claude system/init, before later stream messages.
         match runner.capture_source() {
             Some(source) => self.attach_source(source),
             _ => self.fence(UsageFailure::Source),

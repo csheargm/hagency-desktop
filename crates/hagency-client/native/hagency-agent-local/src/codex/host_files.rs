@@ -158,7 +158,7 @@ struct UpdateInput {
     expected_sha256: String,
 }
 
-pub(super) fn specifications(shared: bool) -> Value {
+pub(crate) fn specifications(shared: bool) -> Value {
     let mut tools = value!([
         {"type":"function","name":"hagency_file_list","description":"List the authorized workspace. Use an empty path for the root.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
         {"type":"function","name":"hagency_file_read","description":"Read a UTF-8 file in the authorized workspace.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
@@ -173,7 +173,7 @@ pub(super) fn specifications(shared: bool) -> Value {
 fn failure(code: &str) -> Value {
     value!({"success":false,"contentItems":[{"type":"inputText","text":code}]})
 }
-fn operation(params: &Value, owner: &str, scope: &Scope, dispatch: &str) -> Result<Operation> {
+pub(crate) fn operation(params: &Value, owner: &str, scope: &Scope, dispatch: &str) -> Result<Operation> {
     if params.get("namespace").is_some_and(|v| !v.is_null()) {
         return Err(Error::Protocol("unexpected host tool namespace"));
     }

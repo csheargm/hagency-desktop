@@ -13,6 +13,8 @@ use std::{fs, path::PathBuf};
 mod continuous;
 #[path = "runtime/questions.rs"]
 mod questions;
+#[path = "runtime/octos_interactive.rs"]
+mod octos_interactive;
 #[path = "runtime/postpaid.rs"]
 mod postpaid;
 #[path = "runtime/room.rs"]
@@ -169,6 +171,25 @@ impl Fixture {
             .unwrap()
     }
 }
+#[tokio::test]
+async fn octos_missing_turn_usage_stays_unsettled_when_session_has_earlier_totals() {
+    let mut f = Fixture::new(Kind::Octos, "octos_missing_with_totals", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let reply = process.session.run_with_started(
+        &mut f.ledger, "@owner:test", &f.scope, "call", "dispatch", "hello",
+        BudgetMode::Postpaid, &queue, None,
+    ).await.unwrap();
+    assert_eq!(reply.text, "offline reply");
+    assert!(!reply.usage.is_reported());
+    assert_eq!(f.spent(), (0, 0));
+    let outstanding = f.ledger.outstanding_calls("@owner:test").unwrap();
+    assert_eq!(outstanding.len(), 1);
+    assert_eq!(outstanding[0].state, "unknown");
+    process.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_reopen() {
     for kind in [Kind::Claude, Kind::Octos] {

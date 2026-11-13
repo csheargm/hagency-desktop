@@ -199,11 +199,13 @@ impl Workspaces {
                 return Err(unavailable());
             }
             hagency_store::private::directory(&entry.path()).map_err(store)?;
-            let root = entry.path().join("managed-claude");
-            if root.try_exists().map_err(|_| unavailable())? && !state.roots.contains_key(&root) {
-                state
-                    .roots
-                    .insert(root.clone(), Arc::new(Root::open(&root)?));
+            for name in ["managed-claude", "managed-octos"] {
+                let root = entry.path().join(name);
+                if root.try_exists().map_err(|_| unavailable())? && !state.roots.contains_key(&root) {
+                    state
+                        .roots
+                        .insert(root.clone(), Arc::new(Root::open(&root)?));
+                }
             }
         }
         Ok(())
@@ -525,6 +527,28 @@ mod tests {
                 .join("manifest")
                 .exists()
         );
+    }
+    #[test]
+    fn shared_octos_startup_sweeps_orphan_profile_and_native_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let base = root.join("owned-agent-owners")
+            .join(format!("owner_{}", "a".repeat(64))).join("managed-octos");
+        hagency_store::private::directory(base.parent().unwrap().parent().unwrap()).unwrap();
+        hagency_store::private::directory(base.parent().unwrap()).unwrap();
+        let owner = Workspaces::default();
+        let lease = owner.open(&base, &"b".repeat(64), "assignment", 1).unwrap();
+        let path = lease.path().to_owned();
+        drop(lease);
+        drop(owner);
+        // Recreate what an abruptly terminated process could have left.
+        hagency_store::private::directory(&path.join("tmp")).unwrap();
+        std::fs::write(path.join("tmp/profile"), "synthetic credential").unwrap();
+        assert!(path.join("tmp/profile").exists());
+        Workspaces::default().sweep_existing(&root).unwrap();
+        assert!(!path.join("tmp").exists());
+        assert!(!path.join("config").exists());
+        assert!(!path.join("home").exists());
     }
     #[test]
     fn shared_claude_scope_revocation_does_not_confuse_stop_or_expiry_with_member_loss() {

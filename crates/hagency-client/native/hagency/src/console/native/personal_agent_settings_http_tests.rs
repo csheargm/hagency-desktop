@@ -849,6 +849,37 @@ async fn model_change(m:&NativeManagement,id:&str)->super::super::SavePersonalMo
     serde_json::from_value(json!({"commandId":id,"agentId":"agent_a","expectedGeneration":choices.generation,"expectedProfileDigest":choices.profile_digest,"runtime":"codex","model":"fixture-model","reasoningEffort":"high","webSearch":false,"workspace":"preserve"})).unwrap()
 }
 #[tokio::test]
+async fn personal_model_http_distinguishes_octos_profiles_with_the_same_model() {
+    let f=Fixture::new().await;
+    let first=format!("octos-managed:shared-home:{}:first","a".repeat(64));
+    let second=format!("octos-managed:shared-home:{}:second","b".repeat(64));
+    let row=|id:&str,reference:&str| json!({"id":id,"model":"local-model","displayName":format!("{id} · local-model"),"description":"Local","isDefault":id=="first","defaultReasoningEffort":"none","supportedReasoningEfforts":[{"reasoningEffort":"none","description":""}],"credentialRef":reference});
+    let mut env=editable_configuration_fixture()["configuration"]["environment"].clone();
+    env["configuration"]["modelProfile"]["credential_ref"]=json!(first);
+    env["configuration"]["modelProfile"]["model"]=json!("local-model");
+    env["configuration"]["modelProfile"]["reasoning_effort"]=json!("none");
+    env["providers"][2]=json!({"runtime":"octos","installed":true,"version":"1.0","versionSupported":true,"state":"ready","authenticated":true,"accountVerified":false,"credentialRef":null,"credentialSource":"local","shared":true,"strictTokenCap":false,"nativeTools":false,"defaultModel":"local-model","models":[row("first",&first),row("second",&second)]});
+    { let mut state=f.state.lock().unwrap();state.editable=true;state.observation=Some(env); }
+    let m=f.manager(true).await;
+    let choices=m.personal_model_choices("agent_a".into()).await.unwrap();
+    let octos=choices.models.iter().filter(|v|v.runtime=="octos").collect::<Vec<_>>();
+    assert_eq!(octos.len(),2);
+    assert_eq!(octos[0].profile_id.as_deref(),Some("first"));
+    assert_eq!(octos[1].profile_id.as_deref(),Some("second"));
+    assert_eq!(choices.current.as_ref().unwrap().profile_id.as_deref(),Some("first"));
+    let public=serde_json::to_string(&choices).unwrap();
+    assert!(!public.contains("credentialRef") && !public.contains(&first) && !public.contains(&second));
+    let mut draft:super::super::SavePersonalModel=serde_json::from_value(json!({"commandId":"octos_original","agentId":"agent_a","expectedGeneration":choices.generation,"expectedProfileDigest":choices.profile_digest,"runtime":"octos","model":"local-model","reasoningEffort":"none","webSearch":false,"workspace":"preserve"})).unwrap();
+    assert!(matches!(m.review_personal_model(&draft,None).await,Err(e) if e.code=="configuration_model_unavailable"));
+    draft.profile_id=Some("second".into());
+    let review=m.review_personal_model(&draft,None).await.unwrap();
+    assert_eq!(review.summary.model.profile_id.as_deref(),Some("second"));
+    m.save_personal_model(review,confirmed()).await.unwrap();
+    let saved=m.saved_commands().await.unwrap();
+    assert_eq!(saved[0].input["profile"]["credential_ref"],second);
+    f.stop().await;
+}
+#[tokio::test]
 async fn personal_model_http_native_workspace_exact_recovery_and_private_projection() {
     let f=Fixture::new().await;f.state.lock().unwrap().editable=true;
     let m=f.manager(true).await;

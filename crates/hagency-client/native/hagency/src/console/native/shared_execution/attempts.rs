@@ -128,6 +128,17 @@ impl SharedExecutionTransport {
         )
         .await
     }
+    #[cfg(all(test, feature = "shared-successors"))]
+    pub(in crate::console::native) async fn poll_octos_successor_fixture(
+        &self, r: &OwnerResourceRegistry, resource_id: String, home: std::path::PathBuf,
+        root: std::path::PathBuf, profile_id: String,
+    ) -> Result<SharedExecutionProgress, NativeError> {
+        let b = self.io.bound().await?;
+        let resource = r.resource(&b.scope.profile, resource_id).await.map_err(store)?;
+        let launch = launch::OctosLaunch::fixture(r.clone(), b.scope.profile, &resource, home, root, profile_id);
+        self.process_attempt_scoped(r, attempt_io::AttemptAction::Poll { after: None }, None,
+            Some(launch::Launch::Octos(launch)), None).await
+    }
     pub(super) async fn process_attempt(
         &self,
         r: &OwnerResourceRegistry,

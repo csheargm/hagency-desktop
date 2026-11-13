@@ -18,7 +18,7 @@ pub use managed::{
 };
 pub use session::OwnedSession;
 mod octos;
-pub use octos::OwnedOctosSession;
+pub use octos::{OwnedOctosSession, SharedOctosPolicy, SharedOctosShell};
 mod claude;
 mod claude_shared;
 pub use claude_shared::SharedClaudePolicy;
