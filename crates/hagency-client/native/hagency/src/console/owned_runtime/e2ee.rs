@@ -74,6 +74,8 @@ pub(in crate::console) struct AgentDevice {
     pub(in crate::console) run_records: std::path::PathBuf,
     revoked: Arc<AtomicBool>,
     sync: tokio::task::AbortHandle,
+    /// Encrypted-room memory scans by room, valid while the newest event id holds.
+    memory_scans: std::sync::Mutex<HashMap<String, hagency_runtime::room_memory_timeline::TimelineScan>>,
 }
 impl Drop for AgentDevice {
     fn drop(&mut self) {
@@ -461,6 +463,7 @@ impl AgentDevice {
             run_records: root.join("run-cards.json"),
             revoked,
             sync,
+            memory_scans: Default::default(),
         })
     }
 

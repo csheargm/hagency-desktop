@@ -1,7 +1,9 @@
 //! Room memory for one admitted dispatch: the injected block and the two Agent
 //! tools. Reads and proposals only. This module has no way to write memory.
+//! Encrypted rooms read encrypted timeline entries, filtered by sender power.
 use super::{Source, e2ee::MemoryRoom};
-use hagency_runtime::room_memory::{self as memory, MemoryOperation, Storage};
+use hagency_runtime::room_memory::{self as memory, Entry, MemoryOperation, Storage};
+use hagency_runtime::room_memory_timeline::reduce_timeline;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -31,14 +33,25 @@ impl MemoryIo for Source {
     }
 }
 
+/// Current entries and, for an encrypted room, what could not be read: how many
+/// events were undecryptable and whether the scan hit a cap. State in an
+/// encrypted room is never consulted.
+fn entries(room: &MemoryRoom) -> (Vec<Entry>, Vec<(&'static str, Value)>) {
+    match memory::storage_for(room.encrypted) {
+        Storage::State => (memory::reduce(&room.events), Vec::new()),
+        Storage::Timeline => {
+            let view = reduce_timeline(&room.scan, &room.levels);
+            let notes = vec![("unreadable_events", json!(view.unreadable)), ("scan_truncated", json!(view.truncated))];
+            (view.entries, notes)
+        }
+    }
+}
+
 /// The block for the next prompt. Anything unexpected means no block, never a
-/// failed turn. Encrypted rooms inject nothing.
+/// failed turn.
 pub(super) async fn block<I: MemoryIo>(io: &I) -> Option<String> {
     let room = io.room().await.ok()?;
-    if memory::storage_for(room.encrypted) == Storage::Unsupported {
-        return None;
-    }
-    memory::render_block(&memory::reduce(&room.events))
+    memory::render_block(&entries(&room).0)
 }
 
 pub(super) async fn handle<I: MemoryIo>(io: &I, operation: &MemoryOperation) -> String {
@@ -46,11 +59,11 @@ pub(super) async fn handle<I: MemoryIo>(io: &I, operation: &MemoryOperation) -> 
         Ok(room) => room,
         Err(code) => return json!({"error": code}).to_string(),
     };
-    if memory::storage_for(room.encrypted) == Storage::Unsupported {
-        return memory::encrypted_error();
-    }
     match operation {
-        MemoryOperation::List => memory::render_list(&memory::reduce(&room.events)),
+        MemoryOperation::List => {
+            let (list, notes) = entries(&room);
+            memory::render_list_with(&list, &notes)
+        }
         MemoryOperation::Propose { text, reason } => propose(io, text, reason).await,
     }
 }
