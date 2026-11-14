@@ -50,6 +50,21 @@ impl AgentDevice {
         room: &str,
         from: &str,
     ) -> Result<HistoryBatch, RuntimeError> {
+        let (chunk, next) = self.timeline_page(room, from).await?;
+        Ok(HistoryBatch {
+            events: chunk.iter().filter_map(history_event).collect(),
+            next,
+        })
+    }
+
+    /// One backward page of SDK timeline events (newest first) and the token
+    /// for the next older page. The encrypted room context needs the raw
+    /// events to find the Agent's join event in timeline order.
+    pub(super) async fn timeline_page(
+        &self,
+        room: &str,
+        from: &str,
+    ) -> Result<(Vec<TimelineEvent>, Option<String>), RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let room = self
             .client
@@ -64,10 +79,7 @@ impl AgentDevice {
         if page.end.as_deref() == Some(from) {
             return Err(RuntimeError::Transport);
         }
-        Ok(HistoryBatch {
-            events: page.chunk.iter().filter_map(history_event).collect(),
-            next: page.end,
-        })
+        Ok((page.chunk, page.end))
     }
 }
 
