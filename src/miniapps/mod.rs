@@ -46,6 +46,7 @@ mod catalog_worker;
 mod consent;
 mod design;
 mod library;
+mod native_panels;
 mod package;
 pub mod palpo;
 mod private_export;

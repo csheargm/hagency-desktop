@@ -3181,5 +3181,9 @@
   "This server cannot keep a shared project folder yet, so each Agent keeps its own folder.": "此服务器暂不支持共享项目文件夹，每个 Agent 仍使用自己的文件夹。",
   "Coding Agents of this space share its project folder.": "此空间的编程 Agent 共用它的项目文件夹。",
   "The shared project folder was not confirmed; each Agent may keep its own folder.": "共享项目文件夹未获确认，各 Agent 可能仍使用自己的文件夹。",
-  "Could not check whether this room is encrypted. Your message was not sent. Try again.": "无法确认此聊天室是否已加密，消息未发送，请重试。"
+  "Could not check whether this room is encrypted. Your message was not sent. Try again.": "无法确认此聊天室是否已加密，消息未发送，请重试。",
+  "Profile": "个人资料",
+  "Server: {0}": "服务器：{0}",
+  "Agent on {0}": "{0} 上的 Agent",
+  "Role: Agent": "角色：Agent"
 }
