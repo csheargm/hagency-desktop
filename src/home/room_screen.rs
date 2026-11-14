@@ -7170,14 +7170,13 @@ fn populate_thread_root_summary(
                     .unwrap_or(embedded_event.sender.as_str()),
                 _ => embedded_event.sender.as_str(),
             };
-            let preview = text_preview_of_timeline_item(
-                &embedded_event.content,
-                &embedded_event.sender,
-                sender_username,
-            ).format_with(sender_username, true);
-            match utils::replace_linebreaks_separators(&preview, true) {
-                Cow::Borrowed(_) => Cow::Owned(preview),
-                Cow::Owned(replaced) => Cow::Owned(replaced),
+            match embedded_event.content.as_message() {
+                Some(msg) => crate::thread_reply_preview::preview_of_message(msg.msgtype(), &embedded_event.sender, sender_username).into(),
+                None => {
+                    let preview = text_preview_of_timeline_item(&embedded_event.content, &embedded_event.sender, sender_username)
+                        .format_with(sender_username, true);
+                    utils::replace_linebreaks_separators(&preview, true).into_owned().into()
+                }
             }
         }
         td @ TimelineDetails::Pending | td @ TimelineDetails::Unavailable => {
@@ -7225,16 +7224,12 @@ pub fn populate_preview_of_timeline_item(
     sender_user_id: &UserId,
     sender_username: &str,
 ) {
-    if let Some(m) = timeline_item_content.as_message() {
-        match m.msgtype() {
-            MessageType::Text(TextMessageEventContent { body, formatted, .. })
-            | MessageType::Notice(NoticeMessageEventContent { body, formatted, .. }) => {
-                let usage=crate::shared::agent_usage::parse_usage(sender_user_id.localpart(),body,formatted.is_some());
-                let _ = populate_text_message_content(cx, widget_out, usage.as_ref().map_or(body.as_str(),|u|u.answer), formatted.as_ref(), None, None, None, None);
-                return;
-            }
-            _ => { } // fall through to the general case for all timeline items below.
-        }
+    // Reply quotes show one line, so a long request is not repeated in full above its reply.
+    if let Some(line) = timeline_item_content.as_message()
+        .and_then(|m| crate::thread_reply_preview::reply_quote_line(m.msgtype(), sender_user_id))
+    {
+        widget_out.show_plaintext(cx, line);
+        return;
     }
     let html = text_preview_of_timeline_item(
         timeline_item_content,
