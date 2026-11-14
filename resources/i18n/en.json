@@ -3157,5 +3157,21 @@
   "You do not have permission to invite people to this room.": "You do not have permission to invite people to this room.",
   "New resource admission request": "New resource admission request",
   "Open Hagency's Server admin workspace to decide.": "Open Hagency's Server admin workspace to decide.",
-  "{count} resource admission requests wait for your review": "{count} resource admission requests wait for your review"
+  "{count} resource admission requests wait for your review": "{count} resource admission requests wait for your review",
+  "Check your email": "Check your email",
+  "Check your email. If an account uses this address, a reset link and your username are on the way.": "Check your email. If an account uses this address, a reset link and your username are on the way.",
+  "Code from the email": "Code from the email",
+  "Continue with GitHub": "Continue with GitHub",
+  "Could not create the account": "Could not create the account",
+  "Could not send the reset email: {error}": "Could not send the reset email: {error}",
+  "Create your account through Pasion on your Hagency server.": "Create your account through Pasion on your Hagency server.",
+  "Email": "Email",
+  "Email (optional, for password recovery)": "Email (optional, for password recovery)",
+  "Enter a valid email address.": "Enter a valid email address.",
+  "Enter the code from the email.": "Enter the code from the email.",
+  "Enter the code we emailed you, then press Create account again.": "Enter the code we emailed you, then press Create account again.",
+  "Enter the email on your account. We'll send a link to reset your password.": "Enter the email on your account. We'll send a link to reset your password.",
+  "Forgot password?": "Forgot password?",
+  "Reset your password in your browser.": "Reset your password in your browser.",
+  "Send reset link": "Send reset link"
 }

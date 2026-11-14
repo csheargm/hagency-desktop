@@ -202,6 +202,27 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    oauth_browser_login_with_hint(client, register, expected, None, open).await
+}
+
+/// [`oauth_browser_login`] with a Pasion `login_hint`, e.g. `upstream:github`
+/// to skip the provider chooser.
+// TODO(R4): homeserver.rs is over budget; split the OAuth browser flow into
+// login/oauth_flow.rs.
+pub(crate) async fn oauth_browser_login_with_hint<F, Fut>(
+    client: &Client,
+    register: bool,
+    expected: Option<(
+        matrix_sdk::ruma::OwnedUserId,
+        matrix_sdk::ruma::OwnedDeviceId,
+    )>,
+    login_hint: Option<&str>,
+    open: F,
+) -> Result<()>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     use matrix_sdk::{
         authentication::oauth::registration::{
             ApplicationType, ClientMetadata, Localized, OAuthGrantType,
@@ -238,7 +259,7 @@ where
             Localized::new(Url::parse("https://github.com/hagency-org/hagency-desktop")?, None),
         )
     };
-    let data = oauth
+    let mut request = oauth
         .login(
             redirect,
             expected
@@ -248,13 +269,11 @@ where
             Some(Raw::new(&metadata)?.into()),
             None,
         )
-        .prompt(vec![if register {
-            Prompt::Create
-        } else {
-            Prompt::from("login")
-        }])
-        .build()
-        .await?;
+        .prompt(vec![if register { Prompt::Create } else { Prompt::from("login") }]);
+    if let Some(hint) = login_hint {
+        request = request.login_hint(hint.to_owned());
+    }
+    let data = request.build().await?;
     if let Err(e) = open(data.url.to_string()).await {
         oauth.abort_login(&data.state).await;
         return Err(e);

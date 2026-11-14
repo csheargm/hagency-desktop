@@ -854,6 +854,13 @@ pub enum MatrixRequest {
     /// from submitting another redundant request, until this request has succeeded or failed.
     SpawnSSOServer { homeserver_url: String, provider_id: Option<String>, register: bool },
     RegisterAccount { homeserver_url: String, username: String, password: String, token: String },
+    /// Username/password sign-in that still yields a Pasion OAuth session.
+    PasswordSignIn {
+        homeserver_url: String,
+        username: String,
+        password: String,
+        token: String,
+    },
     CancelSsoLogin,
     /// Subscribe to typing notices for the given room.
     ///
@@ -2431,7 +2438,12 @@ async fn matrix_worker_task(
             }
 
             MatrixRequest::SpawnSSOServer { homeserver_url, provider_id, register } => {
-                if sso_task.as_ref().is_some_and(|task| !task.is_finished()) { continue; }
+                // A new click supersedes an unfinished browser sign-in (e.g. a
+                // tab the user lost); dropping the click left the modal stuck.
+                if let Some(task) = sso_task.take().filter(|task| !task.is_finished()) {
+                    task.abort();
+                    let _ = task.await;
+                }
                 let sender = login_sender.clone();
                 let epoch = crate::account_session::epoch();
                 sso_task = Some(crate::account_session::spawn(async move {
@@ -2463,20 +2475,29 @@ async fn matrix_worker_task(
                     }
                 }));
             }
-            MatrixRequest::RegisterAccount { homeserver_url, username, password, token } => {
-                if sso_task.as_ref().is_some_and(|task| !task.is_finished()) { continue; }
+            request @ (MatrixRequest::RegisterAccount { .. } | MatrixRequest::PasswordSignIn { .. }) => {
+                let register = matches!(request, MatrixRequest::RegisterAccount { .. });
+                if sso_task.as_ref().is_some_and(|task| !task.is_finished()) {
+                    // Never drop the click silently: the modal would wait forever.
+                    Cx::post_action(LoginAction::LoginFailure("Another sign-in is still in progress. Cancel it or wait, then try again.".into()));
+                    continue;
+                }
+                let (MatrixRequest::RegisterAccount { homeserver_url, username, password, token }
+                    | MatrixRequest::PasswordSignIn { homeserver_url, username, password, token }) = request else { unreachable!() };
                 let sender = login_sender.clone();
+                let epoch = crate::account_session::epoch();
                 sso_task = Some(crate::account_session::spawn(async move {
-                    match run_registration(homeserver_url, username, password, token).await {
+                    match run_registration(homeserver_url, username, password, token, register).await {
                         Ok((client, session)) => {
                             Cx::post_action(LoginAction::Status {
-                                title: "Finishing registration".into(), status: "Loading your account…".into(),
+                                title: if register { "Finishing registration" } else { "Finishing sign-in" }.into(), status: "Loading your account…".into(),
                             });
-                            if sender.send(LoginRequest::LoginBySSOSuccess(client, session)).await.is_err() {
-                                Cx::post_action(LoginAction::LoginFailure("Could not finish registration. Restart Rinx and try signing in.".into()));
+                            let request = if client.oauth().full_session().is_some() { LoginRequest::LoginByOAuthSuccess(client, session, epoch) } else { LoginRequest::LoginBySSOSuccess(client, session) };
+                            if sender.send(request).await.is_err() {
+                                Cx::post_action(LoginAction::LoginFailure("Could not finish sign-in. Restart Rinx and try signing in.".into()));
                             }
                         }
-                        Err(error) => Cx::post_action(LoginAction::LoginFailure(format!("Registration failed: {error}"))),
+                        Err(error) => Cx::post_action(LoginAction::LoginFailure(crate::login::failure_text::login_failure_text(register, &error.to_string()))),
                     }
                 }));
             }
@@ -6370,19 +6391,42 @@ async fn room_avatar(room: &Room, room_name_id: &RoomNameId) -> FetchedRoomAvata
     utils::avatar_from_room_name(room_name_id.name_for_avatar())
 }
 
+/// One-screen sign-up / sign-in: register through Pasion's API when asked,
+/// then complete the normal OAuth authorization with the username and
+/// password over HTTP instead of a browser. The session that results is the
+/// same OAuth session the browser flow produces, so Agents work afterwards.
+/// `token` is ignored by Pasion and kept for the legacy Matrix form.
 async fn run_registration(
     homeserver_url: String,
     username: String,
     password: String,
     token: String,
+    register: bool,
 ) -> Result<(Client, ClientSessionPersisted)> {
+    use ::hagency::pasion::login as pasion_login;
+    let _ = token;
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let (client, session) = build_oauth_candidate(&homeserver_url).await?;
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     let (client, session) = build_client(&Cli {
-        homeserver: Some(homeserver_url), ..Default::default()
+        homeserver: Some(homeserver_url.clone()), ..Default::default()
     }, app_data_dir()).await?;
     crate::login::homeserver::require_hagency(&client).await?;
-    let _ = (username, password, token);
-    let _ = session;
-    bail!("Create your account through Pasion on your Hagency server.")
+    let origin = homeserver_url.trim_end_matches('/').to_owned();
+    if register {
+        Cx::post_action(LoginAction::Status { title: "Creating account".into(), status: "Registering with your server…".into() });
+        pasion_login::register(&origin, &username, &password).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        use crate::login::provision_wait::{wait_for_new_account, PROVISION_POLL, PROVISION_WAIT};
+        wait_for_new_account(&origin, &username, PROVISION_WAIT, PROVISION_POLL).await?;
+    }
+    Cx::post_action(LoginAction::Status { title: "Signing in".into(), status: "Authorizing this device…".into() });
+    // Detached: the loopback listener is only polled once this closure
+    // returns, so an inline authorize would wait on itself.
+    crate::login::homeserver::oauth_browser_login(&client, false, |url| async move {
+        pasion_login::authorize_detached(origin, url, username, password);
+        Ok(())
+    }).await?;
+    Ok((client, session))
 }
 
 /// Use only provider IDs advertised by the selected homeserver.
@@ -6432,7 +6476,8 @@ async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, regi
     }, app_data_dir()).await?;
     let methods = crate::login::homeserver::login_methods(&client).await?;
     if methods.oauth {
-        crate::login::homeserver::oauth_browser_login(&client, register, |url| async move {
+        let hint = crate::login::account_options::upstream_login_hint(provider_id.as_deref());
+        crate::login::homeserver::oauth_browser_login_with_hint(&client, register, None, hint, |url| async move {
             Cx::post_action(LoginAction::Status {
                 title: crate::i18n::tr("Continue in your browser").into(),
                 status: crate::i18n::tr("Finish signing in with Pasion in your browser, then return to Hagency.").into(),
