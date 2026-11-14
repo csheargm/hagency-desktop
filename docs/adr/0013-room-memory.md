@@ -3,7 +3,8 @@
 Status: proposed. First slice (storage rules, Agent tools, prompt injection) in
 `hagency-runtime::room_memory` and `owned_runtime/room_tools/memory.rs`;
 encrypted rooms in `room_memory_timeline` and `owned_runtime/e2ee/memory.rs`. The
-Memory list and the Accept/Dismiss buttons are a follow-up PR.
+Memory list and the proposal cards are in the desktop client
+(`src/home/room_memory/`, see "Human client" below).
 
 ## Context
 
@@ -68,3 +69,25 @@ on the first slice):
   but an accepted entry is still text the model reads. Review before Accept.
 - The personal Agent path (`owned_runtime`) enables the tools. Server-hosted
   shared Agents (`shared_execution`) do not advertise them yet.
+
+## Human client
+
+- The Memory list is a third tab, Memory, in the room information pane. It
+  reads and writes through the signed-in person's own Matrix client with the
+  backend's rules: a state event per entry in a plaintext room, an encrypted
+  timeline event (`send_raw`) in an encrypted one. Add, edit, pin and delete
+  each re-read the room first, so `rev` is current (edit, pin and delete write
+  `rev + 1`; delete is empty state content, or a `deleted` revision) and the
+  power level is the room's now. Members below it see the list read-only with
+  Add disabled.
+- An Agent's proposal renders as a card under a short intro line: text, reason,
+  Accept (only members who may write memory; it calls `room_memory::accept`) and
+  Dismiss. A card whose payload does not parse stays a plain notice. After
+  Accept the card shows "Added to room memory"; it derives that from the room's
+  entries, so it survives restarts and shows on every device.
+- Dismiss is local to the device (`room-memory-dismissed.json`). A marker in the
+  room (a reaction or a custom event) would put clutter in front of everyone,
+  need the right to send, and leak that a proposal was rejected into an
+  encrypted room's timeline; another approver still sees the card.
+- Failed writes show inline in the Memory tab and as a popup. Nothing about
+  memory is read from state in an encrypted room.
