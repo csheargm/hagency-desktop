@@ -13,6 +13,8 @@ agent-budget = ["resource-adoption", "hagency-store/agent-budget"]
 shared-context = ["shared-intake", "hagency-store/shared-context", "hagency-runtime/shared-context"]
 shared-intake = ["shared-successors", "hagency-store/shared-intake"]
 default = ["resource-adoption"]
+# DEMO-ONLY (forwarded from the desktop's `demo` feature): HAGENCY_DEMO_APPROVAL_MODE is honoured only with it.
+demo = ["hagency-agent-local/demo"]
 # Qualification/stop only; no Desktop capability, prompt or shared work route.
 managed-runtime = []
 # Every executor uses the current native context contract. Depend on the

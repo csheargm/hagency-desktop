@@ -248,6 +248,10 @@ impl Profile {
                 environment.insert(name.into(), value);
             }
         }
+        if let Some(token) = crate::demo_env::github_token() {
+            environment.insert(crate::demo_env::GITHUB_TOKEN_ENV.into(), token);
+            arguments.extend(["-c".into(), crate::demo_env::CODEX_KEEP_ENV_OVERRIDE.into()]);
+        }
         Ok(hagency_platform::Launch {
             executable: self.executable.clone(),
             arguments,

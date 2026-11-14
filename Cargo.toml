@@ -275,7 +275,7 @@ agent_chat = ["dep:base64", "dep:ed25519-dalek", "dep:sha2"]
 agent_ops_dev = ["agent_chat"]
 
 ## DEMO-ONLY: scripted rehearsal hooks and demo env prefills. Never default, never upstream.
-demo = []
+demo = ["hagency/demo"]
 
 ## Hides the command prompt console/log window on Windows.
 ## This is enabled automatically for packaged builds via cargo-packager

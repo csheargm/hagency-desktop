@@ -376,6 +376,9 @@ async fn spawn_inner(
             command.env(name, value);
         }
     }
+    if let Some(token) = crate::demo_env::github_token() {
+        command.env(crate::demo_env::GITHUB_TOKEN_ENV, token);
+    }
     match kind {
         Kind::Claude => {
             command
