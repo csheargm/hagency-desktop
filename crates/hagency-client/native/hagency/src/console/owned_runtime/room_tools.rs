@@ -13,6 +13,7 @@ use hagency_runtime::room_tools::RoomOperation;
 use serde_json::{Value, json};
 /// Leave the provider's 64 KiB turn bound room for the bounded context block.
 const ENCRYPTED_CONTEXT_INPUT_LIMIT: usize = 40 * 1024;
+mod memory;
 fn failure(status: u16, code: &str) -> NativeError {
     NativeError {
         status,
@@ -211,17 +212,24 @@ impl Host {
                 ),
                 _ => text.clone(),
             };
+            let memory_block = memory::block(&*state.source).await;
             // Native warm and cold sessions own their conversation history.
             // Leave earlier room pages for explicit reads instead of appending
             // the same recent transcript to every new user turn.
+            let oversized = request.len() >= 48 * 1024;
             let prompt = state.history.followup_prompt(request);
-            if !state.source.encrypted || prompt.len() > ENCRYPTED_CONTEXT_INPUT_LIMIT {
-                return Ok::<_, &'static str>(prompt);
-            }
             // Encrypted rooms: the server cannot attach history, so the Agent
             // device reads what the requester is likely referring to.
-            let context = encrypted_context::read(state.source.device.as_ref(), dispatch).await;
-            Ok(format!("{}\n\n{prompt}", encrypted_context::preamble(&context)))
+            let prompt = if state.source.encrypted && prompt.len() <= ENCRYPTED_CONTEXT_INPUT_LIMIT {
+                let context = encrypted_context::read(state.source.device.as_ref(), dispatch).await;
+                format!("{}\n\n{prompt}", encrypted_context::preamble(&context))
+            } else {
+                prompt
+            };
+            Ok::<_, &'static str>(match memory_block {
+                Some(block) if !oversized => format!("{block}\n\n{prompt}"),
+                _ => prompt,
+            })
         })
         .await;
         match prepared {
@@ -246,6 +254,7 @@ impl Host {
                 }
             }
             RoomOperation::File(operation) => state.files.handle(operation, &state.history).await,
+            RoomOperation::Memory(operation) => memory::handle(&*state.source, operation).await,
         };
         let is_error = serde_json::from_str::<Value>(&text)
             .ok()
