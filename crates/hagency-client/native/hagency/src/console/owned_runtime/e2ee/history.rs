@@ -73,7 +73,18 @@ impl AgentDevice {
 
 pub(super) fn history_event(event: &TimelineEvent) -> Option<Value> {
     let raw: Value = serde_json::from_str(event.kind.raw().json().get()).ok()?;
-    let unavailable_reason = match &event.kind {
+    let unavailable_reason = unavailable_reason(event, &raw);
+    let mut record = history_record(&raw, unavailable_reason.is_some())?;
+    if let Some(reason) = unavailable_reason {
+        record["unavailableReason"] = reason.into();
+    }
+    Some(record)
+}
+
+/// Why an event's content cannot be trusted or read, shared by history and
+/// room memory so both apply one authenticity rule.
+pub(super) fn unavailable_reason(event: &TimelineEvent, raw: &Value) -> Option<&'static str> {
+    match &event.kind {
         TimelineEventKind::UnableToDecrypt { .. } => Some("unable_to_decrypt"),
         TimelineEventKind::Decrypted(d) => {
             if d.encryption_info.sender.as_str() != raw["sender"].as_str().unwrap_or_default() {
@@ -83,12 +94,7 @@ pub(super) fn history_event(event: &TimelineEvent) -> Option<Value> {
             }
         }
         TimelineEventKind::PlainText { .. } => None,
-    };
-    let mut record = history_record(&raw, unavailable_reason.is_some())?;
-    if let Some(reason) = unavailable_reason {
-        record["unavailableReason"] = reason.into();
     }
-    Some(record)
 }
 
 fn verification_issue(state: &VerificationState) -> Option<&'static str> {
