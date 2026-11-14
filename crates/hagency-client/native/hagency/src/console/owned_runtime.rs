@@ -2713,7 +2713,7 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files()).await
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_memory()).await
                     .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
             }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;

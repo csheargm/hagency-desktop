@@ -444,6 +444,7 @@ async fn drive<H: Host, C: Capture>(
                         return Decision::Tool(ToolAnswer::allowed(
                             queue.room.is_some()
                                 && hagency_runtime::room_tools::RoomTools::history_and_files()
+                                    .with_memory()
                                     .parse(name, &input)
                                     .is_ok(),
                         ));

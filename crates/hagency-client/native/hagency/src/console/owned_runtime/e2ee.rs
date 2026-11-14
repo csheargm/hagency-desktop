@@ -27,8 +27,11 @@ use sha2::{Digest, Sha256};
 mod history;
 mod documents;
 mod files;
+// TODO(R4): this file is over budget; split the Agent device (send, history, files, memory) into e2ee/ modules in a refactor session.
+mod memory;
 pub(in crate::console) use documents::RoomFile;
 pub(in crate::console) use history::HistoryBatch;
+pub(in crate::console) use memory::MemoryRoom;
 use std::{
     collections::HashMap,
     path::Path,
