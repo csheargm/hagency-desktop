@@ -477,15 +477,17 @@ fn show_file_save_dialog(
             finish_download_indicator(&sender, mxc.as_ref(), DownloadOutcome::Cancelled);
             return;
         }
-        let select_file = file.clone();
+        // The dialog reads nothing of the app's state: on macOS it runs in a GCD
+        // block on the main thread, and when a host runs the app's code on a thread
+        // of its own (Makepad's JIT runner), that block is outside the app's
+        // context and sees no signed-in account, so a currency check made there
+        // always failed and the dialog never opened. The checks stay on this
+        // worker: one above before the dialog, one below before anything is saved.
+        let downloads = robius_directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_owned));
         let select = move || {
-            if !select_file.is_current() {
-                return None;
-            }
             let mut dialog = rfd::FileDialog::new().set_file_name(&filename);
-            if let Some(downloads) = robius_directories::UserDirs::new()
-                .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_owned))
-            {
+            if let Some(downloads) = downloads {
                 dialog = dialog.set_directory(downloads);
             }
             dialog.save_file()

@@ -1,5 +1,6 @@
 use makepad_widgets::ScriptVm;
 
+pub mod own_profile_watch;
 pub mod user_profile;
 pub mod user_profile_cache;
 #[cfg(test)]

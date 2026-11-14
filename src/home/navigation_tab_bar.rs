@@ -452,6 +452,28 @@ impl Widget for ProfileIcon {
                         // this is only handled in the account settings screen
                         continue;
                     }
+                    // Changed on another device: this copy only knew this device's changes.
+                    Some(AccountDataAction::ProfileChangedElsewhere { avatar_url, display_name }) => {
+                        if let Some(p) = self.own_profile.as_mut() {
+                            let mut changed = false;
+                            if p.avatar_state.uri() != avatar_url.as_ref() {
+                                p.avatar_state = AvatarState::Known(avatar_url.clone());
+                                p.avatar_state.update_from_cache(cx);
+                                changed = true;
+                            }
+                            if p.username != *display_name {
+                                p.username = display_name.clone();
+                                changed = true;
+                            }
+                            if changed {
+                                user_profile_cache::enqueue_user_profile_update(
+                                    UserProfileUpdate::UserProfileOnly(p.clone())
+                                );
+                                self.inner.redraw(cx);
+                            }
+                        }
+                        continue;
+                    }
                     Some(AccountDataAction::DisplayNameChanged(new_display_name)) => {
                         if let Some(p) = self.own_profile.as_mut() {
                             p.username = new_display_name.clone();

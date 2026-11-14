@@ -504,6 +504,31 @@ impl MatchEvent for AccountSettings {
                     }
                     continue;
                 }
+                // Changed on another device: refresh what is shown, without the
+                // popups above, which report this device's own changes.
+                Some(AccountDataAction::ProfileChangedElsewhere { avatar_url, display_name }) => {
+                    let own_change_pending = self.view.widget(cx, ids!(upload_avatar_spinner)).visible()
+                        || self.view.widget(cx, ids!(delete_avatar_spinner)).visible();
+                    let Some(profile) = self.own_profile.as_mut() else { continue };
+                    let new_avatar = profile.avatar_state.uri() != avatar_url.as_ref();
+                    if new_avatar {
+                        profile.avatar_state = AvatarState::Known(avatar_url.clone());
+                        profile.avatar_state.update_from_cache(cx);
+                    }
+                    if profile.username != *display_name {
+                        let shown = profile.username.clone().unwrap_or_default();
+                        profile.username = display_name.clone();
+                        // An edit in progress stays as typed.
+                        if display_name_input.text() == shown {
+                            display_name_input.set_text(cx, display_name.as_deref().unwrap_or_default());
+                        }
+                    }
+                    // This device's own upload or delete repaints when it ends.
+                    if new_avatar && !own_change_pending {
+                        self.populate_avatar_views(cx);
+                    }
+                    continue;
+                }
                 Some(AccountDataAction::AvatarChangeFailed(err_msg)) => {
                     self.view.widget(cx, ids!(upload_avatar_spinner)).set_visible(cx, false);
                     self.view.widget(cx, ids!(delete_avatar_spinner)).set_visible(cx, false);
