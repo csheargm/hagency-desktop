@@ -90,3 +90,10 @@ fn default_names_follow_the_harness() {
     assert_eq!(default_name("ben", &Runtime::Codex), "ben-codex");
     assert_eq!(THINKING[DialogState::new(|_| String::new()).thinking], ::hagency::simple_agent::DEFAULT_REASONING_EFFORT);
 }
+
+#[test]
+fn failures_name_the_step_and_say_what_to_do() {
+    let message = failure_message("start-service", "invalid_arguments");
+    assert!(message.contains("\"start-service\"") && message.contains("invalid_arguments") && message.contains("malformed"), "{message}");
+    assert!(failure_message("models", "zzz").contains("Try again"));
+}

@@ -2199,14 +2199,13 @@ impl MiniAppsPanelRef {
                     modal.open(cx);
                 }
                 MiniAppsAction::OpenAgent => {
-                    // First run: the Agent rail item opens the native Create agent
-                    // dialog in one click. The mini-app (and its permissions
-                    // review) waits until the owner opens it with consent;
-                    // first-run state is never an authorization.
+                    // First run: the Agent rail item also opens the native Create
+                    // agent dialog in one click, above the Agents page that opens
+                    // below it. The dialog is not a consent to the mini-app's
+                    // permissions; its review (if not yet given) still shows.
                     crate::hagency::agent_presence::refresh();
-                    if agent_entry(crate::hagency::agent_presence::needs_first_agent(), palpo_consented()) == AgentEntry::CreateDialog {
+                    if agent_entry(crate::hagency::agent_presence::needs_first_agent()) == AgentEntry::CreateDialog {
                         cx.action(crate::hagency::create_agent::CreateAgentAction::Open);
-                        return;
                     }
                     // A panel that is not running (its recovery page shows)
                     // is started again by coming back to it.
@@ -2323,25 +2322,16 @@ mod tests {
 /// Where the Agent rail item leads.
 #[derive(Debug, PartialEq, Eq)]
 enum AgentEntry { CreateDialog, MiniApp }
-fn agent_entry(first_run: bool, consented: bool) -> AgentEntry {
-    if first_run && !consented { AgentEntry::CreateDialog } else { AgentEntry::MiniApp }
+fn agent_entry(first_run: bool) -> AgentEntry {
+    if first_run { AgentEntry::CreateDialog } else { AgentEntry::MiniApp }
 }
-/// Whether the signed-in account confirmed the bundled Hagency app's permissions.
-fn palpo_consented() -> bool {
-    let app = crate::system_apps::apps().iter().find(|app| app.manifest.id == super::palpo::APP_ID);
-    match (crate::sliding_sync::current_user_id(), app) {
-        (Some(account), Some(app)) => super::consent::remembered(account.as_str(), &app.manifest.integrity.bundle_blake3),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod agent_entry_tests {
     use super::*;
     #[test]
     fn first_run_opens_create_agent_without_granting_permissions() {
-        assert_eq!(agent_entry(true, false), AgentEntry::CreateDialog);
-        assert_eq!(agent_entry(true, true), AgentEntry::MiniApp, "consent given earlier: the app opens as usual");
-        assert_eq!(agent_entry(false, false), AgentEntry::MiniApp, "with an Agent: the review shows as usual");
+        assert_eq!(agent_entry(true), AgentEntry::CreateDialog);
+        assert_eq!(agent_entry(true), AgentEntry::CreateDialog, "the Agents page opens below the dialog either way");
+        assert_eq!(agent_entry(false), AgentEntry::MiniApp, "with an Agent: the review shows as usual");
     }
 }

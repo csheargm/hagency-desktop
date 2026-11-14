@@ -65,6 +65,20 @@ pub(crate) fn validate_name(name: &str) -> Result<String, &'static str> {
     Ok(name.to_owned())
 }
 
+/// What the dialog shows when setup stops: the step, the code and, for the
+/// codes an owner can act on, what to do. Never a bare code.
+pub(crate) fn failure_message(step: &str, code: &str) -> String {
+    let hint = match code {
+        "invalid_arguments" => "The request was refused as malformed; update Hagency or report this.",
+        "device_setup_required" => "This Mac is not set up to run Agents yet; open the Agent's Hosting tab once.",
+        "provider_models_unavailable" | "provider_credential_unavailable" => "Sign in to Claude Code or Codex on this Mac, then try again.",
+        "codex_version_unsupported" => "Update the Codex CLI to 0.167.0 or newer, or choose Claude.",
+        "sign_in_required" | "matrix_oauth_sign_in_required" => "Sign in again, then retry.",
+        _ => "Try again; the Agent may already exist in your list.",
+    };
+    format!("{} \"{step}\": {code}. {}", crate::i18n::tr("Create agent stopped at step"), crate::i18n::tr(hint))
+}
+
 pub(crate) fn harness_label(runtime: &Runtime) -> &'static str {
     if *runtime == Runtime::Claude { "Claude" } else { "Codex" }
 }
