@@ -53,6 +53,7 @@ mod runtime;
 pub mod server_admission;
 pub mod service;
 pub mod setup;
+pub mod simple_agent;
 pub mod task_client;
 mod usage;
 use salvo::prelude::*;
