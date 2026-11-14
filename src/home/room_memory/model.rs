@@ -109,6 +109,19 @@ pub fn parse_proposal(content: &Value) -> Option<Proposal> {
     Some(Proposal { entry, reason: reason.chars().take(MEMORY_REASON_BYTES).collect() })
 }
 
+/// A proposal from the event that carried it. Only a Hagency Agent on the
+/// room's own homeserver may propose, and the author is the event's real
+/// sender: the payload's `author` is attacker-controlled text and is ignored.
+pub fn trusted_proposal(content: &Value, sender: &str, room: &str) -> Option<Proposal> {
+    let server = hagency::agent_questions::server_name(room)?;
+    if !hagency::agent_questions::is_agent_on(sender, server) {
+        return None;
+    }
+    let mut proposal = parse_proposal(content)?;
+    proposal.entry.author = sender.to_owned();
+    Some(proposal)
+}
+
 /// The write Accept sends. A proposal already in memory (same id) is replaced
 /// at the next revision, so accepting twice cannot lose an edit.
 pub fn accept_plan(proposal: &Proposal, existing: Option<&Entry>, me: &str, levels: &PowerLevels, storage: Storage) -> Result<Write, WriteError> {

@@ -85,9 +85,24 @@ on the first slice):
   Dismiss. A card whose payload does not parse stays a plain notice. After
   Accept the card shows "Added to room memory"; it derives that from the room's
   entries, so it survives restarts and shows on every device.
-- Dismiss is local to the device (`room-memory-dismissed.json`). A marker in the
+- Dismiss is local to the device and the signed-in account
+  (`room-memory-dismissed-<hex of user id>.json`, owner-only). A marker in the
   room (a reaction or a custom event) would put clutter in front of everyone,
   need the right to send, and leak that a proposal was rejected into an
   encrypted room's timeline; another approver still sees the card.
 - Failed writes show inline in the Memory tab and as a popup. Nothing about
   memory is read from state in an encrypted room.
+- A proposal card is drawn only when the event's real sender is an Agent
+  (`_hagency_agt_` puppet) of the room's own homeserver; the payload's `author`
+  is ignored and the sender is what an accepted entry records. Anyone else's
+  `io.hagency.memory_proposal` notice stays a plain notice. In an encrypted
+  room only decrypted events are memory: a plaintext `io.hagency.memory` event
+  is counted as unreadable.
+- Concurrent edits in an encrypted room (two devices write revision N+1) cannot
+  be prevented, since timeline events have no compare-and-set. Each write
+  re-reads the room right before sending, and the reader resolves a tie
+  deterministically: highest `rev`, then the later timeline event. The loser is
+  superseded rather than merged; the next edit builds on the winner.
+- Reloads carry a per-room ticket, so a refresh that started before a write
+  cannot replace the list the write just reloaded. A write that succeeded but
+  could not be reloaded shows a notice, not an error, and clears the form.

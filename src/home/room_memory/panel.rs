@@ -171,7 +171,8 @@ impl RoomMemoryPanel {
         let (busy, error) = match self.room.as_ref() {
             Some(room) => {
                 let store = store::lock();
-                (store.busy(room), store.error(room).map(String::from))
+                // A saved-but-not-reloaded notice shows beside errors without blocking the form.
+                (store.busy(room), store.error(room).or(store.stale(room)).map(String::from))
             }
             None => (false, None),
         };

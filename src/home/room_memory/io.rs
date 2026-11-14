@@ -100,7 +100,7 @@ async fn scan(room: &Room) -> Result<TimelineScan, String> {
     }
 }
 
-fn scan_event(event: &TimelineEvent) -> (String, ScanKind) {
+pub(super) fn scan_event(event: &TimelineEvent) -> (String, ScanKind) {
     let Some(raw) = serde_json::from_str::<Value>(event.kind.raw().json().get()).ok() else {
         return (String::new(), ScanKind::Unreadable);
     };
@@ -109,6 +109,9 @@ fn scan_event(event: &TimelineEvent) -> (String, ScanKind) {
     let kind = match (raw["type"].as_str(), untrusted) {
         (_, true) if matches!(event.kind, TimelineEventKind::UnableToDecrypt { .. }) => ScanKind::Unreadable,
         (Some(MEMORY_STATE_TYPE), true) => ScanKind::Unreadable,
+        // Only a decrypted event is authenticated: a plaintext memory event in
+        // an encrypted room could have been written by the homeserver.
+        (Some(MEMORY_STATE_TYPE), false) if matches!(event.kind, TimelineEventKind::PlainText { .. }) => ScanKind::Unreadable,
         (Some(MEMORY_STATE_TYPE), false) => ScanKind::Memory(raw),
         _ => ScanKind::Other,
     };
