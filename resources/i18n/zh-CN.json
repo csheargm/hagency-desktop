@@ -3193,5 +3193,9 @@
   "Last check {time}: {count} issues handed off": "上次检查 {time}：已交出 {count} 个议题",
   "Last check {time} failed: {error}": "上次检查 {time} 失败：{error}",
   "Could not hand off issue #{number}: {error}": "无法交出议题 #{number}：{error}",
-  "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}"
+  "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}",
+  "Profile": "个人资料",
+  "Server: {0}": "服务器：{0}",
+  "Agent on {0}": "{0} 上的 Agent",
+  "Role: Agent": "角色：Agent"
 }

@@ -290,6 +290,8 @@ impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
         if self.started { return; }
         self.started = true;
+        // TODO(R4): app.rs is over budget; this belongs in a miniapps routing module.
+        crate::profile::profile_route::set_side_host(self.docks_mini_apps());
         self.approvals_timer = cx.start_interval(crate::hagency::pending_approvals::POLL_SECONDS);
         crate::hagency::owner_dashboard::register_host_accessibility(cx);
         // only init logging/tracing once.
@@ -678,6 +680,16 @@ impl MatchEvent for App {
                     }
                     AssistantAction::AccountChanged => crate::assistant::account_changed_on_ui(cx),
                     AssistantAction::GrantsChanged => {}
+                }
+                continue;
+            }
+            // TODO(R4): app.rs is over budget; move workspace routing of
+            // profiles, readers and articles into a miniapps routing module.
+            if let Some(crate::profile::profile_route::ShowProfileInSide(info)) = action.downcast_ref() {
+                if self.docks_mini_apps() {
+                    let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
+                    let host = if window.is_open() {window.workspace(cx)} else {self.ui.mini_apps_side_region(cx, ids!(mini_apps_side))};
+                    host.show_profile(cx, info);
                 }
                 continue;
             }

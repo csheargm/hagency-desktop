@@ -3193,5 +3193,9 @@
   "Last check {time}: {count} issues handed off": "Last check {time}: {count} issues handed off",
   "Last check {time} failed: {error}": "Last check {time} failed: {error}",
   "Could not hand off issue #{number}: {error}": "Could not hand off issue #{number}: {error}",
-  "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}"
+  "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}",
+  "Profile": "Profile",
+  "Server: {0}": "Server: {0}",
+  "Agent on {0}": "Agent on {0}",
+  "Role: Agent": "Role: Agent"
 }
