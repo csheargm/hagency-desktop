@@ -254,6 +254,7 @@ pub fn load_image(
     if !scope.is_current() { return Err(ImageError::UnsupportedFormat); }
     let scoped_key = scope.cache_key(key);
     let key = scoped_key.as_path();
+    restart_missed_decode(cx, img, key);
     // Register a reader before collecting: an already decoded image can be
     // handed to a new widget in this very draw.
     let existing = cx
@@ -308,6 +309,16 @@ pub fn load_image(
         collect_images(cx);
     }
     result
+}
+
+/// An image waiting for a decode never hears that it finished if its view was
+/// hidden at the time (hidden views pass no actions on), and loading the same
+/// image again would keep it waiting. Start it over, so the load binds the
+/// decoded texture, or decodes again if the cache has let it go.
+fn restart_missed_decode(cx: &mut Cx, img: &ImageRef, key: &Path) {
+    if !img.has_content() && !image_cache::is_decoding_image(cx, key, Some((1, 1))) {
+        img.set_texture(cx, None);
+    }
 }
 
 fn too_large(bytes: usize, limit: usize) -> ImageError {

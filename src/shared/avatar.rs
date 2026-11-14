@@ -207,13 +207,18 @@ impl Widget for Avatar {
         // Check to see if this image has been loaded/decoded.
         if self.display_state == AvatarDisplayState::ImageLoading {
             if let Event::Actions(actions) = event {
-                if actions.iter().any(|a| a.downcast_ref::<AsyncImageLoad>().is_some())
-                    && self.image(cx, ids!(img_view.img)).has_content()
-                {
-                    self.display_state = AvatarDisplayState::Image;
-                    self.view(cx, ids!(img_view)).set_visible(cx, true);
-                    self.view(cx, ids!(text_view)).set_visible(cx, false);
-                    self.view.redraw(cx);
+                if actions.iter().any(|a| a.downcast_ref::<AsyncImageLoad>().is_some()) {
+                    let image = self.image(cx, ids!(img_view.img));
+                    // `img_view` stays hidden until its image has content, and a hidden view
+                    // passes no actions on, so the image would never hear that its decode
+                    // finished. Hand it the completion here.
+                    image.handle_event(cx, event, scope);
+                    if image.has_content() {
+                        self.display_state = AvatarDisplayState::Image;
+                        self.view(cx, ids!(img_view)).set_visible(cx, true);
+                        self.view(cx, ids!(text_view)).set_visible(cx, false);
+                        self.view.redraw(cx);
+                    }
                 }
             }
         }
