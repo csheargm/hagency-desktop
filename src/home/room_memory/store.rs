@@ -39,9 +39,19 @@ impl Dismissed {
         self.0.entry(room.to_string()).or_default().insert(proposal.into());
         let bytes = serde_json::to_vec(&self.0).map_err(std::io::Error::other)?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, bytes)?;
+        write_private(&temp, &bytes)?;
         std::fs::rename(temp, path)
     }
+}
+
+/// Creates the file readable by its owner only: the JSON names rooms.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(bytes)
 }
 
 #[derive(Default)]
@@ -50,7 +60,12 @@ pub struct Store {
     progress: HashMap<(OwnedRoomId, String), Progress>,
     errors: HashMap<OwnedRoomId, String>,
     requested: HashSet<OwnedRoomId>,
-    dismissed: Option<Dismissed>,
+    /// Newest load ticket per room; an older load finishing later is stale.
+    generation: HashMap<OwnedRoomId, u64>,
+    /// A write went through but the list could not be reloaded: not an error.
+    stale: HashMap<OwnedRoomId, String>,
+    /// The signed-in account's dismissals, keyed by that account.
+    dismissed: Option<(String, Dismissed)>,
 }
 #[cfg(test)]
 thread_local! {
@@ -70,8 +85,10 @@ pub fn lock() -> MutexGuard<'static, Store> {
     // A panic elsewhere cannot leave this plain data half-written.
     STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
-fn dismissed_path() -> std::path::PathBuf {
-    crate::app_data_dir().join("room-memory-dismissed.json")
+/// One file per account, so switching accounts never inherits dismissals.
+pub(super) fn dismissed_path(me: &str) -> std::path::PathBuf {
+    let account: String = me.bytes().map(|b| format!("{b:02x}")).collect();
+    crate::app_data_dir().join(format!("room-memory-dismissed-{account}.json"))
 }
 
 impl Store {
@@ -81,7 +98,29 @@ impl Store {
     }
     pub fn set_loaded(&mut self, loaded: Loaded) {
         self.errors.remove(&loaded.room_id);
+        self.stale.remove(&loaded.room_id);
         self.loaded.insert(loaded.room_id.clone(), loaded);
+    }
+    /// Starts a load: only the newest ticket's result may replace the list.
+    pub fn begin_load(&mut self, room: &RoomId) -> u64 {
+        let ticket = self.generation.entry(room.to_owned()).or_default();
+        *ticket += 1;
+        *ticket
+    }
+    /// Applies a finished load unless a newer one was started meanwhile.
+    pub fn set_loaded_at(&mut self, ticket: u64, loaded: Loaded) -> bool {
+        let current = self.generation.get(&loaded.room_id).copied().unwrap_or(0);
+        if ticket < current {
+            return false;
+        }
+        self.set_loaded(loaded);
+        true
+    }
+    pub fn set_stale(&mut self, room: &RoomId, message: String) {
+        self.stale.insert(room.to_owned(), message);
+    }
+    pub fn stale(&self, room: &RoomId) -> Option<&str> {
+        self.stale.get(room).map(String::as_str)
     }
     pub fn set_error(&mut self, room: &RoomId, message: String) {
         self.errors.insert(room.to_owned(), message);
@@ -91,6 +130,7 @@ impl Store {
     }
     pub fn clear_error(&mut self, room: &RoomId) {
         self.errors.remove(room);
+        self.stale.remove(room);
     }
     /// True once per room: the first card or panel asks for the room's memory.
     pub fn first_request(&mut self, room: &RoomId) -> bool {
@@ -112,17 +152,23 @@ impl Store {
     pub fn progress(&self, room: &RoomId, subject: &str) -> Option<&Progress> {
         self.progress.get(&(room.to_owned(), subject.to_owned()))
     }
-    pub fn is_dismissed(&mut self, room: &RoomId, proposal: &str) -> bool {
-        self.dismissed.get_or_insert_with(|| Dismissed::load(&dismissed_path())).contains(room, proposal)
+    fn dismissals(&mut self, me: &str) -> &mut Dismissed {
+        if self.dismissed.as_ref().is_none_or(|(owner, _)| owner != me) {
+            self.dismissed = Some((me.to_owned(), Dismissed::load(&dismissed_path(me))));
+        }
+        self.dismissed.as_mut().map(|(_, d)| d).expect("set above")
     }
-    pub fn dismiss(&mut self, room: &RoomId, proposal: &str) -> std::io::Result<()> {
-        let path = dismissed_path();
-        self.dismissed.get_or_insert_with(|| Dismissed::load(&path)).insert(&path, room, proposal)
+    pub fn is_dismissed(&mut self, room: &RoomId, me: Option<&str>, proposal: &str) -> bool {
+        me.is_some_and(|me| self.dismissals(me).contains(room, proposal))
+    }
+    pub fn dismiss(&mut self, room: &RoomId, me: Option<&str>, proposal: &str) -> std::io::Result<()> {
+        let me = me.ok_or_else(|| std::io::Error::other("not signed in"))?;
+        self.dismissals(me).insert(&dismissed_path(me), room, proposal)
     }
     /// The state a proposal card shows right now.
     pub fn card_state(&mut self, room: &RoomId, me: Option<&str>, proposal: &str) -> CardState {
         let in_memory = self.loaded(room, me).is_some_and(|l| l.entries.iter().any(|e| e.id == proposal));
-        let dismissed = self.is_dismissed(room, proposal);
+        let dismissed = self.is_dismissed(room, me, proposal);
         let (working, failure) = match self.progress(room, proposal) {
             Some(Progress::Working) => (true, None),
             Some(Progress::Failed(message)) => (false, Some(message.as_str())),

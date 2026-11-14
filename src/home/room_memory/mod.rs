@@ -10,6 +10,8 @@ mod ops;
 pub mod panel;
 mod store;
 #[cfg(test)]
+mod hardening_tests;
+#[cfg(test)]
 mod tests;
 
 use makepad_widgets::ScriptVm;
@@ -19,14 +21,16 @@ pub fn script_mod(vm: &mut ScriptVm) {
     card::script_mod(vm);
 }
 
-/// The memory proposal an Agent's message carries, if it parses.
-pub fn proposal_of(event: &matrix_sdk_ui::timeline::EventTimelineItem) -> Option<model::Proposal> {
+/// The memory proposal an Agent's message carries, if it parses and the
+/// event's actual sender is an Agent of this room's homeserver.
+pub fn proposal_of(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<model::Proposal> {
     let raw = event.latest_json()?;
     let value: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
-    model::parse_proposal(&value["content"])
+    model::trusted_proposal(&value["content"], event.sender().as_str(), room.as_str())
 }
 
-/// The line that replaces a proposal message's body above its card.
-pub fn proposal_intro(proposal: &model::Proposal) -> String {
-    crate::i18n::format("{agent} suggests a note for this room's memory:", &[("agent", proposal.entry.author.clone())])
+/// The line that replaces a proposal message's body above its card. `sender`
+/// is the Agent's display name from the event, never the payload's.
+pub fn proposal_intro(sender: &str) -> String {
+    crate::i18n::format("{agent} suggests a note for this room's memory:", &[("agent", sender.to_owned())])
 }
