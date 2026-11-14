@@ -2,7 +2,7 @@ width: Fill height: Fill flow: Overlay
 show_bg: true draw_bg.color: mod.widgets.RINX_PAGE
 
 if !mod.rinx_theme.reloading() {
-    mod.hagency = {ready: false busy: false page: "overview" notice: "" session: nil
+    mod.hagency = {ready: false connect_tried: false busy: false page: "overview" notice: "" session: nil
         resources: [] connections: [] inbox: [] resource_after: nil connection_after: nil inbox_after: nil
         projects: [] catalog: [] project_after: nil catalog_after: nil project_selected: nil catalog_capability: "" connection_project: nil
         project_draft: {step: 0 resource: nil name: "" purpose: "" tokens: "100000"}
@@ -2836,7 +2836,14 @@ A.open_personal_agents = fn(after,page){
         H.personal_list=data
     })
 }
+// Agents open in the native agent panel (Identity / Context / Activity /
+// Settings); the bundle's own detail page stays reachable from there through
+// Advanced settings.
 A.open_personal_agent = fn(id){
+    if H.busy {return}
+    A.native_open_agent(id)
+}
+A.open_personal_agent_page = fn(id){
     if H.busy {return}
     if H.personal_id != id {H.personal_result=nil H.personal_observed=nil H.personal_config.result=nil H.personal_detail=nil H.local_status=nil H.local_models=nil H.local_model_current=nil}
     H.personal_id=id H.page="personal_agent" H.personal_mode="detail" H.personal_draft=nil
@@ -4049,7 +4056,7 @@ A.refresh_page = fn(){
     if H.page=="execution_policies" {A.open_policies(H.policy_resource,H.policy_after) return}
     if H.page=="execution_policy" {A.open_policy(H.policy_resource,H.policy_engagement) return}
     if H.page == "personal_agents" {A.open_personal_agents(H.personal_after,H.personal_page) return}
-    if H.page == "personal_agent" {A.open_personal_agent(H.personal_id) return}
+    if H.page == "personal_agent" {A.open_personal_agent_page(H.personal_id) return}
     if H.page == "agent_control" {A.open_agent_control(H.control_assignment,H.control_agent_name) return}
     if H.page == "agent_budget" {A.open_agent_budget(H.budget_request_id,H.budget_agent_name,H.budget_after,H.budget_page)} else if H.page == "agent_topup" {A.open_topup(H.budget_topup_id)} else if H.page == "operator_task_command" {if H.task_pending!=nil{A.open_saved_task(H.task_pending)}} else if H.page == "operator_tasks" {A.open_tasks(H.task_offset)} else if H.page == "operator_task" {A.open_task(H.task_id,H.task_comment_offset)} else if H.page == "operator_board" {A.open_board(H.task_board_query)} else if H.page == "device_execution" {A.open_execution(H.execution_after)} else if H.page == "allocations" {A.open_allocations(H.allocation_project,H.allocation_after,H.allocation_page)} else if H.page == "allocation_action" {A.open_allocation(H.allocation_id)} else if H.page == "onboarding" {A.open_onboarding()} else if H.page == "resources" {
         A.owner_load_pools()
@@ -4090,7 +4097,11 @@ A.refresh_page = fn(){
         else if H.wizard.resource == nil { A.open_accounts(nil) }
     } else if H.page == "action" && H.ux.connectionId != "" { A.open_connection(H.ux.connectionId) }
 }
+// The first session read has not answered yet (or has not started).
+A.connect_pending = fn(){return !H.connect_tried || H.busy}
 A.connect = fn(){
+    // Until the first session read answers, Agents shows "Loading…", not the sign-in card.
+    H.connect_tried = true
     A.request("hagency.session", {}, fn(data){
         if data.protocol != "hagency-management-v1" { H.notice = A.t("This server needs a compatible Hagency update.", "此服务器需要更新到兼容的 Hagency 版本。") return }
         H.session = data H.ready = true H.needs_signin=false
@@ -4113,11 +4124,17 @@ A.connect = fn(){
             }
         }
         if !A.entry_allowed(H.entry_role){H.entry_role=""}
+        // First run: no workspace chooser. Everyone starts as an Agent manager
+        // on their own Agents; Resource owner / Server admin stay one click
+        // away under "Switch workspace".
+        let first_run=H.entry_role=="" && A.entry_allowed("manager")
+        if first_run {H.entry_role="manager"}
         H.entry_choosing=H.entry_role==""
         if H.owner_review_pending!=nil {A.owner_review_open()}
         // In any workspace, and on the chooser: an account that decides admission sees what waits.
         if H.entry_role!="admin" {A.adm_pending_load()}
         if H.entry_role=="owner" && H.page=="overview" && H.command==nil{A.open_accounts(nil)}else{A.refresh()}
+        if first_run {A.save() A.native_open("new_local_agent")}
     })
 }
 A.navigate = fn(page){
@@ -5872,7 +5889,7 @@ A.settings_feedback_done=fn(kind){
     if kind=="notice" {H.notice=""}
     if kind=="pool" {A.pool_result_dismiss() return}
     if kind=="default_error" {A.dpol_open(H.dpol.resource) return}
-    if kind=="personal_error" {A.open_personal_agent(H.personal_id) return}
+    if kind=="personal_error" {A.open_personal_agent_page(H.personal_id) return}
     if kind=="default" {H.dpol.saved=nil}
     if kind=="personal" {H.personal_result=nil H.personal_observed=nil H.personal_config.result=nil}
     A.redraw()
@@ -7918,7 +7935,7 @@ A.recover_native = fn(row){
         if H.page == "provider_account" {A.open_account(H.account_id,nil)}
         if H.page=="resource_alert" {A.open_alert(data.resourceId,data.id,0)}
         if H.page == "resource_detail" {A.open_resource(data.resourceId)}
-        if H.page == "personal_agent" {A.open_personal_agent(data.agentId)}
+        if H.page == "personal_agent" {A.open_personal_agent_page(data.agentId)}
         if H.page == "resources" {A.refresh()}
     })
 }
@@ -8033,7 +8050,7 @@ A.retry_command = fn(){
             if command.service == "hagency.resources.rename" || (command.service=="hagency.resources.edit" && H.page!="default_policy") || command.service=="hagency.resources.create" {if !(command.service=="hagency.resources.edit" && A.detour_finish(r.data.resourceId)) {A.open_resource(r.data.resourceId)}}
             if (command.service=="hagency.pools.agents.decide" || command.service=="hagency.pools.agents.stop") && A.reqs_page() {A.reqs_load(nil)}
             if command.service=="hagency.pools.agents.decide" || command.service=="hagency.pools.agents.stop" {A.reqs_counts_reload()}
-            if command.service == "hagency.personal_agents.policy.save" || command.service == "hagency.personal_agents.observe" {A.open_personal_agent(r.data.agentId)}
+            if command.service == "hagency.personal_agents.policy.save" || command.service == "hagency.personal_agents.observe" {A.open_personal_agent_page(r.data.agentId)}
             if A.cleanup_enabled() && (command.service == "hagency.agents.cancel" || command.service == "hagency.agents.revoke") {A.open_removal(r.data.agentRequest.id)}
             if command.service == "hagency.allocations.decide" || command.service == "hagency.allocations.release" {A.open_allocation(r.data.allocation.id)}
             if command.service=="hagency.connections.create" && A.publication_draft(r.data.admission.contribution) {A.publish_offer(r.data.admission.contribution) return}
@@ -8152,7 +8169,7 @@ A.retry_command = fn(){
                 if command.service == "hagency.agents.settlement.request" {H.page="agent_removal" H.removal_id=r.data.requested.requestId H.removal=nil H.settlement=nil}
             if A.save() {A.acknowledge(command.args.commandId)}
             }
-            if personal_refused {A.open_personal_agent(command.args.agentId)}
+            if personal_refused {A.open_personal_agent_page(command.args.agentId)}
         }
         A.redraw()
     })
@@ -8347,13 +8364,33 @@ A.return_list=fn(page){if H.busy{return} H.ux.origin="" H.page=page H.ux.restore
 A.native_open=fn(destination){A.request("hagency.navigation.open",{destination:destination},fn(v){})}
 A.native_open_agent=fn(id){A.request("hagency.navigation.open",{destination:"local_agent",agentId:id},fn(v){})}
 // Local agents: reads and controls that never take the shared busy lock.
+// Each row starts from its last known status this session; a row still unread
+// after A.local_status_wait seconds, or whose read failed, says "Status
+// unavailable" instead of "Checking…"; a late reply still lands.
+A.local_status_wait=6
+A.local_unavailable={here:false service:{state:"unknown" detail:""}}
+A.local_known_for=fn(id){
+    let {local_known=[]}=H
+    for known in local_known {if known.id==id {return known.local}}
+    return nil
+}
+A.local_remember=fn(id,local){
+    let {local_known=[]}=H
+    let keep=[] for known in local_known {if known.id!=id {keep.push(known)}} keep.push({id:id local:local}) H.local_known=keep
+}
+A.local_settle=fn(rows){for row in rows {if row.local==nil {row.local=A.local_unavailable}}}
 A.load_local_list=fn(){
     host.request("hagency.personal_agents.list",{after:nil limit:16},fn(r){
         H.local_list=if r.is_ok && r.data.protocol=="hagency-personal-settings-v1" {r.data.items} else {[]}
-        for row in H.local_list {row.local=nil
+        let rows=H.local_list
+        for row in rows {row.local=A.local_known_for(row.id)
             let item=row
-            host.request("hagency.personal_agents.status",{id:item.id},fn(s){if s.is_ok {item.local=s.data A.redraw()}})
+            host.request("hagency.personal_agents.status",{id:item.id},fn(s){
+                if s.is_ok {item.local=s.data A.local_remember(item.id,s.data)} else if item.local==nil {item.local=A.local_unavailable}
+                A.redraw()
+            })
         }
+        start_timeout(A.local_status_wait,||{A.local_settle(rows) A.redraw()})
         A.redraw()
     })
 }
@@ -8372,7 +8409,7 @@ A.local_act=fn(service,args){
     H.local_epoch=H.local_epoch+1
     let epoch=H.local_epoch
     let id=H.personal_id
-    let silent=if service=="hagency.personal_agents.service" {if args.running {"local_no_response_start"} else {"local_no_response_stop"}} else {"local_no_response"}
+    let silent=if service=="hagency.personal_agents.service" && args.running!=nil {if args.running {"local_no_response_start"} else {"local_no_response_stop"}} else {"local_no_response"}
     H.local_pending=service H.local_error="" A.redraw()
     host.request(service,args,fn(r){
         if H.local_epoch==epoch {H.local_pending=""}
@@ -8395,6 +8432,11 @@ A.local_reason=fn(code){
 A.local_state=fn(){if H.local_status==nil {return ""} return H.local_status.service.state}
 A.local_running=fn(state){return state=="running" || state=="processing" || state=="starting" || state=="waiting" || state=="attention"}
 A.local_reset_time=fn(){return if H.local_status!=nil && H.local_status.resetLocalTime!=nil {H.local_status.resetLocalTime} else {"08:00"}}
+// The engine's own words under the state, so Starting/Needs attention say why.
+A.local_detail=fn(st){
+    if st==nil || st.service==nil || st.service.detail==nil || st.service.detail=="" {return ""}
+    return " · "+st.service.detail
+}
 A.local_state_text=fn(state){
     if state=="offline" {return A.t("Device offline","设备离线")}
     if state=="running" {return A.t("Running","运行中")}
@@ -8498,7 +8540,7 @@ A.local_model_changed=fn(){
     return d.runtime!=c.runtime || d.model!=c.model || A.recipient_optional(d,"profileId")!=A.recipient_optional(c,"profileId") || d.reasoningEffort!=c.reasoningEffort || d.webSearch!=c.webSearch || d.workspace!=keep
 }
 A.local_cancel_model=fn(){
-    if A.local_model_changed() {H.local_discard="model" A.redraw()} else {A.open_personal_agent(H.personal_id)}
+    if A.local_model_changed() {H.local_discard="model" A.redraw()} else {A.open_personal_agent_page(H.personal_id)}
 }
 A.local_conflict=fn(code){return code=="local_revision_conflict" || code=="personal_agent_settings_changed"}
 // Rebuild the review from the device's latest settings with the edits the device refused.
@@ -8556,7 +8598,7 @@ A.local_discard_changes=fn(){
     }
     if kind=="model" {H.personal_config.draft=nil} else {H.personal_mode="detail" H.personal_draft=nil}
     if after!="" {A.navigate(after) return}
-    if kind=="model" {A.open_personal_agent(H.personal_id) return}
+    if kind=="model" {A.open_personal_agent_page(H.personal_id) return}
     A.redraw()
 }
 A.local_model_name=fn(id){
@@ -9281,6 +9323,7 @@ A.render_page = fn(){
                 mod.widgets.HagencySectionTitle{text:A.t("Start or continue your work","开始或继续工作")}
                 mod.widgets.HagencyCopy{text:A.t("Request an Agent directly from a resource pool. The resource owner approves its capacity.","直接从资源池申请 Agent，由资源 owner 审批容量。")}
                 mod.widgets.HagencyActions{
+                    manager_create := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Create agent","创建 Agent") on_click:||A.native_open("new_local_agent")}
                     workspace_pools := mod.widgets.HagencyButton{text:A.t("Browse resource pools","浏览资源池") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.projects enabled:!H.busy on_click:||A.navigate("pools")}
                     workspace_work := mod.widgets.HagencyButton{text:A.t("Tasks and activity","任务与活动") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.tasks enabled:!H.busy on_click:||A.navigate("tools")}
                     pool_continue := mod.widgets.HagencyButton{visible:H.pool_draft!=nil text:A.t("Continue saved Agent request","继续已保存的 Agent 申请") enabled:!H.busy on_click:||A.navigate("pool_apply")}
@@ -9657,6 +9700,7 @@ A.render_page = fn(){
     if H.page=="pool_agents"{
         if H.entry_role=="owner"{mod.widgets.HagencyTitle{text:A.t("Agent requests","Agent 申请")}}
         else {mod.widgets.HagencyLargeTitle{text:A.t("My Agents","我的 Agent")}}
+        if H.entry_role=="manager"{mod.widgets.HagencyActions{my_agents_create := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Create agent","创建 Agent") on_click:||A.native_open("new_local_agent")}}}
         if H.entry_role=="owner"{mod.widgets.HagencyHint{text:A.t("Review capacity requests for resources you own.","审核使用你所拥有资源的容量申请。")}}
         if H.entry_role=="manager" && H.page=="pool_agents"{View{width:Fill height:Fit flow:Down spacing:6
             let local_here=A.local_here()
@@ -9684,8 +9728,8 @@ A.render_page = fn(){
                 if local_here && H.local_list!=nil {View{width:Fill height:Fit flow:Down
                     mod.widgets.HagencyListDivider{margin:Inset{left:14}}
                     mod.widgets.HagencyListRow{
-                        local_add := mod.widgets.HagencyListTap{enabled:!H.busy on_click: || A.native_open("local_agents")}
-                        mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Add Local Agent","添加本地 Agent")}}
+                        local_add := mod.widgets.HagencyListTap{enabled:!H.busy on_click: || A.native_open("new_local_agent")}
+                        mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Create agent","创建 Agent")}}
                     }
                 }}
             }
@@ -9971,7 +10015,12 @@ A.render_page = fn(){
         mod.widgets.HagencyCopy{text:A.error_text("native_resume_missing")}
         mod.widgets.HagencyActions{signin_again := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Sign in again", "重新登录") on_click: || A.reauthenticate()}}
     }}
-    if !H.ready {
+    if !H.ready && A.connect_pending() {
+        mod.widgets.HagencyCard{agents_loading := View{width:Fill height:Fit flow:Right spacing:10 align:Align{y:0.5}
+            mod.widgets.LoadingSpinner{width:18 height:18}
+            mod.widgets.HagencyHint{width:Fit text: A.t("Loading…", "正在读取…")}
+        }}
+    } else if !H.ready {
         mod.widgets.HagencyCard{
             mod.widgets.HagencyTitle{text: A.t("Welcome to Hagency", "欢迎使用 Hagency")}
             mod.widgets.HagencyCopy{text: A.t("Connect this device's agent resources to your Matrix server. Use your current account for every step.", "将此设备的 Agent 资源连接到 Matrix 服务器，全程使用当前账号。")}
@@ -15175,6 +15224,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                 personal_refresh := mod.widgets.HagencyIconButton{enabled:!H.busy draw_icon.svg:mod.rinx_icons.refresh on_click: || A.open_personal_agents(H.personal_after,H.personal_page)}
             }
             mod.widgets.HagencyTitle{text:A.t("Local agents","本地 Agent")}
+            mod.widgets.HagencyActions{personal_create := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Create agent","创建 Agent") on_click:||A.native_open("new_local_agent")}}
             mod.widgets.HagencyList{
                 if H.personal_list == nil {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:if H.busy {A.t("Loading…","正在读取…")} else {A.t("Couldn’t load local agents","暂时无法读取本地 Agent")}}}}}
                 if H.personal_list != nil && H.personal_list.items.len() == 0 {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("No local agents yet","还没有本地 Agent")}}}}
@@ -15280,7 +15330,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.power draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Service","服务")}
-                                mod.widgets.HagencyListSubtitle{text:if service_pending {A.local_pending_text(state)} else {A.local_state_text(state)}}
+                                mod.widgets.HagencyListSubtitle{text:if service_pending {A.local_pending_text(state)} else {A.local_state_text(state)+A.local_detail(st)}}
                             }
                             if service_pending {mod.widgets.HagencySpinner{margin:Inset{right:10}}}
                             local_service := mod.widgets.HagencySwitch{draw_bg.selected:if A.local_running(state)!=service_pending {1.0} else {0.0} enabled:H.local_pending=="" && !alert on_click: || A.local_toggle_service()}
@@ -15516,7 +15566,10 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
             mod.widgets.HagencyCard{
                 mod.widgets.HagencySectionTitle{text:A.t("Local agents","本地 Agent")}
                 mod.widgets.HagencyHint{text:A.t("Budgets, models, workspace and approval preferences for your own agents.","管理本地 Agent 的额度、模型、工作区和审批偏好。")}
-                overview_personal := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("Local-agent settings","本地 Agent 设置") on_click:||A.open_personal_agents(nil,1)}
+                mod.widgets.HagencyActions{
+                    overview_create := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Create agent","创建 Agent") on_click:||A.native_open("new_local_agent")}
+                    overview_personal := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("Local-agent settings","本地 Agent 设置") on_click:||A.open_personal_agents(nil,1)}
+                }
             }
             mod.widgets.HagencyRow{
                 View{width:Fill height:Fit flow:Down spacing:4

@@ -1626,6 +1626,12 @@ impl MiniAppsPanel {
         let action = match (args.get("destination").and_then(Value::as_str), args.len()) {
             (Some("matrix_workspaces"), 1) => crate::hagency::ui::HagencyAction::OpenProjects,
             (Some("local_agents"), 1) => crate::hagency::ui::HagencyAction::OpenAgents,
+            // The script's "Create agent" buttons and the first-run route open
+            // the native Create agent dialog.
+            (Some("new_local_agent"), 1) => {
+                cx.action(crate::hagency::create_agent::CreateAgentAction::Open);
+                return Ok(());
+            }
             // Navigation only: the panel opens the Agent only if this owner has it.
             (Some("local_agent"), 2) => {
                 let agent_id = args.get("agentId").and_then(Value::as_str)
@@ -2193,6 +2199,15 @@ impl MiniAppsPanelRef {
                     modal.open(cx);
                 }
                 MiniAppsAction::OpenAgent => {
+                    // First run: the Agent rail item opens the native Create agent
+                    // dialog in one click. The mini-app (and its permissions
+                    // review) waits until the owner opens it with consent;
+                    // first-run state is never an authorization.
+                    crate::hagency::agent_presence::refresh();
+                    if agent_entry(crate::hagency::agent_presence::needs_first_agent(), palpo_consented()) == AgentEntry::CreateDialog {
+                        cx.action(crate::hagency::create_agent::CreateAgentAction::Open);
+                        return;
+                    }
                     // A panel that is not running (its recovery page shows)
                     // is started again by coming back to it.
                     let already_open = inner.open && !inner.showing_catalog && !inner.showing_hub
@@ -2302,5 +2317,31 @@ mod tests {
         panel.show_import(&mut cx);
         assert!(!panel.navigate_back(&mut cx));
         assert!(panel.showing_catalog, "Catalog import returns to the catalog");
+    }
+}
+
+/// Where the Agent rail item leads.
+#[derive(Debug, PartialEq, Eq)]
+enum AgentEntry { CreateDialog, MiniApp }
+fn agent_entry(first_run: bool, consented: bool) -> AgentEntry {
+    if first_run && !consented { AgentEntry::CreateDialog } else { AgentEntry::MiniApp }
+}
+/// Whether the signed-in account confirmed the bundled Hagency app's permissions.
+fn palpo_consented() -> bool {
+    let app = crate::system_apps::apps().iter().find(|app| app.manifest.id == super::palpo::APP_ID);
+    match (crate::sliding_sync::current_user_id(), app) {
+        (Some(account), Some(app)) => super::consent::remembered(account.as_str(), &app.manifest.integrity.bundle_blake3),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod agent_entry_tests {
+    use super::*;
+    #[test]
+    fn first_run_opens_create_agent_without_granting_permissions() {
+        assert_eq!(agent_entry(true, false), AgentEntry::CreateDialog);
+        assert_eq!(agent_entry(true, true), AgentEntry::MiniApp, "consent given earlier: the app opens as usual");
+        assert_eq!(agent_entry(false, false), AgentEntry::MiniApp, "with an Agent: the review shows as usual");
     }
 }

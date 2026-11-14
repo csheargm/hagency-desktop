@@ -52,6 +52,8 @@ impl Widget for WelcomeScreen {
         }
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        // Learn once whether this account has an Agent, so "Open Agent" can lead a first-timer to Create agent.
+        crate::hagency::agent_presence::refresh();
         self.view.draw_walk(cx, scope, walk)
     }
 }

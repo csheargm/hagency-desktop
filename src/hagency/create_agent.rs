@@ -1,0 +1,124 @@
+//! The one-screen Create agent dialog (Buzz style): Name, Harness, Model and
+//! Thinking, then the same setup as one-click creation
+//! (`quick_setup`). This file is the dialog's state and its mapping to a
+//! `SimpleAgentSpec`; the widget lives in `create_agent/dialog.rs`.
+mod dialog;
+pub use dialog::{CreateAgentAction, CreateAgentDialog, CreateAgentDialogWidgetRefExt, script_mod};
+
+use ::hagency::simple_agent::{DEFAULT_REASONING_EFFORT, Runtime, SimpleAgentSpec};
+use serde_json::Value;
+
+/// Local harnesses in dialog order.
+const HARNESSES: [Runtime; 2] = [Runtime::Claude, Runtime::Codex];
+/// Thinking levels offered; each is the model profile's `reasoning_effort`.
+pub(crate) const THINKING: [&str; 3] = ["low", "medium", "high"];
+/// The server's Agent display-name limit (owned_agents `Create`).
+const NAME_MAX_CHARS: usize = 64;
+
+/// One model the harness's provider lists, as the dialog shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ModelChoice {
+    pub model: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: String,
+}
+
+/// The provider's model list (`Provider`/`RuntimeProvider` `Models` reply),
+/// the provider's default model first.
+pub(crate) fn parse_models(reply: &Value) -> Vec<ModelChoice> {
+    let rows = reply["models"].as_array().cloned().unwrap_or_default();
+    let mut models: Vec<(bool, ModelChoice)> = rows.iter().filter_map(|row| {
+        let model = row["model"].as_str().filter(|m| !m.is_empty())?.to_owned();
+        let efforts = row["supportedReasoningEfforts"].as_array().map(|list| {
+            list.iter().filter_map(|e| e["reasoningEffort"].as_str().map(str::to_owned)).collect()
+        }).unwrap_or_default();
+        Some((row["isDefault"] == true, ModelChoice {
+            label: row["displayName"].as_str().filter(|l| !l.is_empty()).unwrap_or(&model).to_owned(),
+            default_effort: row["defaultReasoningEffort"].as_str().unwrap_or_default().to_owned(),
+            model,
+            efforts,
+        }))
+    }).collect();
+    models.sort_by_key(|(default, _)| !*default); // stable: provider order otherwise
+    models.into_iter().map(|(_, choice)| choice).collect()
+}
+
+/// The Thinking level to save: the chosen one when the model offers it,
+/// otherwise the model's own default (a model that lists nothing takes it as is).
+pub(crate) fn effort_for(choice: &ModelChoice, wanted: &str) -> String {
+    if choice.efforts.is_empty() || choice.efforts.iter().any(|e| e == wanted) {
+        return wanted.to_owned();
+    }
+    [&choice.default_effort, &choice.efforts[0]].into_iter().find(|e| !e.is_empty()).cloned().unwrap_or_default()
+}
+
+/// Same rule as the server: non-blank, at most 64 characters, no control characters.
+pub(crate) fn validate_name(name: &str) -> Result<String, &'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Enter a name for the agent.");
+    }
+    if name.chars().count() > NAME_MAX_CHARS || name.chars().any(char::is_control) {
+        return Err("Use at most 64 characters, without line breaks.");
+    }
+    Ok(name.to_owned())
+}
+
+pub(crate) fn harness_label(runtime: &Runtime) -> &'static str {
+    if *runtime == Runtime::Claude { "Claude" } else { "Codex" }
+}
+/// "ann-claude": the owner's name and the harness, like the demo Agents.
+pub(crate) fn default_name(localpart: &str, runtime: &Runtime) -> String {
+    format!("{localpart}-{}", harness_label(runtime).to_ascii_lowercase())
+}
+
+/// What the dialog holds between draws. Harness probes arrive one by one.
+#[derive(Default)]
+pub(crate) struct DialogState {
+    /// Per `HARNESSES` entry: `None` while checking, then the models or the error code.
+    pub probes: [Option<Result<Vec<ModelChoice>, String>>; 2],
+    pub harness: usize,
+    pub model: usize,
+    pub thinking: usize,
+    pub name: String,
+}
+impl DialogState {
+    pub fn new(name_for: impl Fn(&Runtime) -> String) -> Self {
+        let mut state = Self { thinking: THINKING.iter().position(|t| *t == DEFAULT_REASONING_EFFORT).unwrap_or(1), ..Self::default() };
+        state.name = name_for(&HARNESSES[0]);
+        state
+    }
+    pub fn probe_commands() -> impl Iterator<Item = (usize, Runtime)> {
+        HARNESSES.into_iter().enumerate()
+    }
+    /// Harnesses whose provider answered with at least one model, as indexes into `HARNESSES`.
+    pub fn available(&self) -> Vec<usize> {
+        (0..HARNESSES.len()).filter(|i| matches!(&self.probes[*i], Some(Ok(models)) if !models.is_empty())).collect()
+    }
+    pub fn checking(&self) -> bool {
+        self.probes.iter().any(Option::is_none)
+    }
+    pub fn runtime(&self) -> Option<Runtime> {
+        self.available().get(self.harness).map(|i| HARNESSES[*i].clone())
+    }
+    pub fn models(&self) -> &[ModelChoice] {
+        match self.available().get(self.harness).and_then(|i| self.probes[*i].as_ref()) {
+            Some(Ok(models)) => models,
+            _ => &[],
+        }
+    }
+    /// The spec to create: one-click defaults plus the chosen model and Thinking.
+    pub fn spec(&self, defaults: impl Fn(String, Runtime) -> SimpleAgentSpec) -> Result<SimpleAgentSpec, &'static str> {
+        let name = validate_name(&self.name)?;
+        let runtime = self.runtime().ok_or("No Claude Code or Codex login was found on this Mac.")?;
+        let choice = self.models().get(self.model).ok_or("Choose a model.")?;
+        let mut spec = defaults(name, runtime);
+        spec.model = Some(choice.model.clone());
+        spec.reasoning_effort = Some(effort_for(choice, THINKING[self.thinking.min(THINKING.len() - 1)]));
+        Ok(spec)
+    }
+}
+
+#[cfg(test)]
+mod tests;
