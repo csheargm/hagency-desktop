@@ -3727,6 +3727,8 @@ impl RoomScreen {
         pane: &UserProfileSlidingPaneRef,
         info: UserProfilePaneInfo,
     ) {
+        // TODO(R4): over budget; desktop profiles open in the right-hand region (see `profile_route`).
+        if crate::profile::profile_route::open_in_side(cx, info.clone()) { return; }
         pane.set_info(cx, info);
         pane.show(cx);
         self.redraw(cx);
