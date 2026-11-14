@@ -799,6 +799,8 @@ script_mod! {
                         credential := Text {visible: false}
                         save_model := Primary {text: #(crate::i18n::tr("Save local model profile")) i18n_text: "Save local model profile"}
                         Text {text: #(crate::i18n::tr("Restart the Agent service to apply saved model settings.")) i18n_text: "Restart the Agent service to apply saved model settings." draw_text.color: mod.widgets.RINX_MUTED}
+                        Hr {width: Fill height: 1}
+                        issue_watch := mod.widgets.IssueWatchSection {}
                     }
                     runtime_section := View {visible: false width: Fill height: Fit flow: Down spacing: 12
                         Section {width: Fill height: Fit flow: Down spacing: 8
@@ -1361,6 +1363,17 @@ impl HagencyPanel {
         self.selected(cx, ids!(bindings), &self.bindings)
             .map(|v| string(&v, "id").into())
     }
+    // TODO(R4): ui.rs is far over its size budget; Agent settings blocks such
+    // as issue watching should move into their own module when it is split.
+    /// Hands the selected Agent and its Rooms to the issue-watch block, which
+    /// keeps its own state (`crate::hagency::issue_watch::section`).
+    fn sync_issue_watch(&self, cx: &mut Cx, assigned_here: bool) {
+        let agent = self.agent(cx).unwrap_or_default();
+        let bindings: Vec<Value> = self.bindings.iter().filter(|b| string(b, "agentId") == agent).cloned().collect();
+        let rooms = super::issue_watch::choices::rooms(&bindings, |b| self.binding_label(cx, b));
+        use super::issue_watch::section::IssueWatchSectionWidgetExt;
+        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, assigned_here, rooms);
+    }
     fn binding_label(&self, cx:&mut Cx, binding:&Value)->String {
         if string(binding,"scopeKind") == "owner_direct" {return crate::i18n::tr("Private chat with this Agent").into();}
         let id=string(binding,"roomId");
@@ -1755,6 +1768,7 @@ impl HagencyPanel {
         self.view.check_box(cx, ids!(assignment_confirm)).set_visible(cx, assignable && !assigned_here);
         self.view.button(cx, ids!(assign_current_device)).set_visible(cx, assignable && !assigned_here);
         for id in [ids!(model_tab), ids!(policy_tab)] {self.view.button(cx, id).set_enabled(cx, (assigned_here || remote) && !self.busy);}
+        self.sync_issue_watch(cx, assigned_here);
         self.view.button(cx,ids!(runtime_tab)).set_enabled(cx,assigned_here && !self.busy);
         self.view.drop_down(cx,ids!(policy_layer)).set_disabled(cx,remote || self.busy);
         self.view.button(cx,ids!(reset_policy)).set_visible(cx,!remote);

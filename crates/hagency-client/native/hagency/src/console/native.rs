@@ -277,6 +277,10 @@ pub enum LocalAction {
     AgentServiceStatus,
     Approvals,
     Decision { approval_id: String },
+    /// The Agent's GitHub issue watch and handed-off issues.
+    IssueWatch,
+    /// Saves `{issueWatch}` and/or `{issueSeen}`, then answers like `IssueWatch`.
+    SaveIssueWatch,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -755,6 +759,8 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                     | LocalAction::StartAgentService
                     | LocalAction::StopAgentService
                     | LocalAction::AgentServiceStatus
+                    | LocalAction::IssueWatch
+                    | LocalAction::SaveIssueWatch
             ) && (binding_id.is_some() || requester.is_some())
             {
                 return Err(failure(400, "invalid_arguments"));
@@ -777,6 +783,8 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                 LocalAction::StopAgentService => ("POST", "runtime/service/stop".into()),
                 LocalAction::AgentServiceStatus => ("GET", "runtime/service".into()),
                 LocalAction::Approvals => ("GET", "runtime/approvals".into()),
+                LocalAction::IssueWatch => ("GET", "issue-watch".into()),
+                LocalAction::SaveIssueWatch => ("POST", "issue-watch".into()),
                 LocalAction::Decision { approval_id } => {
                     key(&approval_id)?;
                     ("POST", format!("runtime/approvals/{approval_id}/decision"))

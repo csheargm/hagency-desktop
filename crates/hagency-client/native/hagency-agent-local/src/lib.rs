@@ -3,6 +3,7 @@
 //! interception before using this library. Each call ID denotes ONE provider invocation:
 //! a retry which can charge again requires a fresh call ID under the original requester.
 pub mod codex;
+pub mod issue_watch;
 pub mod inbox;
 pub mod questions;
 pub mod room_tools;
@@ -323,6 +324,7 @@ impl Ledger {
         if !has_web_search {
             db.execute_batch("ALTER TABLE model_profiles ADD COLUMN web_search INTEGER NOT NULL DEFAULT 1 CHECK(web_search IN (0,1))")?;
         }
+        issue_watch::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;
         db.pragma_update(None, "foreign_keys", true)?;

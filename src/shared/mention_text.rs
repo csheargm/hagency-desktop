@@ -159,17 +159,24 @@ impl MentionText {
         for mention in &self.current.mentions {
             if mention.range.start < offset || mention.range.end > offset + visible.len() { continue; }
             output.push_str(&self.text[end..mention.range.start]);
-            output.push('[');
-            for c in mention.label.chars() {
-                if c.is_ascii_punctuation() { output.push('\\'); }
-                output.push(c);
-            }
-            output.push_str(&format!("]({})", mention.user.matrix_to_uri()));
+            output.push_str(&mention_link(&mention.label, &mention.user));
             end = mention.range.end;
         }
         output.push_str(&self.text[end..offset + visible.len()]);
         output
     }
+}
+
+/// The Markdown pill for one mention: `[label](matrix.to link)`, with the
+/// label's ASCII punctuation escaped so it cannot open other Markdown.
+pub fn mention_link(label: &str, user: &UserId) -> String {
+    let mut output = String::from("[");
+    for c in label.chars() {
+        if c.is_ascii_punctuation() { output.push('\\'); }
+        output.push(c);
+    }
+    output.push_str(&format!("]({})", user.matrix_to_uri()));
+    output
 }
 
 fn changed_range(old: &str, new: &str, selection: Option<Range<usize>>, forward_delete: bool) -> (Range<usize>, usize) {
