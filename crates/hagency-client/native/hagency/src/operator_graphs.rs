@@ -182,7 +182,7 @@ fn iso_now() -> String {
         .unwrap_or(0);
     iso_from_millis(millis)
 }
-fn iso_from_millis(millis: u64) -> String {
+pub(crate) fn iso_from_millis(millis: u64) -> String {
     let secs = millis / 1000;
     let ms = millis % 1000;
     let days = (secs / 86_400) as i64;

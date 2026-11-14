@@ -11,6 +11,8 @@ use crate::console::native::{
 use hagency_agent_local::room_tools::{PendingRoomCall, RoomReply};
 use hagency_runtime::room_tools::RoomOperation;
 use serde_json::{Value, json};
+/// Leave the provider's 64 KiB turn bound room for the bounded context block.
+const ENCRYPTED_CONTEXT_INPUT_LIMIT: usize = 40 * 1024;
 fn failure(status: u16, code: &str) -> NativeError {
     NativeError {
         status,
@@ -212,7 +214,14 @@ impl Host {
             // Native warm and cold sessions own their conversation history.
             // Leave earlier room pages for explicit reads instead of appending
             // the same recent transcript to every new user turn.
-            Ok::<_, &'static str>(state.history.followup_prompt(request))
+            let prompt = state.history.followup_prompt(request);
+            if !state.source.encrypted || prompt.len() > ENCRYPTED_CONTEXT_INPUT_LIMIT {
+                return Ok::<_, &'static str>(prompt);
+            }
+            // Encrypted rooms: the server cannot attach history, so the Agent
+            // device reads what the requester is likely referring to.
+            let context = encrypted_context::read(state.source.device.as_ref(), dispatch).await;
+            Ok(format!("{}\n\n{prompt}", encrypted_context::preamble(&context)))
         })
         .await;
         match prepared {
