@@ -32,6 +32,7 @@ pub mod encrypted_approvals;
 pub(crate) mod file_service;
 pub(crate) mod fleet_views;
 pub mod inspect;
+pub mod issue_watch;
 pub mod mcp;
 pub mod native_owner;
 mod operator;
