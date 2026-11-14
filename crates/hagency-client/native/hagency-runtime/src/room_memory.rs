@@ -102,7 +102,11 @@ pub fn reduce(events: &[Value]) -> Vec<Entry> {
     let mut latest: BTreeMap<String, Entry> = BTreeMap::new();
     for event in events {
         let (Some(id), content) = (event["state_key"].as_str(), &event["content"]) else { continue };
-        let Some(text) = content["text"].as_str().map(clean).filter(|t| !t.is_empty()) else { continue };
+        let Some(text) = content["text"].as_str().map(clean).filter(|t| !t.is_empty()) else {
+            // Empty content is a tombstone: it deletes any earlier revision of this id.
+            latest.remove(id);
+            continue;
+        };
         let entry = Entry {
             id: id.into(),
             text,
@@ -259,5 +263,15 @@ mod tests {
         let entries = reduce(&events);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "new");
+    }
+
+    #[test]
+    fn tombstone_deletes_an_earlier_revision_of_the_same_id() {
+        let live = json!({"state_key":"a","content":{"text":"keep?","rev":3}});
+        let tombstone = json!({"state_key":"a","content":{}});
+        assert!(reduce(&[live.clone(), tombstone.clone()]).is_empty());
+        // A later live revision brings the id back.
+        let again = json!({"state_key":"a","content":{"text":"back","rev":4}});
+        assert_eq!(reduce(&[live, tombstone, again])[0].text, "back");
     }
 }
