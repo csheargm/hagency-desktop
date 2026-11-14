@@ -3261,5 +3261,11 @@
   "Saving its settings…": "Saving its settings…",
   "Sign in on this Mac first: run `claude login` or `codex login` in a terminal, then reopen this dialog.": "Sign in on this Mac first: run `claude login` or `codex login` in a terminal, then reopen this dialog.",
   "Thinking": "Thinking",
-  "Use at most 64 characters, without line breaks.": "Use at most 64 characters, without line breaks."
+  "Use at most 64 characters, without line breaks.": "Use at most 64 characters, without line breaks.",
+  "The request was refused as malformed; update Hagency or report this.": "The request was refused as malformed; update Hagency or report this.",
+  "This Mac is not set up to run Agents yet; open the Agent's Hosting tab once.": "This Mac is not set up to run Agents yet; open the Agent's Hosting tab once.",
+  "Sign in to Claude Code or Codex on this Mac, then try again.": "Sign in to Claude Code or Codex on this Mac, then try again.",
+  "Update the Codex CLI to 0.167.0 or newer, or choose Claude.": "Update the Codex CLI to 0.167.0 or newer, or choose Claude.",
+  "Sign in again, then retry.": "Sign in again, then retry.",
+  "Try again; the Agent may already exist in your list.": "Try again; the Agent may already exist in your list."
 }

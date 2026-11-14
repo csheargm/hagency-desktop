@@ -3261,5 +3261,11 @@
   "Saving its settings…": "正在保存设置…",
   "Sign in on this Mac first: run `claude login` or `codex login` in a terminal, then reopen this dialog.": "请先在这台 Mac 上登录：在终端运行 `claude login` 或 `codex login`，然后重新打开此窗口。",
   "Thinking": "思考强度",
-  "Use at most 64 characters, without line breaks.": "最多 64 个字符，不能换行。"
+  "Use at most 64 characters, without line breaks.": "最多 64 个字符，不能换行。",
+  "The request was refused as malformed; update Hagency or report this.": "请求被拒绝（格式不正确）；请更新 Hagency 或反馈此问题。",
+  "This Mac is not set up to run Agents yet; open the Agent's Hosting tab once.": "这台 Mac 尚未设置为运行 Agent；请先在 Agent 的“托管”页签中设置一次。",
+  "Sign in to Claude Code or Codex on this Mac, then try again.": "请先在这台 Mac 上登录 Claude Code 或 Codex，然后重试。",
+  "Update the Codex CLI to 0.167.0 or newer, or choose Claude.": "请将 Codex CLI 更新到 0.167.0 或更高版本，或选择 Claude。",
+  "Sign in again, then retry.": "请重新登录后重试。",
+  "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。"
 }

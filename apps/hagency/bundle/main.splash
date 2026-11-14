@@ -8379,6 +8379,17 @@ A.local_remember=fn(id,local){
     let keep=[] for known in local_known {if known.id!=id {keep.push(known)}} keep.push({id:id local:local}) H.local_known=keep
 }
 A.local_settle=fn(rows){for row in rows {if row.local==nil {row.local=A.local_unavailable}}}
+// While My Agents is open the list re-reads every few seconds (one chain at a
+// time), so an Agent created in the native dialog appears with its status.
+A.local_poll_secs=5
+A.local_poll_arm=fn(){
+    if H.local_poll_armed==true {return}
+    H.local_poll_armed=true
+    start_timeout(A.local_poll_secs,||{
+        H.local_poll_armed=false
+        if H.page=="pool_agents" && !H.busy {A.load_local_list()}
+    })
+}
 A.load_local_list=fn(){
     host.request("hagency.personal_agents.list",{after:nil limit:16},fn(r){
         H.local_list=if r.is_ok && r.data.protocol=="hagency-personal-settings-v1" {r.data.items} else {[]}
@@ -8391,6 +8402,7 @@ A.load_local_list=fn(){
             })
         }
         start_timeout(A.local_status_wait,||{A.local_settle(rows) A.redraw()})
+        A.local_poll_arm()
         A.redraw()
     })
 }
