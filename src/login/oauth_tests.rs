@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 struct Fixture {
@@ -18,6 +18,8 @@ struct Fixture {
     hold_refresh: Arc<AtomicBool>,
     refresh_entered: Arc<AtomicBool>,
     release_refresh: Arc<AtomicBool>,
+    /// whoami answers "not yet provisioned" this many times first.
+    unprovisioned_whoami: Arc<AtomicUsize>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Fixture {
@@ -35,6 +37,8 @@ impl Fixture {
         let held = hold_refresh.clone();
         let entered = refresh_entered.clone();
         let release = release_refresh.clone();
+        let unprovisioned_whoami = Arc::new(AtomicUsize::new(0));
+        let pending_provision = unprovisioned_whoami.clone();
         let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", socket.local_addr().unwrap());
         socket.set_nonblocking(true).unwrap();
@@ -98,7 +102,7 @@ impl Fixture {
                 let response = if route.contains("/versions ") {
                     json!({"versions":["v1.15"],"unstable_features":{}})
                 } else if route.contains("/hagency/api/v1/discovery ") {
-                    json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,
+                    json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,"serverName":"localhost",
                         "homeserver":format!("{root}/"),"issuer":format!("{root}/auth/"),
                         "capabilities":["pasion-oauth","owner-agent-appservice-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1"]})
                 } else if route.contains("/auth_metadata ") {
@@ -174,12 +178,17 @@ impl Fixture {
                 let failure = token_error.lock().unwrap().clone().filter(|_| {
                     route.contains("/token ") && payload["grant_type"] == "refresh_token"
                 });
-                let status = match failure.as_deref() {
-                    Some("server_error") => 503,
-                    Some(_) => 400,
-                    None => 200,
+                // Like Pasion's provision job: the account appears after a
+                // few profile lookups; until then whoami refuses the token.
+                let profile = route.contains("/profile/");
+                let unprovisioned = (route.contains("/whoami ") && pending_provision.load(Ordering::Acquire) > 0)
+                    || (profile && pending_provision.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)).is_ok());
+                let status = match failure.as_deref() { _ if unprovisioned && profile => 404, _ if unprovisioned => 401, Some("server_error") => 503, Some(_) => 400, None => 200 };
+                let response = if unprovisioned {
+                    json!({"errcode":"M_UNKNOWN_TOKEN","error":"User not found (not yet provisioned?)","soft_logout":true})
+                } else {
+                    failure.map(|code| json!({"error":code,"error_description":"fixture detail must never enter diagnostics"})).unwrap_or(response)
                 };
-                let response = failure.map(|code| json!({"error":code,"error_description":"fixture detail must never enter diagnostics"})).unwrap_or(response);
                 let body = response.to_string();
                 let _ = write!(
                     stream,
@@ -199,6 +208,7 @@ impl Fixture {
             hold_refresh,
             refresh_entered,
             release_refresh,
+            unprovisioned_whoami,
             thread: Some(thread),
         }
     }
@@ -938,4 +948,54 @@ async fn credential_migration_held_oauth_refresh_after_logout_is_revoke_only() {
     assert_eq!(std::fs::read(&new_path).unwrap(), new_bytes);
     crate::sliding_sync::test_set_current_client(None);
     assert!(credentials::test_shutdown(&service));
+}
+
+/// Regression: sign-up failed with "[401 / M_UNKNOWN_TOKEN] User not found (not
+/// yet provisioned?)" because the token was used before Pasion's provision job.
+/// Flow: register -> wait for provisioning -> OAuth login -> whoami.
+#[tokio::test]
+async fn registration_waits_for_provisioning_before_oauth_login() {
+    let fixture = Fixture::with_registration(true);
+    fixture.unprovisioned_whoami.store(3, Ordering::Release);
+    crate::login::provision_wait::wait_for_new_account(&fixture.origin, "fixture",
+        std::time::Duration::from_secs(5), std::time::Duration::from_millis(10)).await.unwrap();
+    assert_eq!(fixture.unprovisioned_whoami.load(Ordering::Acquire), 0);
+    let client = Client::builder().homeserver_url(&fixture.origin).build().await.unwrap();
+    let device = fixture.device.clone();
+    oauth_browser_login(&client, false, move |authorization| async move {
+        let url = Url::parse(&authorization).unwrap();
+        let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        *device.lock().unwrap() = params["scope"].split_whitespace()
+            .find_map(|s| s.split_once("device:").map(|(_, d)| d.to_owned()));
+        let mut redirect = Url::parse(&params["redirect_uri"]).unwrap();
+        redirect.query_pairs_mut().append_pair("code", "fixture-code").append_pair("state", &params["state"]);
+        crate::http::client_builder().build()?.get(redirect).send().await?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(client.user_id().unwrap().as_str(), "@fixture:localhost");
+    let requests = fixture.requests.lock().unwrap();
+    assert!(requests.iter().any(|(route, _)| route.contains("/profile/%40fixture%3Alocalhost ") || route.contains("/profile/@fixture:localhost ")));
+}
+
+#[tokio::test]
+async fn registration_wait_gives_a_clear_error_when_provisioning_never_finishes() {
+    let fixture = Fixture::new();
+    fixture.unprovisioned_whoami.store(usize::MAX, Ordering::Release);
+    let error = crate::login::provision_wait::wait_for_new_account(&fixture.origin, "fixture",
+        std::time::Duration::from_millis(100), std::time::Duration::from_millis(10)).await.unwrap_err();
+    assert!(error.to_string().contains("still setting it up"), "{error}");
+}
+
+/// Regression: a failing browser open surfaces an error (closing the modal)
+/// instead of leaving the flow waiting.
+#[tokio::test]
+async fn sdk_oauth_browser_open_failure_returns_error_promptly() {
+    let fixture = Fixture::new();
+    let client = Client::builder().homeserver_url(&fixture.origin).build().await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), oauth_browser_login_with_hint(
+        &client, false, None, Some("upstream:github"), |url| async move {
+            assert!(url.contains("login_hint=upstream%3Agithub"), "{url}");
+            anyhow::bail!("Unable to open your browser")
+        })).await.expect("hint path must not block");
+    assert_eq!(result.unwrap_err().to_string(), "Unable to open your browser");
 }

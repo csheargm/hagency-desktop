@@ -5,6 +5,12 @@ use crate::sliding_sync::{submit_async_request, LoginByPassword, LoginRequest, M
 use super::homeserver::{password_identifier, LoginMethods};
 use super::login_status_modal::{LoginStatusModalAction, LoginStatusModalWidgetExt};
 
+// TODO(R4): this file is over budget; split the DSL and the action handling
+// into child modules along the server / method / registration steps.
+#[path = "login_screen_account.rs"]
+mod account;
+use account::AccountUi;
+
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
@@ -227,6 +233,12 @@ script_mod! {
                             align: Align{x: 0.5, y: 0.5}
                             text: #(crate::i18n::tr("Continue with single sign-on")) i18n_text: "Continue with single sign-on"
                         }
+                        github_login_button := RobrixIconButton {
+                            visible: false
+                            width: Fill, height: 42, padding: 10
+                            align: Align{x: 0.5, y: 0.5}
+                            text: #(crate::i18n::tr("Continue with GitHub")) i18n_text: "Continue with GitHub"
+                        }
                         password_option_button := ButtonFlat {
                             visible: false
                             width: Fit, height: Fit
@@ -280,6 +292,34 @@ script_mod! {
                                 align: Align{x: 0.5, y: 0.5}
                                 text: #(crate::i18n::tr("Sign in with password")) i18n_text: "Sign in with password"
                             }
+                            forgot_password_button := ButtonFlat {
+                                width: Fit, height: Fit
+                                text: #(crate::i18n::tr("Forgot password?")) i18n_text: "Forgot password?"
+                            }
+                        }
+                        recovery_form := View {
+                            visible: false
+                            width: Fill, height: Fit, flow: Down, spacing: 12
+                            recovery_email := RobrixTextInput {
+                                width: Fill, height: Fit, padding: 10
+                                empty_text: #(crate::i18n::tr("Email")) i18n_empty_text: "Email"
+                                autocapitalize: None, autocorrect: Disabled
+                            }
+                            recovery_status := Label {
+                                width: Fill, height: Fit
+                                flow: Flow.Right{wrap: true}
+                                draw_text +: {color: COLOR_TEXT, text_style: REGULAR_TEXT {font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
+                                text: ""
+                            }
+                            send_recovery_button := RobrixIconButton {
+                                width: Fill, height: 42, padding: 10
+                                align: Align{x: 0.5, y: 0.5}
+                                text: #(crate::i18n::tr("Send reset link")) i18n_text: "Send reset link"
+                            }
+                            close_recovery_button := ButtonFlat {
+                                width: Fit, height: Fit
+                                text: #(crate::i18n::tr("Back to sign in")) i18n_text: "Back to sign in"
+                            }
                         }
                         register_option_button := ButtonFlat {
                             width: Fit, height: Fit
@@ -302,6 +342,20 @@ script_mod! {
                                 width: Fill, height: Fit, padding: 10
                                 empty_text: #(crate::i18n::tr("Registration token, if required")) i18n_empty_text: "Registration token, if required"
                                 autocapitalize: None, autocorrect: Disabled
+                            }
+                            registration_email := RobrixTextInput {
+                                width: Fill, height: Fit, padding: 10
+                                empty_text: #(crate::i18n::tr("Email (optional, for password recovery)")) i18n_empty_text: "Email (optional, for password recovery)"
+                                autocapitalize: None, autocorrect: Disabled
+                            }
+                            registration_code_row := View {
+                                visible: false
+                                width: Fill, height: Fit
+                                registration_code := RobrixTextInput {
+                                    width: Fill, height: Fit, padding: 10
+                                    empty_text: #(crate::i18n::tr("Code from the email")) i18n_empty_text: "Code from the email"
+                                    autocapitalize: None, autocorrect: Disabled
+                                }
                             }
                             submit_registration_button := RobrixIconButton {
                                 width: Fill, height: 42, padding: 10
@@ -344,6 +398,8 @@ pub struct LoginScreen {
     #[rust] recent_servers_dirty: bool,
     #[rust] recent_server_selected: String,
     #[rust] recent_server_prompt: String,
+    /// GitHub sign-in, password recovery and email registration (see `account`).
+    #[rust] account: AccountUi,
 
 }
 
@@ -437,6 +493,7 @@ impl LoginScreen {
         self.view.text_input(cx, ids!(registration_password)).set_text(cx, "");
         self.view.text_input(cx, ids!(registration_token)).set_text(cx, "");
         self.view.view(cx, ids!(registration_form)).set_visible(cx, false);
+        self.reset_account_options(cx);
         if self.password_visible {
             self.password_visible = false;
             self.view.text_input(cx, ids!(password_input)).toggle_is_password(cx);
@@ -476,6 +533,7 @@ impl LoginScreen {
         self.view.view(cx, ids!(server_step)).set_visible(cx, false);
         self.view.view(cx, ids!(method_step)).set_visible(cx, true);
         self.methods = Some(methods);
+        self.refresh_account_options(cx);
         self.refresh_method_copy(cx);
         self.redraw(cx);
     }
@@ -590,9 +648,15 @@ impl MatchEvent for LoginScreen {
                 Ok(destination) => {
                     self.login_pending = true;
                     self.show_status(cx, crate::i18n::tr("Signing in"), &crate::i18n::format("Connecting to {destination}…", &[("destination", (destination).to_string())]), crate::i18n::tr("Please wait…"), false);
-                    submit_async_request(MatrixRequest::Login(LoginRequest::LoginByPassword(LoginByPassword {
-                        user_id: user.clone(), password: password_input.text(), homeserver: Some(destination),
-                    })));
+                    if self.methods.as_ref().is_some_and(|methods| methods.oauth) {
+                        // A plain Matrix password token cannot manage Agents; go through Pasion OAuth.
+                        let username = user.trim_start_matches('@').split(':').next().unwrap_or_default().to_owned();
+                        submit_async_request(MatrixRequest::PasswordSignIn { homeserver_url: destination, username, password: password_input.text(), token: String::new() });
+                    } else {
+                        submit_async_request(MatrixRequest::Login(LoginRequest::LoginByPassword(LoginByPassword {
+                            user_id: user.clone(), password: password_input.text(), homeserver: Some(destination),
+                        })));
+                    }
                 }
                 Err(error) => self.show_status(cx, crate::i18n::tr("Check sign-in details"), &error.to_string(), crate::i18n::tr("Okay"), true),
             }
@@ -603,9 +667,8 @@ impl MatchEvent for LoginScreen {
             self.refresh_method_copy(cx);
         }
         if !self.login_pending && self.view.button(cx, ids!(register_option_button)).clicked(actions) {
-            if self.methods.as_ref().is_some_and(|methods| methods.browser_registration) {
-                self.start_sso(cx, None, true);
-            } else if self.methods.as_ref().is_some_and(|methods| methods.password) {
+            // Pasion servers: one in-app screen (username + password), no browser.
+            if self.methods.as_ref().is_some_and(|methods| methods.password || methods.oauth) {
                 self.registration_form_open = true;
                 self.view.view(cx, ids!(provider_list_container)).set_visible(cx, false);
                 self.view.button(cx, ids!(browser_login_button)).set_visible(cx, false);
@@ -626,7 +689,9 @@ impl MatchEvent for LoginScreen {
             let username = self.view.text_input(cx, ids!(registration_username)).text().trim().to_owned();
             let password = self.view.text_input(cx, ids!(registration_password)).text();
             let token = self.view.text_input(cx, ids!(registration_token)).text().trim().to_owned();
-            if username.is_empty() || password.is_empty() {
+            if self.submit_email_registration(cx, &username, &password) {
+                // Handled by the email registration flow.
+            } else if username.is_empty() || password.is_empty() {
                 self.show_status(cx, crate::i18n::tr("Check registration details"), crate::i18n::tr("Enter a username and password."), crate::i18n::tr("Okay"), true);
             } else if let Some(homeserver_url) = self.methods.as_ref().map(|methods| methods.homeserver.clone()) {
                 self.login_pending = true;
@@ -651,6 +716,7 @@ impl MatchEvent for LoginScreen {
             }
         }
 
+        self.handle_account_options(cx, actions);
         for action in actions {
             if let LoginStatusModalAction::Close = action.as_widget_action().cast() {
                 if self.sso_pending {
@@ -707,7 +773,7 @@ impl MatchEvent for LoginScreen {
                 Some(LoginAction::LoginFailure(error)) => {
                     self.login_pending = false;
                     self.sso_pending = false;
-                    self.show_status(cx, crate::i18n::tr("Sign-in failed"), error, crate::i18n::tr("Okay"), true);
+                    self.show_status(cx, crate::i18n::tr(crate::login::failure_text::login_failure_title(self.registration_form_open)), error, crate::i18n::tr("Okay"), true);
                 }
                 Some(LoginAction::SsoPending(pending)) => self.sso_pending = *pending,
                 Some(LoginAction::Cancelled) => {
