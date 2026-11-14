@@ -25,10 +25,13 @@ use matrix_sdk::{
 };
 use sha2::{Digest, Sha256};
 mod history;
+mod recent;
 mod documents;
 mod files;
 pub(in crate::console) use documents::RoomFile;
 pub(in crate::console) use history::HistoryBatch;
+#[cfg(test)]
+pub(in crate::console) use history::history_record;
 use std::{
     collections::HashMap,
     path::Path,

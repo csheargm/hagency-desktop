@@ -2,6 +2,7 @@
 mod drain;
 pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
+mod encrypted_context;
 mod provider_custody;
 pub(in crate::console) mod questions;
 mod room_tools;
