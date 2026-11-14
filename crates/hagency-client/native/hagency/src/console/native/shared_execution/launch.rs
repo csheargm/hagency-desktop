@@ -297,9 +297,10 @@ impl Launch {
                 let binding = credential.binding().clone();
                 let proof =
                     VerifiedProviderAccount::from_claude_binding(binding.clone()).map_err(store)?;
+                // Any verified Claude sign-in of the owner may run the pool.
                 let verified = v
                     .registry
-                    .verify_provider_resource(
+                    .verify_claude_launch_resource(
                         v.profile_authority.clone(),
                         v.resource.clone(),
                         proof,

@@ -88,36 +88,67 @@ impl claude_turn::Host for Host {
         tool: String,
         arguments: Value,
         _directory: &Path,
-    ) -> bool {
+    ) -> claude_turn::ToolAnswer {
+        use claude_turn::ToolAnswer;
         let tool = tool.strip_prefix("claude.").unwrap_or(&tool);
         // These modes come from the resource owner's signed successor policy.
-        if self
+        // Every refusal is logged with codes and the tool's name only.
+        if let Err(e) = self
             .live
             .io
             .check_running(self.live.authority.root())
             .await
-            .is_err()
         {
-            return false;
+            tracing::warn!(tool, status = e.status, code = %e.code, "Shared Claude tool request refused: the run's authority check failed");
+            return ToolAnswer::Deny;
         }
+        let web_tool = matches!(tool, "WebSearch" | "WebFetch");
+        let refused = |reason: &'static str| {
+            tracing::info!(tool, reason, "Shared Claude tool request refused by the pool's policy");
+            ToolAnswer::Deny
+        };
         match self.policy {
-            SharedClaudePolicy::Text => false,
-            SharedClaudePolicy::LiveWeb => matches!(tool, "WebSearch" | "WebFetch"),
-            SharedClaudePolicy::Yolo { web } => web || !matches!(tool, "WebSearch" | "WebFetch"),
+            SharedClaudePolicy::Text => refused("text_only"),
+            SharedClaudePolicy::LiveWeb if !web_tool => refused("web_only"),
+            SharedClaudePolicy::LiveWeb => ToolAnswer::allowed(true),
+            SharedClaudePolicy::Yolo { web } if !web && web_tool => refused("web_off"),
+            SharedClaudePolicy::Yolo { .. } => ToolAnswer::allowed(true),
             SharedClaudePolicy::Standard { web } => {
-                if !web && matches!(tool, "WebSearch" | "WebFetch") {
-                    return false;
+                if !web && web_tool {
+                    return refused("web_off");
                 }
                 let Some(session) = &self.session else {
-                    return false;
+                    tracing::warn!(tool, "Shared Claude tool request refused: no native session is bound yet");
+                    return ToolAnswer::Deny;
                 };
-                let request = json!({"id":id,"method":"claude/can_use_tool","params":{"sessionId":session,"toolName":tool,"input":arguments},"sessionAllowed":false,"managerCanDecide":false});
-                tokio::time::timeout(
+                // The person who sent the message decides. The whole CLI runs
+                // in the sandbox that keeps it writing only in its own folder.
+                let request = json!({"id":id,"method":"claude/can_use_tool","params":{"sessionId":session,"toolName":tool,"input":arguments},"sessionAllowed":false,"managerCanDecide":true});
+                match tokio::time::timeout(
                     Duration::from_secs(120),
                     permission(&self.live, &self.work, request),
                 )
                 .await
-                .is_ok_and(|v| v.unwrap_or(false))
+                {
+                    // The person who asked never answered: nobody refused.
+                    // The server ends its own record a little before this
+                    // wait does and then answers the next read with
+                    // `approval_expired`.
+                    Err(_) => {
+                        tracing::info!("Shared Claude tool request was not answered in time");
+                        ToolAnswer::Unanswered
+                    }
+                    Ok(Err(e)) if e.code == "approval_expired" => {
+                        tracing::info!("Shared Claude tool request expired unanswered");
+                        ToolAnswer::Unanswered
+                    }
+                    // Codes only: never the tool input or a Matrix ID.
+                    Ok(Err(e)) => {
+                        tracing::warn!(status = e.status, code = %e.code, "Shared Claude tool request failed and was refused");
+                        ToolAnswer::Deny
+                    }
+                    Ok(Ok(allowed)) => ToolAnswer::allowed(allowed),
+                }
             }
         }
     }
@@ -267,25 +298,21 @@ pub(in crate::console::native::shared_execution) async fn permission(
     };
     // Opening an encrypted device can span an activity renewal. Register with
     // the current proof, without canceling or repeating the native callback.
-    let (b, _, state) = live.proof().await?;
-    let reply: Timed<Value> = b
-        .upload(
-            Action::ApprovalRegister {
-                authority: state.lease.authority,
-                work: work.clone(),
-                id: id.clone(),
-                request: wire.clone(),
-                remaining_ms: 115_000,
-            },
-            state.until,
-        )
-        .await?;
+    let reply = upload(live, "register", |authority| Action::ApprovalRegister {
+        authority,
+        work: work.clone(),
+        id: id.clone(),
+        request: wire.clone(),
+        remaining_ms: 115_000,
+    })
+    .await?;
     let row = reply.value;
     let hash_value = row["digest"].as_str().ok_or_else(invalid)?.to_owned();
     hash(&hash_value)?;
     if row["approval"]["id"] != id
         || row["approval"]["workId"] != work.id
         || row["approval"]["request"] != wire
+        || row["approval"]["deciderMxid"] != work.requester_mxid.as_str()
         || digest(&row["approval"])? != hash_value
     {
         return Err(invalid());
@@ -294,6 +321,7 @@ pub(in crate::console::native::shared_execution) async fn permission(
     loop {
         if let Some((device, nonce)) = &private {
             if device.is_revoked() {
+                tracing::warn!("Shared Claude tool request refused: the Agent's encrypted device was replaced");
                 return Ok(false);
             }
             if !device.approvals.has_decision(&row).unwrap_or(false) {
@@ -314,17 +342,12 @@ pub(in crate::console::native::shared_execution) async fn permission(
                 continue;
             }
         }
-        let (b, _, state) = live.proof().await?;
-        let reply: Timed<Value> = b
-            .upload(
-                Action::ApprovalTake {
-                    authority: state.lease.authority,
-                    id: id.clone(),
-                    digest: hash_value.clone(),
-                },
-                state.until,
-            )
-            .await?;
+        let reply = upload(live, "take", |authority| Action::ApprovalTake {
+            authority,
+            id: id.clone(),
+            digest: hash_value.clone(),
+        })
+        .await?;
         if reply.value["id"] != id || reply.value["digest"] != hash_value {
             return Err(invalid());
         }
@@ -339,11 +362,58 @@ pub(in crate::console::native::shared_execution) async fn permission(
                     )
                     .unwrap_or(false)
             {
+                tracing::warn!(decision, "Shared Claude tool request refused: the server's decision differs from the encrypted one");
                 return Ok(false);
             }
-            return Ok(decision == "approve_once" && reply.value["ownerApproved"] == true);
+            let by_sender = reply.value["decidedByMxid"] == work.requester_mxid.as_str();
+            tracing::info!(decision, by_sender, "Shared Claude tool request decided");
+            return Ok(decision == "approve_once" && by_sender);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+/// One server step of a waiting tool request under the current lease. A lease
+/// renewal or a credential refresh can refuse a step while the person decides;
+/// registering is idempotent and a decision stays on the server until it is
+/// taken, so such a refusal is asked again. The caller's 120 s bound ends it.
+async fn upload(
+    live: &Live,
+    step: &'static str,
+    action: impl Fn(SharedActivityRef) -> Action,
+) -> Result<Timed<Value>, NativeError> {
+    loop {
+        let attempt: Result<Timed<Value>, NativeError> = async {
+            let (b, _, state) = live.proof().await?;
+            b.upload(action(state.lease.authority), state.until).await
+        }
+        .await;
+        match attempt {
+            Ok(reply) => return Ok(reply),
+            Err(error) if retry_later(live.io.transient(&error), &error.code) => {
+                tracing::info!(step, code = %error.code, "Shared Claude tool request step retrying");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(error) => {
+                tracing::warn!(step, status = error.status, code = %error.code, "Shared Claude tool request step failed");
+                return Err(error);
+            }
+        }
+    }
+}
+/// The server refuses a step proved with the lease a renewal just replaced.
+fn retry_later(transient: bool, code: &str) -> bool {
+    transient || code == "shared_activity_expired_or_changed"
+}
+#[cfg(test)]
+mod permission_tests {
+    use super::retry_later;
+    #[test]
+    fn a_replaced_lease_or_a_refresh_is_asked_again_and_a_refusal_is_not() {
+        assert!(retry_later(true, "management_scope_changed"));
+        assert!(retry_later(false, "shared_activity_expired_or_changed"));
+        for code in ["approval_expired", "approval_request_changed", "resource_owner_required", "invalid_server_response"] {
+            assert!(!retry_later(false, code), "{code}");
+        }
     }
 }
 

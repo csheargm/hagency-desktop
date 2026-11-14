@@ -172,7 +172,9 @@ impl ServerOperation {
                 remaining_ms,
             } => (
                 "approvals/register".into(),
-                json!({"authority":authority,"workId":work.id,"workDigest":digest(&work).map_err(|_|OwnerError{status:400,code:"invalid_shared_work".into()})?,"id":id,"request":request,"remainingMs":remaining_ms}),
+                // The person who sent the message answers. The owner is not
+                // asked and the server does not show the request to them.
+                json!({"authority":authority,"workId":work.id,"workDigest":digest(&work).map_err(|_|OwnerError{status:400,code:"invalid_shared_work".into()})?,"id":id,"request":request,"remainingMs":remaining_ms,"requesterDecides":true}),
             ),
             Action::ApprovalTake {
                 authority,

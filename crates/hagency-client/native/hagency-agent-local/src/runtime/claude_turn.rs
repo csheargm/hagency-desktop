@@ -9,6 +9,22 @@ use hagency_runtime::claude;
 use serde_json::Value;
 use std::{future::Future, path::Path, time::Duration};
 
+/// How the host ended one tool request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolAnswer {
+    Allow,
+    /// Refused by the Agent's rules or by its owner.
+    Deny,
+    /// The owner was asked and did not answer within the wait. Nobody
+    /// refused, so the model is told the request is undecided.
+    Unanswered,
+}
+impl ToolAnswer {
+    pub fn allowed(allow: bool) -> Self {
+        if allow { Self::Allow } else { Self::Deny }
+    }
+}
+
 /// Trusted host only: a native tool request is never an approval. Implementors
 /// must bind their decision to the original owner, requester and dispatch.
 pub trait Host: Send {
@@ -32,7 +48,7 @@ pub trait Host: Send {
         tool: String,
         arguments: Value,
         directory: &Path,
-    ) -> impl Future<Output = bool> + Send;
+    ) -> impl Future<Output = ToolAnswer> + Send;
 }
 
 /// The original owned stream is attached immediately after system/init. Every
@@ -404,7 +420,7 @@ async fn drive<H: Host, C: Capture>(
             } => {
                 let directory = approval_directory(&profile.cwd, &input);
                 enum Decision {
-                    Tool(bool),
+                    Tool(ToolAnswer),
                     Question(Option<crate::questions::SubmittedAnswer>),
                 }
                 let questions = if tool_name == "AskUserQuestion" {
@@ -425,12 +441,12 @@ async fn drive<H: Host, C: Capture>(
                     // this dispatch's room authority. External MCP tools still
                     // use the owner's ordinary permission policy below.
                     if let Some(name) = tool_name.strip_prefix("mcp__hagency_matrix__") {
-                        return Decision::Tool(
+                        return Decision::Tool(ToolAnswer::allowed(
                             queue.room.is_some()
                                 && hagency_runtime::room_tools::RoomTools::history_and_files()
                                     .parse(name, &input)
                                     .is_ok(),
-                        );
+                        ));
                     }
                     if let Some(questions) = questions {
                         return Decision::Question(match &queue.questions {
@@ -482,12 +498,14 @@ async fn drive<H: Host, C: Capture>(
                         submitted = answer;
                         wire.prepare_question(&request_id, &answers)
                     }
-                    Decision::Tool(allow) => wire.prepare_approval(
+                    Decision::Tool(answer) => wire.prepare_approval(
                         &request_id,
-                        if allow {
-                            claude::session::PermissionDecision::Allow
-                        } else {
-                            claude::session::PermissionDecision::Deny
+                        match answer {
+                            ToolAnswer::Allow => claude::session::PermissionDecision::Allow,
+                            ToolAnswer::Deny => claude::session::PermissionDecision::Deny,
+                            ToolAnswer::Unanswered => {
+                                claude::session::PermissionDecision::Unanswered
+                            }
                         },
                     ),
                 }
