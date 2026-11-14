@@ -96,7 +96,13 @@ struct ImageLease {
     _permit: ImagePermit,
     owners: Vec<ImageOwner>,
     texture: Option<Texture>,
+    /// Owners let go while their image still held this texture: when the lease
+    /// retires, they lose the texture too instead of drawing a released one.
+    let_go: Vec<WidgetWeakRef>,
 }
+
+/// At most this many let-go owners are remembered per lease.
+const LET_GO_LIMIT: usize = 32;
 struct ImageOwner {
     widget: WidgetWeakRef,
     bound: bool,
@@ -145,16 +151,24 @@ pub fn collect_images(cx: &mut Cx) {
         if !image.scope.is_current() {
             image.owners.clear();
         }
+        let texture = image.texture.as_ref();
+        let let_go = &mut image.let_go;
         image.owners.retain_mut(|owner| {
-            owner.widget.upgrade().is_some_and(|widget| {
+            let mut holds = false;
+            let keep = owner.widget.upgrade().is_some_and(|widget| {
                 let image_ref = widget.as_image();
                 image_ref.borrow().is_some_and(|widget| {
                     // While decoding, a live owner still has a pending request.
-                    if let Some(texture) = image.texture.as_ref() {
+                    if let Some(texture) = texture {
                         let frame = *owner.bound_at_frame.get_or_insert(cx.drawing_id());
                         if widget.get_texture(0).as_ref() == Some(texture) {
                             owner.bound = true;
+                            holds = true;
+                            // During a draw, an area that this pass has not drawn yet
+                            // reads as invalid even when it is on screen, so areas are
+                            // only judged between draws.
                             cx.drawing_id() <= frame.saturating_add(1)
+                                || cx.in_draw_event()
                                 || owner
                                     .widget
                                     .upgrade()
@@ -166,7 +180,11 @@ pub fn collect_images(cx: &mut Cx) {
                         true
                     }
                 })
-            })
+            });
+            if !keep && holds && let_go.len() < LET_GO_LIMIT {
+                let_go.push(owner.widget.clone());
+            }
+            keep
         });
     }
     let mut index = 0;
@@ -184,6 +202,20 @@ pub fn collect_images(cx: &mut Cx) {
         }
         let image = budget.images.swap_remove(index);
         if let Some(texture) = image.texture {
+            // An image let go while it still held this texture would go on drawing it
+            // after the release, as an empty picture. Take the texture back from it,
+            // so that it loads the image again the next time it is shown.
+            for holder in &image.let_go {
+                let Some(widget) = holder.upgrade() else { continue };
+                let image_ref = widget.as_image();
+                let holds = image_ref
+                    .borrow()
+                    .is_some_and(|image| image.get_texture(0).as_ref() == Some(&texture));
+                if holds {
+                    image_ref.set_texture(cx, None);
+                    widget.redraw(cx);
+                }
+            }
             texture.release(cx);
             match texture.get_format(cx) {
                 TextureFormat::VecBGRAu8_32 { data, .. }
@@ -254,6 +286,7 @@ pub fn load_image(
     if !scope.is_current() { return Err(ImageError::UnsupportedFormat); }
     let scoped_key = scope.cache_key(key);
     let key = scoped_key.as_path();
+    restart_missed_decode(cx, img, key);
     // Register a reader before collecting: an already decoded image can be
     // handed to a new widget in this very draw.
     let existing = cx
@@ -301,6 +334,7 @@ pub fn load_image(
         _permit: ImagePermit::reserve(bytes)?,
         owners: vec![ImageOwner::new(img)],
         texture: None,
+        let_go: Vec::new(),
     });
     let result = img.load_image_from_data_async(cx, key, data);
     if result.is_err() {
@@ -308,6 +342,16 @@ pub fn load_image(
         collect_images(cx);
     }
     result
+}
+
+/// An image waiting for a decode never hears that it finished if its view was
+/// hidden at the time (hidden views pass no actions on), and loading the same
+/// image again would keep it waiting. Start it over, so the load binds the
+/// decoded texture, or decodes again if the cache has let it go.
+fn restart_missed_decode(cx: &mut Cx, img: &ImageRef, key: &Path) {
+    if !img.has_content() && !image_cache::is_decoding_image(cx, key, Some((1, 1))) {
+        img.set_texture(cx, None);
+    }
 }
 
 fn too_large(bytes: usize, limit: usize) -> ImageError {
@@ -621,6 +665,7 @@ mod tests {
                 _permit: ImagePermit::reserve(3072).unwrap(),
                 owners: vec![],
                 texture: None,
+                let_go: Vec::new(),
             }],
             ..Default::default()
         });
@@ -661,6 +706,7 @@ mod tests {
                 _permit: ImagePermit::reserve(24).unwrap(),
                 owners: vec![],
                 texture: None,
+                let_go: Vec::new(),
             }],
             ..Default::default()
         });
@@ -677,6 +723,57 @@ mod tests {
         collect_images(&mut cx);
         assert!(cx.get_global::<ImageBudget>().images.is_empty());
         assert!(!cx.get_global::<ImageCache>().map.contains_key(&key));
+    }
+
+    #[test]
+    fn an_image_let_go_with_its_texture_loses_the_texture_when_it_is_released() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let image = cx.with_vm(|vm| {
+            makepad_widgets::theme_mod(vm);
+            makepad_widgets::widgets_mod(vm);
+            let value = script_eval!(vm, {mod.widgets.Image {}});
+            WidgetRef::new_with_inner(Box::new(Image::script_from_value(vm, value))).as_image()
+        });
+        let key = PathBuf::from("let-go.png");
+        let texture = Texture::new_with_format(
+            &mut cx,
+            TextureFormat::VecBGRAu8_32 {
+                width: 1,
+                height: 1,
+                data: Some(vec![0xff112233]),
+                updated: TextureUpdated::Full,
+            },
+        );
+        let mut cache = ImageCache::new();
+        cache
+            .map
+            .insert(key.clone(), ImageCacheEntry::Loaded(texture.clone()));
+        cx.set_global(cache);
+        cx.set_global(ImageBudget {
+            images: vec![ImageLease {
+                scope: crate::media_cache::MediaFetchScope::capture(),
+                key: key.clone(),
+                _permit: ImagePermit::reserve(24).unwrap(),
+                owners: vec![ImageOwner::new(&image)],
+                texture: None,
+                let_go: Vec::new(),
+            }],
+            ..Default::default()
+        });
+        image.set_texture(&mut cx, Some(texture.clone()));
+        collect_images(&mut cx);
+        assert_eq!(cx.get_global::<ImageBudget>().images.len(), 1, "a fresh owner keeps its image");
+        // Two drawings later the image has never been drawn, so its area is not valid:
+        // the budget lets it go and retires the texture.
+        cx.begin_draw_context();
+        cx.begin_draw_context();
+        collect_images(&mut cx);
+        assert!(cx.get_global::<ImageBudget>().images.is_empty());
+        assert!(!cx.get_global::<ImageCache>().map.contains_key(&key));
+        assert!(
+            !image.has_content(),
+            "an image must not keep a texture whose memory was released"
+        );
     }
 
     #[test]
@@ -803,6 +900,7 @@ mod completion_tests {
                     _permit: ImagePermit::reserve(24).unwrap(),
                     owners: vec![],
                     texture: None,
+                    let_go: Vec::new(),
                 }],
                 ..Default::default()
             });

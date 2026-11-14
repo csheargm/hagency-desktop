@@ -864,10 +864,13 @@ impl AccountSettings {
             (appearance.role("color.content.disabled"), appearance.field)
         };
         let mut delete_avatar_button = delete_avatar_button.clone();
+        // A click leaves the button with key focus, so its focus colors must be
+        // these too (see `enable_upload_avatar_button`).
         script_apply_eval!(cx, delete_avatar_button, {
             enabled: #(enable),
             draw_bg +: {
                 color: #(delete_button_bg_color),
+                color_focus: #(delete_button_bg_color),
                 border_color: #(delete_button_fg_color),
             }
             draw_icon +: {
@@ -875,6 +878,7 @@ impl AccountSettings {
             }
             draw_text +: {
                 color: #(delete_button_fg_color),
+                color_focus: #(delete_button_fg_color),
             }
         });
     }
@@ -888,10 +892,14 @@ impl AccountSettings {
             (appearance.role("color.content.disabled"), appearance.field)
         };
         let mut upload_avatar_button = upload_avatar_button.clone();
+        // A click leaves the button with key focus. The icon button style's focus
+        // colors (a pale face, dark text) are not these, and the icon has no focus
+        // color of its own, so a focused button showed a white icon on a pale face.
         script_apply_eval!(cx, upload_avatar_button, {
             enabled: #(enable),
             draw_bg +: {
                 color: #(upload_button_bg_color),
+                color_focus: #(upload_button_bg_color),
                 border_color: #(upload_button_fg_color),
             }
             draw_icon +: {
@@ -899,6 +907,7 @@ impl AccountSettings {
             }
             draw_text +: {
                 color: #(upload_button_fg_color),
+                color_focus: #(upload_button_fg_color),
             }
         });
     }
