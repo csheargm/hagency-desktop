@@ -229,7 +229,7 @@ pub fn plaintext_body_of_timeline_item(
 
 
 /// Returns a text preview of the given message as an Html-formatted string.
-fn text_preview_of_message(
+pub(crate) fn text_preview_of_message(
     msg: &MessageType,
     sender_user_id: &UserId,
     sender_username: &str,

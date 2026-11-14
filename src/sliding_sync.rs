@@ -39,7 +39,7 @@ use std::{borrow::Cow, cmp::{max, min}, future::Future, hash::{BuildHasherDefaul
 use std::io;
 use hashbrown::{HashMap, HashSet};
 use crate::{
-    app::AppStateAction, app_data_dir, cache_dir, avatar_cache::AvatarUpdate, event_preview::{BeforeText, TextPreview, text_preview_of_raw_timeline_event, text_preview_of_timeline_item}, home::{
+    app::AppStateAction, app_data_dir, cache_dir, avatar_cache::AvatarUpdate, event_preview::{BeforeText, TextPreview, text_preview_of_raw_timeline_event}, home::{
         add_room::KnockResultAction, invite_screen::{JoinRoomResultAction, LeaveRoomResultAction}, link_preview::LinkPreviewData, room_screen::{InviteResultAction, TimelineUpdate, index_of_event}, rooms_list::{self, InvitedRoomInfo, InviterInfo, JoinedRoomInfo, LatestEventPreview, RoomsListUpdate, enqueue_rooms_list_update}, rooms_list_header::RoomsListHeaderAction, send_status_indicator::{stringify_send_error, upload_percent}, tombstone_footer::SuccessorRoomDetails
     }, login::login_screen::LoginAction, logout::{logout_confirm_modal::LogoutAction, logout_state_machine::{LogoutConfig, is_logout_in_progress, logout_with_state_machine}}, media_cache::{MediaCacheEntry, MediaCacheEntryRef}, persistence::{self, ClientSessionPersisted, load_app_state}, profile::{
         user_profile::UserProfile,
@@ -5630,6 +5630,7 @@ async fn text_preview_of_latest_thread_reply(
     let sender_name = sender_room_member.as_ref()
         .and_then(|rm| rm.display_name())
         .unwrap_or(sender_id.as_str());
+    if let Some(preview) = crate::thread_reply_preview::preview_of_raw_event(raw, sender_name) { return Some(preview); }
     let text_preview = text_preview_of_raw_timeline_event(raw, sender_name).unwrap_or_else(|| {
         let event_type = raw.get_field::<String>("type").ok().flatten();
         TextPreview::from((
@@ -5678,13 +5679,7 @@ async fn get_latest_event_details(
                 return None;
             }
             let sender_username = get_sender_username!(profile, sender, *is_own);
-            let preview = text_preview_of_timeline_item(
-                content,
-                sender,
-                &sender_username,
-            );
-            let direct_text = preview.direct_message_body().map(str::to_owned);
-            let text = preview.format_with(&sender_username, true);
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::Local { timestamp, sender, profile, content, state: _ } => {
@@ -5693,13 +5688,7 @@ async fn get_latest_event_details(
             //                "<span color="red">Failed to send {msg}</span>"
             let is_own = current_user_id().is_some_and(|id| &id == sender);
             let sender_username = get_sender_username!(profile, sender, is_own);
-            let preview = text_preview_of_timeline_item(
-                content,
-                sender,
-                &sender_username,
-            );
-            let direct_text = preview.direct_message_body().map(str::to_owned);
-            let text = preview.format_with(&sender_username, true);
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::RemoteInvite { timestamp, .. } => {

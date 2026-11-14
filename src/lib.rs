@@ -92,6 +92,7 @@ pub mod i18n;
 mod apple_fonts;
 /// Generating text previews of timeline events/messages.
 mod event_preview;
+mod thread_reply_preview;
 pub mod room;
 
 
