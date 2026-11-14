@@ -8427,7 +8427,7 @@ A.local_tone_fg=fn(state){
 A.local_here=fn(){if H.session==nil {return true} let {localAgentsHere=true}=H.session return localAgentsHere!=false}
 A.local_need=fn(){if H.session==nil {return ""} let {localAgentsNeed=""}=H.session return localAgentsNeed}
 A.local_need_text=fn(){
-    if A.local_need()=="other_account" {return A.t("This computer hosts another account, so local Agents of this account can’t run here.","这台电脑托管的是另一个账号，此账号的本地 Agent 无法在这里运行。")}
+    if A.local_need()=="other_account" {return A.t("This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool.","这台电脑托管的是另一个账号。本地 Agent 只能在托管你自己账号的电脑上运行，使用你自己的模型登录。想用这台电脑的资源，请在它的资源池里申请 Agent。")}
     return A.t("Set up resource hosting on this computer first. Local Agents run through it.","请先在这台电脑上开启「资源托管」，本地 Agent 由它运行。")
 }
 A.local_toggle_service=fn(){

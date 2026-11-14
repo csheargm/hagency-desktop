@@ -124,7 +124,7 @@ pub(crate) fn no_local_host_text(host: super::backend::LocalAgentHost) -> Option
     use super::backend::LocalAgentHost::*;
     match host {
         Here => None,
-        OtherAccount => Some("This computer hosts another account, so local Agents of this account can't run here."),
+        OtherAccount => Some("This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool."),
         HostingNotSetUp => Some("Set up resource hosting on this computer first. Local Agents run through it."),
     }
 }
@@ -5711,7 +5711,7 @@ mod tests {
         for (host, offered, text) in [
             (None, true, "Configure this account's local agents, their models, rooms and execution permissions."),
             (Some(LocalAgentHost::Here), true, "Configure this account's local agents, their models, rooms and execution permissions."),
-            (Some(LocalAgentHost::OtherAccount), false, "This computer hosts another account, so local Agents of this account can't run here."),
+            (Some(LocalAgentHost::OtherAccount), false, "This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool."),
             (Some(LocalAgentHost::HostingNotSetUp), false, "Set up resource hosting on this computer first. Local Agents run through it."),
         ] {
             panel.local_host = host;

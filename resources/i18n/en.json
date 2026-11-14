@@ -2189,7 +2189,7 @@
   "No Matrix workspaces yet. Create one to organize rooms and members.": "No Matrix workspaces yet. Create one to organize rooms and members.",
   "Organize your Matrix rooms": "Organize your Matrix rooms",
   "Local agents can't run on this computer": "Local agents can't run on this computer",
-  "This computer hosts another account, so local Agents of this account can't run here.": "This computer hosts another account, so local Agents of this account can't run here.",
+  "This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool.": "This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool.",
   "Set up resource hosting on this computer first. Local Agents run through it.": "Set up resource hosting on this computer first. Local Agents run through it.",
   "Manage agents you run locally": "Manage agents you run locally",
   "Create or connect a Matrix Space, then manage its rooms and people.": "Create or connect a Matrix Space, then manage its rooms and people.",
