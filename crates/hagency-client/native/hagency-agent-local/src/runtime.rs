@@ -392,6 +392,10 @@ async fn spawn_inner(
                 claude::interactive_arguments(&profile.model, &profile.effort)
                     .map_err(|_| Error::Profile("Claude model or effort"))?,
             );
+            // The Agent's web search switch, as a shared Claude run reads it.
+            if !profile.web_search {
+                command.args(["--disallowedTools", "WebSearch,WebFetch"]);
+            }
         }
         Kind::Octos => {
             let digest = crate::hash(&(reference, &profile.cwd))?;

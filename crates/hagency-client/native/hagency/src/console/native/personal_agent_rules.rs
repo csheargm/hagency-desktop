@@ -71,6 +71,10 @@ fn replacement(
         })
         .collect::<Result<Vec<_>, _>>()?;
     original.high_risk = ToolPolicy::AllowWithRules { tools, directories };
+    // Full trust is saved only as its own choice, under its warning.
+    if original.high_risk.is_full_trust() {
+        return Err(invalid());
+    }
     Ok(original)
 }
 fn request(saved: &Saved) -> Command {
@@ -143,6 +147,8 @@ impl NativeManagement {
             return Err(failure(409, "personal_execution_device_required"));
         }
         let (tools, directories) = match &snapshot.policy.policy.high_risk {
+            // Full trust is not a list the owner wrote; rules start empty.
+            trusted if trusted.is_full_trust() => (Vec::new(), Vec::new()),
             ToolPolicy::AllowWithRules { tools, directories } => (
                 tools.clone(),
                 directories.iter().map(PathBuf::from).collect(),

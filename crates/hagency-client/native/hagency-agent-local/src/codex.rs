@@ -1432,6 +1432,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         self.server_ids.clear();
         let mut turn_start = value!({"threadId":thread,"input":[{"type":"text","text":input,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user"});
         self.native_sandbox().apply_to_turn(&mut turn_start, cwd);
+        // The owner's full trust lifts the Room folder's sandbox and its
+        // questions for this turn only: every turn states both again, so the
+        // next one is confined as soon as the owner takes the trust back.
+        if self.native_sandbox() == NativeSandbox::RoomFolder && ledger.fully_trusts(scope, dispatch) {
+            turn_start["approvalPolicy"] = "never".into();
+            turn_start["sandboxPolicy"] = value!({"type":"dangerFullAccess"});
+        }
         let reply=self.rpc("turn/start",turn_start).await?;
         let turn = reply["turn"]["id"]
             .as_str()
@@ -2542,12 +2549,17 @@ mod tests {
                         emit(&mut w,value!({"id":frame["id"],"result":{"thread":{"id":"thread-a","cwd":cwd},"cwd":cwd,"model":"codex-test-model","approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite","networkAccess":false}}})).await;
                     }
                     Some("turn/start") => {
-                        assert_eq!(frame["params"]["approvalPolicy"], "untrusted");
-                        assert_eq!(frame["params"]["sandboxPolicy"]["networkAccess"], false);
+                        if kind == "trusted_missing_turn" {
+                            assert_eq!(frame["params"]["approvalPolicy"], "never");
+                            assert_eq!(frame["params"]["sandboxPolicy"], value!({"type":"dangerFullAccess"}));
+                        } else {
+                            assert_eq!(frame["params"]["approvalPolicy"], "untrusted");
+                            assert_eq!(frame["params"]["sandboxPolicy"]["networkAccess"], false);
+                        }
                         // And so does every turn: an empty list here would
                         // switch the environment off for the turn.
                         assert!(frame["params"].get("environments").is_none());
-                        emit(&mut w,value!({"id":frame["id"],"result":{"turn":{"id":if kind=="missing_turn" { "" } else { "turn-a" },"status":"inProgress"}}})).await;
+                        emit(&mut w,value!({"id":frame["id"],"result":{"turn":{"id":if kind.ends_with("missing_turn") { "" } else { "turn-a" },"status":"inProgress"}}})).await;
                         if kind.starts_with("control_") {
                             controls::exchange(&mut r, &mut w, &cwd, kind, &tally).await;
                             continue;
@@ -3197,6 +3209,57 @@ mod tests {
                 .account(&scope(), Layer::Room, Period::Lifetime, now())
                 .unwrap(),
             (0, 0)
+        );
+        drop(session);
+        task.await.unwrap();
+    }
+    /// Under the owner's full trust a turn starts unconfined and unasked. The
+    /// thread keeps the Room folder's sandbox and every other turn states it
+    /// again, which the turns of the other tests here show.
+    #[tokio::test]
+    async fn a_fully_trusted_turn_starts_without_the_sandbox_or_approvals() {
+        let (_temp, mut ledger, profile) = setup(false);
+        let trusted = Policy {
+            budget: Budget {
+                limit: Limit::Tokens(1000),
+                period: Period::Lifetime,
+            },
+            requests: RequestPolicy::Allow,
+            high_risk: ToolPolicy::full_trust(),
+        };
+        for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
+            ledger
+                .set_policy("@alice:test", &scope(), layer, 1, &trusted)
+                .unwrap();
+        }
+        let (mut session, _, task) = fake(
+            profile.cwd.to_str().unwrap().into(),
+            false,
+            true,
+            10,
+            "trusted_missing_turn",
+        );
+        let (queue, _) = approval_queue(1).unwrap();
+        session.initialize().await.unwrap();
+        session
+            .open_context(&mut ledger, &scope(), &profile)
+            .await
+            .unwrap();
+        // The peer checks the turn's frame and then names no turn.
+        assert!(
+            session
+                .run(
+                    &mut ledger,
+                    "@alice:test",
+                    &scope(),
+                    "call",
+                    "dispatch",
+                    "hello",
+                    BudgetMode::Postpaid,
+                    &queue,
+                )
+                .await
+                .is_err()
         );
         drop(session);
         task.await.unwrap();

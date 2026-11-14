@@ -3163,5 +3163,7 @@
   "Couldn't read \"{name}\": {error}": "Couldn't read \"{name}\": {error}",
   "Couldn't crop \"{name}\". Please choose a different image.": "Couldn't crop \"{name}\". Please choose a different image.",
   "\"{name}\" changed after it was opened. Please choose it again.": "\"{name}\" changed after it was opened. Please choose it again.",
-  "Couldn't save the cropped avatar: {error}": "Couldn't save the cropped avatar: {error}"
+  "Couldn't save the cropped avatar: {error}": "Couldn't save the cropped avatar: {error}",
+  "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.": "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.",
+  "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.": "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead."
 }

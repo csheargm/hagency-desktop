@@ -50,6 +50,18 @@ pub fn model_save_request(
     Some(serde_json::json!({"profile":profile,"expectedProfileDigest":digest}))
 }
 
+/// The high-risk tool rule that means full trust, as a local policy carries
+/// it, and whether a policy's rule is that one. The settings form reads and
+/// writes policies as JSON and has no other access to the rule's form.
+pub fn full_trust_rule() -> serde_json::Value {
+    serde_json::to_value(hagency_agent_local::ToolPolicy::full_trust())
+        .expect("a tool policy is plain data")
+}
+pub fn is_full_trust_rule(rule: &serde_json::Value) -> bool {
+    serde_json::from_value::<hagency_agent_local::ToolPolicy>(rule.clone())
+        .is_ok_and(|rule| rule.is_full_trust())
+}
+
 /// Private process-custody entry. The guardian validates its inherited handles;
 /// this does not launch a provider or accept owner commands from argv.
 pub fn run_guardian_if_requested() -> Option<std::io::Result<()>> {

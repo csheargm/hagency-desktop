@@ -744,7 +744,8 @@ script_mod! {
                         Text {text: #(crate::i18n::tr("Request handling")) i18n_text: "Request handling"}
                         requests := Select {labels: [#(crate::i18n::tr("Allow requests")) #(crate::i18n::tr("Deny requests")) #(crate::i18n::tr("Ask owner per request"))] i18n_labels: ["Allow requests" "Deny requests" "Ask owner per request"]}
                         Text {text: #(crate::i18n::tr("High-risk tools")) i18n_text: "High-risk tools"}
-                        tool_risk := Select {labels: [#(crate::i18n::tr("Deny high-risk tools")) #(crate::i18n::tr("Ask owner per tool")) #(crate::i18n::tr("Allow only exact tools/directories"))] i18n_labels: ["Deny high-risk tools" "Ask owner per tool" "Allow only exact tools/directories"]}
+                        tool_risk := Select {labels: [#(crate::i18n::tr("Deny high-risk tools")) #(crate::i18n::tr("Ask owner per tool")) #(crate::i18n::tr("Allow only exact tools/directories")) #(crate::i18n::tr("Full trust (unrestricted)"))] i18n_labels: ["Deny high-risk tools" "Ask owner per tool" "Allow only exact tools/directories" "Full trust (unrestricted)"]}
+                        full_trust_note := Text {visible: false text: #(crate::i18n::tr("Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.")) i18n_text: "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting." draw_text.color: mod.widgets.RINX_WARNING_FG}
                         allowed_tools_holder := View {visible: false width: Fill height: Fit flow: Down spacing: 4 Text {text: #(crate::i18n::tr("Allowed tools")) i18n_text: "Allowed tools"}
  allowed_tools := Input {empty_text: #(crate::i18n::tr("Exact tool names, comma separated")) i18n_empty_text: "Exact tool names, comma separated"}}
                         allowed_directories_holder := View {visible: false width: Fill height: Fit flow: Down spacing: 4 Text {text: #(crate::i18n::tr("Allowed directories")) i18n_text: "Allowed directories"}
@@ -1254,8 +1255,9 @@ impl HagencyPanel {
         self.direct_timer=cx.start_timeout(2.0_f64.powi(i32::from(attempts.min(3))));
     }
     fn render_models(&mut self, cx:&mut Cx) {
-        let codex = self.provider_runtime(cx)=="codex";
-        self.view.view(cx,ids!(web_search_holder)).set_visible(cx,codex);
+        // Codex and Claude Code each have web tools this switch turns off.
+        let web = matches!(self.provider_runtime(cx), "codex" | "claude");
+        self.view.view(cx,ids!(web_search_holder)).set_visible(cx,web);
         let configured = string(&self.policy["modelProfile"],"model");
         let previous = self.selected(cx,ids!(model),&self.provider_models).map(|m|string(&m,"model").to_owned());
         let selected = self.provider_models.iter().position(|m| string(m,"model") == configured && (string(m,"credentialRef").is_empty() || string(m,"credentialRef") == string(&self.policy["modelProfile"],"credential_ref")))
@@ -2253,6 +2255,8 @@ impl HagencyPanel {
             cx,
             if p["high_risk"] == "AskOwner" {
                 1
+            } else if ::hagency::native_owner::is_full_trust_rule(&p["high_risk"]) {
+                3
             } else if p["high_risk"].is_object() {
                 2
             } else {
@@ -2263,8 +2267,10 @@ impl HagencyPanel {
             (ids!(allowed_tools), "tools"),
             (ids!(allowed_directories), "directories"),
         ] {
+            // Full trust is not a list the owner wrote; the rule fields stay empty.
             let values = p["high_risk"]["AllowWithRules"][key]
                 .as_array()
+                .filter(|_| !::hagency::native_owner::is_full_trust_rule(&p["high_risk"]))
                 .map(|v| {
                     v.iter()
                         .filter_map(Value::as_str)
@@ -2283,13 +2289,21 @@ impl HagencyPanel {
                 
             ]),
         );
-        let rules = p["high_risk"].is_object();
+        self.show_tool_risk(cx);
+    }
+    /// The exact-rule fields belong to the rules choice and the warning to
+    /// full trust; neither shows under another choice.
+    fn show_tool_risk(&self, cx: &mut Cx) {
+        let choice = self.view.drop_down(cx, ids!(tool_risk)).selected_item();
         self.view
             .view(cx, ids!(allowed_tools_holder))
-            .set_visible(cx, rules);
+            .set_visible(cx, choice == 2);
         self.view
             .view(cx, ids!(allowed_directories_holder))
-            .set_visible(cx, rules);
+            .set_visible(cx, choice == 2);
+        self.view
+            .label(cx, ids!(full_trust_note))
+            .set_visible(cx, choice == 3);
     }
     fn apply(&mut self, cx: &mut Cx, target: Target, value: &Value) {
         match target {
@@ -2981,6 +2995,45 @@ impl HagencyPanel {
         self.creation = Some(json!({"commandId":input["commandId"],"phase":"unknown"}));
         self.run(cx, Target::Creation, Command::CreateMatrix { input });
     }
+    /// The high-risk tool rule the form's choice stands for; `None`, with the
+    /// reason shown, when the exact rules are incomplete.
+    fn tool_risk(&self, cx: &mut Cx) -> Option<Value> {
+        Some(match self.view.drop_down(cx, ids!(tool_risk)).selected_item() {
+            1 => json!("AskOwner"),
+            2 => {
+                let tools = self
+                    .input(cx, ids!(allowed_tools))
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                let dirs = self
+                    .input(cx, ids!(allowed_directories))
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if tools.is_empty() || dirs.is_empty() {
+                    self.status(
+                        cx,
+                        "Exact allow rules require both tools and absolute directories.",
+                    );
+                    return None;
+                }
+                let rules = json!({"AllowWithRules":{"tools":tools,"directories":dirs}});
+                // Full trust is saved only as its own choice, under its warning.
+                if ::hagency::native_owner::is_full_trust_rule(&rules) {
+                    self.status(cx, "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.");
+                    return None;
+                }
+                rules
+            }
+            3 => ::hagency::native_owner::full_trust_rule(),
+            _ => json!("Deny"),
+        })
+    }
     fn save_policy(&mut self, cx: &mut Cx) {
         let Some(agent) = self.agent(cx) else {
             return;
@@ -3021,33 +3074,8 @@ impl HagencyPanel {
             .drop_down(cx, ids!(requests))
             .selected_item()
             .min(2)];
-        let risk = match self.view.drop_down(cx, ids!(tool_risk)).selected_item() {
-            1 => json!("AskOwner"),
-            2 => {
-                let tools = self
-                    .input(cx, ids!(allowed_tools))
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                let dirs = self
-                    .input(cx, ids!(allowed_directories))
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                if tools.is_empty() || dirs.is_empty() {
-                    self.status(
-                        cx,
-                        "Exact allow rules require both tools and absolute directories.",
-                    );
-                    return;
-                }
-                json!({"AllowWithRules":{"tools":tools,"directories":dirs}})
-            }
-            _ => json!("Deny"),
+        let Some(risk) = self.tool_risk(cx) else {
+            return;
         };
         let policy =
             json!({"budget":{"limit":limit,"period":period},"requests":requests,"high_risk":risk});
@@ -3531,13 +3559,7 @@ impl Widget for HagencyPanel {
             .selected(actions)
             .is_some()
         {
-            let rules = self.view.drop_down(cx, ids!(tool_risk)).selected_item() == 2;
-            self.view
-                .view(cx, ids!(allowed_tools_holder))
-                .set_visible(cx, rules);
-            self.view
-                .view(cx, ids!(allowed_directories_holder))
-                .set_visible(cx, rules);
+            self.show_tool_risk(cx);
             return;
         }
         if self.view.button(cx, ids!(login)).clicked(actions) {
@@ -4816,6 +4838,41 @@ mod tests {
             assert_eq!(panel.view.drop_down(&mut cx,ids!(limit_mode)).selected_item(),usize::from(limit.is_object()));
             assert_eq!(panel.policy["policies"][0]["policy"]["budget"]["limit"],limit);
         }
+    }
+    /// Full trust is a choice of its own in the form: it reads back as that
+    /// choice with its warning and without the rule fields, and saving it
+    /// sends the full-trust rule. Exact rules keep their fields.
+    #[test]
+    fn full_trust_is_its_own_high_risk_choice_with_a_warning() {
+        let mut cx=Cx::new(Box::new(|_,_| {}));let mut panel=cx.with_vm(|vm|{makepad_widgets::script_mod(vm);vm.bx.captured_errors=Some(Vec::new());crate::app::register_widgets(vm);let v=script_eval!(vm,{mod.widgets.HagencyPanel{}});let p=HagencyPanel::script_from_value(vm,v);assert!(vm.take_errors().is_empty());p});
+        let exact=json!({"AllowWithRules":{"tools":["execute"],"directories":["/work"]}});
+        for (rule,choice) in [(json!("Deny"),0),(json!("AskOwner"),1),(exact.clone(),2),(::hagency::native_owner::full_trust_rule(),3)] {
+            panel.policy=json!({"policies":[{"policy":{"budget":{"limit":"Unlimited","period":"Lifetime"},"requests":"Allow","high_risk":rule}}]});
+            panel.render_policy(&mut cx);
+            assert_eq!(panel.view.drop_down(&mut cx,ids!(tool_risk)).selected_item(),choice);
+            assert_eq!(panel.view.label(&mut cx,ids!(full_trust_note)).visible(),choice==3);
+            assert_eq!(panel.view.view(&mut cx,ids!(allowed_tools_holder)).visible(),choice==2);
+            assert_eq!(panel.view.view(&mut cx,ids!(allowed_directories_holder)).visible(),choice==2);
+            assert_eq!(panel.input(&mut cx,ids!(allowed_tools)),if choice==2 {"execute"} else {""});
+            assert_eq!(panel.input(&mut cx,ids!(allowed_directories)),if choice==2 {"/work"} else {""});
+            assert_eq!(panel.tool_risk(&mut cx),Some(rule));
+        }
+        // Choosing full trust in the form shows the warning before any save.
+        panel.view.drop_down(&mut cx,ids!(tool_risk)).set_selected_item(&mut cx,0);
+        panel.show_tool_risk(&mut cx);
+        assert!(!panel.view.label(&mut cx,ids!(full_trust_note)).visible());
+        panel.view.drop_down(&mut cx,ids!(tool_risk)).set_selected_item(&mut cx,3);
+        panel.show_tool_risk(&mut cx);
+        assert!(panel.view.label(&mut cx,ids!(full_trust_note)).visible());
+        assert!(::hagency::native_owner::is_full_trust_rule(&panel.tool_risk(&mut cx).unwrap()));
+        assert!(!::hagency::native_owner::is_full_trust_rule(&exact));
+        // Exact rules that spell full trust are not saved as rules.
+        panel.view.drop_down(&mut cx,ids!(tool_risk)).set_selected_item(&mut cx,2);
+        panel.view.text_input(&mut cx,ids!(allowed_tools)).set_text(&mut cx,"*");
+        panel.view.text_input(&mut cx,ids!(allowed_directories)).set_text(&mut cx,"/");
+        assert_eq!(panel.tool_risk(&mut cx),None);
+        panel.view.text_input(&mut cx,ids!(allowed_directories)).set_text(&mut cx,"/work");
+        assert_eq!(panel.tool_risk(&mut cx),Some(json!({"AllowWithRules":{"tools":["*"],"directories":["/work"]}})));
     }
     #[test]
     fn agent_run_link_selects_only_its_exact_binding_without_starting() {

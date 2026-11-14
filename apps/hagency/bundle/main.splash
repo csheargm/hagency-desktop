@@ -2884,7 +2884,7 @@ A.edit_personal_policy = fn(){
 A.personal_valid = fn(){
     if H.personal_draft == nil {return false}
     let d=H.personal_draft
-    if d.highRiskTools != "deny" && d.highRiskTools != "ask_owner" {return false}
+    if d.highRiskTools != "deny" && d.highRiskTools != "ask_owner" && d.highRiskTools != "full_trust" {return false}
     if d.kind == "tokens" {
         let value=d.tokens.trim()
         if value == "" || value.len() > 64 {return false}
@@ -8451,8 +8451,12 @@ A.local_mode=fn(value){
     if value=="ask_owner" {return A.t("Ask me first","先问我")}
     if value=="deny" {return A.t("Decline","拒绝")}
     if value=="rules" {return A.t("Custom rules","自定义规则")}
+    if value=="full_trust" {return A.t("Full trust (unrestricted)","完全信任（不受限）")}
     return A.personal_policy_mode(value)
 }
+// The segment is a third of a phone width; the note under it carries the rest.
+A.local_risk_segment=fn(value){return if value=="full_trust" {A.t("Full trust","完全信任")} else {A.local_mode(value)}}
+A.local_full_trust_note=fn(){return A.t("Full trust: for your own messages, this Agent runs commands, changes files and uses the network on this computer without asking you, and is not kept to its work folder. Anyone else who calls it gets this only in a room where you also set Full trust for that room and for them. A room or member you saved a setting for keeps that setting.","完全信任：对你自己的消息，此 Agent 在这台电脑上运行命令、读写文件和联网都不再询问你，也不限于自己的工作文件夹。其他人呼叫它时不会这样，除非你在那个房间里把房间和他们本人也设为完全信任。单独保存过设置的房间或成员仍按各自的设置。")}
 A.local_budget_kind=fn(value){
     if value=="unset" {return A.t("Default","跟随默认")}
     if value=="unlimited" {return A.t("No limit","不限")}
@@ -15367,7 +15371,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                             mod.widgets.HagencySwitchRow{
                                 mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.alert draw_icon.color:mod.widgets.RINX_WARNING_FG}}
                                 mod.widgets.HagencyListTitle{text:A.t("High-risk tools","高风险工具")}
-                                mod.widgets.HagencyListValue{text:A.local_mode(o.highRiskTools)}
+                                mod.widgets.HagencyListValue{text:A.local_mode(o.highRiskTools) draw_text.color:if o.highRiskTools=="full_trust" {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
                             }
                             mod.widgets.HagencyListDivider{}
                             mod.widgets.HagencyListRow{
@@ -15433,9 +15437,9 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         mod.widgets.HagencyListNote{text:A.t("What the Agent does when a message needs a model call.","Agent 收到消息、需要调用模型时如何处理。")}
                         mod.widgets.HagencyListLabel{text:A.t("HIGH-RISK TOOLS","高风险工具")}
                         mod.widgets.HagencyList{View{width:Fill height:Fit padding:14
-                            mod.widgets.HagencySegments{for risk in ["ask_owner","deny"] {if d.highRiskTools == risk {mod.widgets.HagencySegmentOn{text:A.local_mode(risk) on_click: || {d.highRiskTools=risk A.redraw()}}} else {mod.widgets.HagencySegment{text:A.local_mode(risk) on_click: || {d.highRiskTools=risk A.redraw()}}}}}
+                            mod.widgets.HagencySegments{for risk in ["ask_owner","deny","full_trust"] {if d.highRiskTools == risk && risk=="full_trust" {mod.widgets.HagencySegmentOn{text:A.local_risk_segment(risk) draw_text +: {color:mod.widgets.RINX_WARNING_FG color_hover:mod.widgets.RINX_WARNING_FG color_focus:mod.widgets.RINX_WARNING_FG} on_click: || {d.highRiskTools=risk A.redraw()}}} else if d.highRiskTools == risk {mod.widgets.HagencySegmentOn{text:A.local_risk_segment(risk) on_click: || {d.highRiskTools=risk A.redraw()}}} else {mod.widgets.HagencySegment{text:A.local_risk_segment(risk) on_click: || {d.highRiskTools=risk A.redraw()}}}}}
                         }}
-                        mod.widgets.HagencyListNote{text:if d.replacesRules {A.t("Saving replaces the current custom tool and folder rules.","保存后将替换当前的自定义工具与目录规则。")} else {A.t("Tools that write files or run commands.","会写入文件或执行命令的工具。")}}
+                        mod.widgets.HagencyListNote{text:if d.highRiskTools=="full_trust" {A.local_full_trust_note()} else if d.replacesRules {A.t("Saving replaces the current custom tool and folder rules.","保存后将替换当前的自定义工具与目录规则。")} else {A.t("Tools that write files or run commands.","会写入文件或执行命令的工具。")} draw_text.color:if d.highRiskTools=="full_trust" {mod.widgets.RINX_WARNING_FG} else {mod.widgets.RINX_MUTED}}
                     }}
                     if H.personal_mode == "review" {View{width:Fill height:Fit flow:Down spacing:6
                         let changes=A.local_policy_changes()
@@ -15453,6 +15457,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                                 }}}
                             }}
                         }
+                        if d.highRiskTools=="full_trust" && H.personal_detail.settings.observation.highRiskTools!="full_trust" {mod.widgets.HagencyListNote{text:A.local_full_trust_note() draw_text.color:mod.widgets.RINX_WARNING_FG}}
                         mod.widgets.HagencyListNote{text:if d.replacesRules {A.t("This also replaces the current custom tool and folder rules. If the settings on the execution device change meanwhile, this save won’t apply.","这也会替换当前的自定义工具与目录规则。如果执行设备上的设置在此期间被修改，本次保存不会生效。")} else {A.t("If the settings on the execution device change meanwhile, this save won’t apply and you’ll need to review again.","如果执行设备上的设置在此期间被修改，本次保存不会生效，需要重新核对。")}}
                     }}
                 }}
