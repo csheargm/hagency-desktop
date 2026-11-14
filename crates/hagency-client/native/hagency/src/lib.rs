@@ -39,6 +39,8 @@ mod operator_graphs;
 pub mod operator_cli;
 pub mod ops;
 pub mod owner_host;
+/// Pasion account helpers used by the Desktop login screen.
+pub mod pasion;
 /// One owner root per account per computer (ADR-192).
 pub mod owner_roots;
 pub(crate) mod receive_service;
