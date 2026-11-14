@@ -546,6 +546,7 @@ async fn serve_room(
                 let text=match &operation{
                     RoomOperation::History{cursor}=>match history.read(cursor.as_deref()).await{Ok(v)=>v,Err(_)=>return RoomReply::unavailable()},
                     RoomOperation::File(operation)=>match files.as_mut(){Some(files)=>files.handle(operation,history).await,None=>return RoomReply::unavailable()},
+                    RoomOperation::Memory(_)=>return RoomReply::unavailable(),
                 };
                 let error=serde_json::from_str::<Value>(&text).ok().is_some_and(|v|v.get("error").is_some());
                 RoomReply::new(text,error).unwrap_or_else(|_|RoomReply::unavailable())
