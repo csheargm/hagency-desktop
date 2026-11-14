@@ -129,7 +129,7 @@ const JUMP_SEARCH_NOT_FOUND_DELAY: f64 = 2.0;
 const MAX_BACKWARDS_PAGINATIONS_WITHOUT_PROGRESS: usize = 5;
 
 
-static UNNAMED_ROOM: &str = "Unnamed Room";
+pub(crate) static UNNAMED_ROOM: &str = "Unnamed Room";
 
 script_mod! {
     use mod.prelude.widgets.*

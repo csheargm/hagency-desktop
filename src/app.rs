@@ -186,6 +186,8 @@ mod embedded_content {
                 // This tooltip widget handles TooltipActions directly by itself,
                 // so we don't need to call show/hide ourselves.
                 app_tooltip := CalloutTooltip {}
+                // The avatar hover card: no scrim, so it never blocks the UI under it.
+                avatar_hover_card := AvatarHoverCard {}
             }
         }
     }
@@ -282,6 +284,7 @@ impl ScriptHook for App {
         vm.with_cx_mut(|cx| {
             crate::shared::popup_list::set_global_popup_list(cx, &self.ui);
             crate::shared::mention_popup::set_global_mention_popup(cx, &self.ui);
+            crate::profile::hover_card::set_global_hover_card(cx, &self.ui);
         });
     }
 }

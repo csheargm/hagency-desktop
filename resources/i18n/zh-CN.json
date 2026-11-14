@@ -3167,5 +3167,7 @@
   "Profile": "个人资料",
   "Server: {0}": "服务器：{0}",
   "Agent on {0}": "{0} 上的 Agent",
-  "Role: Agent": "角色：Agent"
+  "Role: Agent": "角色：Agent",
+  "View profile": "查看资料",
+  "Click the avatar to open this profile": "点击头像打开此资料"
 }

@@ -17,6 +17,7 @@ use crate::{
     avatar_cache::{self, AvatarCacheEntry},
     profile::{user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId}, user_profile_cache},
     room::{FetchedRoomAvatar, RoomAvatarMember},
+    shared::avatar_hover,
     sliding_sync::{submit_async_request, MatrixRequest, TimelineKind},
     utils,
 };
@@ -229,7 +230,11 @@ impl Widget for Avatar {
             Hit::FingerDown(_fde) => {
                 cx.set_key_focus(area);
             }
+            // TODO(R4): avatar.rs is over budget; the hover card lives in avatar_hover.rs.
+            Hit::FingerHoverIn(_) => avatar_hover::anchor_entered(cx, self.widget_uid(), info, area.rect(cx)),
+            Hit::FingerHoverOut(_) => avatar_hover::anchor_left(cx, self.widget_uid()),
             Hit::FingerUp(fue) if fue.is_over && fue.is_primary_hit() && fue.was_tap() => {
+                avatar_hover::dismiss(cx);
                 cx.widget_action(
                     self.widget_uid(),
                     ShowUserProfileAction::ShowUserProfile(info.clone()),

@@ -3167,5 +3167,7 @@
   "Profile": "Profile",
   "Server: {0}": "Server: {0}",
   "Agent on {0}": "Agent on {0}",
-  "Role: Agent": "Role: Agent"
+  "Role: Agent": "Role: Agent",
+  "View profile": "View profile",
+  "Click the avatar to open this profile": "Click the avatar to open this profile"
 }

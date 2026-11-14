@@ -3,6 +3,7 @@ use makepad_widgets::ScriptVm;
 pub mod attachment_download;
 pub mod cached_widget;
 pub mod avatar;
+pub mod avatar_hover;
 pub mod avatar_crop;
 pub mod agent_usage;
 pub mod collapsible_header;
