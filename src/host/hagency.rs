@@ -724,7 +724,7 @@ impl Host {
         };
         self.check(&lease)?;
         lease.authorize(&account, service, None)?;
-        rinx_miniapp_core::bounded_reply(budget::display_reply(service, control::display_reply(service, allocations::display_reply(service, agents::display_reply(service, local_zone::display(service, pools::display(result?)))?)?)?)?)
+        rinx_miniapp_core::bounded_reply(budget::display_reply(service, control::display_reply(service, allocations::display_reply(service, agents::display_reply(service, local::display(service, local_zone::display(service, pools::display(result?))))?)?)?)?)
     }
 }
 fn value(input: impl serde::Serialize) -> Result<Value, String> {

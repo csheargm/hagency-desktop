@@ -8403,6 +8403,7 @@ A.local_state_text=fn(state){
     if state=="waiting" {return A.t("Waiting for your approval","等待你的批准")}
     if state=="attention" {return A.t("Needs attention","需要处理")}
     if state=="elsewhere" {return A.t("On another device","在其他设备上")}
+    if state=="no_host" {return A.t("Can’t run on this computer","无法在本机运行")}
     if state=="stopped" {return A.t("Stopped","已停止")}
     if state=="unknown" {return A.t("Status unavailable","状态不可用")}
     return A.t("Checking…","正在检查…")
@@ -8410,16 +8411,24 @@ A.local_state_text=fn(state){
 A.local_tone_bg=fn(state){
     if state=="running" || state=="processing" {return mod.widgets.RINX_SUCCESS_BG}
     if state=="attention" {return mod.widgets.RINX_DANGER_BG}
-    if state=="waiting" || state=="starting" {return mod.widgets.RINX_WARNING_BG}
+    if state=="waiting" || state=="starting" || state=="no_host" {return mod.widgets.RINX_WARNING_BG}
     if state=="elsewhere" {return mod.widgets.RINX_INFO_BG}
     return mod.widgets.RINX_SELECTED
 }
 A.local_tone_fg=fn(state){
     if state=="running" || state=="processing" {return mod.widgets.RINX_SUCCESS_FG}
     if state=="attention" {return mod.widgets.RINX_DANGER_FG}
-    if state=="waiting" || state=="starting" {return mod.widgets.RINX_WARNING_FG}
+    if state=="waiting" || state=="starting" || state=="no_host" {return mod.widgets.RINX_WARNING_FG}
     if state=="elsewhere" {return mod.widgets.RINX_INFO_FG}
     return mod.widgets.RINX_MUTED
+}
+// Whether this computer runs this account's Agents. A local Agent is offered
+// only where it can run; the session reply names what is missing otherwise.
+A.local_here=fn(){if H.session==nil {return true} let {localAgentsHere=true}=H.session return localAgentsHere!=false}
+A.local_need=fn(){if H.session==nil {return ""} let {localAgentsNeed=""}=H.session return localAgentsNeed}
+A.local_need_text=fn(){
+    if A.local_need()=="other_account" {return A.t("This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool.","这台电脑托管的是另一个账号。本地 Agent 只能在托管你自己账号的电脑上运行，使用你自己的模型登录。想用这台电脑的资源，请在它的资源池里申请 Agent。")}
+    return A.t("Set up resource hosting on this computer first. Local Agents run through it.","请先在这台电脑上开启「资源托管」，本地 Agent 由它运行。")
 }
 A.local_toggle_service=fn(){
     let s=H.local_status
@@ -9646,17 +9655,13 @@ A.render_page = fn(){
         else {mod.widgets.HagencyLargeTitle{text:A.t("My Agents","我的 Agent")}}
         if H.entry_role=="owner"{mod.widgets.HagencyHint{text:A.t("Review capacity requests for resources you own.","审核使用你所拥有资源的容量申请。")}}
         if H.entry_role=="manager" && H.page=="pool_agents"{View{width:Fill height:Fit flow:Down spacing:6
+            let local_here=A.local_here()
+            let local_some=H.local_list!=nil && H.local_list.len()>0
+            if local_here || local_some {View{width:Fill height:Fit flow:Down spacing:6
             mod.widgets.HagencyListLabel{text:A.t("LOCAL AGENTS","本地 Agent")}
             mod.widgets.HagencyList{
                 if H.local_list==nil {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("Loading…","正在读取…")}}}}
-                if H.local_list!=nil && H.local_list.len()==0 {View{width:Fill height:Fit flow:Down
-                    mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("No local agents yet","还没有本地 Agent")}}}
-                    mod.widgets.HagencyListDivider{margin:Inset{left:14}}
-                    mod.widgets.HagencyListRow{
-                        local_add := mod.widgets.HagencyListTap{enabled:!H.busy on_click: || A.native_open("local_agents")}
-                        mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Add Local Agent","添加本地 Agent")}}
-                    }
-                }}
+                if local_here && H.local_list!=nil && H.local_list.len()==0 {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:A.t("No local agents yet","还没有本地 Agent")}}}}
                 if H.local_list!=nil {for index row in H.local_list {View{width:Fill height:Fit flow:Down
                     if index>0 {mod.widgets.HagencyListDivider{margin:Inset{left:66}}}
                     mod.widgets.HagencyListTall{
@@ -9665,15 +9670,23 @@ A.render_page = fn(){
                             mod.widgets.HagencyAvatarSmall{mod.widgets.HagencyAvatarSmallGlyph{}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:row.displayName}
-                                mod.widgets.HagencyListSubtitle{text:if row.local==nil {A.t("Checking…","正在检查…")} else if row.local.here {A.local_state_text(row.local.service.state)+A.t(" · This device"," · 本机")} else {A.local_state_text("elsewhere")}}
+                                mod.widgets.HagencyListSubtitle{text:if row.local==nil {A.t("Checking…","正在检查…")} else if row.local.service.state=="no_host" {A.local_state_text("no_host")} else if row.local.here {A.local_state_text(row.local.service.state)+A.t(" · This device"," · 本机")} else {A.local_state_text("elsewhere")}}
                             }
                             if row.local!=nil {mod.widgets.HagencyPillDot{draw_bg.color:A.local_tone_fg(row.local.service.state)}}
                             mod.widgets.HagencyChevron{}
                         }
                     }
                 }}}
+                if local_here && H.local_list!=nil {View{width:Fill height:Fit flow:Down
+                    mod.widgets.HagencyListDivider{margin:Inset{left:14}}
+                    mod.widgets.HagencyListRow{
+                        local_add := mod.widgets.HagencyListTap{enabled:!H.busy on_click: || A.native_open("local_agents")}
+                        mod.widgets.HagencyListBody{mod.widgets.HagencyAccentText{text:A.t("Add Local Agent","添加本地 Agent")}}
+                    }
+                }}
             }
-            mod.widgets.HagencyListNote{text:A.t("Run on your own device with your own model account.","在你自己的设备上运行，使用你自己的模型账号。")}
+            local_list_note := mod.widgets.HagencyListNote{text:if local_here {A.t("Run on your own device with your own model account.","在你自己的设备上运行，使用你自己的模型账号。")} else {A.local_need_text()}}
+            }}
             mod.widgets.HagencyListLabel{text:A.t("PROJECT AGENTS","项目 Agent · 组织资源池")}
             mod.widgets.HagencyList{
                 if A.pool_agent_rows().len()==0 {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:if H.busy{A.t("Loading…","正在读取…")}else if !H.ux.inboxReady{A.t("Couldn’t load project Agents","项目 Agent 暂时无法加载")}else{A.t("No project Agents yet","还没有项目 Agent")}}}}}
@@ -10160,11 +10173,6 @@ A.render_page = fn(){
                 }
             }
 
-            manager_personal := mod.widgets.HagencyCard{visible:H.entry_role=="manager"
-                mod.widgets.HagencySectionTitle{text:A.t("Local Agents","本地 Agent")}
-                mod.widgets.HagencyCopy{text:A.t("Configure your own Agents and their execution-device settings.","配置你自己的 Agent 及其执行设备设置。")}
-                personal_entry := mod.widgets.HagencyButton{enabled:!H.busy text:A.t("Local-agent settings","本地 Agent 设置") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.person on_click:||A.open_personal_agents(nil,1)}
-            }
             mod.widgets.HagencyHint{text:A.t("Workspace: ","当前工作台：")+A.entry_label(H.entry_role)}
         }
         if H.page == "resources" {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{bottom:28} mod.widgets.HagencyColumn{
@@ -15211,7 +15219,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                 let s=H.personal_detail.settings
                 let o=s.observation
                 let st=H.local_status
-                let state=if !s.online {"offline"} else if st!=nil {st.service.state} else if H.local_error=="status_unavailable" {"unknown"} else {""}
+                let state=if st!=nil && st.service.state=="no_host" {"no_host"} else if !s.online {"offline"} else if st!=nil {st.service.state} else if H.local_error=="status_unavailable" {"unknown"} else {""}
                 let alert=H.local_discard!="" || H.local_confirm=="encrypt"
                 let service_pending=H.local_pending=="hagency.personal_agents.service"
                 let chat=if st==nil {nil} else {st.chat}
@@ -15229,7 +15237,8 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         View{width:Fit height:48 padding:Inset{top:4}
                             local_chat := mod.widgets.HagencyCapsule{text:if chat==nil {A.t("Set Up Private Chat","建立私聊")} else {A.t("Message","发消息")} draw_icon.svg:mod.rinx_icons.chat enabled:st!=nil && !alert on_click: || A.local_open_chat()}
                         }
-                        local_state_hint := mod.widgets.HagencyHint{width:Fill height:24 max_lines:1 align:Align{x:0.5} text:if state=="stopped" {A.t("It replies after its service starts.","服务启动后才会回复。")} else if state=="offline" {A.t("It replies when its device is back online.","设备上线后才会回复。")} else {""}}
+                        if state!="no_host" {local_state_hint := mod.widgets.HagencyHint{width:Fill height:24 max_lines:1 align:Align{x:0.5} text:if state=="stopped" {A.t("It replies after its service starts.","服务启动后才会回复。")} else if state=="offline" {A.t("It replies when its device is back online.","设备上线后才会回复。")} else {""}}}
+                        if state=="no_host" {local_host_hint := mod.widgets.HagencyHint{width:Fill height:Fit align:Align{x:0.5} text:A.local_need_text()}}
                     }
 
                     mod.widgets.HagencyListLabel{text:A.t("CONVERSATION","对话")}
@@ -15263,7 +15272,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
 
                     mod.widgets.HagencyListLabel{text:A.t("SERVICE","运行")}
                     mod.widgets.HagencyList{
-                        if st!=nil && st.here && s.online {mod.widgets.HagencySwitchRow{
+                        if st!=nil && st.here && s.online && state!="no_host" {mod.widgets.HagencySwitchRow{
                             mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.power draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                             mod.widgets.HagencyListText{
                                 mod.widgets.HagencyListTitle{text:A.t("Service","服务")}

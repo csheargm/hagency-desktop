@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::hagency::{backend::Service,model::{Command,LocalAction},ui::HagencyAction};
 
 #[derive(Debug)]
-struct NoticeResult { identity:String, room:String, request:u64, target:Option<(String,String)>, text:String, attention:bool, failed:bool }
+struct NoticeResult { identity:String, room:String, request:u64, target:Option<(String,String)>, text:String, attention:bool, failed:bool, no_host:bool }
 /// Normal or self-resolving states. The owner has nothing to do, so the notice
 /// stays hidden; Open Service remains available from the chat info panel.
 const QUIET: [&str; 8] = [
@@ -90,7 +90,11 @@ impl AgentRuntimeNotice {
                 let binding_id=binding["id"].as_str().ok_or("invalid_binding")?.to_owned();
                 let current=roster["currentDeviceId"].as_str().filter(|id|!id.is_empty());
                 let here=current.is_some_and(|id|agent["executionDeviceId"]==id && roster["devices"].as_array().is_some_and(|ds|ds.iter().any(|d|d["id"]==id && d["revoked"]==false)));
-                let (label,text)=if here {
+                // Nothing on this computer runs this account's Agents: the saved
+                // service state would only send the owner to a start button
+                // that cannot work.
+                let no_host=if here {service.local_agent_host().ok().and_then(crate::hagency::ui::no_local_host_text)} else {None};
+                let (label,text)=if let Some(reason)=no_host {(reason,reason.to_owned())} else if here {
                     let result=service.execute(Command::Local {agent_id:agent_id.clone(),action:LocalAction::Runtime,input:None,binding_id:None,requester:None}).await.and_then(|v|room_runtime(&v,&agent_id,&binding_id));
                     (crate::hagency::ui::runtime_list_label(Some(&result),&agent_id),crate::hagency::ui::runtime_service_description(Some(&result),&agent_id))
                 } else {
@@ -99,14 +103,14 @@ impl AgentRuntimeNotice {
                     else {"Processing is assigned to another device; this device does not run it."};
                     (label,label.to_owned())
                 };
-                Ok::<_,String>(Some((agent_id,binding_id,needs_attention(label,&text),text)))
+                Ok::<_,String>(Some((agent_id,binding_id,needs_attention(label,&text),text,no_host.is_some())))
             }).await;
-            let (target,text,attention,failed)=match result {
-                Ok(Ok(Some((agent,binding,attention,text))))=>(Some((agent,binding)),text,attention,false),
-                Ok(Ok(None))=>(None,String::new(),false,false),
-                _=>(None,"Local processing could not be verified. Refresh to retry.".into(),true,true),
+            let (target,text,attention,failed,no_host)=match result {
+                Ok(Ok(Some((agent,binding,attention,text,no_host))))=>(Some((agent,binding)),text,attention,false,no_host),
+                Ok(Ok(None))=>(None,String::new(),false,false,false),
+                _=>(None,"Local processing could not be verified. Refresh to retry.".into(),true,true,false),
             };
-            Cx::post_action(NoticeResult {identity,room,request,target,text,attention,failed});
+            Cx::post_action(NoticeResult {identity,room,request,target,text,attention,failed,no_host});
         });
     }
 }
@@ -121,6 +125,8 @@ impl Widget for AgentRuntimeNotice {
                     self.set_loading(cx,false);if !done.failed {self.target=done.target.clone();}
                     self.view.label(cx,ids!(status)).set_text(cx,crate::i18n::tr(&done.text));
                     self.view.set_visible(cx,self.target.is_some() && done.attention);self.view.button(cx,ids!(open)).set_enabled(cx,self.target.is_some() && !done.failed);
+                    // Open Service leads to a start button; it is offered only where the Agent can start.
+                    self.view.button(cx,ids!(open)).set_visible(cx,!done.no_host);
                     self.timer=cx.start_timeout(10.0);self.view.redraw(cx);
                 }
             }
@@ -195,6 +201,13 @@ mod tests {
         for loud in ["Not running on this device. Open Service to configure and start.","Waiting for your approval before continuing.",
             "The runtime stopped with an error. Check the details below.","Local processing could not be verified. Refresh to retry.",
             "No available execution device. Open Agent settings to assign this device."] {assert!(needs_attention(loud,loud),"{loud}");}
+        // An account this computer does not host is told so, never sent to a start button.
+        for host in [crate::hagency::backend::LocalAgentHost::OtherAccount,crate::hagency::backend::LocalAgentHost::HostingNotSetUp] {
+            let reason=crate::hagency::ui::no_local_host_text(host).unwrap();
+            assert!(needs_attention(reason,reason),"{reason}");
+            assert_ne!(crate::i18n::tr(reason),"");
+        }
+        assert!(crate::hagency::ui::no_local_host_text(crate::hagency::backend::LocalAgentHost::Here).is_none());
         // Every quiet label is one runtime_list_label or the assigned-elsewhere text can produce.
         let source=include_str!("../hagency/ui.rs");
         for quiet in &QUIET[..7] {assert!(source.contains(&format!("\"{quiet}\"")),"{quiet}");}

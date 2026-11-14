@@ -1,10 +1,11 @@
-//! A failed built-in script must return to native review, not a blank app.
-//! The script budget remains the framework's. Retrying is a new explicit Run;
-//! neither this guard nor teardown replays any saved management command.
+//! A failed built-in script must return to the native recovery page, not a
+//! blank app. The script budget remains the framework's. Retrying is a new
+//! explicit start; neither this guard nor teardown replays any saved
+//! management command.
 use super::*;
 
 const STARTUP_FAILED: &str =
-    "Hagency could not finish opening. Select Run to try again. Saved requests are preserved.";
+    "Hagency could not finish opening. Select Retry to try again. Saved requests are preserved.";
 
 /// Whether the shipped Hagency root installed into `card`. The offline visual
 /// review applies the same check, so it cannot pass a bundle the desktop refuses.
@@ -481,6 +482,72 @@ host.request("fixture.pending",{},fn(result){ui.content.reply.set_text("original
     }
 
     #[test]
+    fn native_hagency_recovery_page_shows_the_reason_and_nothing_to_review() {
+        let (mut cx, mut panel, _directory) = fixture();
+        panel.notice(&mut cx, "management_package_required");
+        panel.present_review_controls(&mut cx);
+        assert!(panel.view.view(&cx, ids!(hagency_review)).visible());
+        assert!(panel.view.button(&cx, ids!(hagency_run)).visible());
+        assert!(panel.view.button(&cx, ids!(hagency_cancel)).visible());
+        assert_eq!(
+            panel.view.label(&cx, ids!(hagency_review.reason)).text(),
+            "management_package_required"
+        );
+        // The page states the reason itself; the line under it stays hidden,
+        // also for a message that arrives while the page shows.
+        assert!(!panel.view.widget(&cx, ids!(notice)).visible());
+        panel.notice(&mut cx, "management_session_required");
+        assert_eq!(
+            panel.view.label(&cx, ids!(hagency_review.reason)).text(),
+            "management_session_required"
+        );
+        assert!(!panel.view.widget(&cx, ids!(notice)).visible());
+        // No list of permissions is left to expand: the person could not
+        // change any of it.
+        assert!(panel.view.widget(&cx, ids!(hagency_review.permission_accounts)).is_empty());
+        assert!(panel.review_notice.is_empty() || !panel.review_notice.contains("hagency."));
+    }
+
+    #[test]
+    fn native_hagency_ended_session_starts_again_by_itself_but_not_in_a_loop() {
+        let (mut cx, mut panel, _directory) = fixture();
+        let ended = || {
+            rinx_miniapp_core::SessionAuthority::default().issue(
+                InstanceId {
+                    app: octosense_app_contract::hagency::APP_ID.into(),
+                    account: "@owner:example.org".into(),
+                    room: None,
+                    generation: 1,
+                },
+                Default::default(),
+                Default::default(),
+                Instant::now(),
+            )
+        };
+        panel.lease = Some(ended());
+        panel.pump(&mut cx);
+        // The panel tried to start again instead of asking for Run. No account
+        // is signed in here, so that start is refused and the page says why.
+        assert!(panel.renewed.is_some());
+        assert_ne!(panel.notice_text, crate::i18n::tr("Session ended. Review and run again."));
+        if panel.lease.is_none() {
+            assert!(!panel.notice_text.is_empty());
+            assert!(panel.view.view(&cx, ids!(hagency_review)).visible());
+            assert_eq!(
+                panel.view.label(&cx, ids!(hagency_review.reason)).text(),
+                panel.notice_text
+            );
+        }
+        // A session that ends again within the minute stays ended.
+        panel.lease = Some(ended());
+        panel.pump(&mut cx);
+        assert!(panel.lease.is_none());
+        assert_eq!(panel.notice_text, crate::i18n::tr("Session ended."));
+        assert!(panel.view.view(&cx, ids!(hagency_review)).visible());
+        assert!(panel.view.button(&cx, ids!(hagency_run)).visible());
+    }
+
+    #[test]
     fn native_hagency_startup_diagnostic_is_localized_and_imported_roots_are_unchanged() {
         assert_eq!(
             crate::i18n::text_for(crate::i18n::Language::English, STARTUP_FAILED),
@@ -488,7 +555,7 @@ host.request("fixture.pending",{},fn(result){ui.content.reply.set_text("original
         );
         let chinese = crate::i18n::text_for(crate::i18n::Language::Chinese, STARTUP_FAILED);
         assert_ne!(chinese, STARTUP_FAILED);
-        assert!(chinese.contains("运行") && chinese.contains("请求"));
+        assert!(chinese.contains("重试") && chinese.contains("请求"));
         let (mut cx, mut panel, _directory) = fixture();
         panel.package = None;
         panel

@@ -118,6 +118,16 @@ type ConfigurationKeys = std::collections::HashMap<String, String>;
 type RuntimeStates = std::collections::HashMap<String,Result<Value,String>>;
 #[derive(Debug)]
 struct RuntimeListCompleted { identity:String, request:u64, states:Vec<(String,Result<Value,String>)> }
+/// Why no local Agent of this account can run on this computer, worded for
+/// the person; `None` where one can.
+pub(crate) fn no_local_host_text(host: super::backend::LocalAgentHost) -> Option<&'static str> {
+    use super::backend::LocalAgentHost::*;
+    match host {
+        Here => None,
+        OtherAccount => Some("This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool."),
+        HostingNotSetUp => Some("Set up resource hosting on this computer first. Local Agents run through it."),
+    }
+}
 pub(crate) fn runtime_list_label(runtime:Option<&Result<Value,String>>,agent:&str)->&'static str {
     let Some(runtime)=runtime else {return "Checking local processing…";};
     let Ok(value)=runtime else {return "Local processing could not be verified. Refresh to retry.";};
@@ -911,6 +921,9 @@ pub struct HagencyPanel {
     #[rust] runtime_list_timer:Timer,
     #[rust] runtime_list_loading:bool,
     #[rust] display_blocked:bool,
+    /// Whether this computer runs this account's local Agents, as last read.
+    /// Unknown counts as "here": nothing is hidden on a guess.
+    #[rust] local_host: Option<super::backend::LocalAgentHost>,
     #[rust] detail_scroll_key:String,
     #[rust]
     agents_loaded: bool,
@@ -1689,6 +1702,16 @@ impl HagencyPanel {
             });
         });
     }
+    /// Reads where this account's local Agents run. A failed read keeps what
+    /// was known.
+    fn read_local_host(&mut self) {
+        if let Ok(host) = Service::for_current().and_then(|service| service.local_agent_host()) {
+            self.local_host = Some(host);
+        }
+    }
+    fn no_local_host(&self) -> Option<&'static str> {
+        no_local_host_text(self.local_host?)
+    }
     fn sync_navigation(&self, cx: &mut Cx) {
         self.render_owner_direct(cx);
         let selected_project_room = self.selected(cx, ids!(rooms), &self.rooms).is_some();
@@ -1717,12 +1740,18 @@ impl HagencyPanel {
         for id in [ids!(approve),ids!(reject)] {let enabled=assigned_here && approval_selected && !self.busy;self.view.button(cx,id).set_enabled(cx,enabled);self.view.widget(cx,id).set_disabled(cx,!enabled);}
         let badge = self.view.widget(cx, ids!(execution_badge));
         render_device_badge(cx, &badge, agent_device_state(&self.execution_agent_record, &self.current_device_id, &self.execution_devices, self.devices_loaded), &self.device_badge(&self.execution_agent_record));
-        self.view.view(cx, ids!(local_device_notice)).set_visible(cx, !assigned_here);
-        self.view.label(cx, ids!(local_device_message)).set_text(cx, if self.devices_loaded && !self.execution_agent_record.is_null() {
+        let no_host = self.no_local_host();
+        self.view.view(cx, ids!(local_device_notice)).set_visible(cx, !assigned_here || no_host.is_some());
+        self.view.label(cx, ids!(local_device_message)).set_text(cx, if let Some(text) = no_host {
+            crate::i18n::tr(text)
+        } else if self.devices_loaded && !self.execution_agent_record.is_null() {
             crate::i18n::tr("Model and Agent limits configure the assigned execution device. Service controls remain on that device.")
         } else {crate::i18n::tr("Checking execution device…")});
         let assignable = self.devices_loaded && self.execution_agent_record["id"].as_str() == self.agent(cx).as_deref() && self.execution_agent_record["generation"].as_i64().is_some_and(|generation| generation > 0) && matches!(string(&self.execution_agent_record, "state"), "creating" | "active" | "suspended") && !self.current_device_id.is_empty() && self.execution_devices.iter().any(|d|string(d,"id") == self.current_device_id && d["revoked"] == false);
         self.view.button(cx, ids!(assign_current_device)).set_enabled(cx, assignable && !assigned_here && !self.busy && self.view.check_box(cx, ids!(assignment_confirm)).active(cx));
+        // Moving an Agent to a computer that runs nothing for this account
+        // would only strand it.
+        let assignable = assignable && no_host.is_none();
         self.view.check_box(cx, ids!(assignment_confirm)).set_visible(cx, assignable && !assigned_here);
         self.view.button(cx, ids!(assign_current_device)).set_visible(cx, assignable && !assigned_here);
         for id in [ids!(model_tab), ids!(policy_tab)] {self.view.button(cx, id).set_enabled(cx, (assigned_here || remote) && !self.busy);}
@@ -1755,7 +1784,7 @@ impl HagencyPanel {
         let reason=if self.runtime_resources_loading {"Checking the saved model and connected local account…"} else if self.view.view(cx,ids!(runtime_section)).visible() && !self.runtime_resources_checked {"Model resources could not be verified. Refresh this Service page to retry."} else if !assigned_here {"Assign this Agent to this device in Agent and device."} else if !self.provider_authenticated {"Connect your account in Model & resources."} else if !model_ready || self.runtime_efforts.is_empty() {"Save a model in Model & resources. A private workspace is created automatically."} else {"Ready to start. Actual usage is charged after each task."};
         self.view.label(cx,ids!(start_requirements)).set_text(cx,crate::i18n::tr(reason));
         let start_ready=self.provider_authenticated && model_ready && !self.runtime_efforts.is_empty() && !self.runtime_resources_loading && self.runtime_resources_checked;
-        self.view.button(cx,ids!(service_toggle)).set_enabled(cx, assigned_here && runtime_known && !self.busy && (self.runtime_room_active || start_ready));
+        self.view.button(cx,ids!(service_toggle)).set_enabled(cx, assigned_here && no_host.is_none() && runtime_known && !self.busy && (self.runtime_room_active || start_ready));
         let selected_agent = self.selected(cx, ids!(agents), &self.agents);
         let can_retire = selected_agent
             .as_ref()
@@ -1853,9 +1882,9 @@ impl HagencyPanel {
         if !detail {
             let projects = self.page == Page::Projects;
             for (id, text) in [
-                (ids!(context_title), if projects {"Spaces for people and Agents"} else {"Manage agents you run locally"}),
-                (ids!(context_description), if projects {"An Agent space is a Matrix Space connected to a Hagency project. The creation wizard handles this setup."} else {"Configure this account's local agents, their models, rooms and execution permissions."}),
-                (ids!(context_steps), if projects {"1 · Create an Agent space    2 · Create a room    3 · Invite people and Agents"} else {"1 · Create an agent    2 · Choose a model    3 · Connect rooms"}),
+                (ids!(context_title), if projects {"Spaces for people and Agents"} else if no_host.is_some() {"Local agents can't run on this computer"} else {"Manage agents you run locally"}),
+                (ids!(context_description), if projects {"An Agent space is a Matrix Space connected to a Hagency project. The creation wizard handles this setup."} else if let Some(text) = no_host {text} else {"Configure this account's local agents, their models, rooms and execution permissions."}),
+                (ids!(context_steps), if projects {"1 · Create an Agent space    2 · Create a room    3 · Invite people and Agents"} else if no_host.is_some() {""} else {"1 · Create an agent    2 · Choose a model    3 · Connect rooms"}),
                 (ids!(context_scope), if projects {"To use contributed capacity, open Hagency → Resource pools and request an Agent."} else {"To use contributed capacity, open Hagency → Resource pools and request an Agent."}),
             ] { self.view.label(cx,id).set_text(cx,crate::i18n::tr(text)); }
             self.view.view(cx,ids!(context_project_icon)).set_visible(cx,projects);
@@ -1873,9 +1902,10 @@ impl HagencyPanel {
             let height=if members {Size::fill()} else {Size::fit()};
             script_apply_eval!(cx,view,{height:#(height)});
         }
+        // A local Agent is offered only where one can run.
         self.view
             .button(cx, ids!(new_item))
-            .set_visible(cx, !detail);
+            .set_visible(cx, !detail && (self.page == Page::Projects || no_host.is_none()));
         self.view.button(cx, ids!(refresh)).set_visible(cx, !detail);
         self.view.button(cx, ids!(back)).set_visible(cx, detail);
         if self.page == Page::Projects && self.view.view(cx, ids!(project_form)).visible() {
@@ -2059,6 +2089,9 @@ impl HagencyPanel {
     }
     fn set_page(&mut self, cx: &mut Cx, page: Page) {
         self.page = page;
+        if page == Page::Agents {
+            self.read_local_host();
+        }
         self.view.label(cx, ids!(heading)).set_text(
             cx,
             crate::i18n::tr(if page == Page::Projects {"Agent spaces"} else {"Local agents"}),
@@ -2373,6 +2406,7 @@ impl HagencyPanel {
                 }
             }
             Target::Agents => {
+                self.read_local_host();
                 self.agents_loaded = true;
                 self.agents_loading = false;
                 self.agents = array(value, "agents");
@@ -3257,6 +3291,9 @@ impl Widget for HagencyPanel {
             self.list_page(cx);
             if self.page == Page::Projects {
                 cx.action(HagencyAction::NewProject);
+                return;
+            } else if self.no_local_host().is_some() {
+                self.sync_navigation(cx);
                 return;
             } else {
                 self.view
@@ -4384,7 +4421,7 @@ impl HagencyPanelRef {
                 panel.set_page(cx, Page::Agents);
                 if let HagencyAction::AgentRun {agent_id,binding_id}=action {panel.wanted_agent=Some(agent_id.clone()); panel.wanted_run=Some((agent_id.clone(),binding_id.clone()));}
                 if let HagencyAction::OpenAgent {agent_id}=action {panel.wanted_agent=Some(agent_id.clone());}
-                if matches!(action, HagencyAction::NewAgent { .. }) {
+                if matches!(action, HagencyAction::NewAgent { .. }) && panel.no_local_host().is_none() {
                     panel
                         .view
                         .view(cx, ids!(agent_name_holder))
@@ -5658,6 +5695,37 @@ mod tests {
         assert_eq!(card_template(2, 1), id!(Card));
         assert_eq!(card_template(2, 2), id!(Filler));
         assert_eq!(card_template(2, 7), id!(Filler));
+    }
+    #[test]
+    fn a_local_agent_is_offered_only_where_this_computer_runs_the_account() {
+        use crate::hagency::backend::LocalAgentHost;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, { mod.widgets.HagencyPanel {} });
+            HagencyPanel::script_from_value(vm, value)
+        });
+        panel.set_page(&mut cx, Page::Agents);
+        panel.list_page(&mut cx);
+        for (host, offered, text) in [
+            (None, true, "Configure this account's local agents, their models, rooms and execution permissions."),
+            (Some(LocalAgentHost::Here), true, "Configure this account's local agents, their models, rooms and execution permissions."),
+            (Some(LocalAgentHost::OtherAccount), false, "This computer hosts another account. Local Agents run only on a computer that hosts your own account, with your own model sign-in. To use the resources of this computer, request an Agent from its resource pool."),
+            (Some(LocalAgentHost::HostingNotSetUp), false, "Set up resource hosting on this computer first. Local Agents run through it."),
+        ] {
+            panel.local_host = host;
+            panel.sync_navigation(&mut cx);
+            assert_eq!(panel.view.button(&mut cx, ids!(new_item)).visible(), offered, "{host:?}");
+            assert_eq!(panel.view.label(&mut cx, ids!(context_description)).text(), crate::i18n::tr(text), "{host:?}");
+            assert_eq!(panel.no_local_host().is_none(), offered, "{host:?}");
+        }
+        // Spaces and rooms do not depend on hosting.
+        panel.local_host = Some(LocalAgentHost::OtherAccount);
+        panel.set_page(&mut cx, Page::Projects);
+        panel.list_page(&mut cx);
+        panel.sync_navigation(&mut cx);
+        assert!(panel.view.button(&mut cx, ids!(new_item)).visible());
     }
     #[test]
     fn registered_portal_card_clicks_and_back_return_to_the_same_list() {

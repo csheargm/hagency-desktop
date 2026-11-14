@@ -3,7 +3,7 @@
 //! native panel. Scripts pass only an Agent ID; Room IDs come from bindings.
 use super::{parse, Id, ManagementPermission, Value};
 use crate::hagency::{
-    backend::Service,
+    backend::{LocalAgentHost, Service},
     model::{Command, LocalAction},
 };
 use serde::Deserialize;
@@ -66,6 +66,26 @@ fn service_for(account: &str) -> Result<Service, String> {
 }
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or("")
+}
+/// `hagency.session` says whether this computer runs this account's Agents,
+/// so the page offers a local Agent only where one can run, and names what
+/// is missing otherwise. Display only: it authorizes nothing, and it is left
+/// out when it cannot be told right now.
+pub(super) fn display(service: &str, mut value: Value) -> Value {
+    if service != "hagency.session" {
+        return value;
+    }
+    if let Ok(host) = Service::for_current().and_then(|service| service.local_agent_host()) {
+        host_fields(&mut value, host);
+    }
+    value
+}
+fn host_fields(value: &mut Value, host: LocalAgentHost) {
+    let Some(object) = value.as_object_mut() else { return };
+    object.insert("localAgentsHere".into(), json!(host == LocalAgentHost::Here));
+    if let Some(need) = host.need() {
+        object.insert("localAgentsNeed".into(), json!(need));
+    }
 }
 /// One state per Agent, worded by the mini app: processing, running,
 /// starting, waiting, attention or stopped.
@@ -155,7 +175,12 @@ fn direct_room(agent: &Agent) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
 async fn status(account: &str, id: &str) -> Result<Value, String> {
     let service = service_for(account)?;
     let agent = agent(&service, id).await?;
-    let state = if agent.here {
+    let state = if agent.here && service.local_agent_host().is_ok_and(|host| host != LocalAgentHost::Here) {
+        // The Agent is assigned to this device, but nothing on this computer
+        // runs this account's Agents (another account is hosted here, or
+        // hosting is not set up). Its saved service state would only mislead.
+        "no_host"
+    } else if agent.here {
         let status = service
             .execute(Command::Local {
                 agent_id: id.into(),
@@ -263,6 +288,29 @@ mod tests {
         // Another Agent's runtime never reports this Agent as running.
         let other = json!({"service": {"enabled": false}, "runtime": {"agentId": "agt_2", "phase": "online"}});
         assert_eq!(service_state(&other, agent), "stopped");
+    }
+    #[test]
+    fn session_names_what_a_local_agent_needs_here() {
+        use crate::hagency::hosting::{Execution, SetupReason};
+        let reply = |execution: Execution| {
+            let mut value = json!({"protocol": "hagency-management-v1"});
+            host_fields(&mut value, LocalAgentHost::of(&execution));
+            value
+        };
+        let hosted = reply(Execution::Daemon { home: "/daemon".into() });
+        assert_eq!(hosted["localAgentsHere"], true);
+        assert!(hosted.get("localAgentsNeed").is_none());
+        assert_eq!(reply(Execution::InProcess)["localAgentsHere"], true);
+        let other = reply(Execution::Setup(SetupReason::OtherOwner));
+        assert_eq!((other["localAgentsHere"].clone(), other["localAgentsNeed"].clone()), (json!(false), json!("other_account")));
+        for reason in [SetupReason::NotEnrolled, SetupReason::StaleRoot] {
+            let setup = reply(Execution::Setup(reason));
+            assert_eq!((setup["localAgentsHere"].clone(), setup["localAgentsNeed"].clone()), (json!(false), json!("hosting_setup")));
+        }
+        // A reply that is not an object is left alone.
+        let mut odd = json!("text");
+        host_fields(&mut odd, LocalAgentHost::OtherAccount);
+        assert_eq!(odd, json!("text"));
     }
     #[test]
     fn only_agent_ids_are_accepted() {

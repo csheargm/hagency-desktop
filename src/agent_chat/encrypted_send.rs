@@ -56,7 +56,7 @@ pub(crate) async fn ensure_ready(
     match result {
         Ok(Ok(())) => Ok(()),
         _ => Err(
-            "Agent encryption is not ready. Your message was not sent; please try again shortly.",
+            "This Agent's device keys are not available; it may not have started on its computer yet. Your message was not sent. Check that its service is running, then try again.",
         ),
     }
 }

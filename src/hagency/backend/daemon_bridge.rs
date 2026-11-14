@@ -5,9 +5,46 @@ use super::*;
 use crate::hagency::hosting::{self, Execution};
 use ::hagency::daemon::bridge::ControllerClient;
 
+/// Whether this computer runs an account's local Agents, and if not, why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalAgentHost {
+    Here,
+    /// The daemon on this computer hosts another account.
+    OtherAccount,
+    /// Hosting is not set up for anyone here (or must be set up again).
+    HostingNotSetUp,
+}
+
+impl LocalAgentHost {
+    pub fn of(execution: &Execution) -> Self {
+        match execution {
+            Execution::InProcess | Execution::Daemon { .. } => Self::Here,
+            Execution::Setup(hosting::SetupReason::OtherOwner) => Self::OtherAccount,
+            Execution::Setup(_) => Self::HostingNotSetUp,
+        }
+    }
+
+    /// The word the mini app receives when no local Agent runs here.
+    pub fn need(self) -> Option<&'static str> {
+        match self {
+            Self::Here => None,
+            Self::OtherAccount => Some("other_account"),
+            Self::HostingNotSetUp => Some("hosting_setup"),
+        }
+    }
+}
+
 impl Service {
     pub(super) fn execution(&self) -> Result<Execution, String> {
         hosting::execution(&self.0.locations, &self.0.origin, &self.0.owner)
+    }
+
+    /// Where this account's local Agents can run on this computer. The
+    /// daemon hosts the account here or, where no daemon ships, this process
+    /// does. An account that only manages from this computer has nothing
+    /// here to run a local Agent.
+    pub fn local_agent_host(&self) -> Result<LocalAgentHost, String> {
+        Ok(LocalAgentHost::of(&self.execution()?))
     }
 
     pub(super) fn local_management_only(&self) -> Result<bool, String> {
