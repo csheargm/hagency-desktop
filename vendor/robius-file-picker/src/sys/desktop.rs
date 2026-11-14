@@ -21,7 +21,14 @@ pub(crate) fn copy_uri_to_path(_uri: &str, _dest: &Path) -> Result<()> {
 /// Shows a native file dialog, then calls the given `callback` with the result `R`.
 ///
 /// The `callback` might block, so it always runs on a background worker thread.
-/// This function is safe to run from any thread context. 
+/// This function is safe to run from any thread context.
+///
+/// On macOS that worker is started here, by the calling thread, and only the dialog
+/// itself runs in the main thread's GCD block. A thread belongs to the context of the
+/// thread that starts it: when a host runs the app's code on a thread of its own (as
+/// Makepad's JIT runner does), a GCD block on the main thread runs outside the app's
+/// context, and a worker started from there would not see the app's statics
+/// (its account epoch, its action sender), so the callback's work would be lost.
 fn run_dialog_then<R, D, C>(dialog_fn: D, callback: C)
 where
     R: Default + Send + 'static,
@@ -29,6 +36,10 @@ where
     C: FnOnce(R) + Send + 'static,
 {
     #[cfg(target_os = "macos")] {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<R>(1);
+        // Post-dialog work may block, so it runs off the main thread.
+        // If the dialog block is dropped without running, this gets the default result.
+        std::thread::spawn(move || callback(receiver.recv().unwrap_or_default()));
         dispatch2::DispatchQueue::main().exec_async(move || {
             // GCD dispatches the dialog to the main UI thread in a C stack frame,
             // so we need to catch a panic/exception being unwound here
@@ -36,8 +47,8 @@ where
             let result = std::panic::catch_unwind(
                 std::panic::AssertUnwindSafe(dialog_fn)
             ).unwrap_or_default();
-            // Post-dialog work may block, so move it off the main thread.
-            std::thread::spawn(move || callback(result));
+            // The worker waits for exactly this one result, so the send cannot block.
+            let _ = sender.send(result);
         });
     }
     #[cfg(not(target_os = "macos"))] {
