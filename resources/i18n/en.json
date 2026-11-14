@@ -3163,5 +3163,9 @@
   "Couldn't read \"{name}\": {error}": "Couldn't read \"{name}\": {error}",
   "Couldn't crop \"{name}\". Please choose a different image.": "Couldn't crop \"{name}\". Please choose a different image.",
   "\"{name}\" changed after it was opened. Please choose it again.": "\"{name}\" changed after it was opened. Please choose it again.",
-  "Couldn't save the cropped avatar: {error}": "Couldn't save the cropped avatar: {error}"
+  "Couldn't save the cropped avatar: {error}": "Couldn't save the cropped avatar: {error}",
+  "Profile": "Profile",
+  "Server: {0}": "Server: {0}",
+  "Agent on {0}": "Agent on {0}",
+  "Role: Agent": "Role: Agent"
 }

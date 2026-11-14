@@ -3163,5 +3163,9 @@
   "Couldn't read \"{name}\": {error}": "无法读取“{name}”：{error}",
   "Couldn't crop \"{name}\". Please choose a different image.": "无法裁剪“{name}”，请选择其他图片。",
   "\"{name}\" changed after it was opened. Please choose it again.": "“{name}”在打开后已被更改，请重新选择。",
-  "Couldn't save the cropped avatar: {error}": "无法保存裁剪后的头像：{error}"
+  "Couldn't save the cropped avatar: {error}": "无法保存裁剪后的头像：{error}",
+  "Profile": "个人资料",
+  "Server: {0}": "服务器：{0}",
+  "Agent on {0}": "{0} 上的 Agent",
+  "Role: Agent": "角色：Agent"
 }

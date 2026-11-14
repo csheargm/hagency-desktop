@@ -17,6 +17,8 @@ use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetExt};
 use crate::hagency::owner_dashboard::OwnerDashboardHostWidgetExt;
 use crate::shared::web_browser::{WebBrowserAction, WebBrowserRef, WebBrowserWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
+use crate::profile::{profile_side_panel::ProfileSidePanelWidgetRefExt, user_profile::UserProfilePaneInfo};
+use super::native_panels::{native_template, native_title};
 use crate::shared::navigation_bar_button::NavigationBarButtonWidgetExt;
 
 script_mod! {
@@ -72,6 +74,8 @@ pub enum SurfaceKey {
     Management,
     Reader,
     Articles,
+    /// A person's or an Agent's profile.
+    Profile,
 }
 
 impl SurfaceKey {
@@ -119,11 +123,7 @@ impl ScriptHook for MiniAppsSurface {
             // Native panels are mounted lazily, outside the DSL's child list.
             // Restyle their existing instances so documents and drafts survive.
             if let Some((key, panel)) = &mut self.native {
-                let value = if *key == SurfaceKey::Reader {
-                    script_eval!(vm, {mod.widgets.WebBrowser {padding: 0}})
-                } else {
-                    script_eval!(vm, {mod.widgets.ArticlePanel {padding: 0}})
-                };
+                let value = native_template(vm, key);
                 panel.script_apply(vm, apply, scope, value);
             }
             self.update_page(vm.cx_mut());
@@ -225,7 +225,7 @@ impl MiniAppsSurface {
 
     fn title(&self, cx: &mut Cx) -> String {
         if let Some((key, _)) = &self.native {
-            return crate::i18n::tr(if *key == SurfaceKey::Reader {"Web pages"} else {"Article editor"}).to_owned();
+            return native_title(key).to_owned();
         }
         if self.agent_surface && self.management_page.is_none() { return crate::i18n::tr("Agent").into(); }
         match self.management_page {
@@ -283,11 +283,7 @@ impl MiniAppsSurface {
             if *existing == key { return (panel.clone(), false); }
         }
         let panel = cx.with_vm(|vm| {
-            let value = if key == SurfaceKey::Reader {
-                script_eval!(vm, {mod.widgets.WebBrowser {padding: 0}})
-            } else {
-                script_eval!(vm, {mod.widgets.ArticlePanel {padding: 0}})
-            };
+            let value = native_template(vm, &key);
             WidgetRef::script_from_value(vm, value)
         });
         if let Some(mut slot) = self.view.view(cx, ids!(native_content)).borrow_mut() {
@@ -306,6 +302,14 @@ impl MiniAppsSurface {
         self.update_page(cx);
     }
 
+    // TODO(R4): over budget; move the native-panel openers (reader, articles,
+    // profile) into native_panels.rs.
+    fn show_profile(&mut self, cx: &mut Cx, info: &UserProfilePaneInfo) {
+        let (panel, _) = self.native_panel(cx, SurfaceKey::Profile);
+        panel.as_profile_side_panel().show(cx, info.clone());
+        self.update_page(cx);
+    }
+
     fn article_action(&mut self, cx: &mut Cx, action: &ArticleAction) {
         let (panel, fresh) = self.native_panel(cx, SurfaceKey::Articles);
         // Selecting an already-open publisher must retain its draft and current page.
@@ -321,6 +325,8 @@ impl MiniAppsSurface {
         if let Some((kind, panel)) = self.native.take() {
             if kind == SurfaceKey::Reader {
                 panel.as_web_browser().action(cx, ModalRef::default(), &WebBrowserAction::Close);
+            } else if kind == SurfaceKey::Profile {
+                // A profile holds no session or draft to end.
             } else {
                 panel.as_article_panel().action(cx, ModalRef::default(), &ArticleAction::Close);
             }
@@ -386,6 +392,9 @@ impl MiniAppsSurfaceRef {
     }
     pub fn article_action(&self, cx: &mut Cx, action: &ArticleAction) {
         if let Some(mut inner) = self.borrow_mut() { inner.article_action(cx, action); }
+    }
+    pub fn show_profile(&self, cx: &mut Cx, info: &UserProfilePaneInfo) {
+        if let Some(mut inner) = self.borrow_mut() { inner.show_profile(cx, info); }
     }
     pub fn reader(&self) -> WebBrowserRef {
         self.borrow().and_then(|inner| inner.native.as_ref().filter(|(key, _)| *key == SurfaceKey::Reader)

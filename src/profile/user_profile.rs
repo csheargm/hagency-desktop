@@ -1,15 +1,14 @@
 //! Widgets and types related to displaying info about a user profile.
 use crate::profile::user_verification_cache::{get_or_fetch_user_verification_state, UserVerificationState, UserVerificationStatesUpdated};
 
-use crate::moderation::{MemberAbilities, MemberAbilitiesFetched, MemberAbilitiesInvalidated, MemberAction, MemberModeration};
-use crate::moderation_modal::{ModerationModalAction, ModerationRequest};
-use std::{borrow::Cow, ops::{Deref, DerefMut}};
+use crate::moderation_modal::ModerationModalAction;
+use std::ops::{Deref, DerefMut};
 use makepad_widgets::*;
-use matrix_sdk::{room::{RoomMember, RoomMemberRole}, ruma::{events::room::member::MembershipState, OwnedRoomId, OwnedUserId}};
+use matrix_sdk::{room::RoomMember, ruma::{OwnedRoomId, OwnedUserId}};
 use crate::{
-    avatar_cache, block_user_modal::{BlockUserModalAction, BlockUserRequest}, shared::{avatar::{AvatarState, AvatarWidgetExt}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{MatrixRequest, current_user_id, is_user_blocked, submit_async_request}, utils
+    block_user_modal::BlockUserModalAction, shared::avatar::{AvatarState, AvatarWidgetExt}, sliding_sync::{MatrixRequest, is_user_blocked, submit_async_request}, utils
 };
-use super::user_profile_cache;
+use super::{profile_moderation::ProfileModeration, profile_view_fill};
 use crate::shared::navigation_bar_button::NavigationBarButtonWidgetExt;
 
 
@@ -92,7 +91,7 @@ script_mod! {
         ban := ModerationButton {text: #(crate::i18n::tr("Ban User")) i18n_text: "Ban User" draw_icon.svg: ICON_FORBIDDEN}
         unban := ModerationButton {text: #(crate::i18n::tr("Unban User")) i18n_text: "Unban User" draw_icon.svg: ICON_CHECKMARK}
     }
-    let UserProfileView = ScrollXYView {
+    mod.widgets.UserProfileView = ScrollXYView {
         width: Fill,
         height: Fill,
         align: Align{x: 0.5, y: 0},
@@ -146,6 +145,14 @@ script_mod! {
                     text_style: MESSAGE_TEXT_STYLE { font_size: (11 * mod.widgets.RINX_TEXT_SCALE) },
                 }
                 text: #(crate::i18n::tr("User ID"))
+            }
+            // The server, or that this is an Agent (right-hand profile tab only).
+            profile_details := Label {
+                visible: false, width: Fill, height: Fit
+                align: Align{x: 0.5}
+                flow: Flow.Right{wrap: true}
+                draw_text +: {color: (MESSAGE_TEXT_COLOR) text_style: MESSAGE_TEXT_STYLE { font_size: (10 * mod.widgets.RINX_TEXT_SCALE) }}
+                text: ""
             }
         }
 
@@ -287,7 +294,7 @@ script_mod! {
             show_bg: true,
             draw_bg.color: (COLOR_PRIMARY)
 
-            user_profile_view := UserProfileView { }
+            user_profile_view := mod.widgets.UserProfileView { }
 
             mobile_profile := SolidView {
                 visible: false width: Fill height: Fill flow: Down draw_bg.color: mod.widgets.RINX_PAGE
@@ -394,42 +401,6 @@ impl DerefMut for UserProfilePaneInfo {
         &mut self.profile_and_room_id
     }
 }
-impl UserProfilePaneInfo {
-    fn membership_title(&self) -> String {
-        if self.room_name.is_empty() {
-            crate::i18n::format("Membership in Room {0}", &[("0", (self.room_id.as_str()).to_string())])
-        } else {
-            crate::i18n::format("Membership in {0}", &[("0", (self.room_name).to_string())])
-        }
-    }
-
-    fn membership_status(&self) -> &str {
-        self.room_member.as_ref().map_or(
-            crate::i18n::tr("Not a Member"),
-            |member| match member.membership() {
-                MembershipState::Join => crate::i18n::tr("Status: Joined"),
-                MembershipState::Leave => crate::i18n::tr("Status: Left"),
-                MembershipState::Ban => crate::i18n::tr("Status: Banned"),
-                MembershipState::Invite => crate::i18n::tr("Status: Invited"),
-                MembershipState::Knock => crate::i18n::tr("Status: Knocking"),
-                _ => crate::i18n::tr("Status: Unknown"),
-            }
-        )
-    }
-
-    fn role_in_room(&self) -> Cow<'_, str> {
-        self.room_member.as_ref().map_or(
-            crate::i18n::tr("Role: Unknown").into(),
-            |member| match member.suggested_role_for_power_level() {
-                RoomMemberRole::Creator => crate::i18n::tr("Role: Creator").into(),
-                RoomMemberRole::Administrator => crate::i18n::tr("Role: Admin").into(),
-                RoomMemberRole::Moderator => crate::i18n::tr("Role: Moderator").into(),
-                RoomMemberRole::User => crate::i18n::tr("Role: Standard User").into(),
-            }
-        )
-    }
-}
-
 #[derive(Script, Widget, Animator)]
 pub struct UserProfileSlidingPane {
     #[source] source: ScriptObjectRef,
@@ -443,8 +414,7 @@ pub struct UserProfileSlidingPane {
     /// `bg_view`; `None` when they have not been placed since this pane was
     /// last applied from script.
     #[rust] placed: Option<(f64, f32)>,
-    #[rust] member_abilities: MemberAbilities,
-    #[rust] abilities_epoch: u64,
+    #[rust] moderation: ProfileModeration,
 }
 
 impl ScriptHook for UserProfileSlidingPane {
@@ -525,58 +495,12 @@ impl Widget for UserProfileSlidingPane {
             && actions.iter().any(|a| a.downcast_ref::<UserVerificationStatesUpdated>().is_some())
         { self.redraw(cx); }
 
-        if let Event::Actions(actions) = event && let Some(info) = self.info.as_mut() {
-            let invalidated = actions.iter().any(|a| a.downcast_ref::<MemberAbilitiesInvalidated>()
-                .is_some_and(|u| u.room_id == info.room_id && u.epoch == crate::account_session::epoch()));
-            if let Some(fetched) = actions.iter().filter_map(|a| a.downcast_ref::<MemberAbilitiesFetched>())
-                .rfind(|f| f.room_id == info.room_id && f.user_id == info.user_id && f.epoch == crate::account_session::epoch()) {
-                self.member_abilities = fetched.abilities;
-                self.abilities_epoch = fetched.epoch;
-                info.room_member = fetched.room_member.clone();
-                self.redraw(cx);
-            }
-            if invalidated { self.request_member_abilities(); self.redraw(cx); }
-        }
+        if let Event::Actions(actions) = event && let Some(info) = self.info.as_mut()
+            && self.moderation.on_actions(info, actions)
+        { self.redraw(cx); }
         // A UI Signal indicates that this user profile's info may have been updated by a background task.
         if let Event::Signal = event {
-            user_profile_cache::process_user_profile_updates(cx);
-            avatar_cache::process_avatar_updates(cx);
-
-            // Re-fetch the currently-displayed user profile info from the cache in case it was updated.
-            let mut redraw_this_pane = false;
-            if let Some(our_info) = self.info.as_mut() {
-                if let Some((new_profile, room_member)) = user_profile_cache::with_user_profile(
-                    cx,
-                    our_info.user_id.clone(),
-                    Some(&our_info.room_id),
-                    false,
-                    |profile, rooms| (profile.clone(), rooms.get(&our_info.room_id).and_then(|entry| entry.loaded()).cloned())
-                ) {
-                    let prev_avatar_state = our_info.avatar_state.clone();
-                    our_info.user_profile = new_profile;
-                    our_info.room_member = room_member;
-                    // Use the avatar URI from the `room_member`, as it will be the most up-to-date
-                    // and specific to the room that this user profile sliding pane is currently being shown for.
-                    if let Some(avatar_uri) = our_info.room_member.as_ref()
-                        .and_then(|rm| rm.avatar_url().map(|u| u.to_owned()))
-                    {
-                        our_info.avatar_state = AvatarState::Known(Some(avatar_uri));
-                    }
-                    // If we know the avatar URI, try to get/fetch the actual avatar image data.
-                    our_info.avatar_state.update_from_cache(cx);
-
-                    // If the new avatar state is fully `Loaded`, keep it as is.
-                    // If the new avatar state is *not* fully `Loaded`, but the previous one was, keep the previous one.
-                    match (prev_avatar_state, &mut our_info.avatar_state) {
-                        (_,                             AvatarState::Loaded(_)) => { }
-                        (prev @ AvatarState::Loaded(_), existing_avatar_state ) => {
-                            *existing_avatar_state = prev;
-                        }
-                        _ => { }
-                    }
-                    redraw_this_pane = true;
-                }
-            }
+            let redraw_this_pane = self.info.as_mut().is_some_and(|info| profile_view_fill::refresh_info(cx, info));
             if redraw_this_pane {
                 self.redraw(cx);
             }
@@ -619,13 +543,7 @@ impl Widget for UserProfileSlidingPane {
 
             if self.button(cx, ids!(copy_link_to_user_button)).clicked(actions)
                 || self.view.navigation_bar_button(cx, ids!(mp_copy)).clicked(actions) {
-                let matrix_to_uri = info.user_id.matrix_to_uri().to_string();
-                cx.copy_to_clipboard(&matrix_to_uri);
-                enqueue_popup_notification(
-                    crate::i18n::tr("Copied User ID to the clipboard."),
-                    PopupKind::Success,
-                    Some(3.0),
-                );
+                profile_view_fill::copy_user_link(cx, info);
             }
 
             // Handle the jump to read receipt button being clicked, which is mostly handled by the room screen.
@@ -644,18 +562,8 @@ impl Widget for UserProfileSlidingPane {
             }
 
             if !self.is_animating_out {
-                let request = [ids!(desktop_moderation), ids!(mobile_moderation)].into_iter().find_map(|panel| {
-                        let view = self.view.view(cx, panel);
-                        [(ids!(mute), MemberAction::Mute), (ids!(unmute), MemberAction::Unmute),
-                         (ids!(kick), MemberAction::Kick), (ids!(ban), MemberAction::Ban), (ids!(unban), MemberAction::Unban)]
-                        .into_iter().find_map(|(button, action)| {
-                            (self.abilities_epoch == crate::account_session::epoch() && self.member_abilities.permits(action)
-                                && view.button(cx, button).clicked(actions)).then(|| ModerationRequest::Member(MemberModeration {
-                                room_id: info.room_id.clone(), room_name: info.room_name.clone(), user_id: info.user_id.clone(),
-                                user_name: info.displayable_name().to_owned(), action,
-                            }))
-                        })
-                    });
+                let request = [ids!(desktop_moderation), ids!(mobile_moderation)].into_iter()
+                    .find_map(|panel| self.moderation.clicked(cx, &self.view.view(cx, panel), info, actions));
                 if let Some(request) = request {
                     cx.action(ModerationModalAction::Open(request));
                     self.is_animating_out = true;
@@ -667,12 +575,7 @@ impl Widget for UserProfileSlidingPane {
             }
             if !self.is_animating_out && (self.button(cx, ids!(block_user_button)).clicked(actions)
                 || self.view.navigation_bar_button(cx, ids!(mp_block)).clicked(actions)) {
-                let request = BlockUserRequest {
-                    user_id: info.user_id.clone(),
-                    display_name: info.username.clone(),
-                    block: !is_user_blocked(&info.user_id),
-                    reject_invite_to: None,
-                };
+                let request = profile_view_fill::block_request(info);
                 // Hide the pane immediately to make room for the confirmation modal
                 self.is_animating_out = true;
                 cx.revert_key_focus();
@@ -721,78 +624,36 @@ impl Widget for UserProfileSlidingPane {
             });
         }
 
-        // Set the user name, using the user ID as a fallback.
-        self.label(cx, ids!(user_name)).set_text(cx, info.displayable_name());
-        self.label(cx, ids!(user_id)).set_text(cx, info.user_id.as_str());
+        let profile_view = self.view.widget(cx, ids!(user_profile_view));
+        profile_view_fill::fill_profile_view(cx, &profile_view, info);
+        let (membership, role) = profile_view_fill::standing(cx, info);
         self.label(cx, ids!(mp_card.name)).set_text(cx, info.displayable_name());
         self.label(cx, ids!(mp_card.user_id)).set_text(cx, &crate::i18n::format("Matrix ID: {0}", &[("0", (info.user_id).to_string())]));
         self.label(cx, ids!(mp_room.value)).set_text(cx, &info.room_name);
-        self.label(cx, ids!(mp_membership.value)).set_text(cx, info.membership_status().trim_start_matches(crate::i18n::tr("Status: ")));
-        self.label(cx, ids!(mp_role.value)).set_text(cx, info.role_in_room().trim_start_matches(crate::i18n::tr("Role: ")));
-
-        // Set the avatar image, using the user name as a fallback.
-        let avatar_ref = self.avatar(cx, ids!(avatar));
-        info.avatar_state
-            .image()
-            .and_then(|image| avatar_ref.show_image(cx, None, |cx, img| utils::load_avatar_image(&img, cx, image)).ok())
-            .unwrap_or_else(|| avatar_ref.show_user_text(cx, &info.user_id, info.displayable_name()));
+        self.label(cx, ids!(mp_membership.value)).set_text(cx, membership.trim_start_matches(crate::i18n::tr("Status: ")));
+        self.label(cx, ids!(mp_role.value)).set_text(cx, role.trim_start_matches(crate::i18n::tr("Role: ")));
         let mobile_avatar = self.avatar(cx, ids!(mp_card.avatar));
         info.avatar_state.image()
             .and_then(|image| mobile_avatar.show_image(cx, None, |cx, img| utils::load_avatar_image(&img, cx, image)).ok())
             .unwrap_or_else(|| mobile_avatar.show_user_text(cx, &info.user_id, info.displayable_name()));
 
-        // Set the membership status and role in the room.
-        self.label(cx, ids!(membership_title_label)).set_text(cx, &info.membership_title());
-        self.label(cx, ids!(membership_status_label)).set_text(cx, info.membership_status());
-        self.label(cx, ids!(role_info_label)).set_text(cx, info.role_in_room().as_ref());
-
-        // Draw and show/hide the buttons according to user and room membership info:
-        // * The own-profile message action opens a separate private File Transfer room.
-        // * `copy_link_to_user_button` is always enabled with the same text.
-        // * `jump_to_read_receipt_button` is always shown with the same text.
-        // * `block_user_button` is hidden if the user is the same as the account user,
-        //    since you cannot block yourself.
-        //    * The button text changes to "Unblock" if the user is already blocked.
-        let is_pane_showing_current_account = info.room_member.as_ref()
-            .map(|rm| rm.is_account_user())
-            .unwrap_or_else(|| current_user_id().is_some_and(|uid| uid == info.user_id));
-
-        self.button(cx, ids!(direct_message_button)).set_visible(cx, true);
-        self.button(cx, ids!(direct_message_button)).set_text(cx, if is_pane_showing_current_account {crate::i18n::tr("File Transfer")} else {crate::i18n::tr("Messages")});
-
+        let is_pane_showing_current_account = profile_view_fill::is_current_account(info);
         let verification = get_or_fetch_user_verification_state(cx, &info.user_id);
         let verified = verification == Some(UserVerificationState::Verified);
         let reset = verification == Some(UserVerificationState::VerificationViolation);
-        self.view(cx, ids!(verified_badge)).set_visible(cx, verified);
-        self.view(cx, ids!(identity_reset_badge)).set_visible(cx, reset);
-        self.button(cx, ids!(withdraw_verification_button)).set_visible(cx, reset);
         self.view.widget(cx, ids!(mp_withdraw_verification)).set_visible(cx, reset);
-        self.button(cx, ids!(verify_this_user_button)).set_visible(cx, !is_pane_showing_current_account && !verified);
         self.view.widget(cx, ids!(mp_verify)).set_visible(cx, !is_pane_showing_current_account);
         self.label(cx, ids!(mp_verify.title)).set_text(cx, crate::i18n::tr(if verified {"Verified User"} else if reset {"Identity reset — verify again"} else {"Verify this User"}));
 
-        let block_user_button = self.button(cx, ids!(block_user_button));
-        block_user_button.set_visible(cx, !is_pane_showing_current_account);
-        // Unfortunately the Matrix SDK's RoomMember type does not properly track
-        // the blocked state of a user, so we have to maintain it separately.
-        let abilities = if self.abilities_epoch == crate::account_session::epoch() { self.member_abilities } else {MemberAbilities::empty()};
         for panel in [ids!(desktop_moderation), ids!(mobile_moderation)] {
             let view = self.view.view(cx, panel);
-            view.set_visible(cx, !abilities.is_empty());
-            for (button, action) in [(ids!(mute), MemberAction::Mute), (ids!(unmute), MemberAction::Unmute),
-                (ids!(kick), MemberAction::Kick), (ids!(ban), MemberAction::Ban), (ids!(unban), MemberAction::Unban)] {
-                view.button(cx, button).set_visible(cx, abilities.permits(action));
-            }
+            self.moderation.show(cx, &view);
         }
         let is_blocked = is_user_blocked(&info.user_id);
         self.view.widget(cx, ids!(mp_message)).set_visible(cx, true);
-        self.label(cx, ids!(mp_message.title)).set_text(cx, if is_pane_showing_current_account {crate::i18n::tr("File Transfer")} else {crate::i18n::tr("Messages")});
+        self.label(cx, ids!(mp_message.title)).set_text(cx, profile_view_fill::message_label(is_pane_showing_current_account));
         self.view.widget(cx, ids!(mp_block_section)).set_visible(cx, !is_pane_showing_current_account);
         self.label(cx, ids!(mp_block.title)).set_text(cx, if is_blocked { crate::i18n::tr("Unblock") } else { crate::i18n::tr("Block") });
-        block_user_button.set_text(
-            cx,
-            if is_blocked { crate::i18n::tr("Unblock User") } else { crate::i18n::tr("Block User") }
-        );
 
         self.view.draw_walk(cx, scope, walk)
     }
@@ -813,34 +674,7 @@ impl UserProfileSlidingPane {
     /// if it's not found in the cache.
     pub fn set_info(&mut self, cx: &mut Cx, mut info: UserProfilePaneInfo) {
         if info.room_member.is_none() {
-            if let Some((new_profile, Some(room_member))) = user_profile_cache::with_user_profile(
-                cx,
-                info.user_id.clone(),
-                Some(&info.room_id),
-                true,
-                |profile, rooms| (profile.clone(), rooms.get(&info.room_id).and_then(|entry| entry.loaded()).cloned())
-            ) {
-                log!("Found user {} room member info in cache", info.user_id);
-                // Update avatar state, preferring that of the room member info.
-                if let Some(uri) = room_member.avatar_url() {
-                    info.avatar_state = AvatarState::Known(Some(uri.to_owned()));
-                }
-                else {
-                    match new_profile.avatar_state {
-                        s @ AvatarState::Known(Some(_)) | s @ AvatarState::Loaded(_) => {
-                            info.avatar_state = s.clone();
-                        }
-                        _ => {}
-                    }
-                }
-                // Update displayable username.
-                if info.username.is_none() {
-                    info.username = room_member.display_name()
-                        .map(|dn| dn.to_owned())
-                        .or_else(|| new_profile.username.clone());
-                }
-                info.room_member = Some(room_member);
-            }
+            profile_view_fill::fill_member_from_cache(cx, &mut info);
         }
         info.avatar_state.update_from_cache(cx);
 
@@ -856,11 +690,7 @@ impl UserProfileSlidingPane {
     }
 
     fn request_member_abilities(&mut self) {
-        self.member_abilities = MemberAbilities::empty();
-        self.abilities_epoch = crate::account_session::epoch();
-        if let Some(info) = &self.info && current_user_id().is_some_and(|user| user != info.user_id) {
-            submit_async_request(MatrixRequest::GetMemberAbilities {room_id: info.room_id.clone(), user_id: info.user_id.clone()});
-        }
+        self.moderation.request(self.info.as_ref());
     }
 
     pub fn show(&mut self, cx: &mut Cx) {

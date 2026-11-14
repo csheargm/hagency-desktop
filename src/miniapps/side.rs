@@ -715,6 +715,14 @@ impl MiniAppsSideRegion {
         self.remember_keys(cx); self.refresh(cx);
     }
 
+    // TODO(R4): over budget; move the native-tab openers (reader, articles,
+    // profile) out with surface.rs's native panels.
+    fn show_profile(&mut self, cx: &mut Cx, info: &crate::profile::user_profile::UserProfilePaneInfo) {
+        let Some(id) = self.native_tab(cx, SurfaceKey::Profile, false) else { return };
+        self.run_on(cx, id, |cx, surface| surface.show_profile(cx, info));
+        self.remember_keys(cx); self.refresh(cx);
+    }
+
     /// Stops the tab's app, revoking its lease, and removes the tab.
     fn close_tab(&mut self, cx: &mut Cx, id: LiveId) {
         let Some(index) = self.tabs.iter().position(|tab| *tab == id) else { return };
@@ -835,6 +843,9 @@ impl MiniAppsSideRegionRef {
     }
     pub fn article_action(&self, cx: &mut Cx, action: &ArticleAction) {
         if let Some(mut inner) = self.borrow_mut() { inner.article_action(cx, action); }
+    }
+    pub fn show_profile(&self, cx: &mut Cx, info: &crate::profile::user_profile::UserProfilePaneInfo) {
+        if let Some(mut inner) = self.borrow_mut() { inner.show_profile(cx, info); }
     }
     pub fn reader(&self, cx: &mut Cx) -> WebBrowserRef {
         self.borrow().and_then(|inner| inner.find(cx, &SurfaceKey::Reader).map(|id| inner.surface(cx, id).reader())).unwrap_or_default()
