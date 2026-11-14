@@ -514,3 +514,61 @@ async fn captured_calls(cases: &[(bool, bool, Option<bool>, bool)]) {
         f.registry.shutdown().await.unwrap();
     }
 }
+/// Owners switch Claude Code between their accounts. A pooled Claude launch
+/// takes whichever verified Claude sign-in is there now and stays bound to the
+/// pool's recorded identity; the exact check and Codex stay strict.
+#[tokio::test]
+async fn claude_launch_takes_another_signed_in_account_and_keeps_the_recorded_identity() {
+    let (f, original) = fixture_claude().await;
+    let until = || Instant::now() + Duration::from_secs(45);
+    let other = || {
+        VerifiedProviderAccount::from_claude_binding(
+            AccountBinding::from_authenticated_profile(
+                "fedcba98-7654-3210-fedc-ba9876543210",
+                "76543210-fedc-ba98-7654-3210fedcba98",
+                "other@example.test",
+                until(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert!(
+        f.registry.verify_provider_resource(f.profile.clone(), f.resource.clone(), other()).await.is_err(),
+        "the exact check still names one account"
+    );
+    let launched = f
+        .registry
+        .verify_claude_launch_resource(f.profile.clone(), f.resource.clone(), other())
+        .await
+        .expect("another signed-in Claude account runs the pool");
+    let recorded = f
+        .registry
+        .verify_provider_resource(
+            f.profile.clone(),
+            f.resource.clone(),
+            VerifiedProviderAccount::from_claude_binding(original).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(launched.binding_digest().unwrap(), recorded.binding_digest().unwrap());
+    let codex = || VerifiedProviderAccount::new("codex", "https://provider.test", "quota-account-fixture", until()).unwrap();
+    assert!(
+        f.registry.verify_claude_launch_resource(f.profile.clone(), f.resource.clone(), codex()).await.is_err(),
+        "a Codex observation is not a Claude sign-in"
+    );
+    let codex_resource = f
+        .registry
+        .prepare_enrollment(f.profile.clone(), "codex_pool".into(), codex(), "gpt-5.6-sol".into(), Some("medium".into()), 1000, until())
+        .unwrap()
+        .approve()
+        .await
+        .unwrap()
+        .resource_id;
+    f.registry.verify_provider_resource(f.profile.clone(), codex_resource.clone(), codex()).await.unwrap();
+    assert!(
+        f.registry.verify_claude_launch_resource(f.profile.clone(), codex_resource, other()).await.is_err(),
+        "a Codex resource never takes another account"
+    );
+    f.registry.shutdown().await.unwrap();
+}

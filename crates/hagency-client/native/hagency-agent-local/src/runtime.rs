@@ -1000,9 +1000,10 @@ async fn permission(
     arguments: Value,
     cwd: &Path,
     queue: &ApprovalQueue,
-) -> bool {
+) -> claude_turn::ToolAnswer {
+    use claude_turn::ToolAnswer;
     let Ok(versions) = ledger.policy_snapshot(scope) else {
-        return false;
+        return ToolAnswer::Deny;
     };
     let proposal = ToolProposal {
         scope: scope.clone(),
@@ -1015,20 +1016,27 @@ async fn permission(
         expires: now() + 280,
     };
     match ledger.tool_disposition(&proposal, now()) {
-        Ok(ToolPolicy::AllowWithRules { .. }) => ledger.authorize_tool(&proposal, now()).is_ok(),
+        Ok(ToolPolicy::AllowWithRules { .. }) => {
+            ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
+        }
         Ok(ToolPolicy::AskOwner) => {
             let (pending, decision) = codex::pending_approval(proposal.clone());
-            queue.offer(pending)
-                && matches!(
-                    tokio::time::timeout(Duration::from_secs(280), decision).await,
-                    Ok(Ok(true))
-                )
-                && ledger
-                    .approve_tool(owner, &proposal, now())
-                    .and_then(|_| ledger.authorize_tool(&proposal, now()))
-                    .is_ok()
+            if !queue.offer(pending) {
+                return ToolAnswer::Deny;
+            }
+            match tokio::time::timeout(Duration::from_secs(280), decision).await {
+                // The owner never answered: nobody refused.
+                Err(_) => ToolAnswer::Unanswered,
+                Ok(Ok(true)) => ToolAnswer::allowed(
+                    ledger
+                        .approve_tool(owner, &proposal, now())
+                        .and_then(|_| ledger.authorize_tool(&proposal, now()))
+                        .is_ok(),
+                ),
+                Ok(_) => ToolAnswer::Deny,
+            }
         }
-        _ => false,
+        _ => ToolAnswer::Deny,
     }
 }
 type TurnResult = claude_turn::Outcome;
@@ -1106,7 +1114,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         tool: String,
         arguments: Value,
         directory: &Path,
-    ) -> bool {
+    ) -> claude_turn::ToolAnswer {
         permission(
             self.ledger,
             self.owner,
@@ -1482,7 +1490,7 @@ async fn run_octos(
                 tokio::pin!(decision);
                 let allow = loop {
                     match octos_wait(wire, decision.as_mut(), &mut controls).await? {
-                        OctosWait::Host(allow) => break Some(allow),
+                        OctosWait::Host(answer) => break Some(answer == claude_turn::ToolAnswer::Allow),
                         OctosWait::Control(action) => {
                             if octos_control(wire, action, &mut steers).await? {
                                 stopping = true;

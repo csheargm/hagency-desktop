@@ -124,6 +124,35 @@ impl OwnerResourceRegistry {
         resource_id: String,
         provider: VerifiedProviderAccount,
     ) -> Result<VerifiedOwnerResourceBinding, Error> {
+        self.verify_resource_binding(profile, resource_id, provider, false)
+            .await
+    }
+    /// A pooled Claude launch runs on whichever Claude account the owner's
+    /// Claude Code is signed in to now: owners switch between several of
+    /// their accounts. The observation must still be a verified Claude sign-in
+    /// (provider profile and CLI agree), but it need not be the account the
+    /// resource was created with. The binding keeps that recorded identity, so
+    /// the resource's records, assignment pins and receipts are unchanged.
+    /// Codex resources and every other caller keep the exact account check.
+    pub async fn verify_claude_launch_resource(
+        &self,
+        profile: ProfileAuthority,
+        resource_id: String,
+        provider: VerifiedProviderAccount,
+    ) -> Result<VerifiedOwnerResourceBinding, Error> {
+        if provider.runtime != "claude" || provider.claude.is_none() {
+            return Err(Error::LocalAuthority);
+        }
+        self.verify_resource_binding(profile, resource_id, provider, true)
+            .await
+    }
+    async fn verify_resource_binding(
+        &self,
+        profile: ProfileAuthority,
+        resource_id: String,
+        provider: VerifiedProviderAccount,
+        any_claude_account: bool,
+    ) -> Result<VerifiedOwnerResourceBinding, Error> {
         profile.check()?;
         hagency_core::project::identifier(&resource_id, 128)?;
         if Instant::now() >= provider.expires || self.0.closed.load(Ordering::Acquire) {
@@ -142,11 +171,22 @@ impl OwnerResourceRegistry {
                 "SELECT revision FROM owner_resource_grants WHERE profile=?1 AND resource_id=?2 AND active=1",
                 params![profile.digest,resource_id], |r| r.get(0),
             )?;
+            let provider_digest = if any_claude_account {
+                if resource.framework != "claude" {
+                    return Err(Error::LocalAuthority);
+                }
+                db.db.query_row(
+                    "SELECT provider_digest FROM owner_resource_accounts WHERE seat_id=?1 AND identity_kind='verified_provider'",
+                    [&resource.seat_id], |r| r.get::<_, String>(0),
+                ).optional()?.ok_or(Error::LocalAuthority)?
+            } else {
+                provider.digest
+            };
             let result = VerifiedOwnerResourceBinding {
                 registry_id: fence.id.clone(), profile, resource_id,
                 resource_revision: crate::resource_publication_revision(&resource)?,
                 runtime: provider.runtime, seat_id: resource.seat_id,
-                provider_digest: provider.digest, access_revision, octos: None, expires: provider.expires,
+                provider_digest, access_revision, octos: None, expires: provider.expires,
             };
             result.check_canonical(&db.db,&fence.id)?;
             if fence.closed.load(Ordering::Acquire) { return Err(Error::LocalAuthority); }
