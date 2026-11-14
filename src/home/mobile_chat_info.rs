@@ -1,6 +1,7 @@
 //! Mobile room information backed by the current Matrix room and push rules.
 
 use makepad_widgets::*;
+use crate::home::room_memory::panel::RoomMemoryPanelWidgetExt;
 use std::collections::{HashMap, HashSet};
 use matrix_sdk::{
     notification_settings::RoomNotificationMode,
@@ -45,6 +46,7 @@ script_mod! {
             View {width: Fill height: 36 flow: Right spacing: 8
                 overview_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Overview")) icon_walk: Walk{width: 0 height: 0}}
                 members_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Members")) icon_walk: Walk{width: 0 height: 0}}
+                memory_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Memory")) i18n_text: "Memory" icon_walk: Walk{width: 0 height: 0}}
             }
         }
         status := Label {
@@ -84,6 +86,7 @@ script_mod! {
             text: #(crate::i18n::tr("Some Agent ownership could not be verified. Unmatched members are shown separately."))
             i18n_text: "Some Agent ownership could not be verified. Unmatched members are shown separately."
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}}
+        memory_panel := mod.widgets.RoomMemoryPanel {}
         information_list := View {width: Fill height: Fill
             list := PortalList {
                 width: Fill height: Fill flow: Down
@@ -180,16 +183,18 @@ script_mod! {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum InfoTab { #[default] Overview, Members }
+// TODO(R4): this file is over budget; split each tab (Overview, Members, Memory) into its own widget.
+enum InfoTab { #[default] Overview, Members, Memory }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InfoRow { Overview, Member(usize), Notifications, Mode(usize), Back, AgentServices, Filler }
 fn info_rows(tab: InfoTab, members: usize, choosing: bool) -> usize {
-    match tab {InfoTab::Members => members, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
+    match tab {InfoTab::Members => members, InfoTab::Memory => 0, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
 }
 fn info_row(tab: InfoTab, members: usize, choosing: bool, index: usize) -> InfoRow {
     if index >= info_rows(tab, members, choosing) {return InfoRow::Filler;}
     match tab {
         InfoTab::Members => InfoRow::Member(index),
+        InfoTab::Memory => InfoRow::Filler,
         InfoTab::Overview if index == 0 => InfoRow::Overview,
         InfoTab::Overview if choosing => if index <= 4 {InfoRow::Mode(index - 1)} else {InfoRow::Back},
         InfoTab::Overview => match index {1 => InfoRow::Notifications, 2 => InfoRow::AgentServices, _ => InfoRow::Filler},
@@ -447,6 +452,9 @@ impl MobileChatInfo {
         self.choosing_notifications = false;
         self.services_open = false;
         self.view.portal_list(cx, ids!(list)).set_first_id_and_scroll(0, 0.0);
+        if let (InfoTab::Memory, Some(room)) = (tab, self.room.as_ref()) {
+            self.view.room_memory_panel(cx, ids!(memory_panel)).show(cx, room.room_id());
+        }
         // Tabs change layout and controls in draw_walk, outside the cached
         // children that a partial View redraw would update.
         cx.redraw_all();
@@ -831,6 +839,7 @@ impl Widget for MobileChatInfo {
             if self.view.button(cx, ids!(services_back)).clicked(actions) {self.services_open=false;self.view.redraw(cx);return;}
             if self.view.button(cx, ids!(overview_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Overview);return;}
             if self.view.button(cx, ids!(members_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Members);return;}
+            if self.view.button(cx, ids!(memory_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Memory);return;}
             if self.tab == InfoTab::Overview && self.services_open && self.view.button(cx, ids!(refresh_services)).clicked(actions) {self.load_services(cx);return;}
             if self.view.drop_down(cx, ids!(room_services)).changed(actions).is_some()
                 && let Some(index) = self.view.drop_down(cx, ids!(room_services)).selected_item().checked_sub(1)
@@ -923,9 +932,11 @@ impl Widget for MobileChatInfo {
             self.clear();
         }
         let members = self.tab == InfoTab::Members;
+        let memory = self.tab == InfoTab::Memory;
+        self.view.widget(cx, ids!(memory_panel)).set_visible(cx, memory);
         self.view.label(cx,ids!(ownership_status)).set_visible(cx,members && self.ownership_unavailable);
-        self.view.view(cx, ids!(services_panel)).set_visible(cx, !members && self.services_open);
-        self.view.view(cx, ids!(information_list)).set_visible(cx, members || !self.services_open);
+        self.view.view(cx, ids!(services_panel)).set_visible(cx, !members && !memory && self.services_open);
+        self.view.view(cx, ids!(information_list)).set_visible(cx, !memory && (members || !self.services_open));
         let service_selected = self.view.drop_down(cx, ids!(room_services)).selected_item().checked_sub(1).is_some_and(|i| i < self.services.len());
         self.view.button(cx, ids!(configure_service)).set_enabled(cx, service_selected && !self.services_busy && self.pin_is_current());
         self.view.button(cx, ids!(refresh_services)).set_enabled(cx, !self.services_busy);
@@ -946,7 +957,7 @@ impl Widget for MobileChatInfo {
         // restyling the tabs each time kept the open panel drawing for ever.
         if self.styled_tab != Some(self.tab) {
             self.styled_tab = Some(self.tab);
-            for (id, selected) in [(ids!(overview_tab), !members), (ids!(members_tab), members)] {
+            for (id, selected) in [(ids!(overview_tab), !members && !memory), (ids!(members_tab), members), (ids!(memory_tab), memory)] {
                 let mut button = self.view.button(cx, id);
                 if selected {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SELECTED} draw_text +: {color: mod.widgets.RINX_ACCENT}});}
                 else {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SURFACE} draw_text +: {color: mod.widgets.RINX_INK}});}
