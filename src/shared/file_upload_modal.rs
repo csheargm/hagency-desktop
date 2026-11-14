@@ -9,8 +9,11 @@ use ruma::OwnedEventId;
 use std::{io::Read, sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}}};
 use crate::{
     settings::account_settings::AccountSettingsAction,
-    shared::popup_list::{PopupKind, enqueue_popup_notification},
-    sliding_sync::{MatrixRequest, TimelineKind, submit_async_request},
+    shared::{
+        avatar_crop::{AvatarCrop, AvatarCropPreview, AvatarCropViewWidgetExt, ZOOM_BUTTON_STEP, prepare_avatar_upload},
+        popup_list::{PopupKind, enqueue_popup_notification},
+    },
+    sliding_sync::{AccountDataAction, MatrixRequest, TimelineKind, submit_async_request},
     utils::format_decimal_file_size,
 };
 
@@ -229,6 +232,42 @@ script_mod! {
                     plain_truncated_label := mod.widgets.PreviewTruncatedLabel {}
                 }
 
+                // The crop tool, shown for a new avatar's picture.
+                avatar_crop_page := View {
+                    width: Fill, height: Fill,
+                    flow: Down,
+                    align: Align{x: 0.5, y: 0.5},
+                    spacing: 6
+
+                    avatar_crop_view := mod.widgets.AvatarCropView {}
+
+                    avatar_zoom_row := View {
+                        width: 256, height: Fit,
+                        flow: Right,
+                        align: Align{y: 0.5},
+                        spacing: 4
+
+                        avatar_zoom_out_button := mod.widgets.AvatarZoomButton {
+                            draw_icon +: { svg: (ICON_ZOOM_OUT) }
+                        }
+                        avatar_zoom_slider := mod.widgets.AvatarZoomSlider {}
+                        avatar_zoom_in_button := mod.widgets.AvatarZoomButton {
+                            draw_icon +: { svg: (ICON_ZOOM_IN) }
+                        }
+                    }
+
+                    avatar_crop_hint := Label {
+                        width: Fill, height: Fit,
+                        align: Align {x: 0.5}
+                        flow: Flow.Right { wrap: true }
+                        draw_text +: {
+                            text_style: REGULAR_TEXT { font_size: (10 * mod.widgets.RINX_TEXT_SCALE) },
+                            color: (SMALL_STATE_TEXT_COLOR)
+                        }
+                        text: #(crate::i18n::tr("Drag the photo to move it. Scroll or use the slider to zoom.")) i18n_text: "Drag the photo to move it. Scroll or use the slider to zoom."
+                    }
+                }
+
                 // Note: add other types of previews here when they're supported.
 
                 // Fallback shown when no preview can be generated.
@@ -344,8 +383,22 @@ pub enum FilePreview {
     Loading,
     /// A fully decoded image, uploaded to a GPU texture by the UI thread when shown.
     Image(ImageBuffer),
+    /// A picture for a new avatar, shown in the crop tool to choose the part kept.
+    AvatarCrop(AvatarCropPreview),
     /// A bounded UTF-8 text excerpt for text-like files.
     Text(TextPreview),
+}
+
+impl FilePreview {
+    /// The preview a new avatar gets: an image goes to the crop tool, and
+    /// anything else (which is then uploaded as it is) stays as it was.
+    fn for_avatar(self) -> FilePreview {
+        match self {
+            FilePreview::Image(buffer) => AvatarCropPreview::new(buffer)
+                .map_or(FilePreview::None, FilePreview::AvatarCrop),
+            other => other,
+        }
+    }
 }
 
 /// A simple file preview wrapper for cheap cloning within makepad actions.
@@ -480,6 +533,8 @@ impl Widget for FileUploadModal {
                 self.reset(cx);
             }
 
+            self.handle_avatar_zoom(cx, actions);
+
             // Handle upload button being clicked or Enter being pressed in the caption input.
             let caption_input = self.text_input(cx, ids!(caption_input));
             let returned = self.view(cx, ids!(caption_view)).visible()
@@ -499,7 +554,10 @@ impl Widget for FileUploadModal {
                         }
                         PendingUpload::Avatar(mut file_data) => {
                             file_data.preview = FilePreview::None;
-                            submit_avatar_upload(cx, file_data);
+                            match self.avatar_crop(cx) {
+                                Some(crop) => submit_cropped_avatar_upload(cx, file_data, crop),
+                                None => submit_avatar_upload(cx, file_data),
+                            }
                         }
                     }
                     self.reset(cx);
@@ -538,6 +596,39 @@ pub fn submit_attachment_upload(upload: AttachmentUpload) {
 /// Submits a confirmed avatar upload request to the Matrix worker.
 fn submit_avatar_upload(cx: &mut Cx, file_data: FileUploadMetadata) {
     submit_async_request(MatrixRequest::UploadAvatar { file_data });
+    avatar_upload_started(cx);
+}
+
+/// Cuts the chosen square out of the picture on a thread of its own, then
+/// submits the cropped avatar like [`submit_avatar_upload()`] does.
+///
+/// The settings screen shows the upload as started right away. A picture that
+/// can't be cropped ends it there, with the reason, as a failed upload does.
+fn submit_cropped_avatar_upload(cx: &mut Cx, file_data: FileUploadMetadata, crop: AvatarCrop) {
+    let epoch = crate::account_session::epoch();
+    avatar_upload_started(cx);
+    // Started from the UI thread, so that under the JIT runner the thread
+    // still reaches the app's statics and can post actions.
+    let spawned = std::thread::Builder::new()
+        .name("avatar-crop".into())
+        .spawn(move || {
+            let result = prepare_avatar_upload(file_data, crop);
+            if epoch != crate::account_session::epoch() { return; }
+            match result {
+                Ok(file_data) => submit_async_request(MatrixRequest::UploadAvatar { file_data }),
+                Err(message) => Cx::post_action(AccountDataAction::AvatarChangeFailed(message)),
+            }
+        });
+    if let Err(e) = spawned {
+        makepad_widgets::error!("Failed to start cropping the new avatar: {e}");
+        cx.action(AccountDataAction::AvatarChangeFailed(crate::i18n::format(
+            "Couldn't save the cropped avatar: {error}",
+            &[("error", e.to_string())],
+        )));
+    }
+}
+
+fn avatar_upload_started(cx: &mut Cx) {
     cx.action(AccountSettingsAction::AvatarUploadStarted);
     enqueue_popup_notification(
         "Uploading your new avatar...",
@@ -564,6 +655,8 @@ impl FileUploadModal {
         self.upload = Some(upload);
         self.preview_id = Some(preview_id);
         self.is_text_preview = false;
+        // Free a picture still held from an earlier avatar, which this upload may not replace.
+        self.avatar_crop_view(cx, ids!(avatar_crop_view)).clear(cx);
         self.show_preview(cx, FilePreview::Loading);
         self.populate(cx);
         // We write the caption once here to avoid overwriting a user's changed caption in `populate()`.
@@ -587,7 +680,7 @@ impl FileUploadModal {
         let size = file_data.size;
 
         let (title, upload_button_text) = if is_avatar {
-            (crate::i18n::tr("Upload Avatar"), "Set Avatar")
+            (crate::i18n::tr("Upload Avatar"), crate::i18n::tr("Set Avatar"))
         } else {
             (crate::i18n::tr("Upload File"), crate::i18n::tr("Upload"))
         };
@@ -596,12 +689,19 @@ impl FileUploadModal {
         // Avatars don't have captions, so hide it.
         self.view(cx, ids!(caption_view)).set_visible(cx, !is_avatar);
         self.label(cx, ids!(file_info_label)).set_text(cx, &info_text);
+        // A new avatar is uploaded as it was picked only when it can't be cropped;
+        // a cropped one is a few hundred kilobytes at most, whatever the picture's size.
+        let is_uploaded_as_picked = !is_avatar || self.preview_page == id!(no_preview_page);
         self.label(cx, ids!(large_attachment_warning_label))
-            .set_visible(cx, size > LARGE_ATTACHMENT_WARNING_THRESHOLD_BYTES);
+            .set_visible(cx, is_uploaded_as_picked && size > LARGE_ATTACHMENT_WARNING_THRESHOLD_BYTES);
         self.label(cx, ids!(empty_attachment_warning_label))
             .set_visible(cx, size == 0);
         self.page_flip(cx, ids!(preview_flip)).set_active_page(cx, self.preview_page);
         self.resize_preview(cx);
+        // The crop tool keeps its picture through a reapply; its slider should match it.
+        if let Some(frame) = self.avatar_crop_view(cx, ids!(avatar_crop_view)).frame() {
+            self.slider(cx, ids!(avatar_zoom_slider)).set_value(cx, frame.zoom_fraction());
+        }
         let truncated = self.preview_truncated;
         self.label(cx, ids!(code_truncated_label))
             .set_visible(cx, truncated && self.preview_page == id!(code_text_page));
@@ -615,10 +715,9 @@ impl FileUploadModal {
             return;
         }
         self.is_text_preview = matches!(preview, FilePreview::Text(_));
-        if let Some(info) = self.upload.as_ref().map(|u| file_info_text(u.file_data(), self.is_text_preview)) {
-            self.label(cx, ids!(file_info_label)).set_text(cx, &info);
-        }
         self.show_preview(cx, preview);
+        // The file info and the warnings depend on the preview shown.
+        self.populate(cx);
         self.redraw(cx);
     }
 
@@ -630,6 +729,13 @@ impl FileUploadModal {
                 let texture = buffer.into_new_texture(cx);
                 self.image(cx, ids!(image_preview)).set_texture(cx, Some(texture));
                 id!(image_page)
+            }
+            FilePreview::AvatarCrop(preview) => {
+                let (width, height) = preview.source_size();
+                let texture = preview.into_texture(cx);
+                self.avatar_crop_view(cx, ids!(avatar_crop_view)).set_image(cx, texture, width, height);
+                self.slider(cx, ids!(avatar_zoom_slider)).set_value(cx, 0.0);
+                id!(avatar_crop_page)
             }
             FilePreview::Text(tp) if tp.is_code => {
                 self.code_view(cx, ids!(code_preview)).set_text(cx, &tp.content);
@@ -650,13 +756,55 @@ impl FileUploadModal {
     }
 
     fn resize_preview(&self, cx: &mut Cx) {
-        let height = if [id!(image_page), id!(code_text_page), id!(plain_text_page)].contains(&self.preview_page) {
+        let height = if self.preview_page == id!(avatar_crop_page) {
+            // The 256-point crop square, the zoom row and the hint under it, and the page's padding.
+            360.0
+        } else if [id!(image_page), id!(code_text_page), id!(plain_text_page)].contains(&self.preview_page) {
             280.0
         } else {
             160.0
         };
         let mut preview = self.view(cx, ids!(preview_block));
         script_apply_eval!(cx, preview, { height: #(height) });
+    }
+
+    /// Keeps the crop tool's zoom and its slider together, whichever of them moved.
+    fn handle_avatar_zoom(&mut self, cx: &mut Cx, actions: &Actions) {
+        let crop_view = self.avatar_crop_view(cx, ids!(avatar_crop_view));
+        let slider = self.slider(cx, ids!(avatar_zoom_slider));
+        if let Some(fraction) = slider.slided(actions) {
+            crop_view.set_zoom_fraction(cx, fraction);
+        }
+        if let Some(fraction) = crop_view.zoomed(actions) {
+            slider.set_value(cx, fraction);
+        }
+        let factor = if self.button(cx, ids!(avatar_zoom_out_button)).clicked(actions) {
+            Some(1.0 / ZOOM_BUTTON_STEP)
+        } else if self.button(cx, ids!(avatar_zoom_in_button)).clicked(actions) {
+            Some(ZOOM_BUTTON_STEP)
+        } else {
+            None
+        };
+        if let Some(fraction) = factor.and_then(|factor| crop_view.zoom_by(cx, factor)) {
+            slider.set_value(cx, fraction);
+        }
+    }
+
+    /// How to crop the new avatar's picture, or `None` to upload it as it was picked.
+    ///
+    /// That's the square chosen in the crop tool, or the tool's starting square for
+    /// a picture confirmed before its preview was ready. A picture with no preview
+    /// (one that can't be decoded) is uploaded as it is.
+    fn avatar_crop(&self, cx: &mut Cx) -> Option<AvatarCrop> {
+        match self.preview_page {
+            page if page == id!(avatar_crop_page) => Some(
+                self.avatar_crop_view(cx, ids!(avatar_crop_view))
+                    .crop_rect()
+                    .map_or(AvatarCrop::Centered, AvatarCrop::Chosen),
+            ),
+            page if page == id!(loading_page) => Some(AvatarCrop::Centered),
+            _ => None,
+        }
     }
 
     /// Clears state and frees every preview resource (texture, text, source file).
@@ -666,6 +814,8 @@ impl FileUploadModal {
         self.is_text_preview = false;
         self.preview_truncated = false;
         self.image(cx, ids!(image_preview)).set_texture(cx, None);
+        self.avatar_crop_view(cx, ids!(avatar_crop_view)).clear(cx);
+        self.slider(cx, ids!(avatar_zoom_slider)).set_value(cx, 0.0);
         self.code_view(cx, ids!(code_preview)).set_text(cx, "");
         self.code_view(cx, ids!(plain_preview)).set_text(cx, "");
         // Back to the loading page so a reopen can't flash stale content.
@@ -804,9 +954,12 @@ fn show_local_file(
     // Show the preview modal instantly, and then re-use this bg thread
     // to read the file and generate the preview.
     let preview_id = next_file_preview_id();
+    let is_avatar = matches!(upload, PendingUpload::Avatar(_));
     if epoch != crate::account_session::epoch() { return; }
     Cx::post_action(FileUploadModalAction::Show { epoch, upload, preview_id });
     let preview = preview_source.build();
+    // A new avatar's picture goes to the crop tool instead.
+    let preview = if is_avatar { preview.for_avatar() } else { preview };
     if epoch != crate::account_session::epoch() { return; }
     Cx::post_action(FileUploadModalAction::PreviewReady {
         epoch,

@@ -3157,5 +3157,11 @@
   "You do not have permission to invite people to this room.": "你没有邀请他人加入此聊天室的权限。",
   "New resource admission request": "新的资源加入申请",
   "Open Hagency's Server admin workspace to decide.": "打开 Hagency 的「服务器管理员」工作台处理。",
-  "{count} resource admission requests wait for your review": "有 {count} 个资源加入申请等待你审批"
+  "{count} resource admission requests wait for your review": "有 {count} 个资源加入申请等待你审批",
+  "Drag the photo to move it. Scroll or use the slider to zoom.": "拖动照片可调整位置，滚动或拖动滑块可缩放。",
+  "Set Avatar": "设为头像",
+  "Couldn't read \"{name}\": {error}": "无法读取“{name}”：{error}",
+  "Couldn't crop \"{name}\". Please choose a different image.": "无法裁剪“{name}”，请选择其他图片。",
+  "\"{name}\" changed after it was opened. Please choose it again.": "“{name}”在打开后已被更改，请重新选择。",
+  "Couldn't save the cropped avatar: {error}": "无法保存裁剪后的头像：{error}"
 }
