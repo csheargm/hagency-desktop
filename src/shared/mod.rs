@@ -3,6 +3,7 @@ use makepad_widgets::ScriptVm;
 pub mod attachment_download;
 pub mod cached_widget;
 pub mod avatar;
+pub mod avatar_crop;
 pub mod agent_usage;
 pub mod collapsible_header;
 pub mod context_menu;
@@ -80,6 +81,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     confirmation_modal::script_mod(vm);
     image_viewer::script_mod(vm);
     progress_bar::script_mod(vm);
+    avatar_crop::script_mod(vm);
     file_upload_modal::script_mod(vm);
     web_browser::script_mod(vm);
     web_browser_window::script_mod(vm);
