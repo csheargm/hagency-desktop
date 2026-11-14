@@ -4492,7 +4492,10 @@ impl RoomScreen {
                 "approve_once" | "approve_session" | "deny" => action.id.as_str(),
                 _ => return,
             };
-            crate::hagency::pending_approvals::decide(pending.id(), pending.digest(), decision);
+            if crate::hagency::pending_approvals::decide(&pending.row, decision) {
+                // The notice at the end of the timeline shows the same request.
+                cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
+            }
             tl.content_drawn_since_last_update.remove(details.item_id .. details.item_id + 1);
             self.view.portal_list(cx, ids!(timeline.list)).redraw(cx);
             return;
@@ -6435,21 +6438,23 @@ fn populate_shared_permission_card(
         return;
     };
     let (title, summary) = pending_approvals::describe(&pending.row);
-    let button = |id: &str, label: &str, style: ActionStyle| ApprovalAction { id: id.into(), label: label.into(), style };
-    let mut actions = vec![button("approve_once", "Allow once / 本次允许", ActionStyle::Primary)];
+    // The same words as the notice at the end of the timeline; the card
+    // translates labels and statuses through the catalog.
+    let button = |id: &str, style: ActionStyle| ApprovalAction { id: id.into(), label: pending_approvals::decision_label(id).into(), style };
+    let mut actions = vec![button("approve_once", ActionStyle::Primary)];
     if pending.session_allowed() {
-        actions.push(button("approve_session", "Allow this session / 本次会话允许", ActionStyle::Secondary));
+        actions.push(button("approve_session", ActionStyle::Secondary));
     }
-    actions.push(button("deny", "Deny / 拒绝", ActionStyle::Danger));
-    let chosen = |decision: &str| actions.iter().find(|a| a.id == decision).cloned().unwrap_or_else(|| button(decision, decision, ActionStyle::Secondary));
+    actions.push(button("deny", ActionStyle::Danger));
+    let chosen = |decision: &str| actions.iter().find(|a| a.id == decision).cloned().unwrap_or_else(|| button(decision, ActionStyle::Secondary));
     let now = current_unix_time_millis();
     let decision = match &pending.local {
         LocalDecision::Sending(d) => ApprovalDecisionState::Sending(chosen(d)),
-        LocalDecision::Sent(d) => ApprovalDecisionState::Confirmed(if d == "deny" { "Denied / 已拒绝".into() } else { "Allowed · waiting for the Agent / 已允许，等待 Agent".into() }),
+        LocalDecision::Sent(d) => ApprovalDecisionState::Confirmed(pending_approvals::sent_status(d).into()),
         LocalDecision::Failed(..) => ApprovalDecisionState::Pending,
         LocalDecision::None if pending.expires_at_ms().is_some_and(|t| t <= now) => ApprovalDecisionState::Expired,
-        LocalDecision::None if pending.row["encryptedPending"] == true => ApprovalDecisionState::Confirmed("Waiting for the encrypted details / 等待加密详情".into()),
-        LocalDecision::None if !pending.can_decide() => ApprovalDecisionState::Confirmed(format!("Waiting for resource owner {} / 等待资源所有者批准", pending.owner_mxid())),
+        LocalDecision::None if pending.row["encryptedPending"] == true => ApprovalDecisionState::Confirmed("Approval becomes available after the encrypted details arrive.".into()),
+        LocalDecision::None if !pending.can_decide() => ApprovalDecisionState::Confirmed(crate::i18n::format("Waiting for resource owner {owner}", &[("owner", pending.owner_mxid().to_owned())])),
         LocalDecision::None => ApprovalDecisionState::Pending,
     };
     card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions,
