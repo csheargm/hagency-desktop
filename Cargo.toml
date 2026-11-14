@@ -274,6 +274,9 @@ agent_chat = ["dep:base64", "dep:ed25519-dalek", "dep:sha2"]
 ## Production agent_chat builds retain the release gate.
 agent_ops_dev = ["agent_chat"]
 
+## DEMO-ONLY: scripted rehearsal hooks and demo env prefills. Never default, never upstream.
+demo = []
+
 ## Hides the command prompt console/log window on Windows.
 ## This is enabled automatically for packaged builds via cargo-packager
 ## (see `build.rs`), but you can also enable it manually if desired.
@@ -680,3 +683,12 @@ required-features = ["onboarding-test-support"]
 [[example]]
 name = "message_metadata_review"
 required-features = ["onboarding-test-support"]
+
+## Demo iteration profile: usable app that relinks in minutes instead of release.
+[profile.demo]
+inherits = "release"
+opt-level = 1
+incremental = true
+codegen-units = 256
+lto = "off"
+strip = false

@@ -397,6 +397,8 @@ pub struct LoginScreen {
     #[rust] recent_servers: Vec<String>,
     #[rust] recent_servers_dirty: bool,
     #[rust] recent_server_selected: String,
+    #[cfg(feature = "demo")]
+    #[rust] manual_server_chosen: bool,
     #[rust] recent_server_prompt: String,
     /// GitHub sign-in, password recovery and email registration (see `account`).
     #[rust] account: AccountUi,
@@ -412,6 +414,19 @@ impl ScriptHook for LoginScreen {
 }
 
 impl LoginScreen {
+    /// DEMO-ONLY: with `HAGENCY_SERVERS` set, the first listed server is
+    /// selected instead of "Other server...", so a demo user only presses
+    /// Continue. Choosing "Other server..." by hand is respected afterwards.
+    #[cfg(feature = "demo")]
+    fn preselect_first_server(&mut self, cx: &mut Cx, servers: &[String]) {
+        if self.recent_server_selected.is_empty() && !self.manual_server_chosen {
+            if let Some(first) = servers.first() {
+                self.recent_server_selected = first.clone();
+                self.recent_servers_dirty = true;
+                self.view.text_input(cx, ids!(homeserver_input)).set_text(cx, first);
+            }
+        }
+    }
     fn sync_recent_servers(&mut self, cx: &mut Cx, servers: Vec<String>) {
         self.sync_recent_servers_with_prompt(cx, servers, crate::i18n::tr("Other server…").to_owned());
     }
@@ -441,12 +456,23 @@ impl Widget for LoginScreen {
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let mut servers = Vec::new();
+        // DEMO-ONLY: HAGENCY_SERVERS="http://a:1,http://b:2" prefills the
+        // server list for first-run demos; saved accounts follow.
+        #[cfg(feature = "demo")]
+        for server in std::env::var("HAGENCY_SERVERS").unwrap_or_default().split(',') {
+            let server = server.trim().trim_end_matches('/').to_owned();
+            if !server.is_empty() && !servers.contains(&server) {
+                servers.push(server);
+            }
+        }
         for account in crate::accounts::saved() {
             let server = account.homeserver.trim_end_matches('/').to_owned();
             if !servers.contains(&server) {
                 servers.push(server);
             }
         }
+        #[cfg(feature = "demo")]
+        self.preselect_first_server(cx, &servers);
         self.sync_recent_servers(cx, servers);
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut list) = item.borrow_mut::<PortalList>() {
@@ -593,11 +619,15 @@ impl MatchEvent for LoginScreen {
         if let Some(index) = self.view.drop_down(cx, ids!(recent_servers)).changed(actions) {
             if let Some(server) = index.checked_sub(1).and_then(|i| self.recent_servers.get(i)).cloned() {
                 self.recent_server_selected = server.clone();
+                #[cfg(feature = "demo")]
+                { self.manual_server_chosen = false; }
                 self.reset_server(cx);
                 server_input.set_text(cx, &server);
                 self.view.view(cx, ids!(manual_server_row)).set_visible(cx, false);
             } else {
                 self.recent_server_selected.clear();
+                #[cfg(feature = "demo")]
+                { self.manual_server_chosen = true; }
                 self.reset_server(cx);
                 self.view.view(cx, ids!(manual_server_row)).set_visible(cx, true);
                 server_input.set_text(cx, "");
