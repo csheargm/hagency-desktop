@@ -240,6 +240,15 @@ impl Widget for Avatar {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        // The image budget takes a texture back from an image it no longer counts
+        // as shown. Show the initials then, not an empty circle.
+        if self.display_state == AvatarDisplayState::Image
+            && !self.image(cx, ids!(img_view.img)).has_content()
+        {
+            self.display_state = AvatarDisplayState::Text;
+            self.view(cx, ids!(img_view)).set_visible(cx, false);
+            self.view(cx, ids!(text_view)).set_visible(cx, true);
+        }
         if self.display_state == AvatarDisplayState::Members {
             let size = cx.peek_walk_turtle(walk).size;
             self.draw_members(cx, size);
