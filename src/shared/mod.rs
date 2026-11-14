@@ -20,6 +20,7 @@ pub mod jump_to_bottom_button;
 pub mod mention_popup;
 pub mod mentionable_text_input;
 mod mention_text;
+pub(crate) use mention_text::mention_link;
 pub mod navigation_bar_button;
 pub mod popup_list;
 pub mod progress_bar;
