@@ -112,13 +112,37 @@ fn scan_event(event: &matrix_sdk::deserialized_responses::TimelineEvent) -> (Str
     };
     let id = raw["event_id"].as_str().unwrap_or_default().to_string();
     let undecrypted = matches!(&event.kind, TimelineEventKind::UnableToDecrypt { .. });
+    // Only a decrypted event is authenticated: a plaintext `io.hagency.memory`
+    // event in an encrypted room was sent in the clear, so the homeserver could
+    // have written it. It is counted as unreadable, never trusted.
+    let plaintext = matches!(&event.kind, TimelineEventKind::PlainText { .. });
     let kind = match (raw["type"].as_str(), unavailable_reason(event, &raw)) {
         (_, Some(_)) if undecrypted => ScanKind::Unreadable,
         (Some(MEMORY_STATE_TYPE), Some(_)) => ScanKind::Unreadable,
+        (Some(MEMORY_STATE_TYPE), None) if plaintext => ScanKind::Unreadable,
         (Some(MEMORY_STATE_TYPE), None) => ScanKind::Memory(raw),
         _ => ScanKind::Other,
     };
     (id, kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use matrix_sdk::deserialized_responses::TimelineEvent;
+    use matrix_sdk::ruma::serde::Raw;
+
+    fn plaintext(kind: &str) -> TimelineEvent {
+        let json = serde_json::json!({"type":kind,"event_id":"$e","sender":"@m:example.test",
+            "origin_server_ts":1u64,"content":{"id":"a","text":"injected","rev":1}});
+        TimelineEvent::from_plaintext(Raw::from_json_string(json.to_string()).unwrap())
+    }
+
+    #[test]
+    fn plaintext_memory_event_in_an_encrypted_room_is_unreadable_not_memory() {
+        assert!(matches!(scan_event(&plaintext(MEMORY_STATE_TYPE)).1, ScanKind::Unreadable));
+        assert!(matches!(scan_event(&plaintext("m.room.message")).1, ScanKind::Other));
+    }
 }
 
 /// Power levels for exactly the senders in the scan, so a creator with
