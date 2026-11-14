@@ -89,3 +89,16 @@ fn revision_content_round_trips_through_reduce() {
     let dead = TimelineScan { events: vec![live.events[0].clone(), json!({"type":MEMORY_STATE_TYPE,"sender":"@boss:x","content":revision_content(&gone,true)})], ..Default::default() };
     assert!(reduce_timeline(&dead, &boss()).entries.is_empty());
 }
+
+#[test]
+fn concurrent_edits_at_the_same_revision_resolve_by_highest_rev_then_later_event() {
+    // Two devices both wrote revision 2 from revision 1: the later event wins on every reader.
+    let scan = TimelineScan {
+        events: vec![memory("a", "@boss:x", "base", 1), memory("a", "@boss:x", "device one", 2), memory("a", "@boss:x", "device two", 2)],
+        ..Default::default()
+    };
+    assert_eq!(reduce_timeline(&scan, &boss()).entries[0].text, "device two");
+    // A higher revision beats a later event with a lower one.
+    let scan = TimelineScan { events: vec![memory("a", "@boss:x", "r3", 3), memory("a", "@boss:x", "late r2", 2)], ..Default::default() };
+    assert_eq!(reduce_timeline(&scan, &boss()).entries[0].text, "r3");
+}
