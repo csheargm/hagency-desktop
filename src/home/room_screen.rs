@@ -1037,6 +1037,13 @@ script_mod! {
                     }
                     text: ""
                 }
+                // Hidden unless HAGENCY_CALL_URL names an Element Call app.
+                desktop_call_button := NavigationBarButton {
+                    tooltip_below: true
+                    visible: false width: 36 height: 36 padding: 8
+                    tooltip_text: #(crate::i18n::tr("Start a voice or video call"))
+                    Icon {icon_walk: Walk{width: 20 height: 20} draw_icon +: {svg: crate_resource("self://resources/icons/video_call.svg") color: mod.widgets.RINX_INK}}
+                }
                 desktop_history_search := NavigationBarButton {
                     tooltip_below: true
                     width: 36 height: 36 padding: 8
@@ -4135,6 +4142,9 @@ impl RoomScreen {
     /// Opens, closes or dismisses the desktop chat info panel.
     fn handle_desktop_chat_info(&mut self, cx: &mut Cx, event: &Event) {
         if !self.view.view(cx, ids!(desktop_chat_header)).visible() { return; }
+        let room_id = self.room_name_id.as_ref().map(|r| r.room_id().clone());
+        if let Event::Actions(actions) = event
+            && call_link::handle_call_button(&self.view.navigation_bar_button(cx, ids!(desktop_call_button)), actions, room_id.as_deref()) { return; }
         if let Event::Actions(actions) = event {
             let search = self.view.navigation_bar_button(cx, ids!(desktop_history_search)).clicked(actions);
             let media = self.view.navigation_bar_button(cx, ids!(desktop_history_media)).clicked(actions);
@@ -4223,6 +4233,7 @@ impl RoomScreen {
         let header = self.view.view(cx, ids!(desktop_chat_header));
         if !header.visible() { return }
         self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).set_visible(cx, self.room_name_id.is_some() && matches!(self.timeline_kind, Some(TimelineKind::Thread {..})));
+        call_link::sync_call_button(cx, &self.view.navigation_bar_button(cx, ids!(desktop_call_button)), self.room_name_id.as_ref().map(|r| r.room_id().as_ref()));
         let Some(room_name_id) = self.room_name_id.as_ref() else { return };
         let title = match self.timeline_kind {
             Some(TimelineKind::Thread { .. }) => format!("{room_name_id} · {}", crate::i18n::tr("Thread")),
@@ -8773,6 +8784,11 @@ pub(crate) mod crypto_recovery_resume_tests {
 
 #[path = "room_screen/system_updates.rs"]
 mod system_updates;
+// TODO(R4): room_screen.rs is far over budget; split the desktop chat header
+// (DSL block, handle_desktop_chat_info, update_desktop_chat_header) into
+// room_screen/chat_header.rs, next to call_link.rs.
+#[path = "room_screen/call_link.rs"]
+mod call_link;
 use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
 
 /// Offline layout fixture using the production disclosure presentation.
