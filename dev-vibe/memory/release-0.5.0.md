@@ -1,6 +1,17 @@
 # Desktop 0.5.0 发布
 
-更新：2026-11-12。
+更新：2026-11-14。
+
+## 2026-11-12 rc.7 发布
+
+修复 rc.6 的 macOS 安装包；由 Claude 执行。
+
+- [v0.5.0-rc.7](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.7) 于 2026-11-12 18:55:06 UTC 公开为 prerelease。标签和两个安装包源码统一为 Desktop `8df3b2d83f8747e6959e5a3f3092fc8f03183720`（PR #85 合入 main）。Makepad 与 rc.6 相同，为 `200eb92bdf511281ebe37bbecd732f296379af4e`。
+- 修复：`build.rs` 在 macOS 的 app／dmg 打包时把包目录设为 `../Resources`，包内图片和字体从 `Contents/Resources` 读取；`src/app.rs` 在启动日志中写明资源来自包内还是源码目录；安装包冒烟检查要求包内标志图片已绘制。
+- [release.yml run 43252198296](https://github.com/hagency-org/hagency-desktop/actions/runs/43252198296) 使用 publish=true、macos-arm64-windows，回归门禁、两平台安装包检查和发布全部通过。
+- 恰好两个安装包：`hagency-desktop-macos-arm64.dmg`（167,611,780 字节）和 `hagency-desktop-windows-amd64.exe`（121,263,488 字节）。公开附件已重新下载，`SHA256SUMS.txt` 校验通过。
+- 公开的 macOS 安装包在构建机以外的 Mac 上用空 profile、隐藏窗口经 `tools/release-desktop-smoke.py` 运行：通过，包目录为 `../Resources`，包内标志已绘制，没有资源错误，rc.6 的缺陷已消除。
+- rc.6 页面没有加说明，也没有撤下其 macOS 安装包（由用户决定）。未部署服务端。
 
 ## 2026-11-12 rc.6 发布（macOS 安装包有缺陷，由 rc.7 取代）
 
