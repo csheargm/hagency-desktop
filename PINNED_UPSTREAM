@@ -1,0 +1,14 @@
+upstream hagency-org/hagency-desktop main 217e97f7071ec00081a66e8586a4372e6cb89790
+fork topic/encrypted-room-context 02713c19ee31d726c6b9517fab00b2a9b5540e1c
+fork topic/issue-watch 290a0f42ffccf1b4ad49a2188e91a39d95e50894
+fork topic/profile-side-panel 2a4286f999f4ff8a5b4a47ddd1d3348e9d52d80d
+fork topic/profile-panel-hover-card 1d1c86957e65e75a1f78e38cc252d5e8039b97d1
+fork topic/readable-previews e6c8e472e45db6818fdd55b8f7e621e502ba1c82
+fork topic/call-button 7a470957470dfaac2d057abbc9cd300606945763
+fork topic/desktop-login-account-options-v2 e4cc1841d14031f2c127151537374d69c68384e1
+fork topic/room-memory 1b52b1b18bd00c5c17d0b10bbf475f665c09db39
+fork topic/room-memory-encrypted ec0bd1272b48906d5ca0a755c24d1eead4fccab6
+fork topic/room-memory-ui e4575f0201cbc7248c4aafaec446ec0b69ffb36d
+
+Rebuild: .jit/sources.sh --outside; CARGO_TARGET_DIR=../int-desktop-target cargo build --profile demo --features demo
+Run: ../int-demo-up.sh (HAGENCY_DEMO_AUTOMATION=0 until demo_automation is ported)
