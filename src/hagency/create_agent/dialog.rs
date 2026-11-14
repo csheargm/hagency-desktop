@@ -219,7 +219,7 @@ impl CreateAgentDialog {
             }
             Err(code) => {
                 let step = simple_agent::last_failed_step().unwrap_or("setup");
-                let message = format!("{} \"{step}\": {code}", crate::i18n::tr("Create agent stopped at step"));
+                let message = super::failure_message(step, code);
                 self.view.label(cx, ids!(status)).set_text(cx, &message);
                 self.render_create(cx);
             }

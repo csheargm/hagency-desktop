@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, time::Duration};
 
-mod agents; mod approval; mod profile; mod progress;
+mod agents; mod approval; mod start; mod profile; mod progress;
 pub use agents::{AgentIdentity, create_agent, find_agent};
 pub use approval::{DEMO_APPROVAL_MODE_ENV, demo_default_mode};
 pub use progress::{STEPS, current_step, last_failed_step, progress_text};
@@ -207,7 +207,7 @@ async fn configure(exec: &dyn CommandExecutor, agent_id: &str, spec: &SimpleAgen
 
 /// "Start responding" (idempotent: an already active runtime counts as started).
 pub async fn start_service(exec: &dyn CommandExecutor, agent_id: &str, reservation: u64) -> Result<bool, NativeError> {
-    let input = json!({"reservation":reservation,"takeover":true});
+    let input = start::input(reservation);
     match step(exec, "start-service", local(agent_id, LocalAction::StartAgentService, Some(input))).await {
         Ok(_) => Ok(true),
         Err(error) if error.code == "agent_runtime_already_active" => Ok(true),
