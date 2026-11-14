@@ -20,7 +20,10 @@ script_mod! {
 
     // Decision buttons follow robrix2's AgentApproval{Primary,Secondary,Danger}Button
     // recipes: a tinted surface with a 1px semantic stroke, RBX_CONTROL_H_MD tall.
+    // They take no key focus on a click (as RinxButton): these colors have no focus
+    // variant, so a clicked button would turn to the engine's default focus face.
     mod.widgets.AgentApprovalPrimaryButton = Button {
+        grab_key_focus: false
         visible: false
         width: Fit
         height: (mod.widgets.RBX_CONTROL_H_MD)
@@ -49,6 +52,7 @@ script_mod! {
     }
 
     mod.widgets.AgentApprovalSecondaryButton = Button {
+        grab_key_focus: false
         visible: false
         width: Fit
         height: (mod.widgets.RBX_CONTROL_H_MD)
@@ -77,6 +81,7 @@ script_mod! {
     }
 
     mod.widgets.AgentApprovalDangerButton = Button {
+        grab_key_focus: false
         visible: false
         width: Fit
         height: (mod.widgets.RBX_CONTROL_H_MD)

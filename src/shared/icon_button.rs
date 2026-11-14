@@ -15,6 +15,10 @@ script_mod! {
         padding: 10,
         margin: 0,
         align: Align{x: 0.5, y: 0.5}
+        // A click takes no key focus (as RinxButton). The focus colors below are one
+        // pale face and dark text for every variant, and the icon has no focus color,
+        // so a clicked button used to stay a white icon on a pale face.
+        grab_key_focus: false
 
         animator +: {
             focus: {

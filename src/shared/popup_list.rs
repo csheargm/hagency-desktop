@@ -187,6 +187,8 @@ script_mod! {
     }
 
     mod.widgets.PopupCloseButton = ButtonFlat {
+        // No key focus on a click: its face has no focus color of its own.
+        grab_key_focus: false
         width: 32,
         height: 32,
         text: "",

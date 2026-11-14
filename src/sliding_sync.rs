@@ -464,6 +464,14 @@ pub enum AccountDataAction {
     DisplayNameChanged(Option<String>),
     /// Failed to update the user's display name.
     DisplayNameChangeFailed(String),
+    /// The user's profile as the server has it now, read again after one of the
+    /// user's member events changed their avatar or name: a change made on another
+    /// device (or this one; screens compare it with their own copy).
+    /// See [`crate::profile::own_profile_watch`].
+    ProfileChangedElsewhere {
+        avatar_url: Option<OwnedMxcUri>,
+        display_name: Option<String>,
+    },
     /// Result of [`MatrixRequest::GetOwnDevice`], in a `Box` because `Device` is large.
     /// * `None` if not logged in or the crypto store isn't ready yet.
     OwnDeviceFetched(Option<Box<Device>>),
@@ -3996,6 +4004,8 @@ async fn start_matrix_client_login_and_sync(rt: Handle) {
         // Questions Agents ask in rooms arrive as room messages of their own type.
         #[cfg(feature = "agent_chat")]
         crate::hagency::pending_questions::attach(&client);
+        // An avatar or name changed on another device arrives as member events.
+        crate::profile::own_profile_watch::attach(&client);
 
         // Listen for updates to the blocked user list.
         subscriber_task_handles.push(handle_blocked_user_list_subscriber(client.clone()));
