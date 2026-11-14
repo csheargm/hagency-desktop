@@ -1467,6 +1467,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::moderation_modal::script_mod(vm);
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);
+    crate::hagency::issue_watch::section::script_mod(vm);
     crate::hagency::ui::script_mod(vm);
     crate::hagency::owner_dashboard::register(vm);
     // A mini-apps host body, the docked region holding them, and the pop-out window.
@@ -1520,6 +1521,8 @@ impl AppMain for App {
             crate::hagency::pending_approvals::poll();
             // On the same timer; the module spaces its own reads.
             crate::hagency::pending_admissions::poll();
+            // Starts once per account session; the poller spaces its own checks.
+            crate::hagency::issue_watch::ensure_running();
             self.resume_hosting_paused_at_quit();
         }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back

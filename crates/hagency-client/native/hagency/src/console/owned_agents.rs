@@ -17,6 +17,7 @@ use std::{
 mod commands;
 mod direct;
 mod earlier_archive;
+mod issue_watch;
 #[cfg(test)]
 mod profile_directory_tests;
 
@@ -830,6 +831,9 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             let mut value = public(&reply.value, "creation")?;
             value["ownerDirectRoomId"] = input.room_id.into();
             return Ok(value);
+        }
+        if parts.len() == 2 && parts[1] == "issue-watch" {
+            return issue_watch::handle(req, depot, agent).await;
         }
         if parts.len() == 2 && ["agent-policy", "agent-model-profile"].contains(&parts[1]) {
             if method != Method::GET {
