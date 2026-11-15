@@ -54,20 +54,29 @@ script_mod! {
         icon := Icon {icon_walk: Walk{width: 16 height: 16} draw_icon +: {color: mod.widgets.RINX_INK}}
     }
 
-    // One tab: the opened item's title, and its close button.
-    mod.widgets.MiniAppsSideTab = View {
+    // TODO(R4): side.rs is over budget; the tab strip (MiniAppsTabStrip + this
+    // DSL) should split into its own tab_strip.rs.
+    // One tab: one rounded chip holding the opened item's title and its close
+    // button. The chip itself shows the selection (its background is turned
+    // on from Rust), so the buttons inside only show hover.
+    mod.widgets.MiniAppsSideTab = RoundedView {
         width: Fill{max: 220} height: Fit flow: Right align: Align{y: 0.5}
+        show_bg: false
+        draw_bg +: {color: mod.widgets.RINX_SELECTED border_radius: 6.0}
         select := NavigationBarButton {
             width: Fill height: (mod.widgets.RINX_CONTROL_HEIGHT) flow: Right
             padding: Inset{left: 10 right: 2} align: Align{x: 0 y: 0.5}
-            draw_bg +: {color_hover: mod.widgets.RINX_HOVER color_active: mod.widgets.RINX_SELECTED border_radius: 6}
+            draw_bg +: {color_hover: mod.widgets.RINX_HOVER color_active: #0000 border_radius: 6}
             title := Label {
                 width: Fill max_lines: 1 text_overflow: Ellipsis
                 draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
             }
         }
+        // A small close button whose hover circle sits inside the chip.
         close := SideIconButton {
+            width: 20 height: 20 margin: Inset{right: 6}
             tooltip_text: #(crate::i18n::tr("Close"))
+            draw_bg +: {color_active: #0000 border_radius: 10}
             icon +: {icon_walk: Walk{width: 10 height: 10} draw_icon +: {svg: ICON_CLOSE color: mod.widgets.RINX_MUTED}}
         }
     }
@@ -313,6 +322,10 @@ impl MiniAppsTabStrip {
             let select = tab.navigation_bar_button(cx, ids!(select));
             if select.borrow().is_some_and(|button| button.animator_in_state(cx, ids!(active.on)) != *selected) {
                 select.set_selected(cx, *selected);
+                // The whole chip, close button included, shows the selection.
+                let mut chip = tab.clone();
+                script_apply_eval!(cx, chip, {show_bg: #(*selected)});
+                chip.redraw(cx);
             }
             if let Some(mut close) = tab.navigation_bar_button(cx, ids!(close)).borrow_mut() {
                 close.set_tooltip_text(crate::i18n::tr("Close"));
