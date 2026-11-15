@@ -1145,6 +1145,12 @@ impl RoomInputBar {
                 });
             }
             SlashCommandAction::InviteUser(user_id) => {
+                // The result arrives later as a popup; say at once that it started.
+                enqueue_popup_notification(
+                    crate::i18n::format("Inviting {user} to this room…", &[("user", user_id.to_string())]),
+                    PopupKind::Info,
+                    Some(4.0),
+                );
                 submit_async_request(MatrixRequest::InviteUser {
                     room_id: room_id.clone(),
                     user_id,

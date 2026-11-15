@@ -3216,5 +3216,6 @@
   "New space": "New space",
   "Add agent to this room": "Add agent to this room",
   "Off by default: hosted agents only answer in unencrypted rooms.": "Off by default: hosted agents only answer in unencrypted rooms.",
-  "Could not create the room": "Could not create the room"
+  "Could not create the room": "Could not create the room",
+  "Inviting {user} to this room…": "Inviting {user} to this room…"
 }

@@ -68,7 +68,7 @@ fn only_a_joined_room_or_thread_is_a_room_an_agent_can_join() {
 #[test]
 fn the_open_room_follows_focus_and_is_forgotten_on_sign_out() {
     let mut cx = Cx::new(Box::new(|_, _| {}));
-    set_open_room(None);
+    set_focused(None);
     deliver(&mut cx, AppStateAction::RoomFocused(SelectedRoom::JoinedRoom { room_name_id: team_room() }));
     assert_eq!(open_room().map(|r| r.room_id().clone()), Some(team_room().room_id().clone()));
     deliver(&mut cx, AppStateAction::FocusNone);
@@ -79,6 +79,31 @@ fn the_open_room_follows_focus_and_is_forgotten_on_sign_out() {
     deliver(&mut cx, AppStateAction::RoomFocused(SelectedRoom::JoinedRoom { room_name_id: team_room() }));
     deliver(&mut cx, LogoutAction::ClearAppState { on_clear_appstate: std::sync::Arc::new(tokio::sync::Notify::new()) });
     assert!(open_room().is_none(), "sign-out forgets the room");
+}
+
+/// Regression (Ben, 2026-11-14): "fix-it" was opened as an invitation and
+/// joined in place, and in the single-pane layout a room comes from the rooms
+/// list, not dock focus. Both must make "Add agent to this room" appear.
+#[test]
+fn an_accepted_invitation_and_a_rooms_list_selection_open_the_room() {
+    use crate::home::rooms_list::{AcceptedInviteKind, RoomsListAction};
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    set_focused(None);
+    deliver(&mut cx, AppStateAction::RoomFocused(SelectedRoom::InvitedRoom { room_name_id: team_room() }));
+    assert!(open_room().is_none(), "an invitation takes no Agent yet");
+    deliver(&mut cx, AppStateAction::UpgradedInviteToJoinedRoom { room_id: team_room().room_id().clone(), is_space: false });
+    assert_eq!(open_room().map(|r| r.room_id().clone()), Some(team_room().room_id().clone()));
+    assert_eq!(items(open_room().is_some()).last(), Some(&PlusItem::AddAgentToRoom));
+
+    set_focused(Some(SelectedRoom::InvitedRoom { room_name_id: team_room() }));
+    let accepted = cx.capture_actions(|cx| cx.widget_action(WidgetUid(7), RoomsListAction::InviteAccepted { room_name_id: team_room(), kind: AcceptedInviteKind::Room }));
+    observe(&accepted);
+    assert!(open_room().is_some(), "an invitation accepted from the list opens the room");
+
+    set_focused(None);
+    let selected = cx.capture_actions(|cx| cx.widget_action(WidgetUid(7), RoomsListAction::Selected(SelectedRoom::JoinedRoom { room_name_id: team_room() })));
+    observe(&selected);
+    assert!(open_room().is_some(), "a rooms-list selection opens the room");
 }
 
 /// Opens the "+" menu, clicks `item` and returns what it emitted.
@@ -98,7 +123,7 @@ fn the_menu_lists_its_rows_and_each_runs_its_existing_action() {
     let (mut cx, mut menu) = menu(Appearance::Light, 1.0);
     let window = Rect { pos: DVec2::default(), size: WINDOW };
     for room_open in [false, true] {
-        set_open_room(room_open.then(team_room));
+        set_focused(room_open.then(|| SelectedRoom::JoinedRoom { room_name_id: team_room() }));
         let anchor = new_or_join_menu_pos(&mut cx, PLUS);
         menu.show(&mut cx, SidebarMenuKind::Add, anchor, window);
         assert_eq!(visible_rows(&mut cx, &menu), rows(room_open), "room open: {room_open}");
@@ -110,7 +135,7 @@ fn the_menu_lists_its_rows_and_each_runs_its_existing_action() {
         }
     }
     // The room is the one open when the menu opened, even if focus moves on.
-    set_open_room(Some(team_room()));
+    set_focused(Some(SelectedRoom::JoinedRoom { room_name_id: team_room() }));
     let anchor = new_or_join_menu_pos(&mut cx, PLUS);
     menu.show(&mut cx, SidebarMenuKind::Add, anchor, window);
     deliver(&mut cx, AppStateAction::FocusNone);
@@ -125,7 +150,7 @@ fn the_menu_lists_its_rows_and_each_runs_its_existing_action() {
         let shown = visible_rows(&mut cx, &menu);
         assert!(!shown.is_empty() && PlusItem::ALL.iter().all(|item| !shown.contains(&item.row())), "{kind:?}: {shown:?}");
     }
-    set_open_room(Some(team_room()));
+    set_focused(Some(SelectedRoom::JoinedRoom { room_name_id: team_room() }));
     let anchor = new_or_join_menu_pos(&mut cx, PLUS);
     menu.show(&mut cx, SidebarMenuKind::Add, anchor, window);
     let escape = Event::KeyDown(KeyEvent { key_code: KeyCode::Escape, ..Default::default() });
@@ -136,7 +161,7 @@ fn the_menu_lists_its_rows_and_each_runs_its_existing_action() {
 #[test]
 fn rows_are_labelled_and_the_existing_labels_are_translated() {
     let (mut cx, mut menu) = menu(Appearance::Light, 1.0);
-    set_open_room(Some(team_room()));
+    set_focused(Some(SelectedRoom::JoinedRoom { room_name_id: team_room() }));
     let anchor = new_or_join_menu_pos(&mut cx, PLUS);
     menu.show(&mut cx, SidebarMenuKind::Add, anchor, Rect { pos: DVec2::default(), size: WINDOW });
     for (item, english, chinese) in [
