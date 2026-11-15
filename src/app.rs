@@ -363,7 +363,6 @@ impl MatchEvent for App {
 
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         // TODO(R4): app.rs is over budget; session-chrome hooks (title, login visibility) belong in their own module.
-        crate::window_title::refresh(cx, &self.ui.window(cx, ids!(main_window)), self.app_state.logged_in, &mut self.window_title.borrow_mut());
         crate::memory_budget::process_completed_decodes(cx, actions);
         for action in actions {
             if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
@@ -1686,6 +1685,11 @@ impl AppMain for App {
         // Outside-click dismissal happens inside Modal, without a Hide action.
         self.sync_native_browser_overlays(cx);
         owner_dashboard::accessibility::after_event(&self.ui, cx, event);
+        // After the children: a profile change updates the cache there, and the
+        // cache's later Signal carries the new name.
+        if matches!(event, Event::Actions(_) | Event::Signal) {
+            crate::window_title::refresh(cx, &self.ui.window(cx, ids!(main_window)), self.app_state.logged_in, &mut self.window_title.borrow_mut());
+        }
         // The backend may restore the next account only after every child has
         // consumed ClearAppState, including hidden settings/room widgets.
         if let Event::Actions(actions) = event {
