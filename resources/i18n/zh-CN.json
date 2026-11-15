@@ -3272,5 +3272,6 @@
   "Stopping; waiting for the runtime to finish and settle.": "正在停止，等待运行时结束并结算。",
   "Stopped": "已停止",
   "Failed": "执行失败",
-  "The run went offline; check its result.": "运行已离线，结果需要核对。"
+  "The run went offline; check its result.": "运行已离线，结果需要核对。",
+  "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。"
 }

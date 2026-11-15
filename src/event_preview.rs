@@ -334,6 +334,12 @@ pub(crate) fn text_preview_of_message(
                 .then(|| htmlize::escape_text(msg.body()).to_string());
             #[cfg(not(feature = "agent_chat"))]
             let agent_chat_body: Option<String> = None;
+            // An Agent run status shows its localized state (same words as the run card).
+            if msg.msgtype() == ::hagency::agent_run_controls::MSGTYPE
+                && let Some(status) = crate::home::agent_run_card::status_of_message(&msg.data())
+            {
+                return TextPreview::from((status.to_owned(), BeforeText::UsernameWithColon));
+            }
             // Never Rust debug output: an unknown msgtype shows its own `body` text.
             let _ = custom;
             agent_chat_body.unwrap_or_else(|| htmlize::escape_text(msg.body()).to_string())

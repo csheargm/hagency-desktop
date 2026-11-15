@@ -3272,5 +3272,6 @@
   "Stopping; waiting for the runtime to finish and settle.": "Stopping; waiting for the runtime to finish and settle.",
   "Stopped": "Stopped",
   "Failed": "Failed",
-  "The run went offline; check its result.": "The run went offline; check its result."
+  "The run went offline; check its result.": "The run went offline; check its result.",
+  "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run"
 }

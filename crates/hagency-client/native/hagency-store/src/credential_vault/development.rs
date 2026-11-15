@@ -85,6 +85,8 @@ impl SecretStore for DevelopmentFileStore {
         // A profile that an earlier build moved to the OS store: read the
         // secret there once (the OS may ask) and keep it here from now on.
         // A refusal is reported as it is and nothing is written.
+        // Logged so a run can be checked: after the first launch this line never appears again.
+        tracing::warn!(code = "credential_file_migration", "Reading one saved secret from the OS store once to keep it in a private file");
         let bytes = self.earlier.get(reference)?;
         self.write(&path, &bytes)?;
         Ok(bytes)
