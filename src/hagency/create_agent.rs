@@ -96,6 +96,9 @@ pub(crate) struct DialogState {
     pub model: usize,
     pub thinking: usize,
     pub name: String,
+    /// "Add to rooms": the checklist rows and the room the app showed on opening.
+    pub rooms: Vec<crate::hagency::bring_agent::RoomChoice>,
+    pub current_room: Option<String>,
 }
 impl DialogState {
     pub fn new(name_for: impl Fn(&Runtime) -> String) -> Self {

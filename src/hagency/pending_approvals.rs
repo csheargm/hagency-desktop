@@ -63,6 +63,10 @@ impl PendingApproval {
     pub fn can_decide(&self) -> bool {
         self.row["canDecide"] == true && self.row["encryptedPending"] != true
     }
+    /// This app's own Agent's request that "Always allow this" can remember.
+    pub fn always_allowed(&self) -> bool {
+        self.row["alwaysAllowed"] == true
+    }
     pub fn session_allowed(&self) -> bool {
         self.row["approval"]["request"]["sessionAllowed"] == true
     }
@@ -302,6 +306,7 @@ pub fn local_decision(id: &str) -> LocalDecision {
 pub fn decision_label(decision: &str) -> &'static str {
     match decision {
         "approve_session" => "Always approve for this session",
+        crate::hagency::local_approvals::ALWAYS => "Always allow this",
         "deny" => "Deny",
         _ => "Approve once",
     }
@@ -310,6 +315,7 @@ pub fn decision_label(decision: &str) -> &'static str {
 pub fn decided_label(decision: &str) -> &'static str {
     match decision {
         "approve_session" => "Approved for this session",
+        crate::hagency::local_approvals::ALWAYS => "Always allowed",
         "deny" => "Denied",
         _ => "Approved once",
     }
@@ -318,6 +324,7 @@ pub fn decided_label(decision: &str) -> &'static str {
 pub fn sent_status(decision: &str) -> &'static str {
     match decision {
         "approve_session" => "Approved for this session. Waiting for the Agent to continue.",
+        crate::hagency::local_approvals::ALWAYS => "Always allowed. Waiting for the Agent to continue.",
         "deny" => "Denied. The Agent will not run this call.",
         _ => "Approved once. Waiting for the Agent to continue.",
     }

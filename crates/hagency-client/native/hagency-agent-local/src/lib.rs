@@ -7,6 +7,7 @@ pub mod agent_env;
 pub mod codex;
 pub mod issue_watch;
 pub mod outside;
+pub mod remembered;
 pub mod demo_env;
 pub mod inbox;
 pub mod questions;
@@ -372,6 +373,7 @@ impl Ledger {
         }
         issue_watch::ensure_schema(&db)?;
         outside::ensure_schema(&db)?;
+        remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;
         db.pragma_update(None, "foreign_keys", true)?;
@@ -1180,12 +1182,12 @@ impl Ledger {
         tx.commit()?;
         Ok(effective.high_risk)
     }
-    /// Set the Agent's approval mode (`outside::MODE_ASK` or `MODE_OUTSIDE`).
+    /// Set the Agent's approval mode (`outside::MODE_ASK`, `remembered::MODE_REMEMBER` or `outside::MODE_OUTSIDE`).
     // TODO(R4): lib.rs is over budget; split the Ledger's tool and approval methods into their own module.
     pub fn set_approval_mode(&mut self, owner: &str, agent: &str, mode: &str) -> Result<()> {
         self.owner(owner)?;
         key(agent)?;
-        if ![outside::MODE_ASK, outside::MODE_OUTSIDE].contains(&mode) {
+        if ![outside::MODE_ASK, remembered::MODE_REMEMBER, outside::MODE_OUTSIDE].contains(&mode) {
             return Err(Error::Invalid("approval mode"));
         }
         self.db.execute(
@@ -1410,6 +1412,8 @@ fn validate_tool(
             // "Ask only for outside changes" (this Agent, this device) skips the
             // question for a request that cannot leave the workspace.
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
+            // "Always allow": the owner remembered exactly this request here.
+            ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref())? => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,
             trusted if trusted.is_full_trust() => {}
             ToolPolicy::AllowWithRules { tools, directories } => {
@@ -1431,10 +1435,16 @@ fn validate_tool(
 }
 /// The Agent's saved approval mode; unsaved means it asks for every high-risk tool.
 fn approval_mode(db: &Connection, agent: &str) -> Result<String> {
-    Ok(db
-        .query_row("SELECT mode FROM approval_modes WHERE agent=?", [agent], |r| r.get(0))
-        .optional()?
-        .unwrap_or_else(|| outside::MODE_ASK.to_owned()))
+    Ok(saved_mode(db, agent)?.unwrap_or_else(|| outside::MODE_ASK.to_owned()))
+}
+fn saved_mode(db: &Connection, agent: &str) -> Result<Option<String>> {
+    Ok(db.query_row("SELECT mode FROM approval_modes WHERE agent=?", [agent], |r| r.get(0)).optional()?)
+}
+/// The Agent's saved approval mode as the owner's panel shows it (unsaved: remember).
+impl Ledger {
+    pub fn approval_mode(&self, agent: &str) -> Result<String> {
+        Ok(saved_mode(&self.db, agent)?.unwrap_or_else(|| remembered::MODE_REMEMBER.to_owned()))
+    }
 }
 fn intersect(a: &Limit, b: &Limit) -> Limit {
     match (a, b) {

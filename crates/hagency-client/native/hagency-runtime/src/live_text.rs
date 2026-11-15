@@ -20,6 +20,9 @@ struct State {
     item: String,
     text: String,
     revision: u64,
+    /// The current step in plain words and how many were shown (presentation only).
+    step: String,
+    steps: u32,
 }
 fn bounded(value: &str) -> String {
     let cut = value.len() > MAX_PREVIEW_BYTES;
@@ -79,6 +82,22 @@ impl LiveText {
             state.revision = state.revision.saturating_add(1);
         }
     }
+    /// Record the step the runtime is on now; an empty or repeated step is skipped.
+    pub fn step(&self, step: &str) {
+        let step = bounded(step.lines().next().unwrap_or("").trim());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if step.is_empty() || state.step == step {
+            return;
+        }
+        state.step = step;
+        state.steps = state.steps.saturating_add(1);
+        state.revision = state.revision.saturating_add(1);
+    }
+    /// The current step and the number of steps so far.
+    pub fn current_step(&self) -> (String, u32) {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.step.clone(), state.steps)
+    }
     pub fn since(&self, previous: u64) -> Option<(u64, String)> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (state.revision > previous).then(|| (state.revision, state.text.clone()))
@@ -102,6 +121,19 @@ mod tests {
         output.append("two", "下一条");
         let (_, text) = output.since(revision).unwrap();
         assert_eq!(text, "下一条");
+    }
+
+    #[test]
+    fn steps_are_counted_once_and_wake_the_reader() {
+        let output = LiveText::default();
+        output.step("running gh pr create");
+        output.step("running gh pr create");
+        output.step("");
+        let (revision, _) = output.since(0).unwrap();
+        assert_eq!(output.current_step(), ("running gh pr create".into(), 1));
+        output.step("reading src/main.rs\nsecond line");
+        assert!(output.since(revision).is_some());
+        assert_eq!(output.current_step(), ("reading src/main.rs".into(), 2));
     }
 
     #[test]

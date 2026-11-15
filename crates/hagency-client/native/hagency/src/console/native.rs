@@ -260,6 +260,7 @@ pub enum ProviderAction {
     Logout,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// TODO(R4): native.rs is over budget; move LocalAction and its route table into console/native/local_routes.rs.
 pub enum LocalAction {
     AgentModel,
     SaveAgentModel,
@@ -283,6 +284,10 @@ pub enum LocalAction {
     SaveIssueWatch,
     /// The Agent's recent requests on this device (read-only, no request text).
     RecentActivity,
+    /// The Agent's approval mode and remembered "Always allow" rules.
+    ApprovalSettings,
+    /// Saves `{mode}` and/or `{forget}`, then answers like `ApprovalSettings`.
+    SaveApprovalSettings,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -764,6 +769,8 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                     | LocalAction::IssueWatch
                     | LocalAction::SaveIssueWatch
                     | LocalAction::RecentActivity
+                    | LocalAction::ApprovalSettings
+                    | LocalAction::SaveApprovalSettings
             ) && (binding_id.is_some() || requester.is_some())
             {
                 return Err(failure(400, "invalid_arguments"));
@@ -789,6 +796,8 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                 LocalAction::IssueWatch => ("GET", "issue-watch".into()),
                 LocalAction::SaveIssueWatch => ("POST", "issue-watch".into()),
                 LocalAction::RecentActivity => ("GET", "activity".into()),
+                LocalAction::ApprovalSettings => ("GET", "approval-settings".into()),
+                LocalAction::SaveApprovalSettings => ("POST", "approval-settings".into()),
                 LocalAction::Decision { approval_id } => {
                     key(&approval_id)?;
                     ("POST", format!("runtime/approvals/{approval_id}/decision"))

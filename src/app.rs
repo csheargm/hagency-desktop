@@ -303,6 +303,8 @@ impl MatchEvent for App {
         crate::profile::profile_route::set_side_host(self.docks_mini_apps());
         self.approvals_timer = cx.start_interval(crate::hagency::pending_approvals::POLL_SECONDS);
         crate::hagency::owner_dashboard::register_host_accessibility(cx);
+        // Run-status lines this desktop's hosted Agents post follow the UI language.
+        ::hagency::agent_run_controls::set_status_text(crate::home::agent_run_card::status_label);
         // only init logging/tracing once.
         //
         // We silence a few overly noisy SDK logs:
@@ -372,6 +374,8 @@ impl MatchEvent for App {
             self.window_title_final.set(crate::window_title::refresh(cx, &self.ui.window(cx, ids!(main_window)), self.app_state.logged_in));
         }
         crate::memory_budget::process_completed_decodes(cx, actions);
+        // TODO(R4): app.rs is over budget; Hagency action observers (bring_agent, plus_menu) belong in one hagency::observe hook.
+        crate::hagency::bring_agent::observe(actions);
         for action in actions {
             if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
                 crate::home::room_screen::release_cached_timeline_history(kind, *channel);
@@ -417,6 +421,10 @@ impl MatchEvent for App {
             if let Some(link) = action.downcast_ref::<crate::matrix_links::LinkAction>() {
                 let effects = self.matrix_link_navigation.action(link);
                 self.apply_matrix_link_effects(cx, effects);
+            }
+            // This app's own Agent queued or settled a request: read now.
+            if action.downcast_ref::<crate::hagency::local_approvals::LocalApprovalsChanged>().is_some() {
+                crate::hagency::pending_approvals::poll();
             }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
                 if crate::hagency::pending_approvals::apply(cx, update) {
@@ -1566,6 +1574,7 @@ impl AppMain for App {
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
+            crate::hagency::local_approvals::ensure_watching();
             // On the same timer; the module spaces its own reads.
             crate::hagency::pending_admissions::poll();
             // Starts once per account session; the poller spaces its own checks.

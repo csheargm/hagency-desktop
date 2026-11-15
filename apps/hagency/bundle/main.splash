@@ -8500,6 +8500,25 @@ A.local_tokens=fn(value){
     let zh=if value>=10000 {""+floor(value/1000)/10+" 万"} else {""+value}
     return A.t(en,zh)
 }
+// "Always allow" rules and the approval mode of a local Agent (ported from the
+// original demo). A rule is one exact request the owner allowed from a card.
+A.local_rules=fn(){
+    let st=H.local_status
+    if st==nil || st.approvals==nil || st.approvals.rules==nil {return []}
+    return st.approvals.rules
+}
+A.local_revoke_rule=fn(rule){A.local_act("hagency.personal_agents.service",{id:H.personal_id forget:{tool:rule.tool directory:rule.directory request:rule.request}})}
+A.local_approval_choice=fn(){
+    let st=H.local_status
+    if st==nil || st.approvals==nil {return "remember"}
+    return st.approvals.mode
+}
+A.local_approval_label=fn(choice){
+    if choice=="ask" {return A.t("Ask every time","每次询问")}
+    if choice=="outside" {return A.t("Ask only for outside changes","仅外部更改时询问")}
+    return A.t("Ask, remember approvals","询问并记住批准")
+}
+A.local_set_approval=fn(choice){A.local_act("hagency.personal_agents.service",{id:H.personal_id approvalMode:choice})}
 A.local_mode=fn(value){
     if value=="allow" {return A.t("Run directly","直接执行")}
     if value=="ask_owner" {return A.t("Ask me first","先问我")}
@@ -15445,6 +15464,27 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                                     mod.widgets.HagencyChevron{}
                                 }
                             }
+                            for index rule in A.local_rules() {View{width:Fill height:Fit flow:Down
+                                mod.widgets.HagencyListDivider{margin:Inset{left:66}}
+                                mod.widgets.HagencyListTall{
+                                    local_rule_revoke := mod.widgets.HagencyListTap{enabled:A.personal_can_edit() && !alert && H.local_pending=="" on_click: || A.local_revoke_rule(rule)}
+                                    mod.widgets.HagencyListBody{
+                                        mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.shield draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
+                                        mod.widgets.HagencyListText{
+                                            mod.widgets.HagencyListTitle{text:A.t("Always allow ","始终允许 ")+rule.label}
+                                            mod.widgets.HagencyListSubtitle{text:rule.directory}
+                                        }
+                                        mod.widgets.HagencyListValue{text:A.t("Revoke","撤销") draw_text.color:mod.widgets.RINX_DANGER_FG}
+                                    }
+                                }
+                            }}
+                            if H.local_status!=nil && H.local_status.approvals!=nil {View{width:Fill height:Fit flow:Down
+                                mod.widgets.HagencyListDivider{}
+                                View{width:Fill height:Fit flow:Down spacing:8 padding:Inset{left:14 right:14 top:11 bottom:12}
+                                    mod.widgets.HagencyListTitle{text:A.t("Approvals","审批方式")}
+                                    mod.widgets.HagencySegments{for choice in ["ask","remember","outside"] {if A.local_approval_choice() == choice {mod.widgets.HagencySegmentOn{text:A.local_approval_label(choice) on_click: || {}}} else {mod.widgets.HagencySegment{text:A.local_approval_label(choice) on_click: || {if A.personal_can_edit() && !alert && H.local_pending=="" {A.local_set_approval(choice)}}}}}}
+                                }
+                            }}
                             mod.widgets.HagencyListDivider{margin:Inset{left:14}}
                             mod.widgets.HagencyListRow{
                                 personal_edit := mod.widgets.HagencyListTap{enabled:A.personal_can_edit() && !alert on_click: || A.edit_personal_policy()}

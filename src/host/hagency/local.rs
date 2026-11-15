@@ -24,11 +24,21 @@ pub(super) fn permissions(service: &str) -> &'static [ManagementPermission] {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SetService {
     id: String,
-    running: bool,
+    #[serde(default)]
+    running: Option<bool>,
+    /// Revoke one remembered "Always allow" rule `{tool, directory, request}`.
+    #[serde(default)]
+    forget: Option<Value>,
+    /// "ask", "remember" or "outside" (ask only for outside changes).
+    #[serde(default)]
+    approval_mode: Option<String>,
 }
+// TODO(R4): local.rs is over budget; move service_state and the status reply into host/hagency/local/status.rs.
 pub(crate) enum Call {
     Status(String),
     Service(String, bool),
+    /// `{forget}` or `{mode}` for the Agent's approval settings.
+    Approvals(String, Value),
     ChatOpen(String),
     ChatEncrypt(String),
 }
@@ -44,14 +54,19 @@ pub(super) fn parse_call(service: &str, args: Value) -> Result<Option<Call>, Str
         STATUS => Call::Status(parse::<Id>(args)?.id),
         SERVICE => {
             let input: SetService = parse(args)?;
-            Call::Service(input.id, input.running)
+            match (input.running, input.forget, input.approval_mode) {
+                (Some(running), None, None) => Call::Service(input.id, running),
+                (None, Some(rule), None) if rule.is_object() => Call::Approvals(input.id, json!({"forget": rule})),
+                (None, None, Some(mode)) if ["ask", "remember", "outside"].contains(&mode.as_str()) => Call::Approvals(input.id, json!({"mode": mode})),
+                _ => return Err("invalid_management_arguments".into()),
+            }
         }
         CHAT_OPEN => Call::ChatOpen(parse::<Id>(args)?.id),
         CHAT_ENCRYPT => Call::ChatEncrypt(parse::<Id>(args)?.id),
         _ => return Ok(None),
     };
     match &call {
-        Call::Status(id) | Call::Service(id, _) | Call::ChatOpen(id) | Call::ChatEncrypt(id) => agent_id(id)?,
+        Call::Status(id) | Call::Service(id, _) | Call::Approvals(id, _) | Call::ChatOpen(id) | Call::ChatEncrypt(id) => agent_id(id)?,
     }
     Ok(Some(call))
 }
@@ -223,7 +238,14 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
         .date_naive()
         .and_hms_opt(0, 0, 0)
         .map(|midnight| midnight.and_utc().with_timezone(&chrono::Local).format("%H:%M").to_string());
-    Ok(json!({"agentId": id, "here": agent.here, "deviceName": agent.device_name, "service": {"state": state}, "chat": chat, "rooms": rooms, "resetLocalTime": reset}))
+    // Only the device that runs the Agent holds its approval settings.
+    let approvals = if agent.here { approval_settings(&service, id, None).await.ok() } else { None };
+    Ok(json!({"agentId": id, "here": agent.here, "deviceName": agent.device_name, "service": {"state": state}, "chat": chat, "rooms": rooms, "resetLocalTime": reset, "approvals": approvals}))
+}
+/// The Agent's approval mode and "Always allow" rules, after `change` if given.
+async fn approval_settings(service: &Service, id: &str, change: Option<Value>) -> Result<Value, String> {
+    let action = if change.is_some() { LocalAction::SaveApprovalSettings } else { LocalAction::ApprovalSettings };
+    service.execute(Command::Local { agent_id: id.into(), action, input: change, binding_id: None, requester: None }).await
 }
 
 impl Call {
@@ -244,6 +266,14 @@ impl Call {
                         requester: None,
                     })
                     .await?;
+                status(account, &id).await
+            }
+            Self::Approvals(id, change) => {
+                let service = service_for(account)?;
+                if !agent(&service, &id).await?.here {
+                    return Err("personal_agent_not_on_this_device".into());
+                }
+                approval_settings(&service, &id, Some(change)).await?;
                 status(account, &id).await
             }
             Self::ChatOpen(id) => {
@@ -317,6 +347,12 @@ mod tests {
         assert!(parse_call(STATUS, json!({"id": "agt_01m5"})).unwrap().is_some());
         assert!(parse_call(STATUS, json!({"id": "!room:server"})).is_err());
         assert!(parse_call(SERVICE, json!({"id": "agt_1", "running": true, "roomId": "!r:s"})).is_err());
+        // Approval settings: one change per call, known modes only.
+        assert!(matches!(parse_call(SERVICE, json!({"id": "agt_1", "approvalMode": "remember"})), Ok(Some(Call::Approvals(..)))));
+        assert!(matches!(parse_call(SERVICE, json!({"id": "agt_1", "forget": {"tool": "claude.Bash"}})), Ok(Some(Call::Approvals(..)))));
+        assert!(parse_call(SERVICE, json!({"id": "agt_1", "approvalMode": "trusted"})).is_err());
+        assert!(parse_call(SERVICE, json!({"id": "agt_1", "running": true, "approvalMode": "ask"})).is_err());
+        assert!(parse_call(SERVICE, json!({"id": "agt_1"})).is_err());
         assert!(parse_call("hagency.personal_agents.list", json!({})).unwrap().is_none());
     }
 }
