@@ -171,7 +171,7 @@ fn card_state_and_buttons_follow_the_proposal_and_the_viewer() {
     assert!(status_text(&CardState::Pending, false).is_some());
 }
 
-fn loaded(room: &RoomId, me: &str, entries: Vec<Entry>) -> Loaded { Loaded { room_id: room.to_owned(), me: me.into(), storage: Storage::State, entries, levels: levels(), unreadable: 0, truncated: false, ignored: 0 } }
+fn loaded(room: &RoomId, me: &str, entries: Vec<Entry>) -> Loaded { Loaded { room_id: room.to_owned(), me: me.into(), storage: Storage::State, entries, levels: levels(), unreadable: 0, truncated: false, ignored: 0, people: Default::default() } }
 fn room(id: &str) -> OwnedRoomId { RoomId::parse(id).unwrap() }
 
 #[test]

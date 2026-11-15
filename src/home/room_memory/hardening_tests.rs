@@ -18,7 +18,7 @@ fn card() -> serde_json::Value {
 }
 fn loaded(room: &str, text: &str) -> Loaded {
     let entry = room_memory::Entry { id: "a".into(), text: text.into(), author: "@a:s".into(), source_event: None, pinned: false, rev: 1 };
-    Loaded { room_id: RoomId::parse(room).unwrap(), me: "@me:s".into(), storage: Storage::State, entries: vec![entry], levels: PowerLevels::default(), unreadable: 0, truncated: false, ignored: 0 }
+    Loaded { room_id: RoomId::parse(room).unwrap(), me: "@me:s".into(), storage: Storage::State, entries: vec![entry], levels: PowerLevels::default(), unreadable: 0, truncated: false, ignored: 0, people: Default::default() }
 }
 
 #[test]

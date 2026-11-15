@@ -213,6 +213,7 @@ impl Widget for RoomMemoryPanel {
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.sync_controls(cx);
         let can_write = self.snapshot().is_some_and(|l| l.can_write());
+        let loaded_people = self.snapshot().map(|l| l.people.clone()).unwrap_or_default();
         let busy = self.room.as_ref().is_some_and(|room| store::lock().busy(room));
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             let Some(mut list) = item.borrow_mut::<PortalList>() else { continue };
@@ -224,7 +225,7 @@ impl Widget for RoomMemoryPanel {
                 };
                 let row = list.item(cx, index, id!(Entry));
                 row.label(cx, ids!(text)).set_text(cx, &entry.text);
-                row.label(cx, ids!(meta)).set_text(cx, &meta_line(entry));
+                row.label(cx, ids!(meta)).set_text(cx, &super::people::meta_line(entry, &loaded_people));
                 row.view(cx, ids!(actions)).set_visible(cx, can_write);
                 row.button(cx, ids!(pin)).set_text(cx, crate::i18n::tr(if entry.pinned { "Unpin" } else { "Pin" }));
                 for id in [ids!(pin), ids!(edit), ids!(remove)] {
@@ -237,16 +238,9 @@ impl Widget for RoomMemoryPanel {
     }
 }
 
-/// "Pinned · Added by alice", from what the entry carries.
+/// "Pinned · Added by alice", from what the entry carries (no names known).
 pub fn meta_line(entry: &hagency::room_memory::Entry) -> String {
-    let mut parts = Vec::new();
-    if entry.pinned {
-        parts.push(crate::i18n::tr("Pinned").to_owned());
-    }
-    if !entry.author.is_empty() {
-        parts.push(crate::i18n::format("Added by {author}", &[("author", entry.author.clone())]));
-    }
-    parts.join(" · ")
+    super::people::meta_line(entry, &super::people::People::default())
 }
 
 impl RoomMemoryPanelRef {

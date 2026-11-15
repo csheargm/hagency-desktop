@@ -3233,5 +3233,9 @@
   "Saved as a team skill": "Saved as a team skill",
   "Saving team skill…": "Saving team skill…",
   "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run",
-  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}"
+  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}",
+  "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings",
+  "Suggested by {author} · accepted by {owner}": "Suggested by {author} · accepted by {owner}",
+  "Suggested a note for this room's memory": "Suggested a note for this room's memory",
+  "Suggested a skill for this room": "Suggested a skill for this room"
 }
