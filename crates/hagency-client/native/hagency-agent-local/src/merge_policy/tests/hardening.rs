@@ -25,7 +25,9 @@ fn renames_and_opaque_files_need_a_person() {
     let binary = ChangedFile { opaque: true, ..file("docs/logo.md", 0) };
     assert!(human(judge(vec![binary], vec![Check::Passed])));
     let huge = ChangedFile { deletions: u64::MAX, ..file("a.md", u64::MAX) };
-    assert!(human(judge(vec![huge.clone(), huge], vec![Check::Passed])), "the line count saturates, never wraps");
+    assert!(human(judge(vec![huge.clone(), huge.clone()], vec![Check::Passed])), "the line count never wraps");
+    let unlimited = parse_policy("low_risk_paths: [\"**\"]\nmax_changed_lines: 18446744073709551615\nrequire_ci: false\n").unwrap();
+    assert!(human(evaluate(&unlimited, &facts(vec![huge], vec![]), &reviewers(&["reviewer"]), "fixer")), "overflow is never equal to the limit");
 }
 
 #[test]

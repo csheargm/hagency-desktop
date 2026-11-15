@@ -109,8 +109,11 @@ fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
             return Some(format!("{} is outside the low-risk paths", file.path));
         }
     }
-    let lines = facts.files.iter().fold(0u64, |sum, f| sum.saturating_add(f.additions).saturating_add(f.deletions));
-    (lines > policy.max_changed_lines).then(|| format!("{lines} changed lines is over the limit of {}", policy.max_changed_lines))
+    let lines = facts.files.iter().try_fold(0u64, |sum, f| sum.checked_add(f.additions)?.checked_add(f.deletions));
+    match lines {
+        None => Some("the changed line count overflows".into()),
+        Some(lines) => (lines > policy.max_changed_lines).then(|| format!("{lines} changed lines is over the limit of {}", policy.max_changed_lines)),
+    }
 }
 
 fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
