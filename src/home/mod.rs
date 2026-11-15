@@ -50,6 +50,7 @@ pub mod reaction_picker;
 pub mod room_context_menu;
 pub mod link_preview;
 pub(crate) mod link_preview_policy;
+pub mod create_agent_cta;
 pub mod room_image_viewer;
 pub mod upload_progress;
 
@@ -93,6 +94,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     navigation_tab_bar::account_bar_script_mod(vm);
     room_filter_bubbles::script_mod(vm);
     rooms_sidebar::script_mod(vm);
+    create_agent_cta::script_mod(vm);
     welcome_screen::script_mod(vm);
     light_themed_dock::script_mod(vm);
     main_desktop_ui::script_mod(vm);
