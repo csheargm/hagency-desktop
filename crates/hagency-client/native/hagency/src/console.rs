@@ -36,6 +36,7 @@ mod side_budget;
 mod side_lifecycle;
 pub mod side_registration;
 mod stream;
+pub mod start_fence;
 mod tasks;
 mod usage;
 use crate::{App, refusal};

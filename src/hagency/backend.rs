@@ -565,6 +565,9 @@ impl Service {
     }
     pub async fn execute(&self, command: Command) -> Result<Value, String> {
         self.check()?;
+        if crate::hagency::kill_switch::refuses(&command) {
+            return Err(crate::hagency::kill_switch::PAUSED_CODE.into());
+        }
         if matches!(command, Command::BeginLogin) {
             return Err("matrix_oauth_sign_in_required".into());
         }
