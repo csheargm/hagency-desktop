@@ -161,8 +161,14 @@ impl NewRoomDialog {
         self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr("Creating…"));
         self.render_create(cx);
         let (ticket, name) = (self.request, config.name.clone());
+        let config_opens_calls = config.opens_calls_to_members();
         spawn_async_task(async move {
-            let result = client.create_room(request).await
+            let opens_calls = config_opens_calls;
+            let result = client.create_room(request).await;
+            if let (Ok(room), true) = (&result, opens_calls) {
+                super::call_power_levels::allow_call_membership_after_create(room).await;
+            }
+            let result = result
                 .map(|room| RoomNameId::new(matrix_sdk::RoomDisplayName::Named(name.into()), room.room_id().to_owned()))
                 .map_err(|error| error.to_string());
             Cx::post_action(Created { request: ticket, result });

@@ -37,6 +37,12 @@ pub struct CreateRoomConfig {
 }
 
 impl CreateRoomConfig {
+    /// Only private rooms open calls to members; public rooms keep the
+    /// server's PL 50 for calls and spaces never host one.
+    pub(crate) fn opens_calls_to_members(&self) -> bool {
+        !self.space && !self.public
+    }
+
     pub(crate) fn request(&self) -> Result<Request> {
         let name = self.name.trim();
         ensure!(
@@ -1296,6 +1302,9 @@ impl Widget for SpaceManagementPanel {
                 }
                 matrix_context::ensure_current(&client)?;
                 let room = client.create_room(request).await?;
+                if config.opens_calls_to_members() {
+                    super::call_power_levels::allow_call_membership_after_create(&room).await;
+                }
                 let name = RoomNameId::new(
                     matrix_sdk::RoomDisplayName::Named(config.name.trim().into()),
                     room.room_id().to_owned(),
@@ -1855,5 +1864,15 @@ mod tests {
         assert!(config.request().is_err());
         config.name = "界".repeat(256);
         assert!(config.request().is_err());
+    }
+    #[test]
+    fn only_private_rooms_open_calls_to_members() {
+        let mut config = CreateRoomConfig { name: "Team".into(), ..Default::default() };
+        assert!(config.opens_calls_to_members());
+        config.public = true;
+        assert!(!config.opens_calls_to_members());
+        config.public = false;
+        config.space = true;
+        assert!(!config.opens_calls_to_members());
     }
 }
