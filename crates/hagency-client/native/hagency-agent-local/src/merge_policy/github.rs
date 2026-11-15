@@ -1,0 +1,112 @@
+//! What the auto-merge gate reads from GitHub, bound to exact commits.
+//!
+//! The pull request view gives the head and base commit SHAs; the changed
+//! files then come from `compare/<base>...<head>`, so the files judged belong
+//! to the head the merge is pinned to (`--match-head-commit`), and the policy
+//! is read at the base commit, not the moving branch name.
+use super::gate::{repo_name, GhPr};
+use super::{ChangedFile, Check, PrFacts, POLICY_PATH};
+use serde_json::Value;
+use std::path::Path;
+use std::time::Duration;
+
+const GH_TIMEOUT: Duration = Duration::from_secs(20);
+/// GitHub's compare API lists at most this many files; a full page may be truncated.
+const COMPARE_FILE_LIMIT: usize = 300;
+const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup";
+const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
+
+/// One pull request as the gate judges it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrView {
+    pub url: String,
+    pub base_sha: String,
+    pub head_sha: String,
+    pub facts: PrFacts,
+}
+
+/// A full 40-hex commit SHA, lower case.
+pub fn commit_sha(text: &str) -> Option<&str> {
+    (text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then_some(text)
+}
+
+/// The view of `gh pr view --json VIEW_FIELDS` plus the compare API's files.
+pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
+    let url = view["url"].as_str()?.to_owned();
+    let base_sha = commit_sha(view["baseRefOid"].as_str()?)?.to_owned();
+    let head_sha = commit_sha(view["headRefOid"].as_str()?)?.to_owned();
+    let files = files.as_array()?;
+    if files.len() >= COMPARE_FILE_LIMIT {
+        return None;
+    }
+    let files = files.iter().map(changed_file).collect::<Option<_>>()?;
+    let checks = view["statusCheckRollup"].as_array().map(|all| all.iter().map(check_state).collect()).unwrap_or_default();
+    Some(PrView { url, base_sha, head_sha, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+}
+
+fn changed_file(file: &Value) -> Option<ChangedFile> {
+    let status = file["status"].as_str()?;
+    let additions = file["additions"].as_u64()?;
+    let deletions = file["deletions"].as_u64()?;
+    let lines = file["changes"].as_u64()?;
+    let plain = matches!(status, "added" | "modified" | "removed");
+    let opaque = !plain || lines == 0 || file["has_patch"] != true;
+    let previous_path = file["previous_filename"].as_str().map(str::to_owned);
+    Some(ChangedFile { path: file["filename"].as_str()?.to_owned(), previous_path, additions, deletions, opaque })
+}
+
+fn check_state(check: &Value) -> Check {
+    let word = check["conclusion"].as_str().filter(|c| !c.is_empty()).or(check["state"].as_str()).unwrap_or("");
+    match word {
+        "SUCCESS" | "NEUTRAL" | "SKIPPED" => Check::Passed,
+        "" | "PENDING" | "QUEUED" | "IN_PROGRESS" | "EXPECTED" => Check::Pending,
+        _ => Check::Failed,
+    }
+}
+
+/// `owner/name` of a github.com pull request URL for pull request `number`.
+pub fn repo_of_url(url: &str, number: u64) -> Option<&str> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (repo, tail) = rest.split_once("/pull/")?;
+    (tail == number.to_string()).then_some(repo).and_then(repo_name)
+}
+
+async fn gh(dir: &Path, args: &[&str]) -> Option<String> {
+    let run = tokio::process::Command::new("gh").args(args).current_dir(dir).kill_on_drop(true).output();
+    let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
+    output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
+}
+
+/// Where the gate reads pull requests and policies (`gh` here; fakes in tests).
+pub trait PrSource {
+    fn pull_request(&self, command: &GhPr) -> impl std::future::Future<Output = Option<PrView>>;
+    /// The policy file at `base_sha`, the base commit the pull request was judged on.
+    fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<String>>;
+}
+
+/// This device's `gh` login.
+pub struct GhCli;
+impl PrSource for GhCli {
+    async fn pull_request(&self, command: &GhPr) -> Option<PrView> {
+        pull_request(command).await
+    }
+    async fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<String> {
+        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
+        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"]).await
+    }
+}
+
+async fn pull_request(command: &GhPr) -> Option<PrView> {
+    let number = command.number.to_string();
+    let mut args = vec!["pr", "view", number.as_str(), "--json", VIEW_FIELDS];
+    if let Some(repo) = &command.repo {
+        args.extend(["--repo", repo.as_str()]);
+    }
+    let view: Value = serde_json::from_str(&gh(&command.dir, &args).await?).ok()?;
+    let url = view["url"].as_str()?;
+    let repo = repo_of_url(url, command.number)?;
+    let (base, head) = (commit_sha(view["baseRefOid"].as_str()?)?, commit_sha(view["headRefOid"].as_str()?)?);
+    let compare = format!("repos/{repo}/compare/{base}...{head}");
+    let files: Value = serde_json::from_str(&gh(&command.dir, &["api", &compare, "--jq", FILE_FIELDS]).await?).ok()?;
+    view_from_json(&view, &files)
+}

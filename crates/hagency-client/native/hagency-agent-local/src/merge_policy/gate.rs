@@ -1,30 +1,29 @@
 //! The auto-merge gate in front of the owner's approval card.
 //!
 //! OFF by default, per Agent on this device. When an Agent with the switch on
-//! asks to run exactly `gh pr merge <N> --squash` (or posts an approving
+//! asks to run exactly `gh pr merge <N> --squash --match-head-commit <sha>` (or posts an approving
 //! `gh pr review`), the gate reads the pull request with this device's `gh`
 //! login, judges it with [`super::evaluate`] and, only on `Merge`, answers the
 //! card the way the owner's click would, once per pull request. Every other
 //! case returns `None`: the normal approval flow (and its card) runs unchanged,
 //! so this never weakens the "ask only for outside changes" classifier.
 //!
-//! Approvals are recorded by Hagency itself, keyed by pull request URL and
-//! reviewing Agent, because every Agent here shares one GitHub identity and
+//! Approvals are recorded by Hagency itself, keyed by pull request URL, head
+//! commit and reviewing Agent (a new push voids them), because every Agent here shares one GitHub identity and
 //! GitHub refuses (and would not count) a self-approval.
-use super::{evaluate, parse_policy, ChangedFile, Check, Decision, PrFacts, POLICY_PATH};
+use super::github::PrSource;
+use super::{evaluate, parse_policy, Decision};
 use crate::outside::{resolves_inside, shell};
 use crate::{key, Ledger, Result, ToolPolicy, ToolProposal};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// A `--comment` review whose body starts with this counts as an approval
 /// (GitHub forbids `--approve` on a pull request from the same account).
 pub const APPROVE_MARKER: &str = "Hagency verdict: APPROVE";
-const GH_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS auto_merge (agent TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1))) STRICT;
-CREATE TABLE IF NOT EXISTS auto_merge_reviews (pr TEXT NOT NULL, reviewer TEXT NOT NULL, PRIMARY KEY(pr,reviewer)) STRICT;
+DROP TABLE IF EXISTS auto_merge_reviews;
+CREATE TABLE IF NOT EXISTS auto_merge_head_reviews (pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, PRIMARY KEY(pr,head,reviewer)) STRICT;
 CREATE TABLE IF NOT EXISTS auto_merge_used (pr TEXT PRIMARY KEY, agent TEXT NOT NULL) STRICT;";
 
 impl Ledger {
@@ -39,13 +38,14 @@ impl Ledger {
         use rusqlite::OptionalExtension;
         Ok(self.db.query_row("SELECT enabled FROM auto_merge WHERE agent=?", [agent], |r| r.get::<_, i64>(0)).optional()? == Some(1))
     }
-    pub(crate) fn record_agent_review(&mut self, pr: &str, reviewer: &str) -> Result<()> {
-        self.db.execute("INSERT OR IGNORE INTO auto_merge_reviews VALUES (?,?)", (pr, reviewer))?;
+    pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str) -> Result<()> {
+        self.db.execute("INSERT OR IGNORE INTO auto_merge_head_reviews VALUES (?,?,?)", (pr, head, reviewer))?;
         Ok(())
     }
-    pub(crate) fn agent_reviewers(&self, pr: &str) -> Result<Vec<String>> {
-        let mut statement = self.db.prepare("SELECT reviewer FROM auto_merge_reviews WHERE pr=?")?;
-        let rows = statement.query_map([pr], |r| r.get(0))?;
+    /// The Agents that approved `pr` at exactly commit `head`.
+    pub(crate) fn agent_reviewers(&self, pr: &str, head: &str) -> Result<Vec<String>> {
+        let mut statement = self.db.prepare("SELECT reviewer FROM auto_merge_head_reviews WHERE pr=? AND head=?")?;
+        let rows = statement.query_map([pr, head], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
     /// Take the one automatic merge of `pr`; false when it was already taken.
@@ -60,6 +60,9 @@ pub struct GhPr {
     pub dir: PathBuf,
     pub number: u64,
     pub repo: Option<String>,
+    /// `--match-head-commit <sha>` of a merge: GitHub refuses the merge when
+    /// the head moved, so the commit judged is the commit merged.
+    pub head: Option<String>,
     pub kind: Kind,
 }
 
@@ -74,7 +77,7 @@ pub enum Kind {
     Ready,
 }
 
-/// Read `gh pr merge <N> --squash [-d] [-R o/r]`, `gh pr ready <N> [-R o/r]` or an
+/// Read `gh pr merge <N> --squash [--match-head-commit <sha>] [-d] [-R o/r]`, `gh pr ready <N> [-R o/r]` or an
 /// approving `gh pr review <N> (--approve | --comment -b "<marker>...") [-R o/r]`,
 /// optionally after one `cd <dir> &&` that stays in the workspace.
 pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
@@ -114,7 +117,7 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
     if !ok {
         return None;
     }
-    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, kind })
+    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind })
 }
 
 #[derive(Default)]
@@ -124,6 +127,7 @@ struct Flags {
     comment: bool,
     body: String,
     repo: Option<String>,
+    head: Option<String>,
 }
 impl Flags {
     fn read(words: &[&str], kind: Kind) -> Option<Self> {
@@ -135,6 +139,7 @@ impl Flags {
             match *word {
                 "--squash" if merge => flags.squash = true,
                 "--delete-branch" | "-d" if merge => {}
+                "--match-head-commit" if merge => flags.head = Some(super::github::commit_sha(words.next()?)?.to_owned()),
                 "--approve" | "-a" if review => flags.approve = true,
                 "--comment" | "-c" if review => flags.comment = true,
                 "--body" | "-b" if review => flags.body = (*words.next()?).to_owned(),
@@ -147,71 +152,10 @@ impl Flags {
 }
 
 /// `owner/name` on github.com and nothing else (no host, no options).
-fn repo_name(text: &str) -> Option<&str> {
+pub(crate) fn repo_name(text: &str) -> Option<&str> {
     let (owner, name) = text.split_once('/')?;
     let part = |s: &str| !s.is_empty() && !s.starts_with(['-', '.']) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
     (part(owner) && part(name)).then_some(text)
-}
-
-/// The URL, base branch and facts of `gh pr view --json url,state,baseRefName,files,statusCheckRollup`.
-pub fn facts_from_json(value: &Value) -> Option<(String, String, PrFacts)> {
-    let url = value["url"].as_str()?.to_owned();
-    let base = value["baseRefName"].as_str().filter(|b| !b.is_empty() && b.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'/')))?;
-    let files = value["files"].as_array()?.iter().map(|f| Some(ChangedFile { path: f["path"].as_str()?.to_owned(), additions: f["additions"].as_u64()?, deletions: f["deletions"].as_u64()? })).collect::<Option<_>>()?;
-    let checks = value["statusCheckRollup"].as_array().map(|all| all.iter().map(check_state).collect()).unwrap_or_default();
-    Some((url, base.to_owned(), PrFacts { open: value["state"] == "OPEN", files, checks }))
-}
-
-fn check_state(check: &Value) -> Check {
-    let word = check["conclusion"].as_str().filter(|c| !c.is_empty()).or(check["state"].as_str()).unwrap_or("");
-    match word {
-        "SUCCESS" | "NEUTRAL" | "SKIPPED" => Check::Passed,
-        "" | "PENDING" | "QUEUED" | "IN_PROGRESS" | "EXPECTED" => Check::Pending,
-        _ => Check::Failed,
-    }
-}
-
-/// `owner/name` of a github.com pull request URL for pull request `number`.
-pub fn repo_of_url(url: &str, number: u64) -> Option<&str> {
-    let rest = url.strip_prefix("https://github.com/")?;
-    let (repo, tail) = rest.split_once("/pull/")?;
-    (tail == number.to_string()).then_some(repo).and_then(repo_name)
-}
-
-async fn gh(dir: &Path, args: &[&str]) -> Option<String> {
-    let run = tokio::process::Command::new("gh").args(args).current_dir(dir).kill_on_drop(true).output();
-    let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
-    output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
-}
-
-/// Where the gate reads pull requests and policies (`gh` here; fakes in tests).
-pub trait PrSource {
-    fn pull_request(&self, command: &GhPr) -> impl std::future::Future<Output = Option<(String, String, PrFacts)>>;
-    fn policy(&self, command: &GhPr, repo: &str, base: &str) -> impl std::future::Future<Output = Option<String>>;
-}
-
-/// This device's `gh` login.
-pub struct GhCli;
-impl PrSource for GhCli {
-    async fn pull_request(&self, command: &GhPr) -> Option<(String, String, PrFacts)> {
-        pull_request(command).await
-    }
-    async fn policy(&self, command: &GhPr, repo: &str, base: &str) -> Option<String> {
-        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base}");
-        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"]).await
-    }
-}
-
-async fn pull_request(command: &GhPr) -> Option<(String, String, PrFacts)> {
-    let number = command.number.to_string();
-    let mut args = vec!["pr", "view", number.as_str(), "--json", "url,state,baseRefName,files,statusCheckRollup"];
-    if let Some(repo) = &command.repo {
-        args.extend(["--repo", repo.as_str()]);
-    }
-    let value: Value = serde_json::from_str(&gh(&command.dir, &args).await?).ok()?;
-    let found = facts_from_json(&value)?;
-    repo_of_url(&found.0, command.number)?;
-    Some(found)
 }
 
 /// Answer `proposal` without a card when the policy allows it, else `None`.
@@ -225,22 +169,31 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     if matches!(disposition, ToolPolicy::Deny) {
         return None;
     }
-    let (url, base, facts) = source.pull_request(&command).await?;
+    let view = source.pull_request(&command).await?;
     if command.kind == Kind::Merge {
-        let repo = repo_of_url(&url, command.number)?;
-        let text = source.policy(&command, repo, &base).await?;
-        let policy = parse_policy(&text)?;
-        let approvers = ledger.agent_reviewers(&url).ok()?;
-        if evaluate(&policy, &facts, &approvers, &agent) != Decision::Merge || !ledger.claim_auto_merge(&url, &agent).ok()? {
+        // Unbound merges always go to the owner: without the flag GitHub
+        // would merge whatever the head is when the command runs.
+        if command.head.as_deref() != Some(view.head_sha.as_str()) {
             return None;
         }
+        let repo = super::github::repo_of_url(&view.url, command.number)?;
+        let policy = parse_policy(&source.policy(&command, repo, &view.base_sha).await?)?;
+        let approvers = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
+        if evaluate(&policy, &view.facts, &approvers, &agent) != Decision::Merge || !ledger.claim_auto_merge(&view.url, &agent).ok()? {
+            return None;
+        }
+    }
+    if command.kind == Kind::Review && !view.facts.open {
+        return None;
     }
     let allowed = match disposition {
         ToolPolicy::AskOwner => ledger.approve_tool(owner, proposal, now).and_then(|_| ledger.authorize_tool(proposal, now)).is_ok(),
         _ => ledger.authorize_tool(proposal, now).is_ok(),
     };
     if allowed && command.kind == Kind::Review {
-        ledger.record_agent_review(&url, &agent).ok()?;
+        // Residual race: a push between this read and the review lands an
+        // approval on the old head; it then never matches the new one.
+        ledger.record_agent_review(&view.url, &view.head_sha, &agent).ok()?;
     }
     Some(allowed)
 }
