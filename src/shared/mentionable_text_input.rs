@@ -537,6 +537,7 @@ impl MentionableTextInputRef {
         inner.sync_mentions();
         let visible_text = entered_text;
         let markdown = inner.mention_text.markdown(entered_text);
+        let markdown = inner.resolve_typed_mentions(&markdown);
         let entered_text = markdown.as_str();
         // These commands format literal text themselves; feeding them Markdown
         // links would visibly print the hidden URI (e.g. /plain or /spoiler).
@@ -591,6 +592,22 @@ impl MentionableTextInputRef {
 }
 
 impl MentionableTextInput {
+    /// Turns unambiguous typed "@name"s into pills, so they mention like picked ones.
+    fn resolve_typed_mentions(&mut self, markdown: &str) -> String {
+        use matrix_sdk::ruma::events::room::member::MembershipState;
+        use super::plain_mentions::{resolve_plain_mentions, PlainMentionCandidate};
+        let Some(members) = self.room_members.clone() else { return markdown.to_owned() };
+        let current_user = crate::sliding_sync::current_user_id();
+        let candidates: Vec<_> = members.iter()
+            .filter(|m| *m.membership() == MembershipState::Join)
+            .filter(|m| super::mention_candidates::is_mention_candidate(m.user_id(), current_user.as_deref()))
+            .map(|m| PlainMentionCandidate { user_id: m.user_id(), display_name: m.display_name() })
+            .collect();
+        let (markdown, users) = resolve_plain_mentions(markdown, &candidates);
+        self.possible_mentions.user_ids.extend(users);
+        markdown
+    }
+
     /// The possible mentions whose link text is still present in `text`.
     fn real_mentions_in_markdown(&self, text: &str) -> Mentions {
         let mut user_ids = BTreeSet::new();
