@@ -372,6 +372,8 @@ impl MatchEvent for App {
             self.window_title_final.set(crate::window_title::refresh(cx, &self.ui.window(cx, ids!(main_window)), self.app_state.logged_in));
         }
         crate::memory_budget::process_completed_decodes(cx, actions);
+        // TODO(R4): app.rs is over budget; Hagency action observers (bring_agent, plus_menu) belong in one hagency::observe hook.
+        crate::hagency::bring_agent::observe(actions);
         for action in actions {
             if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
                 crate::home::room_screen::release_cached_timeline_history(kind, *channel);
