@@ -4,7 +4,7 @@
 //! own wizard under "+" → New space (`space_management`).
 //!
 //! After creation the room opens, and the owner's default Agent joins it
-//! through the same hook the wizard uses (`bring_agent::owner_created_room`).
+//! through `bring_agent::owner_created_room`.
 use super::space_management::CreateRoomConfig;
 use crate::sliding_sync::{get_client, spawn_async_task};
 use crate::utils::RoomNameId;
@@ -169,11 +169,12 @@ impl NewRoomDialog {
         });
     }
 
-    /// Opens the new room.
+    /// Opens the new room and brings the owner's newest Agent along.
     fn finish(&mut self, cx: &mut Cx, result: &Result<RoomNameId, String>) {
         self.busy = false;
         match result {
             Ok(room) => {
+                crate::hagency::bring_agent::owner_created_room(room.room_id().clone());
                 cx.action(NewRoomAction::Close);
                 cx.action(crate::app::AppStateAction::NavigateToRoom {
                     room_to_close: None,
