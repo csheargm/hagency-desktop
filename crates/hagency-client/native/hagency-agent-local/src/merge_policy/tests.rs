@@ -11,6 +11,7 @@ pub(super) const HEAD: &str = "1111111111111111111111111111111111111111";
 pub(super) const BASE: &str = "2222222222222222222222222222222222222222";
 
 mod hardening;
+mod ready_review;
 
 pub(super) fn policy() -> MergePolicy {
     parse_policy(POLICY).unwrap()
@@ -196,7 +197,7 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""));
     let mut approve = bash("", temp.path(), "reviewer");
     approve.arguments = json!({"command": review});
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, None, "a code review is not low risk: the card asks");
     let merge = bash(&merge_line(), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &code).await, None);
     assert!(ledger.authorize_tool(&merge, 11).is_err(), "the owner's card is still required");
