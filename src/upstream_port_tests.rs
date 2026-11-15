@@ -31,7 +31,7 @@ fn draw(cx: &mut Cx, ui: &WidgetRef, size: DVec2) {
     let pass = DrawPass::new(cx);
     pass.set_size(cx, size);
     let mut list = DrawList2d::new(cx);
-    let mut overlay = cx.with_vm(|vm| Overlay::script_new(vm));
+    let overlay = cx.with_vm(|vm| Overlay::script_new(vm));
     let event = DrawEvent::default();
     let mut draw = CxDraw::new(cx, &event);
     let mut cx2d = Cx2d::new(&mut draw);
