@@ -24,6 +24,8 @@ fn main() {
     // LaunchAgent starts `<this executable> daemon run --home <home>`, and
     // Desktop's hosting setup runs `daemon enroll` and `daemon install`.
     // It never starts the UI.
+    // The owner's kill switch: no Agent start passes while it is paused.
+    rinx::hagency::kill_switch::install_fence();
     if let Some(status) = hagency::daemon::cli::run_if_requested() {
         std::process::exit(status);
     }

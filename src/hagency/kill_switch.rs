@@ -28,7 +28,7 @@ pub const APPROVALS_UNANSWERED: &str = "agents_approvals_unanswered";
 /// Returned while another Stop all or Resume all runs.
 pub const BUSY_CODE: &str = "agents_switch_busy";
 /// Returned when an Agent is started while the owner paused it.
-pub const PAUSED_CODE: &str = "agents_paused_by_owner";
+pub use ::hagency::console::start_fence::PAUSED_CODE;
 
 /// Which of the owner's Agents the switch stopped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +63,17 @@ pub trait Agents {
     fn stop_runs(&self) -> usize;
 }
 
+/// The pause file lives in the owner daemon's home, which Desktop and the
+/// daemon share; the daemon's own `--home` argument wins inside the daemon.
 pub fn default_path() -> PathBuf {
-    crate::app_data_dir().join(STATE_FILE)
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let args: Vec<_> = std::env::args_os().collect();
+        let home = args.windows(2).find(|pair| pair[0] == "--home").map(|pair| PathBuf::from(&pair[1]));
+        home.or_else(|| ::hagency::service::default_daemon_dir().ok())
+            .unwrap_or_else(|| crate::app_data_dir().to_owned())
+            .join(STATE_FILE)
+    }).clone()
 }
 
 /// The paused state of `owner`, or None when the owner is not paused.
@@ -79,6 +88,34 @@ fn save(path: &Path, paused: &Paused) -> Result<(), String> {
     let bytes = serde_json::to_vec(paused).map_err(|_| PAUSE_UNSAVED)?;
     let temp = path.with_extension("json.tmp");
     std::fs::write(&temp, bytes).and_then(|_| std::fs::rename(&temp, path)).map_err(|_| PAUSE_UNSAVED.into())
+}
+
+/// Whether the file at `path` pauses `agent`, whichever owner wrote it:
+/// Agent IDs are the owner's own, and a start must fail closed.
+/// A file that exists but cannot be read or parsed refuses every start.
+pub fn paused_in(path: &Path, agent: &str) -> bool {
+    match std::fs::read(path) {
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        Ok(bytes) => serde_json::from_slice::<Paused>(&bytes).map_or(true, |p| p.agents.iter().any(|a| a == agent)),
+    }
+}
+fn paused_here(agent: &str) -> bool {
+    paused_in(&default_path(), agent)
+}
+/// The one start check: `command` would start an Agent the owner paused.
+/// Desktop's owner service applies it to every command it sends (the Agent
+/// panel's Start, Create agent, assignment, My Agents); the native engine
+/// applies the same check through `install_fence`, boot recovery included.
+pub fn refuses(command: &Command) -> bool {
+    refuses_in(&default_path(), command)
+}
+fn refuses_in(path: &Path, command: &Command) -> bool {
+    matches!(command, Command::Local { agent_id, action: LocalAction::StartAgentService | LocalAction::RuntimeStart, .. } if paused_in(path, agent_id))
+}
+/// Install the check in the native owner engine of this process (Desktop
+/// or the owner daemon). Call once, before anything starts an Agent.
+pub fn install_fence() {
+    ::hagency::console::start_fence::install(paused_here);
 }
 
 /// Whether the switch stopped `agent` of `owner`.
@@ -149,18 +186,61 @@ pub async fn resume_all(agents: &impl Agents, path: &Path, owner: &str) -> Resul
     let _busy = Busy::take()?;
     let Some(mut paused) = load(path, owner) else { return Ok(Report::default()) };
     let mut report = Report { agents: paused.agents.len(), ..Report::default() };
-    for id in &paused.agents {
-        if agents.set_running(id, true).await.is_err() {
+    // One Agent at a time: only the Agent being started leaves the pause, and
+    // the file always records what is still paused, so a crash fails closed.
+    for id in paused.agents.clone() {
+        paused.agents.retain(|a| *a != id);
+        save_or_forget(path, &paused)?;
+        if agents.set_running(&id, true).await.is_err() {
+            report.failed.push(id.clone());
+            paused.agents.push(id);
+            save_or_forget(path, &paused)?;
+        }
+    }
+    Ok(report)
+}
+fn save_or_forget(path: &Path, paused: &Paused) -> Result<(), String> {
+    if paused.agents.is_empty() {
+        std::fs::remove_file(path).map_err(|_| PAUSE_UNSAVED.into())
+    } else {
+        save(path, paused)
+    }
+}
+
+/// At sign-in: stop again every Agent the file says is paused, in case the
+/// app stopped mid-way through Stop all and a saved start intent survived.
+pub async fn enforce_on_boot(agents: &impl Agents, path: &Path, owner: &str) -> Report {
+    let ids = load(path, owner).map(|p| p.agents).unwrap_or_default();
+    let mut report = Report { agents: ids.len(), ..Report::default() };
+    for id in &ids {
+        if agents.set_running(id, false).await.is_err() {
             report.failed.push(id.clone());
         }
     }
-    if report.failed.is_empty() {
-        std::fs::remove_file(path).map_err(|_| PAUSE_UNSAVED)?;
-    } else {
-        paused.agents = report.failed.clone();
-        save(path, &paused)?;
-    }
-    Ok(report)
+    report
+}
+
+/// Run `enforce_on_boot` once per signed-in owner, off the UI thread.
+/// A failed stop is retried on a later tick; the start check holds meanwhile.
+pub fn enforce_at_sign_in() {
+    static DONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let Some(owner) = crate::sliding_sync::current_user_id().map(|id| id.to_string()) else { return };
+    let service = {
+        let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+        if done.as_deref() == Some(owner.as_str()) || load(&default_path(), &owner).is_none() {
+            return;
+        }
+        let Ok(service) = crate::hagency::backend::Service::for_current() else { return };
+        *done = Some(owner.clone());
+        service
+    };
+    crate::sliding_sync::spawn_async_task(async move {
+        // Nothing to show: the list already says "Paused by you". A failed
+        // stop is tried again on a later tick.
+        if !enforce_on_boot(&Live(service), &default_path(), &owner).await.failed.is_empty() {
+            *DONE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    });
 }
 
 /// The active Agents of `agents` (a `Command::Agents` answer) assigned to

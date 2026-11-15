@@ -1580,6 +1580,7 @@ impl AppMain for App {
             // Starts once per account session; the poller spaces its own checks.
             crate::hagency::issue_watch::ensure_running();
             self.resume_hosting_paused_at_quit();
+            crate::hagency::kill_switch::enforce_at_sign_in();
         }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back
         // is taken only when it closes one of these modals. Otherwise it goes on

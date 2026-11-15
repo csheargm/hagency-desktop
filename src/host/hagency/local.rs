@@ -263,9 +263,6 @@ impl Call {
                 if !agent(&service, &id).await?.here {
                     return Err("personal_agent_not_on_this_device".into());
                 }
-                if running && crate::hagency::kill_switch::is_paused(&crate::hagency::kill_switch::default_path(), account, &id) {
-                    return Err(crate::hagency::kill_switch::PAUSED_CODE.into());
-                }
                 service
                     .execute(Command::Local {
                         agent_id: id.clone(),

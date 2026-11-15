@@ -756,6 +756,11 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
             requester,
         } => {
             key(&agent_id)?;
+            if matches!(action, LocalAction::StartAgentService | LocalAction::RuntimeStart)
+                && super::start_fence::refuses(&agent_id)
+            {
+                return Err(failure(409, super::start_fence::PAUSED_CODE));
+            }
             if matches!(
                 action,
                 LocalAction::AgentModel
@@ -1735,6 +1740,18 @@ mod tests {
             );
             assert_eq!(body, Some(serde_json::json!({"threadAutoReply":enabled})));
         }
+    }
+    // TODO(R4): native.rs is over budget; move Command routing (request) and its tests into console/native/routing.rs.
+    #[test]
+    fn a_paused_agent_cannot_be_started_by_any_start_command_but_can_be_stopped() {
+        super::super::start_fence::install(|agent| agent == "fenced_agent");
+        let local = |agent: &str, action| Command::Local { agent_id: agent.into(), action, input: Some(serde_json::json!({})), binding_id: None, requester: None };
+        for action in [LocalAction::StartAgentService, LocalAction::RuntimeStart] {
+            let refused = request(local("fenced_agent", action)).err().expect("refused");
+            assert_eq!((refused.status, refused.code.as_str()), (409, super::super::start_fence::PAUSED_CODE));
+        }
+        assert!(request(Command::Local { agent_id: "fenced_agent".into(), action: LocalAction::StopAgentService, input: None, binding_id: None, requester: None }).is_ok());
+        assert!(request(local("other_agent", LocalAction::StartAgentService)).is_ok());
     }
     #[test]
     fn native_commands_cannot_select_an_arbitrary_path_or_foreign_binding_route() {
