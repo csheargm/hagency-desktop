@@ -213,6 +213,7 @@ impl SharedPermissionNotice {
         let identity=self.identity.clone();let room=self.room.clone();let thread=self.thread.clone();let nonce=self.nonce;
         crate::sliding_sync::spawn_async_task(async move {
             let value=service.shared_permissions(ManagementCommand::SharedApprovals{room_id:Some(room.clone())}).await;
+            let value=crate::hagency::local_approvals::with_local(&service,Some(&room),value).await;
             Cx::post_action(PermissionResult{identity,room,thread,nonce,value});
         });
     }

@@ -143,6 +143,7 @@ pub fn poll() {
         let result = service
             .shared_permissions(ManagementCommand::SharedApprovals { room_id: None })
             .await;
+        let result = crate::hagency::local_approvals::with_local(&service, None, result).await;
         Cx::post_action(PendingApprovalsUpdate { identity, result });
     });
 }
@@ -267,9 +268,14 @@ pub fn decide(row: &Value, decision: &str) -> bool {
         state.record(&id, LocalDecision::Sending(decision.to_owned()), now_ms());
     }
     let decision = decision.to_owned();
+    let row_for_runtime = row.clone();
     let service = crate::hagency::backend::Service::for_current();
     crate::sliding_sync::spawn_async_task(async move {
         let result = match service {
+            // A request of this app's own Agent goes back to its runtime.
+            Ok(service) if let Some(command) = crate::hagency::local_approvals::decision_command(&row_for_runtime, &decision) => {
+                service.execute(command).await.map(|_| ())
+            }
             Ok(service) => service
                 .shared_permissions(ManagementCommand::SharedApprovalDecide {
                     id: id.clone(),

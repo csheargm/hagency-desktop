@@ -1,0 +1,143 @@
+//! Tool requests of an Agent running in this app (Claude Code, Codex, Octos on
+//! this device) that ask its owner. They wait in the in-process runtime's queue
+//! (`owned-agents/{id}/runtime/approvals`), not in the management server's
+//! shared-execution list, so until now only the Agent's Service page showed
+//! them, and only while it was open: an owner in the room saw no card and the
+//! request timed out. This module reads that queue and shapes each request as
+//! a `pending_approvals` row, so the room's permission notice and the app-wide
+//! poll show it with the same Approve / Deny buttons; a decision goes back to
+//! the waiting Agent through `runtime/approvals/{id}/decision`.
+use ::hagency::native_owner::{Command, LocalAction};
+use serde_json::{Value, json};
+
+/// Marks a row that came from this app's own Agent runtime.
+const SOURCE: &str = "localRuntime";
+/// At most this many Agents are read per poll (the listing is bounded too).
+const MAX_AGENTS: usize = 128;
+
+/// A runtime `ApprovalView` (`proposalId`, `argsDigest`, `proposal`) as a
+/// `pending_approvals` row. None when it lacks what a card needs.
+pub fn to_row(view: &Value, agent_name: &str) -> Option<Value> {
+    let p = &view["proposal"];
+    let scope = &p["scope"];
+    let (agent, room) = (scope["agent"].as_str()?, scope["room"].as_str()?);
+    let (proposal, digest) = (view["proposalId"].as_str()?, view["argsDigest"].as_str()?);
+    let tool = p["tool"].as_str()?;
+    let (method, tool) = match tool.split_once('.') {
+        Some(("claude", t)) => ("claude/can_use_tool", t),
+        Some(("octos", t)) => ("octos/can_use_tool", t),
+        _ => ("claude/can_use_tool", tool),
+    };
+    Some(json!({
+        "approval": {
+            "id": format!("local:{agent}:{proposal}"),
+            "agentName": agent_name, "roomId": room, "eventId": "", "threadRoot": scope["thread"],
+            "request": {"method": method, "params": {"toolName": tool, "input": p["arguments"],
+                "cwd": p["canonical_directory"]}, "sessionAllowed": false},
+            "expiresAtMs": p["expires"].as_u64()?.saturating_mul(1000),
+        },
+        "digest": digest, "decision": null, "canDecide": true,
+        SOURCE: {"agent": agent, "proposalId": proposal},
+    }))
+}
+
+/// The runtime decision for a row built by `to_row`, or None for any other row.
+pub fn decision_command(row: &Value, decision: &str) -> Option<Command> {
+    let source = &row[SOURCE];
+    let agent = source["agent"].as_str()?;
+    let proposal = source["proposalId"].as_str()?;
+    let digest = row["digest"].as_str()?;
+    Some(Command::Local {
+        agent_id: agent.into(),
+        action: LocalAction::Decision { approval_id: proposal.into() },
+        input: Some(json!({"argsDigest": digest, "approved": decision != "deny"})),
+        binding_id: None,
+        requester: None,
+    })
+}
+
+/// Append this app's own Agents' waiting requests (in `room`, if given) to a
+/// management answer. A failed listing leaves the answer as it was: the
+/// management rows must still show, and the next poll reads the queue again.
+pub async fn with_local(service: &crate::hagency::backend::Service, room: Option<&str>, answer: Result<Value, String>) -> Result<Value, String> {
+    let rows = match read(service).await {
+        Ok(rows) => rows,
+        Err(code) => {
+            // Shown nowhere else: the poll repeats within seconds.
+            makepad_widgets::log!("Local Agent approvals unreadable: {code}");
+            Vec::new()
+        }
+    };
+    let rows: Vec<Value> = rows.into_iter().filter(|r| room.is_none_or(|room| r["approval"]["roomId"] == room)).collect();
+    match answer {
+        Ok(mut value) => {
+            if let Some(list) = value["approvals"].as_array_mut() {
+                list.extend(rows);
+            } else {
+                value["approvals"] = Value::Array(rows);
+            }
+            Ok(value)
+        }
+        Err(code) if rows.is_empty() => Err(code),
+        // Management is unreachable but this app's own Agent is waiting.
+        Err(_) => Ok(json!({"approvals": rows})),
+    }
+}
+
+async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, String> {
+    let listed = service.execute(Command::Agents).await?;
+    let mut rows = Vec::new();
+    for agent in listed["agents"].as_array().into_iter().flatten().take(MAX_AGENTS) {
+        let Some(id) = agent["id"].as_str() else { continue };
+        if agent["state"] != "active" {
+            continue;
+        }
+        let local = Command::Local { agent_id: id.into(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
+        // An Agent that does not run on this device has no queue here.
+        let Ok(answer) = service.execute(local).await else { continue };
+        let name = agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent");
+        rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, name)));
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view() -> Value {
+        json!({"proposalId":"p1","argsDigest":"a".repeat(64),"proposal":{
+            "scope":{"agent":"ag","binding":"b","room":"!r:x","requester":"@o:x","thread":""},
+            "dispatch":"d","tool":"claude.Bash","arguments":{"command":"gh issue view 6"},
+            "canonical_directory":"/w","risk":"high","policy_revision":[1,0,0],"expires":2_000_000_000u64}})
+    }
+
+    /// The owner's flow: the Agent asks for `gh issue view`; the room card
+    /// says so and offers Approve / Deny, and the click reaches the runtime.
+    #[test]
+    fn a_local_agent_request_becomes_a_room_card_and_its_decision_reaches_the_runtime() {
+        let row = to_row(&view(), "demoup-claude").unwrap();
+        assert_eq!(row["approval"]["roomId"], "!r:x");
+        assert_eq!(row["canDecide"], true);
+        let (title, summary) = crate::hagency::pending_approvals::describe(&row);
+        assert!(title.contains("demoup-claude wants to use Bash"), "{title}");
+        assert!(summary.contains("gh issue view 6"), "{summary}");
+        let Some(Command::Local { agent_id, action: LocalAction::Decision { approval_id }, input, .. }) = decision_command(&row, "approve_once") else { panic!("not a runtime decision") };
+        assert_eq!((agent_id.as_str(), approval_id.as_str()), ("ag", "p1"));
+        assert_eq!(input, Some(json!({"argsDigest": "a".repeat(64), "approved": true})));
+        let Some(Command::Local { input, .. }) = decision_command(&row, "deny") else { panic!() };
+        assert_eq!(input.unwrap()["approved"], false);
+        // A management row is not routed to the runtime.
+        assert!(decision_command(&json!({"approval":{"id":"sap"},"digest":"d"}), "deny").is_none());
+    }
+
+    #[test]
+    fn a_view_missing_its_room_or_digest_is_not_shown() {
+        let mut v = view();
+        v["proposal"]["scope"]["room"] = Value::Null;
+        assert!(to_row(&v, "x").is_none());
+        let mut v = view();
+        v["argsDigest"] = Value::Null;
+        assert!(to_row(&v, "x").is_none());
+    }
+}
