@@ -178,24 +178,21 @@ impl ToolPolicy {
 /// admitted under and the rule saved now, each with whether the owner saved
 /// that layer at all.
 type ToolLayer<'a> = [(bool, &'a ToolPolicy); 2];
-/// Full trust on the Agent is the owner's trust in their own messages. For
-/// those, a Room or member layer the owner never saved adds no rule of its
-/// own; one the owner saved still applies. Anyone else, and the owner without
-/// it, meets every layer, and an unsaved layer keeps its default, which is to
-/// deny: another member is fully trusted only where the owner saved full trust
-/// on the Agent, on that Room and on that member.
+/// The owner's own messages follow the Agent's rule: for those, a Room or
+/// member layer the owner never saved adds no rule of its own (so an Agent that
+/// asks its owner asks, rather than an unsaved Room silently denying); one the
+/// owner saved still applies. Anyone else meets every layer, and an unsaved
+/// layer keeps its default, which is to deny: another member is fully trusted
+/// only where the owner saved full trust on the Agent, on that Room and on that
+/// member.
 fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPolicy> {
-    let agent_trusts = from_owner
-        && layers
-            .first()
-            .is_some_and(|agent| agent.iter().all(|(_, rule)| rule.is_full_trust()));
     layers
         .iter()
         .enumerate()
         .flat_map(|(index, layer)| {
             layer
                 .iter()
-                .filter(move |(saved, _)| index == 0 || *saved || !agent_trusts)
+                .filter(move |(saved, _)| index == 0 || *saved || !from_owner)
                 .map(|(_, rule)| *rule)
         })
         .collect()

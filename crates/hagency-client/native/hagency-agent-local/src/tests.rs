@@ -399,6 +399,35 @@ fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
         Err(Error::Denied)
     ));
 }
+/// Regression: an issue handoff the owner's device sent into the owner's own
+/// Room, to an Agent whose rule is "ask owner per tool", must ask (a card), not
+/// deny because nobody saved a rule on that Room or member.
+// TODO(R4): tests.rs is over budget; split the tool-policy layer tests into their own module.
+#[test]
+fn the_owners_own_message_asks_when_only_the_agent_layer_was_saved() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let mut s = scope();
+    s.requester = OWNER.into();
+    ledger.register_binding(OWNER, &s).unwrap();
+    ledger
+        .set_policy(OWNER, &s, Layer::Agent, 0, &config(1000, Period::Lifetime))
+        .unwrap();
+    ledger.reserve(&s, "call", "dispatch", 10, 10).unwrap();
+    assert!(!ledger.fully_trusts(&s, "dispatch"));
+    assert_eq!(
+        ledger.tool_disposition(&tool(&s, [1, 0, 0], "high"), 11).unwrap(),
+        ToolPolicy::AskOwner
+    );
+    // A Room rule the owner saved still applies to their own messages.
+    let mut denied = config(1000, Period::Lifetime);
+    denied.high_risk = ToolPolicy::Deny;
+    ledger.set_policy(OWNER, &s, Layer::Room, 0, &denied).unwrap();
+    assert!(matches!(
+        ledger.tool_disposition(&tool(&s, [1, 1, 0], "high"), 11),
+        Err(Error::Denied)
+    ));
+}
 /// Only the one rule that names every tool in every directory is full trust;
 /// any other rule is matched exactly, as before.
 #[test]
