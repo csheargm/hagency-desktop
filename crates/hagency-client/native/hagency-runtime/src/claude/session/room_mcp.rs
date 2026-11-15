@@ -461,9 +461,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             let status = self
                 .mcp_control(&id, json!({"subtype":"mcp_status"}), until)
                 .await?;
-            if !original.is_subset(&super::task_mcp::server_names(&status)?) {
-                return Err(Error::RoomToolStartup);
-            }
+            // The owner's own servers may come and go while the CLI loads them
+            // (claude.ai connectors replace plugin entries); `mcp_set_servers`
+            // already reported that it removed none, so only ours is judged here.
+            let _ = original;
             let server = super::task_mcp::servers(&status)?
                 .iter()
                 .find(|s| s["name"] == SERVER)
@@ -473,8 +474,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     self.verify_room_server(server)?;
                     return Ok(());
                 }
-                Some("pending") => {}
-                _ => return Err(Error::RoomToolStartup),
+                Some("pending" | "connecting") => {}
+                other => {
+                    tracing::warn!(status = other.unwrap_or("missing"), "Claude room tools server did not connect");
+                    return Err(Error::RoomToolStartup);
+                }
             }
             // Same original deadline, even if the native connection never settles.
             tokio::time::sleep_until((Instant::now() + Duration::from_millis(20)).min(until)).await;
