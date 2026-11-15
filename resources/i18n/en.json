@@ -3327,5 +3327,6 @@
   "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings",
   "Suggested by {author} · accepted by {owner}": "Suggested by {author} · accepted by {owner}",
   "Suggested a note for this room's memory": "Suggested a note for this room's memory",
-  "Suggested a skill for this room": "Suggested a skill for this room"
+  "Suggested a skill for this room": "Suggested a skill for this room",
+  "Reading issue watching…": "Reading issue watching…"
 }

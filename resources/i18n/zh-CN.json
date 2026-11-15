@@ -3327,5 +3327,6 @@
   "No GitHub token — add one in the Agent's GitHub access settings": "没有 GitHub 令牌——请在 Agent 的“GitHub 访问”设置中添加",
   "Suggested by {author} · accepted by {owner}": "由 {author} 建议 · {owner} 已接受",
   "Suggested a note for this room's memory": "建议了一条房间记忆",
-  "Suggested a skill for this room": "建议了一项房间技能"
+  "Suggested a skill for this room": "建议了一项房间技能",
+  "Reading issue watching…": "正在读取议题监视设置…"
 }

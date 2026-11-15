@@ -92,16 +92,19 @@ impl IssueWatchSection {
     /// Shows `agent_id`'s watch; reads it again only when the Agent or
     /// whether this device runs it changed, so typing is never overwritten.
     pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: bool, rooms: Vec<(String, String)>) {
-        let changed = self.agent_id != agent_id || self.editable != editable;
         self.rooms = rooms;
-        if changed {
+        if self.agent_id != agent_id {
             self.agent_id = agent_id.to_owned();
-            self.editable = editable;
             self.watch = Value::Null;
             self.note.clear();
-            if editable && !agent_id.is_empty() {
-                self.send(None);
-            }
+            self.pending = false;
+        }
+        self.editable = editable;
+        // Read once per Agent while it runs here. A device check that settles late (or
+        // flips while the panel loads) no longer discards a pending read and starts over,
+        // which left every control greyed out.
+        if needs_read(editable, &self.agent_id, &self.watch, self.pending) {
+            self.send(None);
         }
         self.render(cx);
     }
@@ -128,7 +131,7 @@ impl IssueWatchSection {
         self.pending = false;
         match &reply.result {
             Ok(value) => {
-                self.watch = value["issueWatch"].clone();
+                self.watch = saved_or_off(value);
                 self.fill(cx);
                 self.note = if reply.saving { crate::i18n::tr("Saved").to_owned() } else { String::new() };
             }
@@ -184,6 +187,9 @@ impl IssueWatchSection {
         self.view.label(cx, ids!(watch_status)).set_text(cx, &self.status_line());
     }
     fn status_line(&self) -> String {
+        if self.editable && self.pending && !self.watch.is_object() {
+            return crate::i18n::tr("Reading issue watching…").to_owned();
+        }
         if !self.editable {
             return crate::i18n::tr("Issue watching runs on the device that runs this Agent.").to_owned();
         }
@@ -218,5 +224,44 @@ pub(super) mod test_support {
     pub fn stale_answer(section: &mut IssueWatchSection, cx: &mut Cx, result: Result<Value, String>) {
         let reply = Reply { request: section.request + 1, agent_id: section.agent_id.clone(), saving: true, result };
         section.apply_reply(cx, &reply);
+    }
+}
+
+/// The saved watch, or "off" for an Agent that never saved one: a missing
+/// watch (`issueWatch: null`) left every control disabled with no reason shown.
+fn saved_or_off(reply: &Value) -> Value {
+    match &reply["issueWatch"] {
+        watch if watch.is_object() => watch.clone(),
+        _ => serde_json::json!({"mode": "off"}),
+    }
+}
+
+#[cfg(test)]
+mod saved_tests {
+    use serde_json::json;
+    /// Regression (live 2026-11-15): a fresh local Agent's watch controls stayed greyed out.
+    #[test]
+    fn an_agent_without_a_saved_watch_is_editable_as_off() {
+        assert_eq!(super::saved_or_off(&json!({"issueWatch":null})), json!({"mode":"off"}));
+        assert_eq!(super::saved_or_off(&json!({})), json!({"mode":"off"}));
+        let saved = json!({"issueWatch":{"mode":"trusted","repo":"o/r"}});
+        assert_eq!(super::saved_or_off(&saved)["repo"], "o/r");
+    }
+}
+
+/// Whether the section should read the saved watch now.
+fn needs_read(editable: bool, agent_id: &str, watch: &Value, pending: bool) -> bool {
+    editable && !agent_id.is_empty() && !watch.is_object() && !pending
+}
+#[cfg(test)]
+mod read_tests {
+    use serde_json::{Value, json};
+    /// Regression (live 2026-11-15): a flip of the device check restarted the read forever.
+    #[test]
+    fn a_pending_or_finished_read_is_not_restarted() {
+        assert!(super::needs_read(true, "a1", &Value::Null, false));
+        assert!(!super::needs_read(true, "a1", &Value::Null, true), "pending: wait for it");
+        assert!(!super::needs_read(true, "a1", &json!({"mode":"off"}), false), "already read");
+        assert!(!super::needs_read(false, "a1", &Value::Null, false), "not on this device");
     }
 }
