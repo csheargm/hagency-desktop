@@ -43,6 +43,7 @@ pub mod sidebar_action_menu;
 pub mod search_messages;
 pub mod space_lobby;
 pub mod space_management;
+pub mod call_power_levels;
 pub mod room_registration;
 pub mod new_room_dialog;
 pub mod spaces_bar;
