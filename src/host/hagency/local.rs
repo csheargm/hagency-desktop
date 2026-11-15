@@ -26,7 +26,7 @@ struct SetService {
     id: String,
     running: bool,
 }
-pub(super) enum Call {
+pub(crate) enum Call {
     Status(String),
     Service(String, bool),
     ChatOpen(String),
@@ -126,7 +126,7 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
         "stopped"
     }
 }
-fn room_name(room: &matrix_sdk::Room) -> String {
+pub(crate) fn room_name(room: &matrix_sdk::Room) -> String {
     room.cached_display_name()
         .map(|name| name.to_string())
         .or_else(|| room.name())
@@ -227,7 +227,7 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
 }
 
 impl Call {
-    pub(super) async fn execute(self, account: &str) -> Result<Value, String> {
+    pub(crate) async fn execute(self, account: &str) -> Result<Value, String> {
         match self {
             Self::Status(id) => status(account, &id).await,
             Self::Service(id, running) => {

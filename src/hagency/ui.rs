@@ -674,6 +674,7 @@ script_mod! {
                     create_agent := Primary {text: #(crate::i18n::tr("Create local agent")) i18n_text: "Create local agent"}
                     bind_agent := Primary {text: #(crate::i18n::tr("Bind selected existing Agent to Room")) i18n_text: "Bind selected existing Agent to Room"}
                 }
+                agent_panel := mod.widgets.HagencyAgentPanel {visible: false}
                 agent_detail := View {visible: false width: Fill height: Fit flow: Down spacing: 10
                     View {width: Fill height: 40 spacing: 8
                         setup_tab := Action {text: #(crate::i18n::tr("Agent")) i18n_text: "Agent"}
@@ -1475,6 +1476,7 @@ impl HagencyPanel {
         self.view
             .view(cx, ids!(agent_detail))
             .set_visible(cx, false);
+        self.view.widget(cx, ids!(agent_panel)).set_visible(cx, false);
         self.view
             .view(cx, ids!(agent_create))
             .set_visible(cx, false);
@@ -1556,6 +1558,7 @@ impl HagencyPanel {
             .view(cx, ids!(agent_create))
             .set_visible(cx, false);
         self.view.view(cx, ids!(agent_detail)).set_visible(cx, true);
+        self.view.widget(cx, ids!(agent_panel)).set_visible(cx, false);
         self.section(cx, ids!(setup_section));
         self.view
             .drop_down(cx, ids!(policy_layer))
@@ -1896,6 +1899,7 @@ impl HagencyPanel {
             }
             Page::Agents => {
                 self.view.view(cx, ids!(agent_detail)).visible()
+                    || self.view.widget(cx, ids!(agent_panel)).visible()
                     || self.view.view(cx, ids!(agent_create)).visible()
             }
         };
@@ -1969,7 +1973,7 @@ impl HagencyPanel {
                 if self.page == Page::Projects {
                     self.project_detail(cx, index);
                 } else {
-                    self.agent_detail(cx, index);
+                    self.open_agent_panel(cx, index);
                 }
                 return true;
             }
@@ -2462,7 +2466,8 @@ impl HagencyPanel {
                     .set_text(cx, string(value, "ownerMxid"));
                 if let Some(wanted)=self.wanted_agent.take() {
                     if let Some(index)=self.agents.iter().position(|a|string(a,"id") == wanted) {
-                        self.agent_detail(cx,index);
+                        // A Run request needs the full detail page; opening an Agent shows the panel.
+                        if self.wanted_run.is_some() {self.agent_detail(cx,index);} else {self.open_agent_panel(cx,index);}
                         return;
                     }
                 }
@@ -3178,6 +3183,7 @@ impl Widget for HagencyPanel {
         let Event::Actions(actions) = event else {
             return;
         };
+        self.handle_agent_panel(cx, actions);
         for action in actions {
             if let Some(result)=action.downcast_ref::<OwnerDirectEncryption>() {
                 if self.direct_encrypting.as_deref()==Some(result.room_id.as_str()) {self.direct_encrypting=None;}
@@ -4493,6 +4499,11 @@ impl HagencyPanelRef {
         }
     }
 }
+
+// TODO(R4): ui.rs is far over budget; the native agent panel's routing lives in
+// its own file so the split session can move it with the rest.
+#[path = "ui_agent_panel.rs"]
+mod agent_panel_route;
 
 #[cfg(test)]
 mod tests {
@@ -5866,10 +5877,11 @@ mod tests {
                     ids!(project_list_holder),
                 )
             } else {
-                (ids!(agents), ids!(agent_detail), ids!(agent_list_holder))
+                // An Agent card opens the native agent panel.
+                (ids!(agents), ids!(agent_panel), ids!(agent_list_holder))
             };
             assert_eq!(panel.view.drop_down(&mut cx, selection).selected_item(), 2);
-            assert!(panel.view.view(&mut cx, detail).visible());
+            assert!(panel.view.widget(&mut cx, detail).visible());
             assert!(!panel.view.view(&mut cx, list_id).visible());
             let back = panel.view.button(&mut cx, ids!(back));
             let actions = cx.capture_actions(|cx| {
@@ -5879,7 +5891,7 @@ mod tests {
             panel.sync_navigation(&mut cx);
             assert!(!panel.view.button(&mut cx, ids!(back)).visible());
             assert!(panel.view.view(&mut cx, list_id).visible());
-            assert!(!panel.view.view(&mut cx, detail).visible());
+            assert!(!panel.view.widget(&mut cx, detail).visible());
             assert!(panel.view.button(&mut cx, ids!(close)).borrow().is_none());
         }
     }
