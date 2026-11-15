@@ -45,6 +45,12 @@ impl Widget for ProfileSidePanel {
             && self.info.as_mut().is_some_and(|info| profile_view_fill::refresh_info(cx, info))
         { self.view.redraw(cx); }
         let Event::Actions(actions) = event else { return };
+        if actions.iter().any(|a| a.downcast_ref::<super::own_agents::OwnAgentsChanged>().is_some())
+            && let Some(user_id) = self.info.as_ref().map(|i| i.user_id.clone())
+        {
+            self.show_agent_settings(cx, &user_id);
+            self.view.redraw(cx);
+        }
         if actions.iter().any(|a| a.downcast_ref::<UserVerificationStatesUpdated>().is_some()) {
             self.view.redraw(cx);
         }
@@ -87,11 +93,20 @@ impl ProfileSidePanel {
         let agent = route == ProfileRoute::Agent;
         self.view.button(cx, ids!(profile_moments)).set_visible(cx, !agent);
         self.view.view(cx, ids!(desktop_moderation)).set_visible(cx, false);
+        self.show_agent_settings(cx, &info.user_id);
         self.moderation.request((!agent).then_some(&info));
         self.view.user_rooms_in_common(cx, ids!(user_profile_view.rooms_in_common)).load(cx, info.user_id.clone());
         self.route = Some(route);
         self.info = Some(info);
         self.view.redraw(cx);
+    }
+
+    /// "Agent settings" for this account's own Agents; an unknown Agent asks
+    /// for the listing once and shows the button when it arrives.
+    fn show_agent_settings(&mut self, cx: &mut Cx, user_id: &matrix_sdk::ruma::UserId) {
+        let own = super::own_agents::agent_for(user_id).is_some();
+        if !own && profile_route::is_agent(user_id) { super::own_agents::refresh(); }
+        self.view.button(cx, ids!(open_agent_panel_button)).set_visible(cx, own);
     }
 
     /// The room pane's actions, except Read Receipt; an Agent keeps only
@@ -107,6 +122,11 @@ impl ProfileSidePanel {
         }
         if self.view.button(cx, ids!(copy_link_to_user_button)).clicked(actions) {
             profile_view_fill::copy_user_link(cx, &info);
+        }
+        if self.view.button(cx, ids!(open_agent_panel_button)).clicked(actions)
+            && let Some(agent_id) = super::own_agents::agent_for(&info.user_id)
+        {
+            cx.action(crate::hagency::ui::HagencyAction::OpenAgent { agent_id });
         }
         if self.route != Some(ProfileRoute::Person) { return; }
         if self.view.button(cx, ids!(profile_moments)).clicked(actions) {
@@ -186,5 +206,6 @@ mod tests {
         assert_eq!(panel.view.label(&mut cx, ids!(user_profile_view.profile_details)).text(), "Agent on example.org");
         assert!(!panel.view.button(&mut cx, ids!(profile_moments)).visible());
         assert!(!panel.view.view(&mut cx, ids!(desktop_moderation)).visible());
+        assert!(!panel.view.button(&mut cx, ids!(open_agent_panel_button)).visible(), "an Agent not listed as ours has no Agent settings");
     }
 }

@@ -137,6 +137,7 @@ pub(crate) static UNNAMED_ROOM: &str = "Unnamed Room";
 // (the snapshot's room_screen/message_item.rs) in its own refactor session.
 pub(crate) mod hover_toolbar;
 use self::hover_toolbar::{MessageHoverToolbarWidgetRefExt, ToolbarButton, toolbar_action};
+use crate::profile::agent_chat_button::AgentChatSettingsButtonWidgetExt;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -1053,6 +1054,8 @@ script_mod! {
                     }
                     text: ""
                 }
+                // Shown only in one of this account's Agents' private chats.
+                desktop_agent_settings := mod.widgets.AgentChatSettingsButton {}
                 // Hidden unless HAGENCY_CALL_URL names an Element Call app.
                 desktop_call_button := NavigationBarButton {
                     tooltip_below: true
@@ -4163,6 +4166,9 @@ impl RoomScreen {
     /// Opens, closes or dismisses the desktop chat info panel.
     fn handle_desktop_chat_info(&mut self, cx: &mut Cx, event: &Event) {
         if !self.view.view(cx, ids!(desktop_chat_header)).visible() { return; }
+        // In an Agent's private chat, a tap on the title opens the Agent's panel too.
+        let title = self.view.label(cx, ids!(desktop_chat_title)).area();
+        self.view.agent_chat_settings_button(cx, ids!(desktop_agent_settings)).handle_title_tap(cx, event, title);
         let room_id = self.room_name_id.as_ref().map(|r| r.room_id().clone());
         if let Event::Actions(actions) = event
             && call_link::handle_call_button(&self.view.navigation_bar_button(cx, ids!(desktop_call_button)), actions, room_id.as_deref()) { return; }
@@ -4255,6 +4261,8 @@ impl RoomScreen {
         if !header.visible() { return }
         self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).set_visible(cx, self.room_name_id.is_some() && matches!(self.timeline_kind, Some(TimelineKind::Thread {..})));
         call_link::sync_call_button(cx, &self.view.navigation_bar_button(cx, ids!(desktop_call_button)), self.room_name_id.as_ref().map(|r| r.room_id().as_ref()));
+        let room_id = self.room_name_id.as_ref().map(|r| r.room_id().clone());
+        self.view.agent_chat_settings_button(cx, ids!(desktop_agent_settings)).set_room(cx, room_id.as_ref());
         let Some(room_name_id) = self.room_name_id.as_ref() else { return };
         let title = match self.timeline_kind {
             Some(TimelineKind::Thread { .. }) => format!("{room_name_id} · {}", crate::i18n::tr("Thread")),

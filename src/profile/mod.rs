@@ -1,6 +1,8 @@
 use makepad_widgets::ScriptVm;
 
 pub mod own_profile_watch;
+pub mod own_agents;
+pub mod agent_chat_button;
 pub mod hover_card;
 pub mod hover_card_route;
 pub mod member_summary;
@@ -22,6 +24,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     user_profile::script_mod(vm);
     profile_side_panel::script_mod(vm);
     hover_card::script_mod(vm);
+    agent_chat_button::script_mod(vm);
 }
 
 pub mod user_verification_cache;

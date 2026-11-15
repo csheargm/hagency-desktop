@@ -228,6 +228,9 @@ script_mod! {
                 }
                 profile_moments := ProfileAction {text: #(crate::i18n::tr("Moments")) i18n_text: "Moments" draw_icon.svg: ICON_GLOBE}
             }
+            // Shown by the side panel for this account's own Agents only.
+            open_agent_panel_button := ProfileAction {visible: false draw_icon.svg: ICON_SETTINGS
+                text: #(crate::i18n::tr("Agent settings")) i18n_text: "Agent settings"}
             View {width: Fill height: 36 flow: Right spacing: 8
                 copy_link_to_user_button := ProfileAction {
                     draw_icon.svg: ICON_COPY
