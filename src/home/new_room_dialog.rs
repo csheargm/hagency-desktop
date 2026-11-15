@@ -3,8 +3,8 @@
 //! rooms), Cancel/Create pinned. No parent space is needed; spaces keep their
 //! own wizard under "+" → New space (`space_management`).
 //!
-//! After creation the room opens, and the owner's default Agent joins it
-//! through the same hook the wizard uses (`bring_agent::owner_created_room`).
+//! After creation the room opens. Bringing the owner's default Agent into
+//! it is not part of this dialog yet (it lands with the add-agent flow).
 use super::space_management::CreateRoomConfig;
 use crate::sliding_sync::{get_client, spawn_async_task};
 use crate::utils::RoomNameId;
