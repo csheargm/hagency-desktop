@@ -77,6 +77,16 @@ script_mod! {
             }
         }
         settings_page := Page {
+            Card {
+                Title {text: #(crate::i18n::tr("Approvals")) i18n_text: "Approvals"}
+                approval_mode := Select {labels: [#(crate::i18n::tr("Ask every time")) #(crate::i18n::tr("Ask, remember approvals")) #(crate::i18n::tr("Ask only for outside changes"))]}
+                approval_hint := Hint {}
+                Text {text: #(crate::i18n::tr("Remembered approvals")) i18n_text: "Remembered approvals"}
+                View {width: Fill height: Fit flow: Right spacing: 8
+                    rules := Select {labels: [#(crate::i18n::tr("No remembered approvals"))]}
+                    revoke := Action {text: #(crate::i18n::tr("Revoke")) i18n_text: "Revoke"}
+                }
+            }
             // The int build's own blocks: issue watching (incl. Trusted mode and
             // Room choice) and the per-Agent GitHub access token with Check.
             Card {issue_watch := mod.widgets.IssueWatchSection {}}

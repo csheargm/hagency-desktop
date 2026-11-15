@@ -25,7 +25,7 @@ fn loaded_agent_renders_identity_who_can_ask_and_credit() {
     let mut cx = Cx::new(Box::new(|_, _| {}));
     let mut panel = panel(&mut cx);
     panel.agent = json!({"id": "agt_1", "displayName": "ann-claude", "puppetMxid": "@_hagency_agt_1:s"});
-    panel.status = json!({"here": true, "deviceName": "Mac", "chat": {"roomId": "!dm:s"}, "service": {"state": "stopped"}});
+    panel.status = json!({"here": true, "deviceName": "Mac", "chat": {"roomId": "!dm:s"}, "service": {"state": "stopped"}, "approvals": {"mode": "outside", "rules": [{"tool": "claude.Bash", "directory": "/w", "request": "r", "label": "gh pr list"}]}});
     panel.model = json!({"policy": {"revision": 3, "policy": {"budget": {"limit": {"Tokens": 2_000_000}, "period": "UtcDay"}, "requests": "Deny", "high_risk": "AskOwner"}},
         "usage": {"spent": 800_000, "held": 0}, "modelProfile": {"model": "m", "credential_ref": "claude-managed:x", "workspace_root": "/work", "reasoning_effort": "high"}});
     panel.models = vec![ModelChoice { model: "m".into(), label: "Model M".into(), efforts: vec!["low".into(), "high".into()], default_effort: "low".into() }];
@@ -35,6 +35,8 @@ fn loaded_agent_renders_identity_who_can_ask_and_credit() {
     assert_eq!(panel.view.drop_down(&mut cx, ids!(who)).selected_item(), 0, "Deny shows Only me");
     assert_eq!(panel.view.drop_down(&mut cx, ids!(thinking)).selected_item(), 1, "saved Thinking is selected");
     assert_eq!(panel.view.label(&mut cx, ids!(credit_text)).text(), "1.2M of 2M tokens left today");
+    assert_eq!(panel.view.drop_down(&mut cx, ids!(approval_mode)).selected_item(), 2, "saved outside mode shows");
+    assert!(panel.view.button(&mut cx, ids!(revoke)).borrow().unwrap().enabled(), "a remembered rule can be revoked");
     assert_eq!(panel.view.text_input(&mut cx, ids!(token_limit)).text(), "2000000");
     assert_eq!(panel.view.label(&mut cx, ids!(workspace)).text(), "/work");
     assert_eq!(panel.view.button(&mut cx, ids!(service_toggle)).text(), "Resume");

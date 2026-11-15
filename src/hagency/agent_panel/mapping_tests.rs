@@ -81,6 +81,17 @@ fn model_profile_and_runtime_mapping() {
 }
 
 #[test]
+fn approval_modes_and_rules_map_to_the_owner_call() {
+    assert_eq!(approval_mode_labels()[approval_mode_index("outside")], "Ask only for outside changes");
+    assert_eq!(approval_mode_index("bogus"), 1, "unknown shows the default, remember");
+    assert_eq!(approval_mode_change(0), Some(json!({"mode": "ask"})));
+    assert_eq!(approval_mode_change(3), None);
+    let rule = json!({"tool": "claude.Bash", "directory": "/w", "request": "{\"command\":\"gh pr list\"}", "label": "gh pr list", "created": 5});
+    assert_eq!(forget_change(&rule), json!({"forget": {"tool": "claude.Bash", "directory": "/w", "request": "{\"command\":\"gh pr list\"}"}}));
+    assert_eq!(rule_label(&rule), "gh pr list · /w");
+}
+
+#[test]
 fn runs_on_and_service_lines() {
     assert_eq!(runs_on(true, "Mac", Some("Claude")), "Runs on this Mac (Claude)");
     assert_eq!(runs_on(false, "Studio", None), "Runs on Studio");

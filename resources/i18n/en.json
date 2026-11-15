@@ -3435,5 +3435,15 @@
   "asks: anyone": "asks: anyone",
   "asks: owner first": "asks: owner first",
   "No requests yet.": "No requests yet.",
-  "Recent requests": "Recent requests"
+  "Recent requests": "Recent requests",
+  "Approvals": "Approvals",
+  "Ask every time": "Ask every time",
+  "Ask, remember approvals": "Ask, remember approvals",
+  "Ask only for outside changes": "Ask only for outside changes",
+  "Remembered approvals": "Remembered approvals",
+  "No remembered approvals": "No remembered approvals",
+  "Approvals are kept on the device that runs this agent.": "Approvals are kept on the device that runs this agent.",
+  "Every tool request asks you first.": "Every tool request asks you first.",
+  "Ask, remember approvals reuses what you chose to always allow.": "Ask, remember approvals reuses what you chose to always allow.",
+  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask."
 }

@@ -1,12 +1,16 @@
-//! Settings tab: issue watching and GitHub access (the int build's own
-//! blocks), budget and period, workspace folder, Pause/Resume service and Retire.
+//! Settings tab: approval mode and remembered rules (Revoke), issue watching
+//! and GitHub access (the int build's own blocks), budget and period, workspace folder, Pause/Resume service and Retire.
 use super::mapping;
 use super::*;
 use crate::hagency::model::AgentAction;
 
 impl AgentPanel {
+    fn rules(&self) -> Vec<Value> {
+        self.status["approvals"]["rules"].as_array().cloned().unwrap_or_default()
+    }
     pub(super) fn render_settings(&mut self, cx: &mut Cx) {
         let (here, idle) = (self.here(), !self.busy);
+        self.render_approvals(cx, here && idle);
         self.render_budget(cx, here && idle);
         let workspace = self.model["modelProfile"]["workspace_root"].as_str().filter(|w| !w.is_empty());
         self.view.label(cx, ids!(workspace)).set_text(cx, workspace.unwrap_or(crate::i18n::tr("Chosen when the agent first runs on this Mac")));
@@ -20,6 +24,29 @@ impl AgentPanel {
         let retirable = !matches!(self.agent["state"].as_str(), Some("retiring" | "retired"));
         let confirmed = self.view.check_box(cx, ids!(retire_confirm)).active(cx);
         self.view.button(cx, ids!(retire)).set_enabled(cx, idle && retirable && confirmed);
+    }
+    fn render_approvals(&mut self, cx: &mut Cx, editable: bool) {
+        let mode = self.status["approvals"]["mode"].as_str().unwrap_or("");
+        let labels = mapping::approval_mode_labels().iter().map(|l| crate::i18n::tr(l).to_owned()).collect();
+        self.view.drop_down(cx, ids!(approval_mode)).set_labels(cx, labels);
+        self.view.drop_down(cx, ids!(approval_mode)).set_selected_item(cx, mapping::approval_mode_index(mode));
+        let loaded = self.status["approvals"].is_object();
+        self.view.widget(cx, ids!(approval_mode)).set_disabled(cx, !editable || !loaded);
+        let hint = if !self.here() && !self.status.is_null() {
+            "Approvals are kept on the device that runs this agent."
+        } else {
+            mapping::approval_mode_hint(mode)
+        };
+        self.view.label(cx, ids!(approval_hint)).set_text(cx, crate::i18n::tr(hint));
+        let rules = self.rules();
+        let labels: Vec<String> = if rules.is_empty() {
+            vec![crate::i18n::tr("No remembered approvals").into()]
+        } else { rules.iter().map(mapping::rule_label).collect() };
+        let selected = self.view.drop_down(cx, ids!(rules)).selected_item().min(labels.len() - 1);
+        self.view.drop_down(cx, ids!(rules)).set_labels(cx, labels);
+        self.view.drop_down(cx, ids!(rules)).set_selected_item(cx, selected);
+        self.view.widget(cx, ids!(rules)).set_disabled(cx, rules.is_empty());
+        self.view.button(cx, ids!(revoke)).set_enabled(cx, editable && !rules.is_empty());
     }
     fn render_budget(&mut self, cx: &mut Cx, editable: bool) {
         let budget = &self.model["policy"]["policy"]["budget"];
@@ -55,6 +82,13 @@ impl AgentPanel {
     }
 
     pub(super) fn handle_settings_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        if let Some(change) = self.view.drop_down(cx, ids!(approval_mode)).selected(actions).and_then(mapping::approval_mode_change) {
+            self.save_approvals(cx, change);
+        }
+        if self.view.button(cx, ids!(revoke)).clicked(actions)
+            && let Some(rule) = self.rules().get(self.view.drop_down(cx, ids!(rules)).selected_item()).cloned() {
+            self.save_approvals(cx, mapping::forget_change(&rule));
+        }
         if self.view.drop_down(cx, ids!(limit_mode)).selected(actions).is_some() {
             let limited = self.view.drop_down(cx, ids!(limit_mode)).selected_item() == 1;
             self.view.view(cx, ids!(token_holder)).set_visible(cx, limited);
@@ -74,6 +108,11 @@ impl AgentPanel {
             self.command(Load::Retired, true, Command::Agent { agent_id: self.agent_id(), action: AgentAction::Retire });
             self.render(cx);
         }
+    }
+    fn save_approvals(&mut self, cx: &mut Cx, change: Value) {
+        self.note(cx, "Saving…");
+        self.call(Load::Status, true, Call::Approvals(self.agent_id(), change));
+        self.render(cx);
     }
     fn save_budget(&mut self, cx: &mut Cx) {
         let limited = self.view.drop_down(cx, ids!(limit_mode)).selected_item() == 1;

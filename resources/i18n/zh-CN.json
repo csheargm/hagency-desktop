@@ -3435,5 +3435,15 @@
   "asks: anyone": "提问：任何人",
   "asks: owner first": "提问：先问主人",
   "No requests yet.": "还没有请求。",
-  "Recent requests": "最近的请求"
+  "Recent requests": "最近的请求",
+  "Approvals": "审批方式",
+  "Ask every time": "每次询问",
+  "Ask, remember approvals": "询问并记住批准",
+  "Ask only for outside changes": "仅外部更改时询问",
+  "Remembered approvals": "已记住的批准",
+  "No remembered approvals": "没有已记住的批准",
+  "Approvals are kept on the device that runs this agent.": "审批设置保存在运行此智能体的设备上。",
+  "Every tool request asks you first.": "每个工具请求都会先征求你的同意。",
+  "Ask, remember approvals reuses what you chose to always allow.": "“询问并记住”会沿用你选择始终允许的操作。",
+  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "“仅外部更改时询问”在工作区内读写无需询问；GitHub 写入、推送、网络工具和其他文件夹仍会询问。"
 }

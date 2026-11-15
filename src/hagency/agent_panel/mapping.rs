@@ -116,6 +116,38 @@ pub(crate) fn compact(tokens: u64) -> String {
     }
 }
 
+/// Approval modes (hagency-agent-local `remembered` wire names) in dropdown order.
+pub(crate) const APPROVAL_MODES: [&str; 3] = ["ask", "remember", "outside"];
+pub(crate) fn approval_mode_labels() -> [&'static str; 3] {
+    ["Ask every time", "Ask, remember approvals", "Ask only for outside changes"]
+}
+/// The one-line explanation under the Approvals setting for a saved mode.
+pub(crate) fn approval_mode_hint(mode: &str) -> &'static str {
+    match mode {
+        "outside" => "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.",
+        "ask" => "Every tool request asks you first.",
+        _ => "Ask, remember approvals reuses what you chose to always allow.",
+    }
+}
+/// Dropdown index for the saved mode (unknown shows "remember", the default).
+pub(crate) fn approval_mode_index(mode: &str) -> usize {
+    APPROVAL_MODES.iter().position(|m| *m == mode).unwrap_or(1)
+}
+/// The `{mode}` change to save for a dropdown index.
+pub(crate) fn approval_mode_change(index: usize) -> Option<Value> {
+    APPROVAL_MODES.get(index).map(|mode| json!({"mode": mode}))
+}
+/// The `{forget}` change that revokes one remembered rule: exactly its key.
+pub(crate) fn forget_change(rule: &Value) -> Value {
+    json!({"forget": {"tool": rule["tool"], "directory": rule["directory"], "request": rule["request"]}})
+}
+/// "Always allow <label> · <directory>".
+pub(crate) fn rule_label(rule: &Value) -> String {
+    let text = |key: &str| rule[key].as_str().unwrap_or("").to_owned();
+    let label = Some(text("label")).filter(|l| !l.is_empty()).unwrap_or_else(|| text("tool"));
+    format!("{label} · {}", text("directory"))
+}
+
 /// The Agent's project rooms (`{roomId, name}` of active, non-private bindings).
 pub(crate) fn watch_rooms(status: &Value) -> Vec<(String, String)> {
     status["rooms"].as_array().into_iter().flatten()
