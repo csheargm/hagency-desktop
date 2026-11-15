@@ -1718,6 +1718,7 @@ impl Widget for RoomScreen {
                 if action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsChanged>().is_some()
                     || action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>().is_some()
                     || action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some()
+                    || action.downcast_ref::<super::agent_run_status::RunClockTick>().is_some()
                 {
                     if let Some(tl) = self.tl_state.as_mut() {
                         tl.content_drawn_since_last_update.clear();
@@ -7289,8 +7290,13 @@ fn populate_thread_root_summary(
     };
     item.label(cx, ids!(thread_summary_count))
         .set_text(cx, &replies_count_text);
+    // A running Agent run shows its live step here, so a collapsed thread never looks stuck.
+    // TODO(R4): move with the thread-summary code when the Message widget seam splits out.
+    let live = thread_root_event_id.as_ref()
+        .and_then(|root| crate::hagency::run_controls::newest_running_in_thread(timeline_kind.room_id(), root.as_str()))
+        .map(|run| super::agent_run_status::live_status(&run.card, run.started.elapsed().as_secs()));
     item.html(cx, ids!(thread_summary_latest))
-        .set_text(cx, &latest_preview);
+        .set_text(cx, &super::agent_run_status::thread_summary_text(live, &latest_preview));
     fully_drawn
 }
 
