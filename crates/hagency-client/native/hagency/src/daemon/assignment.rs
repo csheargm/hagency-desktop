@@ -66,8 +66,22 @@ pub fn resolve_with(
     origin: &str,
     owner: &str,
 ) -> Result<Assignment, &'static str> {
-    decide(roots, home, origin, owner, cfg!(target_os = "macos"))
+    decide(roots, home, origin, owner, cfg!(target_os = "macos") && !demo_in_process())
 }
+
+/// DEMO ONLY (`demo` feature plus `HAGENCY_DEMO_IN_PROCESS_OWNER=1`): macOS executes the owner in
+/// this process like the other platforms, so one-click Agents run without the background daemon and
+/// its browser sign-in. A product build never reads the variable.
+pub const DEMO_IN_PROCESS_ENV: &str = "HAGENCY_DEMO_IN_PROCESS_OWNER";
+#[cfg(feature = "demo")]
+fn demo_in_process() -> bool {
+    std::env::var(DEMO_IN_PROCESS_ENV).is_ok_and(|v| v == "1")
+}
+#[cfg(not(feature = "demo"))]
+fn demo_in_process() -> bool {
+    false
+}
+
 
 fn decide(
     roots: &OwnerRoots,
@@ -258,5 +272,14 @@ mod tests {
             resolve_with(&f.roots, &f.home, "https://s/", "@o:s").unwrap(),
             expected
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "demo")))]
+mod demo_tests {
+    /// A product build never lets the environment move macOS execution into this process.
+    #[test]
+    fn product_build_ignores_the_in_process_override() {
+        assert!(!super::demo_in_process());
     }
 }
