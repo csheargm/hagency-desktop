@@ -4,6 +4,15 @@
 const WEAK_PASSWORD_CODE: &str = "password_too_weak";
 const WEAK_PASSWORD_TEXT: &str =
     "Choose a stronger password: try 3–4 random words with a number, like purple-river-lamp-42.";
+/// Pasion refused sign-up because another account already has the name.
+const USERNAME_TAKEN_TEXT: &str =
+    "That username is already taken on this server. Choose another name, or sign in if it is your account.";
+/// The SDK's text for an OAuth `access_denied` callback. The in-app password
+/// sign-in reports its own failures that way, so this means Pasion refused
+/// the username and password, not that a person cancelled anything.
+const ACCESS_DENIED_SDK_TEXT: &str = "authorization cancelled by the user";
+const ACCESS_DENIED_TEXT: &str =
+    "The server did not accept this username and password. Check them and try again.";
 
 /// Title of the failure dialog: sign-up errors must not read as sign-in errors.
 pub fn login_failure_title(register: bool) -> &'static str {
@@ -14,6 +23,12 @@ pub fn login_failure_title(register: bool) -> &'static str {
 pub fn login_failure_text(register: bool, error: &str) -> String {
     if error.contains(WEAK_PASSWORD_CODE) {
         return crate::i18n::tr(WEAK_PASSWORD_TEXT).to_string();
+    }
+    if error.contains(::hagency::pasion::account::USERNAME_TAKEN_CODE) {
+        return crate::i18n::tr(USERNAME_TAKEN_TEXT).to_string();
+    }
+    if error.contains(ACCESS_DENIED_SDK_TEXT) {
+        return crate::i18n::tr(ACCESS_DENIED_TEXT).to_string();
     }
     format!("{} failed: {error}", if register { "Registration" } else { "Sign-in" })
 }
@@ -28,6 +43,18 @@ mod tests {
         let text = login_failure_text(true, raw);
         assert!(text.contains("stronger password"), "{text}");
         assert!(!text.contains("pasion"), "{text}");
+    }
+
+    #[test]
+    fn a_taken_username_says_so() {
+        let raw = "pasion login failed at register: username_taken";
+        assert_eq!(login_failure_text(true, raw), USERNAME_TAKEN_TEXT);
+    }
+
+    #[test]
+    fn a_refused_in_app_sign_in_does_not_claim_the_user_cancelled() {
+        let raw = "authorization code grant failed: authorization cancelled by the user";
+        assert_eq!(login_failure_text(true, raw), ACCESS_DENIED_TEXT);
     }
 
     #[test]

@@ -95,3 +95,32 @@ async fn registration_without_email_sends_no_email_field() {
     assert_eq!(register(&origin, "octo", "pw", Some("  ")).await.unwrap(), Registration::Created);
     assert!(!log.lock().unwrap().iter().any(|l| l.contains("\"email\"")));
 }
+
+/// Regression (2026-11-15): signing up as "alice" on a server where alice
+/// already existed reported "Existing", the follow-up login then failed with
+/// the new password, and the app showed "authorization cancelled by the user".
+#[tokio::test]
+async fn a_name_taken_by_another_account_is_an_error_not_existing() {
+    let (origin, _) = fake_pasion(vec![
+        ("/auth/login", r#"{"status":"error","error":"invalid_credentials"}"#),
+        ("/auth/register", r#"{"status":"error","error":"username_exists"}"#),
+    ]);
+    let error = register(&origin, "alice", "pw", None).await.unwrap_err().to_string();
+    assert!(error.contains(USERNAME_TAKEN_CODE), "{error}");
+}
+
+#[tokio::test]
+async fn rerunning_with_the_account_password_stays_existing() {
+    let (origin, _) = fake_pasion(vec![("/auth/login", r#"{"status":"success"}"#)]);
+    assert_eq!(register(&origin, "alice", "pw", None).await.unwrap(), Registration::Existing);
+}
+
+#[tokio::test]
+async fn an_email_conflict_is_not_reported_as_a_taken_username() {
+    let (origin, _) = fake_pasion(vec![
+        ("/auth/login", r#"{"status":"error"}"#),
+        ("/auth/register", r#"{"status":"error","error":"email_exists"}"#),
+    ]);
+    let error = register(&origin, "octo", "pw", Some("a@b.c")).await.unwrap_err().to_string();
+    assert!(!error.contains(USERNAME_TAKEN_CODE) && error.contains("email_exists"), "{error}");
+}
