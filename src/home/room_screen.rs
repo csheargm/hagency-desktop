@@ -5499,7 +5499,7 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal sent as text gives way to its intro too (the card shows it).
-                        let (body, formatted) = match super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id()) {
+                        let (body, formatted) = match proposal_card_intro(event_tl_item, timeline_kind.room_id()) {
                             Some(intro) => (Cow::Owned(intro), None),
                             None => (body, formatted),
                         };
@@ -5561,11 +5561,7 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal shows as a card; its notice body gives way to one intro line.
-                        let memory_intro = super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id())
-                            .or_else(|| super::room_skills::proposal_of(event_tl_item, timeline_kind.room_id()).map(|_| {
-                                let sender = get_profile_display_name(event_tl_item).unwrap_or_else(|| event_tl_item.sender().localpart().to_owned());
-                                super::room_skills::proposal_intro(&sender)
-                            }));
+                        let memory_intro = proposal_card_intro(event_tl_item, timeline_kind.room_id());
                         let (body, formatted) = match memory_intro.as_deref() {
                             Some(intro) => (Cow::Borrowed(intro), None),
                             None => (body, formatted),
@@ -6068,10 +6064,16 @@ fn populate_message_view(
         },
         _ => None,
     };
+    // A memory or skill proposal shows only its card and intro line in `content.message`:
+    // the Agent reply renderer would draw the fallback body (raw Agent id) below the card.
     #[cfg(feature = "agent_chat")]
-    let agent_reply = agent_text.is_some()
-        && event_tl_item.event_id().is_some()
-        && AgentMessagePresentation::for_sender(event_tl_item.sender()).is_some();
+    let agent_text = agent_text.filter(|_| proposal_card_intro(event_tl_item, timeline_kind.room_id()).is_none());
+    #[cfg(feature = "agent_chat")]
+    let agent_reply = renders_as_agent_reply(
+        agent_text.is_some(),
+        event_tl_item.event_id().is_some(),
+        AgentMessagePresentation::for_sender(event_tl_item.sender()).is_some(),
+    );
     #[cfg(not(feature = "agent_chat"))]
     let agent_reply = false;
     item.widget(cx, ids!(content.message)).set_visible(cx, web_mini_app.is_none() && forward_bundle.is_none() && !agent_reply);
@@ -7535,6 +7537,31 @@ fn populate_small_state_event(
 
 
 /// Returns the display name of the sender of the given `event_tl_item`, if available.
+/// Whether an Agent's text/notice draws in the Agent reply renderer (`agent_text` is
+/// already `None` for a proposal, whose card replaces the body).
+fn renders_as_agent_reply(agent_text: bool, has_event_id: bool, agent_sender: bool) -> bool {
+    agent_text && has_event_id && agent_sender
+}
+#[cfg(test)]
+mod proposal_body_tests {
+    /// Regression (live 2026-11-15): a memory proposal drew its card AND the Agent reply
+    /// body "Memory proposal from agt_…: … Reason: …" under it.
+    #[test]
+    fn a_proposal_never_reaches_the_agent_reply_body() {
+        let proposal = true;
+        let agent_text = (!proposal).then_some(());
+        assert!(!super::renders_as_agent_reply(agent_text.is_some(), true, true));
+        assert!(super::renders_as_agent_reply(true, true, true), "an ordinary Agent reply still renders there");
+    }
+}
+
+/// The one line that replaces a memory or skill proposal's body above its card.
+fn proposal_card_intro(event: &EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<String> {
+    super::room_memory::proposal_intro_of(event, room).or_else(|| {
+        super::room_skills::proposal_of(event, room).map(|_| super::room_skills::proposal_intro(&super::room_memory::sender_name(event)))
+    })
+}
+
 fn get_profile_display_name(event_tl_item: &EventTimelineItem) -> Option<String> {
     if let TimelineDetails::Ready(profile) = event_tl_item.sender_profile() {
         profile.display_name.clone()

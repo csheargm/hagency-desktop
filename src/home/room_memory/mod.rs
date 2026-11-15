@@ -41,11 +41,15 @@ pub fn proposal_intro(sender: &str) -> String {
 /// the Agent's display name, or "Agent" while the profile is unknown (never a raw id).
 pub fn proposal_intro_of(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<String> {
     proposal_of(event, room)?;
+    Some(proposal_intro(&sender_name(event)))
+}
+/// The sender as cards name them: display name, or "Agent" for an unnamed Agent.
+pub fn sender_name(event: &matrix_sdk_ui::timeline::EventTimelineItem) -> String {
     let name = match event.sender_profile() {
         matrix_sdk_ui::timeline::TimelineDetails::Ready(profile) => profile.display_name.clone(),
         _ => None,
     };
-    Some(proposal_intro(&intro_name(name, event.sender().localpart())))
+    intro_name(name, event.sender().localpart())
 }
 fn intro_name(display_name: Option<String>, localpart: &str) -> String {
     display_name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
