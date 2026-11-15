@@ -1,6 +1,6 @@
 //! GitHub issue watch, desktop side: every `POLL_INTERVAL` one account-scoped
 //! task reads each Agent's watch from this device's ledger (owner API), lists
-//! the repository's open issues with the owner's GitHub token, and hands the
+//! the repository's open issues with the Agent's GitHub token, and hands the
 //! chosen ones to the Agent by posting "@Agent please fix <url>" into the
 //! chosen room, the message the composer would send. The Agent's normal
 //! dispatch and approval flow applies. The task runs in the account session,
@@ -8,12 +8,13 @@
 //! check is a status line under the setting (`section`).
 pub(crate) mod choices;
 mod handoff;
-mod live;
+pub(crate) mod live;
 pub mod section;
 #[cfg(test)]
 mod tests;
 
 use crate::hagency::{backend::Service, model::Command};
+use ::hagency::github_access::{Token, TokenStore};
 use ::hagency::issue_watch::{Client, GITHUB_API, IssueWatch, WatchMode, fetch_open_issues, select};
 use handoff::Outcome;
 use makepad_widgets::Cx;
@@ -27,7 +28,8 @@ use std::time::Duration;
 pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Status key for a failure that is not about one Agent (the Agents list).
 const ALL_AGENTS: &str = "*";
-/// Where the GitHub token comes from, first match wins (the `gh` CLI's order).
+/// The environment fallback for an Agent without its own token, first match
+/// wins (the `gh` CLI's order).
 pub const TOKEN_VARIABLES: [&str; 2] = ["GH_TOKEN", "GITHUB_TOKEN"];
 
 /// Posted after each check so an open settings view shows the new line.
@@ -133,7 +135,7 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     if watch.setting.mode == WatchMode::Off {
         return Ok(None);
     }
-    let token = github_token()?;
+    let token = github_token(id).await?;
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
     let seen: HashSet<i64> = saved["issueSeen"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
     let picks = select(&watch, &issues, &seen);
@@ -141,13 +143,29 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     Ok(Some(handoff::hand_off(&live, &picks).await))
 }
 
-/// The owner's GitHub token from the environment (`TOKEN_VARIABLES`).
-pub(crate) fn github_token() -> Result<String, String> {
-    TOKEN_VARIABLES
-        .iter()
-        .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
-        .ok_or_else(|| crate::i18n::tr("No GitHub token: start Hagency with GH_TOKEN or GITHUB_TOKEN set.").to_owned())
+/// The GitHub token the watcher reads `agent_id`'s repository with: the
+/// Agent's own (its GitHub access settings), else `TOKEN_VARIABLES`.
+pub(crate) async fn github_token(agent_id: &str) -> Result<String, String> {
+    let agent = agent_id.to_owned();
+    let saved = tokio::task::spawn_blocking(move || TokenStore::current().load(&agent))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    choose_token(saved, |name| std::env::var(name).ok())
 }
+/// First match wins: the Agent's saved token, `GH_TOKEN`, `GITHUB_TOKEN`. A
+/// store that cannot be read is reported unless the environment has a token.
+pub(crate) fn choose_token(saved: Result<Option<Token>, String>, env: impl Fn(&str) -> Option<String>) -> Result<String, String> {
+    if let Ok(Some(token)) = &saved {
+        return Ok(token.expose().to_owned());
+    }
+    if let Some(token) = TOKEN_VARIABLES.iter().find_map(|name| env(name).filter(|v| !v.trim().is_empty())) {
+        return Ok(token);
+    }
+    saved?;
+    Err(crate::i18n::tr(NO_TOKEN).to_owned())
+}
+/// Shown when neither the Agent nor the environment has a token.
+pub const NO_TOKEN: &str = "No GitHub token — add one in the Agent's GitHub access settings";
 
 fn now() -> String {
     chrono::Local::now().format("%H:%M").to_string()

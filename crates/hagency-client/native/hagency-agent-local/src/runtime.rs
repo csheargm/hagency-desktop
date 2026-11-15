@@ -376,7 +376,13 @@ async fn spawn_inner(
             command.env(name, value);
         }
     }
-    if let Some(token) = crate::demo_env::github_token() {
+    for (name, value) in profile.environment.iter() {
+        command.env(name, value);
+    }
+    // Demo fallback only: the launcher's token when this Agent has none of its own.
+    if !profile.environment.iter().any(|(name, _)| name == crate::demo_env::GITHUB_TOKEN_ENV)
+        && let Some(token) = crate::demo_env::github_token()
+    {
         command.env(crate::demo_env::GITHUB_TOKEN_ENV, token);
     }
     match kind {

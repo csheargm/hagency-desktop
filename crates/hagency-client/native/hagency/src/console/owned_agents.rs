@@ -1044,6 +1044,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     .clone()
                     .or_else(|| saved_options.as_ref().map(|value| value.effort.clone()))
                     .unwrap_or_else(default_effort);
+                let environment = crate::github_access::start_environment(&agent).await;
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: "*".into(),
@@ -1069,6 +1070,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         },
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
+                        environment,
                     },
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {
@@ -1180,6 +1182,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
                 if input.shared_workspace { return Err(error(409, "shared_workspace_requires_agent_service")); }
+                let environment = crate::github_access::start_environment(&agent).await;
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: input.binding_id,
@@ -1205,6 +1208,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         },
                         shared_auth: provider.shared,
                         web_search: profile.web_search,
+                        environment,
                     },
                     credential_ref: profile.credential_ref,
                     takeover: if input.takeover {

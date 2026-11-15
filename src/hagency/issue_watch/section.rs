@@ -190,10 +190,9 @@ impl IssueWatchSection {
         let watching = self.watch["mode"].as_str().is_some_and(|m| m != "off");
         match super::status_line(&self.agent_id) {
             Some(line) if watching => line,
-            _ if watching => match super::github_token() {
-                Ok(_) => crate::i18n::tr("Waiting for the first check (every minute).").to_owned(),
-                Err(error) => error,
-            },
+            // The token is read by the check itself (the OS store may block),
+            // so a missing one shows as the first check's line.
+            _ if watching => crate::i18n::tr("Waiting for the first check (every minute).").to_owned(),
             _ => String::new(),
         }
     }

@@ -12,3 +12,5 @@ fork topic/room-memory-ui e487fc7b416b670bc03ac13244ede61174fc4867
 
 Rebuild: .jit/sources.sh --outside; CARGO_TARGET_DIR=../int-desktop-target cargo build --profile demo --features demo
 Run: ../int-demo-up.sh (HAGENCY_DEMO_AUTOMATION=0 until demo_automation is ported)
+fork topic/team-skills a7955717368eba8edf915a7f82e4be334439c7a6
+fork topic/agent-github-token 3be023005954082a810f9915139e94671f069f7f
