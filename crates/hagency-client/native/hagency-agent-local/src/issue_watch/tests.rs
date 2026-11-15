@@ -17,7 +17,7 @@ fn issue(number: i64, labels: &[&str], is_pr: bool, created_at: i64) -> Issue {
     by("NONE", number, labels, is_pr, created_at)
 }
 fn by(author: &str, number: i64, labels: &[&str], is_pr: bool, created_at: i64) -> Issue {
-    Issue { author_association: author.into(), number, url: format!("https://github.com/acme/app/issues/{number}"), labels: labels.iter().map(|s| s.to_string()).collect(), is_pr, created_at }
+    Issue { author_association: author.into(), number, url: format!("https://github.com/acme/app/issues/{number}"), title: String::new(), labels: labels.iter().map(|s| s.to_string()).collect(), is_pr, created_at }
 }
 fn numbers(picked: Vec<&Issue>) -> Vec<i64> {
     picked.into_iter().map(|i| i.number).collect()
@@ -123,13 +123,14 @@ fn trusted_picks_new_issues_by_the_team_only() {
 #[test]
 fn github_issue_lists_parse_and_bad_ones_are_errors() {
     let body = json!([
-        {"number": 12, "html_url": "https://github.com/acme/app/issues/12", "labels": [{"name": "agent-fix"}], "author_association": "NONE", "created_at": "2026-11-13T10:00:00Z"},
+        {"number": 12, "html_url": "https://github.com/acme/app/issues/12", "title": "Fix the README", "labels": [{"name": "agent-fix"}], "author_association": "NONE", "created_at": "2026-11-13T10:00:00Z"},
         {"number": 13, "html_url": "https://github.com/acme/app/pull/13", "labels": [], "pull_request": {"url": "x"}, "created_at": "2026-11-13T10:00:01Z"}
     ]);
     let issues = parse_issues(&body.to_string()).unwrap();
-    assert_eq!(issues[0], issue(12, &["agent-fix"], false, 1_794_564_000));
+    assert_eq!(issues[0], Issue { title: "Fix the README".into(), ..issue(12, &["agent-fix"], false, 1_794_564_000) });
     assert!(issues[1].is_pr);
     assert_eq!(issues[1].author_association, "", "missing association is untrusted");
+    assert_eq!((issues[0].title.as_str(), issues[1].title.as_str()), ("Fix the README", ""), "title read; missing title is empty");
     assert!(matches!(parse_issues("{\"message\":\"Bad credentials\"}"), Err(FetchError::Parse(_))));
     let bad_time = json!([{"number": 1, "html_url": "u", "created_at": "yesterday"}]);
     assert!(matches!(parse_issues(&bad_time.to_string()), Err(FetchError::Parse(_))));

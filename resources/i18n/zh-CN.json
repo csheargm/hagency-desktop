@@ -3211,5 +3211,10 @@
   "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}",
   "Suggested a skill for this room": "建议了一项房间技能",
   "Reading issue watching…": "正在读取议题监视设置…",
-  "No answer from this device's Agent host": "这台设备上的 Agent 主机没有响应"
+  "No answer from this device's Agent host": "这台设备上的 Agent 主机没有响应",
+  "Sending was not confirmed; you can retry the same action.": "发送未获确认，可重试同一操作。",
+  "From issue watching": "来自议题监视",
+  "New GitHub issue #{number} in {repo}": "{repo} 中的新 GitHub 议题 #{number}",
+  "Asked {agent} to fix it": "已请 {agent} 修复",
+  "Open on GitHub": "在 GitHub 上打开"
 }

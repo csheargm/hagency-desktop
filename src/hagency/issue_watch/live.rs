@@ -3,7 +3,7 @@
 use super::handoff::Handoff;
 use crate::hagency::backend::Service;
 use crate::hagency::model::{Command, LocalAction};
-use ::hagency::issue_watch::IssueWatch;
+use ::hagency::issue_watch::{Issue, IssueWatch};
 use matrix_sdk::ruma::{OwnedRoomId, OwnedTransactionId, OwnedUserId};
 use serde_json::{Value, json};
 
@@ -37,11 +37,11 @@ impl Live {
 }
 
 impl Handoff for Live {
-    async fn post(&self, number: i64, text: &str) -> Result<(), String> {
-        let message = crate::hagency::room_send::message_content(text, &self.puppet, &self.label);
+    async fn post(&self, issue: &Issue) -> Result<(), String> {
+        let notice = super::notice::Notice::new(&self.repo, issue, &self.label);
         super::still_current(self.epoch)?;
-        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, number);
-        crate::hagency::room_send::send_routed_with(self.room_id.clone(), message, txn_id).await
+        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number);
+        crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(&self.puppet), notice.marker(), txn_id).await
     }
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
         super::still_current(self.epoch)?;

@@ -3211,5 +3211,10 @@
   "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}",
   "Suggested a skill for this room": "Suggested a skill for this room",
   "Reading issue watching…": "Reading issue watching…",
-  "No answer from this device's Agent host": "No answer from this device's Agent host"
+  "No answer from this device's Agent host": "No answer from this device's Agent host",
+  "Sending was not confirmed; you can retry the same action.": "Sending was not confirmed; you can retry the same action.",
+  "From issue watching": "From issue watching",
+  "New GitHub issue #{number} in {repo}": "New GitHub issue #{number} in {repo}",
+  "Asked {agent} to fix it": "Asked {agent} to fix it",
+  "Open on GitHub": "Open on GitHub"
 }

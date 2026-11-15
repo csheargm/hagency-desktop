@@ -37,6 +37,8 @@ struct WireIssue {
     number: i64,
     html_url: String,
     #[serde(default)]
+    title: String,
+    #[serde(default)]
     labels: Vec<WireLabel>,
     #[serde(default)]
     pull_request: Option<serde_json::Value>,
@@ -55,6 +57,7 @@ pub fn parse_issues(body: &str) -> Result<Vec<Issue>, FetchError> {
             Ok(Issue {
                 number: issue.number,
                 url: issue.html_url,
+                title: issue.title,
                 labels: issue.labels.into_iter().map(|l| l.name).collect(),
                 is_pr: issue.pull_request.is_some(),
                 author_association: issue.author_association,
