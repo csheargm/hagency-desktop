@@ -36,6 +36,8 @@ pub(crate) mod reauthentication;
 pub(crate) mod errors;
 pub(crate) mod local;
 mod personal;
+// TODO(R4): hagency.rs is over budget; move service routing into host/hagency/routing.rs.
+mod kill_switch;
 pub(crate) mod personal_configuration;
 mod agents;
 mod pools;
@@ -255,6 +257,7 @@ fn permissions(lease: &Lease) -> Vec<ManagementPermission> {
             "hagency.inbox.decide" => vec![DecideInbox],
             _ if !personal::permissions(cap).is_empty() => personal::permissions(cap).to_vec(),
             _ if !local::permissions(cap).is_empty() => local::permissions(cap).to_vec(),
+            _ if !kill_switch::permissions(cap).is_empty() => kill_switch::permissions(cap).to_vec(),
             _ if !allocations::permissions(cap).is_empty() => allocations::permissions(cap).to_vec(),
             _ if !budget::permissions(cap).is_empty() => budget::permissions(cap).to_vec(),
             _ if !control::permissions(cap).is_empty() => control::permissions(cap).to_vec(),
@@ -670,6 +673,15 @@ impl Host {
             return rinx_miniapp_core::bounded_reply(agents::status_display(value(result?)?)?);
         }
         if let Some(call)=local::parse_call(service,args.clone())? {
+            let result=call.execute(&account).await;
+            self.check(&lease)?;
+            lease.authorize(&account,service,None)?;
+            return rinx_miniapp_core::bounded_reply(result?);
+        }
+        if let Some(call)=kill_switch::parse_call(service,args.clone())? {
+            // A device-wide stop or resume runs only for a current lease.
+            self.check(&lease)?;
+            lease.authorize(&account,service,None)?;
             let result=call.execute(&account).await;
             self.check(&lease)?;
             lease.authorize(&account,service,None)?;

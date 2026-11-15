@@ -121,7 +121,7 @@ pub fn ensure_watching() {
     });
 }
 
-async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, String> {
+pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, String> {
     let listed = service.execute(Command::Agents).await?;
     let mut rows = Vec::new();
     for agent in listed["agents"].as_array().into_iter().flatten().take(MAX_AGENTS) {

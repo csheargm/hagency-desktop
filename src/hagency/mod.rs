@@ -17,5 +17,6 @@ pub mod approval_text;
 pub mod pending_approvals;
 pub mod pending_questions;
 pub mod run_controls;
+pub mod kill_switch;
 
 mod approvals;
