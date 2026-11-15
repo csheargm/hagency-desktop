@@ -19,6 +19,7 @@ use crate::{
     shared::navigation_bar_button::NavigationBarButtonWidgetExt,
     sliding_sync::{submit_async_request, MatrixRequest, UrlPreviewError},
 };
+use super::link_preview_policy::is_preview_worth_showing;
 
 /// Maximum number of cache entries before cleanup is triggered
 const MAX_CACHE_ENTRIES_BEFORE_CLEANUP: usize = 100;
@@ -392,7 +393,16 @@ impl LinkPreviewRef {
     where
         F: Fn(&mut Cx, &TextOrImageRef, Option<&ImageInfo>, MediaSource, &str, &mut MediaCache) -> bool,
     {
-        let accepted_links = previewable_links(links);
+        // TODO(R4): this file is over budget; split the cache (LinkPreviewCache,
+        // insert_into_cache) from the widget along that seam.
+        // Only links whose preview has real content get a card; fetching every
+        // candidate here also starts the requests for links not yet shown.
+        let mut all_drawn = true;
+        let accepted_links: Vec<Url> = previewable_links(links).into_iter().filter(|link| {
+            let entry = link_preview_cache.get_or_fetch_link_preview(link.as_str());
+            all_drawn &= !matches!(entry, LinkPreviewCacheEntry::Requested);
+            is_preview_worth_showing(&entry)
+        }).collect();
 
         let did_links_change = match self.borrow() {
             Some(inner) => inner.last_populated_links != accepted_links,
@@ -425,7 +435,6 @@ impl LinkPreviewRef {
         }
 
         let Some(inner) = self.borrow() else { return true };
-        let mut all_drawn = true;
         for (view, link) in inner.children.iter().zip(inner.last_populated_links.iter()) {
             let entry = link_preview_cache.get_or_fetch_link_preview(link.as_str());
             all_drawn &= populate_preview_item(cx, view, entry, link, media_cache, populate_image_fn);
@@ -485,18 +494,8 @@ where
     let description = |value: &str| utils::replace_linebreaks_separators(value, false).trim().to_owned();
     let data = match entry {
         LinkPreviewCacheEntry::LoadedLinkPreview(data) => data,
-        LinkPreviewCacheEntry::Requested | LinkPreviewCacheEntry::Failed => {
-            title_link.set_text(cx, host);
-            description_label.set_text(cx, if matches!(entry, LinkPreviewCacheEntry::Requested) {
-                crate::i18n::tr("Loading preview…")
-            } else {
-                crate::i18n::tr("Open webpage")
-            });
-            description_label.set_visible(cx, true);
-            footer.set_visible(cx, false);
-            image_view.set_visible(cx, false);
-            return matches!(entry, LinkPreviewCacheEntry::Failed);
-        }
+        // Filtered out by `is_preview_worth_showing` before any card is made.
+        LinkPreviewCacheEntry::Requested | LinkPreviewCacheEntry::Failed => return true,
     };
 
     let title = data.title.as_deref().map(description).filter(|s| !s.is_empty());
@@ -671,7 +670,7 @@ impl LinkPreviewCache {
 }
 
 /// Insert data into a previously-requested media cache entry.
-fn insert_into_cache(
+pub(super) fn insert_into_cache(
     value_ref: Arc<Mutex<TimestampedCacheEntry>>,
     data: Result<LinkPreviewData, UrlPreviewError>,
     update_sender: Option<crate::timeline_updates::Sender>,

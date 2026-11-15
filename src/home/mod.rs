@@ -48,6 +48,7 @@ pub mod reaction_strip;
 pub mod reaction_picker;
 pub mod room_context_menu;
 pub mod link_preview;
+pub(crate) mod link_preview_policy;
 pub mod room_image_viewer;
 pub mod upload_progress;
 
