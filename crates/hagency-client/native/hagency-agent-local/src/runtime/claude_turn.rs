@@ -459,9 +459,14 @@ async fn drive<H: Host, C: Capture>(
                             queue.room.is_some()
                                 && hagency_runtime::room_tools::RoomTools::history_and_files()
                                     .with_memory()
+                                    .with_skills()
                                     .parse(name, &input)
                                     .is_ok(),
                         ));
+                    }
+                    // Read-only web search needs no card (see AGENT_AUTO_ALLOWED_TOOLS).
+                    if hagency_runtime::claude::AGENT_AUTO_ALLOWED_TOOLS.contains(&tool_name.as_str()) {
+                        return Decision::Tool(ToolAnswer::allowed(true));
                     }
                     if let Some(questions) = questions {
                         return Decision::Question(match &queue.questions {

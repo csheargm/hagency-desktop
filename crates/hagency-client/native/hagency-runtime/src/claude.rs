@@ -587,6 +587,43 @@ pub fn interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, E
     ]);
     Ok(args)
 }
+/// What keeps a person's own Claude customizations out of an Agent's session:
+/// no user/project settings, CLAUDE.md, skills, plugins, hooks, custom
+/// commands or agents, and no MCP servers but the host's own SDK server
+/// (installed after initialization). Sign-in and model selection still work.
+pub const AGENT_ISOLATION_ARGUMENTS: [&str; 6] = [
+    "--safe-mode",
+    "--setting-sources=",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--no-chrome",
+];
+
+/// Environment for an Agent's Claude process: the owner's claude.ai account
+/// connectors (Gmail, Drive, Calendar, remote MCP) are never loaded.
+pub const AGENT_ISOLATION_ENV: [(&str, &str); 1] = [("ENABLE_CLAUDEAI_MCP_SERVERS", "false")];
+
+/// Read-only web search runs without a card; the host still decides every
+/// other tool, and WebFetch (which can send data out) always needs a person.
+pub const AGENT_AUTO_ALLOWED_TOOLS: [&str; 1] = ["WebSearch"];
+
+/// Appended to an Agent's system prompt so it never offers what it lacks.
+pub const AGENT_TOOLS_NOTE: &str = "You are an Agent in a Hagency chat room. The only tools you have here are: \
+the room tools (read_room_history; list_received_files, receive_file, send_file, get_file_delivery; \
+memory_list, memory_propose; skill_read, skill_propose), WebSearch, WebFetch only after a person approves it, \
+and local workspace tools (read, edit and shell in this room's workspace), each subject to the owner's approval. \
+You have no access to anyone's email, drive, calendar, claude.ai connectors, personal skills, plugins or other accounts. \
+Never offer or describe tools that are not in this list. The room's team skills (see skill_read) are your only skills.";
+
+/// [`interactive_arguments`] for an Agent that serves a room: the room's team
+/// skills are its only skills and [`AGENT_TOOLS_NOTE`] lists what it has.
+pub fn agent_arguments(model: &str, effort: &str) -> Result<Vec<String>, Error> {
+    let mut args = interactive_arguments(model, effort)?;
+    args.extend(AGENT_ISOLATION_ARGUMENTS.map(str::to_owned));
+    args.extend(["--append-system-prompt".to_owned(), AGENT_TOOLS_NOTE.to_owned()]);
+    Ok(args)
+}
 /// Native aliases include context suffixes (sonnet[1m]); Bedrock accepts full
 /// inference-profile ARNs. Such a name is one argv value, never a shell
 /// fragment or an extra option. Availability is checked by the native CLI.

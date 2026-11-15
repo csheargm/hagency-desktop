@@ -11,7 +11,7 @@ pub mod version;
 mod wire;
 
 pub use connection::{Connection, Event, Phase, TurnScope};
-pub use launch::{native_arguments, validate_native_configuration};
+pub use launch::{AGENT_ISOLATION_OVERRIDES, native_arguments, validate_native_configuration};
 pub use rollout_usage::Cursor as NativeUsageCursor;
 pub use wire::{Decoder, Message, RequestId, RpcError, encode};
 

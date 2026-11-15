@@ -4,6 +4,7 @@
 //! never read in an encrypted room. Every failure comes back as text to show.
 use super::model::{Delivery, Write};
 use hagency::room_memory::{self, Entry, MEMORY_STATE_TYPE, PowerLevels, Storage};
+use hagency::room_skills::SKILL_STATE_TYPE;
 use hagency::room_memory_timeline::{ScanKind, ScanPage, ScanState, ScanStep, TimelineScan, SCAN_PAGE_EVENTS, reduce_timeline};
 use matrix_sdk::{
     Client,
@@ -38,7 +39,7 @@ fn unavailable() -> String {
 }
 
 /// An unknown encryption state is an error, never a plaintext read or write.
-async fn open(client: &Client, room_id: &RoomId) -> Result<(Room, Storage), String> {
+pub(crate) async fn open(client: &Client, room_id: &RoomId) -> Result<(Room, Storage), String> {
     let room = client.get_room(room_id).ok_or_else(unavailable)?;
     let security = room.latest_encryption_state().await.map_err(|_| unavailable())?;
     if security.is_unknown() {
@@ -62,7 +63,7 @@ pub async fn load(client: &Client, room_id: &RoomId) -> Result<Loaded, String> {
             loaded.levels = levels(&room, std::iter::once(loaded.me.clone())).await?;
         }
         Storage::Timeline => {
-            let scan = scan(&room).await?;
+            let scan = scan(&room, MEMORY_STATE_TYPE).await?;
             let senders = scan.events.iter().filter_map(|e| e["sender"].as_str().map(String::from)).chain([loaded.me.clone()]);
             loaded.levels = levels(&room, senders).await?;
             let view = reduce_timeline(&scan, &loaded.levels);
@@ -85,14 +86,15 @@ pub async fn send(client: &Client, room_id: &RoomId, storage: Storage, write: &W
     sent.map_err(|error| crate::i18n::format("Could not save to room memory: {reason}", &[("reason", error.to_string())]))
 }
 
-async fn scan(room: &Room) -> Result<TimelineScan, String> {
+/// A bounded backward scan for one record type (memory or team skills).
+pub(crate) async fn scan(room: &Room, kind: &str) -> Result<TimelineScan, String> {
     let (mut state, mut from) = (ScanState::default(), None::<String>);
     loop {
         let mut options = MessagesOptions::backward();
         options.from = from.clone();
         options.limit = SCAN_PAGE_EVENTS.into();
         let page = room.messages(options).await.map_err(|_| unavailable())?;
-        let step = state.push(ScanPage { events: page.chunk.iter().map(scan_event).collect(), next: page.end });
+        let step = state.push(ScanPage { events: page.chunk.iter().map(|e| scan_event_of(e, kind)).collect(), next: page.end });
         match step {
             ScanStep::Next(token) => from = Some(token),
             ScanStep::Done => return Ok(state.finish()),
@@ -100,19 +102,24 @@ async fn scan(room: &Room) -> Result<TimelineScan, String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn scan_event(event: &TimelineEvent) -> (String, ScanKind) {
+    scan_event_of(event, MEMORY_STATE_TYPE)
+}
+pub(crate) fn scan_event_of(event: &TimelineEvent, wanted: &str) -> (String, ScanKind) {
     let Some(raw) = serde_json::from_str::<Value>(event.kind.raw().json().get()).ok() else {
         return (String::new(), ScanKind::Unreadable);
     };
     let id = raw["event_id"].as_str().unwrap_or_default().to_string();
     let untrusted = untrusted(event, &raw);
-    let kind = match (raw["type"].as_str(), untrusted) {
+    let is_wanted = raw["type"].as_str() == Some(wanted);
+    let kind = match (is_wanted, untrusted) {
         (_, true) if matches!(event.kind, TimelineEventKind::UnableToDecrypt { .. }) => ScanKind::Unreadable,
-        (Some(MEMORY_STATE_TYPE), true) => ScanKind::Unreadable,
-        // Only a decrypted event is authenticated: a plaintext memory event in
+        (true, true) => ScanKind::Unreadable,
+        // Only a decrypted event is authenticated: a plaintext record event in
         // an encrypted room could have been written by the homeserver.
-        (Some(MEMORY_STATE_TYPE), false) if matches!(event.kind, TimelineEventKind::PlainText { .. }) => ScanKind::Unreadable,
-        (Some(MEMORY_STATE_TYPE), false) => ScanKind::Memory(raw),
+        (true, false) if matches!(event.kind, TimelineEventKind::PlainText { .. }) => ScanKind::Unreadable,
+        (true, false) => ScanKind::Memory(raw),
         _ => ScanKind::Other,
     };
     (id, kind)
@@ -141,11 +148,13 @@ fn untrusted(event: &TimelineEvent, raw: &Value) -> bool {
 
 /// Power levels for exactly the given users, so a creator with infinite power
 /// and an unlisted member are both judged by the room's rules.
-async fn levels(room: &Room, users: impl Iterator<Item = String>) -> Result<PowerLevels, String> {
+pub(crate) async fn levels(room: &Room, users: impl Iterator<Item = String>) -> Result<PowerLevels, String> {
     let sdk = room.power_levels().await.map_err(|_| unavailable())?;
     let mut levels = PowerLevels { users_default: i64::from(sdk.users_default), state_default: Some(i64::from(sdk.state_default)), ..Default::default() };
-    if let Some(level) = sdk.events.get(&MEMORY_STATE_TYPE.into()) {
-        levels.events.insert(MEMORY_STATE_TYPE.into(), i64::from(*level));
+    for kind in [MEMORY_STATE_TYPE, SKILL_STATE_TYPE] {
+        if let Some(level) = sdk.events.get(&kind.into()) {
+            levels.events.insert(kind.into(), i64::from(*level));
+        }
     }
     for user in users {
         let Ok(id) = <&UserId>::try_from(user.as_str()) else { continue };

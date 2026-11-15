@@ -233,6 +233,10 @@ impl Profile {
                 "chatgpt_base_url=\"https://chatgpt.com/backend-api\"".into(),
             ]);
         }
+        // Team skills only: the owner's own instructions and skills stay out.
+        for value in hagency_runtime::codex::AGENT_ISOLATION_OVERRIDES {
+            arguments.extend(["-c".into(), value.into()]);
+        }
         for value in overrides {
             arguments.extend(["-c".into(), value.into()]);
         }
@@ -2254,6 +2258,10 @@ mod tests {
                 .unwrap();
         }
         dedicated.validate().unwrap();
+        let launched: Vec<String> = profile.launch(&[]).unwrap().arguments.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        for value in hagency_runtime::codex::AGENT_ISOLATION_OVERRIDES {
+            assert!(launched.windows(2).any(|p| p == ["-c", value]), "{value}");
+        }
         std::fs::create_dir(profile.cwd.join(".codex")).unwrap();
         std::fs::write(
             profile.cwd.join(".codex/config.toml"),

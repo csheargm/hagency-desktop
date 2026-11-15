@@ -407,7 +407,8 @@ async fn spawn_inner(
         Kind::Claude => {
             command
                 .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
-                .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1");
+                .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1")
+                .envs(claude::AGENT_ISOLATION_ENV);
             if let Some(session) = resume {
                 crate::key(session)?;
                 command.args(["--resume", session]);
@@ -415,14 +416,7 @@ async fn spawn_inner(
             if !claude_uses_default_config(&profile.home, &profile.codex_home) {
                 command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
             }
-            command.args(
-                claude::interactive_arguments(&profile.model, &profile.effort)
-                    .map_err(|_| Error::Profile("Claude model or effort"))?,
-            );
-            // The Agent's web search switch, as a shared Claude run reads it.
-            if !profile.web_search {
-                command.args(["--disallowedTools", "WebSearch,WebFetch"]);
-            }
+            command.args(claude_agent_arguments(&profile.model, &profile.effort, profile.web_search)?);
         }
         Kind::Octos => {
             let digest = crate::hash(&(reference, &profile.cwd))?;
@@ -1848,6 +1842,20 @@ pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result
 
 /// The implicit native account and an explicitly selected config directory
 /// are distinct macOS Keychain namespaces, even at the same filesystem path.
+/// The personal Claude Agent's arguments after any `--resume`. The owner chose
+/// team skills only: the owner's own Claude settings, CLAUDE.md, skills,
+/// plugins, commands and MCP servers stay out of every Agent session.
+// TODO(split): runtime.rs is over budget; Claude launch belongs in its own module.
+fn claude_agent_arguments(model: &str, effort: &str, web_search: bool) -> Result<Vec<String>> {
+    let mut args = claude::agent_arguments(model, effort).map_err(|_| Error::Profile("Claude model or effort"))?;
+    // Read-only WebSearch is always there; the web switch governs WebFetch,
+    // which still needs a person's approval card when it is on.
+    if !web_search {
+        args.extend(["--disallowedTools", "WebFetch"].map(str::to_owned));
+    }
+    Ok(args)
+}
+
 pub fn claude_uses_default_config(home: &Path, config: &Path) -> bool {
     std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
         && home.join(".claude").canonicalize().ok().as_deref() == Some(config)
@@ -2124,6 +2132,21 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn personal_claude_agent_never_loads_the_owners_own_customizations() {
+        for web in [false, true] {
+            let args = claude_agent_arguments("sonnet", "medium", web).unwrap();
+            for flag in hagency_runtime::claude::AGENT_ISOLATION_ARGUMENTS {
+                assert!(args.iter().any(|a| a == flag), "{flag}");
+            }
+            assert!(args.windows(2).any(|p| p == ["--mcp-config", "{\"mcpServers\":{}}"]));
+            assert!(args.windows(2).any(|p| p == ["--permission-prompt-tool", "stdio"]));
+            assert_eq!(args.windows(2).any(|p| p == ["--disallowedTools", "WebFetch"]), !web);
+            assert!(!args.windows(2).any(|p| p[0] == "--disallowedTools" && p[1].contains("WebSearch")), "web search stays available");
+            assert!(args.windows(2).any(|p| p == ["--append-system-prompt", hagency_runtime::claude::AGENT_TOOLS_NOTE]));
+        }
+        assert!(claude_agent_arguments("sonnet", "--safe-mode", true).is_err());
+    }
     use super::*;
 
     /// Session records and turn reports, as `run_octos` passes them on.
