@@ -133,6 +133,11 @@ const MAX_BACKWARDS_PAGINATIONS_WITHOUT_PROGRESS: usize = 5;
 
 pub(crate) static UNNAMED_ROOM: &str = "Unnamed Room";
 
+// TODO(R4): room_screen.rs is far over budget; split on the Message widget seam
+// (the snapshot's room_screen/message_item.rs) in its own refactor session.
+pub(crate) mod hover_toolbar;
+use self::hover_toolbar::{MessageHoverToolbarWidgetRefExt, ToolbarButton, toolbar_action};
+
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
@@ -366,6 +371,9 @@ script_mod! {
                 }
             }
         }
+
+        // Floats at the top-right while the mouse hovers; drawn by `Message::draw_walk`.
+        hover_toolbar: mod.widgets.MessageHoverToolbar {}
 
         // A preview of the earlier message that this message was in reply to.
         replied_to_message := mod.widgets.RepliedToMessage {
@@ -7752,6 +7760,8 @@ pub struct Message {
     view: View,
     #[apply_default]
     animator: Animator,
+    /// The floating hover toolbar; not part of `view`'s flow.
+    #[live] hover_toolbar: WidgetRef,
 
     #[rust]
     details: Option<MessageDetails>,
@@ -7767,6 +7777,8 @@ pub struct Message {
     /// The UID of the touch that was claimed by this message or one of its children.
     /// This is used to determine if a future long press was on this message.
     #[rust] pressed_touch_uid: Option<u64>,
+    /// `True` while the mouse hovers this message and its toolbar is drawn.
+    #[rust] is_toolbar_shown: bool,
 
     // Belowhere: cached references to child widgets, for efficiency.
     #[rust] replied_to_message_view: Option<CollapsiblePreviewRef>,
@@ -7799,6 +7811,13 @@ impl Widget for Message {
             self.animator_play(cx, ids!(highlight.off));
         }
 
+        // The toolbar is drawn on top of the message, so it sees pointer events first.
+        let claim_before = event.pointer_claimed_area();
+        self.track_toolbar_hover(cx, event, claim_before);
+        if self.is_toolbar_shown {
+            self.hover_toolbar.handle_event(cx, event, scope);
+        }
+
         let Some(d) = self.details.as_ref() else { return };
         // Frame ticks still reach child animations, but do not need reply,
         // context-menu or message hit tests on every scrolling frame.
@@ -7808,9 +7827,6 @@ impl Widget for Message {
         }
         let room_screen_widget_uid = d.room_screen_widget_uid;
         let thread_root_event_id = d.thread_root_event_id.clone();
-
-        // determine if any other ancestor widget has already claimed this pointer event.
-        let claim_before = event.pointer_claimed_area();
 
         // A right-click or long-press anywhere on a message widget should show its context menu,
         // so we have to handle the raw events instead of relying on the hit system.
@@ -7995,6 +8011,10 @@ impl Widget for Message {
                 }
             }
 
+            if let Some((button, rect)) = self.hover_toolbar.as_message_hover_toolbar().clicked(cx, actions) {
+                self.on_toolbar_click(cx, button, rect);
+            }
+
             #[cfg(feature = "agent_chat")]
             if let Some(action) = {
                 use crate::agent_chat::reply::AgentReplyWidgetExt;
@@ -8146,7 +8166,12 @@ impl Widget for Message {
             });
         }
 
-        self.view.draw_walk(cx, scope, walk)
+        let step = self.view.draw_walk(cx, scope, walk);
+        if self.is_toolbar_shown && step.is_done() {
+            let message_rect = self.view.area().rect(cx);
+            self.hover_toolbar.as_message_hover_toolbar().draw_over(cx, scope, message_rect);
+        }
+        step
     }
 }
 
@@ -8179,6 +8204,7 @@ impl Message {
         #[cfg(not(feature = "agent_chat"))]
         let in_approval_card = false;
         in_approval_card
+            || (self.is_toolbar_shown && self.hover_toolbar.as_message_hover_toolbar().contains(cx, abs))
             || self.view.widget(cx, ids!(content.agent_run_card))
                 .area()
                 .clipped_rect(cx)
@@ -8233,6 +8259,46 @@ impl Message {
         );
     }
 
+    /// Shows the hover toolbar while the mouse is over this message and hides it after.
+    /// Touch layouts never show it, and it stays put while our context menu is open.
+    fn track_toolbar_hover(&mut self, cx: &mut Cx, event: &Event, claim_before: Area) {
+        if self.mobile_bubble || self.mobile_media || self.is_context_menu_open { return; }
+        let hovered = match event {
+            Event::MouseMove(mm) => claim_before.is_empty()
+                && self.view.area().clipped_rect(cx).contains(mm.abs),
+            Event::ClearHover | Event::MouseLeave(_) => false,
+            _ => return,
+        };
+        let abilities = self.details.as_ref().map_or(MessageAbilities::empty(), |d| d.abilities);
+        self.set_toolbar_shown(cx, hovered, abilities);
+    }
+
+    fn set_toolbar_shown(&mut self, cx: &mut Cx, shown: bool, abilities: MessageAbilities) {
+        if shown == self.is_toolbar_shown { return; }
+        let toolbar = self.hover_toolbar.as_message_hover_toolbar();
+        if shown {
+            toolbar.apply_abilities(cx, abilities);
+        } else {
+            toolbar.clear_tooltips(cx);
+        }
+        self.is_toolbar_shown = shown;
+        self.redraw(cx);
+    }
+
+    /// Dispatches the existing action behind a toolbar button. Menus open beneath the button.
+    fn on_toolbar_click(&mut self, cx: &mut Cx, button: ToolbarButton, button_rect: Rect) {
+        let Some(details) = self.details.clone() else { return };
+        let room_screen_widget_uid = details.room_screen_widget_uid;
+        let menu_pos = dvec2(button_rect.pos.x, button_rect.pos.y + button_rect.size.y);
+        match toolbar_action(button, details, menu_pos) {
+            MessageAction::OpenMessageContextMenu { details, abs_pos, .. } => {
+                self.animator_play(cx, ids!(bg_hover.on));
+                self.open_context_menu(cx, room_screen_widget_uid, details, abs_pos);
+            }
+            action => cx.widget_action(room_screen_widget_uid, action),
+        }
+    }
+
     fn thread_root_summary_view(&mut self, cx: &mut Cx) -> ViewRef {
         if let Some(view) = &self.thread_root_summary_view {
             return view.clone();
@@ -8272,12 +8338,17 @@ impl Message {
         if self.details.as_ref().is_none_or(|d| d.timeline_event_id != details.timeline_event_id) {
             self.is_context_menu_open = false;
             self.pressed_touch_uid = None;
+            self.set_toolbar_shown(cx, false, MessageAbilities::empty());
             self.view.html_or_plaintext(cx, ids!(content.message)).clear_selection(cx);
             self.view.html_or_plaintext(cx, ids!(content.message.caption_view.caption)).clear_selection(cx);
             self.view.html_or_plaintext(cx, ids!(content.agent_reply.agent_reply_body)).clear_selection(cx);
             self.animator_cut(cx, ids!(bg_hover.off));
         }
 
+        // Abilities can change in place, e.g., when a local echo is sent.
+        if self.is_toolbar_shown {
+            self.hover_toolbar.as_message_hover_toolbar().apply_abilities(cx, details.abilities);
+        }
         self.details = Some(details);
         self.download_info = download_info;
         self.send_status_indicator(cx).set_from_event(cx, event_tl_item, is_newest_sent, is_blocked_by_failed_send, is_room_encrypted);
