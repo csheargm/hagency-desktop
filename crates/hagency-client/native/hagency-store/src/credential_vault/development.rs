@@ -104,3 +104,14 @@ impl SecretStore for DevelopmentFileStore {
         }
     }
 }
+
+#[cfg(all(test, not(feature = "development-credential-files")))]
+mod compiled_out_tests {
+    /// A product build (no `development-credential-files`, which only the desktop's
+    /// `demo`/developer features turn on) never selects the file store, whatever the env says.
+    #[test]
+    fn product_build_keeps_secrets_in_the_os_store() {
+        assert!(!super::COMPILED);
+        assert!(!super::selected());
+    }
+}
