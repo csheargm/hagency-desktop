@@ -2,7 +2,8 @@
 //! the original demo's `owned_agents/remembered.rs`), kept in the same profile
 //! ledger as the Agent policy, so the owner check and ledger opening match it.
 //! GET returns `{mode, rules}`; POST applies `{forget}` (revoke one rule)
-//! and/or `{mode}` (`ask`, `remember` or `outside`) in one transaction, then
+//! and/or `{mode}` (`ask`, `remember` or `outside`) and/or `{autoMerge}` (the
+//! opt-in agent auto-merge switch, off by default) in one transaction, then
 //! answers like GET. Writes need this device to be the Agent's execution device.
 //! Rules are only ever created by the owner's "Always allow this" on a card.
 use super::*;
@@ -15,6 +16,8 @@ struct Change {
     forget: Option<RememberedRequest>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    auto_merge: Option<bool>,
 }
 
 pub(super) async fn handle(req: &mut Request, depot: &Depot, agent: String) -> Result<Value, OwnerError> {
@@ -61,8 +64,9 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>) -
     }
     let rules = ledger.remembered_requests(&reply.owner, agent).map_err(local_error)?;
     let mode = ledger.approval_mode(agent).map_err(local_error)?;
+    let auto_merge = ledger.auto_merge(agent).map_err(local_error)?;
     let rules: Vec<Value> = rules.iter().map(|rule| json!({"tool": rule.tool, "directory": rule.directory, "request": rule.request, "created": rule.created, "label": label(rule)})).collect();
-    Ok(json!({"agentId": agent, "mode": mode, "rules": rules}))
+    Ok(json!({"agentId": agent, "mode": mode, "autoMerge": auto_merge, "rules": rules}))
 }
 
 /// What the owner's panel names a rule by: the exact command, else the tool
@@ -86,6 +90,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     if let Some(mode) = change.mode {
         ledger.set_approval_mode(owner, agent, &mode)?;
     }
+    if let Some(enabled) = change.auto_merge {
+        ledger.set_auto_merge(owner, agent, enabled)?;
+    }
     Ok(())
 }
 
@@ -97,6 +104,8 @@ mod tests {
     fn a_change_is_a_forget_and_or_a_mode_and_nothing_else() {
         let change: Change = serde_json::from_value(json!({"mode": "remember"})).unwrap();
         assert_eq!(change.mode.as_deref(), Some("remember"));
+        let change: Change = serde_json::from_value(json!({"autoMerge": true})).unwrap();
+        assert_eq!(change.auto_merge, Some(true));
         let change: Change = serde_json::from_value(json!({"forget": {"tool": "claude.Bash", "directory": "/w", "request": "{\"command\":\"cargo test\"}"}})).unwrap();
         assert_eq!(change.forget.unwrap().request, r#"{"command":"cargo test"}"#);
         // A rule is never created here: only the owner's card decision does that.
