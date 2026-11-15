@@ -3209,5 +3209,7 @@
   "Could not save to room memory: {reason}": "无法保存到房间记忆：{reason}",
   "Sign in to use room memory.": "请先登录再使用房间记忆。",
   "Saved. The list updates when the room syncs.": "已保存。房间同步后列表会更新。",
-  "Could not remember the dismissal: {reason}": "无法记住忽略操作：{reason}"
+  "Could not remember the dismissal: {reason}": "无法记住忽略操作：{reason}",
+  "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。",
+  "Room memory is unavailable right now: {reason}": "房间记忆暂时不可用：{reason}"
 }

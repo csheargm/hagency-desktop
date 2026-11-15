@@ -3209,5 +3209,7 @@
   "Could not save to room memory: {reason}": "Could not save to room memory: {reason}",
   "Sign in to use room memory.": "Sign in to use room memory.",
   "Saved. The list updates when the room syncs.": "Saved. The list updates when the room syncs.",
-  "Could not remember the dismissal: {reason}": "Could not remember the dismissal: {reason}"
+  "Could not remember the dismissal: {reason}": "Could not remember the dismissal: {reason}",
+  "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run",
+  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}"
 }
