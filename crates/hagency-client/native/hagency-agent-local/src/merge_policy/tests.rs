@@ -232,9 +232,9 @@ fn codex_merge_ready_and_review_commands_are_read_like_claude_ones() {
     assert_eq!(parse(json!(["gh", "pr", "ready", "7", "--repo", "o/r"])).unwrap().kind, gate::Kind::Ready);
     let body = format!("{APPROVE_MARKER} - docs only");
     assert_eq!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", body])).unwrap().kind, gate::Kind::Review);
-    let wrapped = parse(json!(["/bin/zsh", "-lc", "cd repo && gh pr merge 7 --squash -R o/r"])).unwrap();
+    let wrapped = parse(json!(["/bin/bash", "-c", "cd repo && gh pr merge 7 --squash -R o/r"])).unwrap();
     assert!(wrapped.dir.ends_with("repo"));
-    assert_eq!(parse(json!(["bash", "-c", format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: ok\"")])).unwrap().kind, gate::Kind::Review);
+    assert_eq!(parse(json!(["/bin/sh", "-c", format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: ok\"")])).unwrap().kind, gate::Kind::Review);
 }
 
 #[test]
@@ -243,16 +243,17 @@ fn codex_chained_redirected_or_expanded_commands_still_get_a_card() {
     let parse = |command: Value| gate::parse_command(&codex(command, dir.path()));
     for line in ["gh pr merge 7 --squash; rm -rf ~", "gh pr merge 7 --squash && gh pr merge 8 --squash", "gh pr merge 7 --squash > out", "gh pr merge $(echo 7) --squash", "cd .. && gh pr merge 7 --squash", "gh pr merge 7 --merge"] {
         assert!(parse(json!(line)).is_none(), "{line}");
-        assert!(parse(json!(["bash", "-lc", line])).is_none(), "{line}");
+        assert!(parse(json!(["/bin/bash", "-c", line])).is_none(), "{line}");
     }
     assert!(parse(json!(["gh", "pr", "merge", "7", "--squash", ";"])).is_none(), "argv words hold no metacharacter");
     assert!(parse(json!(["gh", "pr", "merge", "7", "--squash", "--admin"])).is_none());
     assert!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", "Hagency verdict: CHANGES - no"])).is_none());
     assert!(parse(json!(["python3", "-c", "gh pr merge 7 --squash"])).is_none(), "only a shell's -c line is read");
     assert!(parse(json!(["gh", "pr", 7])).is_none());
-    for program in ["./bash", "repo/zsh", "/workspace/bash", "bin/sh", "/tmp/sh"] {
+    for program in ["bash", "sh", "/bin/zsh", "./bash", "repo/zsh", "/workspace/bash", "bin/sh", "/tmp/sh"] {
         assert!(parse(json!([program, "-c", "gh pr merge 7 --squash -R o/r"])).is_none(), "{program} is not a system shell");
     }
+    assert!(parse(json!(["/bin/bash", "-lc", "gh pr merge 7 --squash -R o/r"])).is_none(), "a login shell sources startup files");
     for line in ["gh pr merge 7 --squash", "gh pr ready 7", "gh pr merge 7 --squash -d -R o/r", "gh pr merge 7 --squash --delete-branch -R o/r"] {
         assert!(parse(json!(line)).is_none(), "{line}: exact merge with an explicit repository only");
         assert!(gate::parse_command(&bash(line, dir.path(), "a")).is_none(), "{line}");

@@ -110,7 +110,7 @@ const SHELL_METACHARACTERS: [char; 7] = [';', '|', '\n', '`', '$', '<', '>'];
 
 /// The directory and words of a command proposal. `claude.Bash` and Codex's
 /// `codex.command` give one shell line; Codex may instead give an argv array,
-/// read as `<shell> -c|-lc <line>` or else as plain words that must hold no
+/// read as `/bin/bash|/bin/sh -c <line>` (never a login `-lc`) or else as plain words that must hold no
 /// shell metacharacter. Every other tool (`codex.network` included) is `None`.
 fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
     let cwd = Path::new(&proposal.canonical_directory);
@@ -120,7 +120,7 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
         ("codex.command", Value::Array(argv)) => {
             let argv: Vec<&str> = argv.iter().map(Value::as_str).collect::<Option<_>>()?;
             match argv.as_slice() {
-                [sh, "-c" | "-lc", line] if is_shell(sh) => shell_words(line, cwd),
+                [sh, "-c", line] if is_shell(sh) => shell_words(line, cwd),
                 words if words.iter().all(|w| !w.contains(SHELL_METACHARACTERS)) => Some((cwd.to_path_buf(), words.iter().map(|w| (*w).to_owned()).collect())),
                 _ => None,
             }
@@ -129,10 +129,11 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
     }
 }
 
-/// A system shell: an exact absolute path, or a bare name Codex resolves on
-/// its fixed `PATH`; never a relative or workspace path (`./sh`, `repo/zsh`).
+/// A system shell that reads no startup file under `-c` (the launch env holds no
+/// BASH_ENV/ENV): an exact absolute path only, never a bare name looked up on
+/// `PATH` or a workspace path. zsh is out: `zsh -c` sources `~/.zshenv`.
 fn is_shell(program: &str) -> bool {
-    matches!(program, "bash" | "sh" | "zsh" | "/bin/bash" | "/bin/sh" | "/bin/zsh" | "/usr/bin/bash" | "/usr/bin/zsh")
+    matches!(program, "/bin/bash" | "/bin/sh" | "/usr/bin/bash")
 }
 
 /// One shell line: a single command, or one in-workspace `cd <dir> &&` then one command.
