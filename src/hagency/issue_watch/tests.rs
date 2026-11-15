@@ -11,6 +11,9 @@ struct Fake {
     fail_mark: Option<i64>,
     posted: RefCell<Vec<String>>,
     seen: RefCell<Vec<i64>>,
+    /// Paused from the start, or by Stop All right after this issue's post.
+    paused: std::cell::Cell<bool>,
+    pause_after_post: Option<i64>,
 }
 impl Handoff for Fake {
     async fn post(&self, issue: &Issue) -> Result<(), String> {
@@ -18,6 +21,9 @@ impl Handoff for Fake {
             return Err("room not joined".into());
         }
         self.posted.borrow_mut().push(issue.url.clone());
+        if self.pause_after_post == Some(issue.number) {
+            self.paused.set(true);
+        }
         Ok(())
     }
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
@@ -26,6 +32,9 @@ impl Handoff for Fake {
         }
         self.seen.borrow_mut().push(number);
         Ok(())
+    }
+    fn paused(&self) -> bool {
+        self.paused.get()
     }
 }
 fn issue(number: i64) -> Issue {
@@ -215,4 +224,23 @@ fn another_device_cannot_edit_the_watch() {
     panel.set_context(&mut cx, "agt_1", false, Vec::new());
     assert!(!panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
     assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("runs on the device"));
+}
+
+/// GPT integration review: Stop All during a check must fence the hand-off.
+#[test]
+fn a_paused_agent_gets_no_post_and_nothing_is_marked_seen() {
+    let fake = Fake { paused: true.into(), ..Default::default() };
+    let outcome = run(&fake, &[issue(1), issue(2)]);
+    assert_eq!(outcome.handed, 0);
+    assert!(fake.posted.borrow().is_empty() && fake.seen.borrow().is_empty());
+    assert!(outcome.error.unwrap().contains("issue #1 waits until it is resumed"));
+}
+
+#[test]
+fn stop_all_between_post_and_record_leaves_the_issue_for_after_resume() {
+    let fake = Fake { pause_after_post: Some(2), ..Default::default() };
+    let outcome = run(&fake, &[issue(1), issue(2), issue(3)]);
+    assert_eq!(outcome.handed, 1);
+    assert_eq!(*fake.seen.borrow(), vec![1], "#2 was posted but stays unseen, so it is handed off again after Resume");
+    assert_eq!(fake.posted.borrow().len(), 2, "#3 is never posted");
 }

@@ -87,7 +87,10 @@ pub fn evaluate(policy: &MergePolicy, facts: &PrFacts, approvers: &[String], mer
     Decision::Merge
 }
 
-fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
+/// Why `facts` is not a low-risk change under `policy` (open, files inside
+/// the low-risk paths, under the line limit, nothing protected, renamed or
+/// opaque); `None` when it is. Approvals and CI are not judged here.
+pub(crate) fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
     if !facts.open {
         return Some("the pull request is not open".into());
     }
@@ -116,7 +119,7 @@ fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
     }
 }
 
-fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
+pub(crate) fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
     if !policy.require_ci {
         return None;
     }

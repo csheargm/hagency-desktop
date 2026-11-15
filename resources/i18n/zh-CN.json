@@ -3200,6 +3200,7 @@
   "Last check {time}: 1 issue handed off": "上次检查 {time}：已交出 1 个议题",
   "Last check {time}: {count} issues handed off": "上次检查 {time}：已交出 {count} 个议题",
   "Last check {time} failed: {error}": "上次检查 {time} 失败：{error}",
+  "Agent paused by the owner: issue #{number} waits until it is resumed": "Agent 已被所有者暂停：议题 #{number} 将在恢复后处理",
   "Could not hand off issue #{number}: {error}": "无法交出议题 #{number}：{error}",
   "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}",
   "Profile": "个人资料",

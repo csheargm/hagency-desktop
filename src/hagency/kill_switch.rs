@@ -104,7 +104,8 @@ pub fn paused_in(path: &Path, agent: &str) -> bool {
         Ok(bytes) => serde_json::from_slice::<Paused>(&bytes).map_or(true, |p| p.agents.iter().any(|a| a == agent)),
     }
 }
-fn paused_here(agent: &str) -> bool {
+/// Whether this device's pause file pauses `agent` (unreadable counts as paused).
+pub(crate) fn paused_here(agent: &str) -> bool {
     paused_in(&default_path(), agent)
 }
 /// The one start check: `command` would start an Agent the owner paused.

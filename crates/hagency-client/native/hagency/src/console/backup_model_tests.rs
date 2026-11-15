@@ -13,10 +13,30 @@ fn tags_keep_text_models_cloud_first() {
 }
 #[test]
 fn labels_say_where_the_backup_runs() {
-    assert_eq!(label("ollama:gpt-oss:120b-cloud"), "Ollama: gpt-oss:120b-cloud (cloud)");
-    assert_eq!(label("ollama:qwen3:8b"), "Ollama: qwen3:8b (local)");
-    assert_eq!(switched_notice("usage limit", "ollama:qwen3:8b"),
+    assert_eq!(label("ollama:gpt-oss:120b-cloud|cloud"), "Ollama: gpt-oss:120b-cloud (cloud)");
+    assert_eq!(label("ollama:qwen3:8b|local"), "Ollama: qwen3:8b (local)");
+    assert_eq!(switched_notice("usage limit", "ollama:qwen3:8b|local"),
         "ℹ️ Main model unavailable (usage limit); answered by the backup model Ollama: qwen3:8b (local), without tools.");
+}
+/// GPT integration review: a remote model without a "-cloud" suffix was saved
+/// as a bare name and later labelled "local".
+#[test]
+fn the_place_ollama_reported_is_saved_and_unknown_means_cloud() {
+    let remote = OllamaModel { name: "glm-4.6".into(), cloud: true };
+    assert_eq!(remote.stored(), "ollama:glm-4.6|cloud");
+    assert_eq!(label(&remote.stored()), "Ollama: glm-4.6 (cloud)");
+    for legacy in ["ollama:qwen3:8b", "ollama:qwen3:8b|elsewhere"] {
+        assert_eq!(label(legacy), "Ollama: qwen3:8b (cloud or remote)", "{legacy}");
+    }
+    assert!(same_model("ollama:qwen3:8b", "ollama:qwen3:8b|local"));
+    assert_eq!(model_name("ollama:qwen3:8b|local"), "qwen3:8b");
+}
+#[test]
+fn the_place_is_refreshed_from_what_ollama_lists_now() {
+    let listed = [OllamaModel { name: "qwen3:8b".into(), cloud: true }];
+    assert_eq!(refreshed("ollama:qwen3:8b|local".into(), &listed), "ollama:qwen3:8b|cloud");
+    assert_eq!(refreshed("ollama:qwen3:8b".into(), &listed), "ollama:qwen3:8b|cloud");
+    assert_eq!(refreshed("ollama:gone:1b".into(), &listed), "ollama:gone:1b", "unlisted stays unknown");
 }
 #[test]
 fn store_saves_loads_and_clears() {
@@ -41,7 +61,7 @@ mod retry {
     use hagency_agent_local::provider_failure::{failed_turn, Unavailability};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const BACKUP: &str = "ollama:gpt-oss:120b-cloud";
+    const BACKUP: &str = "ollama:gpt-oss:120b-cloud|cloud";
     async fn run(stored: Option<&str>, main: Error, calls: &AtomicUsize) -> hagency_agent_local::codex::Result<hagency_agent_local::codex::Completed> {
         retry_once(stored.map(str::to_owned), Err(main), |_| async {
             calls.fetch_add(1, Ordering::SeqCst);

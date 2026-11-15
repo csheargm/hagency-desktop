@@ -11,6 +11,7 @@ pub(super) const HEAD: &str = "1111111111111111111111111111111111111111";
 pub(super) const BASE: &str = "2222222222222222222222222222222222222222";
 
 mod hardening;
+mod ready_review;
 
 pub(super) fn policy() -> MergePolicy {
     parse_policy(POLICY).unwrap()
@@ -122,15 +123,16 @@ fn github_pr_json_becomes_facts_and_checks() {
 pub(super) struct Fake {
     files: Vec<ChangedFile>,
     pub(super) head: std::cell::RefCell<String>,
+    pub(super) checks: Vec<Check>,
 }
 impl Fake {
     pub(super) fn new(files: Vec<ChangedFile>) -> Self {
-        Self { files, head: std::cell::RefCell::new(HEAD.into()) }
+        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed] }
     }
 }
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
-        let facts = facts(self.files.clone(), vec![Check::Passed]);
+        let facts = facts(self.files.clone(), self.checks.clone());
         Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), facts })
     }
     async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {
@@ -196,7 +198,7 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""));
     let mut approve = bash("", temp.path(), "reviewer");
     approve.arguments = json!({"command": review});
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, None, "a code review is not low risk: the card asks");
     let merge = bash(&merge_line(), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &code).await, None);
     assert!(ledger.authorize_tool(&merge, 11).is_err(), "the owner's card is still required");

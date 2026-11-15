@@ -3200,6 +3200,7 @@
   "Last check {time}: 1 issue handed off": "Last check {time}: 1 issue handed off",
   "Last check {time}: {count} issues handed off": "Last check {time}: {count} issues handed off",
   "Last check {time} failed: {error}": "Last check {time} failed: {error}",
+  "Agent paused by the owner: issue #{number} waits until it is resumed": "Agent paused by the owner: issue #{number} waits until it is resumed",
   "Could not hand off issue #{number}: {error}": "Could not hand off issue #{number}: {error}",
   "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}",
   "Profile": "Profile",

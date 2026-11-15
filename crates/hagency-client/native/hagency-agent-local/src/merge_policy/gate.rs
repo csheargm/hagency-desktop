@@ -4,7 +4,9 @@
 //! asks to run exactly `gh pr merge <N> --squash --match-head-commit <sha>` (or posts an approving
 //! `gh pr review`), the gate reads the pull request with this device's `gh`
 //! login, judges it with [`super::evaluate`] and, only on `Merge`, answers the
-//! card the way the owner's click would, once per pull request. Every other
+//! card the way the owner's click would, once per pull request. `gh pr ready`
+//! and approving reviews skip the card only for a pull request that is a
+//! low-risk change under the same policy (everything but the approvals). Every other
 //! case returns `None`: the normal approval flow (and its card) runs unchanged,
 //! so this never weakens the "ask only for outside changes" classifier.
 //!
@@ -208,20 +210,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     let view = source.pull_request(&command).await?;
-    if command.kind == Kind::Merge {
-        // Unbound merges always go to the owner: without the flag GitHub
-        // would merge whatever the head is when the command runs.
-        if command.head.as_deref() != Some(view.head_sha.as_str()) {
-            return None;
-        }
-        let repo = super::github::repo_of_url(&view.url, command.number)?;
-        let policy = parse_policy(&source.policy(&command, repo, &view.base_sha).await?)?;
-        let approvers = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
-        if evaluate(&policy, &view.facts, &approvers, &agent) != Decision::Merge || !ledger.claim_auto_merge(&view.url, &agent).ok()? {
-            return None;
-        }
-    }
-    if command.kind == Kind::Review && !view.facts.open {
+    if !qualifies(ledger, &command, &view, &agent, source).await? {
         return None;
     }
     let allowed = match disposition {
@@ -234,4 +223,33 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         ledger.record_agent_review(&view.url, &view.head_sha, &agent).ok()?;
     }
     Some(allowed)
+}
+
+/// Whether `command` may skip the card. Every kind needs the pull request at
+/// its current head to be a low-risk change under the policy at its base
+/// commit; a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
+/// (and takes the one automatic merge). `None` when facts cannot be read.
+async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, agent: &str, source: &impl PrSource) -> Option<bool> {
+    let repo = super::github::repo_of_url(&view.url, command.number)?;
+    if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
+        return Some(false);
+    }
+    let policy = parse_policy(&source.policy(command, repo, &view.base_sha).await?)?;
+    if super::file_reason(&policy, &view.facts).is_some() {
+        return Some(false);
+    }
+    // An approval is public and counts toward a merge, so CI must pass for
+    // it as for a merge; readying a draft (CI may not have run yet) need not.
+    match command.kind {
+        Kind::Ready => return Some(true),
+        Kind::Review => return Some(super::ci_reason(&policy, &view.facts).is_none()),
+        Kind::Merge => {}
+    }
+    // Unbound merges always go to the owner: without the flag GitHub
+    // would merge whatever the head is when the command runs.
+    if command.head.as_deref() != Some(view.head_sha.as_str()) {
+        return Some(false);
+    }
+    let approvers = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
+    Some(evaluate(&policy, &view.facts, &approvers, agent) == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
 }
