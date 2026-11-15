@@ -28,13 +28,13 @@ script_mod! {
         preview := HtmlOrPlaintext { width: Fill height: Fit selectable: true }
         input := TextInput {
             width: Fill height: Fit
-            empty_text: "追加指令…"
+            empty_text: #(crate::i18n::tr("Add instructions…")) i18n_empty_text: "Add instructions…"
         }
         buttons := View {
             width: Fill height: Fit flow: Right spacing: 8
-            append := Button {text: "追加到当前运行"}
-            stop := Button {text: "停止本次运行"}
-            restore := Button {text: "恢复未执行指令"}
+            append := Button {text: #(crate::i18n::tr("Add to the current run")) i18n_text: "Add to the current run"}
+            stop := Button {text: #(crate::i18n::tr("Stop this run")) i18n_text: "Stop this run"}
+            restore := Button {text: #(crate::i18n::tr("Restore unsent instructions")) i18n_text: "Restore unsent instructions"}
         }
         hint := Label {
             width: Fill height: Fit
@@ -42,7 +42,7 @@ script_mod! {
         }
         unconfirmed_notice := Label {
             visible: false width: Fill height: Fit
-            text: "以下指令结果未确认，原文可复制。请先核对，避免重复执行。"
+            text: #(crate::i18n::tr("The result of the instructions below is unconfirmed; the text can be copied. Check first to avoid running them twice.")) i18n_text: "The result of the instructions below is unconfirmed; the text can be copied. Check first to avoid running them twice."
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
         }
         unconfirmed := ScrollYView {
@@ -182,7 +182,7 @@ impl AgentRunCardRef {
         }
         let append = inner.view.button(cx, ids!(buttons.append));
         append.set_visible(cx, open && entry.may_append);
-        append.set_text(cx, "追加到当前运行");
+        append.set_text(cx, crate::i18n::tr("Add to the current run"));
         append.set_enabled(cx, !entry.sending);
         let stop = inner.view.button(cx, ids!(buttons.stop));
         stop.set_visible(cx, open && entry.may_stop);
@@ -196,7 +196,7 @@ impl AgentRunCardRef {
             .set_visible(cx, (open && (entry.may_append || entry.may_stop)) || !entry.recovered_drafts.is_empty());
         let hint = inner.view.label(cx, ids!(hint));
         hint.set_visible(cx, !entry.hint.is_empty());
-        hint.set_text(cx, &entry.hint);
+        hint.set_text(cx, crate::i18n::tr(&entry.hint));
         let unconfirmed = entry.unconfirmed_text();
         inner.view.label(cx, ids!(unconfirmed_notice)).set_visible(cx, unconfirmed.is_some());
         inner.view.view(cx, ids!(unconfirmed)).set_visible(cx, unconfirmed.is_some());
@@ -206,7 +206,10 @@ impl AgentRunCardRef {
 }
 
 #[cfg(test)]
+const SOURCE_TEXT: &str = include_str!("agent_run_card.rs");
+#[cfg(test)]
 mod tests {
+    use super::SOURCE_TEXT;
     use super::*;
 
     #[test]
@@ -227,6 +230,19 @@ mod tests {
     }
 
     #[cfg(feature = "agent_chat")]
+    /// The run card's buttons, placeholder and notices are English keys with a
+    /// Chinese translation, so an English UI no longer shows Chinese labels.
+    #[test]
+    fn run_card_text_is_english_with_a_chinese_translation() {
+        use crate::i18n::{Language, text_for};
+        for key in ["Add instructions…", "Add to the current run", "Stop this run", "Restore unsent instructions",
+            "Sending…", "Sent. Waiting for the Agent to confirm.", "The Agent received this action."] {
+            assert!(key.is_ascii() || key.ends_with('…'), "{key}");
+            assert_eq!(text_for(Language::English, key), key);
+            assert_ne!(text_for(Language::Chinese, key), key, "{key} has no Chinese text");
+        }
+        assert!(!SOURCE_TEXT.split("#[cfg(test)]").next().unwrap().chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "Chinese literal in the card's layout");
+    }
     #[test]
     fn live_text_is_formatted_like_the_finished_reply_and_plain_text_stays_plain() {
         use crate::shared::html_or_plaintext::HtmlOrPlaintextWidgetRefExt;
