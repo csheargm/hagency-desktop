@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, time::Duration};
 
-mod agents; mod approval; mod start; mod profile; mod progress;
+mod agents; mod start; mod profile; mod progress;
 pub use agents::{AgentIdentity, create_agent, find_agent};
-pub use approval::{DEMO_APPROVAL_MODE_ENV, demo_default_mode};
 pub use progress::{STEPS, current_step, last_failed_step, progress_text};
 use progress::{CURRENT_STEP, LAST_FAILED_STEP, step_index};
 
@@ -178,14 +177,11 @@ pub(super) fn local(agent_id: &str, action: LocalAction, input: Option<Value>) -
     Command::Local { agent_id: agent_id.to_owned(), action, input, binding_id: None, requester: None }
 }
 
-async fn configure(exec: &dyn CommandExecutor, agent_id: &str, spec: &SimpleAgentSpec, model: &str, credential: &str, mode: Option<&str>) -> Result<(), NativeError> {
+async fn configure(exec: &dyn CommandExecutor, agent_id: &str, spec: &SimpleAgentSpec, model: &str, credential: &str) -> Result<(), NativeError> {
     // The save names the profile it replaces (compare-and-swap): read it first.
     let current = step(exec, "read-model", local(agent_id, LocalAction::AgentModel, None)).await?;
     let profile = profile::model_input(spec, model, credential);
-    let mut input = crate::native_owner::model_save_request(&current["modelProfile"], profile).ok_or_else(|| failure("invalid_model_profile"))?;
-    if let Some(mode) = mode {
-        input["approvalMode"] = json!(mode);
-    }
+    let input = crate::native_owner::model_save_request(&current["modelProfile"], profile).ok_or_else(|| failure("invalid_model_profile"))?;
     step(exec, "save-model", local(agent_id, LocalAction::SaveAgentModel, Some(input))).await?;
     // Default "who can ask": humans in rooms the owner bound the Agent to are
     // allowed under a daily token budget. The server already drops messages
@@ -226,10 +222,8 @@ pub async fn create_simple_agent_as(exec: &dyn CommandExecutor, spec: &SimpleAge
     // end up with an Agent that has no runtime (seen as a dead "Stopped" Agent).
     let (model, credential) = connect_provider(exec, &spec.runtime, spec.model.as_deref()).await?;
     let (project_id, space_id) = ensure_project(exec, &spec.name).await?;
-    let (agent_id, puppet_mxid, reused) = agents::resolve_agent(exec, &spec.name, identity).await?;
-    // Demo builds only: a NEW Agent that asks its owner starts in the env's approval mode; an existing one is never changed.
-    let mode = (!reused && spec.high_risk == HIGH_RISK_ASK_OWNER).then(demo_default_mode).flatten();
-    if let Err(error) = configure(exec, &agent_id, spec, &model, &credential, mode).await {
+    let (agent_id, puppet_mxid, _reused) = agents::resolve_agent(exec, &spec.name, identity).await?;
+    if let Err(error) = configure(exec, &agent_id, spec, &model, &credential).await {
         if error.code != "agent_execution_device_required" {
             return Err(error);
         }
@@ -237,7 +231,7 @@ pub async fn create_simple_agent_as(exec: &dyn CommandExecutor, spec: &SimpleAge
         let details = step(exec, "agent-details", Command::AgentDetails { agent_id: agent_id.clone() }).await?;
         let generation = details["agent"]["generation"].as_i64().unwrap_or(0);
         step(exec, "assign-device", Command::AssignAgentToCurrentDevice { agent_id: agent_id.clone(), expected_generation: generation }).await?;
-        configure(exec, &agent_id, spec, &model, &credential, mode).await?;
+        configure(exec, &agent_id, spec, &model, &credential).await?;
     }
     let started = start_service(exec, &agent_id, spec.reservation).await?;
     let direct = owner_direct(exec, &agent_id).await?;
