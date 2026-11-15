@@ -8,7 +8,7 @@ use matrix_sdk::{room::RoomMember, ruma::{OwnedRoomId, OwnedUserId}};
 use crate::{
     block_user_modal::BlockUserModalAction, shared::avatar::{AvatarState, AvatarWidgetExt}, sliding_sync::{MatrixRequest, is_user_blocked, submit_async_request}, utils
 };
-use super::{profile_moderation::ProfileModeration, profile_view_fill};
+use super::{profile_moderation::ProfileModeration, profile_view_fill, user_rooms::UserRoomsInCommonWidgetExt};
 use crate::shared::navigation_bar_button::NavigationBarButtonWidgetExt;
 
 
@@ -263,6 +263,9 @@ script_mod! {
         }
 
         desktop_moderation := ModerationActions {}
+
+        // The joined rooms this user is in too; each row opens its room.
+        rooms_in_common := mod.widgets.UserRoomsInCommon {}
 
         // A view that allows the user to verify a new DID and associate it
         // with a particular Matrix User ID.
@@ -685,6 +688,7 @@ impl UserProfileSlidingPane {
                 .show(cx, info.user_id.clone());
         }
 
+        self.view.user_rooms_in_common(cx, ids!(rooms_in_common)).load(cx, info.user_id.clone());
         self.info = Some(info);
         self.request_member_abilities();
     }
