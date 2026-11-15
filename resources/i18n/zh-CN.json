@@ -3231,5 +3231,7 @@
   "{agent} suggests a team skill for this room:": "{agent} 为本房间建议了一项团队技能：",
   "Team skill suggestion: {name}": "团队技能建议：{name}",
   "Saved as a team skill": "已保存为团队技能",
-  "Saving team skill…": "正在保存团队技能…"
+  "Saving team skill…": "正在保存团队技能…",
+  "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。",
+  "Room memory is unavailable right now: {reason}": "房间记忆暂时不可用：{reason}"
 }

@@ -3231,5 +3231,7 @@
   "{agent} suggests a team skill for this room:": "{agent} suggests a team skill for this room:",
   "Team skill suggestion: {name}": "Team skill suggestion: {name}",
   "Saved as a team skill": "Saved as a team skill",
-  "Saving team skill…": "Saving team skill…"
+  "Saving team skill…": "Saving team skill…",
+  "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run",
+  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}"
 }

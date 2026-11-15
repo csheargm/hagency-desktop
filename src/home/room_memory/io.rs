@@ -10,7 +10,7 @@ use matrix_sdk::{
     Client,
     deserialized_responses::{DeviceLinkProblem, TimelineEvent, TimelineEventKind, VerificationLevel, VerificationState},
     room::{MessagesOptions, Room},
-    ruma::{OwnedRoomId, RoomId, UserId, events::{StateEventType, room::power_levels::UserPowerLevel}},
+    ruma::{OwnedRoomId, RoomId, UserId, events::room::power_levels::UserPowerLevel},
 };
 use serde_json::Value;
 
@@ -57,8 +57,8 @@ pub async fn load(client: &Client, room_id: &RoomId) -> Result<Loaded, String> {
     };
     match storage {
         Storage::State => {
-            let raw = room.get_state_events(StateEventType::from(MEMORY_STATE_TYPE)).await.map_err(|_| unavailable())?;
-            let events: Vec<Value> = raw.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+            // From the server: the sync store does not hold custom state types.
+            let events = super::server_state::events_of_type(client, room_id, MEMORY_STATE_TYPE).await?;
             loaded.entries = room_memory::reduce(&events);
             loaded.levels = levels(&room, std::iter::once(loaded.me.clone())).await?;
         }
