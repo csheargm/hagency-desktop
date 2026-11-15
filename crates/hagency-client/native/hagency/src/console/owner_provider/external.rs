@@ -231,6 +231,14 @@ pub(crate) fn verify_reference(home: &Path, selected: &str) -> Result<(), Provid
     }
     Ok(())
 }
+/// Claude Code's local model aliases and their display names: the one list
+/// both this provider reply and the desktop's model labels read.
+// TODO(R4): external.rs is over budget; split the Claude/Octos model lists out.
+pub const CLAUDE_MODEL_LABELS: [(&str, &str); 3] = [("sonnet", "Claude Sonnet"), ("opus", "Claude Opus"), ("haiku", "Claude Haiku")];
+/// The display name for a Claude Code alias or display name (any case).
+pub fn claude_model_label(model: &str) -> Option<&'static str> {
+    CLAUDE_MODEL_LABELS.iter().find(|(alias, label)| alias.eq_ignore_ascii_case(model) || label.eq_ignore_ascii_case(model)).map(|(_, label)| *label)
+}
 fn model(
     id: &str,
     name: &str,
@@ -361,7 +369,7 @@ pub(crate) async fn call(
             model(
                 "sonnet",
                 "sonnet",
-                "Claude Sonnet",
+                claude_model_label("sonnet").unwrap_or("sonnet"),
                 "Claude Code local model alias",
                 &selected,
                 &["medium", "low", "high"],
@@ -369,7 +377,7 @@ pub(crate) async fn call(
             model(
                 "opus",
                 "opus",
-                "Claude Opus",
+                claude_model_label("opus").unwrap_or("opus"),
                 "Claude Code local model alias",
                 &selected,
                 &["medium", "low", "high", "max"],
@@ -377,7 +385,7 @@ pub(crate) async fn call(
             model(
                 "haiku",
                 "haiku",
-                "Claude Haiku",
+                claude_model_label("haiku").unwrap_or("haiku"),
                 "Claude Code local model alias",
                 &selected,
                 &["low", "medium", "high"],

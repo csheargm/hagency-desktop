@@ -105,3 +105,23 @@ fn approvals_card_shows_and_saves_pull_request_merges() {
     assert_eq!(mapping::auto_merge_change(0), Some(json!({"autoMerge": false})));
     assert_eq!(mapping::auto_merge_change(2), None);
 }
+
+/// On screen: one Agent saved "sonnet", another "Claude Sonnet"; both Model
+/// dropdowns read "Claude Sonnet", before and after the choices load.
+#[test]
+fn model_dropdown_shows_one_label_for_alias_and_display_name() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = panel(&mut cx);
+    panel.status = json!({"here": true});
+    for saved in ["sonnet", "Claude Sonnet"] {
+        panel.model = json!({"modelProfile": {"model": saved, "credential_ref": "claude-managed:x"}});
+        panel.models.clear();
+        panel.render(&mut cx);
+        assert_eq!(panel.view.drop_down(&mut cx, ids!(model)).selected_label(), "Claude Sonnet", "{saved} while loading");
+        panel.models = vec![ModelChoice { model: "sonnet".into(), label: "Claude Sonnet".into(), efforts: vec![], default_effort: String::new() },
+            ModelChoice { model: "opus".into(), label: "Claude Opus".into(), efforts: vec![], default_effort: String::new() }];
+        panel.render(&mut cx);
+        let model = panel.view.drop_down(&mut cx, ids!(model));
+        assert_eq!((model.selected_item(), model.selected_label()), (0, "Claude Sonnet".to_owned()), "{saved} with choices");
+    }
+}

@@ -231,3 +231,19 @@ pub(crate) fn service_running(state: &str) -> bool {
 #[cfg(test)]
 #[path = "mapping_tests.rs"]
 mod tests;
+
+/// The provider choice a saved model names, by id or by display name: a
+/// profile may hold either ("sonnet" or "Claude Sonnet").
+pub(crate) fn model_position(models: &[ModelChoice], saved: &str) -> Option<usize> {
+    let wanted = hagency::console::claude_model_label(saved);
+    models.iter().position(|m| m.model == saved || m.label.eq_ignore_ascii_case(saved)
+        || wanted.is_some() && hagency::console::claude_model_label(&m.model) == wanted)
+}
+/// The friendly label for a saved model: its provider choice's label, else
+/// Claude Code's display name for the alias, else the value as saved.
+pub(crate) fn model_label(models: &[ModelChoice], saved: &str) -> String {
+    match model_position(models, saved) {
+        Some(index) => models[index].label.clone(),
+        None => hagency::console::claude_model_label(saved).unwrap_or(saved).to_owned(),
+    }
+}

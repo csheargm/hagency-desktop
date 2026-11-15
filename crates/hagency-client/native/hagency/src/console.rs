@@ -24,6 +24,8 @@ mod owned_agents;
 mod owned_runtime;
 mod owner_projects;
 mod owner_provider;
+// TODO(R4): console.rs is over budget; one re-export line added.
+pub use owner_provider::external::claude_model_label;
 pub mod palpo_import;
 mod project_sides;
 mod resource_configuration;

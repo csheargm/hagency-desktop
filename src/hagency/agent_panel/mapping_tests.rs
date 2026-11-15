@@ -111,3 +111,16 @@ fn watch_rooms_lists_active_project_rooms() {
     assert_eq!(watch_rooms(&status), vec![("!a:s".to_owned(), "Project".to_owned()), ("!b:s".to_owned(), "!b:s".to_owned())]);
     assert!(watch_rooms(&json!({})).is_empty());
 }
+
+#[test]
+fn saved_model_alias_and_display_name_show_the_same_label() {
+    let choices = vec![ModelChoice { model: "sonnet".into(), label: "Claude Sonnet".into(), efforts: vec![], default_effort: String::new() }];
+    for saved in ["sonnet", "Claude Sonnet", "claude sonnet"] {
+        assert_eq!(model_position(&choices, saved), Some(0), "{saved} selects the provider's Sonnet");
+        assert_eq!(model_label(&choices, saved), "Claude Sonnet");
+        assert_eq!(model_label(&[], saved), "Claude Sonnet", "{saved} before the choices load");
+    }
+    assert_eq!(model_label(&[], "opus"), "Claude Opus");
+    assert_eq!(model_label(&choices, "gpt-5"), "gpt-5", "an unknown model shows as saved");
+    assert_eq!(model_position(&choices, "opus"), None);
+}

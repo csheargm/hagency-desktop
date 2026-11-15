@@ -34,8 +34,7 @@ impl AgentPanel {
     }
     /// The saved model's index among the provider's choices.
     fn model_index(&self) -> Option<usize> {
-        let saved = self.model["modelProfile"]["model"].as_str()?;
-        self.models.iter().position(|m| m.model == saved)
+        mapping::model_position(&self.models, self.model["modelProfile"]["model"].as_str()?)
     }
     fn render_model(&mut self, cx: &mut Cx) {
         let editable = self.here() && !self.busy && !self.models.is_empty() && self.model["modelProfile"].is_object();
@@ -43,7 +42,7 @@ impl AgentPanel {
         let mut labels: Vec<String> = self.models.iter().map(|m| m.label.clone()).collect();
         if labels.is_empty() || index.is_none() {
             let saved = self.model["modelProfile"]["model"].as_str().filter(|m| !m.is_empty());
-            labels.insert(0, saved.map(str::to_owned).unwrap_or_else(|| crate::i18n::tr(if self.here() { "Checking model choices…" } else { "Set on the device that runs it" }).into()));
+            labels.insert(0, saved.map(|m| mapping::model_label(&self.models, m)).unwrap_or_else(|| crate::i18n::tr(if self.here() { "Checking model choices…" } else { "Set on the device that runs it" }).into()));
         }
         self.view.drop_down(cx, ids!(model)).set_labels(cx, labels);
         self.view.drop_down(cx, ids!(model)).set_selected_item(cx, index.unwrap_or(0));
