@@ -72,7 +72,7 @@ fn is_git_metadata(path: &Path) -> bool {
 }
 
 /// Resolve `path` from `cwd` and require it to stay in `cwd`.
-fn resolves_inside(path: &str, cwd: &Path) -> bool {
+pub(crate) fn resolves_inside(path: &str, cwd: &Path) -> bool {
     resolves_within(path, cwd, cwd)
 }
 
@@ -128,4 +128,4 @@ mod tests;
 #[cfg(test)]
 mod bypass_tests;
 mod rules;
-mod shell;
+pub(crate) mod shell;
