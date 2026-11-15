@@ -27,6 +27,29 @@ pub struct Notice {
 
 /// What the hand-off adds when the watching Agent's auto-merge is on, so the
 /// fixer continues past the draft without a person's prompt.
+// The data line that carries the issue title opens with
+// `::hagency::ISSUE_TITLE_LABEL`. The title is written by whoever opened the
+// issue, so it follows the fixed request, quoted, and the Agent's
+// instructions (the runtime's AGENT_MERGE_NOTE) name that label as data.
+/// The longest title the data line carries, in characters.
+const MAX_TITLE_CHARS: usize = 200;
+
+/// The title as one quoted, inert line: no quotes or backticks that could
+/// close the quote, no newlines or control characters, capped in length.
+pub fn quoted_title(title: &str) -> String {
+    let inert: String = title.chars().map(|c| match c {
+        '"' | '`' | '“' | '”' => '\'',
+        c if c.is_control() => ' ',
+        c => c,
+    }).collect();
+    let words = inert.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut capped: String = words.chars().take(MAX_TITLE_CHARS).collect();
+    if words.chars().count() > MAX_TITLE_CHARS {
+        capped.push('…');
+    }
+    format!("\"{capped}\"")
+}
+
 pub const MERGE_POLICY_STEP: &str = "This repository has an agent merge policy: when the pull request is ready, mark it ready (gh pr ready <N>) and ask another Agent in this room to review it.";
 
 impl Notice {
@@ -38,21 +61,23 @@ impl Notice {
     /// The same notice for an Agent whose auto-merge switch is `on`.
     pub fn with_merge_policy(mut self, on: bool) -> Self { self.merge_policy = on; self }
     fn merge_step(&self) -> String { if self.merge_policy { format!(" {MERGE_POLICY_STEP}") } else { String::new() } }
+    /// The data line after the request; empty for an untitled issue.
+    fn title_line(&self) -> String { if self.title.is_empty() { String::new() } else { format!("\n{}: {}", ::hagency::ISSUE_TITLE_LABEL, quoted_title(&self.title)) } }
 
     /// The plain body the Agent reads. English on purpose: it is the Agent's
-    /// instruction; people see the localized `view` instead.
+    /// instruction; people see the localized `view` instead. The fixed request
+    /// comes first; the issue's own title only follows as quoted data.
     pub fn body(&self) -> String {
-        let title = if self.title.is_empty() { String::new() } else { format!(": {}", self.title) };
-        format!("🔔 New GitHub issue #{} in {}{title} — @{} please fix it on a branch and open a draft pull request: {}{}", self.number, self.repo, self.agent, self.url, self.merge_step())
+        format!("🔔 New GitHub issue #{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}", self.number, self.repo, self.agent, self.url, self.merge_step(), self.title_line())
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent
     /// in `m.mentions`, and the HTML other clients show.
     pub fn content(&self, puppet: &UserId) -> RoomMessageEventContent {
         let esc = |s: &str| htmlize::escape_text(s).into_owned();
-        let title = if self.title.is_empty() { String::new() } else { format!(": {}", esc(&self.title)) };
+        let title = esc(&self.title_line()).replace('\n', "<br>");
         let html = format!(
-            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo}{title} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{step}",
+            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{step}{title}",
             step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
         );
         RoomMessageEventContent::text_html(self.body(), html).add_mentions(Mentions::with_user_ids([puppet.to_owned()]))
