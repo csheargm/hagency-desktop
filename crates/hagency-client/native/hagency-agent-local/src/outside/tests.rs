@@ -150,8 +150,8 @@ fn github_reads_run_without_a_card_and_writes_still_ask() {
     for line in [
         "gh pr view 20 --repo csheargm/hagency-demo-sandbox; gh pr diff 20 --repo csheargm/hagency-demo-sandbox",
         "gh pr checks 20 -R csheargm/hagency-demo-sandbox 2>&1",
-        "git fetch -q && git log --oneline -3 && git rev-parse HEAD",
-        "gh repo view csheargm/hagency-demo-sandbox && gh run list -R csheargm/hagency-demo-sandbox | head -5",
+        "git log --oneline -3 && git rev-parse HEAD && git ls-files | head",
+        "gh repo view csheargm/hagency-demo-sandbox && gh release list -R csheargm/hagency-demo-sandbox | head -5",
     ] {
         assert!(allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
@@ -159,6 +159,11 @@ fn github_reads_run_without_a_card_and_writes_still_ask() {
         "gh pr merge 20 --squash", "gh pr ready 20", "gh pr review 20 --approve", "gh pr comment 20 -b x", "gh pr edit 20 --base main",
         "gh pr diff 20 --web", "gh pr view 20 -R evil.example/a/b", "git fetch --upload-pack=evil", "git fetch && git push", "gh run rerun 5",
         "gh release download v1", "git -c core.sshCommand=evil fetch",
+        // GPT review, Nov 15: fetch runs helpers and reaches any host; positional
+        // hosts/URLs pick another gh host; Actions logs can hold secrets.
+        "git fetch -u 'sh -c id' .", "git fetch --upload='sh -c id' .", "git fetch https://evil.example/r", "git fetch evil::x",
+        "git fetch origin +main:refs/heads/main", "gh repo view evil.example/o/r", "gh pr view https://evil.example/o/r/pull/1",
+        "gh issue view https://evil.example/o/r/issues/1", "gh run view 1 --log -R o/r", "gh run list",
     ] {
         assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
