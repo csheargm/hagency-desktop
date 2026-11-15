@@ -230,7 +230,9 @@ async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_
         let argv = fs::read_to_string(f.path("argv")).unwrap();
         if kind == Kind::Claude {
             assert!(argv.contains("--resume"));
-            assert!(!argv.contains("--strict-mcp-config"));
+            // Team-skills isolation: no owner settings or MCP servers reach the Agent.
+            assert!(argv.contains("--strict-mcp-config"));
+            assert!(argv.contains("--setting-sources="));
             assert!(!argv.contains("disableAllHooks"));
             assert!(!argv.contains("--disable-slash-commands"));
             assert!(argv.contains("--include-partial-messages"));
