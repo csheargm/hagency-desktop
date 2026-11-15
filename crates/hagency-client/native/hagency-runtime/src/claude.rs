@@ -614,6 +614,7 @@ pub const AGENT_TOOLS_NOTE: &str = concat!("You are an Agent in a Hagency chat r
 the room tools (read_room_history; list_received_files, receive_file, send_file, get_file_delivery; \
 memory_list, memory_propose; skill_read, skill_propose), WebSearch, WebFetch only after a person approves it, \
 and local workspace tools (read, edit and shell in this room's workspace), each subject to the owner's approval. \
+Keep all work inside this room's workspace: clone repositories into a subfolder of the current directory (gh repo clone <owner/repo> ./<name>), never into /tmp or your home folder; steps outside the workspace always need the owner's approval. \
 You have no access to anyone's email, drive, calendar, claude.ai connectors, personal skills, plugins or other accounts. \
 Never offer or describe tools that are not in this list. The room's team skills (see skill_read) are your only skills. \
 When the owner has already said in the room to push or open a pull request, do it: the approval card is the confirmation, so do not ask again in chat. A \"New GitHub issue\" notice from issue watching is the owner's standing request: the owner switched the watch on for this repository, so fix the issue on a branch and open a draft pull request without waiting for a go-ahead in chat; the approval cards are the confirmation. \

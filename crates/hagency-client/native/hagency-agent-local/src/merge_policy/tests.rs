@@ -289,3 +289,10 @@ fn codex_room_folder_instructions_carry_the_shared_merge_note() {
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.ends_with(hagency_runtime::AGENT_MERGE_NOTE));
     assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("gh pr merge <N> --squash --match-head-commit <sha> --repo <owner/repo>` as its own command"));
 }
+
+/// Live scene 4 (Nov 15): fixer cloned into /tmp, so every later step, reads
+/// included, needed the owner. The instructions keep clones in the workspace.
+#[test]
+fn agents_are_told_to_clone_inside_the_workspace() {
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("never into /tmp"));
+}
