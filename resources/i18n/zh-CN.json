@@ -3208,5 +3208,7 @@
   "Last check {time}: {count} issues handed off": "上次检查 {time}：已交出 {count} 个议题",
   "Last check {time} failed: {error}": "上次检查 {time} 失败：{error}",
   "Could not hand off issue #{number}: {error}": "无法交出议题 #{number}：{error}",
-  "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}"
+  "Issue #{number} was handed off but not recorded: {error}": "议题 #{number} 已交出但未记录：{error}",
+  "Suggested a skill for this room": "建议了一项房间技能",
+  "Reading issue watching…": "正在读取议题监视设置…"
 }

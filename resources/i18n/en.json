@@ -3208,5 +3208,7 @@
   "Last check {time}: {count} issues handed off": "Last check {time}: {count} issues handed off",
   "Last check {time} failed: {error}": "Last check {time} failed: {error}",
   "Could not hand off issue #{number}: {error}": "Could not hand off issue #{number}: {error}",
-  "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}"
+  "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}",
+  "Suggested a skill for this room": "Suggested a skill for this room",
+  "Reading issue watching…": "Reading issue watching…"
 }
