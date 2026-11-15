@@ -87,7 +87,7 @@ pub async fn register(origin: &str, username: &str, password: &str, email: Optio
     let error = body["error"].as_str().unwrap_or_default().to_ascii_lowercase();
     // The password did not sign in above, so the name belongs to someone else:
     // "Existing" here would send the caller into a login that must fail.
-    if error.contains("exist") || error.contains("taken") || status == reqwest::StatusCode::CONFLICT {
+    if matches!(error.as_str(), "username_exists" | "username_taken") {
         return Err(step("register", USERNAME_TAKEN_CODE));
     }
     if error == "rate_limited" {
