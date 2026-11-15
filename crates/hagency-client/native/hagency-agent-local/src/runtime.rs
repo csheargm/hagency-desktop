@@ -598,7 +598,7 @@ impl Session {
             Self::Claude { wire, .. } => wire
                 .bind_room_tools(tools)
                 .await
-                .map_err(|_| Error::Protocol("Claude room tools startup")),
+                .map_err(|error| Error::Protocol(room_tools_startup_detail(&error))),
             Self::Octos { room, .. } if room.is_none() => {
                 *room = Some(tools);
                 Ok(())
@@ -994,6 +994,19 @@ fn claude_resume_error(error: claude::session::Error) -> Error {
         Native::Refused => Error::Protocol("Claude resume was refused before input"),
         Native::PeerEof => Error::Protocol("Claude resume process ended before input"),
         _ => Error::Protocol("Claude resume failed before input"),
+    }
+}
+
+/// Why binding the room tools failed, as a fixed log word (never frame content), so a
+/// log says whether the CLI sent an unexpected frame, timed out or refused the server.
+fn room_tools_startup_detail(error: &claude::session::Error) -> &'static str {
+    use claude::session::Error as Native;
+    match error {
+        Native::Identity => "Claude room tools startup: unexpected frame",
+        Native::Timeout => "Claude room tools startup: timeout",
+        Native::Refused => "Claude room tools startup: refused",
+        Native::RoomToolStartup => "Claude room tools startup: server not connected as expected",
+        _ => "Claude room tools startup",
     }
 }
 

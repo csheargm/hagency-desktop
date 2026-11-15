@@ -408,7 +408,10 @@ fn startup_metadata(kind: EventKind, payload: &serde_json::Value) -> bool {
 fn hook_report(payload: &serde_json::Value) -> bool {
     matches!(
         payload["subtype"].as_str(),
-        Some("hook_started" | "hook_progress" | "hook_response")
+        // `commands_changed` is the CLI re-listing the owner's slash commands and skills
+        // (plugins load after start-up, and again when an MCP server is added). It names
+        // no tool, usage or authority, and the list is never read here.
+        Some("hook_started" | "hook_progress" | "hook_response" | "commands_changed")
     )
 }
 struct Operation<'a, R, W, E> {

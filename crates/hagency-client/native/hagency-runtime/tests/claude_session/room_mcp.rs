@@ -122,6 +122,21 @@ async fn bound(continuous: bool, tools: RoomTools) -> (Driver, Peer) {
     assert_eq!(driver.phase(), Phase::Ready);
     (driver, peer)
 }
+/// Regression (2026-11-15, Claude Code 2.1.322 on a Mac with plugins): the CLI re-lists the
+/// owner's commands (`commands_changed`) while the room server is added, and the binding
+/// failed as "Claude room tools startup", so every turn ended "interrupted".
+#[tokio::test]
+async fn claude_room_mcp_binding_passes_the_commands_changed_report() {
+    let tools = RoomTools::history();
+    let (mut driver, mut peer) = pair(32768, limits());
+    initialize(&mut driver, &mut peer).await;
+    let session = native_hook_reports()[0]["session_id"].clone();
+    emit(&mut peer, json!({"type":"system","subtype":"commands_changed","uuid":"c0ffee00-0000-4000-8000-000000000001",
+        "session_id":session,"commands":[{"name":"owner-skill","description":"d","argumentHint":""}]})).await;
+    let (bound, ()) = tokio::join!(driver.bind_room_tools(tools), bind_peer(&mut peer, tools));
+    bound.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
+}
 #[tokio::test]
 async fn claude_room_mcp_binding_passes_reports_of_the_accounts_own_hooks() {
     // A hook that outlasts the CLI's start-up reports while the tools are
