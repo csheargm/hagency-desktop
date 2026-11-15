@@ -1,17 +1,20 @@
 //! GitHub issue watch, desktop side: every `POLL_INTERVAL` one account-scoped
 //! task reads each Agent's watch from this device's ledger (owner API), lists
 //! the repository's open issues with the Agent's GitHub token, and hands the
-//! chosen ones to the Agent by posting "@Agent please fix <url>" into the
-//! chosen room, the message the composer would send. The Agent's normal
+//! chosen ones to the Agent by posting the watcher's notice ("New GitHub
+//! issue #N ... @Agent please fix it", see `notice`) into the chosen room. The Agent's normal
 //! dispatch and approval flow applies. The task runs in the account session,
 //! so sign-out aborts it; an Agent set to Off is skipped. The result of each
 //! check is a status line under the setting (`section`).
 pub(crate) mod choices;
 mod handoff;
 pub(crate) mod live;
+pub mod notice;
 pub mod section;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod notice_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};

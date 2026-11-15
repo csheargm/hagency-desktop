@@ -3347,5 +3347,9 @@
   "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.": "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.",
   "First deal with the instructions that are unconfirmed or were not carried out.": "First deal with the instructions that are unconfirmed or were not carried out.",
   "Sent. Waiting for the Agent to confirm.": "Sent. Waiting for the Agent to confirm.",
-  "Sending was not confirmed; you can retry the same action.": "Sending was not confirmed; you can retry the same action."
+  "Sending was not confirmed; you can retry the same action.": "Sending was not confirmed; you can retry the same action.",
+  "From issue watching": "From issue watching",
+  "New GitHub issue #{number} in {repo}": "New GitHub issue #{number} in {repo}",
+  "Asked {agent} to fix it": "Asked {agent} to fix it",
+  "Open on GitHub": "Open on GitHub"
 }

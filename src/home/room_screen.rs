@@ -5519,15 +5519,27 @@ fn populate_message_view(
                             Some(intro) => (Cow::Owned(intro), None),
                             None => (body, formatted),
                         };
+                        // TODO(R4): this file is over budget; split per-msgtype drawing out of `populate_message_view`.
+                        // The issue watcher's hand-off draws as its compact notice, without a link preview.
+                        let issue_notice = crate::hagency::issue_watch::notice::of_event(event_tl_item).map(|n| n.view());
+                        let is_issue_handoff = issue_notice.is_some();
+                        let (body, formatted) = match issue_notice {
+                            Some((plain, html)) => (Cow::Owned(plain), Some(Cow::Owned(html))),
+                            None => (body, formatted),
+                        };
+                        if is_issue_handoff {
+                            // Empty links clear a preview left by a reused item.
+                            link_preview_ref.populate_below_message(cx, &[], media_cache, link_preview_cache, &populate_image_message_content);
+                        }
                         new_drawn_status.content_drawn = populate_text_message_content(
                             cx,
                             &html_or_plaintext_ref,
                             &body,
                             formatted.as_deref(),
                             room_mention_room_id,
-                            Some(&mut link_preview_ref),
-                            Some(media_cache),
-                            Some(link_preview_cache),
+                            (!is_issue_handoff).then_some(&mut link_preview_ref),
+                            Some(&mut *media_cache),
+                            Some(&mut *link_preview_cache),
                         );
                         (item, false)
                     }

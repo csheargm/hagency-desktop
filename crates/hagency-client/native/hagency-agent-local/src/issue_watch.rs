@@ -88,6 +88,8 @@ pub struct IssueWatch {
 pub struct Issue {
     pub number: i64,
     pub url: String,
+    /// The issue's title as GitHub shows it (empty when GitHub sent none).
+    pub title: String,
     pub labels: Vec<String>,
     pub is_pr: bool,
     /// GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...).

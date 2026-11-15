@@ -3347,5 +3347,9 @@
   "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.": "运行已结束，操作结果未确认。请先核对；不会自动重发。",
   "First deal with the instructions that are unconfirmed or were not carried out.": "请先处理尚未确认或未执行的指令。",
   "Sent. Waiting for the Agent to confirm.": "已发送，等待 Agent 确认。",
-  "Sending was not confirmed; you can retry the same action.": "发送未获确认，可重试同一操作。"
+  "Sending was not confirmed; you can retry the same action.": "发送未获确认，可重试同一操作。",
+  "From issue watching": "来自议题监视",
+  "New GitHub issue #{number} in {repo}": "{repo} 中的新 GitHub 议题 #{number}",
+  "Asked {agent} to fix it": "已请 {agent} 修复",
+  "Open on GitHub": "在 GitHub 上打开"
 }

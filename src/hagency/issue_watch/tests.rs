@@ -1,6 +1,6 @@
 //! The hand-off step with a fake sender: an issue is recorded as handed off
 //! only after its post succeeded, and the first failure stops the rest.
-use super::handoff::{Handoff, Outcome, hand_off, request_text};
+use super::handoff::{Handoff, Outcome, hand_off};
 use super::{failed_line, outcome_line};
 use ::hagency::issue_watch::Issue;
 use std::cell::RefCell;
@@ -13,11 +13,11 @@ struct Fake {
     seen: RefCell<Vec<i64>>,
 }
 impl Handoff for Fake {
-    async fn post(&self, _number: i64, text: &str) -> Result<(), String> {
-        if self.fail_post.is_some_and(|n| text.ends_with(&format!("/issues/{n}"))) {
+    async fn post(&self, issue: &Issue) -> Result<(), String> {
+        if self.fail_post == Some(issue.number) {
             return Err("room not joined".into());
         }
-        self.posted.borrow_mut().push(text.to_owned());
+        self.posted.borrow_mut().push(issue.url.clone());
         Ok(())
     }
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
@@ -32,6 +32,7 @@ fn issue(number: i64) -> Issue {
     Issue {
         number,
         url: format!("https://github.com/acme/app/issues/{number}"),
+        title: format!("Issue {number}"),
         labels: vec![],
         is_pr: false,
         author_association: "MEMBER".into(),
@@ -49,7 +50,7 @@ fn successful_posts_are_marked_seen() {
     let outcome = run(&fake, &[issue(1), issue(2)]);
     assert_eq!(outcome, Outcome { handed: 2, error: None });
     assert_eq!(*fake.seen.borrow(), vec![1, 2]);
-    assert_eq!(fake.posted.borrow()[0], "please fix https://github.com/acme/app/issues/1");
+    assert_eq!(fake.posted.borrow()[0], "https://github.com/acme/app/issues/1");
 }
 
 #[test]
@@ -85,7 +86,6 @@ fn status_lines_say_what_happened() {
     let partial = Outcome { handed: 1, error: Some("Could not hand off issue #2: x".into()) };
     assert_eq!(outcome_line("9:00", &partial), "Last check 9:00: 1 issue handed off · Could not hand off issue #2: x");
     assert_eq!(failed_line("9:00", "GitHub answered 401: bad"), "Last check 9:00 failed: GitHub answered 401: bad");
-    assert_eq!(request_text(&issue(5)), "please fix https://github.com/acme/app/issues/5");
 }
 
 #[test]
@@ -94,16 +94,6 @@ fn a_retried_issue_reuses_its_transaction_id() {
     assert_eq!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("a", "acme/app", 7), "send ok + save lost: the retry is deduplicated");
     assert_ne!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("a", "acme/app", 8));
     assert_ne!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("b", "acme/app", 7));
-}
-
-#[test]
-fn the_hand_off_mentions_the_agent_with_a_real_pill() {
-    use matrix_sdk::ruma::events::room::message::MessageType;
-    let user: &matrix_sdk::ruma::UserId = "@fixer:example.org".try_into().unwrap();
-    let content = crate::hagency::room_send::message_content("please fix x", user, "Fixer");
-    let MessageType::Text(text) = &content.msgtype else { panic!("text message") };
-    assert!(text.formatted.is_some(), "rendered like the composer's mention pill");
-    assert_eq!(content.mentions.unwrap().user_ids.len(), 1, "a real m.mentions entry");
 }
 
 #[test]

@@ -5,16 +5,11 @@ use ::hagency::issue_watch::Issue;
 
 /// Posts the request and records the issue; the live one is `live::Live`.
 pub(crate) trait Handoff {
-    /// Post "please fix <url>" for one issue into the project room.
-    /// `number` keys the send so a retry of the same issue is not posted twice.
-    async fn post(&self, number: i64, text: &str) -> Result<(), String>;
+    /// Post the watcher's notice for one issue (`notice::Notice`) into the
+    /// project room; the issue number keys the send so a retry is not posted twice.
+    async fn post(&self, issue: &Issue) -> Result<(), String>;
     /// Record that the issue was handed to the Agent.
     async fn mark_seen(&self, number: i64) -> Result<(), String>;
-}
-
-/// The words after the Agent mention.
-pub(crate) fn request_text(issue: &Issue) -> String {
-    format!("please fix {}", issue.url)
 }
 
 /// What one check did: how many issues went to the Agent, and the first
@@ -28,7 +23,7 @@ pub(crate) struct Outcome {
 pub(crate) async fn hand_off(sender: &impl Handoff, picks: &[&Issue]) -> Outcome {
     let mut outcome = Outcome::default();
     for issue in picks {
-        if let Err(error) = sender.post(issue.number, &request_text(issue)).await {
+        if let Err(error) = sender.post(issue).await {
             outcome.error = Some(crate::i18n::format("Could not hand off issue #{number}: {error}", &[("number", issue.number.to_string()), ("error", error)]));
             break;
         }
