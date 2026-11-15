@@ -28,6 +28,28 @@ impl State {
     pub fn active(self) -> bool {
         matches!(self, Self::Running | Self::Stopping)
     }
+    /// The English status line; also the key of the desktop's i18n catalog.
+    pub fn english_status(self) -> &'static str {
+        match self {
+            Self::Running => "Working… you can add instructions or stop this run",
+            Self::Stopping => "Stopping; waiting for the runtime to finish and settle.",
+            Self::Completed => "Done",
+            Self::Interrupted => "Stopped",
+            Self::Failed => "Failed",
+            Self::Unknown => "The run went offline; check its result.",
+        }
+    }
+}
+
+/// How a run card's room `body` is worded. English unless the host (the
+/// desktop) installs its UI-language translation with `set_status_text`.
+static STATUS_TEXT: std::sync::OnceLock<fn(State) -> &'static str> = std::sync::OnceLock::new();
+/// Install the host's localized status text once; later calls are ignored.
+pub fn set_status_text(text: fn(State) -> &'static str) {
+    let _ = STATUS_TEXT.set(text); // first host wins; a second install is a no-op by design
+}
+fn status_text(state: State) -> &'static str {
+    STATUS_TEXT.get().map_or_else(|| state.english_status(), |text| text(state))
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
@@ -235,14 +257,7 @@ impl Card {
         Some(card)
     }
     pub fn content(&self) -> Value {
-        let body = match self.state {
-            State::Running => "Agent 正在处理，可追加指令或停止本次任务。",
-            State::Stopping => "已请求停止，正在等待原生运行结束。",
-            State::Completed => "本次任务已完成。",
-            State::Interrupted => "本次任务已停止。",
-            State::Failed => "本次任务执行失败。",
-            State::Unknown => "本次任务已离线，运行结果需要核对。",
-        };
+        let body = status_text(self.state);
         let root = if event(&self.thread_root) {
             &self.thread_root
         } else {
@@ -338,9 +353,20 @@ fn valid_text(text: &str) -> bool {
         && serde_json::to_vec(text).is_ok_and(|v| v.len() <= MAX_INPUT_BYTES)
 }
 
+// TODO(R4): over budget — split the card wire format from validation and actions.
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    /// The room body a client without run-card support shows is English by
+    /// default (no host language installed in this test binary), never Chinese.
+    #[test]
+    fn run_card_body_defaults_to_english() {
+        let mut card = card();
+        card.state = State::Running;
+        assert_eq!(card.content()["body"], "Working… you can add instructions or stop this run");
+        card.state = State::Completed;
+        assert_eq!(card.content()["body"], "Done");
+    }
     #[test]
     fn receipt_history_keeps_card_edits_within_the_wire_budget() {
         let mut card = card();
