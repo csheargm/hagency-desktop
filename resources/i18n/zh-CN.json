@@ -3324,5 +3324,8 @@
   "Check failed: could not reach GitHub: {error}": "检查失败：无法连接 GitHub：{error}",
   "Paste a GitHub token first.": "请先粘贴 GitHub 令牌。",
   "That does not look like a GitHub token.": "这看起来不像 GitHub 令牌。",
-  "No GitHub token — add one in the Agent's GitHub access settings": "没有 GitHub 令牌——请在 Agent 的“GitHub 访问”设置中添加"
+  "No GitHub token — add one in the Agent's GitHub access settings": "没有 GitHub 令牌——请在 Agent 的“GitHub 访问”设置中添加",
+  "Suggested by {author} · accepted by {owner}": "由 {author} 建议 · {owner} 已接受",
+  "Suggested a note for this room's memory": "建议了一条房间记忆",
+  "Suggested a skill for this room": "建议了一项房间技能"
 }

@@ -228,12 +228,37 @@ pub fn plaintext_body_of_timeline_item(
 }
 
 
+/// The preview line for a message carrying a memory or skill proposal.
+fn proposal_preview(data: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
+    if data.contains_key(::hagency::room_memory::MEMORY_PROPOSAL_KEY) {
+        Some(crate::i18n::tr("Suggested a note for this room's memory"))
+    } else if data.contains_key(::hagency::room_skills::SKILL_PROPOSAL_KEY) {
+        Some(crate::i18n::tr("Suggested a skill for this room"))
+    } else {
+        None
+    }
+}
+#[cfg(test)]
+mod proposal_preview_tests {
+    #[test]
+    fn proposals_preview_as_one_line_never_the_raw_body() {
+        let memory = serde_json::json!({"io.hagency.memory_proposal":{"id":"p"}});
+        assert_eq!(super::proposal_preview(memory.as_object().unwrap()), Some(crate::i18n::tr("Suggested a note for this room's memory")));
+        assert!(super::proposal_preview(serde_json::json!({}).as_object().unwrap()).is_none());
+    }
+}
+
 /// Returns a text preview of the given message as an Html-formatted string.
 pub(crate) fn text_preview_of_message(
     msg: &MessageType,
     sender_user_id: &UserId,
     sender_username: &str,
 ) -> TextPreview {
+    // A memory or skill proposal is a card in the room; its fallback body names
+    // a raw Agent id, so previews show one plain line instead.
+    if let Some(line) = proposal_preview(&msg.data()) {
+        return TextPreview::from((line.to_owned(), BeforeText::UsernameWithColon));
+    }
     let text = match msg {
         MessageType::Audio(audio) => format!(
             "[Audio]: <i>{}</i>",

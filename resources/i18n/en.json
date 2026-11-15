@@ -3324,5 +3324,8 @@
   "Check failed: could not reach GitHub: {error}": "Check failed: could not reach GitHub: {error}",
   "Paste a GitHub token first.": "Paste a GitHub token first.",
   "That does not look like a GitHub token.": "That does not look like a GitHub token.",
-  "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings"
+  "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings",
+  "Suggested by {author} · accepted by {owner}": "Suggested by {author} · accepted by {owner}",
+  "Suggested a note for this room's memory": "Suggested a note for this room's memory",
+  "Suggested a skill for this room": "Suggested a skill for this room"
 }
