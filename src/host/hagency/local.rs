@@ -210,6 +210,8 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
             })
             .await;
         match status {
+            // Stopped by the owner's Stop all: shown as "Paused by you".
+            Ok(value) if service_state(&value, id) == "stopped" && crate::hagency::kill_switch::is_paused(&crate::hagency::kill_switch::default_path(), account, id) => "paused",
             Ok(value) => service_state(&value, id),
             Err(_) => "unknown",
         }

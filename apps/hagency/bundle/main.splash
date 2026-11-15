@@ -53,6 +53,8 @@ H.pool_renew_ask=pool_renew_ask H.pool_raise=pool_raise H.pool_created=pool_crea
 let {detour=nil,detour_note=nil,nav_forward=false,pool_floor_proof=nil,reading=false,read_epoch=0,pool_name_after=nil,pool_name_note=nil}=H
 H.detour=detour H.detour_note=detour_note H.nav_forward=nav_forward H.pool_floor_proof=pool_floor_proof H.reading=reading H.read_epoch=read_epoch
 H.pool_name_after=pool_name_after H.pool_name_note=pool_name_note
+let {agents_paused=false,kill_confirm=false,kill_pending=false,kill_note=""}=H
+H.agents_paused=agents_paused H.kill_confirm=kill_confirm H.kill_pending=false H.kill_note=kill_note
 let {who=nil}=H
 if who==nil {who={rid:"" picks:[] name:"" nameError:"" trustOpen:false roomError:""}}
 H.who=who
@@ -6773,6 +6775,7 @@ A.dev_restart_count=fn(){let n={c:0} for row in A.dev_exec_rows() {if row.proces
 A.dev_process_text=fn(state){
     if state=="running" {return A.t("Running","正在运行")}
     if state=="stopped" {return A.t("Stopped","已停止")}
+    if state=="paused" {return A.t("Paused by you","已由你暂停")}
     if state=="qualified" {return A.t("Ready to run","可以运行")}
     return A.t("Not known","状态未知")
 }
@@ -8401,7 +8404,23 @@ A.local_poll_arm=fn(){
         if H.page=="pool_agents" && !H.busy {A.load_local_list()}
     })
 }
+// The owner's kill switch: Stop all agents (confirmed once) and Resume all.
+A.kill_run=fn(service){
+    if H.kill_pending {return}
+    H.kill_pending=true H.kill_confirm=false H.kill_note="" A.redraw()
+    host.request(service,{},fn(r){
+        H.kill_pending=false
+        if r.is_ok {H.agents_paused=r.data.paused H.kill_note=A.kill_text(service,r.data)} else {H.kill_note=A.t("Couldn’t reach this device’s Agents. Try again.","暂时无法连接本机的 Agent，请重试。")}
+        A.load_local_list() A.redraw()
+    })
+}
+A.kill_text=fn(service,d){
+    if d.failed.len()>0 {return A.t("Some Agents didn’t respond. Try again.","部分 Agent 没有响应，请重试。")}
+    if service=="hagency.personal_agents.stop_all" {return A.t("All agents stopped. Current runs were stopped and waiting approvals were denied.","所有 Agent 已停止。正在进行的运行已停止，等待中的批准已拒绝。")}
+    return A.t("All agents resumed.","所有 Agent 已恢复。")
+}
 A.load_local_list=fn(){
+    host.request("hagency.personal_agents.paused",{},fn(p){if p.is_ok {H.agents_paused=p.data.paused A.redraw()}})
     host.request("hagency.personal_agents.list",{after:nil limit:16},fn(r){
         H.local_list=if r.is_ok && r.data.protocol=="hagency-personal-settings-v1" {r.data.items} else {[]}
         let rows=H.local_list
@@ -9783,6 +9802,22 @@ A.render_page = fn(){
                     }
                 }}
             }
+            if local_here && local_some {View{width:Fill height:Fit flow:Down spacing:6
+                if H.agents_paused==true {View{width:Fill height:Fit flow:Down spacing:6
+                    agents_paused_note := mod.widgets.HagencyHint{text:A.t("Paused by you. Your Agents take no new requests until you resume them.","已由你暂停。在你恢复之前，Agent 不会接收新请求。")}
+                    agents_resume_all := mod.widgets.RinxKeyPrimaryButton{text:A.t("Resume all","全部恢复") enabled:!H.kill_pending on_click:||A.kill_run("hagency.personal_agents.resume_all")}
+                }}
+                if H.agents_paused!=true && H.kill_confirm!=true {agents_stop_all := mod.widgets.HagencyButton{text:A.t("Stop all agents","停止所有 Agent") enabled:!H.kill_pending on_click:||{H.kill_confirm=true H.kill_note="" A.redraw()}}}
+                if H.agents_paused!=true && H.kill_confirm==true {View{width:Fill height:Fit flow:Down spacing:6
+                    mod.widgets.HagencyCopy{text:A.t("Stop every Agent on this device now? Current runs stop, waiting approvals are denied, and no new requests are taken until you resume.","立即停止本机的所有 Agent？正在进行的运行会停止，等待中的批准会被拒绝，在你恢复之前不接收新请求。") draw_text.color:mod.widgets.RINX_DANGER_FG}
+                    mod.widgets.HagencyActions{
+                        agents_stop_all_confirm := mod.widgets.RinxKeyPrimaryButton{text:A.t("Stop all now","立即全部停止") enabled:!H.kill_pending on_click:||A.kill_run("hagency.personal_agents.stop_all")}
+                        agents_stop_all_cancel := mod.widgets.HagencyButton{text:A.t("Cancel","取消") on_click:||{H.kill_confirm=false A.redraw()}}
+                    }
+                }}
+                if H.kill_pending {mod.widgets.HagencyHint{text:A.t("Working…","正在处理…")}}
+                if !H.kill_pending && H.kill_note!="" {agents_kill_note := mod.widgets.HagencyHint{text:H.kill_note}}
+            }}
             local_list_note := mod.widgets.HagencyListNote{text:if local_here {A.t("Run on your own device with your own model account.","在你自己的设备上运行，使用你自己的模型账号。")} else {A.local_need_text()}}
             }}
             if A.simple() {View{width:Fill height:Fit flow:Down

@@ -296,6 +296,16 @@ pub fn request(key: &str, stop: bool) -> Option<Requested> {
     entry.hint = "Sending…".into();
     Some(request)
 }
+// TODO(R4): run_controls.rs is over budget; split the send path (request, send, sent) into run_controls/send.rs.
+/// The owner's kill switch: send "Stop this run" for every active run the
+/// owner may stop, through the same request and send as the card's button.
+pub fn stop_all_running() -> usize {
+    let keys: Vec<String> = STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .filter(|e| e.may_stop && e.card.state == RunState::Running)
+        .map(|e| e.key.clone())
+        .collect();
+    keys.iter().filter_map(|key| request(key, true)).map(send).count()
+}
 pub fn sent(value: &Sent) -> bool {
     let mut store = STORE.lock().unwrap_or_else(|e| e.into_inner());
     if store.generation != value.request.generation {
@@ -632,5 +642,19 @@ mod tests {
             assert_eq!(e.draft, "also check the tests", "{runtime}");
             assert!(e.pending_drafts.is_empty());
         }
+    }
+    #[test]
+    fn stop_all_running_requests_an_interrupt_only_for_runs_the_owner_may_stop() {
+        reset(7, "@owner:test");
+        let mut a = entry(); a.key = "$a".into();
+        let mut b = entry(); b.key = "$b".into(); b.may_stop = false;
+        let mut c = entry(); c.key = "$c".into(); c.card.state = RunState::Interrupted;
+        STORE.lock().unwrap().entries = vec![a, b, c];
+        let keys: Vec<String> = STORE.lock().unwrap().entries.iter()
+            .filter(|e| e.may_stop && e.card.state == RunState::Running).map(|e| e.key.clone()).collect();
+        assert_eq!(keys, vec!["$a".to_owned()]);
+        let request = request("$a", true).expect("an interrupt for the running run");
+        assert!(request.text.is_none(), "an interrupt carries no instructions");
+        assert!(STORE.lock().unwrap().entries[0].sending, "the card shows Sending… like its own Stop button");
     }
 }
