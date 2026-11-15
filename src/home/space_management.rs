@@ -197,7 +197,7 @@ async fn route(room: &Room) -> Result<Vec<OwnedServerName>> {
     Ok(route)
 }
 
-async fn link(client: &Client, parent: &RoomId, child: &RoomId, add: bool) -> Result<String> {
+pub(crate) async fn link(client: &Client, parent: &RoomId, child: &RoomId, add: bool) -> Result<String> {
     ensure!(parent != child, "A space cannot contain itself.");
     let space = editable_space(client, parent, StateEventType::SpaceChild).await?;
     let child_room = client.get_room(child);

@@ -701,7 +701,7 @@ impl MobileChatInfo {
         if let Some(service) = service {spawn_async_task(async move {
             let future = async {
                 if let Some(command)=command {service.bind_agent_to_room(command).await}
-                else {service.agents_for_registered_room(room_id.as_str()).await}
+                else {crate::home::room_registration::agents_for_room(&service, room_id.as_str()).await}
             };
             tokio::pin!(future);
             let result = tokio::select! {

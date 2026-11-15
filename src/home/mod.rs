@@ -41,6 +41,7 @@ pub mod sidebar_action_menu;
 pub mod search_messages;
 pub mod space_lobby;
 pub mod space_management;
+pub mod room_registration;
 pub mod new_room_dialog;
 pub mod spaces_bar;
 pub mod navigation_tab_bar;
@@ -94,6 +95,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     agent_runtime_notice::script_mod(vm);
     agent_run_card::script_mod(vm);
     shared_permission_notice::script_mod(vm);
+    room_screen::hover_toolbar::script_mod(vm);
     room_screen::script_mod(vm);
     navigation_tab_bar::account_bar_script_mod(vm);
     room_filter_bubbles::script_mod(vm);
