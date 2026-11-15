@@ -160,6 +160,9 @@ struct EditAgentModel {
     profile: ModelProfile,
     #[serde(rename="expectedProfileDigest")]
     expected_profile_digest:String,
+    /// Saved with the model by one-click setup; the settings form leaves it out.
+    #[serde(default, rename="approvalMode")]
+    approval_mode:Option<String>,
 }
 fn layer(value: &str) -> Result<Layer, OwnerError> {
     match value {
@@ -851,6 +854,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             }
             let mut model_change = None;
             let mut expected_model_digest = None;
+            let mut approval_mode = None;
             let change = if method == Method::PUT && parts[1] == "agent-model-profile" {
                 let mut input: EditAgentModel = parse(req).await?;
                 if !input.profile.workspace_root.is_empty()
@@ -870,6 +874,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         .into();
                 }
                 expected_model_digest=Some(input.expected_profile_digest);
+                approval_mode = input.approval_mode;
                 model_change = Some(input.profile);
                 None
             } else if method == Method::GET {
@@ -938,6 +943,9 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if let Some(profile)=model_change {
                     let expected = expected_model_digest.ok_or_else(|| error(400, "invalid_arguments"))?;
                     ledger.set_agent_model_profile_checked(&reply.owner,&agent,&expected,&profile).map_err(local_error)?;
+                    if let Some(mode) = &approval_mode {
+                        ledger.set_approval_mode(&reply.owner,&agent,mode).map_err(local_error)?;
+                    }
                 }
                 let policy = ledger.agent_policy(&reply.owner, &agent).map_err(local_error)?;
                 let (spent, held) = ledger.agent_account(&reply.owner, &agent, policy.policy.budget.period, now()).map_err(local_error)?;

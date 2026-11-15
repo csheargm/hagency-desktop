@@ -3,6 +3,7 @@
 //! interception before using this library. Each call ID denotes ONE provider invocation:
 //! a retry which can charge again requires a fresh call ID under the original requester.
 pub mod codex;
+pub mod outside;
 pub mod inbox;
 pub mod questions;
 pub mod room_tools;
@@ -368,6 +369,7 @@ impl Ledger {
         if !has_web_search {
             db.execute_batch("ALTER TABLE model_profiles ADD COLUMN web_search INTEGER NOT NULL DEFAULT 1 CHECK(web_search IN (0,1))")?;
         }
+        outside::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         // The last revision of a layer the owner cleared, so a later save
         // never reuses a revision (see `clear_policy`).
@@ -1234,6 +1236,20 @@ impl Ledger {
         tx.commit()?;
         Ok(effective.high_risk)
     }
+    /// Set the Agent's approval mode (`outside::MODE_ASK` or `MODE_OUTSIDE`).
+    // TODO(R4): lib.rs is over budget; split the Ledger's tool and approval methods into their own module.
+    pub fn set_approval_mode(&mut self, owner: &str, agent: &str, mode: &str) -> Result<()> {
+        self.owner(owner)?;
+        key(agent)?;
+        if ![outside::MODE_ASK, outside::MODE_OUTSIDE].contains(&mode) {
+            return Err(Error::Invalid("approval mode"));
+        }
+        self.db.execute(
+            "INSERT INTO approval_modes (agent,mode) VALUES (?,?) ON CONFLICT(agent) DO UPDATE SET mode=excluded.mode",
+            (agent, mode),
+        )?;
+        Ok(())
+    }
     pub fn approve_tool(
         &mut self,
         owner: &str,
@@ -1447,6 +1463,9 @@ fn validate_tool(
     for tool_policy in applicable(&tool_layers(&original, &current), from_owner) {
         match tool_policy {
             ToolPolicy::Deny => return Err(Error::Denied),
+            // "Ask only for outside changes" (this Agent, this device) skips the
+            // question for a request that cannot leave the workspace.
+            ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,
             trusted if trusted.is_full_trust() => {}
             ToolPolicy::AllowWithRules { tools, directories } => {
@@ -1465,6 +1484,13 @@ fn validate_tool(
         effective.high_risk = ToolPolicy::AskOwner;
     }
     Ok(effective)
+}
+/// The Agent's saved approval mode; unsaved means it asks for every high-risk tool.
+fn approval_mode(db: &Connection, agent: &str) -> Result<String> {
+    Ok(db
+        .query_row("SELECT mode FROM approval_modes WHERE agent=?", [agent], |r| r.get(0))
+        .optional()?
+        .unwrap_or_else(|| outside::MODE_ASK.to_owned()))
 }
 fn intersect(a: &Limit, b: &Limit) -> Limit {
     match (a, b) {
