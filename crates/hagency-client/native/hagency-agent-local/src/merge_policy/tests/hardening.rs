@@ -52,7 +52,7 @@ fn a_merge_must_pin_the_head_commit() {
     let dir = tempfile::tempdir().unwrap();
     let parse = |line: &str| gate::parse_command(&bash(line, dir.path(), "a"));
     assert_eq!(parse(&merge_line()).unwrap().head.as_deref(), Some(HEAD));
-    assert_eq!(parse("gh pr merge 7 --squash").unwrap().head, None);
+    assert_eq!(parse("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox").unwrap().head, None);
     for line in ["gh pr merge 7 --squash --match-head-commit", "gh pr merge 7 --squash --match-head-commit abc123", "gh pr review 7 --approve --match-head-commit 1111111111111111111111111111111111111111"] {
         assert!(parse(line).is_none(), "{line}");
     }
@@ -74,12 +74,12 @@ async fn an_unpinned_or_stale_merge_goes_to_the_owner() {
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     let docs = Fake::new(vec![file("README.md", 5)]);
     approved(&mut ledger, temp.path(), &docs).await;
-    let unpinned = bash("gh pr merge 7 --squash", temp.path(), "fixer");
+    let unpinned = bash("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &unpinned, 11, &docs).await, None, "GitHub would merge whatever the head is");
     *docs.head.borrow_mut() = "3333333333333333333333333333333333333333".into();
     let pinned_old = bash(&merge_line(), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_old, 11, &docs).await, None, "the head moved after the review");
-    let pinned_new = bash("gh pr merge 7 --squash --match-head-commit 3333333333333333333333333333333333333333", temp.path(), "fixer");
+    let pinned_new = bash("gh pr merge 7 --squash --match-head-commit 3333333333333333333333333333333333333333 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, 11, &docs).await, None, "the approval was for the old head");
     // One dispatch authorizes once, so the fresh review is recorded directly.
     ledger.record_agent_review(URL, "3333333333333333333333333333333333333333", "reviewer").unwrap();

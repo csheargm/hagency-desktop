@@ -1,5 +1,8 @@
 //! Bounded runtime protocol and host-only owned child IO foundation. It grants
 //! no permissions and cannot mutate canonical dispatch, task or Matrix state.
+#[macro_use]
+mod merge_note;
+pub use merge_note::AGENT_MERGE_NOTE;
 pub mod claude;
 pub mod codex;
 pub mod deadline;

@@ -305,7 +305,11 @@ impl NativeSandbox {
         match self {
             // No "environments" entry: Codex runs in its default local
             // environment in `cwd`.
-            Self::RoomFolder => params["sandbox"] = "workspace-write".into(),
+            Self::RoomFolder => {
+                params["sandbox"] = "workspace-write".into();
+                // Native shell runs here, so the Agent can take the auto-merge flow.
+                params["developerInstructions"] = hagency_runtime::AGENT_MERGE_NOTE.into();
+            }
             Self::SharedProject => {
                 params["sandbox"] = "read-only".into();
                 // An empty list turns the execution environment off.
