@@ -87,7 +87,25 @@ pub struct Card {
     pub last_action: Option<Receipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_receipts: Vec<Receipt>,
+    /// Live step and, once finished, how long the run took (presentation only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
 }
+// TODO(R4): agent_run_controls.rs is over budget; split Card display (preview, progress) out.
+/// What the run card shows beside its state: "Working… <step>" while it runs,
+/// "Done in 41 s · 9 steps" once it completes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Progress {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub step: String,
+    #[serde(default)]
+    pub steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_secs: Option<u64>,
+}
+/// Longest step text a card carries.
+pub const MAX_STEP_BYTES: usize = 256;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Envelope {
@@ -122,6 +140,7 @@ impl Card {
         original.preview = other.preview.clone();
         original.last_action = other.last_action.clone();
         original.action_receipts = other.action_receipts.clone();
+        original.progress = other.progress.clone();
         original == *other
     }
     /// Shared-resource executors are not automatically the Agent's owner.
@@ -153,6 +172,7 @@ impl Card {
             preview: String::new(),
             last_action: None,
             action_receipts: Vec::new(),
+            progress: None,
         };
         card.validate()?;
         Ok(card)
@@ -181,6 +201,7 @@ impl Card {
             preview: String::new(),
             last_action: None,
             action_receipts: Vec::new(),
+            progress: None,
         };
         card.validate()?;
         Ok(card)
@@ -202,6 +223,9 @@ impl Card {
                 .preview
                 .chars()
                 .any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
+            || self.progress.as_ref().is_some_and(|p| {
+                p.step.len() > MAX_STEP_BYTES || p.step.chars().any(char::is_control)
+            })
             || self.action_receipts.len() > MAX_ACTION_RECEIPTS
             || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES)
             || self
@@ -413,6 +437,7 @@ pub(crate) mod tests {
             preview: String::new(),
             last_action: None,
             action_receipts: Vec::new(),
+            progress: None,
         }
     }
 

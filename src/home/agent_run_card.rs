@@ -158,8 +158,8 @@ impl AgentRunCardRef {
             .view
             .label(cx, ids!(title))
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
-        let status = status_label(entry.card.state);
-        inner.view.label(cx, ids!(status)).set_text(cx, status);
+        let status = card_status(&entry.card);
+        inner.view.label(cx, ids!(status)).set_text(cx, &status);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         preview.set_visible(cx, !entry.card.preview.is_empty());
         let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
@@ -270,36 +270,4 @@ mod tests {
     }
 }
 
-/// One Agent run status, localized. The run card, thread summaries and the rooms list
-/// all show this, never the event's stored (Chinese) body.
-pub(crate) fn status_label(state: ::hagency::agent_run_controls::State) -> &'static str {
-    crate::i18n::tr(state.english_status())
-}
-/// The localized status of an `im.hagency.agent_run` message, from its card data.
-pub(crate) fn status_of_message(data: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
-    let state = data.get(::hagency::agent_run_controls::MSGTYPE)?.get("state")?;
-    serde_json::from_value(state.clone()).ok().map(status_label)
-}
-
-#[cfg(test)]
-mod status_tests {
-    /// The desktop installs `status_label` as the run-card body: English UI
-    /// posts English, a zh-CN UI posts the catalog's Chinese.
-    #[test]
-    fn hosted_run_bodies_follow_the_ui_language() {
-        use crate::i18n::{Language, text_for};
-        use ::hagency::agent_run_controls::{State, set_status_text};
-        set_status_text(super::status_label);
-        assert_eq!(super::status_label(State::Running), "Working… you can add instructions or stop this run");
-        assert_eq!(text_for(Language::Chinese, State::Running.english_status()), "Agent 正在处理，可追加指令或停止本次任务。");
-        for state in [State::Stopping, State::Completed, State::Interrupted, State::Failed, State::Unknown] {
-            assert_ne!(text_for(Language::Chinese, state.english_status()), state.english_status(), "{state:?} has a zh-CN entry");
-        }
-    }
-    #[test]
-    fn run_event_previews_use_the_localized_status_not_the_stored_body() {
-        let data = serde_json::json!({"im.hagency.agent_run":{"state":"completed"}});
-        assert_eq!(super::status_of_message(data.as_object().unwrap()), Some(crate::i18n::tr("Done")));
-        assert!(super::status_of_message(serde_json::json!({}).as_object().unwrap()).is_none());
-    }
-}
+pub(crate) use super::agent_run_status::{card_status, status_label, status_of_message};
