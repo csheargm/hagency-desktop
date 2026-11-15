@@ -32,10 +32,10 @@ fn the_body_names_the_issue_and_asks_the_agent_with_its_url() {
     let notice = Notice::new("csheargm/hagency-demo-sandbox", &issue(), "@demoup-claude");
     assert_eq!(
         notice.body(),
-        "🔔 New GitHub issue #6 in csheargm/hagency-demo-sandbox: README: add a 'Getting started' section — @demoup-claude please fix it: https://github.com/csheargm/hagency-demo-sandbox/issues/6"
+        "🔔 New GitHub issue #6 in csheargm/hagency-demo-sandbox: README: add a 'Getting started' section — @demoup-claude please fix it on a branch and open a draft pull request: https://github.com/csheargm/hagency-demo-sandbox/issues/6"
     );
     let untitled = Issue { title: String::new(), ..issue() };
-    assert!(Notice::new("a/b", &untitled, "Bot").body().starts_with("🔔 New GitHub issue #6 in a/b — @Bot please fix it"));
+    assert!(Notice::new("a/b", &untitled, "Bot").body().starts_with("🔔 New GitHub issue #6 in a/b — @Bot please fix it on a branch and open a draft pull request"));
 }
 
 /// Dispatch (`hagency-matrix` event_batch + `verified_ingress`) wakes the Agent
