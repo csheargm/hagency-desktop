@@ -17,6 +17,7 @@ use std::{
 mod commands;
 mod direct;
 mod earlier_archive;
+mod approval_settings;
 mod issue_watch;
 #[cfg(test)]
 mod profile_directory_tests;
@@ -103,9 +104,13 @@ struct Selection {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+// TODO(R4): owned_agents.rs is over budget; split the runtime approvals routes (list, decision) into owned_agents/approvals.rs.
 struct ToolDecision {
     args_digest: String,
     approved: bool,
+    /// "Always allow": also remember exactly this request (tool, folder, command).
+    #[serde(default)]
+    remember: bool,
 }
 fn default_effort() -> String {
     "medium".into()
@@ -835,6 +840,9 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             value["ownerDirectRoomId"] = input.room_id.into();
             return Ok(value);
         }
+        if parts.len() == 2 && parts[1] == "approval-settings" {
+            return approval_settings::handle(req, depot, agent).await;
+        }
         if parts.len() == 2 && parts[1] == "issue-watch" {
             return issue_watch::handle(req, depot, agent).await;
         }
@@ -1126,6 +1134,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         parts[3],
                         &input.args_digest,
                         input.approved,
+                        input.remember,
                     )
                     .await
                     .map_err(runtime_error)?;

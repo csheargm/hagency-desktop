@@ -422,6 +422,10 @@ impl MatchEvent for App {
                 let effects = self.matrix_link_navigation.action(link);
                 self.apply_matrix_link_effects(cx, effects);
             }
+            // This app's own Agent queued or settled a request: read now.
+            if action.downcast_ref::<crate::hagency::local_approvals::LocalApprovalsChanged>().is_some() {
+                crate::hagency::pending_approvals::poll();
+            }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
                 if crate::hagency::pending_approvals::apply(cx, update) {
                     cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
@@ -1569,6 +1573,7 @@ impl AppMain for App {
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
+            crate::hagency::local_approvals::ensure_watching();
             // On the same timer; the module spaces its own reads.
             crate::hagency::pending_admissions::poll();
             // Starts once per account session; the poller spaces its own checks.

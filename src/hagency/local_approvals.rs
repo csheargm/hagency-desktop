@@ -9,9 +9,12 @@
 //! the waiting Agent through `runtime/approvals/{id}/decision`.
 use ::hagency::native_owner::{Command, LocalAction};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Marks a row that came from this app's own Agent runtime.
 const SOURCE: &str = "localRuntime";
+/// The decision that approves and remembers exactly this request.
+pub const ALWAYS: &str = "approve_always";
 /// At most this many Agents are read per poll (the listing is bounded too).
 const MAX_AGENTS: usize = 128;
 
@@ -37,6 +40,8 @@ pub fn to_row(view: &Value, agent_name: &str) -> Option<Value> {
             "expiresAtMs": p["expires"].as_u64()?.saturating_mul(1000),
         },
         "digest": digest, "decision": null, "canDecide": true,
+        // "Always allow this": only an exact command or Claude tool call.
+        "alwaysAllowed": ::hagency::console::can_remember(p),
         SOURCE: {"agent": agent, "proposalId": proposal},
     }))
 }
@@ -50,7 +55,7 @@ pub fn decision_command(row: &Value, decision: &str) -> Option<Command> {
     Some(Command::Local {
         agent_id: agent.into(),
         action: LocalAction::Decision { approval_id: proposal.into() },
-        input: Some(json!({"argsDigest": digest, "approved": decision != "deny"})),
+        input: Some(json!({"argsDigest": digest, "approved": decision != "deny", "remember": decision == ALWAYS})),
         binding_id: None,
         requester: None,
     })
@@ -82,6 +87,37 @@ pub async fn with_local(service: &crate::hagency::backend::Service, room: Option
         // Management is unreachable but this app's own Agent is waiting.
         Err(_) => Ok(json!({"approvals": rows})),
     }
+}
+
+/// Posted when this app's own Agent runtime queued, decided or dropped a
+/// request, so cards refresh within a second instead of at the next poll.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalApprovalsChanged;
+
+static WATCHING: AtomicBool = AtomicBool::new(false);
+/// Clears `WATCHING` however the task ends (signal gone, or the account
+/// session's tasks aborted on sign-out), so the next tick starts it again.
+struct Watching;
+impl Drop for Watching {
+    fn drop(&mut self) {
+        WATCHING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Forward the in-process runtime's change signal to the UI thread. Called on
+/// every approvals tick; starts the forwarder when none is running.
+pub fn ensure_watching() {
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let mut changed = ::hagency::console::approvals_changed();
+    crate::sliding_sync::spawn_async_task(async move {
+        let _watching = Watching;
+        // `Err` means the process-wide sender is gone (shutdown): stop quietly.
+        while changed.changed().await.is_ok() {
+            makepad_widgets::Cx::post_action(LocalApprovalsChanged);
+        }
+    });
 }
 
 async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, String> {
@@ -124,11 +160,24 @@ mod tests {
         assert!(summary.contains("gh issue view 6"), "{summary}");
         let Some(Command::Local { agent_id, action: LocalAction::Decision { approval_id }, input, .. }) = decision_command(&row, "approve_once") else { panic!("not a runtime decision") };
         assert_eq!((agent_id.as_str(), approval_id.as_str()), ("ag", "p1"));
-        assert_eq!(input, Some(json!({"argsDigest": "a".repeat(64), "approved": true})));
+        assert_eq!(input, Some(json!({"argsDigest": "a".repeat(64), "approved": true, "remember": false})));
+        assert_eq!(row["alwaysAllowed"], true, "an exact shell command can be remembered");
+        let Some(Command::Local { input, .. }) = decision_command(&row, ALWAYS) else { panic!() };
+        assert_eq!(input, Some(json!({"argsDigest": "a".repeat(64), "approved": true, "remember": true})));
         let Some(Command::Local { input, .. }) = decision_command(&row, "deny") else { panic!() };
         assert_eq!(input.unwrap()["approved"], false);
         // A management row is not routed to the runtime.
         assert!(decision_command(&json!({"approval":{"id":"sap"},"digest":"d"}), "deny").is_none());
+    }
+
+    /// A Codex permission expansion is approved once; the card offers no
+    /// "Always allow this" for it.
+    #[test]
+    fn an_expansion_offers_no_always_allow() {
+        let mut v = view();
+        v["proposal"]["tool"] = json!("codex.permissions");
+        v["proposal"]["risk"] = json!("permission_expansion");
+        assert_eq!(to_row(&v, "x").unwrap()["alwaysAllowed"], false);
     }
 
     #[test]
