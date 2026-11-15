@@ -610,7 +610,7 @@ impl Service {
     /// Human-invitation entry points use the same durable Agent binding as the
     /// dedicated picker. A Matrix puppet invite alone cannot authorize service.
     pub(crate) async fn invite_agent_to_room(&self, room: &str, user: &str) -> Result<bool, String> {
-        let context = self.agents_for_registered_room(room).await?;
+        let context = crate::home::room_registration::agents_for_room(self, room).await?;
         let command = invited_agent_command(&context, room, user)?;
         let Command::BindAgent {agent_id, ..} = &command else {unreachable!()};
         let agent = agent_id.clone();
