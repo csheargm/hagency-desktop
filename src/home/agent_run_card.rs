@@ -158,8 +158,8 @@ impl AgentRunCardRef {
             .view
             .label(cx, ids!(title))
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
-        let status = status_label(entry.card.state);
-        inner.view.label(cx, ids!(status)).set_text(cx, status);
+        let status = card_status(&entry.card);
+        inner.view.label(cx, ids!(status)).set_text(cx, &status);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         preview.set_visible(cx, !entry.card.preview.is_empty());
         let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
@@ -270,31 +270,4 @@ mod tests {
     }
 }
 
-/// One Agent run status, localized. The run card, thread summaries and the rooms list
-/// all show this, never the event's stored (Chinese) body.
-pub(crate) fn status_label(state: ::hagency::agent_run_controls::State) -> &'static str {
-    use ::hagency::agent_run_controls::State;
-    crate::i18n::tr(match state {
-        State::Running => "Working… you can add instructions or stop this run",
-        State::Stopping => "Stopping; waiting for the runtime to finish and settle.",
-        State::Completed => "Done",
-        State::Interrupted => "Stopped",
-        State::Failed => "Failed",
-        State::Unknown => "The run went offline; check its result.",
-    })
-}
-/// The localized status of an `im.hagency.agent_run` message, from its card data.
-pub(crate) fn status_of_message(data: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
-    let state = data.get(::hagency::agent_run_controls::MSGTYPE)?.get("state")?;
-    serde_json::from_value(state.clone()).ok().map(status_label)
-}
-
-#[cfg(test)]
-mod status_tests {
-    #[test]
-    fn run_event_previews_use_the_localized_status_not_the_stored_body() {
-        let data = serde_json::json!({"im.hagency.agent_run":{"state":"completed"}});
-        assert_eq!(super::status_of_message(data.as_object().unwrap()), Some(crate::i18n::tr("Done")));
-        assert!(super::status_of_message(serde_json::json!({}).as_object().unwrap()).is_none());
-    }
-}
+pub(crate) use super::agent_run_status::{card_status, status_of_message};

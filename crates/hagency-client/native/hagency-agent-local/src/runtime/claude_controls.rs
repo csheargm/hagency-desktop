@@ -210,6 +210,14 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
         if !payload["parent_tool_use_id"].is_null() {
             return Ok(());
         }
+        // TODO(R4): split live output (steps, text, messages) out of claude_controls.rs.
+        if *kind == hagency_runtime::claude::EventKind::Assistant {
+            let blocks = payload["message"]["content"].as_array().into_iter().flatten();
+            for block in blocks.filter(|block| block["type"] == "tool_use") {
+                let name = block["name"].as_str().unwrap_or("");
+                output.step(&hagency_progress::claude_tool_step(name, &block["input"]));
+            }
+        }
         if *kind == hagency_runtime::claude::EventKind::Stream {
             let event = &payload["event"];
             if event["type"] == "message_start"

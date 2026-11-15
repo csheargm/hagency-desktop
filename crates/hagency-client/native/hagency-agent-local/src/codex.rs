@@ -1824,6 +1824,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     self.items.insert(key, item.clone());
                     tools.item(item, method == "item/completed");
+                    // TODO(R4): split item handling out of codex.rs (live steps, messages).
+                    if event_scope.root
+                        && method == "item/started"
+                        && let (Some(output), Some(step)) =
+                            (&queue.live_text, hagency_progress::codex_item_step(item))
+                    {
+                        output.step(&step);
+                    }
                     if event_scope.root
                         && method == "item/completed"
                         && item["type"] == "agentMessage"
