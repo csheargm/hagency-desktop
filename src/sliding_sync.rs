@@ -2505,7 +2505,11 @@ async fn matrix_worker_task(
                                 Cx::post_action(LoginAction::LoginFailure("Could not finish sign-in. Restart Rinx and try signing in.".into()));
                             }
                         }
-                        Err(error) => Cx::post_action(LoginAction::LoginFailure(crate::login::failure_text::login_failure_text(register, &error.to_string()))),
+                        Err(error) => {
+                            // Keep the raw reason in the log: the dialog shows the friendly text.
+                            log!("{} failed: {error:#}", if register { "Registration" } else { "Password sign-in" });
+                            Cx::post_action(LoginAction::LoginFailure(crate::login::failure_text::login_failure_text(register, &error.to_string())));
+                        }
                     }
                 }));
             }

@@ -3455,5 +3455,7 @@
   "Added to room memory automatically": "已自动加入房间记忆",
   "Could not save the automatic memory setting: {reason}": "无法保存自动记忆设置：{reason}",
   "Backup model": "备用模型",
-  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "主模型达到用量上限或不可用时，由备用模型以纯文本方式（不使用工具）回答该请求一次。Ollama 云端模型更快。"
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "主模型达到用量上限或不可用时，由备用模型以纯文本方式（不使用工具）回答该请求一次。Ollama 云端模型更快。",
+  "That username is already taken on this server. Choose another name, or sign in if it is your account.": "该用户名在此服务器上已被占用。请换一个名字；如果这是你的账号，请直接登录。",
+  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。"
 }

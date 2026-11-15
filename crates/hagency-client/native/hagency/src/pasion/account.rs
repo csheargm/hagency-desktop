@@ -33,6 +33,9 @@ pub enum Registration {
     NeedsEmailCode { registration_id: String },
 }
 
+/// Error detail when the requested username already belongs to another account.
+pub const USERNAME_TAKEN_CODE: &str = "username_taken";
+
 fn api(origin: &str, path: &str) -> String {
     format!("{}/auth/api/v1/auth/{path}", origin.trim_end_matches('/'))
 }
@@ -82,8 +85,10 @@ pub async fn register(origin: &str, username: &str, password: &str, email: Optio
     let status = response.status();
     let body: Value = response.json().await.unwrap_or_default();
     let error = body["error"].as_str().unwrap_or_default().to_ascii_lowercase();
+    // The password did not sign in above, so the name belongs to someone else:
+    // "Existing" here would send the caller into a login that must fail.
     if error.contains("exist") || error.contains("taken") || status == reqwest::StatusCode::CONFLICT {
-        return Ok(Registration::Existing);
+        return Err(step("register", USERNAME_TAKEN_CODE));
     }
     if error == "rate_limited" {
         return Err(step("register", "Pasion rate-limited registration from this address; wait or raise [rate_limiting] registration in pasion.toml"));

@@ -3455,5 +3455,7 @@
   "Added to room memory automatically": "Added to room memory automatically",
   "Could not save the automatic memory setting: {reason}": "Could not save the automatic memory setting: {reason}",
   "Backup model": "Backup model",
-  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster."
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.",
+  "That username is already taken on this server. Choose another name, or sign in if it is your account.": "That username is already taken on this server. Choose another name, or sign in if it is your account.",
+  "The server did not accept this username and password. Check them and try again.": "The server did not accept this username and password. Check them and try again."
 }
