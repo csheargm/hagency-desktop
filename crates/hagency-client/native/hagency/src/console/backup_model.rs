@@ -52,6 +52,7 @@ pub fn save_to(path: &Path, agent_id: &str, backup: Option<&str>) -> std::io::Re
         None => store.remove(agent_id),
     };
     let bytes = serde_json::to_vec_pretty(&store).map_err(std::io::Error::other)?;
+    if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
     let temp = path.with_extension("json.tmp");
     std::fs::write(&temp, bytes)?;
     std::fs::rename(temp, path)

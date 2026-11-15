@@ -21,7 +21,7 @@ fn labels_say_where_the_backup_runs() {
 #[test]
 fn store_saves_loads_and_clears() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(STORE_FILE);
+    let path = dir.path().join("fresh").join(STORE_FILE);
     assert_eq!(load_from(&path, "a1"), None, "off unless configured");
     save_to(&path, "a1", Some("ollama:qwen3:8b")).unwrap();
     save_to(&path, "a2", Some("ollama:gpt-oss:120b-cloud")).unwrap();

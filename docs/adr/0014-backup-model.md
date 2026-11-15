@@ -18,7 +18,8 @@ request answered anyway, with a clear note that the main model was unavailable.
   `http://127.0.0.1:11434/api/chat`, text-only: no tools, shell, files or
   GitHub, so no approval, outside-mode or merge-gate path is involved and no
   permission is added. No Hagency credential is sent; the request text (with
-  its room context) is.
+  its room context) is. For a `-cloud` model, Ollama forwards that text to
+  ollama.com under the owner's Ollama sign-in, so choosing one is choosing that.
 - The reply opens with "Main model unavailable (<reason>); answered by the
   backup model Ollama: <model> (cloud|local), without tools."
 - The choice is saved per Agent in `<app data>/backup-models.json`, read at
