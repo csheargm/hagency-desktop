@@ -52,21 +52,11 @@ impl SharedClaudePolicy {
     /// Native permissions always use the original stdio callback. Yolo is an
     /// explicit owner's host policy, not a room member's bypass CLI flag.
     pub fn arguments(self, model: &str, effort: &str) -> Result<Vec<String>, claude::Error> {
-        let mut args = claude::interactive_arguments(model, effort)?;
         // Shared work never inherits a person's hooks, instructions, plugins,
         // settings or connectors. The authenticated host installs the exact
         // room's SDK MCP connection after initialization.
-        args.extend(
-            [
-                "--safe-mode",
-                "--setting-sources=",
-                "--strict-mcp-config",
-                "--mcp-config",
-                "{\"mcpServers\":{}}",
-                "--no-chrome",
-            ]
-            .map(str::to_owned),
-        );
+        let mut args = claude::interactive_arguments(model, effort)?;
+        args.extend(claude::AGENT_ISOLATION_ARGUMENTS.map(str::to_owned));
         if !self.tools() {
             args.extend(
                 [

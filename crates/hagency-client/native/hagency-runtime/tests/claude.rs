@@ -605,3 +605,22 @@ fn control_frames_that_cannot_be_answered_or_classified_still_close_the_stream()
         assert!(matches!(decoder.feed(b"{}\n", 2), Err(Error::Closed)));
     }
 }
+
+#[test]
+fn agent_profile_hides_the_owners_personal_skills_plugins_and_commands() {
+    let args = claude::agent_arguments("sonnet", "medium").unwrap();
+    for flag in ["--safe-mode", "--setting-sources=", "--strict-mcp-config", "--no-chrome"] {
+        assert!(args.iter().any(|arg| arg == flag), "{flag}");
+    }
+    assert!(args.windows(2).any(|p| p == ["--mcp-config", "{\"mcpServers\":{}}"]));
+    // Approval routing stays with the host.
+    assert!(args.windows(2).any(|p| p == ["--permission-prompt-tool", "stdio"]));
+    assert!(!args.iter().any(|arg| arg == "--dangerously-skip-permissions"));
+    let note = &args[args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+    assert_eq!(note, claude::AGENT_TOOLS_NOTE);
+    for tool in ["read_room_history", "memory_list", "skill_read", "skill_propose", "WebSearch"] {
+        assert!(note.contains(tool), "{tool}");
+    }
+    assert!(note.contains("no access to anyone's email, drive, calendar, claude.ai connectors"));
+    assert_eq!(claude::AGENT_ISOLATION_ENV, [("ENABLE_CLAUDEAI_MCP_SERVERS", "false")]);
+}

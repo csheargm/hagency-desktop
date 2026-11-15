@@ -585,6 +585,9 @@ impl ClaudeLaunch {
         ] {
             environment.insert(name.into(), "1".into());
         }
+        for (name, value) in hagency_runtime::claude::AGENT_ISOLATION_ENV {
+            environment.insert(name.into(), value.into());
+        }
         #[cfg(test)]
         if let Some(mode) = &self.selection.fixture_mode {
             environment.insert("HAGENCY_OFFLINE_CLAUDE_MODE".into(), mode.into());

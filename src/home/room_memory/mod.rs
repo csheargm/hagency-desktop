@@ -4,11 +4,11 @@
 //! person's own Matrix client, so the homeserver (or, in an encrypted room,
 //! the readers) enforce who may change memory.
 pub mod card;
-mod io;
+pub(crate) mod io;
 pub mod model;
-mod ops;
+pub(crate) mod ops;
 pub mod panel;
-mod store;
+pub(crate) mod store;
 #[cfg(test)]
 mod hardening_tests;
 #[cfg(test)]

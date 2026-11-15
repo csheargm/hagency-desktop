@@ -3,6 +3,7 @@ use makepad_widgets::ScriptVm;
 pub mod mobile;
 pub mod mobile_chat_info;
 pub mod room_memory;
+pub mod room_skills;
 pub mod account_menu;
 pub mod account_list;
 pub mod add_room;
@@ -58,6 +59,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     mobile::script_mod(vm);
     joined_spaces::script_mod(vm);
     room_memory::script_mod(vm);
+    room_skills::script_mod(vm);
     mobile_chat_info::script_mod(vm);
     search_messages::script_mod(vm);
     loading_pane::script_mod(vm);

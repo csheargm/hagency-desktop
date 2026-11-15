@@ -27,6 +27,17 @@ pub fn native_arguments(shared_auth: bool, web_search: Option<bool>) -> Vec<Stri
     arguments
 }
 
+/// `-c` overrides that keep a person's own Codex instructions and skills out of
+/// an Agent's session (their AGENTS.md, project docs, skill list, plugins).
+/// The account login under CODEX_HOME is untouched.
+pub const AGENT_ISOLATION_OVERRIDES: [&str; 5] = [
+    "instructions=\"\"",
+    "project_doc_max_bytes=0",
+    "skills.include_instructions=false",
+    "skills.bundled.enabled=false",
+    "features.plugins=false",
+];
+
 /// Verify the provider selected by the owner and an explicit web-search policy.
 /// Extensions and instructions are native configuration, not evidence of an
 /// account mismatch. Do not rewrite or expose their arguments or credentials.
