@@ -187,7 +187,9 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
 #[test]
 fn the_agent_instructions_use_the_marker_the_gate_counts() {
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains(APPROVE_MARKER));
-    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("gh pr merge <N> --squash"));
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("gh pr merge <N> --squash --repo <owner/repo>` as its own command"));
+    // The Nov 15 live test: a chained or repo-less merge falls back to a card.
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("never chained"));
     // The issue-watch hand-off's merge-policy sentence and the base-branch check lead here.
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("agent merge policy"));
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("git show origin/<base>:.hagency/merge-policy.yml"));

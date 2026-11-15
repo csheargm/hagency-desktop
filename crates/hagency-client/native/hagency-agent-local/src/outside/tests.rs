@@ -141,3 +141,25 @@ fn compound_bypass_attempts_still_ask() {
         assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line:?}");
     }
 }
+
+/// The merge-review flow (Nov 15 live test): every GitHub read the reviewer
+/// and the author ran asked the owner. Reads now run; writes still ask.
+#[test]
+fn github_reads_run_without_a_card_and_writes_still_ask() {
+    let dir = tempfile::tempdir().unwrap();
+    for line in [
+        "gh pr view 20 --repo csheargm/hagency-demo-sandbox; gh pr diff 20 --repo csheargm/hagency-demo-sandbox",
+        "gh pr checks 20 -R csheargm/hagency-demo-sandbox 2>&1",
+        "git fetch -q && git log --oneline -3 && git rev-parse HEAD",
+        "gh repo view csheargm/hagency-demo-sandbox && gh run list -R csheargm/hagency-demo-sandbox | head -5",
+    ] {
+        assert!(allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
+    }
+    for line in [
+        "gh pr merge 20 --squash", "gh pr ready 20", "gh pr review 20 --approve", "gh pr comment 20 -b x", "gh pr edit 20 --base main",
+        "gh pr diff 20 --web", "gh pr view 20 -R evil.example/a/b", "git fetch --upload-pack=evil", "git fetch && git push", "gh run rerun 5",
+        "gh release download v1", "git -c core.sshCommand=evil fetch",
+    ] {
+        assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
+    }
+}
