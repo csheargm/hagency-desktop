@@ -25,6 +25,38 @@ pub(crate) fn status_text(state: State, progress: Option<&Progress>) -> String {
 pub(crate) fn card_status(card: &Card) -> String {
     status_text(card.state, card.progress.as_ref())
 }
+/// Seconds as "45 s" or "1 m 20 s", localized.
+pub(crate) fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        return crate::i18n::tr("{s} s").replace("{s}", &secs.to_string());
+    }
+    crate::i18n::tr("{m} m {s} s")
+        .replace("{m}", &(secs / 60).to_string())
+        .replace("{s}", &(secs % 60).to_string())
+}
+/// What a card shows now: while it runs, the step (or "Thinking…" before the
+/// first one) with a ticking elapsed time, so a long think never looks stuck.
+pub(crate) fn live_status(card: &Card, elapsed_secs: u64) -> String {
+    if card.state != State::Running {
+        return card_status(card);
+    }
+    let elapsed = format_elapsed(elapsed_secs);
+    match card.progress.as_ref().filter(|p| !p.step.is_empty()) {
+        Some(p) => crate::i18n::tr("Working… {step} · {t}").replace("{step}", &p.step).replace("{t}", &elapsed),
+        None => crate::i18n::tr("Thinking… {t}").replace("{t}", &elapsed),
+    }
+}
+/// The run clock ticks only while the run is running.
+pub(crate) fn needs_tick(card: &Card) -> bool {
+    card.state == State::Running
+}
+/// An Agent run's clock ticked: timelines refresh live run text.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunClockTick;
+/// The collapsed thread summary: the newest running run's live text, else the summary.
+pub(crate) fn thread_summary_text<'a>(live: Option<String>, fallback: &'a str) -> std::borrow::Cow<'a, str> {
+    live.map_or(std::borrow::Cow::Borrowed(fallback), std::borrow::Cow::Owned)
+}
 /// The localized status of an `im.hagency.agent_run` message, from its card data.
 pub(crate) fn status_of_message(data: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
     let card = data.get(MSGTYPE)?;
@@ -60,13 +92,48 @@ mod tests {
             crate::i18n::tr("Done in {s} s · 1 step").replace("{s}", "1"));
         assert_eq!(status_text(State::Running, None), status_label(State::Running));
     }
+    fn card(state: State, step: &str) -> Card {
+        let mut card: Card = serde_json::from_value(serde_json::json!({"version":1,"id":"c","dispatchId":"d",
+            "executionId":"e","roomId":"!r","eventId":"$e","threadRoot":"$t","requester":"@a","owner":"@b",
+            "runtime":"codex","state":"running","revision":0})).unwrap();
+        card.state = state;
+        if !step.is_empty() {
+            card.progress = Some(Progress { step: step.into(), steps: 1, elapsed_secs: None });
+        }
+        card
+    }
+    #[test]
+    fn elapsed_reads_seconds_then_minutes_and_seconds() {
+        assert_eq!(format_elapsed(45), crate::i18n::tr("{s} s").replace("{s}", "45"));
+        assert_eq!(format_elapsed(80), crate::i18n::tr("{m} m {s} s").replace("{m}", "1").replace("{s}", "20"));
+        assert_eq!(format_elapsed(0), crate::i18n::tr("{s} s").replace("{s}", "0"));
+    }
+    #[test]
+    fn a_running_card_ticks_with_thinking_or_the_tool_and_stops_when_done() {
+        let thinking = live_status(&card(State::Running, ""), 45);
+        assert_eq!(thinking, crate::i18n::tr("Thinking… {t}").replace("{t}", &format_elapsed(45)));
+        let tool = live_status(&card(State::Running, "running gh pr view"), 80);
+        assert!(tool.contains("running gh pr view") && tool.ends_with(&format_elapsed(80)), "{tool}");
+        assert!(needs_tick(&card(State::Running, "")));
+        for state in [State::Completed, State::Stopping, State::Failed, State::Interrupted] {
+            assert!(!needs_tick(&card(state, "x")), "{state:?}");
+            assert_eq!(live_status(&card(state, "x"), 9), card_status(&card(state, "x")));
+        }
+    }
+    #[test]
+    fn thread_summary_shows_the_live_step_and_falls_back() {
+        let live = live_status(&card(State::Running, "reading src/main.rs"), 5);
+        assert_eq!(thread_summary_text(Some(live.clone()), "latest reply"), live);
+        assert_eq!(thread_summary_text(None, "latest reply"), "latest reply");
+    }
     #[test]
     fn progress_words_are_english_keys_with_a_chinese_translation() {
-        for key in ["Working… {step}", "Done in {s} s · {n} steps", "Done in {s} s · 1 step"] {
+        for key in ["Working… {step}", "Done in {s} s · {n} steps", "Done in {s} s · 1 step",
+            "Working… {step} · {t}", "Thinking… {t}", "{s} s", "{m} m {s} s"] {
             assert_eq!(text_for(Language::English, key), key);
             let zh = text_for(Language::Chinese, key);
             assert_ne!(zh, key, "{key} has no Chinese text");
-            for slot in ["{step}", "{s}", "{n}"] {
+            for slot in ["{step}", "{s}", "{n}", "{t}", "{m}"] {
                 assert_eq!(key.contains(slot), zh.contains(slot), "{key}: {slot}");
             }
         }

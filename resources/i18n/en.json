@@ -3455,5 +3455,9 @@
   "Added to room memory automatically": "Added to room memory automatically",
   "Could not save the automatic memory setting: {reason}": "Could not save the automatic memory setting: {reason}",
   "Backup model": "Backup model",
-  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster."
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.",
+  "Working… {step} · {t}": "Working… {step} · {t}",
+  "Thinking… {t}": "Thinking… {t}",
+  "{s} s": "{s} s",
+  "{m} m {s} s": "{m} m {s} s"
 }

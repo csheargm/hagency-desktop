@@ -1,5 +1,6 @@
 use makepad_widgets::*;
 use crate::shared::html_or_plaintext::HtmlOrPlaintextWidgetExt;
+use super::agent_run_preview::preview_to_show;
 use crate::hagency::{
     run_controls::{self, Entry},
     pending_questions::PendingQuestionsChanged,
@@ -64,25 +65,15 @@ pub struct AgentRunCard {
     /// Newer live text kept back while the reader selects in the shown text.
     #[rust]
     held_preview: Option<String>,
+    /// The shown run and when it started, for its ticking elapsed time.
+    #[rust]
+    run: Option<(::hagency::agent_run_controls::Card, std::time::Instant)>,
+    /// Ticks once a second while the shown run is running.
+    #[rust]
+    clock: Timer,
 }
-/// The live text to put on screen, or `None` to leave the panel as it is.
-///
-/// The answer grows while the Agent writes, and replacing the text drops a
-/// selection. While the reader selects in a running answer the text holds
-/// still; the latest text shows once the selection is released, the run ends,
-/// or the panel turns to another run.
-fn preview_to_show<'a>(
-    shown: Option<&str>,
-    latest: &'a str,
-    running: bool,
-    same_run: bool,
-    selecting: bool,
-) -> Option<&'a str> {
-    if running && same_run && selecting && shown.is_some() {
-        return None;
-    }
-    (shown != Some(latest)).then_some(latest)
-}
+/// How often a running card's elapsed time ticks.
+const CLOCK_TICK_SECS: f64 = 1.0;
 /// An Agent writes Markdown. Show the live text formatted like the finished
 /// reply, through the same parser and sanitizer; text that is not Markdown
 /// stays plain.
@@ -98,6 +89,12 @@ fn show_preview(cx: &mut Cx, widget: &crate::shared::html_or_plaintext::HtmlOrPl
 impl Widget for AgentRunCard {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
+        if self.clock.is_event(event).is_some() {
+            self.clock = Timer::default();
+            self.show_status(cx);
+            self.view.redraw(cx);
+            cx.action(super::agent_run_status::RunClockTick);
+        }
         // The selection ends with a click, a release or a move of focus. Show
         // the text kept back then, not at the Agent's next update.
         if self.held_preview.is_some()
@@ -139,6 +136,22 @@ impl Widget for AgentRunCard {
         self.view.draw_walk(cx, scope, walk)
     }
 }
+impl AgentRunCard {
+    /// Shows the run's live status; keeps the clock ticking only while it runs.
+    fn show_status(&mut self, cx: &mut Cx) {
+        let ticking = self.run.as_ref().is_some_and(|(card, started)| {
+            let status = super::agent_run_status::live_status(card, started.elapsed().as_secs());
+            self.view.label(cx, ids!(status)).set_text(cx, &status);
+            super::agent_run_status::needs_tick(card)
+        });
+        if !ticking {
+            cx.stop_timer(self.clock);
+            self.clock = Timer::default();
+        } else if self.clock.is_empty() {
+            self.clock = cx.start_timeout(CLOCK_TICK_SECS);
+        }
+    }
+}
 impl AgentRunCardRef {
     pub fn set_entry(&self, cx: &mut Cx, entry: Option<&Entry>) {
         let Some(mut inner) = self.borrow_mut() else {
@@ -148,6 +161,8 @@ impl AgentRunCardRef {
             inner.key = None;
             inner.shown_preview = None;
             inner.held_preview = None;
+            inner.run = None;
+            inner.show_status(cx);
             inner.view.set_visible(cx, false);
             return;
         };
@@ -158,8 +173,8 @@ impl AgentRunCardRef {
             .view
             .label(cx, ids!(title))
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
-        let status = card_status(&entry.card);
-        inner.view.label(cx, ids!(status)).set_text(cx, &status);
+        inner.run = Some((entry.card.clone(), entry.started));
+        inner.show_status(cx);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         preview.set_visible(cx, !entry.card.preview.is_empty());
         let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
@@ -212,23 +227,6 @@ mod tests {
     use super::SOURCE_TEXT;
     use super::*;
 
-    #[test]
-    fn live_text_holds_still_while_the_reader_selects_in_a_running_answer() {
-        // First text, and every later one, shows when nothing is selected.
-        assert_eq!(preview_to_show(None, "a", true, true, false), Some("a"));
-        assert_eq!(preview_to_show(Some("a"), "ab", true, true, false), Some("ab"));
-        // The same text is not parsed again.
-        assert_eq!(preview_to_show(Some("ab"), "ab", true, true, false), None);
-        // A selection in the running answer keeps what is on screen.
-        assert_eq!(preview_to_show(Some("a"), "ab", true, true, true), None);
-        // It shows again once released, when the run ends, or for another run.
-        assert_eq!(preview_to_show(Some("a"), "ab", true, true, false), Some("ab"));
-        assert_eq!(preview_to_show(Some("a"), "ab", false, true, true), Some("ab"));
-        assert_eq!(preview_to_show(Some("a"), "other", true, false, true), Some("other"));
-        // Nothing on screen yet is never held back.
-        assert_eq!(preview_to_show(None, "a", true, true, true), Some("a"));
-    }
-
     #[cfg(feature = "agent_chat")]
     /// The run card's buttons, placeholder and notices are English keys with a
     /// Chinese translation, so an English UI no longer shows Chinese labels.
@@ -270,4 +268,4 @@ mod tests {
     }
 }
 
-pub(crate) use super::agent_run_status::{card_status, status_label, status_of_message};
+pub(crate) use super::agent_run_status::{status_label, status_of_message};

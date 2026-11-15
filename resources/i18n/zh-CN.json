@@ -3455,5 +3455,9 @@
   "Added to room memory automatically": "已自动加入房间记忆",
   "Could not save the automatic memory setting: {reason}": "无法保存自动记忆设置：{reason}",
   "Backup model": "备用模型",
-  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "主模型达到用量上限或不可用时，由备用模型以纯文本方式（不使用工具）回答该请求一次。Ollama 云端模型更快。"
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "主模型达到用量上限或不可用时，由备用模型以纯文本方式（不使用工具）回答该请求一次。Ollama 云端模型更快。",
+  "Working… {step} · {t}": "正在处理… {step} · {t}",
+  "Thinking… {t}": "思考中… {t}",
+  "{s} s": "{s} 秒",
+  "{m} m {s} s": "{m} 分 {s} 秒"
 }

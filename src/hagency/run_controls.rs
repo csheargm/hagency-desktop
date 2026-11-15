@@ -22,6 +22,8 @@ pub struct Entry {
     pub may_append: bool,
     pub may_stop: bool,
     pub recovered_drafts: Vec<String>,
+    /// When this app first saw the run, for the card's ticking elapsed time.
+    pub started: std::time::Instant,
     sent_event: Option<String>,
     sent_owner: Option<String>,
     pending_drafts: Vec<PendingDraft>,
@@ -203,6 +205,7 @@ pub(super) fn authenticated(
         sent_owner: None,
         pending_drafts: Vec::new(),
         recovered_drafts: Vec::new(),
+        started: std::time::Instant::now(),
         retry: None,
     };
     let mut edits: Vec<_> = store
@@ -239,6 +242,13 @@ pub fn for_event(room: &RoomId, event: &str, include_thread: bool) -> Vec<Entry>
     entries.sort_by_key(|e| !e.card.state.active());
     entries.truncate(3);
     entries
+}
+/// The newest running run in a thread, for its collapsed summary.
+pub fn newest_running_in_thread(room: &RoomId, root: &str) -> Option<Entry> {
+    let store = STORE.lock().unwrap_or_else(|e| e.into_inner());
+    store.entries.iter().rev()
+        .find(|e| e.card.room_id == room.as_str() && e.card.thread_root == root && e.card.state == RunState::Running)
+        .cloned()
 }
 pub fn draft(key: &str, value: String) {
     if value.len() > protocol::MAX_INPUT_BYTES {
@@ -420,11 +430,33 @@ mod tests {
             may_append: true,
             may_stop: true,
             recovered_drafts: Vec::new(),
+            started: std::time::Instant::now(),
             sent_event: Some("$action".into()),
             sent_owner: Some("@requester:test".into()),
             pending_drafts: Vec::new(),
             retry: None,
         }
+    }
+    #[test]
+    fn a_thread_summary_finds_the_newest_running_run_in_that_thread_only() {
+        let room = matrix_sdk::ruma::room_id!("!summary:test");
+        let run = |key: &str, root: &str, state: RunState| {
+            let mut e = entry();
+            e.key = key.into();
+            e.card.room_id = room.as_str().into();
+            e.card.thread_root = root.into();
+            e.card.state = state;
+            e
+        };
+        STORE.lock().unwrap().entries.extend([
+            run("$old", "$root", RunState::Running),
+            run("$new", "$root", RunState::Running),
+            run("$done", "$root", RunState::Completed),
+            run("$other", "$elsewhere", RunState::Running),
+        ]);
+        assert_eq!(newest_running_in_thread(room, "$root").map(|e| e.key).as_deref(), Some("$new"));
+        assert!(newest_running_in_thread(room, "$quiet").is_none());
+        STORE.lock().unwrap().entries.retain(|e| e.card.room_id != room.as_str());
     }
     #[test]
     fn reordered_edits_cannot_change_identity_or_reactivate_a_finished_run() {
