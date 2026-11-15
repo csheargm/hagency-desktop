@@ -13,6 +13,7 @@ use crate::{
 use super::{
     profile_moderation::ProfileModeration,
     profile_route::{self, ProfileRoute},
+    user_rooms::UserRoomsInCommonWidgetExt,
     profile_view_fill,
     user_profile::UserProfilePaneInfo,
 };
@@ -87,6 +88,7 @@ impl ProfileSidePanel {
         self.view.button(cx, ids!(profile_moments)).set_visible(cx, !agent);
         self.view.view(cx, ids!(desktop_moderation)).set_visible(cx, false);
         self.moderation.request((!agent).then_some(&info));
+        self.view.user_rooms_in_common(cx, ids!(user_profile_view.rooms_in_common)).load(cx, info.user_id.clone());
         self.route = Some(route);
         self.info = Some(info);
         self.view.redraw(cx);
