@@ -7,7 +7,7 @@ pub mod card;
 pub(crate) mod io;
 pub mod model;
 pub(crate) mod ops;
-mod server_state;
+pub(crate) mod server_state;
 pub mod people;
 pub mod panel;
 pub(crate) mod store;

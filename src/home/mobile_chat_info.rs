@@ -44,9 +44,12 @@ script_mod! {
                         Icon {icon_walk: Walk{width: 16 height: 16} draw_icon +: {svg: ICON_ADD_ATTACHMENT color: mod.widgets.RINX_MUTED}}}
                 }
             }
-            View {width: Fill height: 36 flow: Right spacing: 8
+            // Two rows of two: four labels did not fit the narrow side panel ("Membe", "Memor").
+            View {width: Fill height: 36 flow: Right spacing: 6
                 overview_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Overview")) icon_walk: Walk{width: 0 height: 0}}
                 members_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Members")) icon_walk: Walk{width: 0 height: 0}}
+            }
+            View {width: Fill height: 36 flow: Right spacing: 6
                 memory_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Memory")) i18n_text: "Memory" icon_walk: Walk{width: 0 height: 0}}
                 skills_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Skills")) i18n_text: "Skills" icon_walk: Walk{width: 0 height: 0}}
             }
