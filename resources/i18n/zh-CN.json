@@ -3211,5 +3211,8 @@
   "Saved. The list updates when the room syncs.": "已保存。房间同步后列表会更新。",
   "Could not remember the dismissal: {reason}": "无法记住忽略操作：{reason}",
   "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。",
-  "Room memory is unavailable right now: {reason}": "房间记忆暂时不可用：{reason}"
+  "Room memory is unavailable right now: {reason}": "房间记忆暂时不可用：{reason}",
+  "No GitHub token — add one in the Agent's GitHub access settings": "没有 GitHub 令牌——请在 Agent 的“GitHub 访问”设置中添加",
+  "Suggested by {author} · accepted by {owner}": "由 {author} 建议 · {owner} 已接受",
+  "Suggested a note for this room's memory": "建议了一条房间记忆"
 }

@@ -3211,5 +3211,8 @@
   "Saved. The list updates when the room syncs.": "Saved. The list updates when the room syncs.",
   "Could not remember the dismissal: {reason}": "Could not remember the dismissal: {reason}",
   "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run",
-  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}"
+  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}",
+  "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings",
+  "Suggested by {author} · accepted by {owner}": "Suggested by {author} · accepted by {owner}",
+  "Suggested a note for this room's memory": "Suggested a note for this room's memory"
 }

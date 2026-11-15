@@ -26,6 +26,8 @@ pub struct Loaded {
     pub unreadable: usize,
     pub truncated: bool,
     pub ignored: usize,
+    /// Names for authors and acceptors (display, never raw ids).
+    pub people: super::people::People,
 }
 impl Loaded {
     pub fn can_write(&self) -> bool {
@@ -52,13 +54,14 @@ pub async fn load(client: &Client, room_id: &RoomId) -> Result<Loaded, String> {
     let (room, storage) = open(client, room_id).await?;
     let mut loaded = Loaded {
         room_id: room_id.to_owned(), me, storage, entries: Vec::new(), levels: PowerLevels::default(),
-        unreadable: 0, truncated: false, ignored: 0,
+        unreadable: 0, truncated: false, ignored: 0, people: Default::default(),
     };
     match storage {
         Storage::State => {
             // From the server: the sync store does not hold custom state types.
             let events = super::server_state::events_of_type(client, room_id, MEMORY_STATE_TYPE).await?;
             loaded.entries = room_memory::reduce(&events);
+            loaded.people.accepted_by = super::people::acceptors(&events);
             loaded.levels = levels(&room, std::iter::once(loaded.me.clone())).await?;
         }
         Storage::Timeline => {
@@ -69,7 +72,25 @@ pub async fn load(client: &Client, room_id: &RoomId) -> Result<Loaded, String> {
             (loaded.entries, loaded.unreadable, loaded.truncated, loaded.ignored) = (view.entries, view.unreadable, view.truncated, view.ignored);
         }
     }
+    loaded.people.names = names(&room, &loaded).await;
     Ok(loaded)
+}
+
+/// Display names of everyone the entries name; an unknown member keeps no name.
+async fn names(room: &Room, loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
+    let users: std::collections::BTreeSet<String> = loaded.entries.iter().map(|e| e.author.clone())
+        .chain(loaded.people.accepted_by.values().cloned()).collect();
+    let mut names = std::collections::BTreeMap::new();
+    for user in users {
+        let Ok(id) = UserId::parse(user.as_str()) else { continue };
+        // A member that cannot be read is shown by its fallback name, not an error.
+        if let Ok(Some(member)) = room.get_member_no_sync(&id).await
+            && let Some(name) = member.display_name()
+        {
+            names.insert(user, name.to_owned());
+        }
+    }
+    names
 }
 
 /// Sends one write under the signed-in person's own user.

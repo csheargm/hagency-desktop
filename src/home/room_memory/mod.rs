@@ -8,6 +8,7 @@ mod io;
 pub mod model;
 mod ops;
 mod server_state;
+pub mod people;
 pub mod panel;
 mod store;
 #[cfg(test)]
