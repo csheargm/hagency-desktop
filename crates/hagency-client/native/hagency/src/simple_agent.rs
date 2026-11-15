@@ -12,6 +12,7 @@ mod agents; mod start; mod profile; mod progress;
 pub use agents::{AgentIdentity, create_agent, find_agent};
 pub use progress::{STEPS, current_step, last_failed_step, progress_text};
 use progress::{CURRENT_STEP, LAST_FAILED_STEP, step_index};
+#[cfg(test)] mod policy_tests;
 
 pub type CommandFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, NativeError>> + Send + 'a>>;
 
@@ -190,14 +191,18 @@ async fn configure(exec: &dyn CommandExecutor, agent_id: &str, spec: &SimpleAgen
     // TODO: AskOwner-once for humans outside bound rooms and for other Agents
     // (depth one) need requester-layer rows the policy model cannot express yet.
     let current = step(exec, "agent-policy", local(agent_id, LocalAction::AgentPolicy, None)).await?;
+    // Fail closed: an unexpected reply must not start an Agent that still has
+    // its previous (possibly unlimited) budget and high-risk settings.
     let mut policy = current["policy"]["policy"].clone();
-    if policy.is_object() {
-        policy["requests"] = json!("Allow");
-        policy["budget"] = json!({"limit":{"Tokens":spec.daily_budget},"period":"UtcDay"});
-        policy["high_risk"] = json!(spec.high_risk);
-        let input = json!({"expectedRevision":current["policy"]["revision"],"policy":policy});
-        step(exec, "save-policy", local(agent_id, LocalAction::SaveAgentPolicy, Some(input))).await?;
+    let revision = current["policy"]["revision"].clone();
+    if !policy.is_object() || revision.is_null() {
+        return Err(failure("invalid_server_response"));
     }
+    policy["requests"] = json!("Allow");
+    policy["budget"] = json!({"limit":{"Tokens":spec.daily_budget},"period":"UtcDay"});
+    policy["high_risk"] = json!(spec.high_risk);
+    let input = json!({"expectedRevision":revision,"policy":policy});
+    step(exec, "save-policy", local(agent_id, LocalAction::SaveAgentPolicy, Some(input))).await?;
     Ok(())
 }
 
@@ -218,6 +223,18 @@ pub async fn create_simple_agent(exec: &dyn CommandExecutor, spec: &SimpleAgentS
 
 /// Like `create_simple_agent`, with the caller choosing which Agent to reuse.
 pub async fn create_simple_agent_as(exec: &dyn CommandExecutor, spec: &SimpleAgentSpec, identity: AgentIdentity<'_>) -> Result<SimpleAgentReport, NativeError> {
+    // The step record is per setup: forget the previous run's, and blame the
+    // running step for failures raised between commands (e.g. a bad reply).
+    // TODO: carry the step in the returned error; the atomics are one per process.
+    progress::begin();
+    let result = run_setup(exec, spec, identity).await;
+    if result.is_err() {
+        progress::fail_current();
+    }
+    result
+}
+
+async fn run_setup(exec: &dyn CommandExecutor, spec: &SimpleAgentSpec, identity: AgentIdentity<'_>) -> Result<SimpleAgentReport, NativeError> {
     // The local login is checked first: a Mac that is not signed in must not
     // end up with an Agent that has no runtime (seen as a dead "Stopped" Agent).
     let (model, credential) = connect_provider(exec, &spec.runtime, spec.model.as_deref()).await?;
@@ -247,48 +264,4 @@ pub async fn owner_direct(exec: &dyn CommandExecutor, agent_id: &str) -> Result<
 
 #[cfg(test)] mod spec_tests;
 #[cfg(test)] mod identity_tests;
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-    struct Script(Mutex<Vec<(String, Value)>>);
-    impl CommandExecutor for Script {
-        fn execute(&self, command: Command) -> CommandFuture<'_> {
-            let label = format!("{command:?}");
-            let mut log = self.0.lock().unwrap();
-            let reply = match &command {
-                Command::Projects => json!({"projects":[{"id":"p1","spaceId":"!s:x","active":true}]}),
-                Command::Agents => json!({"agents":[]}),
-                Command::CreateAgent { .. } => json!({"creation":{"agent":{"id":"a1","puppetMxid":"@_hagency_agt_1:x"}},"commandState":"active"}),
-                Command::Provider { action: ProviderAction::UseLocal } => json!({"credentialRef":"codex-shared:1"}),
-                Command::Provider { action: ProviderAction::Models } => json!({"models":[{"model":"gpt-6.1","credentialRef":"codex-shared:1"}]}),
-                Command::Local { action: LocalAction::AgentPolicy, .. } => json!({"policy":{"revision":1,"policy":{"budget":{"limit":"Unlimited","period":"Lifetime"},"requests":"AskOwner","high_risk":"Deny"}}}),
-                Command::EnsureAgentOwnerDirect { .. } => json!({"roomId":"!dm:x"}),
-                _ => json!({}),
-            };
-            log.push((label, reply.clone()));
-            Box::pin(async move { Ok(reply) })
-        }
-    }
-    #[tokio::test]
-    async fn creates_agent_with_existing_project_and_allow_policy() {
-        let script = Script(Mutex::new(vec![]));
-        let spec = SimpleAgentSpec { name: "bobbot".into(), runtime: Runtime::Codex, model: None, workspace_root: None, reservation: 0, daily_budget: DAILY_TOKEN_BUDGET, high_risk: HIGH_RISK_ASK_OWNER, reasoning_effort: None };
-        let report = create_simple_agent(&script, &spec).await.unwrap();
-        assert_eq!(report.agent_id, "a1");
-        assert_eq!(report.project_id, "p1");
-        assert_eq!(report.model, "gpt-6.1");
-        assert!(report.started);
-        assert_eq!(report.owner_direct_room_id.as_deref(), Some("!dm:x"));
-        let log = script.0.lock().unwrap();
-        assert!(log.iter().any(|(label, _)| label.contains("SaveAgentPolicy")));
-        assert!(log.iter().any(|(label, _)| label.contains("StartAgentService")));
-        assert!(!log.iter().any(|(label, _)| label.contains("CreateMatrix")));
-    }
-    #[test]
-    fn runtime_parses_aliases() {
-        assert_eq!("Claude-Code".parse::<Runtime>().unwrap(), Runtime::Claude);
-        assert_eq!("codex".parse::<Runtime>().unwrap(), Runtime::Codex);
-        assert!("octos".parse::<Runtime>().is_err());
-    }
-}
+#[cfg(test)] mod tests;

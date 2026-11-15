@@ -16,6 +16,7 @@ impl CommandExecutor for Server {
             Command::CreateAgent { .. } => Ok(json!({"creation":{"agent":{"id":"a1","puppetMxid":"@_hagency_agt_1:x"}}})),
             Command::Provider { action: ProviderAction::UseLocal } => Ok(json!({"credentialRef":"codex-shared:1"})),
             Command::Provider { action: ProviderAction::Models } => Ok(json!({"models":[{"model":"gpt-6.1"}]})),
+            Command::Local { action: LocalAction::AgentPolicy, .. } => Ok(json!({"policy":{"revision":1,"policy":{"requests":"AskOwner"}}})),
             Command::EnsureAgentOwnerDirect { .. } => self.owner_direct.clone().map_err(failure),
             _ => Ok(json!({})),
         };

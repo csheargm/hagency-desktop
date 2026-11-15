@@ -24,6 +24,21 @@ pub fn progress_text(step: Option<&str>) -> &'static str {
 pub(super) fn step_index(label: &str) -> usize {
     STEPS.iter().position(|s| *s == label).unwrap_or(usize::MAX)
 }
+/// Start a setup with no current or failed step recorded.
+pub(super) fn begin() {
+    reset_steps(&CURRENT_STEP, &LAST_FAILED_STEP);
+}
+/// Name the running step as the failed one unless a command already did.
+pub(super) fn fail_current() {
+    blame_current(&CURRENT_STEP, &LAST_FAILED_STEP);
+}
+fn reset_steps(current: &AtomicUsize, failed: &AtomicUsize) {
+    current.store(usize::MAX, Ordering::Relaxed);
+    failed.store(usize::MAX, Ordering::Relaxed);
+}
+fn blame_current(current: &AtomicUsize, failed: &AtomicUsize) {
+    let _ = failed.compare_exchange(usize::MAX, current.load(Ordering::Relaxed), Ordering::Relaxed, Ordering::Relaxed);
+}
 /// The step whose failure ended the most recent setup, if any.
 pub fn last_failed_step() -> Option<&'static str> {
     STEPS.get(LAST_FAILED_STEP.load(Ordering::Relaxed)).copied()
@@ -42,5 +57,19 @@ mod tests {
         assert_eq!(last_failed_step(), Some("save-model"));
         LAST_FAILED_STEP.store(usize::MAX, Ordering::Relaxed);
         assert_eq!(last_failed_step(), None);
+    }
+    /// Regression: a failure between commands kept the previous setup's step.
+    #[test]
+    fn a_new_setup_forgets_the_old_failure_and_blames_its_running_step() {
+        let (current, failed) = (AtomicUsize::new(1), AtomicUsize::new(step_index("save-policy")));
+        reset_steps(&current, &failed);
+        assert_eq!(failed.load(Ordering::Relaxed), usize::MAX);
+        current.store(step_index("read-model"), Ordering::Relaxed);
+        blame_current(&current, &failed);
+        assert_eq!(failed.load(Ordering::Relaxed), step_index("read-model"));
+        // A command that already named its own failure keeps it.
+        current.store(step_index("save-model"), Ordering::Relaxed);
+        blame_current(&current, &failed);
+        assert_eq!(failed.load(Ordering::Relaxed), step_index("read-model"));
     }
 }
