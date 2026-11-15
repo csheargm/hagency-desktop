@@ -42,6 +42,7 @@ pub fn to_row(view: &Value, agent_name: &str) -> Option<Value> {
         "digest": digest, "decision": null, "canDecide": true,
         // "Always allow this": only an exact command or Claude tool call.
         "alwaysAllowed": ::hagency::console::can_remember(p),
+        "networkStep": ::hagency::console::is_network_step(p),
         SOURCE: {"agent": agent, "proposalId": proposal},
     }))
 }
@@ -141,11 +142,16 @@ async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, 
 mod tests {
     use super::*;
 
+    /// A real canonical folder: "Always allow" needs one (no symlinks).
+    fn folder() -> String {
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap().display().to_string()
+    }
+
     fn view() -> Value {
         json!({"proposalId":"p1","argsDigest":"a".repeat(64),"proposal":{
             "scope":{"agent":"ag","binding":"b","room":"!r:x","requester":"@o:x","thread":""},
             "dispatch":"d","tool":"claude.Bash","arguments":{"command":"gh issue view 6"},
-            "canonical_directory":"/w","risk":"high","policy_revision":[1,0,0],"expires":2_000_000_000u64}})
+            "canonical_directory":folder(),"risk":"high","policy_revision":[1,0,0],"expires":2_000_000_000u64}})
     }
 
     /// The owner's flow: the Agent asks for `gh issue view`; the room card
@@ -178,6 +184,16 @@ mod tests {
         v["proposal"]["tool"] = json!("codex.permissions");
         v["proposal"]["risk"] = json!("permission_expansion");
         assert_eq!(to_row(&v, "x").unwrap()["alwaysAllowed"], false);
+    }
+
+    /// A push is never remembered: no "Always allow this", and the card says why.
+    #[test]
+    fn a_push_offers_no_always_allow_and_says_why() {
+        let mut v = view();
+        v["proposal"]["arguments"]["command"] = json!("git push origin fix-6");
+        let row = to_row(&v, "x").unwrap();
+        assert_eq!((row["alwaysAllowed"].clone(), row["networkStep"].clone()), (json!(false), json!(true)));
+        assert_eq!(to_row(&view(), "x").unwrap()["networkStep"], false);
     }
 
     #[test]

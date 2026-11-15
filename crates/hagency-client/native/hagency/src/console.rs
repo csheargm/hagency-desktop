@@ -74,6 +74,12 @@ pub fn can_remember(proposal: &serde_json::Value) -> bool {
     serde_json::from_value::<hagency_agent_local::ToolProposal>(proposal.clone())
         .is_ok_and(|p| hagency_agent_local::remembered::request_key(&p).is_some())
 }
+/// Whether this proposal is a shell step that can reach the network (or
+/// cannot be read in full), which "Always allow" never remembers.
+pub fn is_network_step(proposal: &serde_json::Value) -> bool {
+    serde_json::from_value::<hagency_agent_local::ToolProposal>(proposal.clone())
+        .is_ok_and(|p| hagency_agent_local::remembered::is_network_step(&p))
+}
 
 struct Inner {
     authority: Authority,

@@ -65,7 +65,7 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>) -
     let rules = ledger.remembered_requests(&reply.owner, agent).map_err(local_error)?;
     let mode = ledger.approval_mode(agent).map_err(local_error)?;
     let auto_merge = ledger.auto_merge(agent).map_err(local_error)?;
-    let rules: Vec<Value> = rules.iter().map(|rule| json!({"tool": rule.tool, "directory": rule.directory, "request": rule.request, "created": rule.created, "label": label(rule)})).collect();
+    let rules: Vec<Value> = rules.iter().map(|rule| json!({"tool": rule.tool, "directory": rule.directory, "request": rule.request, "created": rule.created, "room": rule.room, "label": label(rule)})).collect();
     Ok(json!({"agentId": agent, "mode": mode, "autoMerge": auto_merge, "rules": rules}))
 }
 
@@ -75,6 +75,10 @@ fn label(rule: &RememberedRequest) -> String {
     let request: Value = serde_json::from_str(&rule.request).unwrap_or_default();
     if let Some(command) = request["command"].as_str() {
         return command.to_owned();
+    }
+    // Codex argv (kept exactly, wrapper included): its words, space-separated.
+    if let Some(words) = request["command"].as_array() {
+        return words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
     }
     let tool = rule.tool.rsplit('.').next().unwrap_or(&rule.tool);
     match ["file_path", "path", "pattern", "url"].iter().find_map(|k| request[*k].as_str()) {
@@ -115,9 +119,10 @@ mod tests {
 
     #[test]
     fn a_rule_is_named_by_its_exact_command_or_its_target() {
-        let rule = |tool: &str, request: &str| RememberedRequest { tool: tool.into(), directory: "/w".into(), request: request.into(), created: 0 };
+        let rule = |tool: &str, request: &str| RememberedRequest { tool: tool.into(), directory: "/w".into(), request: request.into(), created: 0, room: String::new() };
         assert_eq!(label(&rule("claude.Bash", r#"{"command":"cargo test"}"#)), "cargo test");
         assert_eq!(label(&rule("claude.Edit", r#"{"file_path":"/w/a.rs","new_string":"b"}"#)), "Edit /w/a.rs");
+        assert_eq!(label(&rule("codex.command", r#"{"command":["bash","-lc","cargo test"],"cwd":"/w"}"#)), "bash -lc cargo test");
         assert_eq!(label(&rule("claude.WebSearch", r#"{"query":"x"}"#)), "WebSearch");
     }
 }

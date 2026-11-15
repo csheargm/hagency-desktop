@@ -32,7 +32,8 @@ const GIT_DENIED: [&str; 12] = [
 const RG_DENIED: [&str; 4] = ["--pre", "--pre-glob", "-z", "--search-zip"];
 /// `gh` reads: `(area, verb)`. None of these changes anything on GitHub.
 /// `gh run` is left out: Actions logs can carry secrets a job printed.
-const READ_ONLY_GH: [(&str, &str); 12] = [
+/// Shared with `remembered::network`: only these `gh` forms may be "Always allow"ed.
+pub(crate) const READ_ONLY_GH: [(&str, &str); 12] = [
     ("issue", "view"), ("issue", "list"), ("issue", "status"),
     ("pr", "view"), ("pr", "list"), ("pr", "diff"), ("pr", "checks"), ("pr", "status"),
     ("repo", "view"), ("release", "list"), ("release", "view"), ("label", "list"),

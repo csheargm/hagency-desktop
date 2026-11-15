@@ -1415,7 +1415,7 @@ fn validate_tool(
             // question for a request that cannot leave the workspace.
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
             // "Always allow": the owner remembered exactly this request here.
-            ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref())? => {}
+            ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref(), now)? => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,
             trusted if trusted.is_full_trust() => {}
             ToolPolicy::AllowWithRules { tools, directories } => {
