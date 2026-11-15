@@ -26,8 +26,26 @@ pub fn preview_of_message(msgtype: &MessageType, sender_id: &UserId, sender_name
     }
 }
 
+/// The preview line of a proposal message. A parsed `m.notice` drops the proposal key, so
+/// the Agent runtime's fixed fallback body is recognized as well.
+pub(crate) fn proposal_line(msgtype: &MessageType) -> Option<&'static str> {
+    crate::event_preview::proposal_preview(&msgtype.data()).or_else(|| match msgtype {
+        MessageType::Notice(notice) if notice.body.starts_with("Memory proposal from ") => {
+            Some(crate::i18n::tr("Suggested a note for this room's memory"))
+        }
+        MessageType::Notice(notice) if notice.body.contains(" proposes ") && notice.body.contains("\nReason: ") => {
+            Some(crate::i18n::tr("Suggested a skill for this room"))
+        }
+        _ => None,
+    })
+}
+
 /// The first readable line of a text or notice message, HTML-escaped.
 fn escaped_plain_line(msgtype: &MessageType) -> Option<String> {
+    // A memory or skill proposal is a card; its fallback body (with a raw Agent id) is never previewed.
+    if let Some(line) = proposal_line(msgtype) {
+        return Some(htmlize::escape_text(line).into_owned());
+    }
     match msgtype {
         MessageType::Text(text) => Some(text.body.as_str()),
         MessageType::Notice(notice) => Some(notice.body.as_str()),
@@ -38,6 +56,9 @@ fn escaped_plain_line(msgtype: &MessageType) -> Option<String> {
 /// The one-line plain text of a quoted (replied-to) text or notice message,
 /// without an agent's usage footer; `None` for other message types.
 pub fn reply_quote_line(msgtype: &MessageType, sender_id: &UserId) -> Option<String> {
+    if let Some(line) = proposal_line(msgtype) {
+        return Some(line.to_owned());
+    }
     let (body, formatted) = match msgtype {
         MessageType::Text(text) => (text.body.as_str(), text.formatted.is_some()),
         MessageType::Notice(notice) => (notice.body.as_str(), notice.formatted.is_some()),
@@ -68,6 +89,12 @@ pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, s
 
 /// The preview of a raw latest-reply event, if it is a room message.
 pub fn preview_of_raw_event(raw: &Raw<AnySyncTimelineEvent>, sender_name: &str) -> Option<String> {
+    // The raw content still has the proposal key that a parsed notice drops.
+    if let Ok(Some(content)) = raw.get_field::<serde_json::Value>("content")
+        && let Some(line) = content.as_object().and_then(crate::event_preview::proposal_preview)
+    {
+        return Some(format!("<b>{}</b>: {}", htmlize::escape_text(sender_name), htmlize::escape_text(line)));
+    }
     match raw.deserialize().ok()? {
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(ev))) =>
             Some(preview_of_message(&ev.content.msgtype, &ev.sender, sender_name)),
@@ -199,5 +226,21 @@ mod tests {
     fn a_bullet_list_quotes_its_first_item() {
         let line = reply_quote_line(&MessageType::text_plain("- first \\- item\n- second"), user_id!("@a:s"));
         assert_eq!(line.as_deref(), Some("first - item"));
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+    /// Regression (live, 2026-11-15): the thread summary under the request showed the proposal's
+    /// fallback body "Memory proposal from agt_…: … Reason: …" next to its card.
+    #[test]
+    fn a_real_shaped_proposal_notice_previews_as_one_plain_line() {
+        let content = serde_json::json!({"msgtype":"m.notice","body":"Memory proposal from agt_01m7: Demo Monday\nReason: asked",
+            "io.hagency.memory_proposal":{"id":"mem_1","text":"Demo Monday","reason":"asked","source_event":"$e","author":"agt_01m7"}});
+        let msgtype: MessageType = serde_json::from_value(content).unwrap();
+        let line = escaped_plain_line(&msgtype).unwrap();
+        assert!(!line.contains("agt_") && !line.contains("Reason"), "{line}");
+        assert_eq!(line, crate::i18n::tr("Suggested a note for this room's memory"));
     }
 }

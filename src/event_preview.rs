@@ -229,7 +229,7 @@ pub fn plaintext_body_of_timeline_item(
 
 
 /// The preview line for a message carrying a memory or skill proposal.
-fn proposal_preview(data: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
+pub(crate) fn proposal_preview(data: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
     if data.contains_key(::hagency::room_memory::MEMORY_PROPOSAL_KEY) {
         Some(crate::i18n::tr("Suggested a note for this room's memory"))
     } else if data.contains_key(::hagency::room_skills::SKILL_PROPOSAL_KEY) {
@@ -256,7 +256,7 @@ pub(crate) fn text_preview_of_message(
 ) -> TextPreview {
     // A memory or skill proposal is a card in the room; its fallback body names
     // a raw Agent id, so previews show one plain line instead.
-    if let Some(line) = proposal_preview(&msg.data()) {
+    if let Some(line) = crate::thread_reply_preview::proposal_line(msg) {
         return TextPreview::from((line.to_owned(), BeforeText::UsernameWithColon));
     }
     let text = match msg {
