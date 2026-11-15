@@ -182,3 +182,36 @@ fn boot_stops_again_every_agent_a_crash_left_recorded_as_paused() {
     block(enforce_on_boot(&other, &path, "@other:x"));
     assert!(other.calls().is_empty());
 }
+
+#[test]
+fn an_unreadable_pause_file_refuses_every_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STATE_FILE);
+    assert!(!paused_in(&path, "codex"), "no file: nothing is paused");
+    std::fs::write(&path, b"{not json").unwrap();
+    assert!(paused_in(&path, "codex") && paused_in(&path, "anything"));
+}
+
+#[test]
+fn resume_keeps_every_agent_not_yet_started_paused() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STATE_FILE);
+    block(stop_all(&recorder(), &path, "@me:x")).unwrap();
+    // While "codex" starts, "claude" must still be fenced.
+    struct Watch(std::path::PathBuf, Mutex<Vec<bool>>);
+    impl Agents for Watch {
+        async fn local_agents(&self) -> Result<Vec<String>, String> { Ok(vec![]) }
+        async fn pending_approvals(&self) -> Result<Vec<Value>, String> { Ok(vec![]) }
+        async fn deny(&self, _: &Value) -> Result<(), String> { Ok(()) }
+        async fn set_running(&self, agent: &str, _: bool) -> Result<(), String> {
+            self.1.lock().unwrap().push(agent == "codex" && paused_in(&self.0, "claude"));
+            Ok(())
+        }
+        fn stop_runs(&self) -> usize { 0 }
+    }
+    let watch = Watch(path.clone(), Mutex::new(vec![]));
+    block(resume_all(&watch, &path, "@me:x")).unwrap();
+    assert_eq!(watch.1.lock().unwrap()[0], true);
+    assert!(!path.exists());
+}

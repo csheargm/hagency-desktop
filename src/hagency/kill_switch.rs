@@ -63,8 +63,17 @@ pub trait Agents {
     fn stop_runs(&self) -> usize;
 }
 
+/// The pause file lives in the owner daemon's home, which Desktop and the
+/// daemon share; the daemon's own `--home` argument wins inside the daemon.
 pub fn default_path() -> PathBuf {
-    crate::app_data_dir().join(STATE_FILE)
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let args: Vec<_> = std::env::args_os().collect();
+        let home = args.windows(2).find(|pair| pair[0] == "--home").map(|pair| PathBuf::from(&pair[1]));
+        home.or_else(|| ::hagency::service::default_daemon_dir().ok())
+            .unwrap_or_else(|| crate::app_data_dir().to_owned())
+            .join(STATE_FILE)
+    }).clone()
 }
 
 /// The paused state of `owner`, or None when the owner is not paused.
@@ -83,10 +92,12 @@ fn save(path: &Path, paused: &Paused) -> Result<(), String> {
 
 /// Whether the file at `path` pauses `agent`, whichever owner wrote it:
 /// Agent IDs are the owner's own, and a start must fail closed.
+/// A file that exists but cannot be read or parsed refuses every start.
 pub fn paused_in(path: &Path, agent: &str) -> bool {
-    std::fs::read(path).ok()
-        .and_then(|bytes| serde_json::from_slice::<Paused>(&bytes).ok())
-        .is_some_and(|p| p.agents.iter().any(|a| a == agent))
+    match std::fs::read(path) {
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        Ok(bytes) => serde_json::from_slice::<Paused>(&bytes).map_or(true, |p| p.agents.iter().any(|a| a == agent)),
+    }
 }
 fn paused_here(agent: &str) -> bool {
     paused_in(&default_path(), agent)
@@ -174,19 +185,26 @@ impl Drop for Busy {
 pub async fn resume_all(agents: &impl Agents, path: &Path, owner: &str) -> Result<Report, String> {
     let _busy = Busy::take()?;
     let Some(mut paused) = load(path, owner) else { return Ok(Report::default()) };
-    // The start check reads this file: forget the pause before starting.
-    std::fs::remove_file(path).map_err(|_| PAUSE_UNSAVED)?;
     let mut report = Report { agents: paused.agents.len(), ..Report::default() };
-    for id in &paused.agents {
-        if agents.set_running(id, true).await.is_err() {
+    // One Agent at a time: only the Agent being started leaves the pause, and
+    // the file always records what is still paused, so a crash fails closed.
+    for id in paused.agents.clone() {
+        paused.agents.retain(|a| *a != id);
+        save_or_forget(path, &paused)?;
+        if agents.set_running(&id, true).await.is_err() {
             report.failed.push(id.clone());
+            paused.agents.push(id);
+            save_or_forget(path, &paused)?;
         }
     }
-    if !report.failed.is_empty() {
-        paused.agents = report.failed.clone();
-        save(path, &paused)?;
-    }
     Ok(report)
+}
+fn save_or_forget(path: &Path, paused: &Paused) -> Result<(), String> {
+    if paused.agents.is_empty() {
+        std::fs::remove_file(path).map_err(|_| PAUSE_UNSAVED.into())
+    } else {
+        save(path, paused)
+    }
 }
 
 /// At sign-in: stop again every Agent the file says is paused, in case the
@@ -203,7 +221,7 @@ pub async fn enforce_on_boot(agents: &impl Agents, path: &Path, owner: &str) -> 
 }
 
 /// Run `enforce_on_boot` once per signed-in owner, off the UI thread.
-/// A failed stop is retried at the next sign-in; the start check still holds.
+/// A failed stop is retried on a later tick; the start check holds meanwhile.
 pub fn enforce_at_sign_in() {
     static DONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     let Some(owner) = crate::sliding_sync::current_user_id().map(|id| id.to_string()) else { return };
@@ -217,8 +235,11 @@ pub fn enforce_at_sign_in() {
         service
     };
     crate::sliding_sync::spawn_async_task(async move {
-        // Nothing to show: the list already says "Paused by you".
-        let _ = enforce_on_boot(&Live(service), &default_path(), &owner).await;
+        // Nothing to show: the list already says "Paused by you". A failed
+        // stop is tried again on a later tick.
+        if !enforce_on_boot(&Live(service), &default_path(), &owner).await.failed.is_empty() {
+            *DONE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
     });
 }
 
