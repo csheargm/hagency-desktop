@@ -6,8 +6,7 @@ use crate::home::room_memory::io::{levels, open, scan};
 use crate::home::room_memory::model::{Delivery, Write};
 use hagency::room_memory::{PowerLevels, Storage};
 use hagency::room_skills::{self as skills, SKILL_STATE_TYPE, Skill};
-use matrix_sdk::{Client, ruma::{OwnedRoomId, RoomId, events::StateEventType}};
-use serde_json::Value;
+use matrix_sdk::{Client, ruma::{OwnedRoomId, RoomId}};
 
 #[derive(Clone, Debug)]
 pub struct Loaded {
@@ -37,8 +36,8 @@ pub async fn load(client: &Client, room_id: &RoomId) -> Result<Loaded, String> {
     };
     match storage {
         Storage::State => {
-            let raw = room.get_state_events(StateEventType::from(SKILL_STATE_TYPE)).await.map_err(|_| unavailable())?;
-            let events: Vec<Value> = raw.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+            // From the server: the sync store does not hold custom state types.
+            let events = crate::home::room_memory::server_state::events_of_type(client, room_id, SKILL_STATE_TYPE).await?;
             loaded.skills = skills::reduce_state(&events);
             loaded.levels = levels(&room, std::iter::once(loaded.me.clone())).await?;
         }
