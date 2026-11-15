@@ -110,6 +110,84 @@ async fn bind_peer_with_task(peer: &mut Peer, tools: RoomTools, with_task: bool)
         .await;
     }
 }
+async fn bind_peer_owner_reloaded(peer: &mut Peer, tools: RoomTools, with_task: bool) {
+    let before = read(peer).await;
+    assert_eq!(before["request"]["subtype"], "mcp_status");
+    emit(
+        peer,
+        ack(
+            &before["request_id"],
+            json!({"mcpServers": if with_task {vec![owner(),task_server()]} else {vec![owner()]}}),
+        ),
+    )
+    .await;
+    let bind = read(peer).await;
+    assert_eq!(
+        bind["request"]["servers"].as_object().unwrap().len(),
+        if with_task { 2 } else { 1 }
+    );
+    assert_eq!(
+        bind["request"]["servers"]["hagency_matrix"],
+        json!({"type":"sdk","name":"hagency_matrix","alwaysLoad":true})
+    );
+    if with_task {
+        assert_eq!(
+            bind["request"]["servers"]["hagency_task_writer"]["type"],
+            "stdio"
+        );
+    }
+    // Metadata callbacks can precede the native control acknowledgement.
+    emit(peer, mcp("mcp-init",json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+        "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}))).await;
+    let reply = read(peer).await;
+    assert_eq!(reply["response"]["response"]["mcp_response"]["id"], 0);
+    emit(
+        peer,
+        mcp(
+            "mcp-ready",
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        ),
+    )
+    .await;
+    assert!(
+        read(peer).await["response"]["response"]["mcp_response"]
+            .get("id")
+            .is_none()
+    );
+    emit(
+        peer,
+        mcp(
+            "mcp-list",
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+        ),
+    )
+    .await;
+    let reply = read(peer).await;
+    assert_eq!(
+        reply["response"]["response"]["mcp_response"]["result"]["tools"],
+        json!(tools.definitions())
+    );
+    emit(
+        peer,
+        ack(
+            &bind["request_id"],
+            json!({"added":["hagency_matrix"],"removed":[],"errors":{}}),
+        ),
+    )
+    .await;
+    for connected in [false, true] {
+        let after = read(peer).await;
+        assert_eq!(after["request"]["subtype"], "mcp_status");
+        emit(
+            peer,
+            ack(
+                &after["request_id"],
+                json!({"mcpServers": if with_task {vec![owner(),task_server(),server(tools,connected)]} else {vec![json!({"name":"claude.ai Figma","status":"pending","scope":"claudeai","source":"claudeai","transport":"http"}),server(tools,connected)]}}),
+            ),
+        )
+        .await;
+    }
+}
 async fn bound(continuous: bool, tools: RoomTools) -> (Driver, Peer) {
     let (mut driver, mut peer) = pair(32768, limits());
     if continuous {
@@ -121,6 +199,17 @@ async fn bound(continuous: bool, tools: RoomTools) -> (Driver, Peer) {
     r.unwrap();
     assert_eq!(driver.phase(), Phase::Ready);
     (driver, peer)
+}
+/// Regression (2026-11-15, CLI 2.1.322): the owner's plugin entry was replaced by a claude.ai
+/// connector while the room server connected, and binding failed "not connected as expected".
+#[tokio::test]
+async fn claude_room_mcp_binding_survives_owner_servers_reloading() {
+    let tools = RoomTools::history();
+    let (mut driver, mut peer) = pair(32768, limits());
+    initialize(&mut driver, &mut peer).await;
+    let (bound, ()) = tokio::join!(driver.bind_room_tools(tools), bind_peer_owner_reloaded(&mut peer, tools, false));
+    bound.unwrap();
+    assert_eq!(driver.phase(), Phase::Ready);
 }
 /// Regression (2026-11-15, Claude Code 2.1.322 on a Mac with plugins): the CLI re-lists the
 /// owner's commands (`commands_changed`) while the room server is added, and the binding
