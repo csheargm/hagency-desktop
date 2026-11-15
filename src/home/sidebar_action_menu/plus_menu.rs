@@ -60,17 +60,18 @@ pub fn items(room_open: bool) -> Vec<PlusItem> {
 }
 
 thread_local! {
-    /// The room the app shows now, as far as an Agent can be added to it.
-    static OPEN_ROOM: RefCell<Option<RoomNameId>> = const { RefCell::new(None) };
+    /// The room, invitation or Space the app shows now. Kept whole so an
+    /// accepted invitation turns into a joined room the menu can act on.
+    static FOCUSED: RefCell<Option<SelectedRoom>> = const { RefCell::new(None) };
 }
 
 /// The open room "Add agent to this room" would act on, if any.
 pub fn open_room() -> Option<RoomNameId> {
-    OPEN_ROOM.with(|room| room.borrow().clone())
+    FOCUSED.with(|room| room.borrow().as_ref().and_then(agent_room))
 }
 
-fn set_open_room(room: Option<RoomNameId>) {
-    OPEN_ROOM.with(|open| *open.borrow_mut() = room);
+fn set_focused(room: Option<SelectedRoom>) {
+    FOCUSED.with(|open| *open.borrow_mut() = room);
 }
 
 /// The room an Agent can join from the menu: a joined room, or the room of an
@@ -84,16 +85,30 @@ pub fn agent_room(selected: &SelectedRoom) -> Option<RoomNameId> {
     }
 }
 
-/// Follows the room the app shows: the desktop dock's focus, and sign-out.
+/// Follows the room the app shows: the desktop dock's focus, a rooms-list
+/// selection (the single-pane layout emits no dock focus), an invitation
+/// accepted in place (the dock keeps its tab, so no new focus comes), and
+/// sign-out.
 pub fn observe(actions: &Actions) {
+    use crate::home::rooms_list::RoomsListAction;
     for action in actions {
         match action.downcast_ref() {
-            Some(AppStateAction::RoomFocused(selected)) => set_open_room(agent_room(selected)),
-            Some(AppStateAction::FocusNone) => set_open_room(None),
+            Some(AppStateAction::RoomFocused(selected)) => set_focused(Some(selected.clone())),
+            Some(AppStateAction::FocusNone) => set_focused(None),
+            Some(AppStateAction::UpgradedInviteToJoinedRoom { room_id, is_space }) => FOCUSED.with(|open| {
+                if let Some(room) = open.borrow_mut().as_mut() { room.upgrade_invite_to_joined(room_id, *is_space); }
+            }),
+            _ => {}
+        }
+        match action.as_widget_action().cast() {
+            RoomsListAction::Selected(selected) => set_focused(Some(selected)),
+            RoomsListAction::InviteAccepted { room_name_id, kind } => FOCUSED.with(|open| {
+                if let Some(room) = open.borrow_mut().as_mut() { room.upgrade_invite_to_joined(room_name_id.room_id(), kind.is_space()); }
+            }),
             _ => {}
         }
         if matches!(action.downcast_ref(), Some(LogoutAction::ClearAppState { .. })) {
-            set_open_room(None);
+            set_focused(None);
         }
     }
 }

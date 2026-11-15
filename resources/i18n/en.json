@@ -3360,5 +3360,9 @@
   "New space": "New space",
   "Add agent to this room": "Add agent to this room",
   "Off by default: hosted agents only answer in unencrypted rooms.": "Off by default: hosted agents only answer in unencrypted rooms.",
-  "Could not create the room": "Could not create the room"
+  "Could not create the room": "Could not create the room",
+  "Inviting {user} to this room…": "Inviting {user} to this room…",
+  "Rooms in common": "Rooms in common",
+  "No rooms in common": "No rooms in common",
+  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "Some rooms' member lists are not loaded yet, so this list may be incomplete."
 }

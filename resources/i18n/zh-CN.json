@@ -3360,5 +3360,9 @@
   "New space": "新建空间",
   "Add agent to this room": "将 Agent 添加到此聊天室",
   "Off by default: hosted agents only answer in unencrypted rooms.": "默认关闭：托管的 Agent 只会在未加密的聊天室中回复。",
-  "Could not create the room": "无法创建聊天室"
+  "Could not create the room": "无法创建聊天室",
+  "Inviting {user} to this room…": "正在邀请 {user} 加入这个房间…",
+  "Rooms in common": "共同的房间",
+  "No rooms in common": "没有共同的房间",
+  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "部分房间的成员列表尚未加载，此列表可能不完整。"
 }
