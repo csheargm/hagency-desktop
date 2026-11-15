@@ -277,3 +277,25 @@ mod tests {
         assert!(!card.view(&mut cx, ids!(preview.html_view)).visible());
     }
 }
+
+/// One Agent run status, localized. The run card shows this, never the event's stored (Chinese) body.
+pub(crate) fn status_label(state: ::hagency::agent_run_controls::State) -> &'static str {
+    crate::i18n::tr(state.english_status())
+}
+
+#[cfg(test)]
+mod status_tests {
+    /// The desktop installs `status_label` as the run-card body: English UI
+    /// posts English, a zh-CN UI posts the catalog's Chinese.
+    #[test]
+    fn hosted_run_bodies_follow_the_ui_language() {
+        use crate::i18n::{Language, text_for};
+        use ::hagency::agent_run_controls::{State, set_status_text};
+        set_status_text(super::status_label);
+        assert_eq!(super::status_label(State::Running), "Working… you can add instructions or stop this run");
+        assert_eq!(text_for(Language::Chinese, State::Running.english_status()), "Agent 正在处理，可追加指令或停止本次任务。");
+        for state in [State::Stopping, State::Completed, State::Interrupted, State::Failed, State::Unknown] {
+            assert_ne!(text_for(Language::Chinese, state.english_status()), state.english_status(), "{state:?} has a zh-CN entry");
+        }
+    }
+}
