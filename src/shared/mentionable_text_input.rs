@@ -24,6 +24,9 @@ use crate::{
     utils::MatchQuality,
 };
 use super::mention_text::{HistoryMove, MentionText, mention_label, user_label};
+use super::mention_insertion::plan_completion;
+// TODO(R4): over budget; split member/room ranking (`rank_members`, `user_match_priority`,
+// `detect_trigger`) into its own module along that seam.
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -299,10 +302,8 @@ impl MentionableTextInput {
         // Show the loading spinner while we wait for the member list / ranking.
         popup_ref.set_results(cx, uid, Arc::new(Vec::new()), true, TriggerKind::User.empty_message());
 
-        let (Some(_), Some(members)) = (self.room_id.as_ref(), self.room_members.clone()) else {
-            // Room members not yet available, just keep showing the loading spinner for now
-            return;
-        };
+        let Some(room_id) = self.room_id.clone() else { return };
+        let snapshot = self.room_members.clone();
         let request_id = self.request_id;
         let query = query.to_string();
         let can_notify_room = self.can_notify_room;
@@ -310,8 +311,14 @@ impl MentionableTextInput {
 
         let epoch = crate::account_session::epoch();
         let current_user = crate::sliding_sync::current_user_id();
-        std::thread::spawn(move || {
-            let items = rank_members(&query, &members, can_notify_room, current_user, room_name);
+        // Read the members now: the snapshot misses people who joined after it.
+        crate::sliding_sync::spawn_async_task(async move {
+            let fresh = super::mention_candidates::current_members(&room_id).await;
+            // Nothing known yet: keep the loading spinner until set_room_context refreshes.
+            let Some(members) = super::mention_candidates::choose_members(fresh, snapshot) else { return };
+            let ranked = tokio::task::spawn_blocking(move || rank_members(&query, &members, can_notify_room, current_user, room_name));
+            // A panicked ranking leaves the spinner; the next keystroke retries.
+            let Ok(items) = ranked.await else { return };
             if epoch != crate::account_session::epoch() { return; }
             let mut result = MentionMatches::new(request_id, uid, items);
             result.epoch = epoch;
@@ -340,48 +347,40 @@ impl MentionableTextInput {
             return;
         };
 
-        let text_to_insert = match &item {
-            MentionItem::User { user_id, display_name, .. } => {
-                format!("{} ", mention_label(user_id, display_name))
-            }
-            MentionItem::NotifyRoom { .. } => {
-                self.possible_mentions.room = true;
-                "@room ".to_string()
-            }
+        let label = match &item {
+            MentionItem::User { user_id, display_name, .. } => mention_label(user_id, display_name),
+            MentionItem::NotifyRoom { .. } => "@room".to_string(),
             MentionItem::Room(candidate) => {
                 // Prefer the room alias so we don't need the `via` servers list.
                 let (label, uri) = match candidate.alias.as_ref() {
                     Some(alias) => (alias.to_string(), alias.matrix_to_uri()),
                     None => (candidate.room_name_id.to_string(), candidate.room_name_id.room_id().matrix_to_uri()),
                 };
-                format!("[{label}]({uri}) ")
+                format!("[{label}]({uri})")
             }
-            MentionItem::Command(cmd) => format!("/{} ", cmd.name),
+            MentionItem::Command(cmd) => format!("/{}", cmd.name),
         };
 
         let text_input = self.text_input_ref();
-        let text = text_input.text();
-        let start = trigger.start_byte.min(text.len());
-        if !text.is_char_boundary(start) {
+        // Replace only the typed trigger token (trigger char up to the cursor);
+        // the text after the cursor is the user's and must survive.
+        let Some(edit) = plan_completion(&text_input.text(), trigger.start_byte, text_input.cursor().index, &label) else {
+            self.close_popup(cx);
+            return;
+        };
+        if text_input.replace_range(cx, edit.range.clone(), &edit.text, text_input::UndoGroup::New).is_err() {
             return;
         }
-        // Replace the whole trigger and query substring, up until the next whitespace.
-        let end = text[start..]
-            .find(char::is_whitespace)
-            .map_or(text.len(), |i| start + i);
-        if text_input.replace_range(cx, start..end, &text_to_insert, text_input::UndoGroup::New).is_err() {
-            return;
+        self.mention_text.sync(&text_input.text(), Some(edit.range.clone()), false, HistoryMove::Edit);
+        match item {
+            MentionItem::User { user_id, .. } => {
+                self.possible_mentions.user_ids.insert(user_id.clone());
+                self.mention_text.bind(edit.range.start..edit.range.start + edit.label_len, user_id);
+            }
+            MentionItem::NotifyRoom { .. } => self.possible_mentions.room = true,
+            _ => {}
         }
-        self.mention_text.sync(&text_input.text(), Some(start..end), false, HistoryMove::Edit);
-        if let MentionItem::User {user_id, ..} = item {
-            self.possible_mentions.user_ids.insert(user_id.clone());
-            self.mention_text.bind(start..start + text_to_insert.len() - 1, user_id);
-        }
-        text_input.set_cursor(
-            cx,
-            Cursor { index: start + text_to_insert.len(), prefer_next_row: false },
-            false,
-        );
+        text_input.set_cursor(cx, Cursor { index: edit.cursor, prefer_next_row: false }, false);
 
         self.close_popup(cx);
         // give key focus back to the text input so the user can keep typing
@@ -711,7 +710,7 @@ fn rank_members(
     let mut ranked: Vec<((MatchQuality, u8), String, usize)> = members
         .iter()
         .enumerate()
-        .filter(|(_, m)| current_user.as_deref() != Some(m.user_id()))
+        .filter(|(_, m)| super::mention_candidates::is_mention_candidate(m.user_id(), current_user.as_deref()))
         .filter_map(|(i, m)| {
             let display_lower = member_display_name(m).to_lowercase();
             let localpart_lower = m.user_id().localpart().to_lowercase();
