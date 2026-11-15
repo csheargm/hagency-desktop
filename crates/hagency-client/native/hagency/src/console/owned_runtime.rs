@@ -2745,7 +2745,9 @@ async fn run_turn<T: Transport>(
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
         }
         if !fresh_running(transport,lease,&prepared.dispatch,&prepared.execution_id,&mut pre_model_cancel).await {return Err(codex::Error::Protocol("running dispatch authorization lost"));}
-        provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,BudgetMode::Postpaid,&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);})
+        let main = provider.session.run_with_started_observed(ledger,owner,&scope,&prepared.execution_id,&prepared.dispatch.id,&input,BudgetMode::Postpaid,&queue,Some(started_tx),Some(&usage_observer)).await.inspect_err(|error|{provider_failure("provider_turn", error);});
+        // TODO(split): owned_runtime.rs is over budget; run_turn's provider phase belongs in owned_runtime/turn.rs.
+        super::backup_model::after_main(&config.agent_id, &input, main).await
             // The answer was read before the provider stream failed: it is still delivered, with unknown usage.
             .inspect(|completed|{if let Some(error) = &completed.late_failure {provider_failure("provider_turn_after_answer", error);}})
         };
@@ -2790,7 +2792,7 @@ async fn run_turn<T: Transport>(
         Ok(completed)=>Ok(Ok(completed)),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。")),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。")),
-        Err(codex::Error::Failed)=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
+        Err(codex::Error::Failed | codex::Error::Unavailable(_))=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
         Err(error)=>Err(provider_failure("agent_turn_result", &error)),
     }};
     if let Some(controls) = &controls {

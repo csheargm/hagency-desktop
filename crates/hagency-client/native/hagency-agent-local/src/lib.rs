@@ -8,6 +8,8 @@ pub mod codex;
 pub mod issue_watch;
 pub mod merge_policy;
 pub mod outside;
+// TODO(split): lib.rs is over budget; the ledger belongs in ledger.rs.
+pub mod provider_failure;
 pub mod remembered;
 pub mod demo_env;
 pub mod inbox;
@@ -54,7 +56,7 @@ const UNREPORTED_ZERO: &str = "unreported-zero-v1";
 const UNREPORTED_USAGE: &str = "unreported-v2";
 
 /// Missing usage has no measured categories and cannot settle a reservation.
-fn unreported_usage() -> Usage {
+pub fn unreported_usage() -> Usage {
     Usage {
         input: 0,
         output: 0,

@@ -5,6 +5,7 @@
 //! policy (`LocalAction::AgentModel` / `SaveAgentModel` / `SaveAgentPolicy`).
 mod activity;
 mod activity_load;
+mod backup;
 pub(crate) mod activity_rows;
 mod design;
 mod identity;
@@ -30,7 +31,7 @@ pub enum AgentPanelAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab { #[default] Identity, Context, Activity, Settings }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Load { Status, Model, Models, Retired, Activity }
+enum Load { Status, Model, Models, Retired, Activity, Backups }
 #[derive(Debug)]
 struct Loaded { request: u64, load: Load, mutation: bool, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -53,6 +54,9 @@ pub struct AgentPanel {
     #[rust] models: Vec<ModelChoice>,
     /// Activity tab: `{requests, approvals}` from `activity_load`.
     #[rust] activity: Value,
+    /// Backup model: Ollama choices (`ollama:<model>`) and the saved one.
+    #[rust] backups: Vec<String>,
+    #[rust] backup_saved: Option<String>,
 }
 impl Widget for AgentPanel {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -66,6 +70,7 @@ impl Widget for AgentPanel {
         self.handle_tabs(cx, actions);
         if self.busy || self.agent_id().is_empty() { return; }
         self.handle_identity_actions(cx, actions);
+        self.handle_backup_actions(cx, actions);
         self.handle_settings_actions(cx, actions);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
@@ -82,10 +87,12 @@ impl AgentPanel {
         self.agent = agent.clone();
         (self.busy, self.status, self.model, self.models_reply, self.activity) = (false, Value::Null, Value::Null, Value::Null, Value::Null);
         self.models.clear();
+        (self.backups, self.backup_saved) = (Vec::new(), None);
         self.view.check_box(cx, ids!(retire_confirm)).set_active(cx, false, Animate::No);
         self.set_tab(cx, Tab::Identity);
         self.note(cx, "Loading…");
         self.call(Load::Status, false, Call::Status(self.agent_id()));
+        self.load_backups();
         self.render(cx);
     }
     fn render(&mut self, cx: &mut Cx) {
@@ -156,6 +163,10 @@ impl AgentPanel {
                 self.models = crate::hagency::create_agent::parse_models(value);
             }
             (Load::Activity, Ok(value)) => self.activity = value.clone(),
+            (Load::Backups, Ok(value)) => {
+                self.apply_backups(value);
+                if mutation { self.note(cx, "Saved."); }
+            }
             (Load::Retired, Ok(_)) => cx.action(AgentPanelAction::Retired { agent_id: self.agent_id() }),
         }
         self.render(cx);

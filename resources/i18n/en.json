@@ -3453,5 +3453,7 @@
   "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.",
   "Accept my Agents' memory automatically": "Accept my Agents' memory automatically",
   "Added to room memory automatically": "Added to room memory automatically",
-  "Could not save the automatic memory setting: {reason}": "Could not save the automatic memory setting: {reason}"
+  "Could not save the automatic memory setting: {reason}": "Could not save the automatic memory setting: {reason}",
+  "Backup model": "Backup model",
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster."
 }

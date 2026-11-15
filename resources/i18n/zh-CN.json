@@ -3453,5 +3453,7 @@
   "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "仅限符合仓库 .hagency/merge-policy.yml 且经另一个 Agent 批准的 PR，其余仍会询问你。",
   "Accept my Agents' memory automatically": "自动接受我的 Agent 提出的记忆",
   "Added to room memory automatically": "已自动加入房间记忆",
-  "Could not save the automatic memory setting: {reason}": "无法保存自动记忆设置：{reason}"
+  "Could not save the automatic memory setting: {reason}": "无法保存自动记忆设置：{reason}",
+  "Backup model": "备用模型",
+  "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.": "主模型达到用量上限或不可用时，由备用模型以纯文本方式（不使用工具）回答该请求一次。Ollama 云端模型更快。"
 }

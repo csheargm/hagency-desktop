@@ -49,6 +49,8 @@ script_mod! {
                 Field {Text {text: #(crate::i18n::tr("Model")) i18n_text: "Model"} model := Select {labels: [#(crate::i18n::tr("Checking model choices…"))]}}
                 Field {Text {text: #(crate::i18n::tr("Thinking")) i18n_text: "Thinking"} thinking := Select {labels: [#(crate::i18n::tr("Default"))]}}
                 model_hint := Hint {}
+                Field {Text {text: #(crate::i18n::tr("Backup model")) i18n_text: "Backup model"} backup := Select {labels: [#(crate::i18n::tr("None"))]}}
+                backup_hint := Hint {}
             }
             Card {
                 Title {text: #(crate::i18n::tr("Who can ask this agent")) i18n_text: "Who can ask this agent"}
