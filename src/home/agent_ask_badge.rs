@@ -107,16 +107,32 @@ pub(crate) fn open_own_agent(owner: Option<&OwnedUserId>, member: &UserId) -> Op
     open_action_in(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner?, member)
 }
 
+/// Whether `member` is one of `owner`'s own Agents; `None` while this
+/// account's Agent listing has not been read yet.
+pub(crate) fn is_own_agent(owner: &UserId, member: &UserId) -> Option<bool> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    (cache.owner.as_deref() == Some(owner)).then(|| cache.puppets.contains_key(member))
+}
+
+/// Records the owner's puppet index, resetting the cache when the account changed.
+fn set_puppets(cache: &mut Cache, owner: &OwnedUserId, index: HashMap<OwnedUserId, String>) {
+    if cache.owner.as_ref() != Some(owner) {
+        let generation = cache.generation + 1;
+        *cache = Cache { owner: Some(owner.clone()), generation, ..Default::default() };
+    }
+    cache.puppets = index;
+}
+#[cfg(test)]
+pub(crate) fn set_test_puppets(owner: &OwnedUserId, rows: &Value) {
+    set_puppets(&mut CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner, puppet_index(rows, owner));
+}
+
 /// Starts one policy read per owned Agent unless one is already running.
 pub(crate) fn refresh(owner: &OwnedUserId, rows: &Value) {
     let index = puppet_index(rows, owner);
     let (generation, agents) = {
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.owner.as_ref() != Some(owner) {
-            let generation = cache.generation + 1;
-            *cache = Cache { owner: Some(owner.clone()), generation, ..Default::default() };
-        }
-        cache.puppets = index;
+        set_puppets(&mut cache, owner, index);
         if cache.loading {
             return;
         }

@@ -2,7 +2,7 @@
 //! and Accept / Dismiss. Accept is offered only to members who may write room
 //! memory; a message that does not parse stays an ordinary notice.
 use super::model::{self, CardState, Proposal};
-use super::{ops, store};
+use super::{auto, ops, store};
 use makepad_widgets::*;
 use matrix_sdk::ruma::OwnedRoomId;
 
@@ -68,11 +68,17 @@ impl MemoryProposalCard {
             let state = store.card_state(room, me.as_deref(), &proposal.entry.id);
             (state, store.loaded(room, me.as_deref()).is_some_and(|l| l.can_write()))
         };
+        if auto::claim(room, proposal, &state, can_write) {
+            return self.accept();
+        }
         self.view.set_visible(cx, true);
         self.view.label(cx, ids!(memory_text)).set_text(cx, &proposal.entry.text);
         self.view.label(cx, ids!(memory_reason)).set_visible(cx, !proposal.reason.is_empty());
         self.view.label(cx, ids!(memory_reason)).set_text(cx, &crate::i18n::format("Reason: {reason}", &[("reason", proposal.reason.clone())]));
-        let status = status_text(&state, can_write);
+        let status = match state {
+            CardState::Added if auto::was_auto(room, &proposal.entry.id) => Some(crate::i18n::tr("Added to room memory automatically").to_owned()),
+            _ => status_text(&state, can_write),
+        };
         self.view.label(cx, ids!(memory_status)).set_visible(cx, status.is_some());
         self.view.label(cx, ids!(memory_status)).set_text(cx, status.as_deref().unwrap_or_default());
         self.view.button(cx, ids!(memory_accept)).set_visible(cx, model::can_accept(&state, can_write));

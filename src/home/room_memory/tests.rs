@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 const ADMIN: &str = "@admin:s";
 const GUEST: &str = "@guest:s";
 
-fn levels() -> PowerLevels {
+pub(super) fn levels() -> PowerLevels {
     PowerLevels {
         users: [(ADMIN.to_string(), 100), (GUEST.to_string(), 0)].into(),
         users_default: 0,
@@ -171,8 +171,8 @@ fn card_state_and_buttons_follow_the_proposal_and_the_viewer() {
     assert!(status_text(&CardState::Pending, false).is_some());
 }
 
-fn loaded(room: &RoomId, me: &str, entries: Vec<Entry>) -> Loaded { Loaded { room_id: room.to_owned(), me: me.into(), storage: Storage::State, entries, levels: levels(), unreadable: 0, truncated: false, ignored: 0, people: Default::default() } }
-fn room(id: &str) -> OwnedRoomId { RoomId::parse(id).unwrap() }
+pub(super) fn loaded(room: &RoomId, me: &str, entries: Vec<Entry>) -> Loaded { Loaded { room_id: room.to_owned(), me: me.into(), storage: Storage::State, entries, levels: levels(), unreadable: 0, truncated: false, ignored: 0, people: Default::default() } }
+pub(super) fn room(id: &str) -> OwnedRoomId { RoomId::parse(id).unwrap() }
 
 #[test]
 fn store_derives_card_states_from_memory_and_progress() {
@@ -239,7 +239,7 @@ fn build_panel() -> (Cx, RoomMemoryPanel) {
         RoomMemoryPanel::script_from_value(vm, value)
     })
 }
-fn build_card() -> (Cx, MemoryProposalCard) {
+pub(super) fn build_card() -> (Cx, MemoryProposalCard) {
     build(|vm| {
         let value = script_eval!(vm, {mod.widgets.MemoryProposalCard {}});
         MemoryProposalCard::script_from_value(vm, value)

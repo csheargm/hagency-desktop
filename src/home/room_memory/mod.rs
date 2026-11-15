@@ -3,6 +3,7 @@
 //! are the backend's; this module only reads and writes through the signed-in
 //! person's own Matrix client, so the homeserver (or, in an encrypted room,
 //! the readers) enforce who may change memory.
+pub mod auto;
 pub mod card;
 pub(crate) mod io;
 pub mod model;
@@ -11,6 +12,8 @@ pub(crate) mod server_state;
 pub mod people;
 pub mod panel;
 pub(crate) mod store;
+#[cfg(test)]
+mod auto_tests;
 #[cfg(test)]
 mod hardening_tests;
 #[cfg(test)]

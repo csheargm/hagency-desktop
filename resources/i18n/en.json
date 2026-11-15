@@ -3449,5 +3449,8 @@
   "Pull request merges": "Pull request merges",
   "People merge": "People merge",
   "Agents merge low-risk PRs": "Agents merge low-risk PRs",
-  "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you."
+  "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.",
+  "Accept my Agents' memory automatically": "Accept my Agents' memory automatically",
+  "Added to room memory automatically": "Added to room memory automatically",
+  "Could not save the automatic memory setting: {reason}": "Could not save the automatic memory setting: {reason}"
 }
