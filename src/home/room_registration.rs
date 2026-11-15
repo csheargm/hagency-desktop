@@ -12,6 +12,9 @@ use crate::hagency::{backend::Service, model::Command};
 
 /// The lookup error that means "no Project of this owner lists this Room".
 pub const REGISTRATION_REQUIRED: &str = "room_project_registration_required";
+/// The one error code for "the Room could not be linked under the Space"; the
+/// Matrix detail is logged, never shown (the picker translates this code).
+pub const SPACE_LINK_FAILED: &str = "room_space_link_failed";
 
 /// The owner's Project to register a Room under: the first active one with a
 /// Space, in the server's order. `None` when the owner has none yet.
@@ -25,15 +28,17 @@ pub fn project_to_register(projects: &Value) -> Option<(String, String)> {
 
 /// Looks up the Room's Agent context; when the Room is not yet registered,
 /// links it under the owner's first Project Space, adopts it, and looks again.
-/// Every other lookup error is returned unchanged. The closures keep the order
-/// testable without a Matrix client or a server.
+/// A failed adoption removes the link again, so a refused Room does not stay
+/// listed in the owner's Space. Every other lookup error is returned unchanged.
+/// The closures keep the order testable without a Matrix client or a server;
+/// `link(space, add)` adds or removes the child link.
 pub async fn context_registering<Lk, LkF, Pr, PrF, Ln, LnF, Ad, AdF>(
     room: &str, lookup: Lk, projects: Pr, link: Ln, adopt: Ad,
 ) -> Result<Value, String>
 where
     Lk: Fn() -> LkF, LkF: Future<Output = Result<Value, String>>,
     Pr: FnOnce() -> PrF, PrF: Future<Output = Result<Value, String>>,
-    Ln: FnOnce(String) -> LnF, LnF: Future<Output = Result<(), String>>,
+    Ln: Fn(String, bool) -> LnF, LnF: Future<Output = Result<(), String>>,
     Ad: FnOnce(Command) -> AdF, AdF: Future<Output = Result<Value, String>>,
 {
     match lookup().await {
@@ -42,8 +47,15 @@ where
     }
     let (project_id, space) = project_to_register(&projects().await?)
         .ok_or_else(|| REGISTRATION_REQUIRED.to_owned())?;
-    link(space).await?;
-    adopt(Command::AdoptRoom { project_id, room_id: room.to_owned() }).await?;
+    link(space.clone(), true).await?;
+    if let Err(error) = adopt(Command::AdoptRoom { project_id, room_id: room.to_owned() }).await {
+        // Best effort: the adoption error is what the owner must see; a link
+        // that cannot be removed is only an extra entry in their own Space.
+        if let Err(unlink) = link(space, false).await {
+            makepad_widgets::log!("Could not unlink {room} after a failed adoption: {unlink}");
+        }
+        return Err(error);
+    }
     lookup().await
 }
 
@@ -53,13 +65,15 @@ pub async fn agents_for_room(service: &Service, room: &str) -> Result<Value, Str
         room,
         || service.agents_for_registered_room(room),
         || service.execute(Command::Projects),
-        |space| async move {
+        |space, add| async move {
             let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
             let parent = matrix_sdk::ruma::OwnedRoomId::try_from(space.as_str()).map_err(|_| "invalid_room_id")?;
             let child = matrix_sdk::ruma::OwnedRoomId::try_from(room).map_err(|_| "invalid_room_id")?;
             // A missing backlink in a Room on another server is only advisory.
-            crate::home::space_management::link(&client, &parent, &child, true)
-                .await.map(|_| ()).map_err(|e| format!("room_link_failed: {e}"))
+            crate::home::space_management::link(&client, &parent, &child, add).await.map(|_| ()).map_err(|e| {
+                makepad_widgets::log!("Linking {child} under {parent} (add: {add}) failed: {e}");
+                SPACE_LINK_FAILED.to_owned()
+            })
         },
         |command| service.execute(command),
     ).await
@@ -100,7 +114,7 @@ mod tests {
                 if done { Ok(json!({"roomId":ROOM,"projectId":"prj_ben","agents":[{"id":"agt_ben"}]})) }
                 else { Err(REGISTRATION_REQUIRED.to_owned()) } } },
             || async { Ok(projects()) },
-            |space| { calls.borrow_mut().push(format!("link {space}")); async { Ok(()) } },
+            |space, _| { calls.borrow_mut().push(format!("link {space}")); async { Ok(()) } },
             |command| {
                 let Command::AdoptRoom { project_id, room_id } = command else { panic!("only adopt") };
                 calls.borrow_mut().push(format!("adopt {project_id} {room_id}"));
@@ -119,7 +133,7 @@ mod tests {
         let result = context_registering(ROOM,
             || async { Err(REGISTRATION_REQUIRED.to_owned()) },
             || async { Ok(json!({"projects":[]})) },
-            |_| async { panic!("no link without a Project") },
+            |_, _| async { panic!("no link without a Project") },
             |_| async { panic!("no adopt without a Project") },
         ).await;
         assert_eq!(result.unwrap_err(), REGISTRATION_REQUIRED);
@@ -130,15 +144,31 @@ mod tests {
         let lookup = context_registering(ROOM,
             || async { Err("room_join_required".to_owned()) },
             || async { panic!("no project read") },
-            |_| async { panic!("no link") }, |_| async { panic!("no adopt") },
+            |_, _| async { panic!("no link") }, |_| async { panic!("no adopt") },
         ).await;
         assert_eq!(lookup.unwrap_err(), "room_join_required");
         let link = context_registering(ROOM,
             || async { Err(REGISTRATION_REQUIRED.to_owned()) },
             || async { Ok(projects()) },
-            |_| async { Err("room_link_failed: forbidden".to_owned()) },
+            |_, _| async { Err(SPACE_LINK_FAILED.to_owned()) },
             |_| async { panic!("no adopt after a failed link") },
         ).await;
-        assert_eq!(link.unwrap_err(), "room_link_failed: forbidden");
+        assert_eq!(link.unwrap_err(), SPACE_LINK_FAILED);
+        assert_ne!(crate::home::mobile_chat_info::agent_binding_error(SPACE_LINK_FAILED),
+            crate::home::mobile_chat_info::agent_binding_error("some_other_code"), "the picker names the link failure");
+    }
+
+    /// Regression: a refused adoption left the Room listed in the owner's Space.
+    #[tokio::test]
+    async fn a_refused_adoption_removes_the_link_again() {
+        let calls = RefCell::new(Vec::new());
+        let result = context_registering(ROOM,
+            || async { Err(REGISTRATION_REQUIRED.to_owned()) },
+            || async { Ok(projects()) },
+            |space, add| { calls.borrow_mut().push(format!("{} {space}", if add { "link" } else { "unlink" })); async { Ok(()) } },
+            |_| async { Err("agent_creation_denied".to_owned()) },
+        ).await;
+        assert_eq!(result.unwrap_err(), "agent_creation_denied");
+        assert_eq!(*calls.borrow(), vec!["link !ben:localhost:8452".to_owned(), "unlink !ben:localhost:8452".to_owned()]);
     }
 }

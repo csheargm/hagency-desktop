@@ -3217,5 +3217,11 @@
   "Add agent to this room": "Add agent to this room",
   "Off by default: hosted agents only answer in unencrypted rooms.": "Off by default: hosted agents only answer in unencrypted rooms.",
   "Could not create the room": "Could not create the room",
-  "Inviting {user} to this room…": "Inviting {user} to this room…"
+  "Inviting {user} to this room…": "Inviting {user} to this room…",
+  "Add to rooms": "Add to rooms",
+  "No rooms to add it to yet.": "No rooms to add it to yet.",
+  "Add it to other rooms later with Add agent in each room.": "Add it to other rooms later with Add agent in each room.",
+  "{agent} joined {room}.": "{agent} joined {room}.",
+  "{agent} is still joining {room}.": "{agent} is still joining {room}.",
+  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}"
 }

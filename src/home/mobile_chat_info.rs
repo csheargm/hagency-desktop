@@ -296,7 +296,7 @@ impl RoomAgentsSlow {
 pub(crate) fn agent_binding_error(code: &str) -> &'static str {
     match code {
         "room_project_registration_required" => "This room could not be registered for your Agents: create an Agent first (Agent → Create agent), then add it here again.",
-        "room_space_link_failed" => "This room could not be linked under your Agent space. Make sure you are joined and retry Add agent.",
+        crate::home::room_registration::SPACE_LINK_FAILED => "This room could not be linked under your Agent space. Make sure you are joined and retry Add agent.",
         "room_join_required" | "room_membership_required" => "Join this room and its Agent space before adding an Agent.",
         "service_invitation_denied" | "agent_service_invite_permission_required" => "The Hagency service needs permission to invite Agents. Ask a room administrator to allow it to invite members, then retry.",
         "agent_service_banned" => "The Hagency service is banned from this room. Ask a room administrator to unban it, then retry.",

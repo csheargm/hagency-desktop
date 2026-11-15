@@ -3217,5 +3217,11 @@
   "Add agent to this room": "将 Agent 添加到此聊天室",
   "Off by default: hosted agents only answer in unencrypted rooms.": "默认关闭：托管的 Agent 只会在未加密的聊天室中回复。",
   "Could not create the room": "无法创建聊天室",
-  "Inviting {user} to this room…": "正在邀请 {user} 加入这个房间…"
+  "Inviting {user} to this room…": "正在邀请 {user} 加入这个房间…",
+  "Add to rooms": "添加到聊天室",
+  "No rooms to add it to yet.": "还没有可添加的聊天室。",
+  "Add it to other rooms later with Add agent in each room.": "之后可在各聊天室中使用“添加 Agent”将它加入其他聊天室。",
+  "{agent} joined {room}.": "{agent} 已加入 {room}。",
+  "{agent} is still joining {room}.": "{agent} 仍在加入 {room}。",
+  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 添加到 {room}：{reason}"
 }
