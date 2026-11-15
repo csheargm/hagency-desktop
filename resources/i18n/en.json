@@ -2683,7 +2683,6 @@
   "Space types could not be checked. Refresh before creating a room.": "Space types could not be checked. Refresh before creating a room.",
   "Choose a space to continue.": "Choose a space to continue.",
   "You cannot add rooms to this space. Choose a space you can manage.": "You cannot add rooms to this space. Choose a space you can manage.",
-  "To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it.": "To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it.",
   "Organize rooms for people. No Agent setup.": "Organize rooms for people. No Agent setup.",
   "People and Agents work together. Project setup is automatic.": "People and Agents work together. Project setup is automatic.",
   "Create a conversation in a space you choose.": "Create a conversation in a space you choose.",
