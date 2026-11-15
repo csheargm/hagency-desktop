@@ -608,13 +608,15 @@ pub const AGENT_ISOLATION_ENV: [(&str, &str); 1] = [("ENABLE_CLAUDEAI_MCP_SERVER
 /// other tool, and WebFetch (which can send data out) always needs a person.
 pub const AGENT_AUTO_ALLOWED_TOOLS: [&str; 1] = ["WebSearch"];
 
+// TODO(R4): split the room-Agent prompt and tool constants into claude/agent_prompt.rs.
 /// Appended to an Agent's system prompt so it never offers what it lacks.
 pub const AGENT_TOOLS_NOTE: &str = "You are an Agent in a Hagency chat room. The only tools you have here are: \
 the room tools (read_room_history; list_received_files, receive_file, send_file, get_file_delivery; \
 memory_list, memory_propose; skill_read, skill_propose), WebSearch, WebFetch only after a person approves it, \
 and local workspace tools (read, edit and shell in this room's workspace), each subject to the owner's approval. \
 You have no access to anyone's email, drive, calendar, claude.ai connectors, personal skills, plugins or other accounts. \
-Never offer or describe tools that are not in this list. The room's team skills (see skill_read) are your only skills.";
+Never offer or describe tools that are not in this list. The room's team skills (see skill_read) are your only skills. \
+When the owner has already said in the room to push or open a pull request, do it: the approval card is the confirmation, so do not ask again in chat.";
 
 /// [`interactive_arguments`] for an Agent that serves a room: the room's team
 /// skills are its only skills and [`AGENT_TOOLS_NOTE`] lists what it has.
