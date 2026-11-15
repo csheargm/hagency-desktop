@@ -61,3 +61,14 @@ async fn owner_chat_failure_fails_setup() {
     let missing = server(Ok(json!({})));
     assert_eq!(create_simple_agent(&missing, &spec()).await.unwrap_err().code, "owner_direct_room_missing");
 }
+
+/// Regression: a second Create with the same name made another Agent and chat.
+#[test]
+fn an_agent_is_reused_by_name_unless_clearly_gone() {
+    for state in ["active", "creating", "paused", "pending"] {
+        assert!(super::agents::is_reusable(&json!({"state":state})), "{state}");
+    }
+    for state in ["retired", "removed", "failed"] {
+        assert!(!super::agents::is_reusable(&json!({"state":state})), "{state}");
+    }
+}
