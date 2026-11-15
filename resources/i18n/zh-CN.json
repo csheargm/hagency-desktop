@@ -1300,6 +1300,9 @@
   "Welcome to Hagency": "欢迎使用 Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server.": "Hagency 在你的电脑上运行编程 Agent，并让你在聊天中与它对话。打开 Agent 连接 Codex 并创建你的第一个 Agent，然后把它邀请进房间。你也可以与联系人发起聊天，或探索服务器上的房间。",
   "Open Agent": "打开 Agent",
+  "Start with your agent": "从你的 Agent 开始",
+  "One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after.": "一键用这台 Mac 上的 Claude Code 或 Codex 登录创建 Agent，并打开它的私聊。房间和邀请可以之后再说。",
+  "Create your agent": "创建你的 Agent",
   "Show details": "显示详情",
   "Hide details": "隐藏详情",
   "Collapse sidebar": "折叠侧栏",
@@ -3349,5 +3352,10 @@
   "From issue watching": "来自议题监视",
   "New GitHub issue #{number} in {repo}": "{repo} 中的新 GitHub 议题 #{number}",
   "Asked {agent} to fix it": "已请 {agent} 修复",
-  "Open on GitHub": "在 GitHub 上打开"
+  "Open on GitHub": "在 GitHub 上打开",
+  "New room": "新建聊天室",
+  "New space": "新建空间",
+  "Add agent to this room": "将 Agent 添加到此聊天室",
+  "Off by default: hosted agents only answer in unencrypted rooms.": "默认关闭：托管的 Agent 只会在未加密的聊天室中回复。",
+  "Could not create the room": "无法创建聊天室"
 }

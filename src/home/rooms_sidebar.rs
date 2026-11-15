@@ -7,8 +7,9 @@
 //!   * It includes a title label, a search row and the RoomsList. Spaces are listed
 //!     in the navigation rail rather than behind an "All Chats | Spaces" switch.
 //!   * The search row is the filter field with a "+" on its right, as in WeChat.
-//!     The "+" opens the "New or Join" menu (New workspace, New room or space,
-//!     Join or explore rooms; see `sidebar_action_menu`) just under it.
+//!     The "+" opens the one "+" menu (New chat, New room, Join a room, Create
+//!     agent, and Add agent to this room while one is open; see
+//!     `sidebar_action_menu::plus_menu`) just under it.
 //!
 //! Neither layout repeats a creation or tool shortcut as a row above the list:
 //! File Transfer has its own rail button on desktop and a Discover row on mobile.
@@ -357,7 +358,6 @@ mod tests {
     const LOOKS: [(Appearance, f64); 4] = [
         (Appearance::Light, 1.0), (Appearance::Dark, 1.0), (Appearance::Light, 1.5), (Appearance::Dark, 2.0),
     ];
-    const NEW_OR_JOIN_ROWS: [LiveId; 3] = [id!(add_room_or_space), id!(add_article_editor), id!(add_join_rooms)];
 
     fn texts(widget: &WidgetRef, found: &mut Vec<String>) {
         found.push(widget.text());
@@ -611,7 +611,7 @@ mod tests {
                 } else {
                     assert!(card.pos.x.abs() < 0.5, "{case}: as far left as the window allows: {card:?}");
                 }
-                for row in NEW_OR_JOIN_ROWS {
+                for row in crate::home::sidebar_action_menu::plus_menu::items(false).into_iter().map(|item| item.row()) {
                     let row = menu.widget(&cx, &[row]).area().rect(&cx);
                     assert!(row.size.y >= 44.0 && row.pos.y >= card.pos.y && row.pos.y + row.size.y <= card.pos.y + card.size.y + 0.5, "{case}: {row:?} in {card:?}");
                 }

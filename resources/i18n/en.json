@@ -1293,6 +1293,9 @@
   "Welcome to Hagency": "Welcome to Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server.": "Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server.",
   "Open Agent": "Open Agent",
+  "Start with your agent": "Start with your agent",
+  "One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after.": "One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after.",
+  "Create your agent": "Create your agent",
   "Show details": "Show details",
   "Hide details": "Hide details",
   "Collapse sidebar": "Collapse sidebar",
@@ -3349,5 +3352,10 @@
   "From issue watching": "From issue watching",
   "New GitHub issue #{number} in {repo}": "New GitHub issue #{number} in {repo}",
   "Asked {agent} to fix it": "Asked {agent} to fix it",
-  "Open on GitHub": "Open on GitHub"
+  "Open on GitHub": "Open on GitHub",
+  "New room": "New room",
+  "New space": "New space",
+  "Add agent to this room": "Add agent to this room",
+  "Off by default: hosted agents only answer in unencrypted rooms.": "Off by default: hosted agents only answer in unencrypted rooms.",
+  "Could not create the room": "Could not create the room"
 }

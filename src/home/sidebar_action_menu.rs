@@ -1,10 +1,14 @@
 //! Creation shortcuts anchored beside permanent navigation rows.
 //!
 //! The "+" beside the desktop chat list's search field opens the
-//! [`SidebarMenuKind::Add`] card ("New or Join"): the one place to start a
-//! workspace, create a room or space, or join and explore rooms. Each row emits
-//! the same action its old entry point did.
+//! [`SidebarMenuKind::Add`] card, the one "+" menu (see [`plus_menu`]): New
+//! chat, New room, Join a room, Create agent and, while a room is open, Add
+//! agent to this room. Each row emits the same action its old entry point did.
+// TODO(R4): over budget. Split along the menu kinds: the Project menu
+// (ProjectMenuTarget, permission checks) and the render tests into their own files.
+pub mod plus_menu;
 use makepad_widgets::*;
+use plus_menu::PlusItem;
 use crate::shared::context_menu::{BUTTON_HEIGHT, ContextMenuClosed, expected_menu_size, menu_position_margin};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,28 +36,6 @@ pub fn new_or_join_menu_pos(cx: &mut Cx, button: Rect) -> DVec2 {
     )
 }
 
-/// The rows of the "New or Join" menu, top to bottom.
-const ADD_ITEMS: [LiveId; 3] = [id!(add_room_or_space), id!(add_article_editor), id!(add_join_rooms)];
-
-/// What one "New or Join" row does: exactly what the same command did before it
-/// moved here.
-fn add_item_action(cx: &mut Cx, item: LiveId) {
-    match item {
-        // Was the rooms list's own "New workspace" button.
-        id!(add_workspace) => cx.action(crate::hagency::ui::HagencyAction::NewProject),
-        // The Explore Rooms page's create button, which opens the same panel.
-        id!(add_room_or_space) => {
-            cx.action(super::space_management::SpaceManagementAction::Open { parent: None })
-        }
-        id!(add_article_editor) => cx.action(crate::article_app::ArticleAction::Open),
-        // Was the old rail "+" button's only action: the Explore Rooms page.
-        id!(add_join_rooms) => {
-            cx.action(super::navigation_tab_bar::NavigationBarAction::GoToAddRoom)
-        }
-        _ => {}
-    }
-}
-
 /// The card's size, for keeping it inside the window. It follows the DSL below:
 /// the card widens with the text scale, and "New or Join" rows are one control
 /// height (44 or more) tall.
@@ -70,7 +52,7 @@ fn menu_size(cx: &mut Cx, kind: SidebarMenuKind) -> DVec2 {
     });
     let (rows, row_height) = match kind {
         SidebarMenuKind::Tools => (5, BUTTON_HEIGHT),
-        SidebarMenuKind::Add => (ADD_ITEMS.len(), control_height),
+        SidebarMenuKind::Add => (plus_menu::items(plus_menu::open_room().is_some()).len(), control_height),
         _ => (1, BUTTON_HEIGHT),
     };
     let size = expected_menu_size(rows, 0);
@@ -185,10 +167,14 @@ script_mod! {
             width: (235 * mod.widgets.RINX_TEXT_SCALE) height: Fit flow: Down align: Align{x: 0 y: 0}
             padding: 6 spacing: 2 show_bg: true
             draw_bg +: {color: mod.widgets.RINX_SURFACE border_size: 1 border_color: mod.widgets.RINX_MUTED}
-            add_workspace := mod.widgets.SidebarAddMenuItem {visible: false text: #(crate::i18n::tr("New workspace")) i18n_text: "New workspace" draw_icon.svg: ICON_HIERARCHY}
-            add_room_or_space := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…" draw_icon.svg: ICON_ADD}
-            add_article_editor := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Article editor")) i18n_text: "Article editor" draw_icon.svg: ICON_EDIT}
-            add_join_rooms := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Join or explore rooms")) i18n_text: "Join or explore rooms" draw_icon.svg: ICON_JOIN_ROOM}
+            // The "+" menu's rows, in `PlusItem::ALL` order.
+            plus_new_chat := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("New chat")) i18n_text: "New chat" draw_icon.svg: ICON_PEOPLE}
+            plus_new_room := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("New room")) i18n_text: "New room" draw_icon.svg: ICON_ADD}
+            // TODO(R4): sidebar_action_menu.rs is over budget; move the "+" rows' DSL into plus_menu.rs.
+            plus_new_space := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("New space")) i18n_text: "New space" draw_icon.svg: ICON_SQUARES}
+            plus_join_room := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Join or explore rooms")) i18n_text: "Join or explore rooms" draw_icon.svg: ICON_JOIN_ROOM}
+            plus_create_agent := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Create agent")) i18n_text: "Create agent" draw_icon.svg: ICON_ROBOT}
+            plus_add_agent := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Add agent to this room")) i18n_text: "Add agent to this room" draw_icon.svg: ICON_ADD_USER}
             project_overview := mod.widgets.ContextMenuButton {visible: false icon_walk: Walk{width: 0 height: 0} spacing: 0 text: #(crate::i18n::tr("Overview")) i18n_text: "Overview"}
             project_rooms := mod.widgets.ContextMenuButton {visible: false icon_walk: Walk{width: 0 height: 0} spacing: 0 text: #(crate::i18n::tr("Discussion Rooms")) i18n_text: "Discussion Rooms"}
             project_members := mod.widgets.ContextMenuButton {visible: false icon_walk: Walk{width: 0 height: 0} spacing: 0 text: #(crate::i18n::tr("Project members")) i18n_text: "Project members"}
@@ -219,6 +205,9 @@ pub struct SidebarActionMenu {
     project: Option<ProjectMenuTarget>,
     #[rust]
     request: u64,
+    /// The room open when the "+" menu opened: "Add agent to this room" acts on it.
+    #[rust]
+    plus_room: Option<crate::utils::RoomNameId>,
 }
 impl SidebarActionMenu {
     pub fn show(&mut self, cx: &mut Cx, kind: SidebarMenuKind, pos: DVec2, container: Rect) {
@@ -226,16 +215,18 @@ impl SidebarActionMenu {
         self.request = next_request();
         self.project_buttons(cx, false);
         self.kind = Some(kind);
-        for (button, target) in [
-            (id!(new_project), SidebarMenuKind::Projects),
-            (id!(new_chat), SidebarMenuKind::Chats),
-            (id!(new_agent), SidebarMenuKind::Agents),
+        self.plus_room = plus_menu::open_room().filter(|_| kind == SidebarMenuKind::Add);
+        let plus_rows = plus_menu::items(self.plus_room.is_some());
+        for (button, shown) in [
+            (id!(new_project), kind == SidebarMenuKind::Projects),
+            (id!(new_chat), kind == SidebarMenuKind::Chats),
+            (id!(new_agent), kind == SidebarMenuKind::Agents),
         ]
         .into_iter()
-        .chain(ADD_ITEMS.map(|item| (item, SidebarMenuKind::Add)))
+        .chain(PlusItem::ALL.map(|item| (item.row(), kind == SidebarMenuKind::Add && plus_rows.contains(&item))))
         {
             let button = self.view.button(cx, &[button]);
-            button.set_visible(cx, kind == target);
+            button.set_visible(cx, shown);
             button.reset_hover(cx);
         }
         for id in [
@@ -323,6 +314,7 @@ impl SidebarActionMenu {
         self.visible = false;
         self.kind = None;
         self.project = None;
+        self.plus_room = None;
         self.request = next_request();
         self.focus_after_draw = false;
         cx.revert_key_focus();
@@ -365,6 +357,10 @@ impl Widget for SidebarActionMenu {
         step
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        // Hidden or not, follow the open room for the "+" menu's last row.
+        if let Event::Actions(actions) = event {
+            plus_menu::observe(actions);
+        }
         if !self.visible {
             return;
         }
@@ -472,11 +468,12 @@ impl Widget for SidebarActionMenu {
             }
 
             if self.kind == Some(SidebarMenuKind::Add) {
-                let selected = ADD_ITEMS
+                let selected = PlusItem::ALL
                     .into_iter()
-                    .find(|id| self.view.button(cx, &[*id]).clicked(actions));
+                    .find(|item| self.view.button(cx, &[item.row()]).clicked(actions));
                 if let Some(item) = selected {
-                    add_item_action(cx, item);
+                    let room = self.plus_room.clone();
+                    plus_menu::run(cx, item, room.as_ref());
                     self.close(cx);
                     return;
                 }
@@ -546,7 +543,7 @@ impl Widget for SidebarActionMenu {
                         cx.action(super::navigation_tab_bar::NavigationBarAction::NewChat)
                     }
                     Some(SidebarMenuKind::Agents) => {
-                        cx.action(crate::hagency::ui::HagencyAction::NewAgent { project_id: None })
+                        cx.action(crate::hagency::create_agent::CreateAgentAction::Open)
                     }
                     Some(SidebarMenuKind::Tools | SidebarMenuKind::Add) | None => {}
                 }
@@ -820,20 +817,24 @@ mod new_or_join_tests {
     use crate::theme::{Appearance, Selection};
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
 
-    const WINDOW: DVec2 = dvec2(1280.0, 760.0);
+    pub(super) const WINDOW: DVec2 = dvec2(1280.0, 760.0);
     /// The "+" beside the search field of a chat list column at its default
     /// width (300 points, right of the 76-point rail, 10-point margins).
-    const PLUS: Rect = Rect {pos: dvec2(331.0, 62.0), size: dvec2(35.0, 35.0)};
+    pub(super) const PLUS: Rect = Rect {pos: dvec2(331.0, 62.0), size: dvec2(35.0, 35.0)};
     /// Every command row the widget can show, whatever menu it is.
-    const ALL_ROWS: [LiveId; 17] = [
+    pub(super) const ALL_ROWS: [LiveId; 19] = [
         id!(project_overview), id!(project_rooms), id!(project_members), id!(project_invite),
         id!(project_space), id!(new_project), id!(new_chat), id!(new_agent), id!(open_discover),
         id!(explore_rooms), id!(open_moments), id!(open_article), id!(open_browser),
-        id!(add_workspace), id!(add_room_or_space), id!(add_article_editor), id!(add_join_rooms),
+        id!(plus_new_chat), id!(plus_new_room), id!(plus_new_space), id!(plus_join_room), id!(plus_create_agent), id!(plus_add_agent),
     ];
+    /// The "+" menu's rows with no room open.
+    fn add_rows() -> Vec<LiveId> {
+        plus_menu::items(false).into_iter().map(PlusItem::row).collect()
+    }
 
     /// A registered menu under one appearance and text scale (1.0 is the default).
-    fn menu(appearance: Appearance, text_scale: f64) -> (Cx, SidebarActionMenu) {
+    pub(super) fn menu(appearance: Appearance, text_scale: f64) -> (Cx, SidebarActionMenu) {
         let mut cx = Cx::new(Box::new(|_, _| {}));
         let menu = cx.with_vm(|vm| {
             crate::theme::tests::install(vm, Selection { appearance, ..Default::default() });
@@ -895,67 +896,8 @@ mod new_or_join_tests {
         (card, drawn)
     }
 
-    fn visible_rows(cx: &mut Cx, menu: &SidebarActionMenu) -> Vec<LiveId> {
+    pub(super) fn visible_rows(cx: &mut Cx, menu: &SidebarActionMenu) -> Vec<LiveId> {
         ALL_ROWS.into_iter().filter(|id| menu.view.button(cx, &[*id]).visible()).collect()
-    }
-
-    #[test]
-    fn new_or_join_menu_has_creation_wizard_article_editor_and_join_action() {
-        let (mut cx, mut menu) = menu(Appearance::Light, 1.0);
-        let anchor = new_or_join_menu_pos(&mut cx, PLUS);
-        menu.show(&mut cx, SidebarMenuKind::Add, anchor, Rect {pos: DVec2::default(), size: WINDOW});
-        assert!(menu.visible);
-        assert_eq!(visible_rows(&mut cx, &menu), ADD_ITEMS, "Creation wizard, article editor and join action");
-        for (row, english, chinese) in [
-            (id!(add_room_or_space), "Create a space or room…", "创建空间或聊天室…"),
-            (id!(add_article_editor), "Article editor", "文章编辑器"),
-            (id!(add_join_rooms), "Join or explore rooms", "加入或探索聊天室"),
-        ] {
-            assert_eq!(menu.view.button(&mut cx, &[row]).text(), english);
-            assert_eq!(text_for(Language::Chinese, english), chinese);
-        }
-        assert_eq!(text_for(Language::Chinese, "New or Join"), "新建或加入");
-        // File Transfer lives in the rail, not in any of these menus.
-        assert!(menu.view.button(&mut cx, ids!(desktop_files)).is_empty());
-        for kind in [SidebarMenuKind::Projects, SidebarMenuKind::Chats, SidebarMenuKind::Agents, SidebarMenuKind::Tools] {
-            menu.show(&mut cx, kind, anchor, Rect {pos: DVec2::default(), size: WINDOW});
-            let rows = visible_rows(&mut cx, &menu);
-            assert!(!rows.is_empty() && ADD_ITEMS.iter().all(|row| !rows.contains(row)), "{kind:?} keeps its own rows: {rows:?}");
-            for row in rows {
-                assert_ne!(menu.view.button(&mut cx, &[row]).text(), crate::i18n::tr("File Transfer"));
-            }
-        }
-
-        // Each row does exactly what the same command did before, then closes the menu.
-        for row in ADD_ITEMS {
-            menu.show(&mut cx, SidebarMenuKind::Add, anchor, Rect {pos: DVec2::default(), size: WINDOW});
-            let uid = menu.view.button(&mut cx, &[row]).widget_uid();
-            let clicked = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(KeyModifiers::default())));
-            let emitted = cx.capture_actions(|cx| menu.handle_event(cx, &Event::Actions(clicked), &mut Scope::empty()));
-            let commands: Vec<LiveId> = emitted.iter().filter_map(|action| {
-                if matches!(action.downcast_ref(), Some(crate::hagency::ui::HagencyAction::NewProject)) {
-                    Some(id!(add_workspace))
-                } else if matches!(action.downcast_ref(), Some(crate::home::space_management::SpaceManagementAction::Open {parent: None})) {
-                    Some(id!(add_room_or_space))
-                } else if matches!(action.downcast_ref(), Some(crate::home::navigation_tab_bar::NavigationBarAction::GoToAddRoom)) {
-                    Some(id!(add_join_rooms))
-                } else if matches!(action.downcast_ref(), Some(crate::article_app::ArticleAction::Open)) {
-                    Some(id!(add_article_editor))
-                } else {
-                    None
-                }
-            }).collect();
-            assert_eq!(commands, vec![row], "{row:?} runs one command, its own");
-            assert!(!menu.visible, "{row:?} closes the menu");
-            assert!(emitted.iter().any(|action| action.downcast_ref::<ContextMenuClosed>().is_some()));
-        }
-
-        // Escape closes it without running anything.
-        menu.show(&mut cx, SidebarMenuKind::Add, anchor, Rect {pos: DVec2::default(), size: WINDOW});
-        let escape = Event::KeyDown(KeyEvent {key_code: KeyCode::Escape, ..Default::default()});
-        let emitted = cx.capture_actions(|cx| menu.handle_event(cx, &escape, &mut Scope::empty()));
-        assert!(!menu.visible);
-        assert!(!emitted.iter().any(|action| action.downcast_ref::<crate::home::navigation_tab_bar::NavigationBarAction>().is_some()));
     }
 
     #[test]
@@ -977,7 +919,7 @@ mod new_or_join_tests {
                     // Clamped only on the left, where large text widens it past the window edge.
                     assert!((card.pos - dvec2(anchor.x.max(0.0), anchor.y)).length() < 1.0, "{case}: card opens at its anchor {anchor:?}: {card:?}");
                 }
-                for row in ADD_ITEMS {
+                for row in add_rows() {
                     let button = menu.view.button(&mut cx, &[row]);
                     let rect = button.area().rect(&cx);
                     assert!(rect.size.y >= 44.0 && (rect.size.y - row_height).abs() < 0.5 && rect.size.x >= 200.0, "{case}: {row:?} is a full target: {rect:?}");
@@ -985,7 +927,7 @@ mod new_or_join_tests {
                     assert_eq!(button.borrow().unwrap().draw_icon.color, theme.accent, "{case}: icons follow the theme");
                 }
                 // Labels, icons and background: nothing spills past the card, even with large text.
-                assert!(drawn.len() > ADD_ITEMS.len());
+                assert!(drawn.len() > add_rows().len());
                 for rect in &drawn {
                     assert!(rect.pos.x >= card.pos.x - 1.0 && rect.pos.y >= card.pos.y - 1.0
                         && rect.pos.x + rect.size.x <= card.pos.x + card.size.x + 1.0
@@ -1014,7 +956,13 @@ mod new_or_join_tests {
                 let (card, _) = draw(&mut cx, &mut menu);
                 assert!(card.pos.x >= 0.0 && card.pos.y >= 0.0 && card.pos.x + card.size.x <= window.x + 0.5 && card.pos.y + card.size.y <= window.y + 0.5,
                     "{case}: the card stays in the window: {card:?}");
-                assert!((card.pos.y - (plus.pos.y + plus.size.y + DROP_DOWN_GAP)).abs() < 1.0, "{case}: just under the +: {card:?}");
+                let below = plus.pos.y + plus.size.y + DROP_DOWN_GAP;
+                if below + card.size.y <= window.y + 0.5 {
+                    assert!((card.pos.y - below).abs() < 1.0, "{case}: just under the +: {card:?}");
+                } else {
+                    // Five rows at 2x text do not fit under the + of a 420-point window.
+                    assert!((card.pos.y + card.size.y - window.y).abs() < 1.0, "{case}: as low as the window allows: {card:?}");
+                }
                 let right = plus.pos.x + plus.size.x;
                 if card.size.x <= right {
                     assert!((card.pos.x + card.size.x - right).abs() < 1.0, "{case}: its right edge is the +'s: {card:?}");
