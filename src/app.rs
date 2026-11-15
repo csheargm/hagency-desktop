@@ -364,6 +364,8 @@ impl MatchEvent for App {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         // TODO(R4): app.rs is over budget; session-chrome hooks (title, login visibility) belong in their own module.
         crate::memory_budget::process_completed_decodes(cx, actions);
+        // TODO(R4): app.rs is over budget; Hagency action observers (bring_agent, plus_menu) belong in one hagency::observe hook.
+        crate::hagency::bring_agent::observe(actions);
         for action in actions {
             if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
                 crate::home::room_screen::release_cached_timeline_history(kind, *channel);

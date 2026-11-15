@@ -293,7 +293,7 @@ impl RoomAgentsSlow {
     }
 }
 
-pub(super) fn agent_binding_error(code: &str) -> &'static str {
+pub(crate) fn agent_binding_error(code: &str) -> &'static str {
     match code {
         "room_project_registration_required" => "This room could not be registered for your Agents: create an Agent first (Agent → Create agent), then add it here again.",
         "room_space_link_failed" => "This room could not be linked under your Agent space. Make sure you are joined and retry Add agent.",

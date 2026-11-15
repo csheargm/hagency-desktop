@@ -46,6 +46,11 @@ script_mod! {
             Field {width: 150 Text {text: #(crate::i18n::tr("Thinking")) i18n_text: "Thinking"} thinking := Select {labels: [#(crate::i18n::tr("Low")) #(crate::i18n::tr("Medium")) #(crate::i18n::tr("High"))]}}
         }
         runs_on := Hint {}
+        Field {
+            rooms_heading := Text {text: #(crate::i18n::tr("Add to rooms")) i18n_text: "Add to rooms"}
+            room_0 := Tick {} room_1 := Tick {} room_2 := Tick {} room_3 := Tick {} room_4 := Tick {} room_5 := Tick {} room_6 := Tick {} room_7 := Tick {}
+            rooms_hint := Hint {}
+        }
         }
         status := Text {}
         ModalButtonsRow {
@@ -67,6 +72,9 @@ struct Probed { request: u64, index: usize, result: Result<Value, String> }
 struct Created { request: u64, identity: String, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
 fn next_request() -> u64 { REQUEST.fetch_add(1, Ordering::Relaxed) }
+
+#[path = "rooms.rs"]
+mod rooms;
 
 #[derive(Script, ScriptHook, Widget)]
 pub struct CreateAgentDialog {
@@ -106,6 +114,7 @@ impl CreateAgentDialog {
                 self.finish(cx, &created.identity, &created.result);
             }
         }
+        self.handle_room_actions(cx, actions);
         if self.view.button(cx, ids!(cancel)).clicked(actions) { cx.action(CreateAgentAction::Close); }
         if self.view.button(cx, ids!(create)).clicked(actions) { self.create(cx); }
         if let Some(name) = self.view.text_input(cx, ids!(name)).changed(actions) { self.state.name = name; self.render_create(cx); }
@@ -125,6 +134,7 @@ impl CreateAgentDialog {
             Ok(service) => self.probe(service),
             Err(code) => self.state.probes = [Some(Err(code.clone())), Some(Err(code))],
         }
+        self.load_rooms(cx);
         self.render(cx);
     }
     /// Read-only: lists each harness's models without connecting a login.
@@ -211,6 +221,7 @@ impl CreateAgentDialog {
         match result {
             Ok(value) => {
                 crate::hagency::agent_presence::set_has_agent(true);
+                self.bind_ticked(value);
                 cx.action(crate::home::project_tree::ProjectTreeChanged { identity: identity.to_owned() });
                 if let Some(room_id) = value["quickSetup"]["ownerDirectRoomId"].as_str().and_then(|id| matrix_sdk::ruma::OwnedRoomId::try_from(id).ok()) {
                     cx.action(crate::hagency::ui::OpenAgentChat { room_id });
