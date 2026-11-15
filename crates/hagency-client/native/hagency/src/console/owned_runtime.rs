@@ -1397,6 +1397,9 @@ fn version_failure(error: &codex::Error) -> Option<RuntimeError> {
         _ => None,
     }
 }
+/// The line a reply starts with when the room tools could not start for it.
+const ROOM_TOOLS_UNAVAILABLE: &str = "ℹ️ Room tools are unavailable for this reply.";
+
 fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
     let (kind, detail) = error.diagnostic();
     tracing::warn!(
@@ -2707,6 +2710,7 @@ async fn run_turn<T: Transport>(
     let question_cancel = cancel.clone();
     let control_cancel = cancel.clone();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let mut tools_unavailable = false;
     let result = tokio::select! {biased; _=canceled(cancel)=>Err(RuntimeError::Stopped), error=monitor_running(transport,lease,&prepared,permission_cancel)=>Err(error), r=async {
         let model = async {
         if !retained {
@@ -2714,8 +2718,17 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_memory()).await
-                    .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
+                if let Err(error) = provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_memory()).await {
+                    // The tools channel did not start: answer without it rather than
+                    // fail the turn. No model input was sent, so a fresh process is safe.
+                    provider_failure("provider_room_tools", &error);
+                    provider.stop().await?;
+                    provider = provider_custody::Provider::capture(&provider_tasks, provider_custody::spawn_for_scope(&profile, &config.credential_ref, ledger, &scope)).await?;
+                    provider.session.initialize().await.inspect_err(|error|{provider_failure("provider_initialize", error);})?;
+                    provider.session.verify_host_environment().await?;
+                    provider.session.require_local_account().await?;
+                    tools_unavailable = true;
+                }
             }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
         }
@@ -2801,10 +2814,13 @@ async fn run_turn<T: Transport>(
         }
     };
     let reply = if completed.status == codex::TurnStatus::Interrupted && completed.text.is_empty() {
-        "⏹️ 本次运行已停止。"
+        "⏹️ 本次运行已停止。".to_owned()
+    } else if tools_unavailable {
+        format!("{ROOM_TOOLS_UNAVAILABLE}\n\n{}", completed.text)
     } else {
-        &completed.text
+        completed.text.clone()
     };
+    let reply = reply.as_str();
     if reply.is_empty() || reply.len() > 65_536 {
         return Err(RuntimeError::Profile);
     }
