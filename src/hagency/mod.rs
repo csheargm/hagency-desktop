@@ -8,6 +8,7 @@ pub mod ui;
 pub mod hosting;
 pub mod github_access;
 pub mod issue_watch;
+pub mod agent_panel;
 pub mod room_send;
 pub mod owner_dashboard;
 pub mod pending_admissions;

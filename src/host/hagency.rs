@@ -34,7 +34,7 @@ mod templates;
 mod graphs;
 pub(crate) mod reauthentication;
 pub(crate) mod errors;
-mod local;
+pub(crate) mod local;
 mod personal;
 pub(crate) mod personal_configuration;
 mod agents;

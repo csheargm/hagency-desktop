@@ -282,6 +282,8 @@ pub enum LocalAction {
     IssueWatch,
     /// Saves `{issueWatch}` and/or `{issueSeen}`, then answers like `IssueWatch`.
     SaveIssueWatch,
+    /// The Agent's recent requests on this device (read-only, no request text).
+    RecentActivity,
     /// The Agent's approval mode and remembered "Always allow" rules.
     ApprovalSettings,
     /// Saves `{mode}` and/or `{forget}`, then answers like `ApprovalSettings`.
@@ -766,6 +768,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                     | LocalAction::AgentServiceStatus
                     | LocalAction::IssueWatch
                     | LocalAction::SaveIssueWatch
+                    | LocalAction::RecentActivity
                     | LocalAction::ApprovalSettings
                     | LocalAction::SaveApprovalSettings
             ) && (binding_id.is_some() || requester.is_some())
@@ -792,6 +795,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                 LocalAction::Approvals => ("GET", "runtime/approvals".into()),
                 LocalAction::IssueWatch => ("GET", "issue-watch".into()),
                 LocalAction::SaveIssueWatch => ("POST", "issue-watch".into()),
+                LocalAction::RecentActivity => ("GET", "activity".into()),
                 LocalAction::ApprovalSettings => ("GET", "approval-settings".into()),
                 LocalAction::SaveApprovalSettings => ("POST", "approval-settings".into()),
                 LocalAction::Decision { approval_id } => {

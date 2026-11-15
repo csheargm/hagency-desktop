@@ -34,7 +34,7 @@ struct SetService {
     approval_mode: Option<String>,
 }
 // TODO(R4): local.rs is over budget; move service_state and the status reply into host/hagency/local/status.rs.
-pub(super) enum Call {
+pub(crate) enum Call {
     Status(String),
     Service(String, bool),
     /// `{forget}` or `{mode}` for the Agent's approval settings.
@@ -141,7 +141,7 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
         "stopped"
     }
 }
-fn room_name(room: &matrix_sdk::Room) -> String {
+pub(crate) fn room_name(room: &matrix_sdk::Room) -> String {
     room.cached_display_name()
         .map(|name| name.to_string())
         .or_else(|| room.name())
@@ -249,7 +249,7 @@ async fn approval_settings(service: &Service, id: &str, change: Option<Value>) -
 }
 
 impl Call {
-    pub(super) async fn execute(self, account: &str) -> Result<Value, String> {
+    pub(crate) async fn execute(self, account: &str) -> Result<Value, String> {
         match self {
             Self::Status(id) => status(account, &id).await,
             Self::Service(id, running) => {

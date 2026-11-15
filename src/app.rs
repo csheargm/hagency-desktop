@@ -1522,6 +1522,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::profile::script_mod(vm);
     crate::hagency::issue_watch::section::script_mod(vm);
     crate::hagency::github_access::script_mod(vm);
+    crate::hagency::agent_panel::script_mod(vm);
     crate::hagency::ui::script_mod(vm);
     crate::hagency::owner_dashboard::register(vm);
     // A mini-apps host body, the docked region holding them, and the pop-out window.

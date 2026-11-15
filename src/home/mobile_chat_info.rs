@@ -120,9 +120,12 @@ script_mod! {
                         avatar := mod.widgets.MobileAvatar {width: 32 height: 32}
                         View {
                             width: Fill height: Fit flow: Down spacing: 2 padding: 0
-                            name := Label {
-                                width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
-                                draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
+                            View {width: Fill height: Fit flow: Right spacing: 6 align: Align{y: 0.5}
+                                name := Label {
+                                    width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
+                                    draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
+                                }
+                                ask_badge := mod.widgets.AgentAskBadge {}
                             }
                             user_id := Label {
                                 width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
@@ -263,6 +266,7 @@ async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap
     if rows.len()>128 {return Err("room_discovery_incomplete".into());}
     // TODO(R4): split member ownership loading (add_member_owners, group_members,
     // fetch_member_owners) out into home/chat_info_members.rs; this file is over budget.
+    super::agent_ask_badge::refresh(owner, &roster["agents"]);
     let mut owners = HashMap::new();let mut conflicts = HashSet::new();
     add_member_owners(&mut owners, &mut conflicts, &roster["agents"], Some(owner));
     let incomplete = match service.agents_for_registered_room(room).await {
@@ -933,6 +937,8 @@ impl Widget for MobileChatInfo {
                 match row {
                     InfoRow::Member(_) => {
                         let Some(profile)=self.rendered_members.get(&widget.widget_uid()) else {continue;};
+                        // TODO(R4): own-Agent rows live in agent_ask_badge; split member rows out of this file.
+                        if let Some(open)=super::agent_ask_badge::open_own_agent(self.owner.as_ref(), &profile.user_id) {cx.action(open); continue;}
                         cx.widget_action(self.widget_uid(), ShowUserProfileAction::ShowUserProfile(UserProfileAndRoomId {user_profile:profile.clone(), room_id:data.room.room_id().clone()}));
                     }
                     InfoRow::Notifications => self.choosing_notifications = true,
@@ -1044,6 +1050,7 @@ impl Widget for MobileChatInfo {
                             );
                         let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
+                        super::agent_ask_badge::show(cx, &widget, self.owner.as_ref(), &profile.user_id);
                         let avatar = widget.avatar(cx, ids!(avatar));
                         let loaded =
                             profile
