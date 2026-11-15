@@ -21,7 +21,10 @@ const NETWORK_PROGRAMS: [&str; 18] = [
     "https", "xh", "open", "osascript",
 ];
 /// Interpreters that run inline code this reader cannot see into.
-const INLINE_CODE: [&str; 10] = ["eval", "python", "python3", "node", "perl", "ruby", "php", "deno", "bun", "source"];
+const INLINE_CODE: [&str; 14] =
+    ["eval", "python", "python3", "node", "perl", "ruby", "php", "deno", "bun", "source", "awk", "gawk", "mawk", "nawk"];
+/// Git options that load config (aliases, `core.sshCommand`) from the line.
+const GIT_CONFIG_OPTIONS: [&str; 2] = ["-c", "--config-env"];
 /// Git subcommands that talk to a remote (or can, via helpers).
 const GIT_NETWORK: [&str; 10] =
     ["push", "fetch", "pull", "clone", "ls-remote", "remote", "submodule", "send-email", "request-pull", "archive"];
@@ -55,19 +58,35 @@ fn line_at(line: &str, depth: usize) -> bool {
         return true;
     }
     let Some(parsed) = shell::parse(line) else { return true };
+    // A heredoc body is input this reader does not check (`make -f - <<EOF`).
+    if parsed.heredoc_at.is_some() {
+        return true;
+    }
     parsed.segments.iter().any(|segment| {
         let words: Vec<&str> = segment.iter().map(String::as_str).collect();
         words_reach_network(&words, depth)
     })
 }
 
+/// Checks the words, then every name-like token inside them, so a network
+/// step hidden in one argument (`awk '{system("curl x")}'`, a git alias
+/// `'!git push'`) still counts.
 fn words_reach_network(words: &[&str], depth: usize) -> bool {
+    let tokens: Vec<&str> = words
+        .iter()
+        .flat_map(|w| w.split(|c: char| !(c.is_ascii_alphanumeric() || "-_.".contains(c))))
+        .filter(|t| !t.is_empty())
+        .collect();
+    any_reaches(words, depth) || any_reaches(&tokens, depth)
+}
+
+fn any_reaches(words: &[&str], depth: usize) -> bool {
     words.iter().enumerate().any(|(at, word)| {
         let rest = &words[at + 1..];
         match base(word) {
             w if NETWORK_PROGRAMS.contains(&w) || INLINE_CODE.contains(&w) => true,
             w if SHELLS.contains(&w) => shell_wrapper_reaches(rest, depth),
-            "git" => rest.iter().any(|r| GIT_NETWORK.contains(r)),
+            "git" => rest.iter().any(|r| GIT_NETWORK.contains(r) || GIT_CONFIG_OPTIONS.iter().any(|o| *r == *o || r.starts_with(&format!("{o}=")))),
             "gh" => !matches!(rest, [area, verb, ..] if READ_ONLY_GH.contains(&(*area, *verb))),
             w if PACKAGE_TOOLS.contains(&w) => rest.iter().any(|r| PACKAGE_NETWORK.contains(r)),
             _ => false,
@@ -97,7 +116,9 @@ mod tests {
             "nc host 80", "npm install", "pip install x", "cargo install ripgrep", "cargo publish", "docker push i",
             "env FOO=1 curl x", "find . -exec curl x ;", "bash -c 'git push'", "zsh -lc \"curl x\"",
             "bash -c \"bash -c 'git push'\"", "bash script.sh", "python -c 'print(1)'", "echo $(curl x)",
-            "`curl x`", "cat a > b",
+            "`curl x`", "cat a > b", "awk 'BEGIN { system(\"curl https://x\") }'",
+            "git -c alias.p='!git push origin main' p", "make -f - push <<'EOF'\npush:\n\tgit push origin main\nEOF\n",
+            "sed 's/x/y/' f | xargs /usr/bin/curl",
         ] {
             assert!(line_reaches_network(line), "{line} must not be remembered");
         }

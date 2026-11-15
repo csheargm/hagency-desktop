@@ -12,7 +12,13 @@
 //! - the folder must canonicalize to itself (no symlinks) when the rule is
 //!   made and every time it is matched;
 //! - rules expire after [`RULE_LIFETIME_SECS`], bounding the residual risk
-//!   that the same text later runs changed scripts or build files.
+//!   that the same text later runs changed scripts or build files. A rule
+//!   dated in the future (clock rollback) does not match.
+//!
+//! Residual risks, not closed here: the folder is matched by canonical path,
+//! not by inode, so it can be swapped between the check and the launch; and a
+//! remembered command runs whatever its scripts, Makefile, git config/aliases
+//! and `PATH` say at the time it runs.
 //!
 //! Codex permission expansions, file changes and MCP calls are always one-use.
 //! Rules apply in the `remember` and `outside` modes (an Agent without a saved
@@ -164,8 +170,8 @@ pub(crate) fn remembered(db: &Connection, proposal: &ToolProposal, saved_mode: O
     let s = &proposal.scope;
     Ok(db
         .query_row(
-            "SELECT 1 FROM remembered_rules WHERE agent=? AND binding=? AND room=? AND tool=? AND directory=? AND request=? AND created>?",
-            (&s.agent, &s.binding, &s.room, &proposal.tool, &proposal.canonical_directory, &request, now - RULE_LIFETIME_SECS),
+            "SELECT 1 FROM remembered_rules WHERE agent=? AND binding=? AND room=? AND tool=? AND directory=? AND request=? AND created>? AND created<=?",
+            (&s.agent, &s.binding, &s.room, &proposal.tool, &proposal.canonical_directory, &request, now - RULE_LIFETIME_SECS, now),
             |_| Ok(()),
         )
         .optional()?

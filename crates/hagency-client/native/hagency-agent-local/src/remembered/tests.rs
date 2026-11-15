@@ -166,6 +166,7 @@ fn rules_expire_and_old_rows_fail_closed() {
     ledger.remember_request(OWNER, &p, 5).unwrap();
     assert!(remembered(&ledger.db, &p, None, 5 + RULE_LIFETIME_SECS - 1).unwrap());
     assert!(!remembered(&ledger.db, &p, None, 5 + RULE_LIFETIME_SECS).unwrap());
+    assert!(!remembered(&ledger.db, &p, None, 4).unwrap(), "a rule dated after now (clock rollback) does not match");
     ledger.db.execute_batch("CREATE TABLE remembered_requests (agent TEXT, tool TEXT, directory TEXT, request TEXT, created INTEGER); INSERT INTO remembered_requests VALUES ('a','claude.Bash','/w','{}',1);").unwrap();
     ensure_schema(&ledger.db).unwrap();
     let old: i64 = ledger.db.query_row("SELECT count(*) FROM sqlite_master WHERE name='remembered_requests'", [], |r| r.get(0)).unwrap();
