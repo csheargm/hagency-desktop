@@ -87,6 +87,11 @@ pub fn load(path: &Path, owner: &str) -> Option<Paused> {
 fn save(path: &Path, paused: &Paused) -> Result<(), String> {
     let bytes = serde_json::to_vec(paused).map_err(|_| PAUSE_UNSAVED)?;
     let temp = path.with_extension("json.tmp");
+    // The owner daemon's home may not exist yet (the in-process owner never
+    // creates it): make it, or the pause is never saved (Nov 15 on screen).
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| PAUSE_UNSAVED)?;
+    }
     std::fs::write(&temp, bytes).and_then(|_| std::fs::rename(&temp, path)).map_err(|_| PAUSE_UNSAVED.into())
 }
 

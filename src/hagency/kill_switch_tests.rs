@@ -105,7 +105,9 @@ fn an_agent_that_fails_to_start_stays_paused_for_a_retry() {
 fn the_owner_stop_wins_even_when_the_pause_cannot_be_saved() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("missing-folder").join(STATE_FILE);
+    // A plain file where the folder should be: the pause cannot be saved.
+    std::fs::write(dir.path().join("blocker"), b"").unwrap();
+    let path = dir.path().join("blocker").join(STATE_FILE);
     let agents = recorder();
     let report = block(stop_all(&agents, &path, "@me:x")).unwrap();
     assert_eq!(report.failed, [PAUSE_UNSAVED]);
@@ -214,4 +216,16 @@ fn resume_keeps_every_agent_not_yet_started_paused() {
     block(resume_all(&watch, &path, "@me:x")).unwrap();
     assert_eq!(watch.1.lock().unwrap()[0], true);
     assert!(!path.exists());
+}
+
+/// On screen (Nov 15): the in-process owner never creates the daemon home,
+/// so the first Stop all could not save the pause. The folder is created.
+#[test]
+fn stop_all_creates_the_missing_daemon_home_and_saves_the_pause() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("owner-daemon").join(STATE_FILE);
+    let report = block(stop_all(&recorder(), &path, "@me:x")).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(is_paused(&path, "@me:x", "codex"));
 }
