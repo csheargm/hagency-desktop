@@ -62,6 +62,7 @@ script_mod! {
         actions := View {width: Fill height: Fit flow: Down spacing: 4
             once := Button {width: Fill text: #(crate::i18n::tr("Approve once")) i18n_text: "Approve once"}
             session := Button {width: Fill text: #(crate::i18n::tr("Always approve for this session")) i18n_text: "Always approve for this session"}
+            always := Button {width: Fill text: #(crate::i18n::tr("Always allow this")) i18n_text: "Always allow this"}
             deny := Button {width: Fill text: #(crate::i18n::tr("Deny")) i18n_text: "Deny"}
         }
         next := Button {text: #(crate::i18n::tr("Next request")) i18n_text: "Next request" visible: false}
@@ -70,6 +71,7 @@ script_mod! {
 /// What the notice shows, worked out from the room's requests and from this
 /// client's own decisions (shared with the card on the message itself).
 #[derive(Debug,Default,PartialEq)]
+// TODO(R4): shared_permission_notice.rs is over budget; split Display (what to show) from the widget.
 struct Display {
     visible:bool,
     /// The spinner beside the title: the Agent works, or a decision is on its way.
@@ -82,6 +84,8 @@ struct Display {
     hint:String,
     once:bool,
     session:bool,
+    /// "Always allow this": this app's own Agent's exact command or tool call.
+    always:bool,
     deny:bool,
     next:bool,
 }
@@ -166,6 +170,7 @@ impl SharedPermissionNotice {
             else if !open {String::new()}
             else if row["encryptedPending"]==true {tr("Approval becomes available after the encrypted details arrive.").to_owned()}
             else if row["canDecide"]!=true {format("Waiting for resource owner {owner}",&[("owner",a["ownerMxid"].as_str().unwrap_or("").to_owned())])}
+            else if row["alwaysAllowed"]==true {tr("\"Always allow this\" runs exactly this request in this folder again without asking.").to_owned()}
             else if matches!(a["request"]["method"].as_str(),Some("claude/can_use_tool"|"octos/can_use_tool")) {tr("Each approval covers this one tool call.").to_owned()}
             else {tr("Session approval covers this Codex session only. It ends when this run stops.").to_owned()};
         Display {
@@ -177,6 +182,7 @@ impl SharedPermissionNotice {
             hint,
             once:can,
             session:can && a["request"]["sessionAllowed"]==true,
+            always:can && row["alwaysAllowed"]==true,
             deny:can,
             next:self.rows.len()>1,
         }
@@ -194,13 +200,13 @@ impl SharedPermissionNotice {
         self.view.widget(cx,ids!(request_details)).set_visible(cx,!shown.details.is_empty());
         // Buttons that cannot be used are hidden, not merely disabled: the two
         // look alike here.
-        for (id,offered) in [(ids!(once),shown.once),(ids!(session),shown.session),(ids!(deny),shown.deny)] {
+        for (id,offered) in [(ids!(once),shown.once),(ids!(session),shown.session),(ids!(always),shown.always),(ids!(deny),shown.deny)] {
             let button=self.view.button(cx,id);
             if offered && !self.view.widget(cx,id).visible() {button.reset_hover(cx);}
             button.set_visible(cx,offered);
             button.set_enabled(cx,offered);
         }
-        self.view.widget(cx,ids!(actions)).set_visible(cx,shown.once || shown.session || shown.deny);
+        self.view.widget(cx,ids!(actions)).set_visible(cx,shown.once || shown.session || shown.always || shown.deny);
         self.view.widget(cx,ids!(next)).set_visible(cx,shown.next);
         self.view.redraw(cx);
     }
@@ -262,8 +268,10 @@ impl Widget for SharedPermissionNotice {
                     if self.active && !self.loading {cx.stop_timer(self.timer);self.timer=cx.start_timeout(0.5);}
                 }
                 if action.downcast_ref::<PendingApprovalsChanged>().is_some(){self.render(cx);}
+                // This app's own Agent asked or was answered: read now, not in 2 s.
+                if action.downcast_ref::<crate::hagency::local_approvals::LocalApprovalsChanged>().is_some() && self.active && !self.loading {cx.stop_timer(self.timer);self.timer=Timer::default();self.poll(cx);}
             }
-            for (id,decision) in [(ids!(once),"approve_once"),(ids!(session),"approve_session"),(ids!(deny),"deny")] {
+            for (id,decision) in [(ids!(once),"approve_once"),(ids!(session),"approve_session"),(ids!(always),crate::hagency::local_approvals::ALWAYS),(ids!(deny),"deny")] {
                 if self.view.button(cx,id).clicked(actions){self.decide(cx,decision);}
             }
             if self.view.button(cx,ids!(next)).clicked(actions) && !self.rows.is_empty(){self.selected=(self.selected+1)%self.rows.len();self.render(cx);}
