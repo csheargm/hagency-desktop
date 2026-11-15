@@ -5,6 +5,7 @@
 //! backward scan (ADR 0013). Nothing is ever read from state in an encrypted room.
 use super::{history::unavailable_reason, *};
 use hagency_runtime::room_memory::{MEMORY_STATE_TYPE, PowerLevels};
+use hagency_runtime::room_skills::SKILL_STATE_TYPE;
 use hagency_runtime::room_memory_timeline::{ScanKind, ScanPage, ScanState, ScanStep, TimelineScan, SCAN_PAGE_EVENTS};
 use matrix_sdk::{
     room::{MessagesOptions, Room},
@@ -24,6 +25,13 @@ pub(in crate::console) struct MemoryRoom {
 impl AgentDevice {
     /// An unknown encryption state is an error, never a plaintext read.
     pub(in crate::console) async fn memory_room(&self, room: &str) -> Result<MemoryRoom, RuntimeError> {
+        self.record_room(room, MEMORY_STATE_TYPE).await
+    }
+    /// Team skills, read by exactly the same rules as memory.
+    pub(in crate::console) async fn skill_room(&self, room: &str) -> Result<MemoryRoom, RuntimeError> {
+        self.record_room(room, SKILL_STATE_TYPE).await
+    }
+    async fn record_room(&self, room: &str, kind: &str) -> Result<MemoryRoom, RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let joined = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
         let security = joined.latest_encryption_state().await.map_err(|_| RuntimeError::Transport)?;
@@ -37,12 +45,12 @@ impl AgentDevice {
             levels: PowerLevels::default(),
         };
         if memory.encrypted {
-            memory.scan = self.memory_scan(&joined, room).await?;
+            memory.scan = self.memory_scan(&joined, &format!("{kind}\n{room}"), kind).await?;
             memory.levels = memory_levels(&joined, &memory.scan).await?;
             return Ok(memory);
         }
         let raw = joined
-            .get_state_events(StateEventType::from(MEMORY_STATE_TYPE))
+            .get_state_events(StateEventType::from(kind))
             .await
             .map_err(|_| RuntimeError::Transport)?;
         memory.events = raw
@@ -52,7 +60,7 @@ impl AgentDevice {
         Ok(memory)
     }
 
-    async fn memory_scan(&self, room: &Room, key: &str) -> Result<TimelineScan, RuntimeError> {
+    async fn memory_scan(&self, room: &Room, key: &str, kind: &str) -> Result<TimelineScan, RuntimeError> {
         let cached = self.memory_scans.lock().map_err(|_| RuntimeError::Transport)?.get(key).cloned();
         let (mut state, mut from) = (ScanState::default(), None::<String>);
         loop {
@@ -62,7 +70,7 @@ impl AgentDevice {
             let page = room.messages(options).await.map_err(|_| RuntimeError::Transport)?;
             let first = state.newest().is_none();
             let step = state.push(ScanPage {
-                events: page.chunk.iter().map(scan_event).collect(),
+                events: page.chunk.iter().map(|e| scan_event(e, kind)).collect(),
                 next: page.end,
             });
             if first
@@ -106,7 +114,7 @@ impl AgentDevice {
     }
 }
 
-fn scan_event(event: &matrix_sdk::deserialized_responses::TimelineEvent) -> (String, ScanKind) {
+fn scan_event(event: &matrix_sdk::deserialized_responses::TimelineEvent, kind: &str) -> (String, ScanKind) {
     let Some(raw) = serde_json::from_str::<Value>(event.kind.raw().json().get()).ok() else {
         return (String::new(), ScanKind::Unreadable);
     };
@@ -116,14 +124,14 @@ fn scan_event(event: &matrix_sdk::deserialized_responses::TimelineEvent) -> (Str
     // event in an encrypted room was sent in the clear, so the homeserver could
     // have written it. It is counted as unreadable, never trusted.
     let plaintext = matches!(&event.kind, TimelineEventKind::PlainText { .. });
-    let kind = match (raw["type"].as_str(), unavailable_reason(event, &raw)) {
-        (_, Some(_)) if undecrypted => ScanKind::Unreadable,
-        (Some(MEMORY_STATE_TYPE), Some(_)) => ScanKind::Unreadable,
-        (Some(MEMORY_STATE_TYPE), None) if plaintext => ScanKind::Unreadable,
-        (Some(MEMORY_STATE_TYPE), None) => ScanKind::Memory(raw),
+    let wanted = raw["type"].as_str() == Some(kind);
+    let found = match unavailable_reason(event, &raw) {
+        Some(_) if undecrypted || wanted => ScanKind::Unreadable,
+        None if wanted && plaintext => ScanKind::Unreadable,
+        None if wanted => ScanKind::Memory(raw),
         _ => ScanKind::Other,
     };
-    (id, kind)
+    (id, found)
 }
 
 #[cfg(test)]
@@ -140,8 +148,11 @@ mod tests {
 
     #[test]
     fn plaintext_memory_event_in_an_encrypted_room_is_unreadable_not_memory() {
-        assert!(matches!(scan_event(&plaintext(MEMORY_STATE_TYPE)).1, ScanKind::Unreadable));
-        assert!(matches!(scan_event(&plaintext("m.room.message")).1, ScanKind::Other));
+        assert!(matches!(scan_event(&plaintext(MEMORY_STATE_TYPE), MEMORY_STATE_TYPE).1, ScanKind::Unreadable));
+        assert!(matches!(scan_event(&plaintext("m.room.message"), MEMORY_STATE_TYPE).1, ScanKind::Other));
+        // The same rule holds for team skills, and one type never reads as the other.
+        assert!(matches!(scan_event(&plaintext(SKILL_STATE_TYPE), SKILL_STATE_TYPE).1, ScanKind::Unreadable));
+        assert!(matches!(scan_event(&plaintext(SKILL_STATE_TYPE), MEMORY_STATE_TYPE).1, ScanKind::Other));
     }
 }
 
@@ -152,8 +163,10 @@ async fn memory_levels(room: &Room, scan: &TimelineScan) -> Result<PowerLevels, 
     let sdk = room.power_levels().await.map_err(|_| RuntimeError::Transport)?;
     let mut levels = PowerLevels { users_default: i64::from(sdk.users_default), ..Default::default() };
     levels.state_default = Some(i64::from(sdk.state_default));
-    if let Some(level) = sdk.events.get(&MEMORY_STATE_TYPE.into()) {
-        levels.events.insert(MEMORY_STATE_TYPE.into(), i64::from(*level));
+    for kind in [MEMORY_STATE_TYPE, SKILL_STATE_TYPE] {
+        if let Some(level) = sdk.events.get(&kind.into()) {
+            levels.events.insert(kind.into(), i64::from(*level));
+        }
     }
     for event in &scan.events {
         let Some(sender) = event["sender"].as_str().and_then(|s| <&UserId>::try_from(s).ok()) else { continue };

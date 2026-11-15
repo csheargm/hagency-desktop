@@ -8,6 +8,7 @@ use super::shared_permission_notice::SharedPermissionNoticeWidgetRefExt;
 use crate::theme::Snapshot as ThemeSnapshot;
 use super::agent_runtime_notice::AgentRuntimeNoticeWidgetRefExt;
 use super::room_memory::card::MemoryProposalCardWidgetRefExt;
+use super::room_skills::card::SkillProposalCardWidgetRefExt;
 use crate::miniapps::action_room::ActionRoomBoardWidgetExt;
 use std::{
     borrow::Cow,
@@ -438,6 +439,7 @@ script_mod! {
                 agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -491,6 +493,7 @@ script_mod! {
                 agent_run_card_2 := mod.widgets.AgentRunCard {}
                 octos_action_card := mod.widgets.OctosActionCard {}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {}
+                skill_proposal_card := mod.widgets.SkillProposalCard {}
                 agent_reply := mod.widgets.AgentReply {}
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
             link_preview_view := mod.widgets.LinkPreview {font_size: mod.widgets.MOBILE_MESSAGE_FONT_SIZE}
@@ -684,6 +687,7 @@ script_mod! {
                 agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -5511,7 +5515,7 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal sent as text gives way to its intro too (the card shows it).
-                        let (body, formatted) = match super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id()) {
+                        let (body, formatted) = match proposal_card_intro(event_tl_item, timeline_kind.room_id()) {
                             Some(intro) => (Cow::Owned(intro), None),
                             None => (body, formatted),
                         };
@@ -5573,7 +5577,7 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal shows as a card; its notice body gives way to one intro line.
-                        let memory_intro = super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id());
+                        let memory_intro = proposal_card_intro(event_tl_item, timeline_kind.room_id());
                         let (body, formatted) = match memory_intro.as_deref() {
                             Some(intro) => (Cow::Borrowed(intro), None),
                             None => (body, formatted),
@@ -6250,6 +6254,8 @@ fn populate_message_view(
         // TODO(R4): this file is over budget; split message-card population into its own module.
         item.memory_proposal_card(cx, ids!(content.memory_proposal_card))
             .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()));
+        item.skill_proposal_card(cx, ids!(content.skill_proposal_card))
+            .show(cx, timeline_kind.room_id(), super::room_skills::proposal_of(event_tl_item, timeline_kind.room_id()));
     }
 
     // If `used_cached_item` is false, we should always redraw the profile, even if profile_drawn is true.
@@ -7541,6 +7547,13 @@ fn populate_small_state_event(
 
 
 /// Returns the display name of the sender of the given `event_tl_item`, if available.
+/// The one line that replaces a memory or skill proposal's body above its card.
+fn proposal_card_intro(event: &EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<String> {
+    super::room_memory::proposal_intro_of(event, room).or_else(|| {
+        super::room_skills::proposal_of(event, room).map(|_| super::room_skills::proposal_intro(&super::room_memory::sender_name(event)))
+    })
+}
+
 fn get_profile_display_name(event_tl_item: &EventTimelineItem) -> Option<String> {
     if let TimelineDetails::Ready(profile) = event_tl_item.sender_profile() {
         profile.display_name.clone()

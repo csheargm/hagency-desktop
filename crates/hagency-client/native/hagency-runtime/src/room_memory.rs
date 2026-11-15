@@ -215,10 +215,17 @@ pub struct PowerLevels {
 }
 impl PowerLevels {
     pub fn required(&self) -> i64 {
-        self.events.get(MEMORY_STATE_TYPE).copied().or(self.state_default).unwrap_or(DEFAULT_STATE_LEVEL)
+        self.required_for(MEMORY_STATE_TYPE)
     }
     pub fn can_write(&self, user: &str) -> bool {
-        self.users.get(user).copied().unwrap_or(self.users_default) >= self.required()
+        self.can_write_type(user, MEMORY_STATE_TYPE)
+    }
+    /// The level a room event type needs, as the homeserver judges state.
+    pub fn required_for(&self, event_type: &str) -> i64 {
+        self.events.get(event_type).copied().or(self.state_default).unwrap_or(DEFAULT_STATE_LEVEL)
+    }
+    pub fn can_write_type(&self, user: &str, event_type: &str) -> bool {
+        self.users.get(user).copied().unwrap_or(self.users_default) >= self.required_for(event_type)
     }
 }
 
