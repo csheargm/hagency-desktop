@@ -35,13 +35,16 @@ fn signed_out() -> String {
 pub fn refresh(room_id: &RoomId) {
     let (Some(client), Some(owner)) = (get_client(), current_user_id()) else { return };
     let room_id = room_id.to_owned();
+    let ticket = store::lock().begin_load(&room_id);
     spawn_async_task(async move {
         let result = io::load(&client, &room_id).await;
         if current_user_id().as_ref() != Some(&owner) {
             return;
         }
         match result {
-            Ok(loaded) => store::lock().set_loaded(loaded),
+            Ok(loaded) => {
+                store::lock().set_loaded_at(ticket, loaded);
+            }
             Err(message) => {
                 store::lock().forget_requests(&room_id);
                 store::lock().set_error(&room_id, message);
@@ -76,35 +79,41 @@ pub fn submit(room_id: &RoomId, subject: &str, plan: Planner) {
             return;
         }
         match outcome {
-            Ok(reloaded) => finish(&room_id, &subject, reloaded),
+            Ok((ticket, reloaded)) => finish(&room_id, &subject, ticket, reloaded),
             Err(message) => fail(&room_id, Some(&subject), message),
         }
     });
 }
 
-fn finish(room_id: &OwnedRoomId, subject: &str, reloaded: Option<Loaded>) {
+fn finish(room_id: &OwnedRoomId, subject: &str, ticket: u64, reloaded: Option<Loaded>) {
     {
         let mut store = store::lock();
         store.set_progress(room_id, subject, None);
         match reloaded {
-            Some(loaded) => store.set_loaded(loaded),
-            None => store.set_error(room_id, crate::i18n::tr("Saved. The list updates when the room syncs.").to_owned()),
+            Some(loaded) => {
+                store.set_loaded_at(ticket, loaded);
+            }
+            // The write succeeded: this is a stale view, not a failed save.
+            None => store.set_stale(room_id, crate::i18n::tr("Saved. The list updates when the room syncs.").to_owned()),
         }
     }
     changed(room_id);
 }
 
-/// `None` means the write went through but the reload failed.
-async fn run(client: &matrix_sdk::Client, room_id: &RoomId, plan: Planner) -> Result<Option<Loaded>, String> {
+/// The reload ticket is taken after the send, so any refresh that started
+/// earlier is older than this result. `None` means the write went through but
+/// the reload failed.
+async fn run(client: &matrix_sdk::Client, room_id: &RoomId, plan: Planner) -> Result<(u64, Option<Loaded>), String> {
     let loaded = io::load(client, room_id).await?;
     let write = plan(&loaded).map_err(|error| crate::i18n::tr(error.message()).to_owned())?;
     io::send(client, room_id, loaded.storage, &write).await?;
-    Ok(io::load(client, room_id).await.ok())
+    let ticket = store::lock().begin_load(room_id);
+    Ok((ticket, io::load(client, room_id).await.ok()))
 }
 
 /// Hides a proposal card on this device.
 pub fn dismiss(room_id: &RoomId, proposal: &str) {
-    let saved = store::lock().dismiss(room_id, proposal);
+    let saved = store::lock().dismiss(room_id, store::me().as_deref(), proposal);
     if let Err(error) = saved {
         let message = crate::i18n::format("Could not remember the dismissal: {reason}", &[("reason", error.to_string())]);
         enqueue_popup_notification(message, PopupKind::Error, None);

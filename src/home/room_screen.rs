@@ -5565,7 +5565,10 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal shows as a card; its notice body gives way to one intro line.
-                        let memory_intro = super::room_memory::proposal_of(event_tl_item).map(|p| super::room_memory::proposal_intro(&p));
+                        let memory_intro = super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()).map(|_| {
+                            let sender = get_profile_display_name(event_tl_item).unwrap_or_else(|| event_tl_item.sender().localpart().to_owned());
+                            super::room_memory::proposal_intro(&sender)
+                        });
                         let (body, formatted) = match memory_intro.as_deref() {
                             Some(intro) => (Cow::Borrowed(intro), None),
                             None => (body, formatted),
@@ -6241,7 +6244,7 @@ fn populate_message_view(
         populate_agent_run_cards(cx, &item, event_tl_item, timeline_kind);
         // TODO(R4): this file is over budget; split message-card population into its own module.
         item.memory_proposal_card(cx, ids!(content.memory_proposal_card))
-            .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item));
+            .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()));
     }
 
     // If `used_cached_item` is false, we should always redraw the profile, even if profile_drawn is true.
