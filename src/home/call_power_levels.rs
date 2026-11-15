@@ -16,18 +16,20 @@ use serde_json::Value;
 /// MatrixRTC membership state event used by Element Call v0.16.
 pub const CALL_MEMBER_EVENT: &str = "org.matrix.msc3401.call.member";
 const MEMBER_LEVEL: i64 = 0;
+/// Bound on the follow-up so a stalled server cannot leave creation at "Creating…".
+const FOLLOW_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The power levels with call membership opened to PL 0, or `None` when they
 /// already allow it (nothing to send). Every other field is kept verbatim.
-pub fn open_call_membership(mut levels: Value) -> Option<Value> {
-    let object = levels.as_object_mut()?;
+pub fn open_call_membership(mut levels: Value) -> anyhow::Result<Option<Value>> {
+    let object = levels.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels are not an object"))?;
     let events = object.entry("events").or_insert_with(|| Value::Object(Default::default()));
-    let events = events.as_object_mut()?;
+    let events = events.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels events is not an object"))?;
     if events.get(CALL_MEMBER_EVENT).and_then(Value::as_i64) == Some(MEMBER_LEVEL) {
-        return None;
+        return Ok(None);
     }
     events.insert(CALL_MEMBER_EVENT.into(), MEMBER_LEVEL.into());
-    Some(levels)
+    Ok(Some(levels))
 }
 
 /// Apply [`open_call_membership`] to a room the user just created (as creator
@@ -39,7 +41,9 @@ pub async fn allow_call_membership(room: &Room) -> anyhow::Result<()> {
         String::new(),
     );
     let current: Value = serde_json::from_str(room.client().send(request).await?.event_or_content.get())?;
-    if let Some(updated) = open_call_membership(current) {
+    // The room was created a moment ago by this user with no other members, so no
+    // concurrent power-level change can be overwritten by this full-content PUT.
+    if let Some(updated) = open_call_membership(current)? {
         room.send_state_event_raw("m.room.power_levels", "", updated).await?;
     }
     Ok(())
@@ -50,9 +54,13 @@ pub async fn allow_call_membership(room: &Room) -> anyhow::Result<()> {
 /// would invite a duplicate; the room then behaves as before this fix (calls
 /// need a moderator) and the warning records why.
 pub async fn allow_call_membership_after_create(room: &Room) {
-    if let Err(error) = allow_call_membership(room).await {
-        makepad_widgets::warning!("room {} created but call access not opened: {error:#}", room.room_id());
-    }
+    let outcome = tokio::time::timeout(FOLLOW_UP_TIMEOUT, allow_call_membership(room)).await;
+    let error = match outcome {
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => format!("{error:#}"),
+        Err(_) => "timed out".to_owned(),
+    };
+    makepad_widgets::warning!("room {} created but call access not opened: {error}", room.room_id());
 }
 
 #[cfg(test)]
@@ -64,7 +72,7 @@ mod tests {
     fn opens_only_the_call_key_and_keeps_server_defaults() {
         let server = json!({"users":{"@me:x":100},"state_default":50,"invite":0,
             "events":{"m.room.tombstone":150,"m.room.power_levels":100,"custom.locked":75}});
-        let updated = open_call_membership(server.clone()).unwrap();
+        let updated = open_call_membership(server.clone()).unwrap().unwrap();
         let mut expected = server;
         expected["events"][CALL_MEMBER_EVENT] = json!(0);
         assert_eq!(updated, expected);
@@ -72,10 +80,38 @@ mod tests {
 
     #[test]
     fn adds_events_map_when_missing_and_skips_when_already_open() {
-        let updated = open_call_membership(json!({"users_default":0})).unwrap();
+        let updated = open_call_membership(json!({"users_default":0})).unwrap().unwrap();
         assert_eq!(updated["events"][CALL_MEMBER_EVENT], 0);
-        assert!(open_call_membership(updated).is_none());
-        assert!(open_call_membership(json!([])).is_none());
+        assert!(open_call_membership(updated).unwrap().is_none());
+        assert!(open_call_membership(json!([])).is_err());
+        assert!(open_call_membership(json!({"events":[]})).is_err(), "malformed is an error, not 'already open'");
+    }
+
+    async fn signed_in(server: &wiremock::MockServer) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder().homeserver_url(server.uri())
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_11]).build().await.unwrap();
+        client.matrix_auth().restore_session(matrix_sdk::authentication::matrix::MatrixSession {
+            meta: matrix_sdk::SessionMeta { user_id: matrix_sdk::ruma::owned_user_id!("@o:x"), device_id: "D".into() },
+            tokens: matrix_sdk::SessionTokens { access_token: "t".into(), refresh_token: None },
+        }, matrix_sdk::store::RoomLoadSettings::default()).await.unwrap();
+        client
+    }
+
+    /// A server refusing the follow-up must not fail or hang room creation.
+    #[tokio::test]
+    async fn follow_up_failure_is_bounded_and_never_a_creation_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/_matrix/client/v3/createRoom"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"room_id":"!r:x"})))
+            .mount(&server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(403)
+            .set_body_json(json!({"errcode":"M_FORBIDDEN","error":"no"}))).mount(&server).await;
+        let client = signed_in(&server).await;
+        let room = client.create_room(Default::default()).await.unwrap();
+        tokio::time::timeout(FOLLOW_UP_TIMEOUT * 2, allow_call_membership_after_create(&room)).await.unwrap();
+        assert!(allow_call_membership(&room).await.is_err());
+        assert!(server.received_requests().await.unwrap().iter().all(|r| r.method.as_str() != "PUT"));
     }
 
     /// User flow: create a private room, then the follow-up keeps the server's
@@ -95,12 +131,7 @@ mod tests {
         Mock::given(method("PUT")).and(path_regex(r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"event_id":"$pl"})))
             .mount(&server).await;
-        let client = matrix_sdk::Client::builder().homeserver_url(server.uri())
-            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_11]).build().await.unwrap();
-        client.matrix_auth().restore_session(matrix_sdk::authentication::matrix::MatrixSession {
-            meta: matrix_sdk::SessionMeta { user_id: matrix_sdk::ruma::owned_user_id!("@o:x"), device_id: "D".into() },
-            tokens: matrix_sdk::SessionTokens { access_token: "t".into(), refresh_token: None },
-        }, matrix_sdk::store::RoomLoadSettings::default()).await.unwrap();
+        let client = signed_in(&server).await;
         let config = crate::home::space_management::CreateRoomConfig { name: "Team".into(), ..Default::default() };
         let room = client.create_room(config.request().unwrap()).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), allow_call_membership(&room))
