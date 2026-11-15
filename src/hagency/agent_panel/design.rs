@@ -86,6 +86,9 @@ script_mod! {
                     rules := Select {labels: [#(crate::i18n::tr("No remembered approvals"))]}
                     revoke := Action {text: #(crate::i18n::tr("Revoke")) i18n_text: "Revoke"}
                 }
+                Text {text: #(crate::i18n::tr("Pull request merges")) i18n_text: "Pull request merges"}
+                auto_merge := Select {labels: [#(crate::i18n::tr("People merge")) #(crate::i18n::tr("Agents merge low-risk PRs"))]}
+                Hint {text: #(crate::i18n::tr(super::mapping::AUTO_MERGE_HINT))}
             }
             // The int build's own blocks: issue watching (incl. Trusted mode and
             // Room choice) and the per-Agent GitHub access token with Check.

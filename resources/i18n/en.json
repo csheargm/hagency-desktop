@@ -3445,5 +3445,9 @@
   "Approvals are kept on the device that runs this agent.": "Approvals are kept on the device that runs this agent.",
   "Every tool request asks you first.": "Every tool request asks you first.",
   "Ask, remember approvals reuses what you chose to always allow.": "Ask, remember approvals reuses what you chose to always allow.",
-  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask."
+  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.",
+  "Pull request merges": "Pull request merges",
+  "People merge": "People merge",
+  "Agents merge low-risk PRs": "Agents merge low-risk PRs",
+  "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you."
 }

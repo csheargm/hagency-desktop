@@ -137,6 +137,11 @@ pub(crate) fn approval_mode_index(mode: &str) -> usize {
 pub(crate) fn approval_mode_change(index: usize) -> Option<Value> {
     APPROVAL_MODES.get(index).map(|mode| json!({"mode": mode}))
 }
+/// "Pull request merges" choices in dropdown order: off (People merge), on.
+pub(crate) fn auto_merge_labels() -> [&'static str; 2] { ["People merge", "Agents merge low-risk PRs"] }
+pub(crate) const AUTO_MERGE_HINT: &str = "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.";
+/// The `{autoMerge}` change to save for a dropdown index.
+pub(crate) fn auto_merge_change(index: usize) -> Option<Value> { (index < 2).then(|| json!({"autoMerge": index == 1})) }
 /// The `{forget}` change that revokes one remembered rule: exactly its key.
 pub(crate) fn forget_change(rule: &Value) -> Value {
     json!({"forget": {"tool": rule["tool"], "directory": rule["directory"], "request": rule["request"]}})

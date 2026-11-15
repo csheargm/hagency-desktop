@@ -47,6 +47,11 @@ impl AgentPanel {
         self.view.drop_down(cx, ids!(rules)).set_selected_item(cx, selected);
         self.view.widget(cx, ids!(rules)).set_disabled(cx, rules.is_empty());
         self.view.button(cx, ids!(revoke)).set_enabled(cx, editable && !rules.is_empty());
+        let merge = mapping::auto_merge_labels().iter().map(|l| crate::i18n::tr(l).to_owned()).collect();
+        self.view.drop_down(cx, ids!(auto_merge)).set_labels(cx, merge);
+        let on = self.status["approvals"]["autoMerge"] == true;
+        self.view.drop_down(cx, ids!(auto_merge)).set_selected_item(cx, usize::from(on));
+        self.view.widget(cx, ids!(auto_merge)).set_disabled(cx, !editable || !loaded);
     }
     fn render_budget(&mut self, cx: &mut Cx, editable: bool) {
         let budget = &self.model["policy"]["policy"]["budget"];
@@ -83,6 +88,9 @@ impl AgentPanel {
 
     pub(super) fn handle_settings_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         if let Some(change) = self.view.drop_down(cx, ids!(approval_mode)).selected(actions).and_then(mapping::approval_mode_change) {
+            self.save_approvals(cx, change);
+        }
+        if let Some(change) = self.view.drop_down(cx, ids!(auto_merge)).selected(actions).and_then(mapping::auto_merge_change) {
             self.save_approvals(cx, change);
         }
         if self.view.button(cx, ids!(revoke)).clicked(actions)

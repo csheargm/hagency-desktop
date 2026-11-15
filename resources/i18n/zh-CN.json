@@ -3445,5 +3445,9 @@
   "Approvals are kept on the device that runs this agent.": "审批设置保存在运行此智能体的设备上。",
   "Every tool request asks you first.": "每个工具请求都会先征求你的同意。",
   "Ask, remember approvals reuses what you chose to always allow.": "“询问并记住”会沿用你选择始终允许的操作。",
-  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "“仅外部更改时询问”在工作区内读写无需询问；GitHub 写入、推送、网络工具和其他文件夹仍会询问。"
+  "Ask only for outside changes runs reads and edits inside the workspace without asking; GitHub writes, pushes, network tools and other folders still ask.": "“仅外部更改时询问”在工作区内读写无需询问；GitHub 写入、推送、网络工具和其他文件夹仍会询问。",
+  "Pull request merges": "PR 合并",
+  "People merge": "由人合并",
+  "Agents merge low-risk PRs": "Agent 合并低风险 PR",
+  "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.": "仅限符合仓库 .hagency/merge-policy.yml 且经另一个 Agent 批准的 PR，其余仍会询问你。"
 }

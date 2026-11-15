@@ -90,3 +90,18 @@ fn activity_tab_says_where_activity_lives_and_when_it_is_empty() {
     assert_eq!(panel.view.label(&mut cx, ids!(activity)).text(), "No requests yet.");
 }
 
+
+#[test]
+fn approvals_card_shows_and_saves_pull_request_merges() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = panel(&mut cx);
+    panel.status = json!({"here": true, "approvals": {"mode": "remember", "rules": [], "autoMerge": true}});
+    panel.render(&mut cx);
+    assert_eq!(panel.view.drop_down(&mut cx, ids!(auto_merge)).selected_item(), 1, "saved autoMerge shows Agents merge");
+    panel.status["approvals"]["autoMerge"] = json!(false);
+    panel.render(&mut cx);
+    assert_eq!(panel.view.drop_down(&mut cx, ids!(auto_merge)).selected_item(), 0, "off shows People merge");
+    assert_eq!(mapping::auto_merge_change(1), Some(json!({"autoMerge": true})), "choosing Agents merge posts autoMerge");
+    assert_eq!(mapping::auto_merge_change(0), Some(json!({"autoMerge": false})));
+    assert_eq!(mapping::auto_merge_change(2), None);
+}
