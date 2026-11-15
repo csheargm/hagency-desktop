@@ -8,14 +8,14 @@
 use std::path::{Path, PathBuf};
 
 /// The words of each segment, and the segment a quoted heredoc feeds.
-pub(super) struct Line {
+pub(crate) struct Line {
     pub segments: Vec<Vec<String>>,
     pub heredoc_at: Option<usize>,
 }
 
 /// Read `line`, or `None` when any part of it is outside what this reader knows.
 /// Lines after a heredoc's terminator are further commands, read the same way.
-pub(super) fn parse(line: &str) -> Option<Line> {
+pub(crate) fn parse(line: &str) -> Option<Line> {
     let Some((header, after)) = split_heredoc(line)? else {
         return Some(Line { segments: segments(line)?, heredoc_at: None });
     };
@@ -123,7 +123,7 @@ fn end_word(out: &mut [Vec<String>], word: &mut String, started: &mut bool, quot
 }
 
 /// Lexically join `path` onto `base` (a `cd` target); `..` pops.
-pub(super) fn lexical_join(base: &Path, path: &str) -> PathBuf {
+pub(crate) fn lexical_join(base: &Path, path: &str) -> PathBuf {
     let mut resolved = PathBuf::new();
     for part in base.join(path).components() {
         match part {

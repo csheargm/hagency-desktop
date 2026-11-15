@@ -8530,6 +8530,13 @@ A.local_approval_label=fn(choice){
     return A.t("Ask, remember approvals","询问并记住批准")
 }
 A.local_set_approval=fn(choice){A.local_act("hagency.personal_agents.service",{id:H.personal_id approvalMode:choice})}
+A.local_auto_merge=fn(){
+    let st=H.local_status
+    if st==nil || st.approvals==nil {return false}
+    return st.approvals.autoMerge==true
+}
+A.local_auto_merge_label=fn(on){if on {return A.t("Agents merge low-risk PRs","Agent 合并低风险 PR")} return A.t("People merge","由人合并")}
+A.local_set_auto_merge=fn(on){A.local_act("hagency.personal_agents.service",{id:H.personal_id autoMerge:on})}
 A.local_mode=fn(value){
     if value=="allow" {return A.t("Run directly","直接执行")}
     if value=="ask_owner" {return A.t("Ask me first","先问我")}
@@ -15501,6 +15508,9 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                                 View{width:Fill height:Fit flow:Down spacing:8 padding:Inset{left:14 right:14 top:11 bottom:12}
                                     mod.widgets.HagencyListTitle{text:A.t("Approvals","审批方式")}
                                     mod.widgets.HagencySegments{for choice in ["ask","remember","outside"] {if A.local_approval_choice() == choice {mod.widgets.HagencySegmentOn{text:A.local_approval_label(choice) on_click: || {}}} else {mod.widgets.HagencySegment{text:A.local_approval_label(choice) on_click: || {if A.personal_can_edit() && !alert && H.local_pending=="" {A.local_set_approval(choice)}}}}}}
+                                    mod.widgets.HagencyListTitle{text:A.t("Pull request merges","PR 合并")}
+                                    mod.widgets.HagencySegments{for on in [false,true] {if A.local_auto_merge() == on {mod.widgets.HagencySegmentOn{text:A.local_auto_merge_label(on) on_click: || {}}} else {mod.widgets.HagencySegment{text:A.local_auto_merge_label(on) on_click: || {if A.personal_can_edit() && !alert && H.local_pending=="" {A.local_set_auto_merge(on)}}}}}}
+                                    mod.widgets.HagencyHint{text:A.t("Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.","仅限符合仓库 .hagency/merge-policy.yml 且经另一个 Agent 批准的 PR，其余仍会询问你。")}
                                 }
                             }}
                             mod.widgets.HagencyListDivider{margin:Inset{left:14}}

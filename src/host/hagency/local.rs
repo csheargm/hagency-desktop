@@ -32,12 +32,15 @@ struct SetService {
     /// "ask", "remember" or "outside" (ask only for outside changes).
     #[serde(default)]
     approval_mode: Option<String>,
+    /// The opt-in agent auto-merge switch (off by default).
+    #[serde(default)]
+    auto_merge: Option<bool>,
 }
 // TODO(R4): local.rs is over budget; move service_state and the status reply into host/hagency/local/status.rs.
 pub(crate) enum Call {
     Status(String),
     Service(String, bool),
-    /// `{forget}` or `{mode}` for the Agent's approval settings.
+    /// `{forget}`, `{mode}` or `{autoMerge}` for the Agent's approval settings.
     Approvals(String, Value),
     ChatOpen(String),
     ChatEncrypt(String),
@@ -54,10 +57,11 @@ pub(super) fn parse_call(service: &str, args: Value) -> Result<Option<Call>, Str
         STATUS => Call::Status(parse::<Id>(args)?.id),
         SERVICE => {
             let input: SetService = parse(args)?;
-            match (input.running, input.forget, input.approval_mode) {
-                (Some(running), None, None) => Call::Service(input.id, running),
-                (None, Some(rule), None) if rule.is_object() => Call::Approvals(input.id, json!({"forget": rule})),
-                (None, None, Some(mode)) if ["ask", "remember", "outside"].contains(&mode.as_str()) => Call::Approvals(input.id, json!({"mode": mode})),
+            match (input.running, input.forget, input.approval_mode, input.auto_merge) {
+                (Some(running), None, None, None) => Call::Service(input.id, running),
+                (None, Some(rule), None, None) if rule.is_object() => Call::Approvals(input.id, json!({"forget": rule})),
+                (None, None, Some(mode), None) if ["ask", "remember", "outside"].contains(&mode.as_str()) => Call::Approvals(input.id, json!({"mode": mode})),
+                (None, None, None, Some(on)) => Call::Approvals(input.id, json!({"autoMerge": on})),
                 _ => return Err("invalid_management_arguments".into()),
             }
         }
@@ -351,6 +355,8 @@ mod tests {
         assert!(matches!(parse_call(SERVICE, json!({"id": "agt_1", "approvalMode": "remember"})), Ok(Some(Call::Approvals(..)))));
         assert!(matches!(parse_call(SERVICE, json!({"id": "agt_1", "forget": {"tool": "claude.Bash"}})), Ok(Some(Call::Approvals(..)))));
         assert!(parse_call(SERVICE, json!({"id": "agt_1", "approvalMode": "trusted"})).is_err());
+        assert!(matches!(parse_call(SERVICE, json!({"id": "agt_1", "autoMerge": true})), Ok(Some(Call::Approvals(_, v))) if v == json!({"autoMerge": true})));
+        assert!(parse_call(SERVICE, json!({"id": "agt_1", "autoMerge": true, "approvalMode": "ask"})).is_err());
         assert!(parse_call(SERVICE, json!({"id": "agt_1", "running": true, "approvalMode": "ask"})).is_err());
         assert!(parse_call(SERVICE, json!({"id": "agt_1"})).is_err());
         assert!(parse_call("hagency.personal_agents.list", json!({})).unwrap().is_none());

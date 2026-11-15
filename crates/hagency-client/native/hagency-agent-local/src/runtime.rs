@@ -1037,6 +1037,12 @@ async fn permission(
         policy_revision: versions.map(|v| v.revision),
         expires: now() + 280,
     };
+    // Opt-in agent auto-merge: a policy-qualified merge or an approving review
+    // is answered without a card; every other case asks exactly as before.
+    // TODO(R4): runtime.rs is over budget; split Claude permission handling into runtime/permission.rs.
+    if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, now(), &crate::merge_policy::gate::GhCli).await {
+        return ToolAnswer::allowed(allowed);
+    }
     match ledger.tool_disposition(&proposal, now()) {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
