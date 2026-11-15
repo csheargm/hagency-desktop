@@ -8415,8 +8415,8 @@ A.kill_run=fn(service){
     })
 }
 A.kill_text=fn(service,d){
-    if d.failed.len()>0 {return A.t("Some Agents didn’t respond. Try again.","部分 Agent 没有响应，请重试。")}
-    if service=="hagency.personal_agents.stop_all" {return A.t("All agents stopped. Current runs were stopped and waiting approvals were denied.","所有 Agent 已停止。正在进行的运行已停止，等待中的批准已拒绝。")}
+    if d.failed.len()>0 {return A.t("Some Agents or approvals didn’t confirm. Try again.","部分 Agent 或批准未能确认，请重试。")}
+    if service=="hagency.personal_agents.stop_all" {return A.t("All agents stopped. Stop was sent to "+d.runs+" active runs and "+d.denied+" waiting approvals were denied.","所有 Agent 已停止。已向 "+d.runs+" 个进行中的运行发送停止，已拒绝 "+d.denied+" 个等待中的批准。")}
     return A.t("All agents resumed.","所有 Agent 已恢复。")
 }
 A.load_local_list=fn(){
@@ -8463,6 +8463,7 @@ A.local_act=fn(service,args){
 A.local_pending_text=fn(state){return if A.local_running(state) {A.t("Stopping…","正在停止…")} else {A.t("Starting…","正在启动…")}}
 A.local_reason=fn(code){
     if code=="status_unavailable" {return A.t("Couldn’t read the service status.","暂时无法读取运行状态。")}
+    if code=="agents_paused_by_owner" {return A.t("You paused all agents. Use Resume all on My Agents first.","你已暂停所有 Agent。请先在“我的 Agent”中点“全部恢复”。")}
     if code=="personal_agent_not_on_this_device" {return A.t("This Agent runs on another device. Start or stop it there.","此 Agent 在其他设备上运行，请在那台设备上启动或停止。")}
     if code=="personal_agent_chat_unavailable" {return A.t("The private chat isn’t set up yet.","私聊尚未建立。")}
     if code=="local_no_response_stop" {return A.t("The device didn’t respond. The service may still be running.","没有收到设备响应，服务可能仍在运行。")}

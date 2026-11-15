@@ -23,6 +23,12 @@ pub const STATE_FILE: &str = "agents-paused-by-owner.json";
 const DENY: &str = "deny";
 /// Reported when the paused state could not be written.
 pub const PAUSE_UNSAVED: &str = "agents_pause_unsaved";
+/// Reported when a waiting approval could not be listed or denied.
+pub const APPROVALS_UNANSWERED: &str = "agents_approvals_unanswered";
+/// Returned while another Stop all or Resume all runs.
+pub const BUSY_CODE: &str = "agents_switch_busy";
+/// Returned when an Agent is started while the owner paused it.
+pub const PAUSED_CODE: &str = "agents_paused_by_owner";
 
 /// Which of the owner's Agents the switch stopped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +90,7 @@ pub fn is_paused(path: &Path, owner: &str, agent: &str) -> bool {
 /// Agent is touched. The owner's stop wins even when it cannot be saved: the
 /// Agents still stop, and the report names `PAUSE_UNSAVED`.
 pub async fn stop_all(agents: &impl Agents, path: &Path, owner: &str) -> Result<Report, String> {
+    let _busy = Busy::take()?;
     let ids = agents.local_agents().await?;
     let mut paused = load(path, owner).unwrap_or(Paused { owner: owner.into(), agents: Vec::new() });
     for id in &ids {
@@ -96,24 +103,50 @@ pub async fn stop_all(agents: &impl Agents, path: &Path, owner: &str) -> Result<
     if saved.is_err() {
         report.failed.push(PAUSE_UNSAVED.into());
     }
-    // A listing failure is not fatal: stopping the services below ends every
-    // waiting request anyway, and must not be held back by it.
-    for row in agents.pending_approvals().await.unwrap_or_default() {
-        if agents.deny(&row).await.is_ok() {
-            report.denied += 1;
-        }
-    }
+    deny_pending(agents, &mut report).await;
     for id in &ids {
         if agents.set_running(id, false).await.is_err() {
             report.failed.push(id.clone());
         }
     }
+    // A request that arrived while the services were stopping: answer it too.
+    deny_pending(agents, &mut report).await;
     Ok(report)
+}
+
+/// Deny every waiting approval; a failed listing or denial is reported.
+async fn deny_pending(agents: &impl Agents, report: &mut Report) {
+    match agents.pending_approvals().await {
+        Ok(rows) => for row in rows {
+            match agents.deny(&row).await {
+                Ok(()) => report.denied += 1,
+                Err(_) => report.failed.push(APPROVALS_UNANSWERED.into()),
+            }
+        },
+        Err(_) => report.failed.push(APPROVALS_UNANSWERED.into()),
+    }
+    report.failed.dedup();
+}
+
+/// One Stop all or Resume all at a time, whatever surface asked.
+struct Busy;
+static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+impl Busy {
+    fn take() -> Result<Self, String> {
+        use std::sync::atomic::Ordering;
+        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| Busy).map_err(|_| BUSY_CODE.into())
+    }
+}
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Start again the Agents the switch stopped. An Agent that fails to start
 /// stays recorded as paused, so Resume all can be tried again.
 pub async fn resume_all(agents: &impl Agents, path: &Path, owner: &str) -> Result<Report, String> {
+    let _busy = Busy::take()?;
     let Some(mut paused) = load(path, owner) else { return Ok(Report::default()) };
     let mut report = Report { agents: paused.agents.len(), ..Report::default() };
     for id in &paused.agents {

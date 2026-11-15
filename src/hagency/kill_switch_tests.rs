@@ -7,6 +7,7 @@ struct Recorder {
     agents: Vec<String>,
     approvals: Vec<Value>,
     fail_start: Vec<String>,
+    unreadable: bool,
     calls: Mutex<Vec<String>>,
 }
 impl Recorder {
@@ -22,7 +23,7 @@ impl Agents for Recorder {
         Ok(self.agents.clone())
     }
     async fn pending_approvals(&self) -> Result<Vec<Value>, String> {
-        Ok(self.approvals.clone())
+        if self.unreadable { Err("down".into()) } else { Ok(self.approvals.clone()) }
     }
     async fn deny(&self, row: &Value) -> Result<(), String> {
         self.log(format!("deny {}", row["id"].as_str().unwrap()));
@@ -37,6 +38,11 @@ impl Agents for Recorder {
         2
     }
 }
+/// The switch is process-wide: its tests run one at a time.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
 fn block<T>(f: impl Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
 }
@@ -50,13 +56,14 @@ fn recorder() -> Recorder {
 
 #[test]
 fn stop_all_stops_runs_denies_approvals_then_stops_every_agent_and_persists() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(STATE_FILE);
     let agents = recorder();
     let report = block(stop_all(&agents, &path, "@me:x")).unwrap();
-    assert_eq!(report, Report { agents: 2, runs: 2, denied: 1, failed: vec![] });
+    assert_eq!(report, Report { agents: 2, runs: 2, denied: 2, failed: vec![] });
     // Runs and approvals are answered while the runtimes still exist.
-    assert_eq!(agents.calls(), ["stop runs", "deny ap1", "stop codex", "stop claude"]);
+    assert_eq!(agents.calls(), ["stop runs", "deny ap1", "stop codex", "stop claude", "deny ap1"]);
     // A restart reads the same state: both stay paused, for this owner only.
     assert!(is_paused(&path, "@me:x", "codex") && is_paused(&path, "@me:x", "claude"));
     assert!(!is_paused(&path, "@other:x", "codex"));
@@ -64,6 +71,7 @@ fn stop_all_stops_runs_denies_approvals_then_stops_every_agent_and_persists() {
 
 #[test]
 fn resume_all_starts_only_the_agents_the_switch_stopped_and_clears_the_state() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(STATE_FILE);
     block(stop_all(&recorder(), &path, "@me:x")).unwrap();
@@ -78,6 +86,7 @@ fn resume_all_starts_only_the_agents_the_switch_stopped_and_clears_the_state() {
 
 #[test]
 fn an_agent_that_fails_to_start_stays_paused_for_a_retry() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(STATE_FILE);
     block(stop_all(&recorder(), &path, "@me:x")).unwrap();
@@ -89,12 +98,13 @@ fn an_agent_that_fails_to_start_stays_paused_for_a_retry() {
 
 #[test]
 fn the_owner_stop_wins_even_when_the_pause_cannot_be_saved() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("missing-folder").join(STATE_FILE);
     let agents = recorder();
     let report = block(stop_all(&agents, &path, "@me:x")).unwrap();
     assert_eq!(report.failed, [PAUSE_UNSAVED]);
-    assert_eq!(agents.calls(), ["stop runs", "deny ap1", "stop codex", "stop claude"]);
+    assert_eq!(&agents.calls()[..4], ["stop runs", "deny ap1", "stop codex", "stop claude"]);
 }
 
 #[test]
@@ -108,4 +118,26 @@ fn here_lists_only_active_agents_on_this_unrevoked_device() {
     assert_eq!(here(&agents, &devices), ["a"]);
     let revoked = json!({"currentDeviceId": "d1", "devices": [{"id": "d1", "revoked": true}]});
     assert!(here(&agents, &revoked).is_empty());
+}
+
+#[test]
+fn unreadable_approvals_are_reported_and_the_agents_still_stop() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STATE_FILE);
+    let agents = Recorder { unreadable: true, ..recorder() };
+    let report = block(stop_all(&agents, &path, "@me:x")).unwrap();
+    assert_eq!(report.failed, [APPROVALS_UNANSWERED]);
+    assert_eq!(agents.calls(), ["stop runs", "stop codex", "stop claude"]);
+}
+
+#[test]
+fn a_second_switch_while_one_runs_is_refused() {
+    let _serial = serial();
+    let held = Busy::take().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STATE_FILE);
+    assert_eq!(block(resume_all(&recorder(), &path, "@me:x")), Err(BUSY_CODE.to_owned()));
+    drop(held);
+    assert!(block(resume_all(&recorder(), &path, "@me:x")).is_ok());
 }

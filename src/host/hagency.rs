@@ -679,6 +679,9 @@ impl Host {
             return rinx_miniapp_core::bounded_reply(result?);
         }
         if let Some(call)=kill_switch::parse_call(service,args.clone())? {
+            // A device-wide stop or resume runs only for a current lease.
+            self.check(&lease)?;
+            lease.authorize(&account,service,None)?;
             let result=call.execute(&account).await;
             self.check(&lease)?;
             lease.authorize(&account,service,None)?;
