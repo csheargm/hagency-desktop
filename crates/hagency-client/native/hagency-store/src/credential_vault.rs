@@ -24,6 +24,8 @@ pub use native::NativeStore;
 const VERSION: u32 = 1;
 const MAX_NATIVE_BYTES: usize = 2048; // Below Windows' 2560-byte credential limit.
 const MAX_SECRET_BYTES: usize = 512;
+/// The id of `SecretRef::single`; readiness uses `...01`.
+const SINGLE_ID: &str = "00000000000000000000000000000002";
 
 /// Deliberately stable, secret-free errors. Native error descriptions can carry
 /// entry identifiers or platform diagnostics and never become UI/log text here.
@@ -73,6 +75,8 @@ pub enum Purpose {
     AgentDatabase,
     Revocations,
     Readiness,
+    /// One Agent's GitHub token, kept on this device only.
+    GithubToken,
 }
 impl Purpose {
     fn label(self) -> &'static str {
@@ -82,6 +86,7 @@ impl Purpose {
             Self::AgentDatabase => "agent_database",
             Self::Revocations => "revocations",
             Self::Readiness => "readiness",
+            Self::GithubToken => "github_token",
         }
     }
 }
@@ -126,6 +131,13 @@ pub struct SecretRef {
     id: String,
 }
 impl SecretRef {
+    /// The one reference of a scope that holds a single plain secret read and
+    /// written straight through a `SecretStore` (no vault document), such as
+    /// an Agent's GitHub token.
+    pub fn single(scope: Scope) -> Result<Self, Error> {
+        scope.validate()?;
+        Ok(Self { version: VERSION, scope, id: SINGLE_ID.into() })
+    }
     pub fn scope(&self) -> &Scope {
         &self.scope
     }

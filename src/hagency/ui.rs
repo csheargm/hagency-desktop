@@ -801,6 +801,8 @@ script_mod! {
                         Text {text: #(crate::i18n::tr("Restart the Agent service to apply saved model settings.")) i18n_text: "Restart the Agent service to apply saved model settings." draw_text.color: mod.widgets.RINX_MUTED}
                         Hr {width: Fill height: 1}
                         issue_watch := mod.widgets.IssueWatchSection {}
+                        Hr {width: Fill height: 1}
+                        github_access := mod.widgets.GithubAccessSection {}
                     }
                     runtime_section := View {visible: false width: Fill height: Fit flow: Down spacing: 12
                         Section {width: Fill height: Fit flow: Down spacing: 8
@@ -1365,14 +1367,16 @@ impl HagencyPanel {
     }
     // TODO(R4): ui.rs is far over its size budget; Agent settings blocks such
     // as issue watching should move into their own module when it is split.
-    /// Hands the selected Agent and its Rooms to the issue-watch block, which
-    /// keeps its own state (`crate::hagency::issue_watch::section`).
+    /// Hands the selected Agent and its Rooms to the issue-watch block, and the
+    /// Agent to the GitHub access block; each keeps its own state.
     fn sync_issue_watch(&self, cx: &mut Cx, assigned_here: bool) {
         let agent = self.agent(cx).unwrap_or_default();
         let bindings: Vec<Value> = self.bindings.iter().filter(|b| string(b, "agentId") == agent).cloned().collect();
         let rooms = super::issue_watch::choices::rooms(&bindings, |b| self.binding_label(cx, b));
         use super::issue_watch::section::IssueWatchSectionWidgetExt;
         self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, assigned_here, rooms);
+        use super::github_access::GithubAccessSectionWidgetExt;
+        self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }
     fn binding_label(&self, cx:&mut Cx, binding:&Value)->String {
         if string(binding,"scopeKind") == "owner_direct" {return crate::i18n::tr("Private chat with this Agent").into();}

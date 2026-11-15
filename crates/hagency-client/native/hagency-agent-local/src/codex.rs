@@ -155,6 +155,8 @@ pub struct Profile {
     pub effort: String,
     pub shared_auth: bool,
     pub web_search: bool,
+    /// This Agent's own extra variables (its GitHub token), never another's.
+    pub environment: crate::agent_env::AgentEnvironment,
 }
 impl Profile {
     pub fn validate(&self) -> Result<()> {
@@ -233,7 +235,7 @@ impl Profile {
                 "chatgpt_base_url=\"https://chatgpt.com/backend-api\"".into(),
             ]);
         }
-        for value in overrides {
+        for value in overrides.iter().cloned().chain(self.environment.codex_overrides()) {
             arguments.extend(["-c".into(), value.into()]);
         }
         let mut environment = BTreeMap::from([
@@ -247,6 +249,9 @@ impl Profile {
             if let Some(value) = std::env::var_os(name) {
                 environment.insert(name.into(), value);
             }
+        }
+        for (name, value) in self.environment.iter() {
+            environment.insert(name.into(), value.into());
         }
         Ok(hagency_platform::Launch {
             executable: self.executable.clone(),
@@ -397,6 +402,7 @@ pub async fn sealed_shared_overrides(
         effort: "medium".into(),
         shared_auth: true,
         web_search: false,
+        environment: Default::default(),
     };
     profile.validate()?;
     let mut probe = profile.spawn_inner(&[]).await?;
@@ -2193,6 +2199,7 @@ mod tests {
         let profile = Profile {
             executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(),
             home, codex_home, cwd, model: "gpt-6.1-sol".into(), effort: "low".into(), shared_auth: true, web_search: true,
+            environment: Default::default(),
         };
         let mut process = profile.spawn().await.unwrap();
         process.session.initialize().await.unwrap();
@@ -2233,6 +2240,7 @@ mod tests {
             effort: "medium".into(),
             shared_auth: true,
             web_search: true,
+            environment: Default::default(),
         };
         profile.validate().unwrap();
         let mut dedicated = profile.clone();
@@ -2360,7 +2368,7 @@ mod tests {
             serde_json::to_string(&argument).unwrap()
         );
         std::fs::write(codex_home.join("config.toml"), config).unwrap();
-        let profile = Profile { executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(), home:home.canonicalize().unwrap(), codex_home:codex_home.canonicalize().unwrap(), cwd:workspace.canonicalize().unwrap(),model:"probe".into(),effort:"medium".into(),shared_auth:true,web_search:true };
+        let profile = Profile { executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(), home:home.canonicalize().unwrap(), codex_home:codex_home.canonicalize().unwrap(), cwd:workspace.canonicalize().unwrap(),model:"probe".into(),effort:"medium".into(),shared_auth:true,web_search:true, environment: Default::default() };
         let mut process = profile.spawn().await.unwrap();
         process.session.initialize().await.unwrap();
         process.session.verify_host_environment().await.unwrap();
@@ -2415,6 +2423,7 @@ mod tests {
             effort: "low".into(),
             shared_auth: false,
             web_search: true,
+            environment: Default::default(),
         };
         (temp, ledger, profile)
     }

@@ -376,6 +376,9 @@ async fn spawn_inner(
             command.env(name, value);
         }
     }
+    for (name, value) in profile.environment.iter() {
+        command.env(name, value);
+    }
     match kind {
         Kind::Claude => {
             command
