@@ -11,7 +11,7 @@ let task_fixture_open=fn(){
 fn fixture(source: &str) -> (Cx, SplashRef) {
     fixture_with_open(source, OPEN)
 }
-fn fixture_with_open(source: &str, open: &str) -> (Cx, SplashRef) {
+pub(super) fn fixture_with_open(source: &str, open: &str) -> (Cx, SplashRef) {
     // Test workers are distinct threads; the framework's isolate registrations
     // are thread-local, unlike the app's process-wide startup Once.
     // JIT PORT: as the app does at startup (miniapps/mod.rs).
@@ -56,7 +56,7 @@ fn fixture_with_open(source: &str, open: &str) -> (Cx, SplashRef) {
     (cx, card)
 }
 
-fn count(widget: &WidgetRef, id: LiveId) -> usize {
+pub(super) fn count(widget: &WidgetRef, id: LiveId) -> usize {
     let mut found = 0;
     widget.children(&mut |child_id, child| {
         if child_id == id {

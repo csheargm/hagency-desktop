@@ -2,7 +2,7 @@ width: Fill height: Fill flow: Overlay
 show_bg: true draw_bg.color: mod.widgets.RINX_PAGE
 
 if !mod.rinx_theme.reloading() {
-    mod.hagency = {ready: false connect_tried: false busy: false page: "overview" notice: "" session: nil
+    mod.hagency = {ready: false connect_tried: false advanced: false busy: false page: "overview" notice: "" session: nil
         resources: [] connections: [] inbox: [] resource_after: nil connection_after: nil inbox_after: nil
         projects: [] catalog: [] project_after: nil catalog_after: nil project_selected: nil catalog_capability: "" connection_project: nil
         project_draft: {step: 0 resource: nil name: "" purpose: "" tokens: "100000"}
@@ -4133,13 +4133,24 @@ A.connect = fn(){
         if H.owner_review_pending!=nil {A.owner_review_open()}
         // In any workspace, and on the chooser: an account that decides admission sees what waits.
         if H.entry_role!="admin" {A.adm_pending_load()}
+        if A.simple() && H.page=="overview" {H.page="pool_agents"}
         if H.entry_role=="owner" && H.page=="overview" && H.command==nil{A.open_accounts(nil)}else{A.refresh()}
         if first_run {A.save() A.native_open("new_local_agent")}
     })
 }
+// Buzz-style default: an Agent manager lands straight on My Agents with no
+// organization tabs (Home / Pools / Work / workspace switch). "Advanced"
+// brings them back for this session; nothing is removed.
+A.simple=fn(){return H.entry_role=="manager" && !H.advanced}
+A.set_advanced=fn(on){
+    if H.busy {return}
+    H.advanced=on
+    A.navigate(if on {"overview"} else {"pool_agents"})
+}
 A.navigate = fn(page){
     if page=="projects" {page="pools"}
     if page=="agent_home" {page="pool_agents"}
+    if page=="overview" && A.simple() {page="pool_agents"}
     if H.busy {return}
     if A.local_leaving(page) {return}
     H.ux.origin="" H.ux.restore=false
@@ -9356,6 +9367,7 @@ A.render_page = fn(){
                 mod.widgets.HagencyActions{
                     manager_create := mod.widgets.RinxKeyPrimaryButton{enabled:!H.busy text:A.t("Create agent","创建 Agent") on_click:||A.native_open("new_local_agent")}
                     workspace_pools := mod.widgets.HagencyButton{text:A.t("Browse resource pools","浏览资源池") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.projects enabled:!H.busy on_click:||A.navigate("pools")}
+                    workspace_hosting := mod.widgets.HagencyButton{text:A.t("Hosting","资源托管") enabled:!H.busy on_click:||A.native_open("hosting")}
                     workspace_work := mod.widgets.HagencyButton{text:A.t("Tasks and activity","任务与活动") icon_walk:Walk{width:16 height:16} draw_icon.svg:mod.rinx_icons.tasks enabled:!H.busy on_click:||A.navigate("tools")}
                     pool_continue := mod.widgets.HagencyButton{visible:H.pool_draft!=nil text:A.t("Continue saved Agent request","继续已保存的 Agent 申请") enabled:!H.busy on_click:||A.navigate("pool_apply")}
                 }
@@ -9766,6 +9778,11 @@ A.render_page = fn(){
             }
             local_list_note := mod.widgets.HagencyListNote{text:if local_here {A.t("Run on your own device with your own model account.","在你自己的设备上运行，使用你自己的模型账号。")} else {A.local_need_text()}}
             }}
+            if A.simple() {View{width:Fill height:Fit flow:Down
+                my_agents_advanced := mod.widgets.HagencyButton{text:A.t("Advanced: pools, work and hosting","高级：资源池、工作与托管") enabled:!H.busy on_click:||A.set_advanced(true)}
+            }}
+            if !A.simple() {View{width:Fill height:Fit flow:Down spacing:6
+            my_agents_simple := mod.widgets.HagencyButton{text:A.t("Back to simple view","返回简洁视图") enabled:!H.busy on_click:||A.set_advanced(false)}
             mod.widgets.HagencyListLabel{text:A.t("PROJECT AGENTS","项目 Agent · 组织资源池")}
             mod.widgets.HagencyList{
                 if A.pool_agent_rows().len()==0 {mod.widgets.HagencyListRow{mod.widgets.HagencyListBody{mod.widgets.HagencyListValue{text:if H.busy{A.t("Loading…","正在读取…")}else if !H.ux.inboxReady{A.t("Couldn’t load project Agents","项目 Agent 暂时无法加载")}else{A.t("No project Agents yet","还没有项目 Agent")}}}}}
@@ -9800,6 +9817,7 @@ A.render_page = fn(){
                 }}
             }
             mod.widgets.HagencyListNote{text:A.t("Capacity comes from an organization pool, approved by its owner.","额度来自组织资源池，由资源所有者审批。")}
+            }}
         }}
         else {View{width:Fill height:Fit flow:Down spacing:16
             if H.entry_role=="owner" && H.owner.poolId!=""{mod.widgets.HagencyStatus{flow:Down
@@ -17408,7 +17426,7 @@ shell := View{width:Fill height:Fill flow:Down spacing:6
         }}
     }}
     navigation := View{width:Fill height:Fit flow:Right spacing:4 on_render:||{
-        if H.ready && H.entry_role!="" && !H.entry_choosing && !A.page_bar_visible() {
+        if H.ready && H.entry_role!="" && !H.entry_choosing && !A.page_bar_visible() && !A.simple() {
             let parent=A.entry_parent()
             nav_overview := View{visible:H.entry_role!="owner" width:Fill height:Fit
                 let active=parent=="overview"

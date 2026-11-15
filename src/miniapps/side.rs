@@ -149,6 +149,10 @@ fn reopened_apps(before: &[(LiveId, SurfaceKey)], now: &[(LiveId, SurfaceKey)]) 
 }
 
 /// Actions the app shell handles for the region.
+/// Asks the front Hagency panel to show its Hosting dashboard (from the bundle's Advanced Home).
+#[derive(Clone, Debug)]
+pub struct OpenHostingAction;
+
 #[derive(Clone, Debug)]
 pub enum MiniAppsSideAction {
     /// Move the entire workspace into its own window.
@@ -503,6 +507,11 @@ impl Widget for MiniAppsSideRegion {
         }
 
         if let Event::Actions(actions) = event {
+            // TODO(R4): side.rs is over budget; split header actions out of it.
+            if actions.iter().any(|a| a.downcast_ref::<OpenHostingAction>().is_some()) {
+                if let Some(id) = self.selected { self.surface(cx, id).set_hosting(cx, true); }
+                self.view.redraw(cx);
+            }
             if self.view.navigation_bar_button(cx, ids!(frame.header.hosting)).clicked(actions) {
                 if let Some(id) = self.selected { self.surface(cx, id).toggle_hosting(cx); }
                 self.view.redraw(cx);
@@ -539,7 +548,8 @@ impl Widget for MiniAppsSideRegion {
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         // Titles follow what each tab shows (a catalog tab becomes its app).
         let hosting = self.selected.and_then(|id| self.surface(cx, id).hosting_state(cx));
-        self.view.widget(cx, ids!(frame.header.hosting)).set_visible(cx, hosting.is_some());
+        // Only "Manage" (the way back) shows; Hosting itself opens from Advanced Home.
+        self.view.widget(cx, ids!(frame.header.hosting)).set_visible(cx, hosting == Some(true));
         self.view.label(cx, ids!(frame.header.hosting.label)).set_text(cx, crate::i18n::tr(if hosting == Some(true) {"Manage"} else {"Hosting"}));
         self.drawn_titles = self.titles(cx);
         let items: Vec<(LiveId, String, bool)> = self

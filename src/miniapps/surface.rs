@@ -342,6 +342,9 @@ impl MiniAppsSurfaceRef {
         let inner = self.borrow()?;
         (inner.is_agent(cx) && inner.management_page.is_none() && inner.native.is_none()).then_some(inner.owner_page)
     }
+    pub fn set_hosting(&self, cx: &mut Cx, on: bool) {
+        if self.hosting_state(cx) == Some(!on) { self.toggle_hosting(cx); }
+    }
     pub fn toggle_hosting(&self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() {
             if inner.is_agent(cx) && inner.management_page.is_none() && inner.native.is_none() {

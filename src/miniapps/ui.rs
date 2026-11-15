@@ -60,6 +60,9 @@ mod agent_capabilities_tests;
 #[cfg(test)]
 #[path = "operator_tasks_tests.rs"]
 mod operator_tasks_tests;
+#[cfg(test)]
+#[path = "simple_agents_tests.rs"]
+mod simple_agents_tests;
 
 // Mirror the server's existing-room eligibility for useful choices; Palpo
 // re-fetches the authoritative state under the caller's identity on submission.
@@ -1630,6 +1633,12 @@ impl MiniAppsPanel {
             // the native Create agent dialog.
             (Some("new_local_agent"), 1) => {
                 cx.action(crate::hagency::create_agent::CreateAgentAction::Open);
+                return Ok(());
+            }
+            // Advanced Home's "Hosting" button: the side panel's header no longer
+            // offers it on the default (simple) path.
+            (Some("hosting"), 1) => {
+                cx.action(super::side::OpenHostingAction);
                 return Ok(());
             }
             // Navigation only: the panel opens the Agent only if this owner has it.
