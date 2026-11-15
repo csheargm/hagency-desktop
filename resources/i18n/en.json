@@ -3273,5 +3273,6 @@
   "Stopped": "Stopped",
   "Failed": "Failed",
   "The run went offline; check its result.": "The run went offline; check its result.",
-  "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run"
+  "Working… you can add instructions or stop this run": "Working… you can add instructions or stop this run",
+  "Room memory is unavailable right now: {reason}": "Room memory is unavailable right now: {reason}"
 }

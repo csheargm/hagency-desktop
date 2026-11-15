@@ -3273,5 +3273,6 @@
   "Stopped": "已停止",
   "Failed": "执行失败",
   "The run went offline; check its result.": "运行已离线，结果需要核对。",
-  "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。"
+  "Working… you can add instructions or stop this run": "Agent 正在处理，可追加指令或停止本次任务。",
+  "Room memory is unavailable right now: {reason}": "房间记忆暂时不可用：{reason}"
 }

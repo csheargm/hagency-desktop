@@ -5510,6 +5510,11 @@ fn populate_message_view(
                             body,
                             formatted.as_ref(),
                         );
+                        // A memory proposal sent as text gives way to its intro too (the card shows it).
+                        let (body, formatted) = match super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id()) {
+                            Some(intro) => (Cow::Owned(intro), None),
+                            None => (body, formatted),
+                        };
                         new_drawn_status.content_drawn = populate_text_message_content(
                             cx,
                             &html_or_plaintext_ref,
@@ -5568,10 +5573,7 @@ fn populate_message_view(
                             formatted.as_ref(),
                         );
                         // A memory proposal shows as a card; its notice body gives way to one intro line.
-                        let memory_intro = super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()).map(|_| {
-                            let sender = get_profile_display_name(event_tl_item).unwrap_or_else(|| event_tl_item.sender().localpart().to_owned());
-                            super::room_memory::proposal_intro(&sender)
-                        });
+                        let memory_intro = super::room_memory::proposal_intro_of(event_tl_item, timeline_kind.room_id());
                         let (body, formatted) = match memory_intro.as_deref() {
                             Some(intro) => (Cow::Borrowed(intro), None),
                             None => (body, formatted),
