@@ -23,6 +23,7 @@ script_mod! {
             i18n_text: "Hagency runs coding Agents on your computer and lets you talk to them from chat. Open Agent to connect Codex and create your first Agent, then invite it to a room. You can also start a chat with a person or explore rooms on your server."
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (14.0 * mod.widgets.RINX_TEXT_SCALE)}}
         }
+        create_agent := mod.widgets.CreateAgentCta {}
         View {width: Fill height: Fit flow: Right spacing: 12
             open_agent := Button {text: #(crate::i18n::tr("Open Agent")) i18n_text: "Open Agent"}
             new_chat := Button {text: #(crate::i18n::tr("New chat")) i18n_text: "New chat"}
