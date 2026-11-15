@@ -12,8 +12,12 @@ use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::OnceLock, time::Du
 /// The local Ollama API. Cloud models are served through it as well, so no
 /// Hagency credential or other host is ever involved.
 pub const OLLAMA_ORIGIN: &str = "http://127.0.0.1:11434";
-/// Stored value prefix: `ollama:<model>`.
+/// Stored value prefix: `ollama:<model>|<place>`.
 pub const OLLAMA_PREFIX: &str = "ollama:";
+/// Separates the model from where Ollama said it runs; never in a model name.
+const PLACE_SEPARATOR: char = '|';
+const PLACE_LOCAL: &str = "local";
+const PLACE_CLOUD: &str = "cloud";
 const STORE_FILE: &str = "backup-models.json";
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
 const LIST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -64,9 +68,21 @@ pub struct OllamaModel {
     pub cloud: bool,
 }
 impl OllamaModel {
+    /// `ollama:<name>|local` or `ollama:<name>|cloud`: the place Ollama
+    /// reported is saved with the choice, never guessed from the name later.
     pub fn stored(&self) -> String {
-        format!("{OLLAMA_PREFIX}{}", self.name)
+        let place = if self.cloud { PLACE_CLOUD } else { PLACE_LOCAL };
+        format!("{OLLAMA_PREFIX}{}{PLACE_SEPARATOR}{place}", self.name)
     }
+}
+/// The model name of a stored value (`ollama:` and the place removed).
+pub fn model_name(stored: &str) -> &str {
+    let name = stored.strip_prefix(OLLAMA_PREFIX).unwrap_or(stored);
+    name.split_once(PLACE_SEPARATOR).map_or(name, |(name, _)| name)
+}
+/// Whether two stored values name the same model, whatever place they record.
+pub fn same_model(a: &str, b: &str) -> bool {
+    model_name(a) == model_name(b)
 }
 /// Text models in an `/api/tags` reply, cloud ones first.
 pub fn parse_tags(tags: &Value) -> Vec<OllamaModel> {
@@ -90,11 +106,22 @@ pub async fn ollama_models() -> Vec<OllamaModel> {
         Err(_) => Vec::new(),
     }
 }
-/// "Ollama: gpt-oss:120b-cloud (cloud)" for a stored value.
+/// "Ollama: gpt-oss:120b-cloud (cloud)" for a stored value; one saved without
+/// a known place reads "(cloud or remote)".
 pub fn label(stored: &str) -> String {
-    let name = stored.strip_prefix(OLLAMA_PREFIX).unwrap_or(stored);
-    let place = if name.ends_with("-cloud") { "cloud" } else { "local" };
-    format!("Ollama: {name} ({place})")
+    let recorded = stored.strip_prefix(OLLAMA_PREFIX).and_then(|v| v.split_once(PLACE_SEPARATOR)).map(|(_, place)| place);
+    let place = match recorded {
+        Some(PLACE_LOCAL) => PLACE_LOCAL,
+        Some(PLACE_CLOUD) => PLACE_CLOUD,
+        _ => "cloud or remote",
+    };
+    format!("Ollama: {} ({place})", model_name(stored))
+}
+/// The stored value with the place Ollama reports now, when it still lists
+/// the model; otherwise unchanged (an unknown place stays treated as cloud).
+pub fn refreshed(stored: String, listed: &[OllamaModel]) -> String {
+    let name = model_name(&stored);
+    listed.iter().find(|m| m.name == name).map_or(stored, OllamaModel::stored)
 }
 /// The line that opens a reply the backup gave.
 pub fn switched_notice(reason: &str, stored: &str) -> String {
@@ -103,7 +130,10 @@ pub fn switched_notice(reason: &str, stored: &str) -> String {
 /// One text-only answer from the stored Ollama backup. Nothing but the
 /// request text is sent, and only to the local Ollama API.
 pub async fn answer(stored: &str, input: &str) -> Result<String, &'static str> {
-    let model = stored.strip_prefix(OLLAMA_PREFIX).ok_or("unsupported backup")?;
+    if !stored.starts_with(OLLAMA_PREFIX) {
+        return Err("unsupported backup");
+    }
+    let model = model_name(stored);
     let body = json!({"model": model, "stream": false, "messages": [{"role": "user", "content": input}]});
     let reply = reqwest::Client::new().post(format!("{OLLAMA_ORIGIN}/api/chat"))
         .timeout(ANSWER_TIMEOUT).json(&body).send().await.map_err(|_| "backup unreachable")?;
@@ -132,7 +162,13 @@ type TurnResult = hagency_agent_local::codex::Result<hagency_agent_local::codex:
 /// The main provider's turn result, or — once, and only for an
 /// availability failure before any tool ran — the Agent's backup answer.
 pub(crate) async fn after_main(agent_id: &str, input: &str, main: TurnResult) -> TurnResult {
-    retry_once(load(agent_id), main, |stored| async move { answer(&stored, input).await }).await
+    // Ask Ollama where the model runs now, so the notice never says "local"
+    // for a model it serves remotely. Only after a failure: no cost otherwise.
+    let stored = match (&main, load(agent_id)) {
+        (Err(hagency_agent_local::codex::Error::Unavailable(_)), Some(stored)) => Some(refreshed(stored, &ollama_models().await)),
+        (_, stored) => stored,
+    };
+    retry_once(stored, main, |stored| async move { answer(&stored, input).await }).await
 }
 async fn retry_once<F, Fut>(stored: Option<String>, main: TurnResult, backup: F) -> TurnResult
 where

@@ -44,10 +44,12 @@ async fn backup_choices(agent: &str) -> Value {
 /// "None" then each model; a saved backup Ollama no longer lists stays shown.
 pub(super) fn backup_labels(models: &[String], saved: Option<&str>) -> (Vec<String>, usize) {
     let mut values: Vec<String> = models.to_vec();
-    if let Some(saved) = saved && !values.iter().any(|m| m == saved) {
+    // Match by model name: a value saved before the place was recorded is
+    // the same choice, and its label then shows the place Ollama reports.
+    if let Some(saved) = saved && !values.iter().any(|m| backup_model::same_model(m, saved)) {
         values.push(saved.to_owned());
     }
-    let index = saved.and_then(|s| values.iter().position(|m| m == s)).map_or(0, |i| i + 1);
+    let index = saved.and_then(|s| values.iter().position(|m| backup_model::same_model(m, s))).map_or(0, |i| i + 1);
     let mut labels = vec![crate::i18n::tr("None").to_owned()];
     labels.extend(values.iter().map(|m| backup_model::label(m)));
     (labels, index)
@@ -58,12 +60,14 @@ mod tests {
     use super::backup_labels;
     #[test]
     fn labels_list_none_then_models_and_keep_the_saved_one() {
-        let models = vec!["ollama:gpt-oss:120b-cloud".to_owned(), "ollama:qwen3:8b".to_owned()];
+        let models = vec!["ollama:gpt-oss:120b-cloud|cloud".to_owned(), "ollama:qwen3:8b|local".to_owned()];
         let (labels, index) = backup_labels(&models, None);
         assert_eq!(labels[1..], ["Ollama: gpt-oss:120b-cloud (cloud)".to_owned(), "Ollama: qwen3:8b (local)".to_owned()]);
         assert_eq!(index, 0, "off unless chosen");
-        assert_eq!(backup_labels(&models, Some("ollama:qwen3:8b")).1, 2);
+        assert_eq!(backup_labels(&models, Some("ollama:qwen3:8b|local")).1, 2);
+        assert_eq!(backup_labels(&models, Some("ollama:qwen3:8b")), (backup_labels(&models, None).0, 2), "a value saved without its place is the same choice");
         let (labels, index) = backup_labels(&[], Some("ollama:gone:1b"));
         assert_eq!((labels.len(), index), (2, 1));
+        assert_eq!(labels[1], "Ollama: gone:1b (cloud or remote)");
     }
 }
