@@ -140,35 +140,6 @@ impl Service {
         if let Err(error)=self.check(){access.retire();return Err(error)}
         Ok(OwnerGrantAccess::local(access))
     }
-    #[cfg(test)]
-    pub(crate) async fn current_grant_access(
-        &self,
-        mut package: ManagementPackage,
-    ) -> Result<OwnerGrantAccess, String> {
-        self.verify_matrix(false).await?;
-        package.account_epoch = self
-            .0
-            .epoch
-            .checked_add(1)
-            .ok_or("matrix_account_changed")?;
-        if let Some(remote) = self.remote_client().await? {
-            return OwnerGrantAccess::remote(remote, package).await.map_err(|e| e.code);
-        }
-        let owner = self.native_owner().await?;
-        let selected = self
-            .load_current_initialization()
-            .await?
-            .ok_or("current_profile_required")?;
-        let access = selected
-            .grant_access(&owner, package)
-            .await
-            .map_err(|e| e.code)?;
-        if let Err(error) = self.check() {
-            access.retire();
-            return Err(error);
-        }
-        Ok(OwnerGrantAccess::local(access))
-    }
 }
 
 #[derive(Default)]
@@ -179,25 +150,6 @@ pub(super) enum ActivationTask {
     Complete(Result<CurrentProfileSelection, String>),
 }
 impl Service {
-    #[cfg(test)]
-    pub(crate) async fn activation_context(
-        &self,
-        package: ManagementPackage,
-        until: std::time::Instant,
-    ) -> Result<::hagency::native_owner::DeviceSetupContext, String> {
-        self.verify_matrix(false).await?;
-        if let Some(remote) = self.remote_client().await? {
-            return remote.device_setup_context(package, until).await.map_err(|e| e.code);
-        }
-        let owner = self.native_owner().await?;
-        let selected = self.load_current_initialization().await?;
-        let value = owner
-            .device_setup_context(package, selected.as_ref())
-            .await
-            .map_err(|e| e.code)?;
-        self.check()?;
-        Ok(value)
-    }
     pub(crate) async fn activation_review(
         &self,
         package: ManagementPackage,
