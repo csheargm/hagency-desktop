@@ -9,7 +9,8 @@
 //! deliberately small: Codex's own commands and file changes (its sandbox
 //! keeps them in the Room folder), Claude's reads and file edits whose path
 //! stays in the working directory, and a short list of plain read-only shell
-//! commands. Everything else, including git pushes and `gh` writes, asks.
+//! commands (and `gh` issue/PR reads). Everything else, including git pushes
+//! and `gh` writes, asks.
 use crate::ToolProposal;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
@@ -26,6 +27,9 @@ pub(crate) fn ensure_schema(db: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
 const READ_ONLY_GIT: [&str; 5] = ["status", "log", "diff", "show", "branch"];
+/// `gh` reads of issues and pull requests: `(area, verb)`. They change nothing
+/// on GitHub or on disk; `--web`/`-w` (opens a browser) still asks.
+const READ_ONLY_GH: [(&str, &str); 4] = [("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list")];
 const SHELL_CONTROL: [char; 12] = [';', '&', '|', '`', '$', '>', '<', '\n', '\r', '(', ')', '\\'];
 
 /// True when `proposal` can only touch the Agent's own workspace.
@@ -85,6 +89,8 @@ fn read_only_shell(line: &str, cwd: &Path) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
     let allowed = match words.first() {
         Some(&"git") => words.get(1).is_some_and(|sub| READ_ONLY_GIT.contains(sub)) && !words.iter().any(|w| w.starts_with("--output") || *w == "-c"),
+        Some(&"gh") => matches!((words.get(1), words.get(2)), (Some(area), Some(verb)) if READ_ONLY_GH.contains(&(*area, *verb)))
+            && !words.iter().any(|w| *w == "--web" || *w == "-w"),
         Some(program) => READ_ONLY_PROGRAMS.contains(program),
         None => false,
     };

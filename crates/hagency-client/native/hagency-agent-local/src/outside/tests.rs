@@ -48,10 +48,10 @@ fn a_symlink_cannot_lead_out_of_the_directory() {
 #[test]
 fn only_plain_read_only_shell_commands_are_allowed() {
     let dir = tempfile::tempdir().unwrap();
-    for line in ["ls -la", "git status", "git log --oneline", "rg todo src", "cat README.md"] {
+    for line in ["ls -la", "git status", "git log --oneline", "rg todo src", "cat README.md", "gh issue view 4 --repo csheargm/hagency-demo-sandbox", "gh issue list", "gh pr view 7 --comments"] {
         assert!(allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
-    for line in ["gh issue create", "git push origin main", "curl https://x", "ls; rm -rf .", "cat /etc/passwd", "cat ../x", "echo hi > out", "ls $(id)", "git -c core.pager=x log", "rm -rf ."] {
+    for line in ["gh issue create", "gh issue view 4 --web", "gh issue close 4", "gh pr merge 7", "gh api repos/x/y", "git push origin main", "curl https://x", "ls; rm -rf .", "cat /etc/passwd", "cat ../x", "echo hi > out", "ls $(id)", "git -c core.pager=x log", "rm -rf ."] {
         assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
 }
