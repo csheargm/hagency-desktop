@@ -45,7 +45,7 @@ impl Dismissed {
 }
 
 /// Creates the file readable by its owner only: the JSON names rooms.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(super) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -87,8 +87,12 @@ pub fn lock() -> MutexGuard<'static, Store> {
 }
 /// One file per account, so switching accounts never inherits dismissals.
 pub(super) fn dismissed_path(me: &str) -> std::path::PathBuf {
+    account_file("room-memory-dismissed", me)
+}
+/// `<prefix>-<hex of the account id>.json` in the app's data folder.
+pub(super) fn account_file(prefix: &str, me: &str) -> std::path::PathBuf {
     let account: String = me.bytes().map(|b| format!("{b:02x}")).collect();
-    crate::app_data_dir().join(format!("room-memory-dismissed-{account}.json"))
+    crate::app_data_dir().join(format!("{prefix}-{account}.json"))
 }
 
 impl Store {

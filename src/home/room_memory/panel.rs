@@ -28,6 +28,11 @@ script_mod! {
             i18n_text: "Facts and decisions your Agents remember for this room. Agents can suggest entries; you approve them."
         }
         memory_notice := MemoryText {visible: false margin: Inset{left: 16 right: 16 bottom: 8}}
+        memory_auto_toggle := ToggleFlat {
+            visible: false margin: Inset{left: 16 right: 16 bottom: 8} padding: Inset{left: 15}
+            active: false draw_bg +: {size: 18}
+            text: #(crate::i18n::tr("Accept my Agents' memory automatically")) i18n_text: "Accept my Agents' memory automatically"
+        }
         memory_list := PortalList {
             width: Fill height: Fill flow: Down
             Entry := View {
@@ -188,6 +193,16 @@ impl RoomMemoryPanel {
         add.set_enabled(cx, can_write && !busy);
         self.view.button(cx, ids!(memory_cancel)).set_visible(cx, editing);
         self.view.text_input(cx, ids!(memory_input)).set_is_read_only(cx, !can_write);
+        self.view.check_box(cx, ids!(memory_auto_toggle)).set_visible(cx, can_write);
+    }
+    fn toggle_auto(&mut self, on: bool) {
+        let Some(room) = self.room.clone() else { return };
+        if let Err(error) = super::auto::set(&room, store::me().as_deref(), on) {
+            let message = crate::i18n::format("Could not save the automatic memory setting: {reason}", &[("reason", error.to_string())]);
+            crate::shared::popup_list::enqueue_popup_notification(message, crate::shared::popup_list::PopupKind::Error, None);
+        }
+        // Pending cards of my own Agents in this room are accepted on their next sync.
+        Cx::post_action(store::MemoryChanged { room_id: room });
     }
 }
 
@@ -206,6 +221,8 @@ impl Widget for RoomMemoryPanel {
             self.submit_box(cx);
         } else if self.view.button(cx, ids!(memory_cancel)).clicked(actions) {
             self.stop_editing(cx);
+        } else if let Some(on) = self.view.check_box(cx, ids!(memory_auto_toggle)).changed(actions) {
+            self.toggle_auto(on);
         } else {
             self.handle_row_clicks(cx, actions);
         }
@@ -253,6 +270,9 @@ impl RoomMemoryPanelRef {
             panel.awaiting = false;
             panel.view.text_input(cx, ids!(memory_input)).set_text(cx, "");
         }
+        // Every open: the signed-in account may have changed for the same room.
+        let on = super::auto::is_on(room, store::me().as_deref());
+        panel.view.check_box(cx, ids!(memory_auto_toggle)).set_active(cx, on, Animate::No);
         ops::refresh(room);
         panel.view.redraw(cx);
     }
