@@ -32,7 +32,7 @@ impl Notice {
     /// instruction; people see the localized `view` instead.
     pub fn body(&self) -> String {
         let title = if self.title.is_empty() { String::new() } else { format!(": {}", self.title) };
-        format!("🔔 New GitHub issue #{} in {}{title} — @{} please fix it: {}", self.number, self.repo, self.agent, self.url)
+        format!("🔔 New GitHub issue #{} in {}{title} — @{} please fix it on a branch and open a draft pull request: {}", self.number, self.repo, self.agent, self.url)
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent
@@ -41,7 +41,7 @@ impl Notice {
         let esc = |s: &str| htmlize::escape_text(s).into_owned();
         let title = if self.title.is_empty() { String::new() } else { format!(": {}", esc(&self.title)) };
         let html = format!(
-            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo}{title} — <a href=\"{pill}\">@{agent}</a> please fix it",
+            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo}{title} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request",
             url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
         );
         RoomMessageEventContent::text_html(self.body(), html).add_mentions(Mentions::with_user_ids([puppet.to_owned()]))
