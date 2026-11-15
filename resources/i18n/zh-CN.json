@@ -2615,7 +2615,6 @@
   "Space types could not be checked. Refresh before creating a room.": "暂时无法确认空间类型。请刷新后再创建聊天室。",
   "Choose a space to continue.": "请选择聊天室所属空间。",
   "You cannot add rooms to this space. Choose a space you can manage.": "你没有在此空间添加聊天室的权限，请选择你可以管理的空间。",
-  "To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it.": "与 Agent 聊天需要使用 Agent 空间。点击 + → 创建空间或聊天室，选择 Agent 空间，再在其中创建聊天室。",
   "Organize rooms for people. No Agent setup.": "组织普通聊天室，供成员交流，无需设置 Agent。",
   "People and Agents work together. Project setup is automatic.": "人与 Agent 协作，自动完成项目关联。",
   "Create a conversation in a space you choose.": "选择所属空间，创建独立的聊天会话。",
