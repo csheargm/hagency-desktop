@@ -123,15 +123,16 @@ fn github_pr_json_becomes_facts_and_checks() {
 pub(super) struct Fake {
     files: Vec<ChangedFile>,
     pub(super) head: std::cell::RefCell<String>,
+    pub(super) checks: Vec<Check>,
 }
 impl Fake {
     pub(super) fn new(files: Vec<ChangedFile>) -> Self {
-        Self { files, head: std::cell::RefCell::new(HEAD.into()) }
+        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed] }
     }
 }
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
-        let facts = facts(self.files.clone(), vec![Check::Passed]);
+        let facts = facts(self.files.clone(), self.checks.clone());
         Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), facts })
     }
     async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {

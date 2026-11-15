@@ -227,7 +227,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
 
 /// Whether `command` may skip the card. Every kind needs the pull request at
 /// its current head to be a low-risk change under the policy at its base
-/// commit; a merge also needs the head it names and the policy's approvals
+/// commit; a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
 /// (and takes the one automatic merge). `None` when facts cannot be read.
 async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, agent: &str, source: &impl PrSource) -> Option<bool> {
     let repo = super::github::repo_of_url(&view.url, command.number)?;
@@ -238,8 +238,12 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
     if super::file_reason(&policy, &view.facts).is_some() {
         return Some(false);
     }
-    if command.kind != Kind::Merge {
-        return Some(true);
+    // An approval is public and counts toward a merge, so CI must pass for
+    // it as for a merge; readying a draft (CI may not have run yet) need not.
+    match command.kind {
+        Kind::Ready => return Some(true),
+        Kind::Review => return Some(super::ci_reason(&policy, &view.facts).is_none()),
+        Kind::Merge => {}
     }
     // Unbound merges always go to the owner: without the flag GitHub
     // would merge whatever the head is when the command runs.

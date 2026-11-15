@@ -165,10 +165,20 @@ pub(crate) async fn after_main(agent_id: &str, input: &str, main: TurnResult) ->
     // Ask Ollama where the model runs now, so the notice never says "local"
     // for a model it serves remotely. Only after a failure: no cost otherwise.
     let stored = match (&main, load(agent_id)) {
-        (Err(hagency_agent_local::codex::Error::Unavailable(_)), Some(stored)) => Some(refreshed(stored, &ollama_models().await)),
+        (Err(hagency_agent_local::codex::Error::Unavailable(_)), Some(stored)) => Some(refresh_saved(agent_id, stored).await),
         (_, stored) => stored,
     };
     retry_once(stored, main, |stored| async move { answer(&stored, input).await }).await
+}
+/// [`refreshed`] against Ollama now, saved when the place changed so a later
+/// use without Ollama's list does not fall back to a stale `local`.
+async fn refresh_saved(agent_id: &str, stored: String) -> String {
+    let fresh = refreshed(stored.clone(), &ollama_models().await);
+    if fresh != stored && let Err(error) = save(agent_id, Some(&fresh)) {
+        // The fresh place is still used for this answer and its notice.
+        tracing::warn!(code = "backup_model_place_unsaved", %error, "Could not save the backup model's current place");
+    }
+    fresh
 }
 async fn retry_once<F, Fut>(stored: Option<String>, main: TurnResult, backup: F) -> TurnResult
 where

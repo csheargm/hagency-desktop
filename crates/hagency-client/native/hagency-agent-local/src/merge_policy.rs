@@ -119,7 +119,7 @@ pub(crate) fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<Strin
     }
 }
 
-fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
+pub(crate) fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
     if !policy.require_ci {
         return None;
     }

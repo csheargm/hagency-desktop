@@ -34,6 +34,20 @@ async fn anything_outside_the_policy_gets_the_owner_card() {
     }
 }
 
+/// GPT review of the fix: an approval is public and counts toward a merge.
+#[tokio::test]
+async fn a_review_needs_the_policys_ci_but_readying_a_draft_does_not() {
+    for checks in [vec![Check::Failed], vec![Check::Pending], vec![]] {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = "@owner:example.org";
+        let mut ledger = ledger_with(temp.path(), &["fixer"]);
+        ledger.set_auto_merge(owner, "fixer", true).unwrap();
+        let source = Fake { checks: checks.clone(), ..Fake::new(vec![file("README.md", 1)]) };
+        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(&review(), temp.path(), "fixer"), 11, &source).await, None, "{checks:?}");
+        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(READY, temp.path(), "fixer"), 11, &source).await, Some(true), "{checks:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_repository_other_than_the_pull_requests_gets_the_owner_card() {
     assert_eq!(answer(vec![file("README.md", 1)], "gh pr ready 7 -R someone/else").await, None);
