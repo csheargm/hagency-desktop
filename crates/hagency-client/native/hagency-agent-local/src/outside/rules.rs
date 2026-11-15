@@ -13,10 +13,12 @@
 //! a browser (`--web`/`-w`).
 
 const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
-/// Git subcommands that only read (`fetch` writes only remote-tracking refs
-/// inside the clone; its helper options are in [`GIT_DENIED`]).
-const READ_ONLY_GIT: [&str; 11] =
-    ["status", "log", "diff", "show", "fetch", "rev-parse", "ls-files", "blame", "shortlog", "describe", "merge-base"];
+/// Git subcommands that only read local history. `fetch` is deliberately not
+/// here: `-u`/`--upload-pack`, URLs, `remote::` helpers, remotes, submodules
+/// and refspecs make it a network and code-execution surface (GPT review,
+/// Nov 15).
+const READ_ONLY_GIT: [&str; 10] =
+    ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "shortlog", "describe", "merge-base"];
 /// `git branch` forms that only list.
 const BRANCH_LISTING: [&str; 8] = ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--list", "--show-current"];
 /// Git options that run a helper program or move git to another repository or
@@ -29,10 +31,11 @@ const GIT_DENIED: [&str; 12] = [
 /// `rg` options that run another program on the files it reads.
 const RG_DENIED: [&str; 4] = ["--pre", "--pre-glob", "-z", "--search-zip"];
 /// `gh` reads: `(area, verb)`. None of these changes anything on GitHub.
-const READ_ONLY_GH: [(&str, &str); 14] = [
+/// `gh run` is left out: Actions logs can carry secrets a job printed.
+const READ_ONLY_GH: [(&str, &str); 12] = [
     ("issue", "view"), ("issue", "list"), ("issue", "status"),
     ("pr", "view"), ("pr", "list"), ("pr", "diff"), ("pr", "checks"), ("pr", "status"),
-    ("repo", "view"), ("release", "list"), ("release", "view"), ("run", "list"), ("run", "view"), ("label", "list"),
+    ("repo", "view"), ("release", "list"), ("release", "view"), ("label", "list"),
 ];
 
 /// A known command shape (path words are checked by the caller).
@@ -52,7 +55,7 @@ pub(super) fn segment_allowed(words: &[&str]) -> bool {
         ["gh", ..] if !gh_options_safe(words) => false,
         ["gh", "repo", "clone", repo, _path] => !repo.starts_with('-'),
         ["gh", "auth", "status", rest @ ..] => rest.is_empty(),
-        ["gh", area, verb, ..] => READ_ONLY_GH.contains(&(*area, *verb)),
+        ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(rest),
         ["rg", ..] if words.iter().any(|w| RG_DENIED.iter().any(|d| option_is(w, d))) => false,
         ["mkdir", rest @ ..] => !rest.is_empty() && words[1..].iter().filter(|w| w.starts_with('-')).all(|w| *w == "-p"),
         [program, ..] => READ_ONLY_PROGRAMS.contains(program),
@@ -89,6 +92,13 @@ fn gh_options_safe(words: &[&str]) -> bool {
         }
         !["--web", "-w", "--hostname", "-h"].iter().any(|d| option_is(w, d))
     }) && !repo_next
+}
+
+/// Positional `gh` arguments: a number, a branch/tag-like word, or
+/// `OWNER/REPO`; never a `HOST/OWNER/REPO` or a URL, which could pick another
+/// configured host. Option values are checked by [`gh_options_safe`].
+fn gh_targets_safe(rest: &[&str]) -> bool {
+    rest.iter().all(|w| w.starts_with('-') || !(w.contains(':') || w.matches('/').count() > 1 || (w.contains('/') && !github_repo_name(w))))
 }
 
 /// `OWNER/REPO` on github.com (no host prefix).
