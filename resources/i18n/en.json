@@ -3210,5 +3210,6 @@
   "Could not hand off issue #{number}: {error}": "Could not hand off issue #{number}: {error}",
   "Issue #{number} was handed off but not recorded: {error}": "Issue #{number} was handed off but not recorded: {error}",
   "Suggested a skill for this room": "Suggested a skill for this room",
-  "Reading issue watching…": "Reading issue watching…"
+  "Reading issue watching…": "Reading issue watching…",
+  "No answer from this device's Agent host": "No answer from this device's Agent host"
 }

@@ -79,6 +79,9 @@ fn still_current(epoch: u64) -> Result<(), String> {
     }
 }
 
+/// The longest one Agent's check may take.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Starts the poller once per account session; cheap to call on every tick.
 pub fn ensure_running() {
     let epoch = crate::account_session::epoch();
@@ -107,7 +110,13 @@ async fn check_all(epoch: u64, client: &Client) {
     prune(epoch, &agents.iter().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect());
     for agent in &agents {
         let Some(id) = agent["id"].as_str() else { continue };
-        let line = match check_agent(epoch, &service, client, agent).await {
+        // Bounded: one Agent whose host does not answer must not stop every later check.
+        let checked = tokio::time::timeout(CHECK_TIMEOUT, check_agent(epoch, &service, client, agent)).await
+            .unwrap_or_else(|_| Err(crate::i18n::tr("No answer from this device's Agent host").to_owned()));
+        if let Err(error) = &checked {
+            makepad_widgets::log!("WARN issue_watch_check_failed agent={id}: {error}");
+        }
+        let line = match checked {
             Ok(outcome) => outcome.map(|outcome| outcome_line(&now(), &outcome)),
             Err(error) => Some(failed_line(&now(), &error)),
         };
