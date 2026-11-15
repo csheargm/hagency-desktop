@@ -31,7 +31,7 @@ script_mod! {
 }
 
 /// One owner-API answer for the section; stale ones are dropped.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Reply {
     request: u64,
     agent_id: String,
@@ -63,6 +63,15 @@ pub struct IssueWatchSection {
     note: String,
 }
 
+/// The last answer, for a section that did not receive the action.
+static LATEST: std::sync::Mutex<Option<Reply>> = std::sync::Mutex::new(None);
+/// Wakes the UI so `draw_walk` can apply `LATEST`.
+#[derive(Debug)]
+struct IssueWatchReplyReady;
+
+/// How long a read or save may take before the section says so and enables the controls.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Widget for IssueWatchSection {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
@@ -84,6 +93,10 @@ impl Widget for IssueWatchSection {
         }
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        let latest = LATEST.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(reply) = latest.filter(|r| self.pending && r.request == self.request && r.agent_id == self.agent_id) {
+            self.apply_reply(cx, &reply);
+        }
         self.view.draw_walk(cx, scope, walk)
     }
 }
@@ -120,8 +133,19 @@ impl IssueWatchSection {
         self.pending = true;
         let (request, agent_id, saving) = (self.request, self.agent_id.clone(), change.is_some());
         crate::sliding_sync::spawn_async_task(async move {
-            let result = live::saved(&service, &agent_id, change).await;
-            Cx::post_action(Reply { request, agent_id, saving, result });
+            let result = match tokio::time::timeout(READ_TIMEOUT, live::saved(&service, &agent_id, change)).await {
+                Ok(result) => result,
+                Err(_) => Err("no answer from this device's Agent host within 10 s".to_owned()),
+            };
+            if let Err(error) = &result {
+                makepad_widgets::log!("WARN issue_watch_request_failed saving={saving}: {error}");
+            }
+            let reply = Reply { request, agent_id, saving, result };
+            // Also kept here: the section picks it up on its next draw even if the
+            // action is not routed to it (it lives inside a nested settings page).
+            LATEST.lock().unwrap_or_else(|p| p.into_inner()).replace(reply.clone());
+            Cx::post_action(reply);
+            Cx::post_action(IssueWatchReplyReady);
         });
     }
     fn apply_reply(&mut self, cx: &mut Cx, reply: &Reply) {
@@ -138,6 +162,11 @@ impl IssueWatchSection {
             Err(error) => {
                 let template = if reply.saving { "Could not save issue watching: {error}" } else { "Could not read issue watching: {error}" };
                 self.note = crate::i18n::format(template, &[("error", error.clone())]);
+                // A failed read still lets the owner choose and save: the controls start at Off.
+                if !reply.saving && !self.watch.is_object() {
+                    self.watch = serde_json::json!({"mode": "off"});
+                    self.fill(cx);
+                }
             }
         }
         self.render(cx);
