@@ -23,6 +23,17 @@ impl HagencyPanel {
         self.sync_navigation(cx);
     }
 
+    /// Back from an Agent opened from My Agents: close management so the
+    /// Hagency app (still on My Agents) shows again. False means the usual
+    /// Back to the Local agents list.
+    pub(super) fn leave_for_my_agents(&mut self, cx: &mut Cx) -> bool {
+        if !self.back_to_my_agents || !self.view.widget(cx, ids!(agent_panel)).visible() { return false; }
+        self.back_to_my_agents = false;
+        self.list_page(cx);
+        cx.action(HagencyAction::Close);
+        true
+    }
+
     /// The panel's own requests back to the Agents page.
     pub(super) fn handle_agent_panel(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
@@ -79,5 +90,26 @@ mod tests {
 
         panel.list_page(&mut cx);
         assert!(!panel.view.widget(&mut cx, ids!(agent_panel)).visible(), "back to the list hides the panel");
+    }
+
+    /// The user flow: My Agents card -> `OpenAgent` -> panel; Back closes
+    /// management (back to My Agents) instead of showing the Local agents list.
+    #[test]
+    fn back_from_an_agent_opened_from_my_agents_returns_to_my_agents() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = panel(&mut cx);
+        panel.identity = "owner".into();
+        panel.agents = vec![json!({"id": "a", "displayName": "First"})];
+        panel.back_to_my_agents = true; // what `action(OpenAgent)` records
+        panel.set_page(&mut cx, Page::Agents);
+        panel.open_agent_panel(&mut cx, 0);
+        let emitted = cx.capture_actions(|cx| assert!(panel.leave_for_my_agents(cx)));
+        assert!(emitted.iter().any(|a| matches!(a.downcast_ref(), Some(HagencyAction::Close))), "Back closes management");
+        assert!(!panel.view.widget(&mut cx, ids!(agent_panel)).visible());
+
+        // Opened from the Local agents list instead: Back stays the list's Back.
+        panel.open_agent_panel(&mut cx, 0);
+        let emitted = cx.capture_actions(|cx| assert!(!panel.leave_for_my_agents(cx)));
+        assert!(emitted.is_empty());
     }
 }

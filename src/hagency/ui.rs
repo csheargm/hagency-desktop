@@ -1006,6 +1006,9 @@ pub struct HagencyPanel {
     #[rust] direct_agent: String,
     #[rust] direct_state: Value,
     #[rust] wanted_agent: Option<String>,
+    /// The Agent was opened straight from My Agents (`OpenAgent`): the panel's
+    /// Back returns there instead of to the older Local agents list.
+    #[rust] back_to_my_agents: bool,
     #[rust] wanted_run: Option<(String,String)>,
     #[rust] direct_timer: Timer,
     #[rust] direct_retry: Option<(String,String,u8)>,
@@ -1984,6 +1987,8 @@ impl HagencyPanel {
         if !self.view.button(cx, ids!(back)).clicked(actions) {
             return false;
         }
+        // TODO(R4): ui.rs is over budget; Back routing belongs in ui_agent_panel.rs.
+        if self.leave_for_my_agents(cx) { return true; }
         self.cancel_direct_retry(cx);
         self.wanted_project = None;
         self.wanted_project_section = None;
@@ -4330,6 +4335,7 @@ impl HagencyPanelRef {
         panel.cancel_read_wait(cx);
         if matches!(action,HagencyAction::AgentRun {..}|HagencyAction::OpenAgent {..}|HagencyAction::NewAgent {..}|HagencyAction::NewProject) {panel.reset_detail_scroll(cx);}
         panel.wanted_run=None;
+        panel.back_to_my_agents=matches!(action,HagencyAction::OpenAgent {..});
         if matches!(action, HagencyAction::Close) {
             panel.active = false;
             panel.request = nonce();
