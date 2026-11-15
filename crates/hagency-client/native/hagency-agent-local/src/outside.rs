@@ -127,5 +127,5 @@ fn is_commit_from_stdin(words: &[&str]) -> bool {
 mod tests;
 #[cfg(test)]
 mod bypass_tests;
-mod rules;
+pub(crate) mod rules;
 pub(crate) mod shell;

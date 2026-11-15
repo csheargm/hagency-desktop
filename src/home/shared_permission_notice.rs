@@ -170,7 +170,8 @@ impl SharedPermissionNotice {
             else if !open {String::new()}
             else if row["encryptedPending"]==true {tr("Approval becomes available after the encrypted details arrive.").to_owned()}
             else if row["canDecide"]!=true {format("Waiting for resource owner {owner}",&[("owner",a["ownerMxid"].as_str().unwrap_or("").to_owned())])}
-            else if row["alwaysAllowed"]==true {tr("\"Always allow this\" runs exactly this request in this folder again without asking.").to_owned()}
+            else if row["alwaysAllowed"]==true {tr("\"Always allow this\" runs exactly this request in this folder, in this room, again without asking, for 30 days.").to_owned()}
+            else if row["networkStep"]==true {tr("Pushes and network steps always ask, so \"Always allow this\" is not offered.").to_owned()}
             else if matches!(a["request"]["method"].as_str(),Some("claude/can_use_tool"|"octos/can_use_tool")) {tr("Each approval covers this one tool call.").to_owned()}
             else {tr("Session approval covers this Codex session only. It ends when this run stops.").to_owned()};
         Display {
