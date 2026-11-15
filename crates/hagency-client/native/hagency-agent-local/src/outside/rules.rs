@@ -13,7 +13,10 @@
 //! a browser (`--web`/`-w`).
 
 const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
-const READ_ONLY_GIT: [&str; 4] = ["status", "log", "diff", "show"];
+/// Git subcommands that only read (`fetch` writes only remote-tracking refs
+/// inside the clone; its helper options are in [`GIT_DENIED`]).
+const READ_ONLY_GIT: [&str; 11] =
+    ["status", "log", "diff", "show", "fetch", "rev-parse", "ls-files", "blame", "shortlog", "describe", "merge-base"];
 /// `git branch` forms that only list.
 const BRANCH_LISTING: [&str; 8] = ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--list", "--show-current"];
 /// Git options that run a helper program or move git to another repository or
@@ -25,8 +28,12 @@ const GIT_DENIED: [&str; 12] = [
 ];
 /// `rg` options that run another program on the files it reads.
 const RG_DENIED: [&str; 4] = ["--pre", "--pre-glob", "-z", "--search-zip"];
-/// `gh` issue/PR reads: `(area, verb)`.
-const READ_ONLY_GH: [(&str, &str); 4] = [("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list")];
+/// `gh` reads: `(area, verb)`. None of these changes anything on GitHub.
+const READ_ONLY_GH: [(&str, &str); 14] = [
+    ("issue", "view"), ("issue", "list"), ("issue", "status"),
+    ("pr", "view"), ("pr", "list"), ("pr", "diff"), ("pr", "checks"), ("pr", "status"),
+    ("repo", "view"), ("release", "list"), ("release", "view"), ("run", "list"), ("run", "view"), ("label", "list"),
+];
 
 /// A known command shape (path words are checked by the caller).
 pub(super) fn segment_allowed(words: &[&str]) -> bool {
