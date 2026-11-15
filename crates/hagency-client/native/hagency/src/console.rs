@@ -6,6 +6,7 @@ mod agent_extras;
 mod agents;
 mod alerts;
 mod approval_bindings;
+mod approval_signal;
 mod approvals;
 mod authority;
 pub mod client;
@@ -63,6 +64,14 @@ pub enum Error {
     Unavailable,
 }
 pub use server_login::AuthorizedDevice;
+pub use approval_signal::subscribe as approvals_changed;
+// TODO(R4): console.rs is over budget; move the in-process approval helpers into console/approval_signal.rs.
+/// Whether "Always allow" could remember this runtime proposal (a pending
+/// approval's `proposal`): only exact shell commands and Claude tool calls can.
+pub fn can_remember(proposal: &serde_json::Value) -> bool {
+    serde_json::from_value::<hagency_agent_local::ToolProposal>(proposal.clone())
+        .is_ok_and(|p| hagency_agent_local::remembered::request_key(&p).is_some())
+}
 
 struct Inner {
     authority: Authority,

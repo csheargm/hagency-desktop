@@ -10,6 +10,7 @@ pub(in crate::console) mod run_controls;
 mod service;
 #[cfg(unix)]
 mod working_directory;
+use super::approval_signal;
 use super::lifecycle::{RetainedTask, TaskCustody};
 use super::{
     AuthorizedDevice, Console,
@@ -98,6 +99,22 @@ fn current_runtime_state(bytes: &[u8], identity: &str) -> Result<Option<serde_js
     if version != u64::from(RUNTIME_STATE_VERSION) { return Err(RuntimeError::Profile); }
     Ok(Some(value))
 }
+/// "Always allow": remember exactly this request before the waiting runtime
+/// continues. The owner's approval of this one request stands even when it
+/// cannot be remembered (a request only approvable once, or a ledger error);
+/// the next identical request then asks again, which is the safe direction.
+fn remember_request(console: &Console, device: &AuthorizedDevice, proposal: &hagency_agent_local::ToolProposal) {
+    let opened = console.0.server_login.state_directory().ok_or(()).and_then(|root| {
+        let path = ledger_path(&root, device.origin(), device.issuer(), device.subject(), device.owner_mxid()).map_err(|_| ())?;
+        let identity = profile_identity(device.origin(), device.issuer(), device.subject(), device.owner_mxid()).map_err(|_| ())?;
+        Ledger::open_scoped(&path, device.owner_mxid(), &identity).map_err(|_| ())
+    });
+    let remembered = opened.and_then(|mut ledger| ledger.remember_request(device.owner_mxid(), proposal, wall_ms() / 1000).map_err(|_| ()));
+    if remembered.is_err() {
+        tracing::warn!(stage = "remember_approval", tool = %proposal.tool, "Approved once; this request could not be remembered");
+    }
+}
+// TODO(R4): owned_runtime.rs is over budget; split the approval queue (insert, take, decide, remember) into owned_runtime/approvals.rs.
 fn intent_location(
     console: &Console,
     device: &AuthorizedDevice,
@@ -477,11 +494,9 @@ impl Entry {
         {
             return Err(RuntimeError::Approval);
         }
-        Ok(self
-            .approvals
-            .remove(id)
-            .ok_or(RuntimeError::Approval)?
-            .pending)
+        let slot = self.approvals.remove(id).ok_or(RuntimeError::Approval)?;
+        approval_signal::bump();
+        Ok(slot.pending)
     }
 }
 struct AbortHeartbeat(tokio::task::AbortHandle);
@@ -829,9 +844,7 @@ impl OwnedRuntime {
         let entry = entries
             .get_mut(&identity(&device, agent))
             .ok_or(RuntimeError::Authorization)?;
-        entry
-            .approvals
-            .retain(|_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
+        approval_signal::retain(&mut entry.approvals, |_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
         if *entry.cancel.borrow()
             || entry.task.is_finished()
             || entry.device != DevicePin::from(&device)
@@ -863,6 +876,7 @@ impl OwnedRuntime {
                 device: DevicePin::from(&device),
             },
         );
+        approval_signal::bump();
         Ok(())
     }
     pub async fn pending(
@@ -882,18 +896,14 @@ impl OwnedRuntime {
         {
             return Err(RuntimeError::Authorization);
         }
-        entry
-            .approvals
-            .retain(|_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
+        approval_signal::retain(&mut entry.approvals, |_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
         let active: BTreeSet<_> = entry
             .bindings
             .iter()
             .filter(|(_, b)| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
             .map(|(id, _)| id.clone())
             .collect();
-        entry
-            .approvals
-            .retain(|_, slot| active.contains(&slot.view.proposal.scope.binding));
+        approval_signal::retain(&mut entry.approvals, |_, slot| active.contains(&slot.view.proposal.scope.binding));
         Ok(entry
             .approvals
             .values()
@@ -909,6 +919,7 @@ impl OwnedRuntime {
         proposal_id: &str,
         args_digest: &str,
         approved: bool,
+        remember: bool,
     ) -> Result<(), RuntimeError> {
         let device = console.authorized_device().await.map_err(device_error)?;
         device.bearer().map_err(|_| RuntimeError::Authorization)?;
@@ -944,6 +955,9 @@ impl OwnedRuntime {
         let pin = DevicePin::from(&device);
         let pending =
             entry.take_approval(&pin, agent, proposal_id, args_digest, &bindings, now())?;
+        if approved && remember {
+            remember_request(console, &device, &pending.proposal);
+        }
         pending.decide(approved);
         Ok(())
     }
@@ -1007,9 +1021,7 @@ impl OwnedRuntime {
             };
             handle.cancel.send_replace(true);
             let receiver = handle.status.clone();
-            entry
-                .approvals
-                .retain(|_, slot| slot.view.proposal.scope.binding != binding);
+            approval_signal::retain(&mut entry.approvals, |_, slot| slot.view.proposal.scope.binding != binding);
             if !entry.bindings.keys().any(|id| entry.binding_active(id)) {
                 entry.cancel.send_replace(true);
             }
@@ -4877,6 +4889,9 @@ for raw in sys.stdin:
             Err(RuntimeError::Authorization)
         ));
         entry.cancel.send_replace(false);
+        // The desktop's cards refresh on this signal instead of a poll.
+        let mut signal = crate::console::approvals_changed();
+        let before = *signal.borrow_and_update();
         let entry = Arc::new(Mutex::new(entry));
         let mut tasks = Vec::new();
         for _ in 0..8 {
@@ -4912,6 +4927,7 @@ for raw in sys.stdin:
         }
         assert_eq!(count, 1);
         assert!(decision.await.unwrap());
+        assert!(*signal.borrow_and_update() > before, "taking the approval signals the change");
         entry.lock().await.task.abort();
     }
     struct RequestFacts {
