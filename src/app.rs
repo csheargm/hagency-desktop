@@ -258,6 +258,8 @@ pub struct App {
     #[rust] hosted_windows: Vec<(HostedWindow, WidgetRef)>,
     /// The top-level app state, shared across various parts of the app.
     #[rust] app_state: AppState,
+    /// False until the window title shows the signed-in account's final name (window_title).
+    #[rust] window_title_final: std::cell::Cell<bool>,
     /// Polls pending Agent permission requests while signed in, so the owner
     /// is told within the request's two-minute window wherever they are.
     #[rust] approvals_timer: Timer,
@@ -359,6 +361,10 @@ impl MatchEvent for App {
     }
 
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        // TODO(R4): app.rs is over budget; session-chrome hooks (title, login visibility) belong in their own module.
+        if !self.window_title_final.get() {
+            self.window_title_final.set(crate::window_title::refresh(cx, &self.ui.window(cx, ids!(main_window)), self.app_state.logged_in));
+        }
         crate::memory_budget::process_completed_decodes(cx, actions);
         for action in actions {
             if let Some(crate::sliding_sync::TimelineCacheEvicted(kind, channel)) = action.downcast_ref() {
@@ -2157,6 +2163,8 @@ impl App {
 
     fn update_login_visibility(&self, cx: &mut Cx) {
         let show_login = !self.app_state.logged_in;
+        // Sign-in, sign-out and account switch all pass here: recompute the window title.
+        self.window_title_final.set(false);
         if show_login {
             self.close_web_browser(cx);
         }
