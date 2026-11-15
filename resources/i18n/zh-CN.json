@@ -1235,8 +1235,6 @@
   "Opened link: {0}": "已打开的链接：{0}",
   "In-app browsing is unavailable on this platform. Use Open in browser.": "此平台暂不支持应用内浏览，请点击“在浏览器中打开”。",
   "Unable to load this page in the app. Use Open in browser.": "无法在应用内加载此页面，请点击“在浏览器中打开”。",
-  "Loading preview…": "正在加载预览…",
-  "Open webpage": "打开网页",
   "App appearance": "应用外观",
   "Light": "浅色",
   "Dark": "深色",
