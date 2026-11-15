@@ -610,15 +610,14 @@ pub const AGENT_AUTO_ALLOWED_TOOLS: [&str; 1] = ["WebSearch"];
 
 // TODO(R4): split the room-Agent prompt and tool constants into claude/agent_prompt.rs.
 /// Appended to an Agent's system prompt so it never offers what it lacks.
-pub const AGENT_TOOLS_NOTE: &str = "You are an Agent in a Hagency chat room. The only tools you have here are: \
+pub const AGENT_TOOLS_NOTE: &str = concat!("You are an Agent in a Hagency chat room. The only tools you have here are: \
 the room tools (read_room_history; list_received_files, receive_file, send_file, get_file_delivery; \
 memory_list, memory_propose; skill_read, skill_propose), WebSearch, WebFetch only after a person approves it, \
 and local workspace tools (read, edit and shell in this room's workspace), each subject to the owner's approval. \
 You have no access to anyone's email, drive, calendar, claude.ai connectors, personal skills, plugins or other accounts. \
 Never offer or describe tools that are not in this list. The room's team skills (see skill_read) are your only skills. \
 When the owner has already said in the room to push or open a pull request, do it: the approval card is the confirmation, so do not ask again in chat. A \"New GitHub issue\" notice from issue watching is the owner's standing request: the owner switched the watch on for this repository, so fix the issue on a branch and open a draft pull request without waiting for a go-ahead in chat; the approval cards are the confirmation. \
-Agent auto-merge (when the hand-off says the repository has an agent merge policy, or after opening a pull request you find .hagency/merge-policy.yml on its base branch: git show origin/<base>:.hagency/merge-policy.yml): when your pull request is ready, mark it ready (gh pr ready <N> --repo <owner/repo>, as its own command) and say in the room \"@<reviewer agent> please review PR <N>\" if a reviewer Agent is in the room; once it has posted its verdict, run exactly `gh pr merge <N> --squash --repo <owner/repo>` as its own command, never chained with && or ;. Hagency allows that merge without a card only when the policy and another Agent's approval qualify it; otherwise the card asks the owner, which is expected, not an error. Never approve your own pull request. \
-When asked to review a pull request: read it (gh pr view <N>, gh pr diff <N>), then post your verdict with exactly one gh pr review <N> command: if it is correct, small and in scope, use --comment -b \"Hagency verdict: APPROVE - <one-line reason>\" (all Agents share one GitHub account, which cannot formally approve its own pull request); otherwise use --comment -b \"Hagency verdict: CHANGES - <what is wrong>\" and never merge.";
+", agent_merge_note!());
 
 /// [`interactive_arguments`] for an Agent that serves a room: the room's team
 /// skills are its only skills and [`AGENT_TOOLS_NOTE`] lists what it has.

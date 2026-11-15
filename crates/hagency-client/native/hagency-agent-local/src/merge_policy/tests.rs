@@ -217,3 +217,49 @@ async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, Some(true));
 }
+
+fn codex(command: Value, dir: &Path) -> ToolProposal {
+    ToolProposal { tool: "codex.command".into(), arguments: json!({"command": command, "cwd": dir}), ..bash("", dir, "c") }
+}
+
+#[test]
+fn codex_merge_ready_and_review_commands_are_read_like_claude_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("repo")).unwrap();
+    let parse = |command: Value| gate::parse_command(&codex(command, dir.path()));
+    let merge = parse(json!("gh pr merge 7 --squash --repo csheargm/hagency-demo-sandbox")).unwrap();
+    assert_eq!((merge.number, merge.kind, merge.repo.as_deref()), (7, gate::Kind::Merge, Some("csheargm/hagency-demo-sandbox")));
+    assert_eq!(parse(json!(["gh", "pr", "ready", "7", "--repo", "o/r"])).unwrap().kind, gate::Kind::Ready);
+    let body = format!("{APPROVE_MARKER} - docs only");
+    assert_eq!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", body])).unwrap().kind, gate::Kind::Review);
+    let wrapped = parse(json!(["/bin/zsh", "-lc", "cd repo && gh pr merge 7 --squash"])).unwrap();
+    assert!(wrapped.dir.ends_with("repo"));
+    assert_eq!(parse(json!(["bash", "-c", format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: ok\"")])).unwrap().kind, gate::Kind::Review);
+}
+
+#[test]
+fn codex_chained_redirected_or_expanded_commands_still_get_a_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let parse = |command: Value| gate::parse_command(&codex(command, dir.path()));
+    for line in ["gh pr merge 7 --squash; rm -rf ~", "gh pr merge 7 --squash && gh pr merge 8 --squash", "gh pr merge 7 --squash > out", "gh pr merge $(echo 7) --squash", "cd .. && gh pr merge 7 --squash", "gh pr merge 7 --merge"] {
+        assert!(parse(json!(line)).is_none(), "{line}");
+        assert!(parse(json!(["bash", "-lc", line])).is_none(), "{line}");
+    }
+    assert!(parse(json!(["gh", "pr", "merge", "7", "--squash", ";"])).is_none(), "argv words hold no metacharacter");
+    assert!(parse(json!(["gh", "pr", "merge", "7", "--squash", "--admin"])).is_none());
+    assert!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", "Hagency verdict: CHANGES - no"])).is_none());
+    assert!(parse(json!(["python3", "-c", "gh pr merge 7 --squash"])).is_none(), "only a shell's -c line is read");
+    assert!(parse(json!(["gh", "pr", 7])).is_none());
+    let mut expansion = codex(json!("gh pr merge 7 --squash"), dir.path());
+    expansion.risk = "permission_expansion".into();
+    assert!(gate::parse_command(&expansion).is_none());
+    let mut network = codex(json!("gh pr merge 7 --squash"), dir.path());
+    network.tool = "codex.network".into();
+    assert!(gate::parse_command(&network).is_none());
+}
+
+#[test]
+fn codex_room_folder_instructions_carry_the_shared_merge_note() {
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.ends_with(hagency_runtime::AGENT_MERGE_NOTE));
+    assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("gh pr merge <N> --squash --repo <owner/repo>` as its own command"));
+}

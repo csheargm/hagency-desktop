@@ -18,7 +18,7 @@ impl HostToolGate for Live {
 fn each_workspace_kind_has_its_own_native_sandbox() {
     let mut thread = value!({});
     NativeSandbox::RoomFolder.apply_to_thread(&mut thread);
-    assert_eq!(thread, value!({"sandbox":"workspace-write"}));
+    assert_eq!(thread, value!({"sandbox":"workspace-write","developerInstructions":hagency_runtime::AGENT_MERGE_NOTE}));
     assert_eq!(NativeSandbox::RoomFolder.reported(), "workspaceWrite");
     let mut turn = value!({});
     NativeSandbox::RoomFolder.apply_to_turn(&mut turn, "/room");

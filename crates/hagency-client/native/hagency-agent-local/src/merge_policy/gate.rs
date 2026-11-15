@@ -76,25 +76,13 @@ pub enum Kind {
 
 /// Read `gh pr merge <N> --squash [-d] [-R o/r]`, `gh pr ready <N> [-R o/r]` or an
 /// approving `gh pr review <N> (--approve | --comment -b "<marker>...") [-R o/r]`,
-/// optionally after one `cd <dir> &&` that stays in the workspace.
+/// optionally after one `cd <dir> &&` that stays in the workspace. Claude's Bash
+/// and Codex's command approval are read the same way; see [`command_words`].
 pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
-    if proposal.tool != "claude.Bash" || proposal.risk == "permission_expansion" {
+    if proposal.risk == "permission_expansion" {
         return None;
     }
-    let line = proposal.arguments["command"].as_str()?;
-    if line.contains([';', '|', '\n', '`', '$', '<', '>']) {
-        return None;
-    }
-    let cwd = Path::new(&proposal.canonical_directory);
-    let parsed = shell::parse(line)?;
-    let (dir, words) = match parsed.segments.as_slice() {
-        [words] => (cwd.to_path_buf(), words),
-        [cd, words] if line.contains("&&") => match cd.as_slice() {
-            [c, target] if c == "cd" && !target.starts_with('-') && resolves_inside(target, cwd) => (shell::lexical_join(cwd, target), words),
-            _ => return None,
-        },
-        _ => return None,
-    };
+    let (dir, words) = command_words(proposal)?;
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     let (kind, number, rest) = match words.as_slice() {
         ["gh", "pr", "merge", n, rest @ ..] => (Kind::Merge, *n, rest),
@@ -115,6 +103,53 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
         return None;
     }
     Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, kind })
+}
+
+/// Characters that would chain, redirect or substitute; any one refuses the command.
+const SHELL_METACHARACTERS: [char; 7] = [';', '|', '\n', '`', '$', '<', '>'];
+
+/// The directory and words of a command proposal. `claude.Bash` and Codex's
+/// `codex.command` give one shell line; Codex may instead give an argv array,
+/// read as `<shell> -c|-lc <line>` or else as plain words that must hold no
+/// shell metacharacter. Every other tool (`codex.network` included) is `None`.
+fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
+    let cwd = Path::new(&proposal.canonical_directory);
+    let command = &proposal.arguments["command"];
+    match (proposal.tool.as_str(), command) {
+        ("claude.Bash" | "codex.command", Value::String(line)) => shell_words(line, cwd),
+        ("codex.command", Value::Array(argv)) => {
+            let argv: Vec<&str> = argv.iter().map(Value::as_str).collect::<Option<_>>()?;
+            match argv.as_slice() {
+                [sh, "-c" | "-lc", line] if is_shell(sh) => shell_words(line, cwd),
+                words if words.iter().all(|w| !w.contains(SHELL_METACHARACTERS)) => Some((cwd.to_path_buf(), words.iter().map(|w| (*w).to_owned()).collect())),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_shell(program: &str) -> bool {
+    matches!(program.rsplit('/').next(), Some("bash" | "sh" | "zsh"))
+}
+
+/// One shell line: a single command, or one in-workspace `cd <dir> &&` then one command.
+fn shell_words(line: &str, cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
+    if line.contains(SHELL_METACHARACTERS) {
+        return None;
+    }
+    let mut segments = shell::parse(line)?.segments;
+    match segments.len() {
+        1 => Some((cwd.to_path_buf(), segments.pop()?)),
+        2 if line.contains("&&") => {
+            let words = segments.pop()?;
+            match segments[0].as_slice() {
+                [c, target] if c == "cd" && !target.starts_with('-') && resolves_inside(target, cwd) => Some((shell::lexical_join(cwd, target), words)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Default)]
