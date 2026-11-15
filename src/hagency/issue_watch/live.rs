@@ -51,6 +51,9 @@ impl Handoff for Live {
         let input = json!({"issueSeen": {"repo": self.repo, "number": number}});
         saved(&self.service, &self.agent_id, Some(input)).await.map(|_| ())
     }
+    fn paused(&self) -> bool {
+        crate::hagency::kill_switch::paused_here(&self.agent_id)
+    }
 }
 
 /// The owner API's issue-watch record (`issueWatch`, `issueSeen`); a change
