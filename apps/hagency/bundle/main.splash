@@ -64,9 +64,9 @@ H.who_list=who_list
 let {who_people=nil}=H
 if who_people==nil {who_people={rid:"" known:[] knownState:"idle" query:"" found:[] exact:nil state:"idle" epoch:0}}
 H.who_people=who_people
-let {local_list=nil,local_status=nil,local_pending="",local_confirm="",local_error="",local_discard="",local_models=nil,local_model_current=nil,local_model_epoch=0,local_after="",local_effort_note="",bar_past=false,local_epoch=0,local_failure="",local_failure_reason="",local_failure_code="",local_kept=nil,local_rechecked=false}=H
+let {local_list=nil,local_status=nil,local_pending="",local_confirm="",local_error="",local_discard="",local_models=nil,local_model_current=nil,local_model_epoch=0,local_after="",local_effort_note="",bar_past=false,local_epoch=0,local_failure="",local_failure_reason="",local_failure_code="",local_kept=nil,local_rechecked=false,local_poll_armed=false}=H
 H.local_list=local_list H.local_status=local_status H.local_pending=local_pending H.local_confirm=local_confirm H.local_error=local_error H.local_discard=local_discard H.local_models=local_models H.local_model_current=local_model_current H.local_model_epoch=local_model_epoch
-H.local_after=local_after H.local_effort_note=local_effort_note H.bar_past=bar_past H.local_epoch=local_epoch H.local_failure=local_failure H.local_failure_reason=local_failure_reason H.local_failure_code=local_failure_code H.local_kept=local_kept H.local_rechecked=local_rechecked
+H.local_after=local_after H.local_effort_note=local_effort_note H.bar_past=bar_past H.local_epoch=local_epoch H.local_failure=local_failure H.local_failure_reason=local_failure_reason H.local_failure_code=local_failure_code H.local_kept=local_kept H.local_rechecked=local_rechecked H.local_poll_armed=local_poll_armed
 let {account_inventory=nil,account_detail=nil,account_id="",account_after=nil,account_resource_after=nil}=H
 H.account_list_epoch=0 H.account_pending_open=false
 H.account_inventory=account_inventory H.account_detail=account_detail H.account_id=account_id H.account_after=account_after H.account_resource_after=account_resource_after
