@@ -281,6 +281,8 @@ pub enum LocalAction {
     IssueWatch,
     /// Saves `{issueWatch}` and/or `{issueSeen}`, then answers like `IssueWatch`.
     SaveIssueWatch,
+    /// The Agent's recent requests on this device (read-only, no request text).
+    RecentActivity,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -761,6 +763,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                     | LocalAction::AgentServiceStatus
                     | LocalAction::IssueWatch
                     | LocalAction::SaveIssueWatch
+                    | LocalAction::RecentActivity
             ) && (binding_id.is_some() || requester.is_some())
             {
                 return Err(failure(400, "invalid_arguments"));
@@ -785,6 +788,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                 LocalAction::Approvals => ("GET", "runtime/approvals".into()),
                 LocalAction::IssueWatch => ("GET", "issue-watch".into()),
                 LocalAction::SaveIssueWatch => ("POST", "issue-watch".into()),
+                LocalAction::RecentActivity => ("GET", "activity".into()),
                 LocalAction::Decision { approval_id } => {
                     key(&approval_id)?;
                     ("POST", format!("runtime/approvals/{approval_id}/decision"))

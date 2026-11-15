@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+mod activity;
 mod commands;
 mod direct;
 mod earlier_archive;
@@ -837,6 +838,9 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
         }
         if parts.len() == 2 && parts[1] == "issue-watch" {
             return issue_watch::handle(req, depot, agent).await;
+        }
+        if parts.len() == 2 && parts[1] == "activity" {
+            return activity::handle(req, depot, agent).await;
         }
         if parts.len() == 2 && ["agent-policy", "agent-model-profile"].contains(&parts[1]) {
             if method != Method::GET {
