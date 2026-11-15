@@ -3203,5 +3203,8 @@
   "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.": "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.",
   "First deal with the instructions that are unconfirmed or were not carried out.": "First deal with the instructions that are unconfirmed or were not carried out.",
   "Sent. Waiting for the Agent to confirm.": "Sent. Waiting for the Agent to confirm.",
-  "Sending was not confirmed; you can retry the same action.": "Sending was not confirmed; you can retry the same action."
+  "Sending was not confirmed; you can retry the same action.": "Sending was not confirmed; you can retry the same action.",
+  "Working… {step}": "Working… {step}",
+  "Done in {s} s · {n} steps": "Done in {s} s · {n} steps",
+  "Done in {s} s · 1 step": "Done in {s} s · 1 step"
 }

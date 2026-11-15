@@ -158,19 +158,11 @@ impl AgentRunCardRef {
             .view
             .label(cx, ids!(title))
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
-        use ::hagency::agent_run_controls::State;
-        let status = match entry.card.state {
-            State::Running => "Running. New instructions join this run.",
-            State::Stopping => "Stopping; waiting for the runtime to finish and settle.",
-            State::Completed => "Done",
-            State::Interrupted => "Stopped",
-            State::Failed => "Failed",
-            State::Unknown => "The run went offline; check its result.",
-        };
-        inner.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(status));
+        let status = card_status(&entry.card);
+        inner.view.label(cx, ids!(status)).set_text(cx, &status);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         preview.set_visible(cx, !entry.card.preview.is_empty());
-        let open = entry.card.state == State::Running;
+        let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
         let selecting = preview.selection_active(cx);
         if let Some(text) = preview_to_show(
             inner.shown_preview.as_deref(), &entry.card.preview, open, !changed, selecting,
@@ -278,24 +270,4 @@ mod tests {
     }
 }
 
-/// One Agent run status, localized. The run card shows this, never the event's stored (Chinese) body.
-pub(crate) fn status_label(state: ::hagency::agent_run_controls::State) -> &'static str {
-    crate::i18n::tr(state.english_status())
-}
-
-#[cfg(test)]
-mod status_tests {
-    /// The desktop installs `status_label` as the run-card body: English UI
-    /// posts English, a zh-CN UI posts the catalog's Chinese.
-    #[test]
-    fn hosted_run_bodies_follow_the_ui_language() {
-        use crate::i18n::{Language, text_for};
-        use ::hagency::agent_run_controls::{State, set_status_text};
-        set_status_text(super::status_label);
-        assert_eq!(super::status_label(State::Running), "Working… you can add instructions or stop this run");
-        assert_eq!(text_for(Language::Chinese, State::Running.english_status()), "Agent 正在处理，可追加指令或停止本次任务。");
-        for state in [State::Stopping, State::Completed, State::Interrupted, State::Failed, State::Unknown] {
-            assert_ne!(text_for(Language::Chinese, state.english_status()), state.english_status(), "{state:?} has a zh-CN entry");
-        }
-    }
-}
+pub(crate) use super::agent_run_status::{card_status, status_label};

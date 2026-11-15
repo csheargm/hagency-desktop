@@ -3203,5 +3203,8 @@
   "The run has ended and the result is unconfirmed. Check first; nothing is resent automatically.": "运行已结束，操作结果未确认。请先核对；不会自动重发。",
   "First deal with the instructions that are unconfirmed or were not carried out.": "请先处理尚未确认或未执行的指令。",
   "Sent. Waiting for the Agent to confirm.": "已发送，等待 Agent 确认。",
-  "Sending was not confirmed; you can retry the same action.": "发送未获确认，可重试同一操作。"
+  "Sending was not confirmed; you can retry the same action.": "发送未获确认，可重试同一操作。",
+  "Working… {step}": "正在处理… {step}",
+  "Done in {s} s · {n} steps": "已完成，用时 {s} 秒 · {n} 步",
+  "Done in {s} s · 1 step": "已完成，用时 {s} 秒 · 1 步"
 }
