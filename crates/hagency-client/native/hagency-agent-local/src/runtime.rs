@@ -948,7 +948,9 @@ impl Session {
             .settle_external(scope, call, &usage, context, session, &counters)?;
         charge.settled = true;
         if status == TurnStatus::Failed {
-            return Err(Error::Failed);
+            // TODO(split): runtime.rs is over budget; move external settlement into runtime/settle.rs.
+            let cause = crate::provider_failure::classify_text(&text);
+            return Err(crate::provider_failure::failed_turn(cause, requests));
         }
         if let Self::Claude { reusable, .. } = self {
             *reusable = usage.is_reported() && cumulative;

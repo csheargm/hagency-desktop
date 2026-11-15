@@ -10,6 +10,7 @@ impl AgentPanel {
     pub(super) fn render_identity(&mut self, cx: &mut Cx) {
         self.render_header(cx);
         self.render_model(cx);
+        self.render_backup(cx);
         self.render_who(cx);
         self.render_credit(cx);
     }

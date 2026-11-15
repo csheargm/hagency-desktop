@@ -38,6 +38,9 @@ pub enum Error {
     Unknown,
     #[error("Codex turn failed or interrupted")]
     Failed,
+    /// The provider failed the turn for its own availability before any tool ran.
+    #[error("provider unavailable: {}", .0.reason())]
+    Unavailable(crate::provider_failure::Unavailability),
     #[error("operation timed out")]
     Timeout,
     #[error(transparent)]
@@ -59,6 +62,7 @@ impl Error {
             Self::Io(_) => ("io", "process or stream IO failed"),
             Self::Unknown => ("stream", "provider stream ended without completion"),
             Self::Failed => ("turn", "provider failed or interrupted the turn"),
+            Self::Unavailable(_) => ("turn", "provider unavailable for this turn"),
             Self::Timeout => ("timeout", "provider operation timed out"),
             Self::Ledger(_) => ("ledger", "local ledger operation failed"),
             Self::Json(_) => ("json", "provider frame or local data is invalid JSON"),
@@ -814,6 +818,9 @@ pub struct Session<R, W> {
     bound_scope: Option<Scope>,
     bound_profile: Option<Profile>,
     retained_turn: Option<hagency_runtime::codex::tree::TurnTree>,
+    /// Set by the root turn's failure; read once when the turn returns.
+    // TODO(split): codex.rs is over budget; split the turn event loop (run_inner) into codex/turn.rs.
+    unavailable: Option<crate::provider_failure::Unavailability>,
     native_rollout: Option<hagency_runtime::codex::NativeUsageCursor>,
     // Old runtimes without response receipts are only comparable on a fresh
     // context on this connection. Resumed context counters include history.
@@ -844,6 +851,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             bound_scope: None,
             bound_profile: None,
             retained_turn: None,
+            unavailable: None,
             native_rollout: None,
             legacy_usage: true,
             callbacks_enabled: true,
@@ -1350,6 +1358,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             ));
         }
         self.retained_turn = None;
+        self.unavailable = None;
         let mut charge = PendingCall {
             ledger,
             scope: scope.clone(),
@@ -1411,10 +1420,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     return Err(error.into());
                 }
                 charge.settled = true;
+                let unavailable = self.unavailable.take();
                 if completed.status != TurnStatus::Failed {
                     Ok(completed)
                 } else {
-                    Err(Error::Failed)
+                    Err(crate::provider_failure::failed_turn(unavailable, completed.tool_requests))
                 }
             }
             Err(error) => {
@@ -1854,6 +1864,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                 }
                 "turn/completed" if event_scope.root => {
+                    self.unavailable = crate::provider_failure::classify_codex(&params["turn"]["error"]);
                     root_status = Some(match params["turn"]["status"].as_str() {
                         Some("completed") => TurnStatus::Completed,
                         Some("failed") => TurnStatus::Failed,

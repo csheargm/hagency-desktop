@@ -9,6 +9,7 @@ mod approval_bindings;
 mod approval_signal;
 mod approvals;
 mod authority;
+pub mod backup_model;
 pub mod client;
 pub mod device_execution;
 mod engagements;

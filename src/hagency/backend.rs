@@ -306,6 +306,9 @@ impl Service {
         self.0.state.as_deref().map_err(Clone::clone)
     }
     pub fn for_current() -> Result<Self, String> {
+        // TODO(split): backend.rs is over budget; Service construction belongs in backend/service.rs.
+        // The runtime reads each Agent's backup model from the app's data directory.
+        hagency::console::backup_model::set_store_dir(crate::app_data_dir());
         if PROCESS_CLOSING.load(std::sync::atomic::Ordering::Acquire)
             || crate::logout::logout_state_machine::is_logout_in_progress()
             || crate::sliding_sync::token_expired()
