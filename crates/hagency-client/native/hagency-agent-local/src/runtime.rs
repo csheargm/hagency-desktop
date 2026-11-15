@@ -387,6 +387,8 @@ async fn spawn_inner(
     }
     match kind {
         Kind::Claude => {
+            // TODO(R4): split the launch environment out of runtime.rs.
+            command.envs(crate::agent_env::GIT_HELPERS_OFF_ENV);
             command
                 .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
                 .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1")

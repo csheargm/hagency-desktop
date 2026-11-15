@@ -4,7 +4,7 @@ use super::MODE_OUTSIDE;
 use super::MODE_ASK;
 use serde_json::json;
 
-fn proposal(tool: &str, arguments: Value, directory: &Path, risk: &str) -> ToolProposal {
+pub(super) fn proposal(tool: &str, arguments: Value, directory: &Path, risk: &str) -> ToolProposal {
     ToolProposal {
         scope: Scope { agent: "a".into(), binding: "b".into(), room: "!r:x".into(), requester: "@o:x".into(), thread: "t".into() },
         dispatch: "d".into(), tool: tool.into(), arguments, canonical_directory: directory.to_string_lossy().into(), risk: risk.into(),
