@@ -3204,5 +3204,14 @@
   "Sign in to Claude Code or Codex on this Mac, then try again.": "请先在这台 Mac 上登录 Claude Code 或 Codex，然后重试。",
   "Update the Codex CLI to 0.167.0 or newer, or choose Claude.": "请将 Codex CLI 更新到 0.167.0 或更高版本，或选择 Claude。",
   "Sign in again, then retry.": "请重新登录后重试。",
-  "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。"
+  "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。",
+  "Start with your agent": "从你的 Agent 开始",
+  "One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after.": "一键用这台 Mac 上的 Claude Code 或 Codex 登录创建 Agent，并打开它的私聊。房间和邀请可以之后再说。",
+  "Create your agent": "创建你的 Agent",
+  "Open on GitHub": "在 GitHub 上打开",
+  "New room": "新建聊天室",
+  "New space": "新建空间",
+  "Add agent to this room": "将 Agent 添加到此聊天室",
+  "Off by default: hosted agents only answer in unencrypted rooms.": "默认关闭：托管的 Agent 只会在未加密的聊天室中回复。",
+  "Could not create the room": "无法创建聊天室"
 }

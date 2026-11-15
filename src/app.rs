@@ -128,6 +128,7 @@ mod embedded_content {
                 approval_inbox_modal := Modal {can_dismiss: false content := ApprovalInbox {}}
                 agent_access_modal := Modal {can_dismiss: false content := AgentAccessPanel {}}
                 space_management_modal := Modal {can_dismiss: false content := SpaceManagementPanel {}}
+                new_room_modal := Modal {can_dismiss: false content := NewRoomDialog {}}
                 hagency_management_modal := Modal {can_dismiss: false content := View {
                     width: Fill height: Fill flow: Down
                     close := RinxBackButton {}
@@ -619,6 +620,11 @@ impl MatchEvent for App {
                 let modal = self.ui.modal(cx, ids!(agent_access_modal));
                 self.ui.agent_access_panel(cx, ids!(agent_access_modal.content)).action(cx, modal, action, &self.app_state.agent_access);
                 if matches!(action, AgentAccessAction::Changed) {self.persist_runtime_state(cx, "agent access");cx.redraw_all();}
+            }
+            if let Some(action) = action.downcast_ref::<crate::home::new_room_dialog::NewRoomAction>() {
+                use crate::home::new_room_dialog::NewRoomDialogWidgetRefExt;
+                let modal = self.ui.modal(cx, ids!(new_room_modal));
+                self.ui.new_room_dialog(cx, ids!(new_room_modal.content)).action(cx, modal, action);
             }
             if let Some(action) = action.downcast_ref::<SpaceManagementAction>() {
                 let modal = self.ui.modal(cx, ids!(space_management_modal));
@@ -1374,6 +1380,9 @@ impl App {
         crate::agent_access::publish(None, &Default::default());
         let modal = self.ui.modal(cx, ids!(space_management_modal));
         self.ui.space_management_panel(cx, ids!(space_management_modal.content)).action(cx, modal, &SpaceManagementAction::Close);
+        // The New room form holds the old account's draft and request id.
+        let modal = self.ui.modal(cx, ids!(new_room_modal));
+        crate::home::new_room_dialog::NewRoomDialogWidgetRefExt::new_room_dialog(&self.ui, cx, ids!(new_room_modal.content)).action(cx, modal, &crate::home::new_room_dialog::NewRoomAction::Close);
         crate::assistant::set_current_room(None);
         for window in [HostedWindow::Moments, HostedWindow::Article, HostedWindow::WebBrowser, HostedWindow::MiniApps] {
             self.close_hosted_window(cx, window, true);

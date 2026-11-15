@@ -37,7 +37,7 @@ pub struct CreateRoomConfig {
 }
 
 impl CreateRoomConfig {
-    fn request(&self) -> Result<Request> {
+    pub(crate) fn request(&self) -> Result<Request> {
         let name = self.name.trim();
         ensure!(
             !name.is_empty() && name.chars().count() <= 255,

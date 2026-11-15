@@ -39,6 +39,7 @@ pub mod sidebar_action_menu;
 pub mod search_messages;
 pub mod space_lobby;
 pub mod space_management;
+pub mod new_room_dialog;
 pub mod spaces_bar;
 pub mod navigation_tab_bar;
 pub mod welcome_screen;
@@ -54,6 +55,7 @@ pub mod upload_progress;
 
 pub fn script_mod(vm: &mut ScriptVm) {
     space_management::script_mod(vm);
+    new_room_dialog::script_mod(vm);
     room_history::script_mod(vm);
     mobile::script_mod(vm);
     joined_spaces::script_mod(vm);
