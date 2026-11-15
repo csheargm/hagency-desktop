@@ -22,6 +22,7 @@ pub mod mention_popup;
 pub mod mentionable_text_input;
 mod mention_text;
 mod mention_insertion;
+mod plain_mentions;
 pub(crate) mod mention_candidates;
 pub mod navigation_bar_button;
 pub mod popup_list;

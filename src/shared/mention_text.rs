@@ -169,7 +169,7 @@ impl MentionText {
 
 /// The Markdown pill for one mention: `[label](matrix.to link)`, with the
 /// label's ASCII punctuation escaped so it cannot open other Markdown.
-fn mention_link(label: &str, user: &UserId) -> String {
+pub(super) fn mention_link(label: &str, user: &UserId) -> String {
     let mut output = String::from("[");
     for c in label.chars() {
         if c.is_ascii_punctuation() { output.push('\\'); }
