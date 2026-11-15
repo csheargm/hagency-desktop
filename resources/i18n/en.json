@@ -3185,5 +3185,8 @@
   "Profile": "Profile",
   "Server: {0}": "Server: {0}",
   "Agent on {0}": "Agent on {0}",
-  "Role: Agent": "Role: Agent"
+  "Role: Agent": "Role: Agent",
+  "No rooms in common": "No rooms in common",
+  "Rooms in common": "Rooms in common",
+  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "Some rooms' member lists are not loaded yet, so this list may be incomplete."
 }

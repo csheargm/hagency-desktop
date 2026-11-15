@@ -3185,5 +3185,8 @@
   "Profile": "个人资料",
   "Server: {0}": "服务器：{0}",
   "Agent on {0}": "{0} 上的 Agent",
-  "Role: Agent": "角色：Agent"
+  "Role: Agent": "角色：Agent",
+  "No rooms in common": "没有共同的房间",
+  "Rooms in common": "共同的房间",
+  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "部分房间的成员列表尚未加载，此列表可能不完整。"
 }
