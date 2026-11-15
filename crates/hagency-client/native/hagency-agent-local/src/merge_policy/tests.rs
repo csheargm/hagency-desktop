@@ -210,7 +210,7 @@ fn the_agent_instructions_use_the_marker_the_gate_counts() {
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("never chained"));
     // The issue-watch hand-off's merge-policy sentence and the base-branch check lead here.
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("agent merge policy"));
-    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("git show origin/<base>:.hagency/merge-policy.yml"));
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("do not read or fetch the policy yourself"));
 }
 
 /// The hand-off now tells the fixer to continue (ready, ask a reviewer), but
