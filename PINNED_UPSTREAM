@@ -6,9 +6,9 @@ fork topic/profile-panel-hover-card 1d1c86957e65e75a1f78e38cc252d5e8039b97d1
 fork topic/readable-previews e6c8e472e45db6818fdd55b8f7e621e502ba1c82
 fork topic/call-button 7a470957470dfaac2d057abbc9cd300606945763
 fork topic/desktop-login-account-options-v2 e4cc1841d14031f2c127151537374d69c68384e1
-fork topic/room-memory 1b52b1b18bd00c5c17d0b10bbf475f665c09db39
-fork topic/room-memory-encrypted ec0bd1272b48906d5ca0a755c24d1eead4fccab6
-fork topic/room-memory-ui e4575f0201cbc7248c4aafaec446ec0b69ffb36d
+fork topic/room-memory 7d78193326e52e2e93b63a2577dc79e50d624ee0
+fork topic/room-memory-encrypted 347dfa0a0ca1943774362479bc622578713f197e
+fork topic/room-memory-ui e487fc7b416b670bc03ac13244ede61174fc4867
 
 Rebuild: .jit/sources.sh --outside; CARGO_TARGET_DIR=../int-desktop-target cargo build --profile demo --features demo
 Run: ../int-demo-up.sh (HAGENCY_DEMO_AUTOMATION=0 until demo_automation is ported)
