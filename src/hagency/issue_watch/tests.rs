@@ -167,11 +167,19 @@ fn only_active_room_bindings_are_offered() {
 }
 
 #[test]
-fn the_token_comes_from_the_environment_or_the_error_says_how() {
-    use super::{TOKEN_VARIABLES, github_token};
-    if TOKEN_VARIABLES.iter().all(|name| std::env::var(name).is_err()) {
-        assert!(github_token().unwrap_err().contains("GH_TOKEN"));
-    }
+fn the_agents_token_wins_then_the_environment_then_the_error_says_where() {
+    use super::{NO_TOKEN, choose_token};
+    use ::hagency::github_access::Token;
+    let agent = || Ok(Some(Token::parse("agent-token").unwrap()));
+    let env = |name: &str| (name == "GITHUB_TOKEN").then(|| "env-token".to_owned());
+    let none = |_: &str| None;
+    assert_eq!(choose_token(agent(), env).unwrap(), "agent-token");
+    assert_eq!(choose_token(Ok(None), env).unwrap(), "env-token");
+    let gh_first = |name: &str| Some(format!("{name}-value"));
+    assert_eq!(choose_token(Ok(None), gh_first).unwrap(), "GH_TOKEN-value");
+    assert_eq!(choose_token(Ok(None), none).unwrap_err(), crate::i18n::tr(NO_TOKEN));
+    assert_eq!(choose_token(Err("store locked".into()), env).unwrap(), "env-token");
+    assert_eq!(choose_token(Err("store locked".into()), none).unwrap_err(), "store locked");
 }
 
 fn section(cx: &mut makepad_widgets::Cx) -> super::section::IssueWatchSection {

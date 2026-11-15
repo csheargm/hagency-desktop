@@ -199,6 +199,7 @@ impl Launch {
                     .unwrap_or_else(|| "medium".into()),
                 shared_auth: true,
                 web_search: false,
+                environment: Default::default(),
             },
             policy: SharedClaudePolicy::Text,
         }))
@@ -509,6 +510,7 @@ impl ClaudeLaunch {
                 effort: "medium".into(),
                 shared_auth: true,
                 web_search: false,
+                environment: Default::default(),
             },
             policy: SharedClaudePolicy::Text,
             binding: Some(binding),

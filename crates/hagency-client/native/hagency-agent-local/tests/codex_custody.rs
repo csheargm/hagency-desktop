@@ -70,6 +70,7 @@ else:
             effort: "medium".into(),
             shared_auth: true,
             web_search: false,
+            environment: Default::default(),
         };
         let guardian = Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
         let mut process = runtime::spawn_with_guardian(&profile, "codex", Some(guardian))

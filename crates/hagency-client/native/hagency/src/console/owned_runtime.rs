@@ -3600,6 +3600,7 @@ mod tests {
                 effort: "low".into(),
                 shared_auth: false,
                 web_search: true,
+                environment: Default::default(),
             },
 
             credential_ref: "keychain:test".into(),

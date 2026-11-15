@@ -16,6 +16,8 @@ pub use domain::owner_anchors::OwnerAnchor;
 mod domain_worker;
 pub mod management;
 pub mod private;
+/// The secret buffer type `credential_vault::SecretStore` returns.
+pub use zeroize::Zeroizing;
 pub mod task_context;
 pub use domain::PrivateApprovalCard;
 pub use domain::StaleMatrixSessionReceipt;

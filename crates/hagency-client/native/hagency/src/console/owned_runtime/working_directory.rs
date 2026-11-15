@@ -85,6 +85,7 @@ mod tests {
             effort: "low".into(),
             shared_auth: false,
             web_search: false,
+            environment: Default::default(),
         };
         let scope = Scope {
             agent: "agent".into(),
@@ -134,6 +135,7 @@ mod tests {
             executable: owner.join("provider"), home: temp.path().join("person"),
             codex_home: temp.path().join("person/.octos"), cwd: project.clone(), model: "fixture".into(),
             effort: "low".into(), shared_auth: true, web_search: false,
+            environment: Default::default(),
         };
         let scope = Scope { agent:"agent".into(), binding:"room".into(), room:"!room:test".into(), requester:"@owner:test".into(), thread:"$thread".into() };
         assert!(for_turn(&profile, Some(owner.as_path()), "@owner:test", &scope, false, true, None, None).is_err());

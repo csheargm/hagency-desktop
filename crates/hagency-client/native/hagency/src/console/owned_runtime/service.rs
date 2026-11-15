@@ -756,6 +756,7 @@ mod tests {
                 effort: "low".into(),
                 shared_auth: true,
                 web_search: false,
+                environment: Default::default(),
             },
             credential_ref: runtime::local_reference(runtime::Kind::Claude, &folder, None),
             takeover: Takeover::Never,
