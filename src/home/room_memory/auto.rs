@@ -7,8 +7,9 @@
 use super::model::{CardState, Proposal};
 use super::store::{self, MemoryChanged};
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, UserId};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use std::sync::{LazyLock, Mutex, MutexGuard, atomic::{AtomicBool, Ordering}};
 
 /// Rooms where this account accepts its own Agents' memory automatically.
@@ -35,10 +36,17 @@ impl AutoRooms {
 
 #[derive(Default)]
 struct State {
-    rooms: Option<(String, AutoRooms)>,
-    /// Proposals this client accepted automatically (or tried to): never twice.
-    claimed: HashSet<(OwnedRoomId, String)>,
+    /// Per account, loaded from disk on first use.
+    rooms: HashMap<String, AutoRooms>,
+    /// Proposals this client accepted automatically (or tried to), per
+    /// account: at most one automatic attempt; a failure keeps manual Accept.
+    claimed: HashSet<(String, OwnedRoomId, String)>,
+    /// When this account's Agent listing was last read: older ones are re-read
+    /// first, so a removed or transferred Agent stops qualifying.
+    roster_at: Option<(String, Instant)>,
 }
+/// How long an Agent listing counts as current for automatic Accept.
+const ROSTER_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
 static ROSTER_LOADING: AtomicBool = AtomicBool::new(false);
 fn lock() -> MutexGuard<'static, State> {
@@ -49,10 +57,7 @@ fn path(me: &str) -> std::path::PathBuf {
     store::account_file("room-memory-auto-accept", me)
 }
 fn rooms<'a>(state: &'a mut State, me: &str) -> &'a mut AutoRooms {
-    if state.rooms.as_ref().is_none_or(|(owner, _)| owner != me) {
-        state.rooms = Some((me.to_owned(), AutoRooms::load(&path(me))));
-    }
-    state.rooms.as_mut().map(|(_, r)| r).expect("set above")
+    state.rooms.entry(me.to_owned()).or_insert_with(|| AutoRooms::load(&path(me)))
 }
 
 /// Whether automatic Accept is on for `room` for the signed-in account.
@@ -68,15 +73,14 @@ pub fn set(room: &RoomId, me: Option<&str>, on: bool) -> std::io::Result<()> {
 #[cfg(test)]
 pub fn set_for_test(room: &RoomId, me: &str, on: bool) {
     let mut state = lock();
-    if state.rooms.as_ref().is_none_or(|(owner, _)| owner != me) {
-        state.rooms = Some((me.to_owned(), AutoRooms::default()));
-    }
-    let rooms = &mut state.rooms.as_mut().expect("set above").1;
+    let rooms = state.rooms.entry(me.to_owned()).or_default();
     if on { rooms.0.insert(room.to_string()) } else { rooms.0.remove(room.as_str()) };
+    state.roster_at = Some((me.to_owned(), Instant::now()));
 }
 /// Whether this client accepted the proposal on its own.
 pub fn was_auto(room: &RoomId, proposal: &str) -> bool {
-    lock().claimed.contains(&(room.to_owned(), proposal.to_owned()))
+    let Some(me) = store::me() else { return false };
+    lock().claimed.contains(&(me, room.to_owned(), proposal.to_owned()))
 }
 
 /// The rule: on, from one of my own Agents, still pending, I may write, and
@@ -93,7 +97,8 @@ pub fn claim(room: &RoomId, proposal: &Proposal, state: &CardState, can_write: b
         return false;
     }
     let own = own_agent(room, me.as_deref(), &proposal.entry.author);
-    let key = (room.to_owned(), proposal.entry.id.clone());
+    let Some(me) = me else { return false };
+    let key = (me, room.to_owned(), proposal.entry.id.clone());
     let mut state_lock = lock();
     if !should_accept(true, own, state, can_write, state_lock.claimed.contains(&key)) {
         return false;
@@ -101,10 +106,13 @@ pub fn claim(room: &RoomId, proposal: &Proposal, state: &CardState, can_write: b
     state_lock.claimed.insert(key)
 }
 
+/// `None` (never accept) while the listing is missing or older than
+/// [`ROSTER_MAX_AGE`]; a fresh one is requested then.
 fn own_agent(room: &RoomId, me: Option<&str>, author: &str) -> Option<bool> {
     let me = me.and_then(|me| <&UserId>::try_from(me).ok())?;
     let author = <&UserId>::try_from(author).ok()?;
-    let known = crate::home::agent_ask_badge::is_own_agent(me, author);
+    let fresh = lock().roster_at.as_ref().is_some_and(|(owner, at)| owner == me.as_str() && at.elapsed() < ROSTER_MAX_AGE);
+    let known = fresh.then(|| crate::home::agent_ask_badge::is_own_agent(me, author)).flatten();
     if known.is_none() {
         load_roster(room);
     }
@@ -126,14 +134,15 @@ fn load_roster(room: &RoomId) {
                 return Err::<(), String>("matrix_account_changed".into());
             }
             crate::home::agent_ask_badge::refresh(&owner, &roster["agents"]);
+            lock().roster_at = Some((owner.to_string(), Instant::now()));
             Ok(())
         }.await;
         ROSTER_LOADING.store(false, Ordering::SeqCst);
         match result {
             Ok(()) => makepad_widgets::Cx::post_action(MemoryChanged { room_id: room }),
             // Silent on purpose: without the listing nothing is accepted
-            // automatically and the card keeps its manual Accept; the next card
-            // sync tries again.
+            // automatically (fail closed) and the card keeps its manual Accept;
+            // the card's next sync (any memory change in the room) asks again.
             Err(error) => makepad_widgets::warning!("Agent listing for automatic memory Accept unavailable: {error}"),
         }
     });

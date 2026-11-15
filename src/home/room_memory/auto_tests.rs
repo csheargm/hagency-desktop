@@ -85,3 +85,10 @@ fn the_setting_is_off_by_default_and_survives_a_restart() {
     assert!(!AutoRooms::load(&path).contains(&room));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn an_automatic_accept_is_marked_for_the_account_that_made_it_only() {
+    assert!(sync_card("!auto-acct:s", MY_AGENT, "p-acct", true));
+    TEST_ME.with(|t| *t.borrow_mut() = Some("@someone:s".into()));
+    assert!(!auto::was_auto(&room("!auto-acct:s"), "p-acct"), "another account's manual accept is not labelled automatic");
+}

@@ -269,9 +269,10 @@ impl RoomMemoryPanelRef {
             panel.editing = None;
             panel.awaiting = false;
             panel.view.text_input(cx, ids!(memory_input)).set_text(cx, "");
-            let on = super::auto::is_on(room, store::me().as_deref());
-            panel.view.check_box(cx, ids!(memory_auto_toggle)).set_active(cx, on, Animate::No);
         }
+        // Every open: the signed-in account may have changed for the same room.
+        let on = super::auto::is_on(room, store::me().as_deref());
+        panel.view.check_box(cx, ids!(memory_auto_toggle)).set_active(cx, on, Animate::No);
         ops::refresh(room);
         panel.view.redraw(cx);
     }
