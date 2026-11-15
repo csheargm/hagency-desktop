@@ -22,6 +22,8 @@
 //! "local"`. Their decisions go to the Agent's own decision route, where the
 //! daemon re-checks the owner, the exact request and its expiry. Nothing is
 //! posted to the room: only the owner's app shows them.
+// TODO(R4): over budget; split describe()/tool_target() wording out from the poll store.
+use super::approval_text::{readable_command, relative_to_workspace};
 use crate::shared::popup_list::{PopupKind, enqueue_popup_notification};
 use ::hagency::native_owner::ManagementCommand;
 use makepad_widgets::*;
@@ -569,21 +571,22 @@ pub fn describe(row: &Value) -> (String, String) {
     let mut lines = Vec::new();
     let title = match request["method"].as_str() {
         Some("item/commandExecution/requestApproval") => {
-            lines.push(command_words(&params["command"]));
-            if let Some(cwd) = params["cwd"].as_str() {
-                lines.push(format("In {path}", &[("path", cwd.to_owned())]));
+            let cwd = params["cwd"].as_str();
+            lines.push(readable_command(&command_words(&params["command"]), cwd));
+            if let Some(cwd) = cwd {
+                lines.push(format("In {path}", &[("path", relative_to_workspace(cwd))]));
             }
             format("{agent} wants to run a command", &[agent()])
         }
         Some("item/fileChange/requestApproval") => {
             if let Some(root) = params["grantRoot"].as_str() {
-                lines.push(root.to_owned());
+                lines.push(relative_to_workspace(root));
             }
             format("{agent} wants to change files", &[agent()])
         }
         Some(method @ ("claude/can_use_tool" | "octos/can_use_tool")) => {
             let tool = params["toolName"].as_str().unwrap_or("tool");
-            lines.push(tool_target(method, tool, &params["input"]));
+            lines.push(tool_target(method, tool, &params["input"], params["cwd"].as_str()));
             format("{agent} wants to use {tool}", &[agent(), ("tool", tool.to_owned())])
         }
         Some("item/permissions/requestApproval") => {
@@ -592,7 +595,7 @@ pub fn describe(row: &Value) -> (String, String) {
                 lines.push(tr("Network access").to_owned());
             }
             if p.get("fileSystem").is_some() {
-                lines.push(format("File system: {value}", &[("value", short_json(&p["fileSystem"]))]));
+                lines.push(format("File system: {value}", &[("value", p["fileSystem"].to_string())]));
             }
             format("{agent} asks for permissions", &[agent()])
         }
@@ -633,17 +636,23 @@ fn short_text(text: &str) -> String {
 /// What a Claude or Octos tool call would act on. Claude Code's tools name
 /// their target in a few well-known input fields; anything else is shown as
 /// compact JSON.
-fn tool_target(method: &str, tool: &str, input: &Value) -> String {
+/// The full target is shown (commands one step per line, workspace paths as
+/// `~workspace/…`); the card scrolls rather than cutting it.
+fn tool_target(method: &str, tool: &str, input: &Value, cwd: Option<&str>) -> String {
     if method == "octos/can_use_tool" && tool == "shell" {
-        return input["command"].as_str()
+        let command = input["command"].as_str()
             .or_else(|| input["cmd"].as_str())
-            .or_else(|| input["body"].as_str()).unwrap_or("").to_owned();
+            .or_else(|| input["body"].as_str()).unwrap_or("");
+        return readable_command(command, cwd);
     }
-    ["command", "file_path", "notebook_path", "path", "pattern", "url", "query"]
+    if let Some(command) = input["command"].as_str().filter(|text| !text.trim().is_empty()) {
+        return readable_command(command, cwd);
+    }
+    ["file_path", "notebook_path", "path", "pattern", "url", "query"]
         .iter()
         .find_map(|key| input[*key].as_str().filter(|text| !text.trim().is_empty()))
-        .map(str::to_owned)
-        .unwrap_or_else(|| short_json(input))
+        .map(relative_to_workspace)
+        .unwrap_or_else(|| input.to_string())
 }
 fn command_words(command: &Value) -> String {
     match command {
@@ -651,10 +660,6 @@ fn command_words(command: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
-}
-fn short_json(value: &Value) -> String {
-    let text = value.to_string();
-    if text.len() > 160 { format!("{}…", &text[..text.floor_char_boundary(160)]) } else { text }
 }
 fn decide_error(code: &str) -> &'static str {
     match code {
@@ -702,15 +707,25 @@ mod tests {
         pending["encryptedPending"] = json!(true);
         assert!(describe(&pending).0.contains("on its way"));
         pending["encryptedPending"] = json!(false);
+        // A long tool input is shown whole, never cut at a length.
+        let long = "x".repeat(400);
+        pending["approval"]["request"] = json!({"method":"claude/can_use_tool","params":{"toolName":"Mcp","input":{"data":long}}});
+        assert!(describe(&pending).1.contains(&long));
+        // The Agent's workspace path reads as ~workspace/….
+        let ws = format!("/u/owner_{}/room-workspaces/binding_{}", "a".repeat(64), "b".repeat(64));
+        pending["approval"]["request"] = json!({"method":"item/commandExecution/requestApproval","params":{"command":"git push","cwd":format!("{ws}/repo")}});
+        let summary = describe(&pending).1;
+        assert!(summary.contains("In ~workspace/repo") && !summary.contains("owner_"), "{summary}");
         pending["approval"]["request"] = json!({"method":"octos/can_use_tool",
             "params":{"toolName":"shell","input":{"cmd":"printf PTY_READY; read answer","tty":true}}});
-        assert!(describe(&pending).1.contains("printf PTY_READY; read answer"));
+        assert!(describe(&pending).1.contains("printf PTY_READY;\nread answer"));
         // Claude Code's tools: the command, file or pattern, not raw JSON.
         for (tool, input, shown) in [
             ("Bash", json!({"command":"ls -la","description":"List files"}), "ls -la"),
             ("Write", json!({"file_path":"/w/notes.md","content":"secret text"}), "/w/notes.md"),
             ("Glob", json!({"pattern":"**/*.rs"}), "**/*.rs"),
             ("Unknown", json!({"n":1}), "{\"n\":1}"),
+            ("Bash", json!({"command":"cargo test && git push && gh pr create --fill"}), "cargo test &&\ngit push &&\ngh pr create --fill"),
         ] {
             pending["approval"]["request"] = json!({"method":"claude/can_use_tool","params":{"toolName":tool,"input":input}});
             let (title, summary) = describe(&pending);

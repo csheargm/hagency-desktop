@@ -163,13 +163,13 @@ impl ApprovalRequest {
             parts.push(self.description.clone());
         }
         if !self.input_preview.is_empty() {
-            parts.push(self.input_preview.clone());
+            parts.push(crate::hagency::approval_text::readable_command(&self.input_preview, None));
         }
         if let Some(scope) = &self.reusable_scope {
             let mut line = String::from(crate::i18n::tr("Reusable scope: "));
             line.push_str(&scope.description);
             if !scope.workspace.is_empty() {
-                line.push_str(&crate::i18n::format("\nWorkspace: {workspace}", &[("workspace", scope.workspace.clone())]));
+                line.push_str(&crate::i18n::format("\nWorkspace: {workspace}", &[("workspace", crate::hagency::approval_text::relative_to_workspace(&scope.workspace))]));
             }
             parts.push(line);
         }

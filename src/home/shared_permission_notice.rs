@@ -58,7 +58,7 @@ script_mod! {
             title := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: mod.widgets.RINX_INK}
         }
         context := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: mod.widgets.RINX_MUTED}
-        request_details := ScrollYView {width: Fill height: Fit{max: FitBound.Abs(130.0)}
+        request_details := ScrollYView {width: Fill height: Fit{max: FitBound.Abs(260.0)}
             details := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: mod.widgets.RINX_INK}
         }
         hint := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: mod.widgets.RINX_MUTED}
