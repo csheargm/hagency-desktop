@@ -334,7 +334,9 @@ pub(crate) fn text_preview_of_message(
                 .then(|| htmlize::escape_text(msg.body()).to_string());
             #[cfg(not(feature = "agent_chat"))]
             let agent_chat_body: Option<String> = None;
-            agent_chat_body.unwrap_or_else(|| format!("[Custom message]: {:?}", custom))
+            // Never Rust debug output: an unknown msgtype shows its own `body` text.
+            let _ = custom;
+            agent_chat_body.unwrap_or_else(|| htmlize::escape_text(msg.body()).to_string())
         }
         other => format!(
             "[Unknown message type]: {}",

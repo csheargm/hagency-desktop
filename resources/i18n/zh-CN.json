@@ -3267,5 +3267,10 @@
   "Sign in to Claude Code or Codex on this Mac, then try again.": "请先在这台 Mac 上登录 Claude Code 或 Codex，然后重试。",
   "Update the Codex CLI to 0.167.0 or newer, or choose Claude.": "请将 Codex CLI 更新到 0.167.0 或更高版本，或选择 Claude。",
   "Sign in again, then retry.": "请重新登录后重试。",
-  "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。"
+  "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。",
+  "Running. New instructions join this run.": "运行中。追加指令会加入当前运行。",
+  "Stopping; waiting for the runtime to finish and settle.": "正在停止，等待运行时结束并结算。",
+  "Stopped": "已停止",
+  "Failed": "执行失败",
+  "The run went offline; check its result.": "运行已离线，结果需要核对。"
 }
