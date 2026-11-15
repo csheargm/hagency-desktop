@@ -15,13 +15,15 @@ pub(super) struct Live {
     /// The Agent's Matrix user, mentioned like the composer does.
     puppet: OwnedUserId,
     label: String,
+    /// The Agent's auto-merge switch (`Notice::with_merge_policy`).
+    auto_merge: bool,
     /// The account session this check started in; nothing is sent after it ends.
     epoch: u64,
 }
 
 impl Live {
     /// The sender for one Agent record of the Agents list and its saved watch.
-    pub(super) fn new(service: &Service, agent: &Value, watch: &IssueWatch, epoch: u64) -> Result<Self, String> {
+    pub(super) fn new(service: &Service, agent: &Value, watch: &IssueWatch, auto_merge: bool, epoch: u64) -> Result<Self, String> {
         let room = &watch.setting.room_id;
         let puppet = agent["puppetMxid"].as_str().unwrap_or_default();
         Ok(Self {
@@ -31,6 +33,7 @@ impl Live {
             room_id: room.as_str().try_into().map_err(|_| format!("Invalid room {room}"))?,
             puppet: puppet.try_into().map_err(|_| format!("Unreadable Agent Matrix ID {puppet}"))?,
             label: agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent").to_owned(),
+            auto_merge,
             epoch,
         })
     }
@@ -38,7 +41,7 @@ impl Live {
 
 impl Handoff for Live {
     async fn post(&self, issue: &Issue) -> Result<(), String> {
-        let notice = super::notice::Notice::new(&self.repo, issue, &self.label);
+        let notice = super::notice::Notice::new(&self.repo, issue, &self.label).with_merge_policy(self.auto_merge);
         super::still_current(self.epoch)?;
         let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number);
         crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(&self.puppet), notice.marker(), txn_id).await
@@ -55,6 +58,17 @@ impl Handoff for Live {
 pub(crate) async fn saved(service: &Service, agent_id: &str, change: Option<Value>) -> Result<Value, String> {
     let action = if change.is_some() { LocalAction::SaveIssueWatch } else { LocalAction::IssueWatch };
     service.execute(Command::Local { agent_id: agent_id.into(), action, input: change, binding_id: None, requester: None }).await
+}
+
+/// The Agent's auto-merge switch, from the same local status the agent panel
+/// reads (`approvals.autoMerge`).
+pub(super) async fn auto_merge(agent_id: &str) -> bool {
+    let account = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
+    // An unreadable status only leaves the merge-policy sentence out of the
+    // hand-off (the draft-PR request is unchanged and the merge stays gated),
+    // so it must not block the issue hand-off itself.
+    crate::host::hagency::local::Call::Status(agent_id.into()).execute(&account).await
+        .is_ok_and(|status| status["approvals"]["autoMerge"] == true)
 }
 
 /// The same id for the same Agent, repository and issue on every retry, so a

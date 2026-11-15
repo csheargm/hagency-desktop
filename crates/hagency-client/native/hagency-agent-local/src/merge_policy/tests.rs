@@ -188,4 +188,30 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
 fn the_agent_instructions_use_the_marker_the_gate_counts() {
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains(APPROVE_MARKER));
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("gh pr merge <N> --squash"));
+    // The issue-watch hand-off's merge-policy sentence and the base-branch check lead here.
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("agent merge policy"));
+    assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.contains("git show origin/<base>:.hagency/merge-policy.yml"));
+}
+
+/// The hand-off now tells the fixer to continue (ready, ask a reviewer), but
+/// the merge gate is unchanged: with both switches on, the fixer's merge still
+/// needs a recorded approval from an Agent other than the author.
+#[tokio::test]
+async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = "@owner:example.org";
+    let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
+    for agent in ["fixer", "reviewer"] {
+        ledger.set_auto_merge(owner, agent, true).unwrap();
+    }
+    let docs = Fake { files: vec![file("README.md", 5)] };
+    let merge = bash("gh pr merge 7 --squash", temp.path(), "fixer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7", temp.path(), "fixer"), 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "no review recorded yet");
+    let own = bash("gh pr review 7 --approve", temp.path(), "fixer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &own, 11, &docs).await, Some(true), "recorded, but as the author's");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "the author's own verdict does not count");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, Some(true));
 }

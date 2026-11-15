@@ -20,19 +20,30 @@ pub struct Notice {
     pub url: String,
     pub title: String,
     pub agent: String,
+    /// The watching Agent's auto-merge switch is on: the hand-off also tells it
+    /// to carry the pull request on to review (the merge itself stays gated).
+    pub merge_policy: bool,
 }
+
+/// What the hand-off adds when the watching Agent's auto-merge is on, so the
+/// fixer continues past the draft without a person's prompt.
+pub const MERGE_POLICY_STEP: &str = "This repository has an agent merge policy: when the pull request is ready, mark it ready (gh pr ready <N>) and ask another Agent in this room to review it.";
 
 impl Notice {
     pub fn new(repo: &str, issue: &Issue, agent_label: &str) -> Self {
         let title = issue.title.split_whitespace().collect::<Vec<_>>().join(" ");
-        Self { repo: repo.to_owned(), number: issue.number, url: issue.url.clone(), title, agent: agent_label.trim_start_matches('@').to_owned() }
+        Self { repo: repo.to_owned(), number: issue.number, url: issue.url.clone(), title, agent: agent_label.trim_start_matches('@').to_owned(), merge_policy: false }
     }
+
+    /// The same notice for an Agent whose auto-merge switch is `on`.
+    pub fn with_merge_policy(mut self, on: bool) -> Self { self.merge_policy = on; self }
+    fn merge_step(&self) -> String { if self.merge_policy { format!(" {MERGE_POLICY_STEP}") } else { String::new() } }
 
     /// The plain body the Agent reads. English on purpose: it is the Agent's
     /// instruction; people see the localized `view` instead.
     pub fn body(&self) -> String {
         let title = if self.title.is_empty() { String::new() } else { format!(": {}", self.title) };
-        format!("🔔 New GitHub issue #{} in {}{title} — @{} please fix it on a branch and open a draft pull request: {}", self.number, self.repo, self.agent, self.url)
+        format!("🔔 New GitHub issue #{} in {}{title} — @{} please fix it on a branch and open a draft pull request: {}{}", self.number, self.repo, self.agent, self.url, self.merge_step())
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent
@@ -41,8 +52,8 @@ impl Notice {
         let esc = |s: &str| htmlize::escape_text(s).into_owned();
         let title = if self.title.is_empty() { String::new() } else { format!(": {}", esc(&self.title)) };
         let html = format!(
-            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo}{title} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request",
-            url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
+            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo}{title} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{step}",
+            step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
         );
         RoomMessageEventContent::text_html(self.body(), html).add_mentions(Mentions::with_user_ids([puppet.to_owned()]))
     }
@@ -50,7 +61,7 @@ impl Notice {
     /// The extra content fields sent beside the message.
     pub fn marker(&self) -> Map<String, Value> {
         let mut extra = Map::new();
-        extra.insert(MARKER.into(), json!({"repo": self.repo, "number": self.number, "url": self.url, "title": self.title, "agent": self.agent}));
+        extra.insert(MARKER.into(), json!({"repo": self.repo, "number": self.number, "url": self.url, "title": self.title, "agent": self.agent, "mergePolicy": self.merge_policy}));
         extra
     }
 
@@ -59,7 +70,8 @@ impl Notice {
         let m = content.get(MARKER)?;
         let text = |k: &str| m.get(k)?.as_str().map(str::to_owned);
         let url = text("url").filter(|u| u.starts_with("https://"))?;
-        Some(Self { repo: text("repo")?, number: m.get("number")?.as_i64()?, url, title: text("title").unwrap_or_default(), agent: text("agent").unwrap_or_default() })
+        Some(Self { repo: text("repo")?, number: m.get("number")?.as_i64()?, url, title: text("title").unwrap_or_default(), agent: text("agent").unwrap_or_default(),
+            merge_policy: m.get("mergePolicy").and_then(Value::as_bool).unwrap_or(false) })
     }
 
     /// The compact notice the timeline shows: a "From issue watching" label,

@@ -1,6 +1,6 @@
 //! The watcher's hand-off message: what the Agent reads, what wakes it, and
 //! what the timeline shows.
-use super::notice::{MARKER, Notice};
+use super::notice::{MARKER, MERGE_POLICY_STEP, Notice};
 use ::hagency::issue_watch::Issue;
 use matrix_sdk::ruma::UserId;
 use serde_json::Value;
@@ -75,4 +75,19 @@ fn an_unmarked_or_malformed_message_is_not_a_hand_off() {
     assert_eq!(Notice::from_content(&bad), None, "only https links become the Open on GitHub link");
     bad[MARKER] = Value::String("x".into());
     assert_eq!(Notice::from_content(&bad), None);
+}
+
+/// Auto-merge on: the fixer is told to carry the PR on to an Agent review, so
+/// the flow continues past the draft with no person's prompt; off: unchanged.
+#[test]
+fn auto_merge_on_adds_the_merge_policy_step_and_survives_the_marker() {
+    let off = Notice::new("a/b", &issue(), "fixer");
+    assert!(!off.body().contains("merge policy"), "off: the draft-PR request only");
+    let on = off.clone().with_merge_policy(true);
+    assert!(on.body().ends_with(&format!("issues/6 {MERGE_POLICY_STEP}")));
+    assert!(MERGE_POLICY_STEP.contains("gh pr ready <N>") && MERGE_POLICY_STEP.contains("another Agent in this room to review"));
+    let content = sent_content(&on);
+    assert!(content["formatted_body"].as_str().unwrap().contains("agent merge policy"));
+    assert_eq!(Notice::from_content(&content), Some(on));
+    assert_eq!(Notice::from_content(&sent_content(&off)), Some(off), "older notices read as off");
 }

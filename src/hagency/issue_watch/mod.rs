@@ -151,7 +151,8 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
     let seen: HashSet<i64> = saved["issueSeen"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
     let picks = select(&watch, &issues, &seen);
-    let live = live::Live::new(service, agent, &watch, epoch)?;
+    let auto_merge = !picks.is_empty() && live::auto_merge(id).await;
+    let live = live::Live::new(service, agent, &watch, auto_merge, epoch)?;
     Ok(Some(handoff::hand_off(&live, &picks).await))
 }
 
