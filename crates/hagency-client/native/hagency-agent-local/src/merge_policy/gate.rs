@@ -74,7 +74,7 @@ pub enum Kind {
     Ready,
 }
 
-/// Read `gh pr merge <N> --squash [-d] [-R o/r]`, `gh pr ready <N> [-R o/r]` or an
+/// Read `gh pr merge <N> --squash -R o/r`, `gh pr ready <N> -R o/r` or an
 /// approving `gh pr review <N> (--approve | --comment -b "<marker>...") [-R o/r]`,
 /// optionally after one `cd <dir> &&` that stays in the workspace. Claude's Bash
 /// and Codex's command approval are read the same way; see [`command_words`].
@@ -95,9 +95,9 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
     }
     let flags = Flags::read(rest, kind)?;
     let ok = match kind {
-        Kind::Merge => flags.squash,
+        Kind::Merge => flags.squash && flags.repo.is_some(),
         Kind::Review => flags.approve != flags.comment && (flags.approve || flags.body.starts_with(APPROVE_MARKER)),
-        Kind::Ready => true,
+        Kind::Ready => flags.repo.is_some(),
     };
     if !ok {
         return None;
@@ -129,8 +129,10 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
     }
 }
 
+/// A system shell: an exact absolute path, or a bare name Codex resolves on
+/// its fixed `PATH`; never a relative or workspace path (`./sh`, `repo/zsh`).
 fn is_shell(program: &str) -> bool {
-    matches!(program.rsplit('/').next(), Some("bash" | "sh" | "zsh"))
+    matches!(program, "bash" | "sh" | "zsh" | "/bin/bash" | "/bin/sh" | "/bin/zsh" | "/usr/bin/bash" | "/usr/bin/zsh")
 }
 
 /// One shell line: a single command, or one in-workspace `cd <dir> &&` then one command.
@@ -169,7 +171,6 @@ impl Flags {
         while let Some(word) = words.next() {
             match *word {
                 "--squash" if merge => flags.squash = true,
-                "--delete-branch" | "-d" if merge => {}
                 "--approve" | "-a" if review => flags.approve = true,
                 "--comment" | "-c" if review => flags.comment = true,
                 "--body" | "-b" if review => flags.body = (*words.next()?).to_owned(),

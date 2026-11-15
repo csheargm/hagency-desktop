@@ -123,4 +123,19 @@ mod tests {
         assert!(!without.environment.contains_key(std::ffi::OsStr::new("GH_TOKEN")));
         assert!(!without.arguments.contains(&keep));
     }
+
+    /// A `bash -c`/`zsh -c` wrapper the merge gate reads must not source init
+    /// files: the launch starts from an empty environment, so BASH_ENV, ENV,
+    /// ZDOTDIR and the like never reach Codex, whatever the parent has.
+    #[test]
+    fn codex_launch_carries_no_shell_startup_variables() {
+        let launch = profile(AgentEnvironment::github_token("tok")).launch(&[]).unwrap();
+        let allowed = ["HOME", "CODEX_HOME", "PATH", "USER", "TMPDIR", "SystemRoot", GITHUB_TOKEN_VARIABLE, crate::demo_env::GITHUB_TOKEN_ENV];
+        for name in launch.environment.keys() {
+            assert!(allowed.iter().any(|a| std::ffi::OsStr::new(a) == name), "{name:?} is not on the launch allowlist");
+        }
+        for name in ["BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND"] {
+            assert!(!launch.environment.contains_key(std::ffi::OsStr::new(name)), "{name}");
+        }
+    }
 }

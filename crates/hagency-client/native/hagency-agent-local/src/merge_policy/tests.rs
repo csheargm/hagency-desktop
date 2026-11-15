@@ -82,9 +82,9 @@ fn only_exact_merge_and_approving_review_commands_reach_the_gate() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("repo")).unwrap();
     let parse = |line: &str| gate::parse_command(&bash(line, dir.path(), "a"));
-    let merge = parse("cd repo && gh pr merge 7 --squash --delete-branch").unwrap();
+    let merge = parse("cd repo && gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox").unwrap();
     assert_eq!((merge.number, merge.kind, merge.dir.ends_with("repo")), (7, gate::Kind::Merge, true));
-    assert_eq!(parse("gh pr ready 7").unwrap().kind, gate::Kind::Ready);
+    assert_eq!(parse("gh pr ready 7 -R csheargm/hagency-demo-sandbox").unwrap().kind, gate::Kind::Ready);
     assert_eq!(parse("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox").unwrap().repo.as_deref(), Some("csheargm/hagency-demo-sandbox"));
     assert_eq!(parse("gh pr review 7 --approve").unwrap().kind, gate::Kind::Review);
     assert!(parse(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: docs only\"")).is_some());
@@ -148,11 +148,11 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     let owner = "@owner:example.org";
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     let docs = Fake { files: vec![file("README.md", 5)] };
-    let merge = bash("gh pr merge 7 --squash", temp.path(), "fixer");
+    let merge = bash("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "off by default: the card asks");
     ledger.set_auto_merge(owner, "fixer", true).unwrap();
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7", temp.path(), "fixer"), 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "no other Agent approved yet");
     let self_review = bash("gh pr review 7 --approve", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &self_review, 11, &docs).await, Some(true));
@@ -162,7 +162,7 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, Some(true));
     let mut again = merge.clone();
-    again.arguments = json!({"command": "gh pr merge 7 --squash -d"});
+    again.arguments = json!({"command": "gh pr merge 7 --repo csheargm/hagency-demo-sandbox --squash"});
     assert_eq!(gate::auto_answer(&mut ledger, owner, &again, 11, &docs).await, None, "one automatic merge per pull request");
 }
 
@@ -179,7 +179,7 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     let mut approve = bash("", temp.path(), "reviewer");
     approve.arguments = json!({"command": review});
     assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, Some(true));
-    let merge = bash("gh pr merge 7 --squash", temp.path(), "fixer");
+    let merge = bash("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &code).await, None);
     assert!(ledger.authorize_tool(&merge, 11).is_err(), "the owner's card is still required");
 }
@@ -207,8 +207,8 @@ async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
         ledger.set_auto_merge(owner, agent, true).unwrap();
     }
     let docs = Fake { files: vec![file("README.md", 5)] };
-    let merge = bash("gh pr merge 7 --squash", temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7", temp.path(), "fixer"), 11, &docs).await, Some(true));
+    let merge = bash("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "no review recorded yet");
     let own = bash("gh pr review 7 --approve", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &own, 11, &docs).await, Some(true), "recorded, but as the author's");
@@ -232,7 +232,7 @@ fn codex_merge_ready_and_review_commands_are_read_like_claude_ones() {
     assert_eq!(parse(json!(["gh", "pr", "ready", "7", "--repo", "o/r"])).unwrap().kind, gate::Kind::Ready);
     let body = format!("{APPROVE_MARKER} - docs only");
     assert_eq!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", body])).unwrap().kind, gate::Kind::Review);
-    let wrapped = parse(json!(["/bin/zsh", "-lc", "cd repo && gh pr merge 7 --squash"])).unwrap();
+    let wrapped = parse(json!(["/bin/zsh", "-lc", "cd repo && gh pr merge 7 --squash -R o/r"])).unwrap();
     assert!(wrapped.dir.ends_with("repo"));
     assert_eq!(parse(json!(["bash", "-c", format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: ok\"")])).unwrap().kind, gate::Kind::Review);
 }
@@ -250,10 +250,17 @@ fn codex_chained_redirected_or_expanded_commands_still_get_a_card() {
     assert!(parse(json!(["gh", "pr", "review", "7", "--comment", "-b", "Hagency verdict: CHANGES - no"])).is_none());
     assert!(parse(json!(["python3", "-c", "gh pr merge 7 --squash"])).is_none(), "only a shell's -c line is read");
     assert!(parse(json!(["gh", "pr", 7])).is_none());
-    let mut expansion = codex(json!("gh pr merge 7 --squash"), dir.path());
+    for program in ["./bash", "repo/zsh", "/workspace/bash", "bin/sh", "/tmp/sh"] {
+        assert!(parse(json!([program, "-c", "gh pr merge 7 --squash -R o/r"])).is_none(), "{program} is not a system shell");
+    }
+    for line in ["gh pr merge 7 --squash", "gh pr ready 7", "gh pr merge 7 --squash -d -R o/r", "gh pr merge 7 --squash --delete-branch -R o/r"] {
+        assert!(parse(json!(line)).is_none(), "{line}: exact merge with an explicit repository only");
+        assert!(gate::parse_command(&bash(line, dir.path(), "a")).is_none(), "{line}");
+    }
+    let mut expansion = codex(json!("gh pr merge 7 --squash -R o/r"), dir.path());
     expansion.risk = "permission_expansion".into();
     assert!(gate::parse_command(&expansion).is_none());
-    let mut network = codex(json!("gh pr merge 7 --squash"), dir.path());
+    let mut network = codex(json!("gh pr merge 7 --squash -R o/r"), dir.path());
     network.tool = "codex.network".into();
     assert!(gate::parse_command(&network).is_none());
 }
