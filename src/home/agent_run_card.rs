@@ -160,14 +160,14 @@ impl AgentRunCardRef {
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
         use ::hagency::agent_run_controls::State;
         let status = match entry.card.state {
-            State::Running => "运行中。追加指令会加入当前运行。",
-            State::Stopping => "正在停止，等待运行时结束并结算。",
-            State::Completed => "已完成",
-            State::Interrupted => "已停止",
-            State::Failed => "执行失败",
-            State::Unknown => "运行已离线，结果需要核对。",
+            State::Running => "Running. New instructions join this run.",
+            State::Stopping => "Stopping; waiting for the runtime to finish and settle.",
+            State::Completed => "Done",
+            State::Interrupted => "Stopped",
+            State::Failed => "Failed",
+            State::Unknown => "The run went offline; check its result.",
         };
-        inner.view.label(cx, ids!(status)).set_text(cx, status);
+        inner.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(status));
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         preview.set_visible(cx, !entry.card.preview.is_empty());
         let open = entry.card.state == State::Running;

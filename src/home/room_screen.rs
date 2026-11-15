@@ -2111,9 +2111,12 @@ impl Widget for RoomScreen {
                     let (item, item_new_draw_status) = match timeline_item.kind() {
                         TimelineItemKind::Event(event_tl_item) => match event_tl_item.content() {
                             TimelineItemContent::MsgLike(msg_like_content) => {
-                                if tl_state.kind.thread_root_event_id().is_none()
-                                    && msg_like_content.thread_root.is_some()
+                                if (tl_state.kind.thread_root_event_id().is_none()
+                                    && msg_like_content.thread_root.is_some())
+                                    || is_agent_run_status(&msg_like_content.kind)
                                 {
+                                    // An Agent run's status event is shown by its run card on the
+                                    // request (`populate_agent_run_cards`), never as its own message.
                                     // Hide threaded replies from the main room timeline UI.
                                     (list.item(cx, item_id, id!(Empty)), ItemDrawnStatus::both_drawn())
                                 } else {
@@ -6460,6 +6463,11 @@ fn populate_shared_permission_card(
     card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions,
         }),
     );
+}
+
+/// The Agent run status event (`im.hagency.agent_run`); the run card displays it.
+fn is_agent_run_status(kind: &MsgLikeKind) -> bool {
+    matches!(kind, MsgLikeKind::Message(message) if message.msgtype().msgtype() == ::hagency::agent_run_controls::MSGTYPE)
 }
 
 fn populate_agent_run_cards(

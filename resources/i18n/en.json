@@ -3178,5 +3178,11 @@
   "This server cannot keep a shared project folder yet, so each Agent keeps its own folder.": "This server cannot keep a shared project folder yet, so each Agent keeps its own folder.",
   "Coding Agents of this space share its project folder.": "Coding Agents of this space share its project folder.",
   "The shared project folder was not confirmed; each Agent may keep its own folder.": "The shared project folder was not confirmed; each Agent may keep its own folder.",
-  "Could not check whether this room is encrypted. Your message was not sent. Try again.": "Could not check whether this room is encrypted. Your message was not sent. Try again."
+  "Could not check whether this room is encrypted. Your message was not sent. Try again.": "Could not check whether this room is encrypted. Your message was not sent. Try again.",
+  "Try again; the Agent may already exist in your list.": "Try again; the Agent may already exist in your list.",
+  "Running. New instructions join this run.": "Running. New instructions join this run.",
+  "Stopping; waiting for the runtime to finish and settle.": "Stopping; waiting for the runtime to finish and settle.",
+  "Stopped": "Stopped",
+  "Failed": "Failed",
+  "The run went offline; check its result.": "The run went offline; check its result."
 }
