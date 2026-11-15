@@ -813,7 +813,6 @@ mod render_tests {
 #[cfg(test)]
 mod new_or_join_tests {
     use super::*;
-    use crate::i18n::{text_for, Language};
     use crate::theme::{Appearance, Selection};
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
 

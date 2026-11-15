@@ -73,7 +73,6 @@ mod tests {
     }
     #[test]
     fn hosted_run_bodies_follow_the_ui_language() {
-        use crate::i18n::{Language, text_for};
         use ::hagency::agent_run_controls::set_status_text;
         set_status_text(super::status_label);
         assert_eq!(super::status_label(State::Running), "Working… you can add instructions or stop this run");
