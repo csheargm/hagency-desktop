@@ -15,8 +15,9 @@ pub enum AgentIdentity<'a> {
     Known(Option<&'a str>),
 }
 
-fn active(agent: &serde_json::Value) -> bool {
-    matches!(agent["state"].as_str(), Some("active" | "creating"))
+pub(super) fn is_reusable(agent: &serde_json::Value) -> bool {
+    // Reuse by name unless the Agent is clearly gone: a second Create must not duplicate it.
+    !matches!(agent["state"].as_str(), Some("retired" | "removed" | "deleted" | "failed" | "cancelled"))
 }
 
 async fn find_where(
@@ -25,7 +26,7 @@ async fn find_where(
 ) -> Result<Option<(String, String)>, NativeError> {
     let listed = step(exec, "agents", Command::Agents).await?;
     Ok(listed["agents"].as_array().and_then(|agents| {
-        agents.iter().find(|a| wanted(a) && active(a)).map(|a| (text(a, "id"), text(a, "puppetMxid")))
+        agents.iter().find(|a| wanted(a) && is_reusable(a)).map(|a| (text(a, "id"), text(a, "puppetMxid")))
     }))
 }
 
