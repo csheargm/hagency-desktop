@@ -1,5 +1,5 @@
 //! The one-screen Create agent dialog (Buzz style): Name, Harness, Model and
-//! Thinking, then the same setup as one-click creation
+//! Thinking (and an optional Backup model), then the same setup as one-click creation
 //! (`quick_setup`). This file is the dialog's state and its mapping to a
 //! `SimpleAgentSpec`; the widget lives in `create_agent/dialog.rs`.
 mod dialog;
@@ -99,6 +99,9 @@ pub(crate) struct DialogState {
     /// "Add to rooms": the checklist rows and the room the app showed on opening.
     pub rooms: Vec<crate::hagency::bring_agent::RoomChoice>,
     pub current_room: Option<String>,
+    /// "Backup model": the Ollama models listed (stored form) and the chosen row, 0 = None.
+    pub backups: Vec<String>,
+    pub backup: usize,
 }
 impl DialogState {
     pub fn new(name_for: impl Fn(&Runtime) -> String) -> Self {
@@ -124,6 +127,10 @@ impl DialogState {
             Some(Ok(models)) => models,
             _ => &[],
         }
+    }
+    /// The backup model to save for the new Agent, None unless chosen.
+    pub fn backup_choice(&self) -> Option<String> {
+        self.backup.checked_sub(1).and_then(|i| self.backups.get(i)).cloned()
     }
     /// The spec to create: one-click defaults plus the chosen model and Thinking.
     pub fn spec(&self, defaults: impl Fn(String, Runtime) -> SimpleAgentSpec) -> Result<SimpleAgentSpec, &'static str> {

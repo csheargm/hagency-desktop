@@ -97,3 +97,12 @@ fn failures_name_the_step_and_say_what_to_do() {
     assert!(message.contains("\"start-service\"") && message.contains("invalid_arguments") && message.contains("malformed"), "{message}");
     assert!(failure_message("models", "zzz").contains("Try again"));
 }
+#[test]
+fn backup_is_none_unless_a_listed_model_is_chosen() {
+    let mut state = ready(Some(claude_models()), None);
+    assert_eq!(state.backup_choice(), None);
+    state.backups = vec!["ollama:gpt-oss:120b-cloud|cloud".into(), "ollama:qwen3:8b|local".into()];
+    assert_eq!(state.backup_choice(), None, "row 0 is None");
+    state.backup = 2;
+    assert_eq!(state.backup_choice().as_deref(), Some("ollama:qwen3:8b|local"));
+}

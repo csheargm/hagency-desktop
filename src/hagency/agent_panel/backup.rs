@@ -6,7 +6,7 @@ use super::*;
 use hagency::console::backup_model;
 use serde_json::json;
 
-pub(super) const BACKUP_HINT: &str = "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.";
+pub(crate) const BACKUP_HINT: &str = "If the main model hits a usage limit or is down, the backup answers that request once, as text only (no tools). Ollama cloud models are faster.";
 
 impl AgentPanel {
     /// Loads the saved backup and the Ollama models this Mac lists.
@@ -42,7 +42,7 @@ async fn backup_choices(agent: &str) -> Value {
     json!({"saved": backup_model::load(agent), "models": models})
 }
 /// "None" then each model; a saved backup Ollama no longer lists stays shown.
-pub(super) fn backup_labels(models: &[String], saved: Option<&str>) -> (Vec<String>, usize) {
+pub(crate) fn backup_labels(models: &[String], saved: Option<&str>) -> (Vec<String>, usize) {
     let mut values: Vec<String> = models.to_vec();
     // Match by model name: a value saved before the place was recorded is
     // the same choice, and its label then shows the place Ollama reports.

@@ -5,7 +5,7 @@
 //! policy (`LocalAction::AgentModel` / `SaveAgentModel` / `SaveAgentPolicy`).
 mod activity;
 mod activity_load;
-mod backup;
+pub(crate) mod backup;
 pub(crate) mod activity_rows;
 mod design;
 mod identity;
