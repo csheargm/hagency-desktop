@@ -181,6 +181,7 @@ fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
         "gh issue view 4 --json body -t '{{.body}}'",
         "gh pr view 26 --json comments --template \"{{range .comments}}{{.body}}{{end}}\"",
         "gh pr view 26 --json headRefOid -q '.headRefOid' 2>&1",
+        "gh pr view 26 -R cli/cli -c",
     ] {
         assert!(run(line), "{line}");
     }
@@ -196,6 +197,11 @@ fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
         "gh pr view --json state -q -t evil.example/x/y",
         "gh pr view 26 --json state -q env.GH_TOKEN",
         "gh pr view 26 --json state -qenv.GH_TOKEN",
+        "gh pr view 26 -R cli/cli -cw",
+        "gh pr view 26 -R cli/cli -wc",
+        "gh pr view 26 -R cli/cli -c -w",
+        "gh pr view 26 -R cli/cli --web",
+        "gh repo view cli/cli --browse",
         "gh pr view 26 --json state -cqenv.GH_TOKEN",
         "gh pr view 26 --json state --jq '$ENV'",
         "gh pr view 26 --json state --jq='$ENV.GH_TOKEN'",

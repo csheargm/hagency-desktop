@@ -91,8 +91,23 @@ fn gh_options_safe(words: &[&str]) -> bool {
         if repo.is_some_and(|r| !github_repo_name(r)) {
             return false;
         }
-        !["--web", "-w", "--hostname", "-h"].iter().any(|d| option_is(w, d))
+        !["--web", "-w", "--browse", "--hostname", "-h"].iter().any(|d| option_is(w, d)) && short_cluster_safe(w)
     }) && !repo_next
+}
+
+/// Short letters gh rejects here (`-w` web, `-h` hostname), and letters that
+/// take a value, which consumes the rest of the word (`-qenv.X`).
+const GH_SHORT_DENIED: [char; 2] = ['w', 'h'];
+const GH_SHORT_VALUED: [char; 8] = ['q', 't', 'R', 'b', 'B', 'H', 'L', 'S'];
+
+/// pflag expands `-cw` to `-c -w`: check each letter of a short cluster.
+fn short_cluster_safe(word: &str) -> bool {
+    let Some(letters) = word.strip_prefix('-').filter(|l| !l.starts_with('-')) else { return true };
+    for c in letters.chars() {
+        if GH_SHORT_DENIED.contains(&c) { return false; }
+        if GH_SHORT_VALUED.contains(&c) { return true; }
+    }
+    true
 }
 
 /// Positional `gh` arguments: a number, a branch/tag-like word, or
