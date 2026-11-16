@@ -6566,11 +6566,13 @@ fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineIte
         .into_iter().filter(|e| e.card.thread_root == root).collect();
     if runs.is_empty() { return HashSet::new(); }
     let events: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(|e| {
-        let plain = e.content().as_message().is_some_and(|m| is_plain_text(m.msgtype()));
-        e.event_id().map(|id| (id.to_string(), e.sender().to_string(), plain))
+        let message = e.content().as_message();
+        let plain = message.is_some_and(|m| is_plain_text(m.msgtype()));
+        let body = message.map_or(String::new(), |m| m.body().to_owned());
+        e.event_id().map(|id| (id.to_string(), e.sender().to_string(), plain, body))
     }).collect();
-    let timeline: Vec<_> = events.iter().map(|(event_id, sender, plain)| super::agent_reply_dedupe::Sent {
-        event_id, sender, plain: *plain,
+    let timeline: Vec<_> = events.iter().map(|(event_id, sender, plain, body)| super::agent_reply_dedupe::Sent {
+        event_id, sender, plain: *plain, body,
     }).collect();
     super::agent_reply_dedupe::duplicates(&runs, &timeline).into_iter().map(str::to_owned).collect()
 }
@@ -7271,8 +7273,10 @@ fn populate_thread_root_summary(
         let runs: Vec<_> = crate::hagency::run_controls::for_event(timeline_kind.room_id(), root.as_str(), true)
             .into_iter().filter(|e| e.card.thread_root == root.as_str()).collect();
         let latest = match &thread_summary.latest_event { TimelineDetails::Ready(e) => Some(e), _ => None };
-        let plain = latest.and_then(|e| e.content.as_message()).is_some_and(|m| is_plain_text(m.msgtype()));
-        super::agent_reply_dedupe::shown_reply_count(replies_count, &runs, latest.map(|e| e.sender.as_str()), plain)
+        let latest = latest.map(|e| super::agent_reply_dedupe::Sent { event_id: "", sender: e.sender.as_str(),
+            plain: e.content.as_message().is_some_and(|m| is_plain_text(m.msgtype())),
+            body: e.content.as_message().map_or("", |m| m.body()) });
+        super::agent_reply_dedupe::shown_reply_count(replies_count, &runs, latest)
     });
     if replies_count == 0 {
         // Not cached: a reply or a run update can bring the bar back.

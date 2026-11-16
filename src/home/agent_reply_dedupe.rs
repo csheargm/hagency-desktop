@@ -2,7 +2,8 @@
 //! its own reply, after the run card already carries it. The desktop hides
 //! that second copy. It is matched by run, never by text: the copy is the
 //! last plain message the run's Agent sent after that run's card and before
-//! the Agent's next card in the same thread.
+//! the Agent's next card in the same thread, and only when its body is that
+//! run's answer (confirmation, so another message is never hidden).
 use std::collections::HashSet;
 use crate::hagency::run_controls::Entry;
 
@@ -13,11 +14,16 @@ pub struct Sent<'a> {
     pub sender: &'a str,
     /// A plain text or notice message (not a card or other Agent event).
     pub plain: bool,
+    pub body: &'a str,
 }
 
 /// A finished run whose card holds its answer.
 fn answered(entry: &Entry) -> bool {
     !entry.card.answer.is_empty() && !entry.card.state.active()
+}
+
+fn same_answer(body: &str, run: &Entry) -> bool {
+    body.trim() == run.card.answer.trim()
 }
 
 /// The event ids of the separate replies that repeat an answered card.
@@ -27,7 +33,9 @@ pub fn duplicates<'a>(runs: &[Entry], timeline: &[Sent<'a>]) -> HashSet<&'a str>
         let Some(start) = timeline.iter().position(|m| m.event_id == run.key) else { continue };
         let own_card = |m: &Sent| m.sender == run.agent && runs.iter().any(|r| r.key == m.event_id);
         let end = timeline[start + 1..].iter().position(own_card).map_or(timeline.len(), |i| start + 1 + i);
-        if let Some(copy) = timeline[start + 1..end].iter().rev().find(|m| m.plain && m.sender == run.agent) {
+        if let Some(copy) = timeline[start + 1..end].iter().rev().find(|m| m.plain && m.sender == run.agent)
+            && same_answer(copy.body, run)
+        {
             hidden.insert(copy.event_id);
         }
     }
@@ -37,9 +45,9 @@ pub fn duplicates<'a>(runs: &[Entry], timeline: &[Sent<'a>]) -> HashSet<&'a str>
 /// The reply count a thread bar shows: run cards are drawn on the request,
 /// not as replies, and the latest reply is not counted when it repeats an
 /// answered card. Zero hides the bar.
-pub fn shown_reply_count(count: u32, runs: &[Entry], latest_sender: Option<&str>, latest_plain: bool) -> u32 {
+pub fn shown_reply_count(count: u32, runs: &[Entry], latest: Option<Sent>) -> u32 {
     let cards = runs.len() as u32;
-    let copy = latest_plain && latest_sender.is_some_and(|s| runs.iter().any(|r| answered(r) && r.agent == s));
+    let copy = latest.is_some_and(|m| m.plain && runs.iter().any(|r| answered(r) && r.agent == m.sender && same_answer(m.body, r)));
     count.saturating_sub(cards + u32::from(copy))
 }
 
@@ -54,12 +62,13 @@ mod tests {
         e.agent = agent.into();
         e
     }
-    fn sent<'a>(event_id: &'a str, sender: &'a str, plain: bool) -> Sent<'a> { Sent { event_id, sender, plain } }
+    fn sent<'a>(event_id: &'a str, sender: &'a str, plain: bool) -> Sent<'a> { sent_body(event_id, sender, plain, "42") }
+    fn sent_body<'a>(event_id: &'a str, sender: &'a str, plain: bool, body: &'a str) -> Sent<'a> { Sent { event_id, sender, plain, body } }
 
     /// Live finding: the server's own reply showed again under the card.
     #[test]
     fn the_separate_reply_of_an_answered_run_is_hidden_matched_by_run() {
-        let runs = [run("$card1", "@bot:s", "42"), run("$card2", "@bot:s", "43")];
+        let runs = [run("$card1", "@bot:s", "42"), run("$card2", "@bot:s", "42")];
         let timeline = [
             sent("$card1", "@bot:s", false), sent("$note", "@bot:s", true), sent("$copy1", "@bot:s", true),
             sent("$ask", "@me:s", true),
@@ -77,13 +86,16 @@ mod tests {
         let timeline = [sent("$card", "@bot:s", false), sent("$msg", "@me:s", true)];
         assert!(duplicates(&runs, &timeline).is_empty(), "the requester's follow-up stays");
         assert!(duplicates(&runs, &[sent("$msg", "@bot:s", true)]).is_empty(), "no card loaded, nothing hidden");
+        let timeline = [sent("$card", "@bot:s", false), sent_body("$later", "@bot:s", true, "a clarification")];
+        assert!(duplicates(&runs, &timeline).is_empty(), "GPT review: a later, different Agent message stays");
     }
     #[test]
     fn the_thread_bar_counts_neither_the_card_nor_its_copy() {
         let runs = [run("$card", "@bot:s", "42")];
-        assert_eq!(shown_reply_count(2, &runs, Some("@bot:s"), true), 0, "card + copy: no bar");
-        assert_eq!(shown_reply_count(1, &runs, Some("@bot:s"), false), 0, "card only: no bar");
-        assert_eq!(shown_reply_count(3, &runs, Some("@me:s"), true), 2, "real replies still count");
-        assert_eq!(shown_reply_count(1, &[], Some("@bot:s"), true), 1);
+        assert_eq!(shown_reply_count(2, &runs, Some(sent("$c", "@bot:s", true))), 0, "card + copy: no bar");
+        assert_eq!(shown_reply_count(1, &runs, Some(sent("$c", "@bot:s", false))), 0, "card only: no bar");
+        assert_eq!(shown_reply_count(3, &runs, Some(sent("$c", "@me:s", true))), 2, "real replies still count");
+        assert_eq!(shown_reply_count(2, &runs, Some(sent_body("$c", "@bot:s", true, "other"))), 1, "another Agent message counts");
+        assert_eq!(shown_reply_count(1, &[], Some(sent("$c", "@bot:s", true))), 1);
     }
 }
