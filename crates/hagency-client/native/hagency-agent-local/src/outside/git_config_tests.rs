@@ -60,3 +60,26 @@ fn a_symlink_then_dotdot_cannot_escape() {
     assert!(!allowed("sort link/../secret", temp.path()));
     assert!(allowed("cat secret", temp.path()));
 }
+
+/// GPT re-review: a `.git` file pointing at another git directory, and
+/// per-command `-c`/`--git-dir` overrides, cannot smuggle a helper in.
+#[test]
+fn a_gitdir_file_or_command_line_override_still_asks() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let evil = root.join("evil");
+    std::fs::create_dir(&evil).unwrap();
+    git(&evil, &["init", "-q"]);
+    git(&evil, &["config", "core.pager", "touch ran"]);
+    let wt = root.join("wt");
+    std::fs::create_dir(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", evil.join(".git").display())).unwrap();
+    assert!(!allowed("cd wt && git log -1", &root));
+    let clean = root.join("clean");
+    std::fs::create_dir(&clean).unwrap();
+    git(&clean, &["init", "-q"]);
+    for line in ["cd clean && git -c core.pager=x log", "cd clean && git --git-dir=../evil/.git log", "cd clean && env GIT_DIR=../evil/.git git log"] {
+        assert!(!allowed(line, &root), "{line}");
+    }
+    assert!(allowed("cd clean && git log", &root));
+}
