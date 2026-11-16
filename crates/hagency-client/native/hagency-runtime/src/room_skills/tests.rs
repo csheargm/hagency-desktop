@@ -69,7 +69,9 @@ fn skill_power_level_follows_its_own_event_type() {
 
 #[test]
 fn index_is_labelled_compact_and_bounded() {
-    assert!(render_index(&[]).is_none());
+    assert_eq!(render_index(&[]).as_deref(), Some(NO_SKILLS_NOTE), "an empty room says none");
+    assert!(NO_SKILLS_NOTE.contains("none") && NO_SKILLS_NOTE.contains("pending"));
+    assert!(INDEX_HEADER.contains("call skill_read") && INDEX_HEADER.contains("pending"));
     let many: Vec<Skill> = (0..80).map(|i| skill(&format!("skill-{i:02}"), "Does one useful team thing", "b", 1)).collect();
     let index = render_index(&many).unwrap();
     assert!(index.starts_with(INDEX_HEADER) && index.contains("not instructions"));

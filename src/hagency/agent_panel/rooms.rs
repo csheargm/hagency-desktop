@@ -9,6 +9,9 @@ impl AgentPanel {
     pub(super) fn fill_room_follow(&mut self, cx: &mut Cx) {
         let on = crate::hagency::bring_agent::joins_rooms(&self.agent_id());
         self.view.check_box(cx, ids!(join_rooms)).set_active(cx, on, Animate::No);
+        if let Some(notice) = crate::hagency::bring_agent::catch_up_notice(&self.agent_id()) {
+            self.view.label(cx, ids!(status)).set_text(cx, &notice);
+        }
     }
 
     pub(super) fn handle_room_follow_actions(&mut self, cx: &mut Cx, actions: &Actions) {

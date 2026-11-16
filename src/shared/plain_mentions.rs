@@ -53,6 +53,11 @@ pub(super) fn resolve_plain_mentions(markdown: &str, members: &[PlainMentionCand
 /// Every plain `@token` in `text` (outside code, links and URLs), as the
 /// send-time resolver would see it.
 pub(super) fn typed_tokens(text: &str) -> Vec<&str> {
+    typed_token_ranges(text).into_iter().map(|range| &text[range]).collect()
+}
+
+/// Where each typed `@name` sits, as the byte range of the name after `@`.
+pub(super) fn typed_token_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut tokens = Vec::new();
     let mut index = 0;
     while let Some(found) = text[index..].find(['`', '[', '@', 'h']) {
@@ -60,7 +65,7 @@ pub(super) fn typed_tokens(text: &str) -> Vec<&str> {
         let (tail, previous) = (&text[start..], text[..start].chars().next_back());
         let skip = protected_len(tail, previous);
         if skip > 0 { index = start + skip; continue; }
-        if let Some(token) = mention_token(tail, previous) { tokens.push(token); }
+        if let Some(token) = mention_token(tail, previous) { tokens.push(start + 1..start + 1 + token.len()); }
         index = start + tail.chars().next().map_or(1, char::len_utf8);
     }
     tokens

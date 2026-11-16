@@ -24,6 +24,15 @@ pub fn reset() {
 fn settle(epoch: u64, has_agent: bool) {
     if EPOCH.load(Ordering::Relaxed) == epoch { set_has_agent(has_agent); }
 }
+/// Wait before a failed listing may be asked again, so a not-yet-ready owner
+/// engine is retried instead of leaving the welcome screen loading forever.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+/// A failed listing: allow another after a pause and wake the UI to ask it.
+async fn retry_later() {
+    tokio::time::sleep(RETRY_AFTER).await;
+    REQUESTED.store(false, Ordering::Relaxed);
+    makepad_widgets::SignalToUI::set_ui_signal();
+}
 /// `Some(true)` once an Agent was listed, `Some(false)` once a listing came
 /// back empty, `None` before any listing.
 pub fn has_agent() -> Option<bool> {
@@ -59,15 +68,20 @@ pub fn refresh() {
     crate::sliding_sync::spawn_async_task(async move {
         match crate::hagency::backend::Service::for_current() {
             Ok(service) => match service.execute(::hagency::native_owner::Command::Agents).await {
-                Ok(listed) => settle(epoch, listed["agents"].as_array().is_some_and(|a| !a.is_empty())),
+                Ok(listed) => {
+                    settle(epoch, listed["agents"].as_array().is_some_and(|a| !a.is_empty()));
+                    // Once per account: Agents not yet caught up join the owner's earlier rooms.
+                    crate::hagency::bring_agent::catch_up_agents();
+                    makepad_widgets::SignalToUI::set_ui_signal();
+                }
                 Err(code) => {
-                    // Unknown stays unknown; the welcome screen keeps offering
-                    // the Agent and the panel's own listing will settle it.
+                    // Unknown stays unknown (the welcome screen shows neither
+                    // entry) and the listing is asked again shortly.
                     makepad_widgets::log!("Agent presence listing failed: {code}");
-                    REQUESTED.store(false, Ordering::Relaxed);
+                    retry_later().await;
                 }
             },
-            Err(code) => { makepad_widgets::log!("Agent presence: no owner service yet: {code}"); REQUESTED.store(false, Ordering::Relaxed); }
+            Err(code) => { makepad_widgets::log!("Agent presence: no owner service yet: {code}"); retry_later().await; }
         }
     });
 }

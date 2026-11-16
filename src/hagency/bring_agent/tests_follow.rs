@@ -75,6 +75,22 @@ fn an_unreadable_file_fails_closed_to_asking() {
     std::fs::write(&path, b"{not json").unwrap();
     assert!(!Prefs::load(&path).joins_rooms("agt_any"), "corrupt means ask, never join silently");
     assert!(path.with_extension("json.corrupt").exists());
+    assert!(!Prefs::load(&path).claim_catch_up("agt_any").unwrap(), "corrupt never catches up");
+    assert!(!Prefs::load(&path).needs_catch_up("agt_any"));
+}
+
+#[test]
+fn an_agent_catches_up_once_and_it_persists() {
+    let path = temp_file("catch_up");
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.needs_catch_up("agt_new"));
+    assert!(prefs.claim_catch_up("agt_new").unwrap());
+    assert!(!prefs.claim_catch_up("agt_new").unwrap());
+    assert!(!prefs.needs_catch_up("agt_new"));
+    prefs.save(&path).unwrap();
+    let mut back = Prefs::load(&path);
+    assert!(!back.claim_catch_up("agt_new").unwrap(), "restart does not catch up again");
+    assert!(back.claim_catch_up("agt_other").unwrap());
 }
 
 /// Review fix: a room not loaded yet when Joined arrives is retried, and the
@@ -99,4 +115,32 @@ fn only_success_or_a_definitive_refusal_settles_a_pair() {
     assert!(begin("!r:s agt_1").is_none(), "one bind in flight per pair");
     drop(first); // also what an aborted bind task does
     assert!(begin("!r:s agt_1").is_some(), "the pair is free again");
+}
+
+/// Owner ask: a failed catch-up join stays pending (also across a restart)
+/// and is given up, with a notice, only after the cap.
+#[test]
+fn a_failed_catch_up_join_is_retried_across_restarts_until_the_cap() {
+    use super::super::prefs::MAX_CATCH_UP_FAILURES;
+    let path = temp_file("catch_up_retry");
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.catch_up_pending("!dev:s", "agt_anna"));
+    assert!(!prefs.note_catch_up_failure("!dev:s", "agt_anna"));
+    prefs.save(&path).unwrap();
+    // Restart mid-catch-up: the room is still pending.
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.catch_up_pending("!dev:s", "agt_anna"), "a failed join is retried later");
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 0);
+    for _ in 2..MAX_CATCH_UP_FAILURES { assert!(!prefs.note_catch_up_failure("!dev:s", "agt_anna")); }
+    assert!(prefs.note_catch_up_failure("!dev:s", "agt_anna"), "the cap gives it up once");
+    assert!(!prefs.catch_up_pending("!dev:s", "agt_anna"));
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 1);
+    // Success on another room settles it and forgets failures.
+    prefs.note_catch_up_failure("!ops:s", "agt_anna");
+    prefs.clear_catch_up_failures("!ops:s", "agt_anna");
+    prefs.claim("!ops:s", "agt_anna").unwrap();
+    assert!(!prefs.catch_up_pending("!ops:s", "agt_anna"), "a settled room is never re-joined");
+    // Added by hand after the give-up: the notice clears.
+    prefs.clear_catch_up_failures("!dev:s", "agt_anna");
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 0);
 }
