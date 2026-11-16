@@ -1046,6 +1046,12 @@ async fn permission(
     if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), &crate::merge_policy::github::GhCli).await {
         return ToolAnswer::allowed(allowed);
     }
+    // Owner push trust: checked once, authorized, and run exactly as pinned.
+    match ledger.trusted_publish(owner, &proposal, now()) {
+        Ok(Some(command)) => return ToolAnswer::AllowCommand(command),
+        Ok(None) => {}
+        Err(_) => return ToolAnswer::Deny,
+    }
     match ledger.tool_disposition(&proposal, now()) {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())

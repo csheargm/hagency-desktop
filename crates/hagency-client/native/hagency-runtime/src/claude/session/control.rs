@@ -32,9 +32,12 @@ pub struct ApprovalControlPolicy {
     pub response_reserve_ms: u64,
 }
 /// Host-selected wire behavior, not an owner verdict. No JSON constructor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allow,
+    /// Allowed, running this Bash command in place of the requested one (the
+    /// command the host checked, pinned so it cannot change underneath).
+    AllowCommand(String),
     Deny,
     /// The owner was asked and did not answer within the wait.
     Unanswered,
@@ -273,6 +276,13 @@ impl<R, W, E> SessionDriver<R, W, E> {
         self.prepare_response(id, |tool, input| match decision {
             PermissionDecision::Allow if tool == super::questions::TOOL => Err(Error::PermissionUnavailable),
             PermissionDecision::Allow => Ok(json!({"behavior":"allow","updatedInput":input})),
+            // Only a shell command can be pinned; anything else must not run.
+            PermissionDecision::AllowCommand(_) if tool != "Bash" => Err(Error::PermissionUnavailable),
+            PermissionDecision::AllowCommand(command) => {
+                let mut input = input;
+                input["command"] = json!(command);
+                Ok(json!({"behavior":"allow","updatedInput":input}))
+            }
             // A refusal is an answer, not a stop: the model is told and ends
             // the turn in its own words, so the requester reads what was not
             // allowed. `interrupt: true` made the CLI abort the turn, which

@@ -100,3 +100,21 @@ async fn an_approve_review_is_judged_by_the_same_policy() {
         assert_eq!(answer(files.clone(), approve).await, None, "{files:?}");
     }
 }
+
+/// GPT review P1: a background call's launch result is not its outcome, so a
+/// background review, ready or merge always gets the owner card.
+#[tokio::test]
+async fn a_background_call_is_never_answered_or_recorded() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = "@owner:example.org";
+    let mut ledger = ledger_with(temp.path(), &["reviewer"]);
+    ledger.set_auto_merge(owner, "reviewer", true).unwrap();
+    let docs = Fake::new(vec![file("README.md", 1)]);
+    for line in [review(), READY.to_owned()] {
+        let mut call = bash(&line, temp.path(), "reviewer");
+        call.arguments["run_in_background"] = serde_json::json!(true);
+        assert_eq!(gate::auto_answer(&mut ledger, owner, &call, "bg", 11, &docs).await, None, "{line}");
+    }
+    ledger.settle_agent_review("bg", true).unwrap();
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
+}

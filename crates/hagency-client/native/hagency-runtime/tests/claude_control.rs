@@ -128,6 +128,7 @@ async fn native_claude_many_sequential_tools_keep_replay_protection() {
 async fn native_claude_permission_exact_response() {
     for decision in [
         PermissionDecision::Allow,
+        PermissionDecision::AllowCommand("git -C '/w/app' push 'https://github.com/a/b.git'".into()),
         PermissionDecision::Deny,
         PermissionDecision::Unanswered,
     ] {
@@ -143,7 +144,7 @@ async fn native_claude_permission_exact_response() {
         if let Message::Permission { input, .. } = &mut observed {
             *input = json!({"command":"substituted input"});
         }
-        let mut prepared = driver.prepare_approval("request-one", decision).unwrap();
+        let mut prepared = driver.prepare_approval("request-one", decision.clone()).unwrap();
         assert_eq!(prepared.request_id(), "request-one");
         assert!(prepared.response_deadline() > driver.approval_deadline("request-one").unwrap());
         let (sent, response) = tokio::join!(
@@ -155,6 +156,12 @@ async fn native_claude_permission_exact_response() {
         );
         let expected = match decision {
             PermissionDecision::Allow => json!({"behavior":"allow","updatedInput":original}),
+            // Push trust: only the command changes, every other field is kept.
+            PermissionDecision::AllowCommand(command) => {
+                let mut pinned = original.clone();
+                pinned["command"] = json!(command);
+                json!({"behavior":"allow","updatedInput":pinned})
+            }
             PermissionDecision::Deny => {
                 // The model is told and the turn goes on: the CLI aborts a
                 // turn whose refusal says `interrupt: true`.
@@ -962,7 +969,7 @@ async fn native_claude_permission_with_extra_envelope_keys_gets_its_exact_respon
             "extra keys on a permission request ended the session: {:?}",
             admitted.err()
         );
-        let mut prepared = driver.prepare_approval("extra", decision).unwrap();
+        let mut prepared = driver.prepare_approval("extra", decision.clone()).unwrap();
         let (sent, reply) = tokio::join!(
             driver.send_prepared_approval(&mut prepared),
             read(&mut peer)

@@ -352,7 +352,7 @@ async fn native_claude_owned_permission_roundtrip() {
             PermissionDecision::Allow
         };
         let mut prepared = runner
-            .prepare_approval("owned-permission", decision)
+            .prepare_approval("owned-permission", decision.clone())
             .unwrap();
         if mode == "permission-cancel" {
             let until = Instant::now() + Duration::from_secs(2);

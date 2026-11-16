@@ -2,7 +2,7 @@
 //! matched exactly (no clusters, no `--web`/`--editor`, no host), and a
 //! file-reading option must name a file inside the workspace.
 use crate::outside;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// `gh pr create` options that take a value / take none.
 const CREATE_VALUED: [&str; 22] = [
@@ -28,6 +28,8 @@ pub(crate) struct PrCommand<'a> {
     /// A pull request URL target: `gh` uses its repository.
     url_repo: Option<&'a str>,
     files: Vec<&'a str>,
+    /// `create` names `--head`, so gh never pushes the branch itself.
+    head: bool,
 }
 
 impl<'a> PrCommand<'a> {
@@ -62,7 +64,9 @@ impl<'a> PrCommand<'a> {
             };
             command.take(name, value)?;
         }
-        if positional.len() > targets {
+        // Without --head, `gh pr create` may push the branch with the
+        // checkout's git config (GPT review): only the pinned push publishes.
+        if positional.len() > targets || (verb == "create" && !command.head) {
             return None;
         }
         if let Some(target) = positional.first() {
@@ -74,21 +78,22 @@ impl<'a> PrCommand<'a> {
     fn take(&mut self, name: &str, value: &'a str) -> Option<()> {
         if matches!(name, "-R" | "--repo") {
             self.repo = Some(crate::merge_policy::gate::repo_name(value)?);
+        } else if matches!(name, "-H" | "--head") {
+            self.head = !value.contains(':') && !value.starts_with('-');
         } else if FILE_OPTIONS.contains(&name) {
             self.files.push(value);
         }
         Some(())
     }
 
-    /// Aimed at `repo` from every directory the line may be in, and every
-    /// body file stays in the workspace (`-` is stdin).
-    pub(crate) fn allowed(&self, dirs: &[PathBuf], root: &Path, repo: &str) -> bool {
+    /// Names `repo` (never left to the checkout's remotes or the shell's
+    /// directory), and every body file is `-` (stdin) or an absolute path
+    /// inside the workspace.
+    pub(crate) fn allowed(&self, root: &Path, repo: &str) -> bool {
         let named = self.url_repo.or(self.repo);
-        let aimed = match named {
-            Some(named) => named.eq_ignore_ascii_case(repo) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo)),
-            None => dirs.iter().all(|dir| super::git::all_remotes_are(dir, repo)),
-        };
-        aimed && self.files.iter().all(|file| *file == "-" || outside::inside_all(file, dirs, root))
+        let aimed = named.is_some_and(|named| named.eq_ignore_ascii_case(repo)) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo));
+        let roots = [root.to_path_buf()];
+        aimed && self.files.iter().all(|file| *file == "-" || (Path::new(file).is_absolute() && outside::inside_all(file, &roots, root)))
     }
 }
 

@@ -10,9 +10,11 @@ use serde_json::Value;
 use std::{future::Future, path::Path, time::Duration};
 
 /// How the host ended one tool request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolAnswer {
     Allow,
+    /// Allowed as this pinned Bash command (owner push trust).
+    AllowCommand(String),
     /// Refused by the Agent's rules or by its owner.
     Deny,
     /// The owner was asked and did not answer within the wait. Nobody
@@ -512,6 +514,9 @@ async fn drive<H: Host, C: Capture>(
                         &request_id,
                         match answer {
                             ToolAnswer::Allow => claude::session::PermissionDecision::Allow,
+                            ToolAnswer::AllowCommand(command) => {
+                                claude::session::PermissionDecision::AllowCommand(command)
+                            }
                             ToolAnswer::Deny => claude::session::PermissionDecision::Deny,
                             ToolAnswer::Unanswered => {
                                 claude::session::PermissionDecision::Unanswered

@@ -2,23 +2,24 @@
 //! an owner opt-in stored with the Agent's issue watch (this device's ledger,
 //! written only through the owner API; nothing the Agent runs can set it).
 //!
-//! While the watch is on, the switch is on, and the turn runs in the watch's
-//! Room, an Ask-owner shell line is allowed without a card when every segment is
-//! either a trusted publish step for the watched repository or a step outside
-//! mode would allow anyway (only when the Agent is in outside mode), and at
-//! least one segment is a publish step. Publish steps:
-//! - `git push [-u|--set-upstream|-q] [<remote> [<branch>|HEAD]]` of a local
-//!   non-default branch to a remote whose every push URL is the watched
-//!   repository on github.com (see [`git`]);
-//! - `gh pr create`, `gh pr ready`, `gh pr edit` aimed at the watched
-//!   repository (see [`gh`]).
+//! While the watch is on, the switch is on, the turn runs in the watch's Room
+//! for the owner (the issue-watch notice is the owner's), the call is a
+//! foreground Claude `Bash` call, and the WHOLE line is one publish step, the
+//! call runs without a card. Fail-closed by design (GPT review, Nov 15): no
+//! chaining (an earlier step could switch branch or edit config), no reliance
+//! on the shell's persistent directory, and no Codex (its approvals cannot
+//! rewrite the command, see [`pinned`]). Publish steps:
+//! - `git -C <checkout> push [-u] <remote> <branch>`: a local non-default
+//!   branch named explicitly, from a checkout inside the Room workspace whose
+//!   remote pushes to the watched repository (see [`git`]). It runs rewritten
+//!   (see [`git::Push::pinned`]) so config written after this check cannot
+//!   change where it goes;
+//! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]).
 //!
-//! Everything else (force, delete, mirror, tags, refspecs with `:`, pushes to
-//! main/master/the remote's default branch, other repositories, other Rooms,
-//! `--web`, merges) keeps asking. Merges stay with `merge_policy`.
-use crate::{ToolProposal, outside, outside::shell};
+//! Everything else keeps asking. Merges stay with `merge_policy`.
+use crate::{ToolProposal, outside::shell};
 use rusqlite::{Connection, OptionalExtension};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) mod gh;
 pub(crate) mod git;
@@ -34,64 +35,60 @@ fn trusted_repo(db: &Connection, proposal: &ToolProposal) -> crate::Result<Optio
     Ok(row.and_then(|(mode, repo, room, trusted)| (mode != "off" && trusted == 1 && room == proposal.scope.room).then_some(repo)))
 }
 
-/// True when the owner's push trust answers `proposal` without a card.
-/// `outside_mode`: the Agent's approval mode lets in-workspace steps run.
-pub(crate) fn allows(db: &Connection, proposal: &ToolProposal, outside_mode: bool) -> crate::Result<bool> {
-    if proposal.risk == "permission_expansion" || !matches!(proposal.tool.as_str(), "claude.Bash" | "codex.command") {
-        return Ok(false);
+/// The command that must run in place of `proposal`'s when push trust answers
+/// it. The Claude permission reply carries it as `updatedInput`, so what runs
+/// is exactly what was checked; Codex cannot do that, so it is never trusted.
+pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<Option<String>> {
+    if proposal.risk == "permission_expansion"
+        || proposal.tool != "claude.Bash"
+        || proposal.scope.requester != owner
+        // A background call's launch result says nothing about what it did.
+        || proposal.arguments["run_in_background"] == true
+    {
+        return Ok(None);
     }
-    let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
-    let Some(repo) = trusted_repo(db, proposal)? else { return Ok(false) };
-    Ok(line_allowed(line, Path::new(&proposal.canonical_directory), &repo, outside_mode))
+    let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
+    let Some(repo) = trusted_repo(db, proposal)? else { return Ok(None) };
+    Ok(pinned_line(line, Path::new(&proposal.canonical_directory), &repo))
 }
 
-/// Every segment is a publish step for `repo` (checked from every directory
-/// the line may be in) or, in outside mode, an in-workspace step; at least one
-/// is a publish step.
-pub(crate) fn line_allowed(line: &str, root: &Path, repo: &str, outside_mode: bool) -> bool {
-    let Some(parsed) = shell::parse(line) else { return false };
-    let mut dirs: Vec<PathBuf> = vec![root.to_path_buf()];
-    // While every join so far is `&&`, a failed `cd` stops the line, so the
-    // line can only be in the last `cd`'s directory.
-    let mut exact = Some(root.to_path_buf());
-    let mut published = false;
-    for (index, words) in parsed.segments.iter().enumerate() {
-        let words: Vec<&str> = words.iter().map(String::as_str).collect();
-        if parsed.heredoc_at == Some(index) && !outside::is_commit_from_stdin(&words) {
-            return false;
-        }
-        if index > 0 && !parsed.after_and[index] {
-            exact = None;
-        }
-        let here: Vec<PathBuf> = exact.clone().map_or_else(|| dirs.clone(), |dir| vec![dir]);
-        let ok = match words.as_slice() {
-            ["cd", target] => {
-                exact = exact.map(|dir| shell::lexical_join(&dir, target));
-                outside::enter_dir(target, &mut dirs, root)
-            }
-            ["git", "push", ..] | ["gh", "pr", ..] if is_publish(&words, &here, root, repo) => {
-                published = true;
-                true
-            }
-            _ => outside_mode && outside::segment_in_workspace(&words, &dirs, root),
-        };
-        if !ok {
-            return false;
-        }
+/// `line` as it must run when it is a single publish step for `repo` from
+/// inside `root`, else `None`.
+pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<String> {
+    let parsed = shell::parse(line)?;
+    let [words] = parsed.segments.as_slice() else { return None };
+    if parsed.heredoc_at.is_some() {
+        return None;
     }
-    published
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["git", "-C", dir, "push", rest @ ..] => {
+            let dir = checkout(root, dir)?;
+            let push = git::Push::parse(rest)?;
+            (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| push.pinned(&dir, repo))
+        }
+        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| pin_env(line)),
+        _ => None,
+    }
 }
 
-fn is_publish(words: &[&str], dirs: &[PathBuf], root: &Path, repo: &str) -> bool {
-    // `git push` and `gh pr` (which runs git) read the local config too.
-    if !dirs.iter().all(|dir| outside::git_config::local_config_safe(dir)) {
-        return false;
-    }
-    match words {
-        ["git", "push", rest @ ..] => git::Push::parse(rest).is_some_and(|push| dirs.iter().all(|dir| push.allowed_in(dir, repo))),
-        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest).is_some_and(|command| command.allowed(dirs, root, repo)),
-        _ => false,
-    }
+/// `command` run with git's hooks and helpers off, whatever the checkout's
+/// config says (`gh` runs git in the shell's directory).
+pub(crate) fn pin_env(command: &str) -> String {
+    let env: Vec<String> = crate::agent_env::GIT_HELPERS_OFF_ENV.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    format!("{} {command}", env.join(" "))
+}
+
+/// `word` in single quotes, safe for any POSIX shell.
+pub(crate) fn quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// `dir` (absolute, or relative to `root`) resolved to a directory inside `root`.
+fn checkout(root: &Path, dir: &str) -> Option<std::path::PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let dir = root.join(dir).canonicalize().ok()?;
+    dir.starts_with(&root).then_some(dir)
 }
 
 /// `owner/name` of a github.com remote URL (https, ssh or scp form).
