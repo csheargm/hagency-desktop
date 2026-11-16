@@ -168,3 +168,48 @@ fn github_reads_run_without_a_card_and_writes_still_ask() {
         assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
 }
+#[test]
+fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |line: &str| allowed("claude.Bash", json!({"command": line}), dir.path());
+    let live = "gh pr view 26 --repo csheargm/hagency-demo-sandbox --json state,isDraft,headRefOid,reviews,comments -q '{state,isDraft,headRefOid,reviews:[.reviews[]|{author:.author.login,state}],comments:[.comments[]|{body}]}'";
+    for line in [
+        live,
+        "gh pr view 26 --json state --jq '.state'",
+        "gh pr view 26 --json files --jq '.files[] | \"\\(.path)\"'",
+        "gh pr list --json number,title --jq='.[] | select(.title | test(\"docs/\"))'",
+        "gh issue view 4 --json body -t '{{.body}}'",
+        "gh pr view 26 --json comments --template \"{{range .comments}}{{.body}}{{end}}\"",
+        "gh pr view 26 --json headRefOid -q '.headRefOid' 2>&1",
+        "gh pr view 26 -R cli/cli -c",
+    ] {
+        assert!(run(line), "{line}");
+    }
+    for line in [
+        "gh pr view 26 --json state -q \"$(id)\"",
+        "gh pr view 26 --json state -q .state > /tmp/out",
+        "gh pr view 26 --json state -q '.state' | sh",
+        "gh pr view 26 --json state -q `id`",
+        "gh pr merge 26 --json state -q '.state'",
+        "gh pr view 26 -q '.state' ../../etc/passwd",
+        "gh pr view https://evil.example/x/y/pull/1 --json state -q '.'",
+        "gh pr view --json state --template --jq https://evil.example/x/y/pull/1",
+        "gh pr view --json state -q -t evil.example/x/y",
+        "gh pr view 26 --json state -q env.GH_TOKEN",
+        "gh pr view 26 --json state -qenv.GH_TOKEN",
+        "gh pr view 26 -R cli/cli -cw",
+        "gh pr view 26 -R cli/cli -wc",
+        "gh pr view 26 -R cli/cli -c -w",
+        "gh pr view 26 -R cli/cli --web",
+        "gh repo view cli/cli --browse",
+        "gh pr view 26 --json state -cqenv.GH_TOKEN",
+        "gh pr view 26 --json state --jq '$ENV'",
+        "gh pr view 26 --json state --jq='$ENV.GH_TOKEN'",
+        "gh pr view 26 --json state -q '$__loc__'",
+        "gh pr view 26 --json state -q 'input_filename'",
+        "gh pr view 26 --json state -t '{{env \"GH_TOKEN\"}}'",
+        "gh pr view 26 --json state --template='{{ ENV }}'",
+    ] {
+        assert!(!run(line), "{line}");
+    }
+}

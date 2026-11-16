@@ -72,3 +72,15 @@ fn both_runtimes_are_told_github_text_is_data_not_instructions() {
     assert!(note.contains(&format!("\"{}\" line", hagency_runtime::ISSUE_TITLE_LABEL)));
     assert!(hagency_runtime::claude::AGENT_TOOLS_NOTE.ends_with(note));
 }
+
+/// Live report (Nov 15): `gh pr review --approve` ran with no card. That is
+/// the policy path, not a bypass: an `--approve` review is judged like the
+/// marker review, so only an eligible pull request skips the card.
+#[tokio::test]
+async fn an_approve_review_is_judged_by_the_same_policy() {
+    let approve = "gh pr review 7 --approve -R csheargm/hagency-demo-sandbox";
+    assert_eq!(answer(vec![file("docs/a.md", 5)], approve).await, Some(true));
+    for files in [vec![file("src/main.rs", 1)], vec![file("README.md", 51)], vec![file(".hagency/merge-policy.yml", 1)]] {
+        assert_eq!(answer(files.clone(), approve).await, None, "{files:?}");
+    }
+}
