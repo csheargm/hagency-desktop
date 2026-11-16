@@ -90,6 +90,8 @@ pub fn script_mod(vm: &mut ScriptVm) {
     agent_runtime_notice::script_mod(vm);
     agent_run_card::script_mod(vm);
     shared_permission_notice::script_mod(vm);
+    // The hover toolbar is used by RoomScreen's DSL, so it must exist first.
+    room_screen::hover_toolbar::script_mod(vm);
     room_screen::script_mod(vm);
     navigation_tab_bar::account_bar_script_mod(vm);
     room_filter_bubbles::script_mod(vm);
