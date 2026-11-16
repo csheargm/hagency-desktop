@@ -64,7 +64,8 @@ async fn approved(ledger: &mut Ledger, dir: &Path, source: &Fake) {
         ledger.set_auto_merge(owner, agent, true).unwrap();
     }
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), dir, "reviewer");
-    assert_eq!(gate::auto_answer(ledger, owner, &review, 11, source).await, Some(true));
+    assert_eq!(gate::auto_answer(ledger, owner, &review, "call", 11, source).await, Some(true));
+    ledger.settle_agent_review("call", true).unwrap();
 }
 
 #[tokio::test]
@@ -75,13 +76,29 @@ async fn an_unpinned_or_stale_merge_goes_to_the_owner() {
     let docs = Fake::new(vec![file("README.md", 5)]);
     approved(&mut ledger, temp.path(), &docs).await;
     let unpinned = bash("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &unpinned, 11, &docs).await, None, "GitHub would merge whatever the head is");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &unpinned, "call", 11, &docs).await, None, "GitHub would merge whatever the head is");
     *docs.head.borrow_mut() = "3333333333333333333333333333333333333333".into();
     let pinned_old = bash(&merge_line(), temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_old, 11, &docs).await, None, "the head moved after the review");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_old, "call", 11, &docs).await, None, "the head moved after the review");
     let pinned_new = bash("gh pr merge 7 --squash --match-head-commit 3333333333333333333333333333333333333333 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, 11, &docs).await, None, "the approval was for the old head");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, "call", 11, &docs).await, None, "the approval was for the old head");
     // One dispatch authorizes once, so the fresh review is recorded directly.
     ledger.record_agent_review(URL, "3333333333333333333333333333333333333333", "reviewer").unwrap();
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, 11, &docs).await, Some(true), "a fresh review of the new head counts");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, "call", 11, &docs).await, Some(true), "a fresh review of the new head counts");
+}
+
+#[tokio::test]
+async fn a_review_command_that_failed_does_not_qualify_a_merge() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = "@owner:example.org";
+    let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
+    let docs = Fake::new(vec![file("README.md", 5)]);
+    for agent in ["fixer", "reviewer"] {
+        ledger.set_auto_merge(owner, agent, true).unwrap();
+    }
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "toolu_review", 11, &docs).await, Some(true));
+    ledger.settle_agent_review("toolu_review", false).unwrap();
+    let merge = bash(&merge_line(), temp.path(), "fixer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "toolu_merge", 11, &docs).await, None, "the review never landed");
 }

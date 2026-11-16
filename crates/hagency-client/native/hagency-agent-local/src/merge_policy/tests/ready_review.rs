@@ -13,7 +13,7 @@ async fn answer(files: Vec<ChangedFile>, line: &str) -> Option<bool> {
     let owner = "@owner:example.org";
     let mut ledger = ledger_with(temp.path(), &["fixer"]);
     ledger.set_auto_merge(owner, "fixer", true).unwrap();
-    gate::auto_answer(&mut ledger, owner, &bash(line, temp.path(), "fixer"), 11, &Fake::new(files)).await
+    gate::auto_answer(&mut ledger, owner, &bash(line, temp.path(), "fixer"), "call", 11, &Fake::new(files)).await
 }
 
 #[tokio::test]
@@ -43,8 +43,8 @@ async fn a_review_needs_the_policys_ci_but_readying_a_draft_does_not() {
         let mut ledger = ledger_with(temp.path(), &["fixer"]);
         ledger.set_auto_merge(owner, "fixer", true).unwrap();
         let source = Fake { checks: checks.clone(), ..Fake::new(vec![file("README.md", 1)]) };
-        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(&review(), temp.path(), "fixer"), 11, &source).await, None, "{checks:?}");
-        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(READY, temp.path(), "fixer"), 11, &source).await, Some(true), "{checks:?}");
+        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(&review(), temp.path(), "fixer"), "call", 11, &source).await, None, "{checks:?}");
+        assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(READY, temp.path(), "fixer"), "call", 11, &source).await, Some(true), "{checks:?}");
     }
 }
 
@@ -60,9 +60,25 @@ async fn a_review_is_recorded_for_the_head_that_was_judged() {
     let mut ledger = ledger_with(temp.path(), &["reviewer"]);
     ledger.set_auto_merge(owner, "reviewer", true).unwrap();
     let docs = Fake::new(vec![file("README.md", 1)]);
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(&review(), temp.path(), "reviewer"), 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash(&review(), temp.path(), "reviewer"), "call", 11, &docs).await, Some(true));
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "allowed is not done: nothing counts before the command succeeds");
+    ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["reviewer"]);
     assert!(ledger.agent_reviewers(URL, BASE).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_or_unfinished_review_never_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = "@owner:example.org";
+    let mut ledger = ledger_with(temp.path(), &["reviewer"]);
+    ledger.set_auto_merge(owner, "reviewer", true).unwrap();
+    let docs = Fake::new(vec![file("README.md", 1)]);
+    let review = bash(&review(), temp.path(), "reviewer");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "failed", 11, &docs).await, Some(true));
+    ledger.settle_agent_review("failed", false).unwrap();
+    ledger.settle_agent_review("failed", true).unwrap();
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "a failed review is dropped, and cannot be settled again");
 }
 
 #[test]
