@@ -32,6 +32,9 @@ use crate::room::reply_preview::CollapsiblePreviewWidgetRefExt;
 use crate::home::editing_pane::EditingPaneRef;
 use crate::shared::mentionable_text_input::MentionableTextInputRef;
 
+/// The composer's placeholder in a thread.
+pub(crate) const THREAD_EMPTY_TEXT: &str = "Reply in thread…";
+
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
@@ -129,6 +132,26 @@ script_mod! {
         draw_bg +: {
             color: (COLOR_PRIMARY_DARKER)
             border_size: 0.0
+        }
+
+        // Shown only in a thread, so nobody types into a thread by mistake
+        // and thinks the room never got the message.
+        thread_banner := View {
+            visible: false
+            width: Fill height: Fit flow: Right spacing: 8
+            align: Align{y: 0.5}
+            padding: Inset{left: 10 right: 6 top: 4 bottom: 4}
+            margin: Inset{bottom: 4}
+            show_bg: true
+            draw_bg +: {color: mod.widgets.RINX_WARNING_BG}
+            thread_banner_label := Label {
+                width: Fill height: Fit
+                text: #(crate::i18n::tr("Replying in a thread. Only people who open this thread see these messages.")) i18n_text: "Replying in a thread. Only people who open this thread see these messages."
+                draw_text +: {color: mod.widgets.RINX_WARNING_FG text_style: theme.font_regular {font_size: 11}}
+            }
+            thread_banner_back := Button {
+                text: #(crate::i18n::tr("Back to room")) i18n_text: "Back to room"
+            }
         }
 
         // The top-most element is a preview of the message that the user is replying to, if any.
@@ -1463,13 +1486,33 @@ impl RoomInputBar {
             empty_text = crate::i18n::tr("Write a message (in Markdown)…");
         }
 
+        let in_thread = self.in_thread();
         self.text_input(cx, ids!(input_bar.mentionable_text_input.text_input))
-            .set_empty_text(cx, if self.mobile {
+            .set_empty_text(cx, if in_thread {
+                crate::i18n::tr(THREAD_EMPTY_TEXT)
+            } else if self.mobile {
                 if is_encrypted { crate::i18n::tr("Message") } else { crate::i18n::tr("Message (unencrypted)") }
             } else { empty_text }.to_string());
+        self.show_thread_mode(cx, in_thread);
 
         let enable = self.is_send_enabled;
         self.enable_send_message_button(cx, enable);
+    }
+
+    // TODO(R4): room_input_bar.rs is over budget; split thread mode (banner, tint) out.
+    fn in_thread(&self) -> bool {
+        self.timeline_kind.as_ref().is_some_and(|k| k.thread_root_event_id().is_some())
+    }
+    /// A thread composer is labelled and tinted, with a way back to the room.
+    fn show_thread_mode(&mut self, cx: &mut Cx, in_thread: bool) {
+        self.view.view(cx, ids!(thread_banner)).set_visible(cx, in_thread);
+        let (bg, border) = if in_thread {
+            (self.appearance.selected, self.appearance.accent)
+        } else {
+            (self.appearance.surface, self.appearance.border)
+        };
+        let mut input_bar = self.view.view(cx, ids!(input_bar));
+        script_apply_eval!(cx, input_bar, { draw_bg.color: #(bg), draw_bg.border_color: #(border) });
     }
 
     /// Returns true if the TSP signing checkbox is checked, false otherwise.
@@ -1710,6 +1753,8 @@ impl RoomInputBarRef {
         }
         inner.room_screen_widget_uid = Some(room_screen_widget_uid);
         inner.timeline_kind = Some(timeline_kind);
+        let encrypted = inner.is_encrypted;
+        inner.update_encryption_state(cx, encrypted);
         inner.mentionable_text_input(cx, ids!(mentionable_text_input))
             .set_room_context(cx, room_id.clone(), room_members.clone());
         inner.mentionable_text_input(cx, ids!(editing_pane.editing_content.edit_text_input))
@@ -1932,5 +1977,45 @@ mod typing_broadcast_tests {
         assert_eq!(state.observe(false,true),None);
         assert_eq!(state.observe(true,false),Some(true));
         assert_eq!(state.observe(true,true),Some(false));
+    }
+}
+
+#[cfg(test)]
+mod thread_mode_tests {
+    use super::*;
+    use crate::sliding_sync::TimelineKind;
+
+    /// A thread composer says so: its own placeholder, a banner with a way
+    /// back to the room. The room composer shows neither.
+    #[test]
+    fn a_thread_composer_is_labelled_and_offers_back_to_room() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let bar = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomInputBar {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let room: OwnedRoomId = "!room:test".try_into().unwrap();
+        let root: OwnedEventId = "$root:test".try_into().unwrap();
+        let input = |cx: &mut Cx| bar.text_input(cx, ids!(input_bar.mentionable_text_input.text_input)).empty_text();
+        let thread = TimelineKind::Thread { room_id: room.clone(), thread_root_event_id: root };
+        bar.as_room_input_bar().set_room_context(&mut cx, WidgetUid(1), thread, None);
+        assert!(bar.view(&mut cx, ids!(thread_banner)).visible());
+        assert!(bar.button(&mut cx, ids!(thread_banner_back)).visible());
+        assert_eq!(input(&mut cx), crate::i18n::tr(THREAD_EMPTY_TEXT));
+        bar.as_room_input_bar().set_room_context(&mut cx, WidgetUid(1), TimelineKind::MainRoom { room_id: room }, None);
+        assert!(!bar.view(&mut cx, ids!(thread_banner)).visible());
+        assert_ne!(input(&mut cx), crate::i18n::tr(THREAD_EMPTY_TEXT));
+    }
+    #[test]
+    fn thread_mode_words_have_a_chinese_translation() {
+        use crate::i18n::{Language, text_for};
+        for key in [THREAD_EMPTY_TEXT, "Back to room", "Replying in a thread. Only people who open this thread see these messages."] {
+            assert_eq!(text_for(Language::English, key), key);
+            assert_ne!(text_for(Language::Chinese, key), key, "{key}");
+        }
     }
 }
