@@ -8,7 +8,7 @@ script_mod! {
     use mod.widgets.*
 
     mod.widgets.CreateAgentCta = #(CreateAgentCta::register_widget(vm)) {
-        width: Fill height: Fit flow: Down spacing: 12 visible: false
+        width: Fill height: Fit flow: Down spacing: 12
         headline := Label {
             width: Fill height: Fit
             text: #(crate::i18n::tr("Start with your agent")) i18n_text: "Start with your agent"
@@ -16,8 +16,8 @@ script_mod! {
         }
         hint := Label {
             width: Fill height: Fit flow: Flow.Right{wrap: true}
-            text: #(crate::i18n::tr("One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after."))
-            i18n_text: "One button creates an agent on this Mac's Claude Code or Codex login and opens its private chat. Rooms and invitations come after."
+            text: #(crate::i18n::tr("One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after."))
+            i18n_text: "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after."
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (14.0 * mod.widgets.RINX_TEXT_SCALE)}}
         }
         create := Button {text: #(crate::i18n::tr("Create your agent")) i18n_text: "Create your agent"}
@@ -46,11 +46,8 @@ impl Widget for CreateAgentCta {
         }
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        let has_agent = crate::hagency::agent_presence::has_agent();
-        if has_agent.is_none() {
-            crate::hagency::agent_presence::refresh();
-        }
-        self.view.set_visible(cx, show_cta(has_agent));
+        // Shown or hidden by the welcome screen: a view hidden by itself is never
+        // drawn again, so it could not show itself once an account is first run.
         self.view.draw_walk(cx, scope, walk)
     }
 }
