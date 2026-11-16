@@ -109,6 +109,13 @@ fn existing_agents_are_seeded_caught_up_on_first_run() {
     assert!(back.needs_catch_up("agt_later"), "an Agent created after the upgrade catches up");
 }
 
+#[test]
+fn the_upgrade_seed_covers_agents_in_every_state() {
+    let listing = json!({"agents": [{"id": "agt_a", "state": "active", "puppetMxid": "@p:x"},
+        {"id": "agt_s", "state": "suspended"}, {"id": "agt_c", "state": "creating"}, {"id": ""}]});
+    assert_eq!(super::super::listed_agent_ids(&listing), ["agt_a", "agt_s", "agt_c"]);
+}
+
 /// Review fix: a room not loaded yet when Joined arrives is retried, and the
 /// retries are bounded.
 #[test]

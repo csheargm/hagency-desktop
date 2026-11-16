@@ -46,6 +46,13 @@ pub(crate) fn active_agents_newest_first(listing: &Value) -> Vec<&Value> {
     rows
 }
 
+/// Every listed Agent id, in any state: the upgrade seed must cover Agents
+/// that are suspended or still creating, not only the active ones.
+pub(crate) fn listed_agent_ids(listing: &Value) -> Vec<String> {
+    listing["agents"].as_array().map(|rows| rows.iter().filter_map(|row| row["id"].as_str())
+        .filter(|id| !id.is_empty()).map(str::to_owned).collect()).unwrap_or_default()
+}
+
 /// Every active Agent with an identity, newest first.
 pub(crate) fn active_agents(listing: &Value) -> Vec<AgentPick> {
     active_agents_newest_first(listing).into_iter().map(agent_pick).collect()

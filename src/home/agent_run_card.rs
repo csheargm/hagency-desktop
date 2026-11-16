@@ -147,9 +147,9 @@ impl Widget for AgentRunCard {
         if let Some(action) = {
             use crate::agent_chat::reply::AgentReplyWidgetExt;
             self.view.agent_reply(cx, ids!(answer)).clicked_action(cx, actions)
-        } && let Some((card, _)) = self.run.as_ref() && let Some(key) = self.key.as_deref()
+        } && let Some(entry) = self.page_key.as_deref().and_then(|k| self.pages.iter().find(|e| e.key == k))
         {
-            super::agent_run_answer::act(cx, action, &card.room_id, key, &card.answer);
+            super::agent_run_answer::act(cx, action, entry);
         }
         let Some(key) = self.key.as_deref() else {
             return;

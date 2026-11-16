@@ -95,11 +95,13 @@ pub fn catch_up_agents() {
 async fn catch_up(epoch: u64) -> Result<(), String> {
     let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
     let me = crate::sliding_sync::current_user_id().ok_or("matrix_sign_in_required")?;
-    let agents = active_agents(&Service::for_current()?.execute(Command::Agents).await?);
+    let listing = Service::for_current()?.execute(Command::Agents).await?;
+    let agents = active_agents(&listing);
     let saved = prefs::load_current();
     if !saved.catch_up_seeded() {
-        // Upgrade: Agents that already exist keep their rooms as the owner left them.
-        prefs::update_current(|p| p.seed_catch_up(agents.iter().map(|a| a.id.as_str())))?;
+        // Upgrade: Agents that already exist (any state) keep their rooms as the owner left them.
+        let ids = super::listed_agent_ids(&listing);
+        prefs::update_current(|p| p.seed_catch_up(ids.iter().map(String::as_str)))?;
         return Ok(());
     }
     for agent in agents.into_iter().filter(|a| saved.joins_rooms(&a.id) && saved.needs_catch_up(&a.id)) {

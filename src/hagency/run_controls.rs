@@ -229,8 +229,10 @@ pub(super) fn authenticated(
 }
 pub fn for_event(room: &RoomId, event: &str, include_thread: bool) -> Vec<Entry> {
     let store = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut entries: Vec<_> = store
-        .entries
+    runs_for(&store.entries, room, event, include_thread)
+}
+fn runs_for(all: &[Entry], room: &RoomId, event: &str, include_thread: bool) -> Vec<Entry> {
+    let mut entries: Vec<_> = all
         .iter()
         .filter(|e| {
             e.card.room_id == room.as_str()
@@ -426,12 +428,8 @@ pub(crate) fn fixture(key: &str, state: RunState, answer: &str) -> Entry {
 #[test]
 fn every_run_of_a_message_is_listed() {
     let room: OwnedRoomId = "!room:test".try_into().unwrap();
-    let mut store = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    let saved = std::mem::take(&mut store.entries);
-    store.entries = (0..5).map(|i| fixture(&format!("$run{i}"), if i == 4 { RunState::Running } else { RunState::Completed }, "a")).collect();
-    drop(store);
-    let listed = for_event(&room, "$trigger", false);
-    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries = saved;
+    let all: Vec<_> = (0..5).map(|i| fixture(&format!("$run{i}"), if i == 4 { RunState::Running } else { RunState::Completed }, "a")).collect();
+    let listed = runs_for(&all, &room, "$trigger", false);
     assert_eq!(listed.len(), 5);
     assert_eq!(listed[0].key, "$run4", "the active run comes first");
 }

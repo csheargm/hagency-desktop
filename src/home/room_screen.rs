@@ -1733,7 +1733,7 @@ impl Widget for RoomScreen {
                     && tl.kind.room_id().as_str() == fwd.room
                 {
                     let messages = tl.items.iter().filter_map(|i| i.as_event()).filter_map(ForwardMessage::from_event).collect();
-                    match super::agent_run_answer::forward_list(messages, &fwd.run_event, &fwd.answer) {
+                    match super::agent_run_answer::forward_list(messages, fwd) {
                         Some((messages, selected)) => cx.action(ForwardAction::Select {
                             title: self.room_name_id.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "Chat history".into()),
                             messages, selected,
