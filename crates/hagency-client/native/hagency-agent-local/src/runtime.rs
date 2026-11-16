@@ -1020,6 +1020,7 @@ async fn permission(
     owner: &str,
     scope: &Scope,
     dispatch: &str,
+    call: &str,
     tool: String,
     arguments: Value,
     cwd: &Path,
@@ -1042,7 +1043,7 @@ async fn permission(
     // Opt-in agent auto-merge: a policy-qualified merge or an approving review
     // is answered without a card; every other case asks exactly as before.
     // TODO(R4): runtime.rs is over budget; split Claude permission handling into runtime/permission.rs.
-    if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, now(), &crate::merge_policy::github::GhCli).await {
+    if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), &crate::merge_policy::github::GhCli).await {
         return ToolAnswer::allowed(allowed);
     }
     match ledger.tool_disposition(&proposal, now()) {
@@ -1140,7 +1141,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
     }
     async fn permission(
         &mut self,
-        _request_id: &str,
+        tool_use_id: &str,
         tool: String,
         arguments: Value,
         directory: &Path,
@@ -1150,12 +1151,16 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             self.owner,
             self.scope,
             self.dispatch,
+            tool_use_id,
             tool,
             arguments,
             directory,
             self.queue,
         )
         .await
+    }
+    fn tool_finished(&mut self, tool_use_id: &str, succeeded: bool) -> Result<()> {
+        self.ledger.settle_agent_review(tool_use_id, succeeded).map_err(Into::into)
     }
 }
 // Personal accounting is retained by its original session ledger and native
@@ -1512,6 +1517,9 @@ async fn run_octos(
                     owner,
                     scope,
                     dispatch,
+                    // No completion signal is wired for Octos yet, so an
+                    // approving review there never counts toward auto-merge.
+                    "",
                     "octos.approval".into(),
                     params,
                     &directory,

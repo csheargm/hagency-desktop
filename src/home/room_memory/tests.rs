@@ -298,3 +298,16 @@ fn card_renders_its_states_for_each_viewer() {
     card.sync(&mut cx);
     assert!(!card.view.visible(), "a message without a proposal stays a plain notice");
 }
+
+#[test]
+fn account_switch_loads_the_rooms_memory_again() {
+    use matrix_sdk::ruma::room_id;
+    let room = room_id!("!r:example.test");
+    let mut store = super::store::Store::default();
+    assert!(store.first_request(room, Some("@a:example.test")));
+    assert!(!store.first_request(room, Some("@a:example.test")));
+    assert!(store.first_request(room, Some("@b:example.test")), "account B must load its own memory");
+    assert!(store.first_request(room, Some("@a:example.test")), "switching back to A loads again");
+    store.forget_requests(room);
+    assert!(!store.was_requested(room, Some("@a:example.test")));
+}

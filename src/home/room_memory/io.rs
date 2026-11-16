@@ -8,7 +8,7 @@ use hagency::room_skills::SKILL_STATE_TYPE;
 use hagency::room_memory_timeline::{ScanKind, ScanPage, ScanState, ScanStep, TimelineScan, SCAN_PAGE_EVENTS, reduce_timeline};
 use matrix_sdk::{
     Client,
-    deserialized_responses::{DeviceLinkProblem, TimelineEvent, TimelineEventKind, VerificationLevel, VerificationState},
+    deserialized_responses::{TimelineEvent, TimelineEventKind},
     room::{MessagesOptions, Room},
     ruma::{OwnedRoomId, RoomId, UserId, events::room::power_levels::UserPowerLevel},
 };
@@ -152,18 +152,11 @@ fn untrusted(event: &TimelineEvent, raw: &Value) -> bool {
     match &event.kind {
         TimelineEventKind::UnableToDecrypt { .. } => true,
         TimelineEventKind::PlainText { .. } => false,
-        TimelineEventKind::Decrypted(d) => {
-            d.encryption_info.sender.as_str() != raw["sender"].as_str().unwrap_or_default()
-                || match &d.encryption_info.verification_state {
-                    VerificationState::Verified => false,
-                    VerificationState::Unverified(level) => matches!(
-                        level,
-                        VerificationLevel::None(DeviceLinkProblem::MissingDevice | DeviceLinkProblem::InsecureSource)
-                            | VerificationLevel::MismatchedSender
-                            | VerificationLevel::VerificationViolation
-                    ),
-                }
-        }
+        TimelineEventKind::Decrypted(d) => super::authentic::identity_untrusted(
+            d.encryption_info.sender.as_str(),
+            &d.encryption_info.verification_state,
+            raw["sender"].as_str().unwrap_or_default(),
+        ),
     }
 }
 

@@ -170,20 +170,22 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     let docs = Fake::new(vec![file("README.md", 5)]);
     let merge = bash(&merge_line(), temp.path(), "fixer");
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "off by default: the card asks");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "off by default: the card asks");
     ledger.set_auto_merge(owner, "fixer", true).unwrap();
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), 11, &docs).await, Some(true));
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "no other Agent approved yet");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no other Agent approved yet");
     let self_review = bash("gh pr review 7 --approve", temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &self_review, 11, &docs).await, Some(true));
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "its own approval does not count");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, None, "the reviewer's switch is off");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &self_review, "call", 11, &docs).await, Some(true));
+    ledger.settle_agent_review("call", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "its own approval does not count");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, None, "the reviewer's switch is off");
     ledger.set_auto_merge(owner, "reviewer", true).unwrap();
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, Some(true));
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, Some(true));
+    ledger.settle_agent_review("call", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(true));
     let mut again = merge.clone();
     again.arguments = json!({"command": format!("{} --repo csheargm/hagency-demo-sandbox", merge_line().replace(" -R csheargm/hagency-demo-sandbox", ""))});
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &again, 11, &docs).await, None, "one automatic merge per pull request");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &again, "call", 11, &docs).await, None, "one automatic merge per pull request");
 }
 
 #[tokio::test]
@@ -198,9 +200,9 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""));
     let mut approve = bash("", temp.path(), "reviewer");
     approve.arguments = json!({"command": review});
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, 11, &code).await, None, "a code review is not low risk: the card asks");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, "call", 11, &code).await, None, "a code review is not low risk: the card asks");
     let merge = bash(&merge_line(), temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &code).await, None);
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &code).await, None);
     assert!(ledger.authorize_tool(&merge, 11).is_err(), "the owner's card is still required");
 }
 
@@ -228,14 +230,16 @@ async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
     }
     let docs = Fake::new(vec![file("README.md", 5)]);
     let merge = bash(&merge_line(), temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), 11, &docs).await, Some(true));
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "no review recorded yet");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no review recorded yet");
     let own = bash("gh pr review 7 --approve", temp.path(), "fixer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &own, 11, &docs).await, Some(true), "recorded, but as the author's");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, None, "the author's own verdict does not count");
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &own, "call", 11, &docs).await, Some(true), "recorded, but as the author's");
+    ledger.settle_agent_review("call", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "the author's own verdict does not count");
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, 11, &docs).await, Some(true));
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, 11, &docs).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, Some(true));
+    ledger.settle_agent_review("call", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(true));
 }
 
 fn codex(command: Value, dir: &Path) -> ToolProposal {

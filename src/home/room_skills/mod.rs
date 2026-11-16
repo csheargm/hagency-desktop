@@ -21,6 +21,9 @@ pub fn script_mod(vm: &mut ScriptVm) {
 /// The skill proposal an Agent's message carries, if it parses and the event's
 /// real sender is an Agent of this room's homeserver.
 pub fn proposal_of(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<model::Proposal> {
+    if !crate::home::room_memory::authentic::event_authentic(event, room) {
+        return None;
+    }
     let raw = event.latest_json()?;
     let value: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
     model::trusted_proposal(&value["content"], event.sender().as_str(), room.as_str())

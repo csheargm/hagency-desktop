@@ -3,6 +3,7 @@
 //! are the backend's; this module only reads and writes through the signed-in
 //! person's own Matrix client, so the homeserver (or, in an encrypted room,
 //! the readers) enforce who may change memory.
+pub(crate) mod authentic;
 pub mod auto;
 pub mod card;
 pub(crate) mod io;
@@ -33,6 +34,9 @@ pub fn script_mod(vm: &mut ScriptVm) {
 /// The memory proposal an Agent's message carries, if it parses and the
 /// event's actual sender is an Agent of this room's homeserver.
 pub fn proposal_of(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<model::Proposal> {
+    if !crate::home::room_memory::authentic::event_authentic(event, room) {
+        return None;
+    }
     let raw = event.latest_json()?;
     let value: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
     model::trusted_proposal(&value["content"], event.sender().as_str(), room.as_str())

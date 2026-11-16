@@ -27,7 +27,8 @@ pub const APPROVE_MARKER: &str = "Hagency verdict: APPROVE";
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS auto_merge (agent TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1))) STRICT;
 DROP TABLE IF EXISTS auto_merge_reviews;
 CREATE TABLE IF NOT EXISTS auto_merge_head_reviews (pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, PRIMARY KEY(pr,head,reviewer)) STRICT;
-CREATE TABLE IF NOT EXISTS auto_merge_used (pr TEXT PRIMARY KEY, agent TEXT NOT NULL) STRICT;";
+CREATE TABLE IF NOT EXISTS auto_merge_used (pr TEXT PRIMARY KEY, agent TEXT NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS auto_merge_pending_reviews (call TEXT PRIMARY KEY, pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL) STRICT;";
 
 impl Ledger {
     /// Switch agent auto-merge on or off for one Agent (off unless set).
@@ -44,6 +45,24 @@ impl Ledger {
     pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str) -> Result<()> {
         self.db.execute("INSERT OR IGNORE INTO auto_merge_head_reviews VALUES (?,?,?)", (pr, head, reviewer))?;
         Ok(())
+    }
+    /// An allowed review not yet run: it counts only once tool call `call`
+    /// reports success ([`Ledger::settle_agent_review`]).
+    pub(crate) fn hold_agent_review(&mut self, call: &str, pr: &str, head: &str, reviewer: &str) -> Result<()> {
+        self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_reviews VALUES (?,?,?,?)", (call, pr, head, reviewer))?;
+        Ok(())
+    }
+    /// Tool call `call` finished: a held review counts only if it succeeded.
+    pub fn settle_agent_review(&mut self, call: &str, succeeded: bool) -> Result<()> {
+        use rusqlite::OptionalExtension;
+        let held: Option<(String, String, String)> = self
+            .db
+            .query_row("DELETE FROM auto_merge_pending_reviews WHERE call=? RETURNING pr, head, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        match held {
+            Some((pr, head, reviewer)) if succeeded => self.record_agent_review(&pr, &head, &reviewer),
+            _ => Ok(()),
+        }
     }
     /// The Agents that approved `pr` at exactly commit `head`.
     pub(crate) fn agent_reviewers(&self, pr: &str, head: &str) -> Result<Vec<String>> {
@@ -199,7 +218,9 @@ pub(crate) fn repo_name(text: &str) -> Option<&str> {
 }
 
 /// Answer `proposal` without a card when the policy allows it, else `None`.
-pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, now: i64, source: &impl PrSource) -> Option<bool> {
+/// `call` is the tool call's id; an allowed review is held under it and
+/// counts only after that call succeeds (an empty id never counts).
+pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, call: &str, now: i64, source: &impl PrSource) -> Option<bool> {
     let command = parse_command(proposal)?;
     let agent = proposal.scope.agent.clone();
     if !ledger.auto_merge(&agent).ok()? {
@@ -217,10 +238,10 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         ToolPolicy::AskOwner => ledger.approve_tool(owner, proposal, now).and_then(|_| ledger.authorize_tool(proposal, now)).is_ok(),
         _ => ledger.authorize_tool(proposal, now).is_ok(),
     };
-    if allowed && command.kind == Kind::Review {
+    if allowed && command.kind == Kind::Review && !call.is_empty() {
         // Residual race: a push between this read and the review lands an
         // approval on the old head; it then never matches the new one.
-        ledger.record_agent_review(&view.url, &view.head_sha, &agent).ok()?;
+        ledger.hold_agent_review(call, &view.url, &view.head_sha, &agent).ok()?;
     }
     Some(allowed)
 }

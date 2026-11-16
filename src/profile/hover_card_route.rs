@@ -67,4 +67,3 @@ pub(super) fn room_name(cx: &mut Cx, info: &UserProfileAndRoomId) -> String {
         .get_room_name(&info.room_id)
         .map_or_else(|| UNNAMED_ROOM.to_string(), |name| name.to_string())
 }
-

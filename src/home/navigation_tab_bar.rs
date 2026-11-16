@@ -272,4 +272,3 @@ pub enum NavigationBarAction {
     /// is always shown in Desktop view mode.
     ToggleSpacesBar,
 }
-

@@ -57,7 +57,7 @@ pub fn refresh(room_id: &RoomId) {
 
 /// Loads a room's memory the first time anything asks for it.
 pub fn ensure_loaded(room_id: &RoomId) {
-    if store::lock().first_request(room_id) {
+    if store::lock().first_request(room_id, store::me().as_deref()) {
         refresh(room_id);
     }
 }

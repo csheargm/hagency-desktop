@@ -49,6 +49,10 @@ pub trait Host: Send {
         arguments: Value,
         directory: &Path,
     ) -> impl Future<Output = ToolAnswer> + Send;
+    /// Claude reported the result of tool call `tool_use_id`.
+    fn tool_finished(&mut self, _tool_use_id: &str, _succeeded: bool) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// The original owned stream is attached immediately after system/init. Every
@@ -415,8 +419,8 @@ async fn drive<H: Host, C: Capture>(
             claude::Message::Permission {
                 request_id,
                 tool_name,
+                tool_use_id,
                 input,
-                ..
             } => {
                 let directory = approval_directory(&profile.cwd, &input);
                 enum Decision {
@@ -466,7 +470,7 @@ async fn drive<H: Host, C: Capture>(
                     }
                     Decision::Tool(
                         host.permission(
-                            &request_id,
+                            tool_use_id.as_deref().unwrap_or_default(),
                             format!("claude.{tool_name}"),
                             input,
                             &directory,
@@ -549,6 +553,8 @@ async fn drive<H: Host, C: Capture>(
                             && let Some(id) = block["tool_use_id"].as_str()
                         {
                             claude_controls::remember_tool(returns, id)?;
+                            // TODO(R4): claude_turn.rs is over budget; split event handling out.
+                            host.tool_finished(id, block["is_error"] != true)?;
                         }
                     }
                 }
