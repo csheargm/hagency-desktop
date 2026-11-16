@@ -90,6 +90,11 @@ pub fn github_button_visible(available: bool, oauth: bool, registration_open: bo
     available && oauth && !registration_open
 }
 
+/// Username sent to Pasion at sign-up. Matrix localparts are lowercase, and a
+/// mixed-case Pasion username ("Betty") cannot later sign in with a password
+/// through Matrix clients that lowercase it, so normalise before registering.
+pub fn normalize_signup_username(raw: &str) -> String { raw.trim().to_lowercase() }
+
 /// Optional email: blank is fine, anything else must look like an address.
 pub fn validate_optional_email(email: &str) -> Result<Option<String>, &'static str> {
     let email = email.trim();
