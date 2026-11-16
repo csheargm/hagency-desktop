@@ -2965,10 +2965,13 @@ async fn retry_reply<T: Transport>(
     if !flush_record_messages(console, lease, cancel, config, record).await? { return Ok(()); }
     let sent = if record.dispatch.body.is_empty() {
         send_encrypted_reply(console, owner, ledger, lease, cancel, config, record).await
-    } else if send_card_reply(console, owner, ledger, lease, cancel, config, record).await? {
-        Ok(())
     } else {
-        send_reply(console, owner, ledger, lease, cancel, record).await
+        // Card failures go to the reply-error handling below, like any reply.
+        match send_card_reply(console, owner, ledger, lease, cancel, config, record).await {
+            Ok(true) => Ok(()),
+            Ok(false) => send_reply(console, owner, ledger, lease, cancel, record).await,
+            Err(error) => Err(error),
+        }
     };
     match sent {
         Err(RuntimeError::Stopped) => Err(RuntimeError::Stopped),
