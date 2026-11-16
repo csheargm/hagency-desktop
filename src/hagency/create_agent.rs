@@ -116,6 +116,13 @@ impl DialogState {
     pub fn available(&self) -> Vec<usize> {
         (0..HARNESSES.len()).filter(|i| matches!(&self.probes[*i], Some(Ok(models)) if !models.is_empty())).collect()
     }
+    /// A probe failed because this window's Agent sign-in expired, not because
+    /// the Mac lacks a Claude Code or Codex login: only signing in again helps.
+    pub fn needs_sign_in(&self) -> bool {
+        self.probes.iter().flatten().any(|probe| matches!(probe, Err(code) if matches!(code.as_str(),
+            "native_resume_missing" | "native_resume_revoked" | "sign_in_required" | "matrix_sign_in_required"
+            | "matrix_oauth_sign_in_required" | "matrix_authorization_required")))
+    }
     pub fn checking(&self) -> bool {
         self.probes.iter().any(Option::is_none)
     }

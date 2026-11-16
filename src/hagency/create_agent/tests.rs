@@ -106,3 +106,14 @@ fn backup_is_none_unless_a_listed_model_is_chosen() {
     state.backup = 2;
     assert_eq!(state.backup_choice().as_deref(), Some("ollama:qwen3:8b|local"));
 }
+#[test]
+fn revoked_agent_sign_in_asks_to_sign_in_again_not_for_a_provider_login() {
+    // Regression: a revoked owner sign-in showed "No Claude Code or Codex login found".
+    let mut state = ready(None, None);
+    assert!(!state.needs_sign_in());
+    state.probes = [Some(Err("native_resume_revoked".into())), Some(Err("native_resume_revoked".into()))];
+    assert!(state.needs_sign_in());
+    assert!(state.available().is_empty());
+    state.probes[1] = None;
+    assert!(state.needs_sign_in() && state.checking());
+}
