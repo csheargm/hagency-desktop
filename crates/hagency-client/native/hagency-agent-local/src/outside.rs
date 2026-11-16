@@ -80,7 +80,7 @@ pub(crate) fn resolves_inside(path: &str, cwd: &Path) -> bool {
 /// resolve symlinks through the deepest existing ancestor so a link cannot lead out.
 fn resolves_within(path: &str, base: &Path, root: &Path) -> bool {
     let Ok(root) = std::fs::canonicalize(root) else { return false };
-    let resolved = shell::lexical_join(base, path);
+    let Some(resolved) = physical_join(base, path) else { return false };
     let mut existing = resolved.as_path();
     let mut tail = PathBuf::new();
     while !existing.exists() {
@@ -89,6 +89,26 @@ fn resolves_within(path: &str, base: &Path, root: &Path) -> bool {
         existing = parent;
     }
     std::fs::canonicalize(existing).is_ok_and(|real| real.join(tail).starts_with(&root))
+}
+
+/// Join `path` onto `base` the way the OS opens it: a `..` steps out of the
+/// real (symlink-resolved) directory, so `link/../x` with `link -> /etc` is
+/// `/x`, not `<base>/x` (GPT review, Nov 15).
+fn physical_join(base: &Path, path: &str) -> Option<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for part in base.join(path).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                if resolved.exists() {
+                    resolved = std::fs::canonicalize(&resolved).ok()?;
+                }
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => resolved.push(other),
+        }
+    }
+    Some(resolved)
 }
 
 /// Every segment of `line` is a known command whose path words stay in `root`.
@@ -103,23 +123,37 @@ fn read_only_shell(line: &str, root: &Path) -> bool {
             return false;
         }
         match words.as_slice() {
-            ["cd", target] => {
-                if target.starts_with('-') || !inside_all(target, &dirs, root) { return false; }
-                let next: Vec<PathBuf> = dirs.iter().map(|dir| shell::lexical_join(dir, target)).collect();
-                dirs.extend(next);
-                true
-            }
-            _ => rules::segment_allowed(&words) && rules::paths(&words).all(|w| inside_all(w, &dirs, root)),
+            ["cd", target] => enter_dir(target, &mut dirs, root),
+            _ => segment_in_workspace(&words, &dirs, root),
         }
     })
 }
 
-fn inside_all(path: &str, dirs: &[PathBuf], root: &Path) -> bool {
+/// A `cd <target>` inside `root` from every directory in `dirs`; on success
+/// `dirs` also holds where it leads (the line may be in either afterwards).
+pub(crate) fn enter_dir(target: &str, dirs: &mut Vec<PathBuf>, root: &Path) -> bool {
+    if target.starts_with('-') || !inside_all(target, dirs, root) {
+        return false;
+    }
+    let next: Vec<PathBuf> = dirs.iter().map(|dir| shell::lexical_join(dir, target)).collect();
+    dirs.extend(next);
+    true
+}
+
+/// One non-`cd` segment that outside mode lets run from any of `dirs`.
+/// A git command also needs every directory's local config to run no helper.
+pub(crate) fn segment_in_workspace(words: &[&str], dirs: &[PathBuf], root: &Path) -> bool {
+    rules::segment_allowed(words)
+        && rules::paths(words).all(|w| inside_all(w, dirs, root))
+        && (words.first() != Some(&"git") || dirs.iter().all(|dir| git_config::local_config_safe(dir)))
+}
+
+pub(crate) fn inside_all(path: &str, dirs: &[PathBuf], root: &Path) -> bool {
     dirs.iter().all(|dir| resolves_within(path, dir, root))
 }
 
 /// `git commit ... -F -` (the heredoc is its message).
-fn is_commit_from_stdin(words: &[&str]) -> bool {
+pub(crate) fn is_commit_from_stdin(words: &[&str]) -> bool {
     words.starts_with(&["git", "commit"]) && words.windows(2).any(|pair| matches!(pair, ["-F" | "--file", "-"]))
 }
 
@@ -127,5 +161,11 @@ fn is_commit_from_stdin(words: &[&str]) -> bool {
 mod tests;
 #[cfg(test)]
 mod bypass_tests;
+#[cfg(test)]
+mod filter_tests;
+#[cfg(test)]
+mod git_config_tests;
+mod filters;
+pub(crate) mod git_config;
 pub(crate) mod rules;
 pub(crate) mod shell;

@@ -8,6 +8,7 @@ pub mod codex;
 pub mod issue_watch;
 pub mod merge_policy;
 pub mod outside;
+pub mod watch_trust;
 // TODO(split): lib.rs is over budget; the ledger belongs in ledger.rs.
 pub mod provider_failure;
 pub mod remembered;
@@ -1416,6 +1417,9 @@ fn validate_tool(
             // "Ask only for outside changes" (this Agent, this device) skips the
             // question for a request that cannot leave the workspace.
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
+            // Issue-watch push trust (owner opt-in): publishing a branch or PR to the watched repository.
+            // TODO(R4): lib.rs is over budget; move these approval shortcuts with the tool methods.
+            ToolPolicy::AskOwner if watch_trust::allows(db, proposal, approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE)? => {}
             // "Always allow": the owner remembered exactly this request here.
             ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref(), now)? => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,

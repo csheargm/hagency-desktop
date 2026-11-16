@@ -12,6 +12,14 @@ pub(crate) const MODE_LABELS: [&str; 4] = [
     "Fully automatic: every new issue",
 ];
 
+/// The push-trust choice, off first (English keys; translate on use). On lets
+/// the Agent push branches and open pull requests in the watched repository,
+/// from the watched Room, without a card; merges stay with the merge policy.
+pub(crate) const PUSH_LABELS: [&str; 2] = [
+    "Ask before each push or pull request",
+    "Let this Agent push branches and open pull requests here without asking",
+];
+
 /// The one-line explanation under the mode choice.
 pub(crate) fn hint(index: usize) -> &'static str {
     match MODES.get(index).copied() {
@@ -38,8 +46,9 @@ pub(crate) fn rooms(bindings: &[Value], mut name: impl FnMut(&Value) -> String) 
 }
 /// The `{issueWatch}` change to save. Off needs nothing else; the others
 /// need an `owner/name` repository and one of the Agent's rooms. The engine
-/// checks both again before it stores anything.
-pub(crate) fn change(index: usize, repo: &str, room_id: Option<&str>) -> Result<Value, &'static str> {
+/// checks both again before it stores anything. Push trust is saved only with
+/// an active watch (`push_index` is the `PUSH_LABELS` position).
+pub(crate) fn change(index: usize, repo: &str, room_id: Option<&str>, push_index: usize) -> Result<Value, &'static str> {
     let mode = MODES.get(index).copied().unwrap_or("off");
     let repo = repo.trim();
     let room_id = room_id.unwrap_or("");
@@ -53,5 +62,6 @@ pub(crate) fn change(index: usize, repo: &str, room_id: Option<&str>) -> Result<
         }
     }
     let label = ::hagency::issue_watch::DEFAULT_LABEL;
-    Ok(json!({"issueWatch": {"mode": mode, "label": label, "repo": repo, "roomId": room_id}}))
+    let push_trusted = mode != "off" && push_index == 1;
+    Ok(json!({"issueWatch": {"mode": mode, "label": label, "repo": repo, "roomId": room_id, "pushTrusted": push_trusted}}))
 }

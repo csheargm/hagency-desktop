@@ -11,20 +11,28 @@ use std::path::{Path, PathBuf};
 pub(crate) struct Line {
     pub segments: Vec<Vec<String>>,
     pub heredoc_at: Option<usize>,
+    /// `after_and[i]`: segment `i` runs only if segment `i - 1` succeeded
+    /// (joined by `&&`); always false for the first segment.
+    pub after_and: Vec<bool>,
 }
 
 /// Read `line`, or `None` when any part of it is outside what this reader knows.
 /// Lines after a heredoc's terminator are further commands, read the same way.
 pub(crate) fn parse(line: &str) -> Option<Line> {
     let Some((header, after)) = split_heredoc(line)? else {
-        return Some(Line { segments: segments(line)?, heredoc_at: None });
+        let (segments, after_and) = segments(line)?;
+        return Some(Line { segments, heredoc_at: None, after_and });
     };
-    let mut all = segments(header)?;
+    let (mut all, mut after_and) = segments(header)?;
     let heredoc_at = Some(all.len() - 1);
     for next in after.split('\n').filter(|l| !l.trim().is_empty()) {
-        all.extend(segments(next)?);
+        let (more, mut joins) = segments(next)?;
+        // A new line runs whatever the line before it did.
+        joins[0] = false;
+        all.extend(more);
+        after_and.append(&mut joins);
     }
-    Some(Line { segments: all, heredoc_at })
+    Some(Line { segments: all, heredoc_at, after_and })
 }
 
 /// Split at a `<<'TAG'` heredoc: the command line before it and the text after
@@ -53,9 +61,11 @@ fn split_heredoc(line: &str) -> Option<Option<(&str, &str)>> {
     None
 }
 
-/// Tokenize one heredoc-free line into segments of words.
-fn segments(line: &str) -> Option<Vec<Vec<String>>> {
+/// Tokenize one heredoc-free line into segments of words, and whether each
+/// segment follows a `&&`.
+fn segments(line: &str) -> Option<(Vec<Vec<String>>, Vec<bool>)> {
     let mut out = vec![Vec::new()];
+    let mut after_and = vec![false];
     let mut word = String::new();
     let (mut started, mut quoted) = (false, false);
     let mut chars = line.chars().peekable();
@@ -83,6 +93,7 @@ fn segments(line: &str) -> Option<Vec<Vec<String>>> {
                 end_word(&mut out, &mut word, &mut started, &mut quoted);
                 if out.last().is_some_and(Vec::is_empty) { return None; }
                 out.push(Vec::new());
+                after_and.push(c == '&');
             }
             '>' => {
                 // Only `2>&1`, written as one unquoted word.
@@ -97,7 +108,7 @@ fn segments(line: &str) -> Option<Vec<Vec<String>>> {
         }
     }
     end_word(&mut out, &mut word, &mut started, &mut quoted);
-    (!out.iter().any(Vec::is_empty)).then_some(out)
+    (!out.iter().any(Vec::is_empty)).then_some((out, after_and))
 }
 
 /// A double-quoted run: literal except `$?`; any other `$`, a backtick, a

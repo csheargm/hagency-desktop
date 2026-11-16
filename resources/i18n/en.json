@@ -3179,7 +3179,7 @@
   "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.": "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.",
   "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.": "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.",
   "Issue watching": "Issue watching",
-  "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub.": "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub.",
+  "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules.": "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules.",
   "Repository": "Repository",
   "Save issue watching": "Save issue watching",
   "Could not save issue watching: {error}": "Could not save issue watching: {error}",
@@ -3188,6 +3188,8 @@
   "Labelled issues (agent-fix)": "Labelled issues (agent-fix)",
   "Trusted team: issues from the repository's owner, members and collaborators": "Trusted team: issues from the repository's owner, members and collaborators",
   "Fully automatic: every new issue": "Fully automatic: every new issue",
+  "Ask before each push or pull request": "Ask before each push or pull request",
+  "Let this Agent push branches and open pull requests here without asking": "Let this Agent push branches and open pull requests here without asking",
   "Hands off open issues that carry the agent-fix label.": "Hands off open issues that carry the agent-fix label.",
   "Hands off new issues opened by the repository's owner, members and collaborators.": "Hands off new issues opened by the repository's owner, members and collaborators.",
   "Hands off every new issue, from anyone. Use only on repositories you trust.": "Hands off every new issue, from anyone. Use only on repositories you trust.",
@@ -3486,5 +3488,9 @@
   "Waiting for this Agent's status…": "Waiting for this Agent's status…",
   "Issue watching has not been read yet; it is read again when this panel refreshes.": "Issue watching has not been read yet; it is read again when this panel refreshes.",
   "Add this Agent to a Room first; the Rooms it is in are listed here.": "Add this Agent to a Room first; the Rooms it is in are listed here.",
-  "Open GitHub tokens page": "Open GitHub tokens page"
+  "Open GitHub tokens page": "Open GitHub tokens page",
+  "Add to rooms": "Add to rooms",
+  "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them",
+  "Resume the agents you paused with Stop all agents": "Resume the agents you paused with Stop all agents",
+  "Read whether you paused your agents on this device": "Read whether you paused your agents on this device"
 }
