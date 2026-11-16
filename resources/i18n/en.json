@@ -1294,7 +1294,6 @@
   "New project": "New project",
   "Welcome to Hagency": "Welcome to Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.": "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.",
-  "Open Agent": "Open Agent",
   "Start with your agent": "Start with your agent",
   "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.": "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.",
   "Create your agent": "Create your agent",
@@ -3492,5 +3491,6 @@
   "Add to rooms": "Add to rooms",
   "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them",
   "Resume the agents you paused with Stop all agents": "Resume the agents you paused with Stop all agents",
-  "Read whether you paused your agents on this device": "Read whether you paused your agents on this device"
+  "Read whether you paused your agents on this device": "Read whether you paused your agents on this device",
+  "Your agents": "Your agents"
 }

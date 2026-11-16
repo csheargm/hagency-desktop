@@ -24,11 +24,25 @@ script_mod! {
     }
 }
 
-/// The call-to-action shows until the account is known to have an Agent: a
-/// brand-new account never opens the Agent panel, so "unknown" counts as
-/// first run while the welcome screen's own listing settles it.
-pub fn show_cta(has_agent: Option<bool>) -> bool {
-    has_agent != Some(true)
+/// What the welcome screen offers for the account's Agents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentEntry {
+    /// The listing came back empty: "Create your agent".
+    Create,
+    /// At least one Agent is listed: "Your agents" opens them.
+    Open,
+    /// Still listing: neither, so an account with Agents never sees
+    /// "Create your agent" while it loads.
+    Loading,
+}
+
+/// The entry for the last Agents listing (`None` before one settled).
+pub fn agent_entry(has_agent: Option<bool>) -> AgentEntry {
+    match has_agent {
+        Some(true) => AgentEntry::Open,
+        Some(false) => AgentEntry::Create,
+        None => AgentEntry::Loading,
+    }
 }
 
 #[derive(Script, ScriptHook, Widget)]
@@ -58,9 +72,10 @@ mod tests {
     #[test]
     fn cta_until_an_agent_is_known() {
         // Never-opened panel: nothing reported yet, still first run.
-        assert!(show_cta(None));
-        assert!(show_cta(Some(false)));
-        assert!(!show_cta(Some(true)));
+        // Regression: Betty saw "Create your agent" while her two Agents were still listing.
+        assert_eq!(agent_entry(None), AgentEntry::Loading);
+        assert_eq!(agent_entry(Some(false)), AgentEntry::Create);
+        assert_eq!(agent_entry(Some(true)), AgentEntry::Open);
     }
 
     /// The welcome screen (where a brand-new account lands) registers with the

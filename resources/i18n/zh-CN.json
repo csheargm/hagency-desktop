@@ -1301,7 +1301,6 @@
   "New project": "新建项目",
   "Welcome to Hagency": "欢迎使用 Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.": "Hagency 在你的电脑上运行编程 Agent，并让你在聊天中与它对话。把你的 Agent 邀请进房间一起协作，与联系人发起聊天，或探索服务器上的房间。",
-  "Open Agent": "打开 Agent",
   "Start with your agent": "从你的 Agent 开始",
   "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.": "一键创建一个使用本机 Claude Code 登录运行的 Agent，并打开它的私聊。房间和邀请可以之后再说。",
   "Create your agent": "创建你的 Agent",
@@ -3492,5 +3491,6 @@
   "Add to rooms": "添加到房间",
   "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "停止你在此设备上的所有 Agent：停止其运行、拒绝等待中的审批并暂停它们",
   "Resume the agents you paused with Stop all agents": "恢复你用“停止所有 Agent”暂停的 Agent",
-  "Read whether you paused your agents on this device": "读取你是否已暂停此设备上的 Agent"
+  "Read whether you paused your agents on this device": "读取你是否已暂停此设备上的 Agent",
+  "Your agents": "你的 Agent"
 }

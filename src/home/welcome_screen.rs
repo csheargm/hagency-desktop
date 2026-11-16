@@ -1,5 +1,5 @@
 use makepad_widgets::*;
-use crate::home::{create_agent_cta::show_cta, navigation_tab_bar::NavigationBarAction};
+use crate::home::{create_agent_cta::{AgentEntry, agent_entry}, navigation_tab_bar::NavigationBarAction};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -25,7 +25,7 @@ script_mod! {
         }
         create_agent := mod.widgets.CreateAgentCta {visible: false}
         View {width: Fill height: Fit flow: Right spacing: 12
-            open_agent := Button {text: #(crate::i18n::tr("Open Agent")) i18n_text: "Open Agent"}
+            open_agent := Button {visible: false text: #(crate::i18n::tr("Your agents")) i18n_text: "Your agents"}
             new_chat := Button {text: #(crate::i18n::tr("New chat")) i18n_text: "New chat"}
             explore := Button {text: #(crate::i18n::tr("Explore rooms")) i18n_text: "Explore rooms"}
         }
@@ -38,15 +38,18 @@ pub struct WelcomeScreen {
     #[deref] view: View,
 }
 impl WelcomeScreen {
-    /// A first-run account gets one primary action, "Create your agent"; "Open Agent" returns once it has one.
-    fn show_first_run(&mut self, cx: &mut Cx, first_run: bool) {
-        self.view.widget(cx, ids!(create_agent)).set_visible(cx, first_run);
-        self.view.button(cx, ids!(open_agent)).set_visible(cx, !first_run);
+    /// An account with no Agent gets "Create your agent", one with Agents "Your agents", and
+    /// neither while the listing is still loading.
+    fn show_agent_entry(&mut self, cx: &mut Cx, entry: AgentEntry) {
+        self.view.widget(cx, ids!(create_agent)).set_visible(cx, entry == AgentEntry::Create);
+        self.view.button(cx, ids!(open_agent)).set_visible(cx, entry == AgentEntry::Open);
     }
 }
 impl Widget for WelcomeScreen {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
+        // The presence listing settles off the UI thread and signals; redraw to show its answer.
+        if let Event::Signal = event { self.view.redraw(cx); }
         if let Event::Actions(actions) = event {
             if self.view.button(cx, ids!(open_agent)).clicked(actions) {
                 cx.action(crate::miniapps::MiniAppsAction::OpenAgent);
@@ -60,9 +63,9 @@ impl Widget for WelcomeScreen {
         }
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        // Learn once whether this account has an Agent, so "Open Agent" can lead a first-timer to Create agent.
+        // Learn whether this account has an Agent: "Create your agent", "Your agents", or neither while loading.
         crate::hagency::agent_presence::refresh();
-        self.show_first_run(cx, show_cta(crate::hagency::agent_presence::has_agent()));
+        self.show_agent_entry(cx, agent_entry(crate::hagency::agent_presence::has_agent()));
         self.view.draw_walk(cx, scope, walk)
     }
 }
@@ -112,10 +115,10 @@ mod tests {
             assert!(vm.take_errors().is_empty()); (screen, cta)
         });
         assert!(cta.visible(), "the CTA must not hide itself; the welcome screen decides");
-        for first_run in [true, false, true] {
-            screen.show_first_run(&mut cx, first_run);
-            assert_eq!(screen.view.widget(&mut cx, ids!(create_agent)).visible(), first_run);
-            assert_eq!(screen.view.button(&mut cx, ids!(open_agent)).visible(), !first_run);
+        for (has_agent, cta, open) in [(Some(false), true, false), (Some(true), false, true), (None, false, false), (Some(false), true, false)] {
+            screen.show_agent_entry(&mut cx, agent_entry(has_agent));
+            assert_eq!(screen.view.widget(&mut cx, ids!(create_agent)).visible(), cta, "{has_agent:?}");
+            assert_eq!(screen.view.button(&mut cx, ids!(open_agent)).visible(), open, "{has_agent:?}");
         }
     }
 }
