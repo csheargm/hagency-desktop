@@ -56,7 +56,7 @@ pub(super) fn segment_allowed(words: &[&str]) -> bool {
         ["gh", ..] if !gh_options_safe(words) => false,
         ["gh", "repo", "clone", repo, _path] => !repo.starts_with('-'),
         ["gh", "auth", "status", rest @ ..] => rest.is_empty(),
-        ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(&gh_without_data(rest)),
+        ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(&gh_without_data(rest)) && gh_filters_safe(rest),
         ["rg", ..] if words.iter().any(|w| RG_DENIED.iter().any(|d| option_is(w, d))) => false,
         ["mkdir", rest @ ..] => !rest.is_empty() && words[1..].iter().filter(|w| w.starts_with('-')).all(|w| *w == "-p"),
         [program, ..] => READ_ONLY_PROGRAMS.contains(program),
@@ -120,6 +120,24 @@ pub(super) fn gh_without_data<'a>(words: &[&'a str]) -> Vec<&'a str> {
         value_next = GH_DATA_OPTIONS.contains(w);
         !GH_DATA_OPTIONS.iter().any(|d| d.starts_with("--") && w.strip_prefix(d).is_some_and(|r| r.starts_with('=')))
     }).collect()
+}
+
+/// Filter words that could read the process environment (and so print
+/// GH_TOKEN into the room): jq `env`/`$ENV`, `$__loc__`, `input_filename`, or
+/// any `$`. Matched loosely on purpose; a false hit only asks the owner.
+const GH_FILTER_DENIED: [&str; 4] = ["env", "$", "input", "__loc__"];
+
+/// No filter value of a gh read names anything in [`GH_FILTER_DENIED`].
+fn gh_filters_safe(words: &[&str]) -> bool {
+    let kept = gh_without_data(words);
+    let mut kept = kept.iter().peekable();
+    words.iter().all(|w| {
+        if kept.next_if(|k| **k == *w).is_some() && !w.starts_with("--jq=") && !w.starts_with("--template=") {
+            return true;
+        }
+        let lower = w.to_ascii_lowercase();
+        !GH_FILTER_DENIED.iter().any(|d| lower.contains(d))
+    })
 }
 
 /// `OWNER/REPO` on github.com (no host prefix).

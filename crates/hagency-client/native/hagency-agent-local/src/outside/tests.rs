@@ -194,6 +194,13 @@ fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
         "gh pr view https://evil.example/x/y/pull/1 --json state -q '.'",
         "gh pr view --json state --template --jq https://evil.example/x/y/pull/1",
         "gh pr view --json state -q -t evil.example/x/y",
+        "gh pr view 26 --json state -q env.GH_TOKEN",
+        "gh pr view 26 --json state --jq '$ENV'",
+        "gh pr view 26 --json state --jq='$ENV.GH_TOKEN'",
+        "gh pr view 26 --json state -q '$__loc__'",
+        "gh pr view 26 --json state -q 'input_filename'",
+        "gh pr view 26 --json state -t '{{env \"GH_TOKEN\"}}'",
+        "gh pr view 26 --json state --template='{{ ENV }}'",
     ] {
         assert!(!run(line), "{line}");
     }
