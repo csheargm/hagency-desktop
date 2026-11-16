@@ -239,8 +239,9 @@ pub fn for_event(room: &RoomId, event: &str, include_thread: bool) -> Vec<Entry>
         })
         .cloned()
         .collect();
+    // Every run is returned: the message's card slots page through the
+    // overflow, so no answer or active run's controls become unreachable.
     entries.sort_by_key(|e| !e.card.state.active());
-    entries.truncate(3);
     entries
 }
 /// The newest running run in a thread, for its collapsed summary.
@@ -410,10 +411,35 @@ pub fn send(request: Requested) {
     });
 }
 
+/// A run as the store holds it, for view tests outside this module.
+#[cfg(test)]
+pub(crate) fn fixture(key: &str, state: RunState, answer: &str) -> Entry {
+    let mut entry = tests::entry();
+    entry.key = key.into();
+    entry.card.state = state;
+    entry.card.answer = answer.into();
+    entry
+}
+
+/// Review fix: no run is dropped for a message with many runs.
+#[cfg(test)]
+#[test]
+fn every_run_of_a_message_is_listed() {
+    let room: OwnedRoomId = "!room:test".try_into().unwrap();
+    let mut store = STORE.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::mem::take(&mut store.entries);
+    store.entries = (0..5).map(|i| fixture(&format!("$run{i}"), if i == 4 { RunState::Running } else { RunState::Completed }, "a")).collect();
+    drop(store);
+    let listed = for_event(&room, "$trigger", false);
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries = saved;
+    assert_eq!(listed.len(), 5);
+    assert_eq!(listed[0].key, "$run4", "the active run comes first");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn entry() -> Entry {
+    pub(super) fn entry() -> Entry {
         let card: Card = serde_json::from_value(serde_json::json!({
             "version":1,"id":"run_fixture","dispatchId":"dispatch","executionId":"execution",
             "roomId":"!room:test","eventId":"$trigger","threadRoot":"!room:test",

@@ -97,6 +97,11 @@ async fn catch_up(epoch: u64) -> Result<(), String> {
     let me = crate::sliding_sync::current_user_id().ok_or("matrix_sign_in_required")?;
     let agents = active_agents(&Service::for_current()?.execute(Command::Agents).await?);
     let saved = prefs::load_current();
+    if !saved.catch_up_seeded() {
+        // Upgrade: Agents that already exist keep their rooms as the owner left them.
+        prefs::update_current(|p| p.seed_catch_up(agents.iter().map(|a| a.id.as_str())))?;
+        return Ok(());
+    }
     for agent in agents.into_iter().filter(|a| saved.joins_rooms(&a.id) && saved.needs_catch_up(&a.id)) {
         // Nothing is recorded per Agent: each room is settled on its own, so a
         // room still loading, a failed join or a restart leaves it for the next pass.

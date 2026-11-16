@@ -35,6 +35,11 @@ pub(crate) struct Prefs {
     /// [`MAX_CATCH_UP_FAILURES`] the pair is given up and noticed.
     #[serde(default)]
     catch_up_failures: BTreeMap<String, u32>,
+    /// Set once the Agents that existed when the catch-up first ran were
+    /// marked caught up: only Agents created after that ever catch up, so an
+    /// upgrade never adds existing Agents to rooms the owner left them out of.
+    #[serde(default)]
+    catch_up_seeded: bool,
     #[serde(skip)]
     corrupt: bool,
 }
@@ -67,7 +72,7 @@ impl Prefs {
         Self { corrupt: true, ..Self::default() }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), catch_up_failures: self.catch_up_failures.clone(), corrupt: false };
+        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), catch_up_failures: self.catch_up_failures.clone(), catch_up_seeded: self.catch_up_seeded, corrupt: false };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -96,6 +101,16 @@ impl Prefs {
         if self.corrupt || self.caught_up.contains(agent_id) { return Ok(false); }
         if self.caught_up.len() >= MAX_HANDLED { return Err("too_many_room_choices".into()); }
         Ok(self.caught_up.insert(agent_id.to_owned()))
+    }
+    /// Whether the existing Agents were already marked caught up.
+    pub fn catch_up_seeded(&self) -> bool { self.catch_up_seeded }
+    /// First run only: every Agent that already exists is caught up (no
+    /// historical joins). False when already seeded or the file is corrupt.
+    pub fn seed_catch_up<'a>(&mut self, agent_ids: impl IntoIterator<Item = &'a str>) -> Result<bool, String> {
+        if self.corrupt || self.catch_up_seeded { return Ok(false); }
+        for id in agent_ids { self.claim_catch_up(id)?; }
+        self.catch_up_seeded = true;
+        Ok(true)
     }
     /// Whether the catch-up should still try this pair (never once given up).
     pub fn catch_up_pending(&self, room_id: &str, agent_id: &str) -> bool {

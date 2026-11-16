@@ -1726,6 +1726,21 @@ impl Widget for RoomScreen {
                         self.view.redraw(cx);
                     }
                 }
+                // Forward a run card's answer (the run's status event carries it).
+                // TODO(R4): room_screen.rs should split its action handling per card kind.
+                if let Some(fwd) = action.downcast_ref::<super::agent_run_answer::ForwardRunAnswer>()
+                    && let Some(tl) = self.tl_state.as_ref()
+                    && tl.kind.room_id().as_str() == fwd.room
+                {
+                    let messages = tl.items.iter().filter_map(|i| i.as_event()).filter_map(ForwardMessage::from_event).collect();
+                    match super::agent_run_answer::forward_list(messages, &fwd.run_event, &fwd.answer) {
+                        Some((messages, selected)) => cx.action(ForwardAction::Select {
+                            title: self.room_name_id.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "Chat history".into()),
+                            messages, selected,
+                        }),
+                        None => enqueue_popup_notification(crate::i18n::tr("Could not find the answer to export. Please try again."), PopupKind::Error, Some(5.0)),
+                    }
+                }
                 // Handle the outcome of sending an agent-chat approval verdict.
                 #[cfg(feature = "agent_chat")]
                 if let Some(changed) = action.downcast_ref::<crate::agent_chat::approval_runtime::ApprovalStateChanged>() {
@@ -6560,16 +6575,9 @@ fn populate_agent_run_cards(
             )
         })
         .unwrap_or_default();
-    for (index, path) in [
-        ids!(content.agent_run_card),
-        ids!(content.agent_run_card_1),
-        ids!(content.agent_run_card_2),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        item.agent_run_card(cx, path)
-            .set_entry(cx, entries.get(index));
+    let paths = [ids!(content.agent_run_card), ids!(content.agent_run_card_1), ids!(content.agent_run_card_2)];
+    for (path, shown) in paths.into_iter().zip(super::agent_run_pager::slot_entries(&entries)) {
+        item.agent_run_card(cx, path).set_entries(cx, shown);
     }
 }
 

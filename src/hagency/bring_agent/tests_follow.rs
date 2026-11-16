@@ -93,6 +93,22 @@ fn an_agent_catches_up_once_and_it_persists() {
     assert!(back.claim_catch_up("agt_other").unwrap());
 }
 
+/// Review fix: an upgrade never adds Agents that already existed to earlier
+/// rooms; only Agents created after the first run catch up.
+#[test]
+fn existing_agents_are_seeded_caught_up_on_first_run() {
+    let path = temp_file("seed");
+    let mut prefs = Prefs::load(&path);
+    assert!(!prefs.catch_up_seeded());
+    assert!(prefs.seed_catch_up(["agt_old"]).unwrap());
+    assert!(!prefs.needs_catch_up("agt_old"), "an existing Agent never catches up");
+    prefs.save(&path).unwrap();
+    let mut back = Prefs::load(&path);
+    assert!(back.catch_up_seeded());
+    assert!(!back.seed_catch_up(["agt_later"]).unwrap(), "seeding happens once");
+    assert!(back.needs_catch_up("agt_later"), "an Agent created after the upgrade catches up");
+}
+
 /// Review fix: a room not loaded yet when Joined arrives is retried, and the
 /// retries are bounded.
 #[test]

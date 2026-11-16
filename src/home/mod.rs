@@ -33,6 +33,8 @@ pub mod agent_runtime_notice;
 pub mod agent_run_card;
 pub mod agent_run_status;
 pub mod agent_run_preview;
+pub mod agent_run_pager;
+pub mod agent_run_answer;
 pub mod shared_permission_notice;
 pub mod room_read_receipt;
 pub mod send_status_indicator;

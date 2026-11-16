@@ -23,6 +23,8 @@ script_mod! {
             draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: 12}}
         }
         preview := HtmlOrPlaintext { width: Fill height: Fit selectable: true }
+        // A finished answer, with the same actions as an Agent's reply message.
+        answer := mod.widgets.AgentReply {width: Fill}
         footer := View {
             width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
             status := Label {
@@ -33,6 +35,13 @@ script_mod! {
                 visible: false
                 text: #(crate::i18n::tr("Details")) i18n_text: "Details"
             }
+        }
+        // More runs than slots: the last card pages through them.
+        pager := View {
+            visible: false width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+            previous := Button {text: "‹"}
+            page := Label {width: Fit height: Fit draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}}
+            next := Button {text: "›"}
         }
         input := TextInput {
             width: Fill height: Fit
@@ -81,6 +90,12 @@ pub struct AgentRunCard {
     /// Whether the reader opened an answered run's details (Agent, runtime).
     #[rust]
     details_open: bool,
+    /// The runs this card pages through (the last slot's overflow).
+    #[rust]
+    pages: Vec<Entry>,
+    /// The run the reader paged to, kept while it is still listed.
+    #[rust]
+    page_key: Option<String>,
 }
 /// How often a running card's elapsed time ticks.
 const CLOCK_TICK_SECS: f64 = 1.0;
@@ -122,6 +137,20 @@ impl Widget for AgentRunCard {
         let Event::Actions(actions) = event else {
             return;
         };
+        for (path, forward) in [(ids!(pager.previous), false), (ids!(pager.next), true)] {
+            if self.view.button(cx, path).clicked(actions) {
+                self.turn_page(cx, forward);
+                return;
+            }
+        }
+        #[cfg(feature = "agent_chat")]
+        if let Some(action) = {
+            use crate::agent_chat::reply::AgentReplyWidgetExt;
+            self.view.agent_reply(cx, ids!(answer)).clicked_action(cx, actions)
+        } && let Some((card, _)) = self.run.as_ref() && let Some(key) = self.key.as_deref()
+        {
+            super::agent_run_answer::act(cx, action, &card.room_id, key, &card.answer);
+        }
         let Some(key) = self.key.as_deref() else {
             return;
         };
@@ -169,15 +198,44 @@ impl AgentRunCard {
 }
 impl AgentRunCardRef {
     pub fn set_entry(&self, cx: &mut Cx, entry: Option<&Entry>) {
+        self.set_entries(cx, entry.map(std::slice::from_ref).unwrap_or_default());
+    }
+    /// Shows one of these runs, with a pager when there is more than one.
+    pub fn set_entries(&self, cx: &mut Cx, entries: &[Entry]) {
         let Some(mut inner) = self.borrow_mut() else {
             return;
         };
+        inner.pages = entries.to_vec();
+        inner.turn_page_by(cx, None);
+    }
+}
+impl AgentRunCard {
+    /// Pages one run forward or back.
+    fn turn_page(&mut self, cx: &mut Cx, forward: bool) {
+        self.turn_page_by(cx, Some(forward));
+    }
+    fn turn_page_by(&mut self, cx: &mut Cx, step: Option<bool>) {
+        use super::agent_run_pager as pager;
+        let keys: Vec<&str> = self.pages.iter().map(|e| e.key.as_str()).collect();
+        let mut page = pager::page_of(&keys, self.page_key.as_deref());
+        if let Some(forward) = step { page = pager::step(page, keys.len(), forward); }
+        let entry = self.pages.get(page).cloned();
+        self.page_key = entry.as_ref().map(|e| e.key.clone());
+        self.view.view(cx, ids!(pager)).set_visible(cx, self.pages.len() > 1);
+        self.view.label(cx, ids!(pager.page)).set_text(cx, &pager::pager_text(page, self.pages.len()));
+        self.show(cx, entry.as_ref());
+    }
+    // TODO(R4): split this file on the seam between the card's live run view
+    // and its answer/pager presentation.
+    fn show(&mut self, cx: &mut Cx, entry: Option<&Entry>) {
+        let inner = self;
         let Some(entry) = entry else {
             inner.key = None;
             inner.shown_preview = None;
             inner.held_preview = None;
             inner.run = None;
             inner.show_status(cx);
+            show_answer(cx, &inner.view, None);
             inner.view.set_visible(cx, false);
             return;
         };
@@ -201,7 +259,8 @@ impl AgentRunCardRef {
         inner.show_status(cx);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
         let body = shown_text(&entry.card);
-        preview.set_visible(cx, !body.is_empty());
+        let in_reply = show_answer(cx, &inner.view, Some(entry));
+        preview.set_visible(cx, !body.is_empty() && !in_reply);
         let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
         let selecting = preview.selection_active(cx);
         if let Some(text) = preview_to_show(
@@ -243,6 +302,26 @@ impl AgentRunCardRef {
         inner.view.html_or_plaintext(cx, ids!(unconfirmed.text)).show_plaintext(cx, unconfirmed.as_deref().unwrap_or_default());
         inner.view.redraw(cx);
     }
+}
+
+/// Shows an answered run's answer in the reply component (true), else hides it.
+fn show_answer(cx: &mut Cx, view: &View, entry: Option<&Entry>) -> bool {
+    #[cfg(feature = "agent_chat")]
+    {
+        use crate::agent_chat::reply::AgentReplyWidgetExt;
+        let reply = view.agent_reply(cx, ids!(answer));
+        match entry.filter(|e| !e.card.answer.is_empty()) {
+            Some(entry) => {
+                let me = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
+                let rich = crate::agent_chat::presentation::markdown_body(&entry.card.answer);
+                reply.populate(cx, format!("{me}|{}|{}", entry.card.room_id, entry.key), &entry.card.answer, rich.as_ref(), false, false);
+                true
+            }
+            None => { reply.hide(cx); false }
+        }
+    }
+    #[cfg(not(feature = "agent_chat"))]
+    { let _ = (cx, view, entry); false }
 }
 
 /// The card's main text: the answer once the run carries it, else the live text.
@@ -287,6 +366,42 @@ mod tests {
         card.answer = "42".into();
         assert_eq!(shown_text(&card), "42");
         assert_eq!(footer_text(&card, "Done in 2 s · 0 steps"), "✅ Done in 2 s · 0 steps");
+    }
+    /// Review fix: with more runs than slots, the last card pages through
+    /// them, and an answer shows in the reply component with its actions.
+    #[cfg(feature = "agent_chat")]
+    #[test]
+    fn the_last_card_pages_through_overflow_runs_and_answers_keep_their_actions() {
+        use crate::hagency::run_controls::fixture;
+        use ::hagency::agent_run_controls::State;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widget = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.AgentRunCard {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let card = widget.as_agent_run_card();
+        let runs = [fixture("$a", State::Completed, "first answer"), fixture("$b", State::Running, ""), fixture("$c", State::Completed, "third")];
+        let all: Vec<_> = (0..5).map(|i| fixture(&format!("$r{i}"), State::Completed, "x")).collect();
+        let slots = super::super::agent_run_pager::slot_entries(&all);
+        assert_eq!(slots.iter().map(|s| s.len()).sum::<usize>(), 5, "every run has a slot");
+        card.set_entries(&mut cx, &runs);
+        assert!(widget.view(&mut cx, ids!(pager)).visible());
+        assert_eq!(widget.label(&mut cx, ids!(pager.page)).text(), "1 / 3");
+        assert!(widget.widget(&mut cx, ids!(answer)).visible(), "the answer shows in the reply component");
+        assert!(!widget.widget(&mut cx, ids!(preview)).visible());
+        assert!(widget.view(&mut cx, ids!(answer.answer_actions)).visible(), "Copy/Forward/Markdown/PDF are offered");
+        card.borrow_mut().unwrap().turn_page(&mut cx, true);
+        assert_eq!(card.borrow().unwrap().key.as_deref(), Some("$b"));
+        assert!(widget.button(&mut cx, ids!(buttons.stop)).visible(), "an overflow active run keeps its controls");
+        assert!(!widget.widget(&mut cx, ids!(answer)).visible());
+        card.set_entries(&mut cx, &runs);
+        assert_eq!(card.borrow().unwrap().key.as_deref(), Some("$b"), "the page holds across updates");
+        card.set_entries(&mut cx, &runs[..1]);
+        assert!(!widget.view(&mut cx, ids!(pager)).visible());
     }
     #[test]
     fn live_text_is_formatted_like_the_finished_reply_and_plain_text_stays_plain() {
