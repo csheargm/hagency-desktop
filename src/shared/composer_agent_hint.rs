@@ -33,18 +33,20 @@ script_mod! {
 struct AgentCache {
     epoch: u64,
     agents: Vec<OwnAgent>,
-    loading: bool,
+    /// The account epoch of the read in flight, if any.
+    loading: Option<u64>,
 }
 static AGENTS: LazyLock<Mutex<AgentCache>> = LazyLock::new(Default::default);
 
 /// Re-reads the Agents listing unless a read is already running.
 fn request_agents() {
+    let epoch = crate::account_session::epoch();
     {
         let mut cache = AGENTS.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.loading { return; }
-        cache.loading = true;
+        // A read for an earlier account must not hold off this account's read.
+        if cache.loading == Some(epoch) { return; }
+        cache.loading = Some(epoch);
     }
-    let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
         let owner = crate::sliding_sync::current_user_id();
         let listing = match crate::hagency::backend::Service::for_current() {
@@ -52,11 +54,12 @@ fn request_agents() {
             Err(code) => Err(code),
         };
         let mut cache = AGENTS.lock().unwrap_or_else(|e| e.into_inner());
-        cache.loading = false;
+        if cache.loading != Some(epoch) || epoch != crate::account_session::epoch() { return; }
+        cache.loading = None;
         // A failed read only means no hint: sending and the "@" picker work
         // without it, and the next room change reads again.
         if let (Ok(listing), Some(owner)) = (listing, owner) {
-            *cache = AgentCache { epoch, agents: own_agents(&listing, &owner), loading: false };
+            *cache = AgentCache { epoch, agents: own_agents(&listing, &owner), loading: None };
         }
     });
 }

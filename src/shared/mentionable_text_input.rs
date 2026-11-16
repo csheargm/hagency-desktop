@@ -515,6 +515,10 @@ impl MentionableTextInputRef {
         if members_changed && inner.active_trigger.is_some_and(|t| t.kind == TriggerKind::User) {
             inner.refresh_popup(cx);
         }
+        // A new room or an Agent that just joined changes what the hint offers.
+        if room_changed || members_changed {
+            inner.update_agent_hint(cx);
+        }
     }
 
     /// Returns a saved instance of this widget's state.
