@@ -4,17 +4,17 @@
 use super::auto::{Offer, offer};
 use super::model::{CardState, accept_plan, card_state, parse_proposal};
 use super::outcome::*;
-use super::watch::{Stale, stale_by};
+use super::watch::{OUTCOME_RELOAD_GAP, OutcomeDebounce, Stale, stale_by};
 use hagency::room_memory::{self, Storage};
 use serde_json::json;
 
 #[test]
 fn another_members_accept_reaches_this_client_as_a_reload() {
     let state = json!({"type": "io.hagency.memory", "state_key": "mem_1", "content": {"text": "x", "rev": 1}});
-    assert_eq!(stale_by(&state), Stale { memory: true, skills: false });
-    assert_eq!(stale_by(&json!({"type": "io.hagency.skill", "state_key": "deploy"})), Stale { memory: false, skills: true });
+    assert_eq!(stale_by(&state), Stale { memory: true, skills: false, from_notice: false });
+    assert_eq!(stale_by(&json!({"type": "io.hagency.skill", "state_key": "deploy"})), Stale { memory: false, skills: true, from_notice: false });
     let notice = json!({"type": "m.room.message", "content": {"msgtype": "m.notice", "body": "✅", OUTCOME_KEY: {"proposal": "mem_1"}}});
-    assert_eq!(stale_by(&notice), Stale { memory: true, skills: true });
+    assert_eq!(stale_by(&notice), Stale { memory: true, skills: true, from_notice: true });
     assert_eq!(stale_by(&json!({"type": "m.room.message", "content": {"body": "hi"}})), Stale::default());
 }
 
@@ -75,4 +75,16 @@ fn only_the_owner_who_can_write_is_offered_auto_accept() {
     assert_eq!(offer(false, Some(true), false, true), Offer::Hidden, "cannot write memory");
     assert_eq!(offer(true, Some(false), false, true), Offer::Hidden, "someone else's Agent");
     assert_eq!(offer(true, None, false, true), Offer::Hidden, "ownership unknown");
+}
+
+/// Review fix: any member can post the outcome marker, so notices reload at
+/// most once per room per gap; other rooms and later notices still reload.
+#[test]
+fn forged_outcome_notices_are_rate_limited_per_room() {
+    let mut debounce = OutcomeDebounce::default();
+    let t0 = std::time::Instant::now();
+    assert!(debounce.allow("!a:s", t0));
+    for i in 1..50 { assert!(!debounce.allow("!a:s", t0 + std::time::Duration::from_millis(i * 10)), "spam {i} suppressed"); }
+    assert!(debounce.allow("!b:s", t0), "another room is independent");
+    assert!(debounce.allow("!a:s", t0 + OUTCOME_RELOAD_GAP), "a notice after the gap reloads again");
 }

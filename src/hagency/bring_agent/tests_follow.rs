@@ -1,5 +1,6 @@
 //! "The Agent follows its owner into rooms": join rules and the saved setting.
 use super::super::{Follow, RoomFacts, active_agents, follow_on_join, offer_text, prefs::{FILE_NAME, Prefs}};
+use super::super::retry::{POWER_LEVELS_UNREADABLE, RETRY_DELAYS_MS, ROOM_NOT_LOADED, begin, bind_settles, delay_after, finish, lookup_retries};
 use serde_json::json;
 
 fn group_room() -> RoomFacts {
@@ -74,4 +75,28 @@ fn an_unreadable_file_fails_closed_to_asking() {
     std::fs::write(&path, b"{not json").unwrap();
     assert!(!Prefs::load(&path).joins_rooms("agt_any"), "corrupt means ask, never join silently");
     assert!(path.with_extension("json.corrupt").exists());
+}
+
+/// Review fix: a room not loaded yet when Joined arrives is retried, and the
+/// retries are bounded.
+#[test]
+fn an_unloaded_room_is_retried_a_bounded_number_of_times() {
+    assert!(lookup_retries(ROOM_NOT_LOADED) && lookup_retries(POWER_LEVELS_UNREADABLE));
+    assert!(!lookup_retries("matrix_sign_in_required"));
+    let waits: Vec<_> = (0..10).map_while(delay_after).collect();
+    assert_eq!(waits.len(), RETRY_DELAYS_MS.len(), "attempts stop");
+    assert!(waits.windows(2).all(|w| w[0] < w[1]), "backoff grows");
+}
+
+/// Review fix: a transient bind failure leaves the pair open; only success or
+/// a definitive refusal records it as handled.
+#[test]
+fn only_success_or_a_definitive_refusal_settles_a_pair() {
+    assert!(bind_settles(&Ok(true)) && bind_settles(&Ok(false)));
+    assert!(bind_settles(&Err("agent_retired".into())));
+    assert!(!bind_settles(&Err("network_unavailable".into())), "transient: retry later");
+    assert!(begin("!r:s agt_1") && !begin("!r:s agt_1"), "one bind in flight per pair");
+    finish("!r:s agt_1");
+    assert!(begin("!r:s agt_1"));
+    finish("!r:s agt_1");
 }

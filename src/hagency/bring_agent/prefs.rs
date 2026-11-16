@@ -29,7 +29,7 @@ pub(crate) struct Prefs {
     corrupt: bool,
 }
 
-fn pair(room_id: &str, agent_id: &str) -> String {
+pub(super) fn pair(room_id: &str, agent_id: &str) -> String {
     format!("{room_id} {agent_id}")
 }
 

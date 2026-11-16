@@ -13,6 +13,7 @@
 mod flow;
 mod prefs;
 mod prompt;
+mod retry;
 pub use flow::{bind_into_rooms, observe, owner_created_room};
 pub use prompt::{BringAgentAction, route as route_prompt, script_mod};
 
