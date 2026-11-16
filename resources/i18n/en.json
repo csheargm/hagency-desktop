@@ -3339,7 +3339,6 @@
   "Check failed: could not reach GitHub: {error}": "Check failed: could not reach GitHub: {error}",
   "Paste a GitHub token first.": "Paste a GitHub token first.",
   "That does not look like a GitHub token.": "That does not look like a GitHub token.",
-  "No GitHub token — add one in the Agent's GitHub access settings": "No GitHub token — add one in the Agent's GitHub access settings",
   "Suggested by {author} · accepted by {owner}": "Suggested by {author} · accepted by {owner}",
   "Suggested a note for this room's memory": "Suggested a note for this room's memory",
   "Suggested a skill for this room": "Suggested a skill for this room",
@@ -3482,5 +3481,10 @@
   "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}",
   "{0} isn't in this room. Add it?": "{0} isn't in this room. Add it?",
   "Agent sign-in expired": "Agent sign-in expired",
-  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept."
+  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.",
+  "Needs a GitHub token: create one at https://github.com/settings/tokens (repo scope), then add it under GitHub access below.": "Needs a GitHub token: create one at https://github.com/settings/tokens (repo scope), then add it under GitHub access below.",
+  "Waiting for this Agent's status…": "Waiting for this Agent's status…",
+  "Issue watching has not been read yet; it is read again when this panel refreshes.": "Issue watching has not been read yet; it is read again when this panel refreshes.",
+  "Add this Agent to a Room first; the Rooms it is in are listed here.": "Add this Agent to a Room first; the Rooms it is in are listed here.",
+  "Open GitHub tokens page": "Open GitHub tokens page"
 }
