@@ -32,10 +32,11 @@ fn a_created_time_wins_over_id_order() {
 
 #[test]
 fn a_new_group_room_gets_the_agent_but_never_a_space_dm_or_room_it_is_in() {
-    let room = RoomFacts::default();
-    assert!(should_auto_join(room));
-    for facts in [RoomFacts { space: true, ..room }, RoomFacts { direct: true, ..room }, RoomFacts { agent_present: true, ..room }] {
-        assert!(!should_auto_join(facts), "{facts:?}");
+    let room = RoomFacts { can_invite: true, ..RoomFacts::default() };
+    assert!(should_auto_join(true, room));
+    assert!(!should_auto_join(false, room), "New room honours \"Join rooms I join\" off");
+    for facts in [RoomFacts { space: true, ..room }, RoomFacts { direct: true, ..room }, RoomFacts { agent_present: true, ..room }, RoomFacts { can_invite: false, ..room }] {
+        assert!(!should_auto_join(true, facts), "{facts:?}");
     }
 }
 
@@ -60,3 +61,7 @@ fn outcome_lines_name_the_agent_and_room() {
     let failed = bind_result_text("ann-claude", "Team", &Err("agent_retired".into()));
     assert!(failed.starts_with("Could not add ann-claude to Team: ") && !failed.ends_with("agent_retired"), "{failed}");
 }
+
+#[cfg(test)]
+#[path = "tests_follow.rs"]
+mod follow;

@@ -3464,5 +3464,14 @@
   "{s} s": "{s} 秒",
   "{m} m {s} s": "{m} 分 {s} 秒",
   "That username is already taken on this server. Choose another name, or sign in if it is your account.": "该用户名在此服务器上已被占用。请换一个名字；如果这是你的账号，请直接登录。",
-  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。"
+  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。",
+  "Join rooms I join": "加入我加入的聊天室",
+  "When off, you are asked each time you join a room.": "关闭后，每次你加入聊天室时都会先询问。",
+  "Bring {agent} into {room}?": "要让 {agent} 加入 {room} 吗？",
+  "Bring": "带上",
+  "Not now": "暂不",
+  "{agent} was not added to {room}: you do not have permission to invite members there.": "未将 {agent} 加入 {room}：你没有在该聊天室邀请成员的权限。",
+  "{agent} joined {room}.": "{agent} 已加入 {room}。",
+  "{agent} is still joining {room}.": "{agent} 仍在加入 {room}。",
+  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 加入 {room}：{reason}"
 }

@@ -1,0 +1,77 @@
+//! "The Agent follows its owner into rooms": join rules and the saved setting.
+use super::super::{Follow, RoomFacts, active_agents, follow_on_join, offer_text, prefs::{FILE_NAME, Prefs}};
+use serde_json::json;
+
+fn group_room() -> RoomFacts {
+    RoomFacts { can_invite: true, ..RoomFacts::default() }
+}
+
+/// Regression (Chris, fix-it): Betty accepted an invite and her Agent stayed behind.
+#[test]
+fn joining_a_group_room_brings_an_agent_whose_setting_is_on() {
+    assert_eq!(follow_on_join(true, false, group_room()), Follow::Join);
+}
+
+#[test]
+fn an_agent_with_the_setting_off_is_offered_not_added() {
+    assert_eq!(follow_on_join(false, false, group_room()), Follow::Offer);
+    assert_eq!(offer_text("betty-claude", "fix-it"), "Bring betty-claude into fix-it?");
+}
+
+#[test]
+fn dms_spaces_rooms_it_is_in_and_handled_pairs_are_skipped() {
+    let room = group_room();
+    for facts in [RoomFacts { direct: true, ..room }, RoomFacts { space: true, ..room }, RoomFacts { agent_present: true, ..room }] {
+        assert_eq!(follow_on_join(true, false, facts), Follow::Skip, "{facts:?}");
+        assert_eq!(follow_on_join(false, false, facts), Follow::Skip, "{facts:?}");
+    }
+    assert_eq!(follow_on_join(true, true, room), Follow::Skip, "one add per Agent per room");
+}
+
+#[test]
+fn without_invite_rights_nothing_is_tried_and_the_owner_is_told() {
+    let room = RoomFacts { can_invite: false, ..group_room() };
+    assert_eq!(follow_on_join(true, false, room), Follow::NoInviteRights);
+    assert_eq!(follow_on_join(false, false, room), Follow::NoInviteRights);
+}
+
+#[test]
+fn every_active_agent_with_an_identity_is_considered() {
+    let listing = json!({"agents": [
+        {"id": "agt_01a", "state": "active", "puppetMxid": "@a:s", "displayName": "a"},
+        {"id": "agt_01b", "state": "retired", "puppetMxid": "@b:s"},
+        {"id": "agt_01c", "state": "active", "puppetMxid": "@c:s", "displayName": "c"},
+    ]});
+    let ids: Vec<String> = active_agents(&listing).into_iter().map(|a| a.id).collect();
+    assert_eq!(ids, ["agt_01c", "agt_01a"]);
+}
+
+fn temp_file(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("hagency-follow-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir); // a leftover from an earlier run; absent is fine
+    dir.join(FILE_NAME)
+}
+
+#[test]
+fn the_setting_defaults_on_including_existing_agents_and_persists() {
+    let path = temp_file("persist");
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.joins_rooms("agt_existing"), "no entry (Agent made before the setting) means on");
+    prefs.set_joins_rooms("agt_quiet", false);
+    assert!(prefs.claim("!fix:s", "agt_quiet").unwrap());
+    prefs.save(&path).unwrap();
+    let back = Prefs::load(&path);
+    assert!(!back.joins_rooms("agt_quiet") && back.joins_rooms("agt_existing"));
+    assert!(back.is_handled("!fix:s", "agt_quiet") && !back.is_handled("!fix:s", "agt_existing"));
+    let mut again = back;
+    assert!(!again.claim("!fix:s", "agt_quiet").unwrap(), "a second claim is refused");
+}
+
+#[test]
+fn an_unreadable_file_fails_closed_to_asking() {
+    let path = temp_file("corrupt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{not json").unwrap();
+    assert!(!Prefs::load(&path).joins_rooms("agt_any"), "corrupt means ask, never join silently");
+    assert!(path.with_extension("json.corrupt").exists());
+}

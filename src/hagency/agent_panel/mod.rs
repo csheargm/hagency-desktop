@@ -10,6 +10,7 @@ pub(crate) mod activity_rows;
 mod design;
 mod identity;
 pub(crate) mod mapping;
+mod rooms;
 mod settings;
 pub use design::script_mod;
 
@@ -72,6 +73,7 @@ impl Widget for AgentPanel {
         self.handle_identity_actions(cx, actions);
         self.handle_backup_actions(cx, actions);
         self.handle_settings_actions(cx, actions);
+        self.handle_room_follow_actions(cx, actions);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.view.draw_walk(cx, scope, walk)
@@ -89,6 +91,7 @@ impl AgentPanel {
         self.models.clear();
         (self.backups, self.backup_saved) = (Vec::new(), None);
         self.view.check_box(cx, ids!(retire_confirm)).set_active(cx, false, Animate::No);
+        self.fill_room_follow(cx);
         self.set_tab(cx, Tab::Identity);
         self.note(cx, "Loading…");
         self.call(Load::Status, false, Call::Status(self.agent_id()));
