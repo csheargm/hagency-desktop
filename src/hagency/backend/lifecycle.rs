@@ -32,32 +32,42 @@ impl Service {
     }
 
     /// Runs one command on the in-process owner. A demo server restart revokes
-    /// the owner's resume grant, which leaves the cached owner retired; every
-    /// later command then failed until the window restarted. Such a failure is
-    /// raised by owner authorization before the command is sent, so the stale
-    /// owner is dropped and the command retried once on a freshly authorized
-    /// owner. A second failure is returned and the UI offers "Sign in again".
+    /// the owner's resume grant, which left the cached owner retired; every
+    /// later command failed until the window restarted. On such a failure the
+    /// stale owner is dropped so the next command authorizes a fresh one. Only
+    /// reads are retried at once: the owner can report these codes after a
+    /// mutation was already sent, and a mutation must never run twice.
     pub(super) async fn execute_native(&self, command: Command) -> Result<Value, String> {
-        let first = self.native_owner().await?.execute(command.clone()).await.map_err(|e| e.code);
-        match first {
+        let owner = self.native_owner().await?;
+        let read = super::management_read(&command);
+        let retry = read.then(|| command.clone());
+        match owner.execute(command).await.map_err(|e| e.code) {
             Err(code) if stale_owner_code(&code) => {
-                self.drop_stale_native_owner().await?;
-                self.native_owner().await?.execute(command).await.map_err(|e| e.code)
+                self.drop_stale_native_owner(&owner).await?;
+                match retry {
+                    Some(command) => self.native_owner().await?.execute(command).await.map_err(|e| e.code),
+                    None => Err(code),
+                }
             }
             other => other,
         }
     }
 
-    async fn drop_stale_native_owner(&self) -> Result<(), String> {
+    /// Drops `failed` only if it is still the cached owner: a concurrent
+    /// caller may already have replaced it, and that owner must keep running.
+    async fn drop_stale_native_owner(&self, failed: &NativeOwner) -> Result<(), String> {
         let mut native = self.0.native.lock().await;
         self.check()?;
-        let registered = self.0.native_retirement.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        if let Some(owner) = native.clone().or(registered) {
-            owner.retire();
-            self.close_native_owner(&owner).await?;
+        if native.as_ref().is_some_and(|current| !current.same_instance(failed)) {
+            return Ok(());
         }
+        failed.retire();
+        self.close_native_owner(failed).await?;
         native.take();
-        self.0.native_retirement.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let mut registered = self.0.native_retirement.lock().unwrap_or_else(|p| p.into_inner());
+        if registered.as_ref().is_some_and(|owner| owner.same_instance(failed)) {
+            registered.take();
+        }
         Ok(())
     }
 

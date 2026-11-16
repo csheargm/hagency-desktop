@@ -871,6 +871,12 @@ impl Drop for Inner {
 /// standalone browser authentication listens only for its OAuth callback.
 #[derive(Clone)]
 pub struct NativeOwner(Arc<Inner>);
+impl NativeOwner {
+    /// Whether both handles are the same opened owner (not merely the same account).
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
 #[cfg(feature = "resource-adoption")]
 mod server_administration;
 #[derive(Clone, Copy, PartialEq, Eq)]
