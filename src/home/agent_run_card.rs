@@ -22,11 +22,18 @@ script_mod! {
             width: Fill height: Fit
             draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: 12}}
         }
-        status := Label {
-            width: Fill height: Fit
-            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
-        }
         preview := HtmlOrPlaintext { width: Fill height: Fit selectable: true }
+        footer := View {
+            width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+            status := Label {
+                width: Fit height: Fit
+                draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+            }
+            details := Button {
+                visible: false
+                text: #(crate::i18n::tr("Details")) i18n_text: "Details"
+            }
+        }
         input := TextInput {
             width: Fill height: Fit
             empty_text: #(crate::i18n::tr("Add instructions…")) i18n_empty_text: "Add instructions…"
@@ -71,6 +78,9 @@ pub struct AgentRunCard {
     /// Ticks once a second while the shown run is running.
     #[rust]
     clock: Timer,
+    /// Whether the reader opened an answered run's details (Agent, runtime).
+    #[rust]
+    details_open: bool,
 }
 /// How often a running card's elapsed time ticks.
 const CLOCK_TICK_SECS: f64 = 1.0;
@@ -115,6 +125,11 @@ impl Widget for AgentRunCard {
         let Some(key) = self.key.as_deref() else {
             return;
         };
+        if self.view.button(cx, ids!(footer.details)).clicked(actions) {
+            self.details_open = !self.details_open;
+            self.view.label(cx, ids!(title)).set_visible(cx, self.details_open);
+            self.view.redraw(cx);
+        }
         if let Some(text) = self.view.text_input(cx, ids!(input)).changed(actions) {
             run_controls::draft(key, text);
         }
@@ -141,7 +156,7 @@ impl AgentRunCard {
     fn show_status(&mut self, cx: &mut Cx) {
         let ticking = self.run.as_ref().is_some_and(|(card, started)| {
             let status = super::agent_run_status::live_status(card, started.elapsed().as_secs());
-            self.view.label(cx, ids!(status)).set_text(cx, &status);
+            self.view.label(cx, ids!(footer.status)).set_text(cx, &footer_text(card, &status));
             super::agent_run_status::needs_tick(card)
         });
         if !ticking {
@@ -167,28 +182,38 @@ impl AgentRunCardRef {
             return;
         };
         let changed = inner.key.as_deref() != Some(entry.key.as_str());
+        if changed {
+            inner.details_open = false;
+        }
         inner.key = Some(entry.key.clone());
         inner.view.set_visible(cx, true);
         inner
             .view
             .label(cx, ids!(title))
             .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
+        // An answered run is the answer itself: its Agent and runtime move
+        // behind "Details", and the status line becomes a short footer.
+        let answered = !entry.card.answer.is_empty();
+        let show_title = !answered || inner.details_open;
+        inner.view.label(cx, ids!(title)).set_visible(cx, show_title);
+        inner.view.button(cx, ids!(footer.details)).set_visible(cx, answered);
         inner.run = Some((entry.card.clone(), entry.started));
         inner.show_status(cx);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
-        preview.set_visible(cx, !entry.card.preview.is_empty());
+        let body = shown_text(&entry.card);
+        preview.set_visible(cx, !body.is_empty());
         let open = entry.card.state == ::hagency::agent_run_controls::State::Running;
         let selecting = preview.selection_active(cx);
         if let Some(text) = preview_to_show(
-            inner.shown_preview.as_deref(), &entry.card.preview, open, !changed, selecting,
+            inner.shown_preview.as_deref(), body, open, !changed, selecting,
         ) {
             show_preview(cx, &preview, text);
             inner.shown_preview = Some(text.to_owned());
             inner.held_preview = None;
         } else {
             // Kept back for the selection; `handle_event` shows it on release.
-            inner.held_preview = (inner.shown_preview.as_deref() != Some(entry.card.preview.as_str()))
-                .then(|| entry.card.preview.clone());
+            inner.held_preview = (inner.shown_preview.as_deref() != Some(body))
+                .then(|| body.to_owned());
         }
         let input = inner.view.text_input(cx, ids!(input));
         input.set_visible(cx, entry.may_append && (open || !entry.draft.is_empty() || !entry.recovered_drafts.is_empty()));
@@ -220,6 +245,15 @@ impl AgentRunCardRef {
     }
 }
 
+/// The card's main text: the answer once the run carries it, else the live text.
+fn shown_text(card: &::hagency::agent_run_controls::Card) -> &str {
+    if card.answer.is_empty() { &card.preview } else { &card.answer }
+}
+/// The status line: "✅ Done in 2 s · 0 steps" under an answer, else the live status.
+fn footer_text(card: &::hagency::agent_run_controls::Card, status: &str) -> String {
+    if card.answer.is_empty() { status.to_owned() } else { format!("✅ {status}") }
+}
+
 #[cfg(test)]
 const SOURCE_TEXT: &str = include_str!("agent_run_card.rs");
 #[cfg(test)]
@@ -240,6 +274,19 @@ mod tests {
             assert_ne!(text_for(Language::Chinese, key), key, "{key} has no Chinese text");
         }
         assert!(!SOURCE_TEXT.split("#[cfg(test)]").next().unwrap().chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "Chinese literal in the card's layout");
+    }
+    #[test]
+    fn an_answered_run_shows_the_answer_with_a_short_footer() {
+        let mut card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({"version":1,
+            "id":"c","dispatchId":"d","executionId":"e","roomId":"!r","eventId":"$e","threadRoot":"!r",
+            "requester":"@a","owner":"@b","runtime":"codex","state":"running","revision":0,"preview":"live"})).unwrap();
+        assert_eq!(shown_text(&card), "live");
+        assert_eq!(footer_text(&card, "Thinking… 2 s"), "Thinking… 2 s");
+        card.state = ::hagency::agent_run_controls::State::Completed;
+        card.preview.clear();
+        card.answer = "42".into();
+        assert_eq!(shown_text(&card), "42");
+        assert_eq!(footer_text(&card, "Done in 2 s · 0 steps"), "✅ Done in 2 s · 0 steps");
     }
     #[test]
     fn live_text_is_formatted_like_the_finished_reply_and_plain_text_stays_plain() {

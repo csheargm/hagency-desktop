@@ -60,6 +60,10 @@ pub(crate) fn thread_summary_text<'a>(live: Option<String>, fallback: &'a str) -
 /// The localized status of an `im.hagency.agent_run` message, from its card data.
 pub(crate) fn status_of_message(data: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
     let card = data.get(MSGTYPE)?;
+    // A finished run's one message is its answer: previews show the answer.
+    if let Some(answer) = card.get("answer").and_then(|a| a.as_str()).filter(|a| !a.is_empty()) {
+        return Some(answer.to_owned());
+    }
     let state = serde_json::from_value(card.get("state")?.clone()).ok()?;
     let progress = card.get("progress").and_then(|p| serde_json::from_value(p.clone()).ok());
     Some(status_text(state, progress.as_ref()))
@@ -75,6 +79,8 @@ mod tests {
         let data = serde_json::json!({"im.hagency.agent_run":{"state":"completed"}});
         assert_eq!(status_of_message(data.as_object().unwrap()).as_deref(), Some(crate::i18n::tr("Done")));
         assert!(status_of_message(serde_json::json!({}).as_object().unwrap()).is_none());
+        let answered = serde_json::json!({"im.hagency.agent_run":{"state":"completed","answer":"42"}});
+        assert_eq!(status_of_message(answered.as_object().unwrap()).as_deref(), Some("42"));
     }
     /// The demo flow: the card reads the step while the Agent works, then the
     /// summary once it is done; a run without steps keeps the upstream words.

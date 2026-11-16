@@ -1461,7 +1461,8 @@ impl Widget for RoomScreen {
         }
         board.handle_event(cx, event, &mut Scope::empty());
         if let Event::Actions(actions) = event
-            && self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).clicked(actions)
+            && (self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).clicked(actions)
+                || self.view.button(cx, ids!(thread_banner_back)).clicked(actions))
             && matches!(self.timeline_kind, Some(TimelineKind::Thread {..}))
             && let Some(room_name_id) = self.room_name_id.clone() {
             cx.widget_action(self.widget_uid(), RoomsListAction::Selected(SelectedRoom::JoinedRoom {room_name_id}));
