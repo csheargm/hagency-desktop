@@ -12,6 +12,8 @@ pub(crate) const FILE_NAME: &str = "agent_follow.json";
 const VERSION: u32 = 1;
 /// More (room, Agent) pairs than anyone joins by hand; a hostile file cannot grow past it.
 const MAX_HANDLED: usize = 8192;
+/// Failed catch-up passes (each with its own bounded retries) before a pair is given up.
+pub(crate) const MAX_CATCH_UP_FAILURES: u32 = 5;
 /// Serializes load-modify-save between the UI thread and backend tasks.
 static WRITE: Mutex<()> = Mutex::new(());
 
@@ -25,6 +27,19 @@ pub(crate) struct Prefs {
     /// one add (or one prompt) per Agent per room.
     #[serde(default)]
     handled: BTreeSet<String>,
+    /// Agent ids whose earlier rooms were chosen explicitly (Create agent
+    /// checklist): the catch-up never adds them.
+    #[serde(default)]
+    caught_up: BTreeSet<String>,
+    /// Catch-up passes that failed to bind a pair, by pair; at
+    /// [`MAX_CATCH_UP_FAILURES`] the pair is given up and noticed.
+    #[serde(default)]
+    catch_up_failures: BTreeMap<String, u32>,
+    /// Set once the Agents that existed when the catch-up first ran were
+    /// marked caught up: only Agents created after that ever catch up, so an
+    /// upgrade never adds existing Agents to rooms the owner left them out of.
+    #[serde(default)]
+    catch_up_seeded: bool,
     #[serde(skip)]
     corrupt: bool,
 }
@@ -57,7 +72,7 @@ impl Prefs {
         Self { corrupt: true, ..Self::default() }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), corrupt: false };
+        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), catch_up_failures: self.catch_up_failures.clone(), catch_up_seeded: self.catch_up_seeded, corrupt: false };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -75,6 +90,48 @@ impl Prefs {
     }
     pub fn is_handled(&self, room_id: &str, agent_id: &str) -> bool {
         self.handled.contains(&pair(room_id, agent_id))
+    }
+    /// Whether this Agent still has to catch up (never with a corrupt file).
+    pub fn needs_catch_up(&self, agent_id: &str) -> bool {
+        !self.corrupt && !self.caught_up.contains(agent_id)
+    }
+    /// Records that this Agent caught up on earlier rooms; false when it already had.
+    /// A corrupt file never catches up (fail closed, like the setting).
+    pub fn claim_catch_up(&mut self, agent_id: &str) -> Result<bool, String> {
+        if self.corrupt || self.caught_up.contains(agent_id) { return Ok(false); }
+        if self.caught_up.len() >= MAX_HANDLED { return Err("too_many_room_choices".into()); }
+        Ok(self.caught_up.insert(agent_id.to_owned()))
+    }
+    /// Whether the existing Agents were already marked caught up.
+    pub fn catch_up_seeded(&self) -> bool { self.catch_up_seeded }
+    /// First run only: every Agent that already exists is caught up (no
+    /// historical joins). False when already seeded or the file is corrupt.
+    pub fn seed_catch_up<'a>(&mut self, agent_ids: impl IntoIterator<Item = &'a str>) -> Result<bool, String> {
+        if self.corrupt || self.catch_up_seeded { return Ok(false); }
+        for id in agent_ids { self.claim_catch_up(id)?; }
+        self.catch_up_seeded = true;
+        Ok(true)
+    }
+    /// Whether the catch-up should still try this pair (never once given up).
+    pub fn catch_up_pending(&self, room_id: &str, agent_id: &str) -> bool {
+        !self.is_handled(room_id, agent_id) && self.catch_up_failures.get(&pair(room_id, agent_id)).is_none_or(|n| *n < MAX_CATCH_UP_FAILURES)
+    }
+    /// One more failed pass for the pair; returns true when this gave it up.
+    pub fn note_catch_up_failure(&mut self, room_id: &str, agent_id: &str) -> bool {
+        let key = pair(room_id, agent_id);
+        if !self.catch_up_failures.contains_key(&key) && self.catch_up_failures.len() >= MAX_HANDLED { return false; }
+        let count = self.catch_up_failures.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+        *count == MAX_CATCH_UP_FAILURES
+    }
+    /// The pair settled: forget its failures.
+    pub fn clear_catch_up_failures(&mut self, room_id: &str, agent_id: &str) {
+        self.catch_up_failures.remove(&pair(room_id, agent_id));
+    }
+    /// Rooms the catch-up gave up on for this Agent.
+    pub fn catch_up_given_up(&self, agent_id: &str) -> usize {
+        let suffix = format!(" {agent_id}");
+        self.catch_up_failures.iter().filter(|(key, n)| key.ends_with(&suffix) && **n >= MAX_CATCH_UP_FAILURES).count()
     }
     /// Records the pair; false when it was already handled (nothing to do again).
     pub fn claim(&mut self, room_id: &str, agent_id: &str) -> Result<bool, String> {

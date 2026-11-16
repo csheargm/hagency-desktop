@@ -1461,7 +1461,8 @@ impl Widget for RoomScreen {
         }
         board.handle_event(cx, event, &mut Scope::empty());
         if let Event::Actions(actions) = event
-            && self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).clicked(actions)
+            && (self.view.navigation_bar_button(cx, ids!(desktop_thread_back)).clicked(actions)
+                || self.view.button(cx, ids!(thread_banner_back)).clicked(actions))
             && matches!(self.timeline_kind, Some(TimelineKind::Thread {..}))
             && let Some(room_name_id) = self.room_name_id.clone() {
             cx.widget_action(self.widget_uid(), RoomsListAction::Selected(SelectedRoom::JoinedRoom {room_name_id}));
@@ -1723,6 +1724,21 @@ impl Widget for RoomScreen {
                     if let Some(tl) = self.tl_state.as_mut() {
                         tl.content_drawn_since_last_update.clear();
                         self.view.redraw(cx);
+                    }
+                }
+                // Forward a run card's answer (the run's status event carries it).
+                // TODO(R4): room_screen.rs should split its action handling per card kind.
+                if let Some(fwd) = action.downcast_ref::<super::agent_run_answer::ForwardRunAnswer>()
+                    && let Some(tl) = self.tl_state.as_ref()
+                    && tl.kind.room_id().as_str() == fwd.room
+                {
+                    let messages = tl.items.iter().filter_map(|i| i.as_event()).filter_map(ForwardMessage::from_event).collect();
+                    match super::agent_run_answer::forward_list(messages, fwd) {
+                        Some((messages, selected)) => cx.action(ForwardAction::Select {
+                            title: self.room_name_id.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "Chat history".into()),
+                            messages, selected,
+                        }),
+                        None => enqueue_popup_notification(crate::i18n::tr("Could not find the answer to export. Please try again."), PopupKind::Error, Some(5.0)),
                     }
                 }
                 // Handle the outcome of sending an agent-chat approval verdict.
@@ -6559,16 +6575,9 @@ fn populate_agent_run_cards(
             )
         })
         .unwrap_or_default();
-    for (index, path) in [
-        ids!(content.agent_run_card),
-        ids!(content.agent_run_card_1),
-        ids!(content.agent_run_card_2),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        item.agent_run_card(cx, path)
-            .set_entry(cx, entries.get(index));
+    let paths = [ids!(content.agent_run_card), ids!(content.agent_run_card_1), ids!(content.agent_run_card_2)];
+    for (path, shown) in paths.into_iter().zip(super::agent_run_pager::slot_entries(&entries)) {
+        item.agent_run_card(cx, path).set_entries(cx, shown);
     }
 }
 

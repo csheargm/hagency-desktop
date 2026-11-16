@@ -1,7 +1,7 @@
 //! The async steps: read the owner's Agents, look at the room, then bind
 //! through `Service::invite_agent_to_room` (the Add agent path). Binds run
 //! one after another so two binds of one Agent never race in the journal.
-use super::{AgentPick, retry, Follow, RoomFacts, active_agents, default_agent, follow_on_join, prefs, prompt::BringAgentAction, should_auto_join};
+use super::{AgentPick, retry, Follow, RoomFacts, active_agents, follow_on_join, prefs, prompt::BringAgentAction, should_auto_join, should_catch_up};
 use crate::hagency::{backend::Service, model::Command};
 use crate::shared::popup_list::{PopupKind, enqueue_popup_notification};
 use crate::utils::RoomNameId;
@@ -22,6 +22,11 @@ pub(super) struct BindDone {
 
 /// Binds the Agent `puppet` into each `(room id, name)` in order, reporting each outcome.
 pub fn bind_into_rooms(agent: String, puppet: String, rooms: Vec<(String, String)>) {
+    bind_into_rooms_then(agent, puppet, rooms, |_| {});
+}
+
+/// As [`bind_into_rooms`], also handing each outcome to `done` (off the UI thread).
+pub fn bind_into_rooms_then(agent: String, puppet: String, rooms: Vec<(String, String)>, done: impl Fn(&Result<bool, String>) + Send + 'static) {
     if rooms.is_empty() { return; }
     let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
@@ -31,6 +36,7 @@ pub fn bind_into_rooms(agent: String, puppet: String, rooms: Vec<(String, String
                 Ok(service) => service.invite_agent_to_room(&room_id, &puppet).await,
                 Err(code) => Err(code.clone()),
             };
+            done(&result);
             Cx::post_action(BindDone { epoch, agent: agent.clone(), room, result });
         }
     });
@@ -50,22 +56,95 @@ pub fn observe(actions: &Actions) {
     }
 }
 
-/// After a room the owner created (New room) exists: add the newest Agent
-/// when its "Join rooms I join" setting is on.
+/// After a room the owner created (New room) exists: every Agent whose
+/// "Join rooms I join" setting is on joins it.
 pub fn owner_created_room(room_id: OwnedRoomId) {
     let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
         match when_loaded(epoch, || prepare(&room_id)).await {
-            Ok(Some((agent, room, facts))) if should_auto_join(prefs::load_current().joins_rooms(&agent.id), facts) => {
-                if !prefs::load_current().is_handled(room_id.as_str(), &agent.id) {
-                    follow_bind(room_id, agent, room);
+            Ok((agents, room)) => {
+                if epoch != crate::account_session::epoch() { return; }
+                let saved = prefs::load_current();
+                for (agent, facts) in agents {
+                    if should_auto_join(saved.joins_rooms(&agent.id), facts) && !saved.is_handled(room_id.as_str(), &agent.id) {
+                        follow_bind(room_id.clone(), agent, room.clone());
+                    }
                 }
             }
-            Ok(_) => {}
             // Optional convenience: the room was created either way and Add
             // agent still works there, so a failed lookup only skips it.
             Err(code) => warning!("Bring agent: no automatic add to new room {room_id}: {code}"),
         }
+    });
+}
+
+/// Agents new to this account's follow settings (just created, or older than
+/// the catch-up) join the group rooms the owner created before they existed,
+/// once per Agent. Rooms the owner only joined are left to their prompt.
+pub fn catch_up_agents() {
+    let epoch = crate::account_session::epoch();
+    crate::account_session::spawn(async move {
+        if let Err(code) = catch_up(epoch).await {
+            // Optional convenience: Add agent still works in each room, and an
+            // unclaimed Agent tries again on the next listing.
+            warning!("Bring agent: owner's earlier rooms not caught up: {code}");
+        }
+    });
+}
+
+async fn catch_up(epoch: u64) -> Result<(), String> {
+    let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
+    let me = crate::sliding_sync::current_user_id().ok_or("matrix_sign_in_required")?;
+    let listing = Service::for_current()?.execute(Command::Agents).await?;
+    let agents = active_agents(&listing);
+    let saved = prefs::load_current();
+    if !saved.catch_up_seeded() {
+        // Upgrade: Agents that already exist (any state) keep their rooms as the owner left them.
+        let ids = super::listed_agent_ids(&listing);
+        prefs::update_current(|p| p.seed_catch_up(ids.iter().map(String::as_str)))?;
+        return Ok(());
+    }
+    for agent in agents.into_iter().filter(|a| saved.joins_rooms(&a.id) && saved.needs_catch_up(&a.id)) {
+        // Nothing is recorded per Agent: each room is settled on its own, so a
+        // room still loading, a failed join or a restart leaves it for the next pass.
+        for room in client.joined_rooms() {
+            if epoch != crate::account_session::epoch() { return Err("account_changed".into()); }
+            let room_id = room.room_id().to_owned();
+            if !room.creators().is_some_and(|c| c.contains(&me)) || saved.is_handled(room_id.as_str(), &agent.id) { continue; }
+            let Ok(facts) = room_facts(&room, &agent).await else { continue };
+            if facts.agent_present {
+                // Already there (also added by hand after a give-up): settled, notice cleared.
+                let (r, a) = (room_id.as_str(), agent.id.as_str());
+                if let Err(code) = prefs::update_current(|p| { p.clear_catch_up_failures(r, a); p.claim(r, a).map(|_| ()) }) {
+                    warning!("Bring agent: {a} in {r} not recorded: {code}");
+                }
+            } else if saved.catch_up_pending(room_id.as_str(), &agent.id) && should_catch_up(true, false, true, facts) {
+                let name = RoomNameId::from_room(&room).await.to_string();
+                catch_up_bind(room_id, agent.clone(), name);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One catch-up bind: settled pairs are recorded; a failure counts toward the
+/// cap and stays pending for the next pass (startup, Agents listing).
+fn catch_up_bind(room_id: OwnedRoomId, agent: AgentPick, room: String) {
+    let key = prefs::pair(room_id.as_str(), &agent.id);
+    let Some(in_flight) = retry::begin(&key) else { return };
+    let epoch = crate::account_session::epoch();
+    crate::account_session::spawn(async move {
+        let result = bind_with_retries(epoch, &room_id, &agent.puppet).await;
+        drop(in_flight);
+        let (r, a) = (room_id.as_str(), agent.id.as_str());
+        let saved = if retry::bind_settles(&result) {
+            prefs::update_current(|p| { p.clear_catch_up_failures(r, a); p.claim(r, a).map(|_| ()) })
+        } else {
+            prefs::update_current(|p| { p.note_catch_up_failure(r, a); Ok(()) })
+        };
+        if let Err(code) = saved { warning!("Bring agent: catch-up of {a} in {r} not recorded: {code}"); }
+        // Failures stay quiet here; the Agent panel notes rooms given up on.
+        if result.is_ok() { Cx::post_action(BindDone { epoch, agent: agent.name, room, result }); }
     });
 }
 
@@ -176,15 +255,17 @@ async fn plan_follow(room_id: &OwnedRoomId) -> Result<Vec<(AgentPick, String, Fo
     Ok(steps)
 }
 
-/// The default Agent, the room's name and what the room is, or None when the
-/// owner has no Agent yet.
-async fn prepare(room_id: &OwnedRoomId) -> Result<Option<(AgentPick, String, RoomFacts)>, String> {
+/// Every active Agent with what the room is for it, and the room's name.
+async fn prepare(room_id: &OwnedRoomId) -> Result<(Vec<(AgentPick, RoomFacts)>, String), String> {
     let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
     let room = client.get_room(room_id).ok_or(retry::ROOM_NOT_LOADED)?;
     let service = Service::for_current()?;
-    let Some(agent) = default_agent(&service.execute(Command::Agents).await?) else { return Ok(None) };
-    let facts = room_facts(&room, &agent).await?;
-    Ok(Some((agent, RoomNameId::from_room(&room).await.to_string(), facts)))
+    let mut agents = Vec::new();
+    for agent in active_agents(&service.execute(Command::Agents).await?) {
+        let facts = room_facts(&room, &agent).await?;
+        agents.push((agent, facts));
+    }
+    Ok((agents, RoomNameId::from_room(&room).await.to_string()))
 }
 
 async fn room_facts(room: &matrix_sdk::Room, agent: &AgentPick) -> Result<RoomFacts, String> {
