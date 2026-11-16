@@ -168,3 +168,31 @@ fn github_reads_run_without_a_card_and_writes_still_ask() {
         assert!(!allowed("claude.Bash", json!({"command":line}), dir.path()), "{line}");
     }
 }
+#[test]
+fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |line: &str| allowed("claude.Bash", json!({"command": line}), dir.path());
+    let live = "gh pr view 26 --repo csheargm/hagency-demo-sandbox --json state,isDraft,headRefOid,reviews,comments -q '{state,isDraft,headRefOid,reviews:[.reviews[]|{author:.author.login,state}],comments:[.comments[]|{body}]}'";
+    for line in [
+        live,
+        "gh pr view 26 --json state --jq '.state'",
+        "gh pr view 26 --json files --jq '.files[] | \"\\(.path)\"'",
+        "gh pr list --json number,title --jq='.[] | select(.title | test(\"docs/\"))'",
+        "gh issue view 4 --json body -t '{{.body}}'",
+        "gh pr view 26 --json comments --template \"{{range .comments}}{{.body}}{{end}}\"",
+        "gh pr view 26 --json headRefOid -q '.headRefOid' 2>&1",
+    ] {
+        assert!(run(line), "{line}");
+    }
+    for line in [
+        "gh pr view 26 --json state -q \"$(id)\"",
+        "gh pr view 26 --json state -q .state > /tmp/out",
+        "gh pr view 26 --json state -q '.state' | sh",
+        "gh pr view 26 --json state -q `id`",
+        "gh pr merge 26 --json state -q '.state'",
+        "gh pr view 26 -q '.state' ../../etc/passwd",
+        "gh pr view https://evil.example/x/y/pull/1 --json state -q '.'",
+    ] {
+        assert!(!run(line), "{line}");
+    }
+}

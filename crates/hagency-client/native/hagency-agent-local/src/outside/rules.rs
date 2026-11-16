@@ -56,7 +56,7 @@ pub(super) fn segment_allowed(words: &[&str]) -> bool {
         ["gh", ..] if !gh_options_safe(words) => false,
         ["gh", "repo", "clone", repo, _path] => !repo.starts_with('-'),
         ["gh", "auth", "status", rest @ ..] => rest.is_empty(),
-        ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(rest),
+        ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(&gh_without_data(rest)),
         ["rg", ..] if words.iter().any(|w| RG_DENIED.iter().any(|d| option_is(w, d))) => false,
         ["mkdir", rest @ ..] => !rest.is_empty() && words[1..].iter().filter(|w| w.starts_with('-')).all(|w| *w == "-p"),
         [program, ..] => READ_ONLY_PROGRAMS.contains(program),
@@ -102,6 +102,24 @@ fn gh_targets_safe(rest: &[&str]) -> bool {
     rest.iter().all(|w| w.starts_with('-') || !(w.contains(':') || w.matches('/').count() > 1 || (w.contains('/') && !github_repo_name(w))))
 }
 
+/// Options whose value is an output filter or field list that `gh` itself
+/// reads (jq, Go template, `--json` fields): data, never a path or target.
+/// Only with `--json`; the shell tokenizer has already refused substitutions
+/// and redirects outside quotes.
+const GH_DATA_OPTIONS: [&str; 5] = ["--json", "-q", "--jq", "-t", "--template"];
+
+/// `words` minus the values of [`GH_DATA_OPTIONS`] (and `--jq=...` forms)
+/// when the command reads `--json`; otherwise unchanged.
+pub(super) fn gh_without_data<'a>(words: &[&'a str]) -> Vec<&'a str> {
+    let json = words.iter().any(|w| option_is(w, "--json"));
+    let mut value_next = false;
+    words.iter().copied().filter(|w| {
+        if !json { return true; }
+        if std::mem::replace(&mut value_next, GH_DATA_OPTIONS.contains(w)) { return false; }
+        !GH_DATA_OPTIONS.iter().any(|d| d.starts_with("--") && w.strip_prefix(d).is_some_and(|r| r.starts_with('=')))
+    }).collect()
+}
+
 /// `OWNER/REPO` on github.com (no host prefix).
 fn github_repo_name(value: &str) -> bool {
     let mut parts = value.split('/');
@@ -113,13 +131,15 @@ fn github_repo_name(value: &str) -> bool {
 /// values, minus the repository of `gh repo clone`, a branch name, and a
 /// `git commit -m` message.
 pub(super) fn paths<'a>(words: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
-    let skip = match words {
+    let gh: Option<Vec<&'a str>> = (words.first() == Some(&"gh")).then(|| gh_without_data(words));
+    let words: Vec<&'a str> = gh.unwrap_or_else(|| words.to_vec());
+    let skip = match words.as_slice() {
         ["gh", "repo", "clone", ..] | ["git", "checkout", "-b", ..] | ["git", "switch", "-c", ..] => 4,
         _ => 1,
     };
     let commit = words.get(1) == Some(&"commit");
     let mut after_message = false;
-    words.iter().skip(skip).copied().filter_map(move |w| {
+    words.into_iter().skip(skip).filter_map(move |w| {
         let message = std::mem::replace(&mut after_message, commit && matches!(w, "-m" | "--message"));
         if message || (commit && w.starts_with("--message=")) {
             return None;
