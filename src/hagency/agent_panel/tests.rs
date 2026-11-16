@@ -37,9 +37,9 @@ fn loaded_agent_renders_identity_who_can_ask_and_credit() {
     assert_eq!(panel.view.label(&mut cx, ids!(credit_text)).text(), "1.2M of 2M tokens left today");
     assert_eq!(panel.view.drop_down(&mut cx, ids!(approval_mode)).selected_item(), 2, "saved outside mode shows");
     assert!(panel.view.button(&mut cx, ids!(revoke)).borrow().unwrap().enabled(), "a remembered rule can be revoked");
-    assert_eq!(panel.view.text_input(&mut cx, ids!(token_limit)).text(), "2000000");
-    assert_eq!(panel.view.label(&mut cx, ids!(workspace)).text(), "/work");
-    assert_eq!(panel.view.button(&mut cx, ids!(service_toggle)).text(), "Resume");
+    assert_eq!(panel.view.text_input(&mut cx, ids!(panel_token_limit)).text(), "2000000");
+    assert_eq!(panel.view.label(&mut cx, ids!(panel_workspace)).text(), "/work");
+    assert_eq!(panel.view.button(&mut cx, ids!(panel_service_toggle)).text(), "Resume");
 }
 
 #[test]
@@ -117,11 +117,11 @@ fn model_dropdown_shows_one_label_for_alias_and_display_name() {
         panel.model = json!({"modelProfile": {"model": saved, "credential_ref": "claude-managed:x"}});
         panel.models.clear();
         panel.render(&mut cx);
-        assert_eq!(panel.view.drop_down(&mut cx, ids!(model)).selected_label(), "Claude Sonnet", "{saved} while loading");
+        assert_eq!(panel.view.drop_down(&mut cx, ids!(panel_model)).selected_label(), "Claude Sonnet", "{saved} while loading");
         panel.models = vec![ModelChoice { model: "sonnet".into(), label: "Claude Sonnet".into(), efforts: vec![], default_effort: String::new() },
             ModelChoice { model: "opus".into(), label: "Claude Opus".into(), efforts: vec![], default_effort: String::new() }];
         panel.render(&mut cx);
-        let model = panel.view.drop_down(&mut cx, ids!(model));
+        let model = panel.view.drop_down(&mut cx, ids!(panel_model));
         assert_eq!((model.selected_item(), model.selected_label()), (0, "Claude Sonnet".to_owned()), "{saved} with choices");
     }
 }

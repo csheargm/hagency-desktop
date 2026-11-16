@@ -6,8 +6,6 @@ use super::*;
 use crate::hagency::agent_panel::{AgentPanelAction, AgentPanelWidgetRefExt};
 
 impl HagencyPanel {
-    // TODO(id-collision): limit_mode, model, period, retire_confirm, token_limit,
-    // workspace and service_toggle are also bare ids in both pages; scope them too.
     /// The detail page's own issue-watch block. A bare `ids!(issue_watch)`
     /// finds the native panel's block first and overwrote its context.
     pub(super) fn detail_issue_watch(&self, cx: &mut Cx) -> WidgetRef {
@@ -145,5 +143,34 @@ mod tests {
         }
         assert_ne!(panel.detail_issue_watch(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(issue_watch)).widget_uid());
         assert_ne!(panel.detail_github_access(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(github_access)).widget_uid());
+    }
+
+    /// Regression: every id the detail page looks up bare that the native
+    /// panel also defined resolved into the panel (it sits earlier in the
+    /// tree), so the detail page read and wrote the open panel's controls.
+    /// The panel's copies now carry a `panel_` prefix.
+    #[test]
+    fn detail_page_bare_ids_never_reach_the_open_panel() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = panel(&mut cx);
+        panel.identity = "owner".into();
+        panel.agents = vec![json!({"id": "a", "displayName": "First"})];
+        panel.set_page(&mut cx, Page::Agents);
+        panel.open_agent_panel(&mut cx, 0);
+        let inner = panel.view.widget(&mut cx, ids!(agent_panel));
+        let detail = panel.view.widget(&mut cx, ids!(agent_detail));
+        let shared = [
+            (ids!(limit_mode), ids!(panel_limit_mode)), (ids!(model), ids!(panel_model)),
+            (ids!(period), ids!(panel_period)), (ids!(retire_confirm), ids!(panel_retire_confirm)),
+            (ids!(token_limit), ids!(panel_token_limit)), (ids!(workspace), ids!(panel_workspace)),
+            (ids!(service_toggle), ids!(panel_service_toggle)),
+        ];
+        for (bare, renamed) in shared {
+            let found = panel.view.widget(&mut cx, bare);
+            assert!(!found.is_empty(), "{bare:?} missing from the detail page");
+            assert_eq!(found.widget_uid(), detail.widget(&mut cx, bare).widget_uid(), "{bare:?} left the detail page");
+            assert!(inner.widget(&mut cx, bare).is_empty(), "{bare:?} still defined in the native panel");
+            assert!(!inner.widget(&mut cx, renamed).is_empty(), "{renamed:?} missing from the native panel");
+        }
     }
 }
