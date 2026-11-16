@@ -4029,6 +4029,8 @@ async fn start_matrix_client_login_and_sync(rt: Handle) {
         // Questions Agents ask in rooms arrive as room messages of their own type.
         #[cfg(feature = "agent_chat")]
         crate::hagency::pending_questions::attach(&client);
+        // TODO(R4): sliding_sync.rs is over budget; move these client watchers into one attach module.
+        crate::home::room_memory::watch::attach(&client);
         // An avatar or name changed on another device arrives as member events.
         crate::profile::own_profile_watch::attach(&client);
 

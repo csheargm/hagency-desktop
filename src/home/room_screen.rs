@@ -6288,9 +6288,9 @@ fn populate_message_view(
         populate_agent_run_cards(cx, &item, event_tl_item, timeline_kind);
         // TODO(R4): this file is over budget; split message-card population into its own module.
         item.memory_proposal_card(cx, ids!(content.memory_proposal_card))
-            .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()));
+            .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()), super::room_memory::outcome::origin_of(event_tl_item));
         item.skill_proposal_card(cx, ids!(content.skill_proposal_card))
-            .show(cx, timeline_kind.room_id(), super::room_skills::proposal_of(event_tl_item, timeline_kind.room_id()));
+            .show(cx, timeline_kind.room_id(), super::room_skills::proposal_of(event_tl_item, timeline_kind.room_id()), super::room_memory::outcome::origin_of(event_tl_item));
     }
 
     // If `used_cached_item` is false, we should always redraw the profile, even if profile_drawn is true.

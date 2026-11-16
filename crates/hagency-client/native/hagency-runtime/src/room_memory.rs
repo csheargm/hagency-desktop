@@ -181,11 +181,17 @@ pub fn render_list_with(entries: &[Entry], extra: &[(&str, Value)]) -> String {
 /// Content of the proposal card an Agent posts. It is an ordinary message, not
 /// a state event: proposing never changes memory.
 pub fn proposal_content(id: &str, text: &str, reason: &str, source_event: &str, agent: &str) -> Value {
-    json!({
-        "msgtype": "m.notice",
-        "body": format!("Memory proposal from {agent}: {text}\nReason: {reason}"),
-        MEMORY_PROPOSAL_KEY: {"id":id,"text":text,"reason":reason,"source_event":source_event,"author":agent},
-    })
+    let mut content = json!({"msgtype": "m.notice",
+        MEMORY_PROPOSAL_KEY: {"id":id,"text":text,"reason":reason,"source_event":source_event,"author":agent}});
+    name_proposal(&mut content, "Agent");
+    content
+}
+pub const PROPOSAL_BODY_MARK: &str = " suggests a note for this room's memory: ";
+/// The fallback body other clients show names the Agent, never its raw id.
+pub fn name_proposal(content: &mut Value, agent_name: &str) {
+    let p = &content[MEMORY_PROPOSAL_KEY];
+    let (text, reason) = (p["text"].as_str().unwrap_or_default(), p["reason"].as_str().unwrap_or_default());
+    content["body"] = json!(format!("{agent_name}{PROPOSAL_BODY_MARK}{text}\nReason: {reason}"));
 }
 
 /// Parse a proposal card's payload.

@@ -140,6 +140,10 @@ impl Store {
     pub fn first_request(&mut self, room: &RoomId) -> bool {
         self.requested.insert(room.to_owned())
     }
+    /// Whether a card or the panel has asked for this room's memory.
+    pub fn was_requested(&self, room: &RoomId) -> bool {
+        self.requested.contains(room)
+    }
     pub fn forget_requests(&mut self, room: &RoomId) {
         self.requested.remove(room);
     }

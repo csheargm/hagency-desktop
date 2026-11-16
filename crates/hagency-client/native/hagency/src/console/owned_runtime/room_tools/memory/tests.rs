@@ -211,3 +211,14 @@ async fn budgets_hold_and_replays_share_a_transaction() {
     let posted = room.posted.lock().unwrap();
     assert_eq!(posted[0].0, posted[1].0);
 }
+
+/// Regression (live 2026-11-15): Element showed "Memory proposal from agt_…".
+#[test]
+fn proposal_fallback_body_names_the_agent_never_its_raw_id() {
+    let mut content = mem::proposal_content("mem_1", "Demo Monday", "asked", "$e", "agt_01m7");
+    assert_eq!(content["body"], "Agent suggests a note for this room's memory: Demo Monday\nReason: asked");
+    mem::name_proposal(&mut content, "demoup-claude");
+    let body = content["body"].as_str().unwrap();
+    assert!(body.starts_with("demoup-claude suggests a note for this room's memory: Demo Monday") && !body.contains("agt_"), "{body}");
+    assert_eq!(mem::proposal_from_content(&content).unwrap().text, "Demo Monday", "the card payload is unchanged");
+}
