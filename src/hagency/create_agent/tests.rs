@@ -117,3 +117,10 @@ fn revoked_agent_sign_in_asks_to_sign_in_again_not_for_a_provider_login() {
     state.probes[1] = None;
     assert!(state.needs_sign_in() && state.checking());
 }
+#[test]
+fn account_mismatch_offers_sign_in_again_not_a_generic_error() {
+    // Regression: @Anna vs @anna showed "operation could not finish" with no way out.
+    let mut state = ready(None, None);
+    state.probes = [Some(Err("matrix_account_mismatch".into())), Some(Err("matrix_account_mismatch".into()))];
+    assert!(state.needs_sign_in() && state.account_mismatch());
+}

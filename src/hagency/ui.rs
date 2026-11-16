@@ -397,6 +397,15 @@ fn agent_empty_message(loaded: bool, loading: bool) -> &'static str {
     else if !loaded { "Your Agent list could not be loaded. Refresh to retry." }
     else { "No Agents yet. Create an Agent, then configure this device and add it to Rooms." }
 }
+// TODO(R4): ui.rs is over budget; split error copy (user_error and friends) into `ui/errors.rs`.
+const ACCOUNT_MISMATCH_MESSAGE: &str = "Agent setup is authorized for a different account than the one this window is signed in to. Click Sign in again to reconnect Agents with this window's account.";
+/// Names this window's account so the owner can tell which identity to use.
+pub(crate) fn account_mismatch_message() -> String {
+    match crate::sliding_sync::get_client().and_then(|c| c.user_id().map(|u| u.to_string())) {
+        Some(user) => format!("Agent setup is authorized for a different account than {user}, the account this window is signed in to. Click Sign in again to reconnect Agents as {user}."),
+        None => ACCOUNT_MISMATCH_MESSAGE.to_owned(),
+    }
+}
 fn user_error(error: &str) -> &str {
     if let Some(message) = provider_error_message(error) { return message; }
     match error {
@@ -427,6 +436,7 @@ fn user_error(error: &str) -> &str {
         "project_not_found" | "room_not_found" | "room_kind_mismatch" => {
             "This Project or Room is no longer available. Refresh the list."
         }
+        "matrix_account_mismatch" => ACCOUNT_MISMATCH_MESSAGE,
         "device_authorization_required" | "local_access_required"
         | "native_resume_missing" | "native_resume_revoked" => {
             "Your account authorization expired. Sign in again to continue."
@@ -3272,12 +3282,15 @@ impl Widget for HagencyPanel {
                                 | "sign_in_required"
                                 | "native_resume_missing"
                                 | "native_resume_revoked"
+                                | "matrix_account_mismatch"
                         );
                         self.view
                             .button(cx, ids!(login))
                             .set_visible(cx, reauthenticate);
                         let message = if error.contains("ledger_recovery_required") {
                             "Restore this exact owner's complete ledger before running new model requests. Stop, restore, then restart.".to_owned()
+                        } else if error == "matrix_account_mismatch" {
+                            account_mismatch_message()
                         } else if reauthenticate {
                             "Sign in through Pasion to restore this account. Chats and Agent management use the same login.".to_owned()
                         } else if error == "matrix_authorization_unavailable" {
@@ -4516,6 +4529,12 @@ mod agent_panel_route;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn account_mismatch_is_actionable_not_generic() {
+        // Regression: @Anna vs @anna showed "This action could not be completed".
+        assert_eq!(user_error("matrix_account_mismatch"), ACCOUNT_MISMATCH_MESSAGE);
+        assert!(user_error("matrix_account_mismatch").contains("Sign in again"));
+    }
     #[test]
     fn runtime_start_button_body_matches_the_native_request_parser() {
         for takeover in [false, true] {

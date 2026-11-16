@@ -195,6 +195,7 @@ impl CreateAgentDialog {
     fn render_lines(&mut self, cx: &mut Cx) {
         let runs_on = match self.state.runtime() {
             Some(runtime) => crate::i18n::tr("Runs on this Mac with your {harness} login; usage counts against that account.").replace("{harness}", harness_label(&runtime)),
+            None if self.state.account_mismatch() => crate::hagency::ui::account_mismatch_message(),
             None if self.state.needs_sign_in() => crate::i18n::tr("Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.").into(),
             None if self.state.checking() => String::new(),
             None => crate::i18n::tr("Sign in on this Mac first: run `claude login` or `codex login` in a terminal, then reopen this dialog.").into(),
