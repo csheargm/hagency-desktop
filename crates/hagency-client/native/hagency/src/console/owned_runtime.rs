@@ -2977,10 +2977,12 @@ async fn send_encrypted_reply<T: Transport>(
         Err(error) => return Err(error),
         Ok(_) => return Err(RuntimeError::Transport),
     }
+    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))?;
+    // Only after the local ledger is durable may the card record go.
     if carded.is_some() {
         run_controls::answer_recorded(&device, &record.dispatch, &execution);
     }
-    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))
+    Ok(())
 }
 async fn send_reply<T: Transport>(
     console: &T,
