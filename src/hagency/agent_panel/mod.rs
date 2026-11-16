@@ -90,7 +90,7 @@ impl AgentPanel {
         (self.busy, self.status, self.model, self.models_reply, self.activity) = (false, Value::Null, Value::Null, Value::Null, Value::Null);
         self.models.clear();
         (self.backups, self.backup_saved) = (Vec::new(), None);
-        self.view.check_box(cx, ids!(retire_confirm)).set_active(cx, false, Animate::No);
+        self.view.check_box(cx, ids!(panel_retire_confirm)).set_active(cx, false, Animate::No);
         self.fill_room_follow(cx);
         self.set_tab(cx, Tab::Identity);
         self.note(cx, "Loading…");

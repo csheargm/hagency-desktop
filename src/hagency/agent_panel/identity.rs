@@ -45,8 +45,8 @@ impl AgentPanel {
             let saved = self.model["modelProfile"]["model"].as_str().filter(|m| !m.is_empty());
             labels.insert(0, saved.map(|m| mapping::model_label(&self.models, m)).unwrap_or_else(|| crate::i18n::tr(if self.here() { "Checking model choices…" } else { "Set on the device that runs it" }).into()));
         }
-        self.view.drop_down(cx, ids!(model)).set_labels(cx, labels);
-        self.view.drop_down(cx, ids!(model)).set_selected_item(cx, index.unwrap_or(0));
+        self.view.drop_down(cx, ids!(panel_model)).set_labels(cx, labels);
+        self.view.drop_down(cx, ids!(panel_model)).set_selected_item(cx, index.unwrap_or(0));
         let efforts = index.map(|i| self.models[i].efforts.clone()).unwrap_or_default();
         let saved_effort = self.model["modelProfile"]["reasoning_effort"].as_str().unwrap_or("");
         let thinking: Vec<String> = if efforts.is_empty() {
@@ -54,7 +54,7 @@ impl AgentPanel {
         } else { efforts.clone() };
         self.view.drop_down(cx, ids!(thinking)).set_labels(cx, thinking);
         self.view.drop_down(cx, ids!(thinking)).set_selected_item(cx, efforts.iter().position(|e| e == saved_effort).unwrap_or(0));
-        self.view.widget(cx, ids!(model)).set_disabled(cx, !editable);
+        self.view.widget(cx, ids!(panel_model)).set_disabled(cx, !editable);
         self.view.widget(cx, ids!(thinking)).set_disabled(cx, !editable || efforts.is_empty());
         let hint = if self.status.is_null() || self.here() { "Changes save right away and apply to the next request." } else { "Model and limits are set on the device that runs this agent. Open Advanced settings to change them." };
         self.view.label(cx, ids!(model_hint)).set_text(cx, crate::i18n::tr(hint));
@@ -91,7 +91,7 @@ impl AgentPanel {
         if self.view.button(cx, ids!(message)).clicked(actions) && let Some(room_id) = self.chat_room() {
             crate::hagency::ui::open_agent_chat(cx, room_id);
         }
-        if let Some(index) = self.view.drop_down(cx, ids!(model)).selected(actions) {
+        if let Some(index) = self.view.drop_down(cx, ids!(panel_model)).selected(actions) {
             self.save_model(cx, index, None);
         }
         if let Some(index) = self.view.drop_down(cx, ids!(thinking)).selected(actions) && let Some(model) = self.model_index() {

@@ -46,7 +46,7 @@ script_mod! {
         status := Hint {}
         identity_page := Page {visible: true
             Card {
-                Field {Text {text: #(crate::i18n::tr("Model")) i18n_text: "Model"} model := Select {labels: [#(crate::i18n::tr("Checking model choices…"))]}}
+                Field {Text {text: #(crate::i18n::tr("Model")) i18n_text: "Model"} panel_model := Select {labels: [#(crate::i18n::tr("Checking model choices…"))]}}
                 Field {Text {text: #(crate::i18n::tr("Thinking")) i18n_text: "Thinking"} thinking := Select {labels: [#(crate::i18n::tr("Default"))]}}
                 model_hint := Hint {}
                 Field {Text {text: #(crate::i18n::tr("Backup model")) i18n_text: "Backup model"} backup := Select {labels: [#(crate::i18n::tr("None"))]}}
@@ -98,9 +98,9 @@ script_mod! {
             Card {github_access := mod.widgets.GithubAccessSection {}}
             Card {
                 Title {text: #(crate::i18n::tr("Budget")) i18n_text: "Budget"}
-                limit_mode := Select {labels: [#(crate::i18n::tr("No limit")) #(crate::i18n::tr("Token limit"))]}
-                token_holder := Field {Text {text: #(crate::i18n::tr("Tokens")) i18n_text: "Tokens"} token_limit := Input {empty_text: "2000000"}}
-                period := Select {labels: [#(crate::i18n::tr("In total")) #(crate::i18n::tr("Per day (UTC)")) #(crate::i18n::tr("Per month (UTC)"))]}
+                panel_limit_mode := Select {labels: [#(crate::i18n::tr("No limit")) #(crate::i18n::tr("Token limit"))]}
+                token_holder := Field {Text {text: #(crate::i18n::tr("Tokens")) i18n_text: "Tokens"} panel_token_limit := Input {empty_text: "2000000"}}
+                panel_period := Select {labels: [#(crate::i18n::tr("In total")) #(crate::i18n::tr("Per day (UTC)")) #(crate::i18n::tr("Per month (UTC)"))]}
                 save_budget := Primary {text: #(crate::i18n::tr("Save budget")) i18n_text: "Save budget"}
             }
             Card {
@@ -110,16 +110,16 @@ script_mod! {
             }
             Card {
                 Title {text: #(crate::i18n::tr("Workspace folder")) i18n_text: "Workspace folder"}
-                workspace := Text {}
+                panel_workspace := Text {}
             }
             Card {
                 Title {text: #(crate::i18n::tr("Service")) i18n_text: "Service"}
                 service_state := Text {}
-                service_toggle := Action {text: #(crate::i18n::tr("Pause")) i18n_text: "Pause"}
+                panel_service_toggle := Action {text: #(crate::i18n::tr("Pause")) i18n_text: "Pause"}
             }
             Card {
                 Title {text: #(crate::i18n::tr("Retire")) i18n_text: "Retire"}
-                retire_confirm := CheckBox {text: #(crate::i18n::tr("I confirm retirement stops every Room; this identity remains mine")) i18n_text: "I confirm retirement stops every Room; this identity remains mine"}
+                panel_retire_confirm := CheckBox {text: #(crate::i18n::tr("I confirm retirement stops every Room; this identity remains mine")) i18n_text: "I confirm retirement stops every Room; this identity remains mine"}
                 retire := Danger {text: #(crate::i18n::tr("Retire Agent permanently")) i18n_text: "Retire Agent permanently"}
             }
         }
