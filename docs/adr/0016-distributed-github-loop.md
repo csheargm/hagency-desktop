@@ -90,6 +90,20 @@ Separation and approvals:
   never counts the PR author's own review. An unreadable review list counts
   nothing.
 - The author must be on `authors=` (`*` = anyone), or be this owner's own login.
+- An approving review skips the card only if its body names the current head
+  SHA (`review_names_head`). This is the commit the reviewer read; an
+  approval of an older head asks the owner. For a maintainer, the author must
+  also be trusted.
+- `--request-changes` withdraws that Agent's earlier approvals of the pull
+  request immediately.
+- The repository file keeps its own approval rule: an Agent other than the
+  merger, counted from local approvals only. The owner's relaxation and
+  `reviewers=` apply only to the owner's policy. This device's own login in
+  `reviewers=` is never counted a second time.
+- Missing CI evidence (no `statusCheckRollup`) is treated as "still
+  running", never as "no checks".
+- A developer's claim is reserved in the ledger before the hand-off, and the
+  daily limit is enforced at that point.
 
 The file format also gained `tier: trusted` (`paths:`, `max_lines:`,
 `always_human:`), which always requires CI. Trusted-tier keys without

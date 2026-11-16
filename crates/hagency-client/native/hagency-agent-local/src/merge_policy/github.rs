@@ -42,7 +42,8 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
         return None;
     }
     let files = files.iter().map(changed_file).collect::<Option<_>>()?;
-    let checks = view["statusCheckRollup"].as_array().map(|all| all.iter().map(check_state).collect()).unwrap_or_default();
+    // Missing or unreadable CI evidence is "still running", never "no checks" (GPT review P2).
+    let checks = view["statusCheckRollup"].as_array().map_or_else(|| vec![Check::Pending], |all| all.iter().map(check_state).collect());
     let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
     Some(PrView { url, base_sha, head_sha, author, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }

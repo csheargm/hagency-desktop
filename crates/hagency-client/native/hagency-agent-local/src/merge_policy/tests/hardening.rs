@@ -63,7 +63,7 @@ async fn approved(ledger: &mut Ledger, dir: &Path, source: &Fake) {
     for agent in ["fixer", "reviewer"] {
         ledger.set_auto_merge(owner, agent, true).unwrap();
     }
-    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), dir, "reviewer");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), dir, "reviewer");
     assert_eq!(gate::auto_answer(ledger, owner, &review, "call", 11, source).await, Some(true));
     ledger.settle_agent_review("call", true).unwrap();
 }
@@ -96,7 +96,7 @@ async fn a_review_command_that_failed_does_not_qualify_a_merge() {
     for agent in ["fixer", "reviewer"] {
         ledger.set_auto_merge(owner, agent, true).unwrap();
     }
-    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "toolu_review", 11, &docs).await, Some(true));
     ledger.settle_agent_review("toolu_review", false).unwrap();
     let merge = bash(&merge_line(), temp.path(), "fixer");

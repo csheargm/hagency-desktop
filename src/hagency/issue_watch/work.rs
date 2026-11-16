@@ -91,11 +91,18 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
             live.mark_seen(issue.number).await?;
             continue;
         }
+        // Reserved before the hand-off, so the daily limit holds even when a
+        // later step fails (a reserved issue counts; it is never handed twice).
+        let reserved = loop_api(worker.service, id, json!({"workClaim": {"repo": entry.repo, "number": issue.number}})).await?;
+        // Not reserved: the limit is used up (stop), or it was reserved by an
+        // earlier pass whose hand-off failed (hand it off now; same txn id).
+        if reserved["claimed"] != true && reserved["claimsLeft"].as_u64() == Some(0) {
+            break;
+        }
         let outcome = handoff::hand_off(&live, &[issue]).await;
         if let Some(error) = outcome.error {
             return Err(error);
         }
-        loop_api(worker.service, id, json!({"workClaim": {"repo": entry.repo, "number": issue.number}})).await?;
         handed += outcome.handed;
     }
     Ok(handed)
@@ -108,6 +115,9 @@ async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str
     let now = chrono::Utc::now().timestamp();
     if let Some(holder) = claim_holder(&read().await?, now) {
         return Ok(holder.eq_ignore_ascii_case(login));
+    }
+    if crate::hagency::kill_switch::paused_here(worker.agent["id"].as_str().unwrap_or_default()) {
+        return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
     let label = worker.agent["displayName"].as_str().unwrap_or("Agent");
     post_comment(worker.client, GITHUB_API, &entry.repo, number, worker.token, &format!("{CLAIM_MARKER} — {}", super::notice::quoted_title(label))).await.map_err(|e| e.to_string())?;
@@ -154,6 +164,10 @@ impl<'a> LiveLoop<'a> {
 impl LoopIo for LiveLoop<'_> {
     async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
         super::still_current(self.worker.epoch)?;
+        // Checked right before the send, after every await that led here.
+        if self.paused() {
+            return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
+        }
         crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(), notice.marker(), notice.txn_id(&self.agent_id)).await
     }
     async fn review(&self, change: Value) -> Result<Value, String> {

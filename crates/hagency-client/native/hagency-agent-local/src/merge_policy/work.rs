@@ -87,6 +87,13 @@ pub struct OwnerRules {
     pub always_human: Vec<String>,
 }
 
+impl Judged {
+    /// Every policy that applies; each must pass.
+    pub fn policies(&self) -> impl Iterator<Item = &MergePolicy> {
+        self.file.iter().chain(self.rules.iter())
+    }
+}
+
 fn login_ok(login: &str) -> bool {
     login == ANYONE || (!login.is_empty() && login.len() <= 39 && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
@@ -153,8 +160,12 @@ impl Ledger {
         let text: Option<String> = self.db.query_row("SELECT rules FROM agent_work WHERE agent=? AND repo=?", (agent, repo.to_ascii_lowercase()), |r| r.get(0)).optional()?;
         text.map(|t| serde_json::from_str(&t).map_err(|_| Error::Invalid("stored rules are unreadable"))).transpose()
     }
-    /// Record that the Agent claimed issue `number` at `now`; false when already claimed.
+    /// Reserve issue `number` for the Agent at `now`, before its hand-off;
+    /// false when it was already reserved or the daily limit is used up.
     pub fn record_work_claim(&mut self, agent: &str, repo: &str, number: i64, now: i64) -> Result<bool> {
+        if self.claims_left_today(agent, now)? == 0 {
+            return Ok(false);
+        }
         Ok(self.db.execute("INSERT OR IGNORE INTO agent_work_claims VALUES (?,?,?,?)", (agent, repo.to_ascii_lowercase(), number, now))? == 1)
     }
     pub fn work_claimed(&self, agent: &str, repo: &str, number: i64) -> Result<bool> {
@@ -190,9 +201,14 @@ impl Ledger {
 
 /// What the gate judges a pull request by.
 pub(crate) struct Judged {
-    /// Every policy that applies; all must pass. Never empty.
-    pub policies: Vec<MergePolicy>,
+    /// The repository's own file, judged with its own approval rule (an Agent
+    /// other than the merger; GitHub reviews never count for it).
+    pub file: Option<MergePolicy>,
+    /// The owner's rules (or a developer's or reviewer's readying policy).
+    pub rules: Option<MergePolicy>,
     pub trusted_reviewers: Vec<String>,
+    /// This device's own GitHub login, when known (never counted twice).
+    pub own_login: Option<String>,
     /// The Agent whose own approval does not count: the merger, unless the
     /// owner's rules apply and someone else's GitHub login wrote the change.
     pub excluded: String,
@@ -211,11 +227,11 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
         None => None,
     };
     let rules = ledger.owner_rules(agent, repo).ok()?;
-    let mut judged = Judged { policies: file.into_iter().collect(), trusted_reviewers: Vec::new(), excluded: agent.to_owned(), author_reason: None, review_only: false };
+    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_only: false };
     if let Some(rules) = rules.as_ref().filter(|r| r.role != Role::Maintainer) {
         judged.review_only = true;
         // Readying or reviewing any path (protected ones still ask); never a merge.
-        judged.policies.push(OwnerRules { any_path: true, max_lines: None, ..rules.clone() }.policy());
+        judged.rules = Some(OwnerRules { any_path: true, max_lines: None, ..rules.clone() }.policy());
     }
     if let Some(rules) = rules.filter(|r| r.role == Role::Maintainer) {
         let own = source.viewer_login(command).await;
@@ -223,11 +239,12 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
             judged.author_reason = Some(format!("{} is not a trusted author", if view.author.is_empty() { "an unknown account" } else { view.author.as_str() }));
         }
         // The Agent did not write this change if its owner's login did not.
-        if own.is_some_and(|o| !view.author.is_empty() && !o.eq_ignore_ascii_case(&view.author)) {
+        if own.as_deref().is_some_and(|o| !view.author.is_empty() && !o.eq_ignore_ascii_case(&view.author)) {
             judged.excluded = String::new();
         }
         judged.trusted_reviewers = rules.trusted_reviewers.clone();
-        judged.policies.push(rules.policy());
+        judged.rules = Some(rules.policy());
+        judged.own_login = own;
     }
-    (!judged.policies.is_empty()).then_some(judged)
+    (judged.file.is_some() || judged.rules.is_some()).then_some(judged)
 }

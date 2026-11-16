@@ -58,7 +58,7 @@ fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
 fn line(verb: &str, repo: &str) -> String {
     match verb {
         "merge" => format!("gh pr merge 7 --squash --match-head-commit {HEAD} --repo {repo}"),
-        _ => format!("gh pr review 7 --repo {repo} --approve -b \"Hagency verdict: APPROVE - ok\""),
+        _ => format!("gh pr review 7 --repo {repo} --approve -b \"Hagency verdict: APPROVE {HEAD} - ok\""),
     }
 }
 /// Anna's Agent reviews (settled as a success), then merges.
@@ -181,11 +181,59 @@ async fn readiness_reports_the_decision_without_taking_the_merge() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
     let src = Src::new(vec![file("src/a.rs", 3)]);
-    let command = GhPr { dir: temp.path().into(), number: 7, repo: Some(A.into()), head: None, kind: gate::Kind::Merge };
+    let command = GhPr { dir: temp.path().into(), number: 7, repo: Some(A.into()), head: None, kind: gate::Kind::Merge, body: String::new() };
     assert!(matches!(merge_readiness(&mut ledger, &command, "anna", &src).await.unwrap().1, Decision::NeedsHuman(_)), "no review yet");
     let review = gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await;
     ledger.settle_agent_review("rv", review == Some(true)).unwrap();
     let (view, decision) = merge_readiness(&mut ledger, &command, "anna", &src).await.unwrap();
     assert_eq!((view.head_sha.as_str(), decision), (HEAD, Decision::Merge));
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, Some(true), "still available");
+}
+
+#[tokio::test]
+async fn gpt_review_fixes_hold() {
+    // An approval must name the head it reviewed; a stale or missing SHA asks.
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    let src = Src::new(vec![file("src/a.rs", 1)]);
+    for body in ["Hagency verdict: APPROVE - ok".to_owned(), format!("Hagency verdict: APPROVE {BASE}"), format!("Hagency verdict: APPROVE {HEAD}0")] {
+        let line = format!("gh pr review 7 --repo {A} --approve -b \"{body}\"");
+        assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line, temp.path(), "anna"), "rv", 11, &src).await, None, "{body}");
+    }
+    // An untrusted author's pull request gets no card-free approval.
+    let mallory = Src { author: "mallory", ..Src::new(vec![file("src/a.rs", 1)]) };
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &mallory).await, None);
+    // Request changes withdraws an earlier approval.
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await, Some(true));
+    ledger.settle_agent_review("rv", true).unwrap();
+    let changes = format!("gh pr review 7 --repo {A} --request-changes -b \"Hagency verdict: CHANGES - no\"");
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&changes, temp.path(), "anna"), "rc", 11, &src).await, Some(true));
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, None, "the approval was withdrawn");
+}
+
+#[tokio::test]
+async fn the_file_keeps_its_own_approval_rule_and_one_review_counts_once() {
+    // A repository file requiring another Agent still does under owner rules.
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    let filed = Src { policy: Some(Some("low_risk_paths: [\"**\"]\n".into())), ..Src::new(vec![file("src/a.rs", 1)]) };
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &filed).await.1, None, "the maintainer alone does not satisfy the file");
+    // Two approvals required: the device's own login in reviewers= does not count twice.
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![OwnerRules { trusted_reviewers: vec!["anna".into()], ..rules(A, Role::Maintainer) }]);
+    let two = Src { policy: Some(Some("tier: trusted\nrequired_agent_approvals: 2\n".into())), reviews: Some(vec![("anna".into(), "APPROVED".into(), HEAD.into())]), ..Src::new(vec![file("src/a.rs", 1)]) };
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &two).await.1, None);
+}
+
+#[test]
+fn missing_ci_evidence_is_pending_and_the_daily_claim_limit_is_enforced_on_reserve() {
+    let view = serde_json::json!({"url": "https://github.com/a/b/pull/7", "state": "OPEN", "baseRefOid": BASE, "headRefOid": HEAD});
+    assert_eq!(crate::merge_policy::github::view_from_json(&view, &serde_json::json!([])).unwrap().facts.checks, [Check::Pending]);
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna"]);
+    let limit = crate::merge_policy::work::DEFAULT_ISSUES_PER_DAY as i64;
+    for n in 0..limit {
+        assert!(ledger.record_work_claim("anna", A, n, 10).unwrap());
+    }
+    assert!(!ledger.record_work_claim("anna", B, 99, 10).unwrap(), "the limit holds across repositories");
 }
