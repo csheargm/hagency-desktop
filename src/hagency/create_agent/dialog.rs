@@ -237,8 +237,11 @@ impl CreateAgentDialog {
             Ok(value) => {
                 crate::hagency::agent_presence::set_has_agent(true);
                 self.bind_ticked(value);
-                // The new Agent also joins the group rooms its owner made earlier.
-                crate::hagency::bring_agent::catch_up_agents();
+                // The checklist was the owner's explicit choice of earlier rooms:
+                // the catch-up must never add this Agent to rooms left unticked.
+                if let Some(id) = value["creation"]["agent"]["id"].as_str() {
+                    crate::hagency::bring_agent::skip_catch_up(id);
+                }
                 self.save_backup(value);
                 cx.action(crate::home::project_tree::ProjectTreeChanged { identity: identity.to_owned() });
                 if let Some(room_id) = value["quickSetup"]["ownerDirectRoomId"].as_str().and_then(|id| matrix_sdk::ruma::OwnedRoomId::try_from(id).ok()) {

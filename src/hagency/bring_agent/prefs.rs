@@ -79,6 +79,10 @@ impl Prefs {
     pub fn is_handled(&self, room_id: &str, agent_id: &str) -> bool {
         self.handled.contains(&pair(room_id, agent_id))
     }
+    /// Whether this Agent still has to catch up (never with a corrupt file).
+    pub fn needs_catch_up(&self, agent_id: &str) -> bool {
+        !self.corrupt && !self.caught_up.contains(agent_id)
+    }
     /// Records that this Agent caught up on earlier rooms; false when it already had.
     /// A corrupt file never catches up (fail closed, like the setting).
     pub fn claim_catch_up(&mut self, agent_id: &str) -> Result<bool, String> {

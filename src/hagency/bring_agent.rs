@@ -5,8 +5,8 @@
 //! - the Create agent dialog's "Add to rooms" checklist (`create_agent`);
 //! - rooms the owner creates with New room: every active Agent with its
 //!   "Join rooms I join" setting on joins at once;
-//! - an Agent that is new to this device (just created, or never caught up)
-//!   joins the group rooms its owner created before it existed, once;
+//! - an Agent not created with the Create agent dialog's checklist (older
+//!   Agents, ones made elsewhere) joins the group rooms its owner created, once;
 //! - group rooms the owner joins (accepted invite or join): every active
 //!   Agent with the setting on joins; one with it off gets a one-click prompt.
 //!
@@ -16,7 +16,7 @@ mod flow;
 mod prefs;
 mod prompt;
 mod retry;
-pub use flow::{bind_into_rooms, catch_up_agents, observe, owner_created_room};
+pub use flow::{bind_into_rooms, bind_into_rooms_then, catch_up_agents, observe, owner_created_room};
 pub use prompt::{BringAgentAction, route as route_prompt, script_mod};
 
 use serde_json::Value;
@@ -105,6 +105,14 @@ pub(crate) fn follow_on_join(joins_rooms: bool, handled: bool, room: RoomFacts) 
 /// Whether this Agent follows its owner into rooms (default on).
 pub(crate) fn joins_rooms(agent_id: &str) -> bool {
     prefs::load_current().joins_rooms(agent_id)
+}
+
+/// Marks an Agent as caught up without joining anything (its rooms were chosen
+/// explicitly). A failed save is logged: the next catch-up may then add it.
+pub(crate) fn skip_catch_up(agent_id: &str) {
+    if let Err(code) = prefs::update_current(|prefs| prefs.claim_catch_up(agent_id)) {
+        makepad_widgets::warning!("Bring agent: could not record {agent_id}'s room choice: {code}");
+    }
 }
 
 /// Saves this Agent's "Join rooms I join" for the signed-in account.

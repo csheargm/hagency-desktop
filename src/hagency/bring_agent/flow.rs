@@ -22,6 +22,11 @@ pub(super) struct BindDone {
 
 /// Binds the Agent `puppet` into each `(room id, name)` in order, reporting each outcome.
 pub fn bind_into_rooms(agent: String, puppet: String, rooms: Vec<(String, String)>) {
+    bind_into_rooms_then(agent, puppet, rooms, |_| {});
+}
+
+/// As [`bind_into_rooms`], also handing each outcome to `done` (off the UI thread).
+pub fn bind_into_rooms_then(agent: String, puppet: String, rooms: Vec<(String, String)>, done: impl Fn(&Result<bool, String>) + Send + 'static) {
     if rooms.is_empty() { return; }
     let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
@@ -31,6 +36,7 @@ pub fn bind_into_rooms(agent: String, puppet: String, rooms: Vec<(String, String
                 Ok(service) => service.invite_agent_to_room(&room_id, &puppet).await,
                 Err(code) => Err(code.clone()),
             };
+            done(&result);
             Cx::post_action(BindDone { epoch, agent: agent.clone(), room, result });
         }
     });
@@ -90,20 +96,24 @@ async fn catch_up(epoch: u64) -> Result<(), String> {
     let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
     let me = crate::sliding_sync::current_user_id().ok_or("matrix_sign_in_required")?;
     let agents = active_agents(&Service::for_current()?.execute(Command::Agents).await?);
-    for agent in agents {
-        if !prefs::load_current().joins_rooms(&agent.id) { continue; }
-        if !prefs::update_current(|prefs| prefs.claim_catch_up(&agent.id))? { continue; }
+    let saved = prefs::load_current();
+    for agent in agents.into_iter().filter(|a| saved.joins_rooms(&a.id) && saved.needs_catch_up(&a.id)) {
+        // Every room is read before anything is recorded: a room still loading
+        // fails this pass, and the Agent is caught up on a later listing.
+        let mut joins = Vec::new();
         for room in client.joined_rooms() {
             if epoch != crate::account_session::epoch() { return Err("account_changed".into()); }
             let owner_created = room.creators().is_some_and(|c| c.contains(&me));
-            // A room still loading counts as not created by the owner: skipped, never guessed.
-            let Ok(facts) = room_facts(&room, &agent).await else { continue };
-            let saved = prefs::load_current();
-            if should_catch_up(saved.joins_rooms(&agent.id), saved.is_handled(room.room_id().as_str(), &agent.id), owner_created, facts) {
-                let name = RoomNameId::from_room(&room).await.to_string();
-                follow_bind(room.room_id().to_owned(), agent.clone(), name);
+            if !owner_created { continue; }
+            let facts = room_facts(&room, &agent).await?;
+            if should_catch_up(true, saved.is_handled(room.room_id().as_str(), &agent.id), true, facts) {
+                joins.push((room.room_id().to_owned(), RoomNameId::from_room(&room).await.to_string()));
             }
         }
+        // Each pair is recorded only when its bind settles (`follow_bind`), so a
+        // failed bind is retried by the next join of that room.
+        if !prefs::update_current(|prefs| prefs.claim_catch_up(&agent.id))? { continue; }
+        for (room_id, name) in joins { follow_bind(room_id, agent.clone(), name); }
     }
     Ok(())
 }
