@@ -115,7 +115,9 @@ pub(super) fn gh_without_data<'a>(words: &[&'a str]) -> Vec<&'a str> {
     let mut value_next = false;
     words.iter().copied().filter(|w| {
         if !json { return true; }
-        if std::mem::replace(&mut value_next, GH_DATA_OPTIONS.contains(w)) { return false; }
+        // A value is consumed before it is read as an option (`--template --jq URL`).
+        if std::mem::take(&mut value_next) { return false; }
+        value_next = GH_DATA_OPTIONS.contains(w);
         !GH_DATA_OPTIONS.iter().any(|d| d.starts_with("--") && w.strip_prefix(d).is_some_and(|r| r.starts_with('=')))
     }).collect()
 }

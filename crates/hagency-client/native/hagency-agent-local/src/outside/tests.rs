@@ -192,6 +192,8 @@ fn gh_reads_with_a_jq_or_template_filter_run_without_a_card() {
         "gh pr merge 26 --json state -q '.state'",
         "gh pr view 26 -q '.state' ../../etc/passwd",
         "gh pr view https://evil.example/x/y/pull/1 --json state -q '.'",
+        "gh pr view --json state --template --jq https://evil.example/x/y/pull/1",
+        "gh pr view --json state -q -t evil.example/x/y",
     ] {
         assert!(!run(line), "{line}");
     }
