@@ -239,54 +239,97 @@ async fn serve(
 fn text_result(reply: RoomReply) -> Value {
     json!({"isError":reply.is_error(),"content":[{"type":"text","text":reply.text()}]})
 }
-fn identity(params: &Value) -> Option<(Key, String)> {
+/// Codex call metadata differs by path: a direct MCP call carries an object
+/// in `x-codex-turn-metadata` with equal `callId`/`itemId`, while code-mode
+/// (scripted) calls may send it as a JSON string, omit `threadId`, carry a
+/// distinct `itemId`, or name only the root turn. Accept every shape that
+/// still names one thread, one turn and one call; reject contradictions.
+struct Identity {
+    thread: String,
+    turns: Vec<String>,
+    call: String,
+}
+fn identity(params: &Value) -> std::result::Result<Identity, &'static str> {
     let meta = &params["_meta"];
-    let source = &meta["x-codex-turn-metadata"];
+    let parsed;
+    let source = match &meta["x-codex-turn-metadata"] {
+        Value::String(text) => {
+            parsed = serde_json::from_str::<Value>(text).map_err(|_| "turn_metadata_invalid")?;
+            &parsed
+        }
+        other => other,
+    };
     let valid = |v: &Value| {
         v.as_str()
             .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
             .map(str::to_owned)
     };
-    let thread = valid(&source["thread_id"])?;
-    let turn = valid(&source["turn_id"])?;
-    let call = valid(&meta["callId"])?;
-    if meta["threadId"] != thread || meta["itemId"] != call {
-        return None;
+    let thread = valid(&source["thread_id"])
+        .or_else(|| valid(&meta["threadId"]))
+        .ok_or("thread_missing")?;
+    if valid(&meta["threadId"]).is_some_and(|t| t != thread) {
+        return Err("thread_mismatch");
     }
-    Some(((thread, turn), call))
+    let mut turns: Vec<String> = [&source["turn_id"], &source["root_turn_id"], &meta["x-codex-root-turn-id"]]
+        .into_iter()
+        .filter_map(valid)
+        .collect();
+    turns.dedup();
+    if turns.is_empty() {
+        return Err("turn_missing");
+    }
+    let call = valid(&meta["callId"])
+        .or_else(|| valid(&meta["itemId"]))
+        .ok_or("call_missing")?;
+    Ok(Identity { thread, turns, call })
+}
+fn refused(reason: &str) -> Value {
+    // The model sees why, so it can tell the owner instead of guessing.
+    text_result(RoomReply::new(json!({"error":"room_tool_unavailable","reason":reason}).to_string(), true)
+        .unwrap_or_else(|_| RoomReply::unavailable()))
 }
 async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
-    let denied = || text_result(RoomReply::unavailable());
-    let Some((key, call)) = identity(params) else {
-        return denied();
+    let who = match identity(params) {
+        Ok(who) => who,
+        Err(reason) => return refused(reason),
     };
     let Some(name) = params["name"].as_str() else {
-        return denied();
+        return refused("tool_name_missing");
     };
     let Ok(operation) = tools.parse(name, &params["arguments"]) else {
-        return denied();
+        return refused("arguments_invalid");
     };
     let admission = {
         let mut locked = state.lock().unwrap_or_else(|e| e.into_inner());
-        locked.as_mut().and_then(|active| {
-            let cancel = active.turns.get(&key)?.subscribe();
-            let context = active.context.get(&key).cloned();
-            if active.calls.len() >= hagency_runtime::codex::session::MAX_EVENTS
-                || !active.calls.insert((key, call.clone()))
-            {
-                return None;
-            }
-            Some((active.queue.clone(), cancel, context))
-        })
+        match locked.as_mut() {
+            None => Err("no_active_turn"),
+            Some(active) => who
+                .turns
+                .iter()
+                .map(|turn| (who.thread.clone(), turn.clone()))
+                .find(|key| active.turns.contains_key(key))
+                .ok_or("turn_not_active")
+                .and_then(|key| {
+                    let cancel = active.turns[&key].subscribe();
+                    let context = active.context.get(&key).cloned();
+                    if active.calls.len() >= hagency_runtime::codex::session::MAX_EVENTS
+                        || !active.calls.insert((key, who.call.clone()))
+                    {
+                        return Err("call_repeated");
+                    }
+                    Ok((active.queue.clone(), cancel, context))
+                }),
+        }
     };
-    let Some((queue, mut cancel, context)) = admission else {
-        return denied();
+    let (queue, mut cancel, context) = match admission {
+        Ok(admitted) => admitted,
+        Err(reason) => return refused(reason),
     };
     // The cancellation sender belongs to an observed native turn, not to the
     // HTTP connection or to a subsequent dispatch's room queue.
     tokio::select! { biased;
-        _ = cancel.changed() => denied(),
-        reply = queue.call_with_context(operation, call, Instant::now() + CALL_WAIT, context) => text_result(reply),
+        _ = cancel.changed() => refused("turn_ended"),
+        reply = queue.call_with_context(operation, who.call, Instant::now() + CALL_WAIT, context) => text_result(reply),
     }
 }
 
