@@ -159,7 +159,7 @@ fn rules_are_validated_and_claims_are_limited_per_agent_across_repositories() {
     assert!(ledger.set_work("@intruder:example.org", "anna", vec![rules(A, Role::Developer)]).is_err(), "only the owner sets the work list");
     let left = ledger.claims_left_today("anna", 1000).unwrap();
     assert!(ledger.record_work_claim("anna", A, 1, 1000).unwrap());
-    assert!(!ledger.record_work_claim("anna", A, 1, 1000).unwrap(), "one claim per issue");
+    assert!(ledger.record_work_claim("anna", A, 1, 1000).unwrap(), "reserving again is idempotent");
     assert!(ledger.record_work_claim("anna", B, 1, 1000).unwrap(), "the same number in another repository");
     assert_eq!(ledger.claims_left_today("anna", 1000).unwrap(), left - 2);
     assert_eq!(ledger.claims_left_today("anna", 1000 + 86_401).unwrap(), left, "a day later");
@@ -209,6 +209,14 @@ async fn gpt_review_fixes_hold() {
     let changes = format!("gh pr review 7 --repo {A} --request-changes -b \"Hagency verdict: CHANGES - no\"");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&changes, temp.path(), "anna"), "rc", 11, &src).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, None, "the approval was withdrawn");
+    // Even with the switch off (the owner's card answers), and a held approval cannot settle afterwards.
+    let again = format!("gh pr review 7 --repo {A} --approve -b \"Hagency verdict: APPROVE {HEAD} - second look\"");
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&again, temp.path(), "anna"), "held", 11, &src).await, Some(true));
+    ledger.set_auto_merge(OWNER, "anna", false).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&changes, temp.path(), "anna"), "rc2", 11, &src).await, None, "the card asks");
+    ledger.settle_agent_review("held", true).unwrap();
+    ledger.set_auto_merge(OWNER, "anna", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, None, "still withdrawn");
 }
 
 #[tokio::test]
@@ -236,4 +244,5 @@ fn missing_ci_evidence_is_pending_and_the_daily_claim_limit_is_enforced_on_reser
         assert!(ledger.record_work_claim("anna", A, n, 10).unwrap());
     }
     assert!(!ledger.record_work_claim("anna", B, 99, 10).unwrap(), "the limit holds across repositories");
+    assert!(ledger.record_work_claim("anna", A, 0, 10).unwrap(), "an earlier reservation is retried after a failed hand-off");
 }

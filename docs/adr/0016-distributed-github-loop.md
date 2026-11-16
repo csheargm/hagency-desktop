@@ -94,16 +94,21 @@ Separation and approvals:
   SHA (`review_names_head`). This is the commit the reviewer read; an
   approval of an older head asks the owner. For a maintainer, the author must
   also be trusted.
-- `--request-changes` withdraws that Agent's earlier approvals of the pull
-  request immediately.
+- `--request-changes` withdraws that Agent's settled and pending approvals of
+  the pull request before anything answers the command (the gate or the
+  owner's card).
 - The repository file keeps its own approval rule: an Agent other than the
   merger, counted from local approvals only. The owner's relaxation and
   `reviewers=` apply only to the owner's policy. This device's own login in
   `reviewers=` is never counted a second time.
 - Missing CI evidence (no `statusCheckRollup`) is treated as "still
   running", never as "no checks".
-- A developer's claim is reserved in the ledger before the hand-off, and the
-  daily limit is enforced at that point.
+- A developer's claim is reserved in the ledger before anything is posted on
+  GitHub. The reservation and the daily limit are one SQL statement. Asking
+  for the same reservation again succeeds, so a failed hand-off is retried.
+- Residual: `room_send::send_routed_with` awaits a room read after the last
+  Stop All check, so a pause during that await can still let one notice go
+  out. The merge itself is still judged by the gate.
 
 The file format also gained `tier: trusted` (`paths:`, `max_lines:`,
 `always_human:`), which always requires CI. Trusted-tier keys without

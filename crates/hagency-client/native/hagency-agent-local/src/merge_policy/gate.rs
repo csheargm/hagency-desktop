@@ -45,6 +45,8 @@ impl Ledger {
     /// `reviewer` asked for changes: none of its approvals of `pr` count any more.
     pub(crate) fn withdraw_agent_review(&mut self, pr: &str, reviewer: &str) -> Result<()> {
         self.db.execute("DELETE FROM auto_merge_head_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        // A held approval must not settle afterwards and restore it.
+        self.db.execute("DELETE FROM auto_merge_pending_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
         Ok(())
     }
     pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str) -> Result<()> {
@@ -248,6 +250,13 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     }
     let command = parse_command(proposal)?;
     let agent = proposal.scope.agent.clone();
+    if command.kind == Kind::RequestChanges {
+        // Whatever answers it (this gate or the owner's card), a blocking
+        // verdict withdraws this Agent's approvals of the pull request first.
+        // An unreadable pull request leaves the card to the owner.
+        let url = source.pull_request(&command).await?.url;
+        ledger.withdraw_agent_review(&url, &agent).ok()?;
+    }
     if !ledger.auto_merge(&agent).ok()? {
         return None;
     }
@@ -263,11 +272,6 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         ToolPolicy::AskOwner => ledger.approve_tool(owner, proposal, now).and_then(|_| ledger.authorize_tool(proposal, now)).is_ok(),
         _ => ledger.authorize_tool(proposal, now).is_ok(),
     };
-    if allowed && command.kind == Kind::RequestChanges {
-        // A blocking verdict withdraws this Agent's approval of the pull
-        // request at once, before the command even runs (GPT review P1).
-        ledger.withdraw_agent_review(&view.url, &agent).ok()?;
-    }
     if allowed && command.kind == Kind::Review && !call.is_empty() {
         // Residual race: a push between this read and the review lands an
         // approval on the old head; it then never matches the new one.

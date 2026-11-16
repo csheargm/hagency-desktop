@@ -160,13 +160,20 @@ impl Ledger {
         let text: Option<String> = self.db.query_row("SELECT rules FROM agent_work WHERE agent=? AND repo=?", (agent, repo.to_ascii_lowercase()), |r| r.get(0)).optional()?;
         text.map(|t| serde_json::from_str(&t).map_err(|_| Error::Invalid("stored rules are unreadable"))).transpose()
     }
-    /// Reserve issue `number` for the Agent at `now`, before its hand-off;
-    /// false when it was already reserved or the daily limit is used up.
+    /// Reserve issue `number` for the Agent at `now`, before its hand-off:
+    /// true when it is reserved (now, or by an earlier pass whose hand-off
+    /// failed), false when the daily limit is used up. One statement, so the
+    /// count and the insert cannot interleave with another writer.
     pub fn record_work_claim(&mut self, agent: &str, repo: &str, number: i64, now: i64) -> Result<bool> {
-        if self.claims_left_today(agent, now)? == 0 {
-            return Ok(false);
+        let repo = repo.to_ascii_lowercase();
+        if self.work_claimed(agent, &repo, number)? {
+            return Ok(true);
         }
-        Ok(self.db.execute("INSERT OR IGNORE INTO agent_work_claims VALUES (?,?,?,?)", (agent, repo.to_ascii_lowercase(), number, now))? == 1)
+        let inserted = self.db.execute(
+            "INSERT OR IGNORE INTO agent_work_claims SELECT ?1,?2,?3,?4 WHERE (SELECT COUNT(*) FROM agent_work_claims WHERE agent=?1 AND at>?4-?5) < ?6",
+            rusqlite::params![agent, repo, number, now, DAY_SECS, DEFAULT_ISSUES_PER_DAY],
+        )?;
+        Ok(inserted == 1 || self.work_claimed(agent, &repo, number)?)
     }
     pub fn work_claimed(&self, agent: &str, repo: &str, number: i64) -> Result<bool> {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM agent_work_claims WHERE agent=? AND repo=? AND number=?)", (agent, repo.to_ascii_lowercase(), number), |r| r.get(0))?)

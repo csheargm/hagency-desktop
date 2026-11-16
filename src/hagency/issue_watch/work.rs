@@ -77,8 +77,9 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
     let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
-    let left = loop_api(worker.service, id, json!({})).await?["claimsLeft"].as_u64().unwrap_or(0) as usize;
-    let picks: Vec<&Issue> = select(&watch, &issues, seen).into_iter().take(left).collect();
+    // The daily limit is enforced by each reservation below, which also lets
+    // an issue reserved by a pass whose hand-off failed be handed off now.
+    let picks: Vec<&Issue> = select(&watch, &issues, seen);
     // The work list always carries the pull request on past the draft.
     let live = super::live::Live::new(worker.service, worker.agent, &watch, true, worker.epoch)?;
     let mut handed = 0;
@@ -86,18 +87,16 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
         if live.paused() {
             return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
         }
+        // Reserved first, so the daily limit holds before anything is posted
+        // on GitHub, and a reserved issue whose hand-off failed is retried.
+        let reserved = loop_api(worker.service, id, json!({"workClaim": {"repo": entry.repo, "number": issue.number}})).await?;
+        if reserved["claimed"] != true {
+            break; // the daily limit is used up
+        }
         if !claim(worker, entry, issue.number, login).await? {
             // Someone else holds it: never handed off, never retried.
             live.mark_seen(issue.number).await?;
             continue;
-        }
-        // Reserved before the hand-off, so the daily limit holds even when a
-        // later step fails (a reserved issue counts; it is never handed twice).
-        let reserved = loop_api(worker.service, id, json!({"workClaim": {"repo": entry.repo, "number": issue.number}})).await?;
-        // Not reserved: the limit is used up (stop), or it was reserved by an
-        // earlier pass whose hand-off failed (hand it off now; same txn id).
-        if reserved["claimed"] != true && reserved["claimsLeft"].as_u64() == Some(0) {
-            break;
         }
         let outcome = handoff::hand_off(&live, &[issue]).await;
         if let Some(error) = outcome.error {
