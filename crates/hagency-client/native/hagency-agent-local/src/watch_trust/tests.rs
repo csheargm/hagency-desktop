@@ -42,7 +42,7 @@ fn a_named_branch_push_and_named_repo_prs_are_allowed() {
         PUSH,
         "git -C app push --set-upstream origin docs/faq",
         abs.as_str(),
-        "gh pr create --draft --repo acme/app --title 'docs: FAQ' --body 'Fixes #27' --base main",
+        "gh pr create --draft --repo acme/app --head docs/faq --title 'docs: FAQ' --body 'Fixes #27' --base main",
         "gh pr ready 28 --repo acme/app",
         "gh pr ready https://github.com/acme/app/pull/28",
         "gh pr edit 28 --add-label docs -R acme/app",
@@ -88,6 +88,7 @@ fn chained_unnamed_or_directory_relative_publishing_asks() {
         "cd app && gh pr create --draft --title t --body b",
         "gh pr create --repo acme/app --title t --body-file body.md",
         "gh pr ready 28 --repo acme/app && git -C app push origin docs/faq",
+        "gh pr create --repo acme/app --title t --body b",
     ] {
         assert!(!allowed(line, &root), "{line}");
     }
@@ -223,7 +224,7 @@ fn ledger_skips_the_card_for_trusted_publishing_only() {
         p
     };
     let push = make(PUSH);
-    let pr = make("gh pr create --draft --repo acme/app --title t --body b");
+    let pr = make("gh pr create --draft --repo acme/app -H docs/faq --title t --body b");
     let risky = [make("git -C app push -f origin docs/faq"), make("git -C app push origin main"), make("git switch -c master && git -C app push origin HEAD")];
     assert_eq!(ledger.trusted_publish(OWNER, &push, 11).unwrap(), None, "trust off: asks");
     watch(&mut ledger, WatchMode::Trusted, true);

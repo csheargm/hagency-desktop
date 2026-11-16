@@ -28,6 +28,8 @@ pub(crate) struct PrCommand<'a> {
     /// A pull request URL target: `gh` uses its repository.
     url_repo: Option<&'a str>,
     files: Vec<&'a str>,
+    /// `create` names `--head`, so gh never pushes the branch itself.
+    head: bool,
 }
 
 impl<'a> PrCommand<'a> {
@@ -62,7 +64,9 @@ impl<'a> PrCommand<'a> {
             };
             command.take(name, value)?;
         }
-        if positional.len() > targets {
+        // Without --head, `gh pr create` may push the branch with the
+        // checkout's git config (GPT review): only the pinned push publishes.
+        if positional.len() > targets || (verb == "create" && !command.head) {
             return None;
         }
         if let Some(target) = positional.first() {
@@ -74,6 +78,8 @@ impl<'a> PrCommand<'a> {
     fn take(&mut self, name: &str, value: &'a str) -> Option<()> {
         if matches!(name, "-R" | "--repo") {
             self.repo = Some(crate::merge_policy::gate::repo_name(value)?);
+        } else if matches!(name, "-H" | "--head") {
+            self.head = !value.contains(':') && !value.starts_with('-');
         } else if FILE_OPTIONS.contains(&name) {
             self.files.push(value);
         }
