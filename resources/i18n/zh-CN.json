@@ -3488,5 +3488,9 @@
   "Could not add {agent} to {room}: {reason}": "无法将 {agent} 加入 {room}：{reason}",
   "{0} isn't in this room. Add it?": "{0} 不在此房间中。要添加吗？",
   "Agent sign-in expired": "Agent 登录已过期",
-  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "此 Mac 上的 Agent 登录已过期。点击“重新登录”以重新连接你的 Agent；房间和 Agent 都会保留。"
+  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "此 Mac 上的 Agent 登录已过期。点击“重新登录”以重新连接你的 Agent；房间和 Agent 都会保留。",
+  "Add to rooms": "添加到房间",
+  "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "停止你在此设备上的所有 Agent：停止其运行、拒绝等待中的审批并暂停它们",
+  "Resume the agents you paused with Stop all agents": "恢复你用“停止所有 Agent”暂停的 Agent",
+  "Read whether you paused your agents on this device": "读取你是否已暂停此设备上的 Agent"
 }
