@@ -2,11 +2,7 @@
 //! no permissions and cannot mutate canonical dispatch, task or Matrix state.
 #[macro_use]
 mod merge_note;
-<<<<<<< HEAD
-pub use merge_note::{AGENT_MERGE_NOTE, ISSUE_TITLE_LABEL, TRUSTED_FIX_STEPS, TRUSTED_PUSH};
-=======
-pub use merge_note::{AGENT_MERGE_NOTE, ISSUE_TITLE_LABEL, REVIEW_STEPS, TRUSTED_PUSH};
->>>>>>> feat/auto-loop-review
+pub use merge_note::{AGENT_MERGE_NOTE, ISSUE_TITLE_LABEL, REVIEW_STEPS, TRUSTED_FIX_STEPS, TRUSTED_PUSH};
 pub mod claude;
 pub mod codex;
 pub mod deadline;
