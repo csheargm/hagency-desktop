@@ -50,6 +50,22 @@ pub(super) fn resolve_plain_mentions(markdown: &str, members: &[PlainMentionCand
     (output, users)
 }
 
+/// Every plain `@token` in `text` (outside code, links and URLs), as the
+/// send-time resolver would see it.
+pub(super) fn typed_tokens(text: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while let Some(found) = text[index..].find(['`', '[', '@', 'h']) {
+        let start = index + found;
+        let (tail, previous) = (&text[start..], text[..start].chars().next_back());
+        let skip = protected_len(tail, previous);
+        if skip > 0 { index = start + skip; continue; }
+        if let Some(token) = mention_token(tail, previous) { tokens.push(token); }
+        index = start + tail.chars().next().map_or(1, char::len_utf8);
+    }
+    tokens
+}
+
 /// Length of a region that must be copied verbatim: code, an existing link, or a URL.
 fn protected_len(tail: &str, previous: Option<char>) -> usize {
     if let Some(after) = tail.strip_prefix("```") {
@@ -84,7 +100,7 @@ fn existing_link_len(tail: &str) -> Option<usize> {
 
 /// The name after an `@` that starts a word, without trailing punctuation.
 /// Full Matrix IDs (`@name:server`) and emails (`a@b.c`) are not tokens.
-fn mention_token(tail: &str, previous: Option<char>) -> Option<&str> {
+pub(super) fn mention_token(tail: &str, previous: Option<char>) -> Option<&str> {
     let after = tail.strip_prefix('@')?;
     if previous.is_some_and(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '/')) {
         return None;
@@ -97,7 +113,7 @@ fn mention_token(tail: &str, previous: Option<char>) -> Option<&str> {
 }
 
 /// The single member whose display name or localpart equals `token` (ignoring case).
-fn unique_match<'m, 'a>(token: &str, members: &'m [PlainMentionCandidate<'a>]) -> Option<&'m PlainMentionCandidate<'a>> {
+pub(super) fn unique_match<'m, 'a>(token: &str, members: &'m [PlainMentionCandidate<'a>]) -> Option<&'m PlainMentionCandidate<'a>> {
     let mut matches = members.iter().filter(|member| {
         let same = |name: &str| name.trim().to_lowercase() == token.to_lowercase();
         member.display_name.is_some_and(same) || same(member.user_id.localpart())
@@ -144,6 +160,11 @@ mod tests {
                      "mail fixer@a.server".into(), "see https://x.org/@fixer".into(), "@fixer:a.server".into()] {
             assert_eq!(resolve(&text), (text.clone(), vec![]), "{text}");
         }
+    }
+
+    #[test]
+    fn typed_tokens_skip_code_links_and_ids() {
+        assert_eq!(typed_tokens("hi @fixer, `@code` @x:a.server mail a@b.c @ben-claude."), vec!["fixer", "ben-claude"]);
     }
 
     #[test]

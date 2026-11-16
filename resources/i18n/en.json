@@ -3464,5 +3464,6 @@
   "{s} s": "{s} s",
   "{m} m {s} s": "{m} m {s} s",
   "That username is already taken on this server. Choose another name, or sign in if it is your account.": "That username is already taken on this server. Choose another name, or sign in if it is your account.",
-  "The server did not accept this username and password. Check them and try again.": "The server did not accept this username and password. Check them and try again."
+  "The server did not accept this username and password. Check them and try again.": "The server did not accept this username and password. Check them and try again.",
+  "{0} isn't in this room. Add it?": "{0} isn't in this room. Add it?"
 }

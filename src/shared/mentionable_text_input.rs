@@ -25,8 +25,10 @@ use crate::{
 };
 use super::mention_text::{HistoryMove, MentionText, mention_label, user_label};
 use super::mention_insertion::plan_completion;
+use super::composer_agent_hint::ComposerAgentHintWidgetRefExt;
 // TODO(R4): over budget; split member/room ranking (`rank_members`, `user_match_priority`,
-// `detect_trigger`) into its own module along that seam.
+// `detect_trigger`) into its own module along that seam, and the typed-name glue
+// (`try_live_pill`, `update_agent_hint`, `typed_name_candidates`) into `live_mentions`.
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -41,6 +43,7 @@ script_mod! {
         text_input := RobrixTextInput {
             is_multiline: true,
         }
+        agent_hint := ComposerAgentHint {}
     }
 }
 
@@ -73,6 +76,9 @@ pub struct MentionableTextInput {
     #[rust] possible_mentions: Mentions,
     #[rust] mention_text: MentionText,
     #[rust] focus_after_draw: bool,
+    /// Pills made from typed names, and names whose pill the user broke (kept as text).
+    #[rust] live_pills: Vec<(OwnedUserId, String)>,
+    #[rust] declined_pills: Vec<String>,
     #[cfg(feature = "onboarding-test-support")]
     #[rust] review_members: Option<Vec<MentionItem>>,
 }
@@ -158,6 +164,13 @@ impl Widget for MentionableTextInput {
         let forward_delete = matches!(event, Event::KeyDown(key) if key.key_code == KeyCode::Delete);
         self.view.handle_event(cx, event, scope);
         self.mention_text.sync(&self.text_input_ref().text(), Some(selection.start().index..selection.end().index), forward_delete, movement);
+        self.note_broken_pills();
+        if let Event::TextInput(typed) = event
+            && !typed.was_paste && !typed.replace_last && typed.composition.is_none()
+            && cx.has_key_focus(self.text_input_ref().area())
+        {
+            self.try_live_pill(cx, &typed.input);
+        }
 
         if let Event::Actions(actions) = event {
             for action in actions {
@@ -181,6 +194,7 @@ impl Widget for MentionableTextInput {
             let text_input = self.text_input_ref();
             if cx.has_key_focus(text_input.area()) && text_input.changed(actions).is_some() {
                 self.refresh_popup(cx);
+                self.update_agent_hint(cx);
             }
         }
     }
@@ -210,6 +224,9 @@ impl Widget for MentionableTextInput {
         self.text_input_ref().set_text(cx, self.mention_text.text());
         self.possible_mentions.user_ids = self.mention_text.users().cloned().collect();
         self.possible_mentions.room &= contains_room_mention(text);
+        self.live_pills.clear();
+        self.declined_pills.clear();
+        self.update_agent_hint(cx);
         self.redraw(cx);
     }
 
@@ -469,6 +486,7 @@ impl MentionableTextInputRef {
                 .map(|n| n.to_string())
                 .unwrap_or_default();
         }
+        inner.child_by_path(ids!(agent_hint)).as_composer_agent_hint().set_room(cx, &room_id, &inner.room_name);
         inner.room_id = Some(room_id);
         let members_changed = match (&inner.room_members, &room_members) {
             (Some(previous), Some(current)) => !Arc::ptr_eq(previous, current),
@@ -525,6 +543,8 @@ impl MentionableTextInputRef {
         if let Some(mut inner) = self.borrow_mut() {
             inner.possible_mentions = Mentions::new();
             inner.mention_text.clear();
+            inner.live_pills.clear();
+            inner.declined_pills.clear();
         }
     }
 
@@ -594,18 +614,45 @@ impl MentionableTextInputRef {
 impl MentionableTextInput {
     /// Turns unambiguous typed "@name"s into pills, so they mention like picked ones.
     fn resolve_typed_mentions(&mut self, markdown: &str) -> String {
-        use matrix_sdk::ruma::events::room::member::MembershipState;
-        use super::plain_mentions::{resolve_plain_mentions, PlainMentionCandidate};
         let Some(members) = self.room_members.clone() else { return markdown.to_owned() };
-        let current_user = crate::sliding_sync::current_user_id();
-        let candidates: Vec<_> = members.iter()
-            .filter(|m| *m.membership() == MembershipState::Join)
-            .filter(|m| super::mention_candidates::is_mention_candidate(m.user_id(), current_user.as_deref()))
-            .map(|m| PlainMentionCandidate { user_id: m.user_id(), display_name: m.display_name() })
-            .collect();
-        let (markdown, users) = resolve_plain_mentions(markdown, &candidates);
+        let candidates = typed_name_candidates(&members, false);
+        let (markdown, users) = super::plain_mentions::resolve_plain_mentions(markdown, &candidates);
         self.possible_mentions.user_ids.extend(users);
         markdown
+    }
+
+    /// After a typed terminator, turns an unambiguous `@name` into the picker's pill.
+    fn try_live_pill(&mut self, cx: &mut Cx, inserted: &str) {
+        let Some(members) = self.room_members.clone() else { return };
+        let text_input = self.text_input_ref();
+        let (text, cursor) = (text_input.text(), text_input.cursor().index);
+        let candidates = typed_name_candidates(&members, false);
+        let Some(pill) = super::live_mentions::live_pill(&text, cursor, inserted, &candidates, &self.declined_pills) else { return };
+        if self.mention_text.covers(pill.range.start) { return; }
+        // Its own undo step: undoing it restores the typed text, which then stays text.
+        if text_input.replace_range(cx, pill.range.clone(), &pill.label, text_input::UndoGroup::New).is_err() { return; }
+        self.mention_text.sync(&text_input.text(), Some(pill.range.clone()), false, HistoryMove::Edit);
+        self.mention_text.bind(pill.range.start..pill.range.start + pill.label.len(), pill.user.clone());
+        self.possible_mentions.user_ids.insert(pill.user.clone());
+        let cursor = cursor - pill.range.len() + pill.label.len();
+        text_input.set_cursor(cx, Cursor { index: cursor, prefer_next_row: false }, false);
+        self.live_pills.push((pill.user, pill.key));
+        self.redraw(cx);
+    }
+
+    /// Typed pills the user has since edited stay plain text from now on.
+    fn note_broken_pills(&mut self) {
+        if self.live_pills.is_empty() { return; }
+        let bound: Vec<&matrix_sdk::ruma::UserId> = self.mention_text.users().map(|user| user.as_ref()).collect();
+        let broken = super::live_mentions::broken_pills(&mut self.live_pills, &bound);
+        self.declined_pills.extend(broken);
+    }
+
+    /// Shows "<agent> isn't in this room. Add it?" for a typed own-Agent name.
+    fn update_agent_hint(&mut self, cx: &mut Cx) {
+        let hint = self.child_by_path(ids!(agent_hint)).as_composer_agent_hint();
+        let members = self.room_members.clone().unwrap_or_default();
+        hint.update(cx, &self.text_input_ref().text(), &typed_name_candidates(&members, true));
     }
 
     /// The possible mentions whose link text is still present in `text`.
@@ -697,6 +744,21 @@ struct ActiveTrigger {
     kind: TriggerKind,
     /// The byte-wise index of the trigger character within the text.
     start_byte: usize,
+}
+
+/// Members a typed `@name` is matched against: joined mention candidates, or
+/// for the not-in-room hint every joined or invited member.
+fn typed_name_candidates(members: &[RoomMember], for_hint: bool) -> Vec<super::plain_mentions::PlainMentionCandidate<'_>> {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let current_user = crate::sliding_sync::current_user_id();
+    members.iter()
+        .filter(|m| match m.membership() {
+            MembershipState::Join => for_hint || super::mention_candidates::is_mention_candidate(m.user_id(), current_user.as_deref()),
+            MembershipState::Invite => for_hint,
+            _ => false,
+        })
+        .map(|m| super::plain_mentions::PlainMentionCandidate { user_id: m.user_id(), display_name: m.display_name() })
+        .collect()
 }
 
 /// Returns true if `text` contains a standalone `@room` word.

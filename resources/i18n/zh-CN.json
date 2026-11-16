@@ -3464,5 +3464,6 @@
   "{s} s": "{s} 秒",
   "{m} m {s} s": "{m} 分 {s} 秒",
   "That username is already taken on this server. Choose another name, or sign in if it is your account.": "该用户名在此服务器上已被占用。请换一个名字；如果这是你的账号，请直接登录。",
-  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。"
+  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。",
+  "{0} isn't in this room. Add it?": "{0} 不在此房间中。要添加吗？"
 }
