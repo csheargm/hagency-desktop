@@ -103,8 +103,9 @@ impl Prefs {
     }
     /// One more failed pass for the pair; returns true when this gave it up.
     pub fn note_catch_up_failure(&mut self, room_id: &str, agent_id: &str) -> bool {
-        if self.catch_up_failures.len() >= MAX_HANDLED { return false; }
-        let count = self.catch_up_failures.entry(pair(room_id, agent_id)).or_insert(0);
+        let key = pair(room_id, agent_id);
+        if !self.catch_up_failures.contains_key(&key) && self.catch_up_failures.len() >= MAX_HANDLED { return false; }
+        let count = self.catch_up_failures.entry(key).or_insert(0);
         *count = count.saturating_add(1);
         *count == MAX_CATCH_UP_FAILURES
     }

@@ -140,4 +140,7 @@ fn a_failed_catch_up_join_is_retried_across_restarts_until_the_cap() {
     prefs.clear_catch_up_failures("!ops:s", "agt_anna");
     prefs.claim("!ops:s", "agt_anna").unwrap();
     assert!(!prefs.catch_up_pending("!ops:s", "agt_anna"), "a settled room is never re-joined");
+    // Added by hand after the give-up: the notice clears.
+    prefs.clear_catch_up_failures("!dev:s", "agt_anna");
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 0);
 }

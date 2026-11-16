@@ -103,12 +103,15 @@ async fn catch_up(epoch: u64) -> Result<(), String> {
         for room in client.joined_rooms() {
             if epoch != crate::account_session::epoch() { return Err("account_changed".into()); }
             let room_id = room.room_id().to_owned();
-            if !room.creators().is_some_and(|c| c.contains(&me)) || !saved.catch_up_pending(room_id.as_str(), &agent.id) { continue; }
+            if !room.creators().is_some_and(|c| c.contains(&me)) || saved.is_handled(room_id.as_str(), &agent.id) { continue; }
             let Ok(facts) = room_facts(&room, &agent).await else { continue };
             if facts.agent_present {
-                // Already there: settled without a bind.
-                let _ = claim(&room_id, &agent);
-            } else if should_catch_up(true, false, true, facts) {
+                // Already there (also added by hand after a give-up): settled, notice cleared.
+                let (r, a) = (room_id.as_str(), agent.id.as_str());
+                if let Err(code) = prefs::update_current(|p| { p.clear_catch_up_failures(r, a); p.claim(r, a).map(|_| ()) }) {
+                    warning!("Bring agent: {a} in {r} not recorded: {code}");
+                }
+            } else if saved.catch_up_pending(room_id.as_str(), &agent.id) && should_catch_up(true, false, true, facts) {
                 let name = RoomNameId::from_room(&room).await.to_string();
                 catch_up_bind(room_id, agent.clone(), name);
             }
