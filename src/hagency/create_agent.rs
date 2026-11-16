@@ -121,7 +121,11 @@ impl DialogState {
     pub fn needs_sign_in(&self) -> bool {
         self.probes.iter().flatten().any(|probe| matches!(probe, Err(code) if matches!(code.as_str(),
             "native_resume_missing" | "native_resume_revoked" | "sign_in_required" | "matrix_sign_in_required"
-            | "matrix_oauth_sign_in_required" | "matrix_authorization_required")))
+            | "matrix_oauth_sign_in_required" | "matrix_authorization_required" | "matrix_account_mismatch")))
+    }
+    /// The probe's owner grant names another account than this window's.
+    pub fn account_mismatch(&self) -> bool {
+        self.probes.iter().flatten().any(|probe| matches!(probe, Err(code) if code == "matrix_account_mismatch"))
     }
     pub fn checking(&self) -> bool {
         self.probes.iter().any(Option::is_none)

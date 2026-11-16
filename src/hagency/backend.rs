@@ -587,10 +587,10 @@ impl Service {
         }
         let result = if let Some(remote) = self.remote_client().await? {
             if matches!(command, Command::Logout) { remote.sign_out().await.map(|_| Value::Null) }
-            else { remote.execute(command).await }
+            else { remote.execute(command).await }.map_err(|e| e.code)
         } else {
-            self.native_owner().await?.execute(command).await
-        }.map_err(|e| e.code);
+            self.execute_native(command).await
+        };
         if let Err(e) = self.check() {
             if self.suspend().await.is_err() {
                 return Err("native_owner_drain_required".into());

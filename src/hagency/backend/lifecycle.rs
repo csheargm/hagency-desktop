@@ -31,6 +31,36 @@ impl Service {
         Ok(())
     }
 
+    /// Runs one command on the in-process owner. A demo server restart revokes
+    /// the owner's resume grant, which leaves the cached owner retired; every
+    /// later command then failed until the window restarted. Such a failure is
+    /// raised by owner authorization before the command is sent, so the stale
+    /// owner is dropped and the command retried once on a freshly authorized
+    /// owner. A second failure is returned and the UI offers "Sign in again".
+    pub(super) async fn execute_native(&self, command: Command) -> Result<Value, String> {
+        let first = self.native_owner().await?.execute(command.clone()).await.map_err(|e| e.code);
+        match first {
+            Err(code) if stale_owner_code(&code) => {
+                self.drop_stale_native_owner().await?;
+                self.native_owner().await?.execute(command).await.map_err(|e| e.code)
+            }
+            other => other,
+        }
+    }
+
+    async fn drop_stale_native_owner(&self) -> Result<(), String> {
+        let mut native = self.0.native.lock().await;
+        self.check()?;
+        let registered = self.0.native_retirement.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(owner) = native.clone().or(registered) {
+            owner.retire();
+            self.close_native_owner(&owner).await?;
+        }
+        native.take();
+        self.0.native_retirement.lock().unwrap_or_else(|p| p.into_inner()).take();
+        Ok(())
+    }
+
     pub fn revoke_current() -> Result<(), String> {
         let service = CURRENT
             .lock()
@@ -159,5 +189,28 @@ impl Service {
     }
     pub async fn stop_current() -> Result<(), String> {
         Self::close_current(true).await
+    }
+}
+
+/// Owner-authorization failures that a fresh owner can clear: the server
+/// revoked or lost this window's resume grant (a restart), or the cached
+/// device grant names another account. A real account switch is caught
+/// earlier by `verify_matrix`, which retires the whole service instead.
+pub(super) fn stale_owner_code(code: &str) -> bool {
+    matches!(code, "native_resume_revoked" | "native_resume_missing" | "matrix_account_mismatch")
+}
+
+#[cfg(test)]
+mod stale_owner_tests {
+    use super::stale_owner_code;
+
+    #[test]
+    fn only_owner_authorization_failures_reopen_the_owner() {
+        for code in ["native_resume_revoked", "native_resume_missing", "matrix_account_mismatch"] {
+            assert!(stale_owner_code(code), "{code}");
+        }
+        for code in ["server_unavailable", "forbidden", "matrix_account_changed", "agent_command_recovery_required"] {
+            assert!(!stale_owner_code(code), "{code}");
+        }
     }
 }
