@@ -30,7 +30,12 @@ pub(crate) fn sender_authentic(room_encrypted: Option<bool>, info: Option<&Encry
 }
 
 /// The timeline item's sender is authentic in `room` as the client sees it now.
+/// An edited item is never authentic: its encryption info is the original
+/// event's, while its JSON is the (unchecked) replacement's.
 pub(crate) fn event_authentic(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> bool {
+    if event.latest_edit_json().is_some() {
+        return false;
+    }
     let encrypted = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)).and_then(|r| {
         let state = r.encryption_state();
         (!state.is_unknown()).then(|| state.is_encrypted())

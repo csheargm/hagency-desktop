@@ -139,8 +139,11 @@ impl Store {
         self.stale.remove(room);
     }
     /// True once per room: the first card or panel asks for the room's memory.
+    /// Drops another account's request for the room, whose cache this replaces.
     pub fn first_request(&mut self, room: &RoomId, me: Option<&str>) -> bool {
-        self.requested.insert((me.unwrap_or_default().to_owned(), room.to_owned()))
+        let me = me.unwrap_or_default();
+        self.requested.retain(|(m, r)| r != room || m == me);
+        self.requested.insert((me.to_owned(), room.to_owned()))
     }
     /// Whether a card or the panel has asked for this room's memory.
     pub fn was_requested(&self, room: &RoomId, me: Option<&str>) -> bool {

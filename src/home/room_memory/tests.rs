@@ -307,6 +307,7 @@ fn account_switch_loads_the_rooms_memory_again() {
     assert!(store.first_request(room, Some("@a:example.test")));
     assert!(!store.first_request(room, Some("@a:example.test")));
     assert!(store.first_request(room, Some("@b:example.test")), "account B must load its own memory");
+    assert!(store.first_request(room, Some("@a:example.test")), "switching back to A loads again");
     store.forget_requests(room);
     assert!(!store.was_requested(room, Some("@a:example.test")));
 }

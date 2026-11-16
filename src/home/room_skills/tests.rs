@@ -88,4 +88,5 @@ fn account_switch_loads_the_rooms_again() {
     assert!(!store.first_request(room, Some("@a:example.test")));
     assert!(store.first_request(room, Some("@b:example.test")), "account B must load its own skills");
     assert!(store.was_requested(room, Some("@b:example.test")));
+    assert!(store.first_request(room, Some("@a:example.test")), "switching back to A loads again");
 }

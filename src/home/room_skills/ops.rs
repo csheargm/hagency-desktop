@@ -28,8 +28,11 @@ pub struct Store {
     requested: HashSet<(String, OwnedRoomId)>,
 }
 impl Store {
+    /// Drops another account's request for the room, whose cache this replaces.
     pub fn first_request(&mut self, room: &RoomId, me: Option<&str>) -> bool {
-        self.requested.insert((me.unwrap_or_default().to_owned(), room.to_owned()))
+        let me = me.unwrap_or_default();
+        self.requested.retain(|(m, r)| r != room || m == me);
+        self.requested.insert((me.to_owned(), room.to_owned()))
     }
     pub fn was_requested(&self, room: &RoomId, me: Option<&str>) -> bool {
         self.requested.contains(&(me.unwrap_or_default().to_owned(), room.to_owned()))
