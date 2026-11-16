@@ -3,6 +3,7 @@
 #[macro_use]
 mod merge_note;
 pub use merge_note::{AGENT_MERGE_NOTE, ISSUE_TITLE_LABEL, TRUSTED_PUSH};
+pub mod attribution;
 pub mod claude;
 pub mod codex;
 pub mod deadline;

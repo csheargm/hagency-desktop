@@ -219,14 +219,14 @@ pub struct OctosHostFiles {
 }
 
 pub async fn spawn(profile: &Profile, reference: &str) -> Result<Process> {
-    spawn_inner(profile, reference, None, None).await
+    spawn_inner(profile, reference, None, None, None).await
 }
 pub async fn spawn_with_guardian(
     profile: &Profile,
     reference: &str,
     guardian: Option<&Path>,
 ) -> Result<Process> {
-    spawn_inner(profile, reference, None, guardian).await
+    spawn_inner(profile, reference, None, guardian, None).await
 }
 fn context_profile(profile: &Profile, reference: &str) -> Result<String> {
     crate::hash(&(reference, &profile.model, &profile.effort, &profile.cwd)).map_err(Into::into)
@@ -260,7 +260,7 @@ pub async fn spawn_for_scope_with_guardian(
         )
         .optional()
         .map_err(crate::Error::from)?;
-    let mut process = spawn_inner(profile, reference, session.as_deref(), guardian).await?;
+    let mut process = spawn_inner(profile, reference, session.as_deref(), guardian, Some(&scope.agent)).await?;
     if let (Some(saved), Session::Claude { wire, .. }) = (session.as_deref(), &mut process.session)
     {
         wire.enable_native_completion()
@@ -287,7 +287,7 @@ pub async fn spawn_for_scope_with_guardian(
                 }
                 retire_saved_session(ledger, scope, &context, &profile_key, saved)?;
                 claude::resume_failures::clear(&counted);
-                process = spawn_inner(profile, reference, None, guardian).await?;
+                process = spawn_inner(profile, reference, None, guardian, Some(&scope.agent)).await?;
                 process.discarded_session = Some(SESSION_DISCARDED_MISSING);
             }
             // A timeout, a refusal, an exit or an unexpected frame before the
@@ -304,7 +304,7 @@ pub async fn spawn_for_scope_with_guardian(
                 // The saved row is retired only once a fresh process has
                 // initialized. If that fails too, the row and the count stay
                 // and the next message tries again.
-                let mut fresh = spawn_inner(profile, reference, None, guardian).await?;
+                let mut fresh = spawn_inner(profile, reference, None, guardian, Some(&scope.agent)).await?;
                 let retired = match fresh.session.initialize().await {
                     Ok(()) => retire_saved_session(ledger, scope, &context, &profile_key, saved),
                     Err(error) => Err(error),
@@ -348,6 +348,7 @@ async fn spawn_inner(
     reference: &str,
     resume: Option<&str>,
     guardian: Option<&Path>,
+    agent: Option<&str>,
 ) -> Result<Process> {
     validate(profile, reference)?;
     let kind = kind(reference);
@@ -400,7 +401,7 @@ async fn spawn_inner(
             if !claude_uses_default_config(&profile.home, &profile.codex_home) {
                 command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
             }
-            command.args(claude_agent_arguments(&profile.model, &profile.effort, profile.web_search)?);
+            command.args(claude_agent_arguments(&profile.model, &profile.effort, profile.web_search, agent)?);
         }
         Kind::Octos => {
             let digest = crate::hash(&(reference, &profile.cwd))?;
@@ -1103,7 +1104,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         let written = if owner_command(self.owner, self.scope, input) {
             process.owner_command(input).await
         } else {
-            process.prompt(input).await
+            process.prompt(&crate::attribution::turn_context(self.owner, self.scope, input)).await
         };
         written
             .map(|_| ())
@@ -1767,8 +1768,14 @@ pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result
 /// team skills only: the owner's own Claude settings, CLAUDE.md, skills,
 /// plugins, commands and MCP servers stay out of every Agent session.
 // TODO(split): runtime.rs is over budget; Claude launch belongs in its own module.
-fn claude_agent_arguments(model: &str, effort: &str, web_search: bool) -> Result<Vec<String>> {
+fn claude_agent_arguments(model: &str, effort: &str, web_search: bool, agent: Option<&str>) -> Result<Vec<String>> {
     let mut args = claude::agent_arguments(model, effort).map_err(|_| Error::Profile("Claude model or effort"))?;
+    // The Agent signs its commits and GitHub bodies with its own identity.
+    if let Some(agent) = agent
+        && let Some(note) = args.iter().position(|a| a == "--append-system-prompt").and_then(|i| args.get_mut(i + 1))
+    {
+        *note = crate::attribution::with_identity(note, agent);
+    }
     // Read-only WebSearch is always there; the web switch governs WebFetch,
     // which still needs a person's approval card when it is on.
     if !web_search {
@@ -2056,7 +2063,7 @@ mod tests {
     #[test]
     fn personal_claude_agent_never_loads_the_owners_own_customizations() {
         for web in [false, true] {
-            let args = claude_agent_arguments("sonnet", "medium", web).unwrap();
+            let args = claude_agent_arguments("sonnet", "medium", web, None).unwrap();
             for flag in hagency_runtime::claude::AGENT_ISOLATION_ARGUMENTS {
                 assert!(args.iter().any(|a| a == flag), "{flag}");
             }
@@ -2066,7 +2073,15 @@ mod tests {
             assert!(!args.windows(2).any(|p| p[0] == "--disallowedTools" && p[1].contains("WebSearch")), "web search stays available");
             assert!(args.windows(2).any(|p| p == ["--append-system-prompt", hagency_runtime::claude::AGENT_TOOLS_NOTE]));
         }
-        assert!(claude_agent_arguments("sonnet", "--safe-mode", true).is_err());
+        assert!(claude_agent_arguments("sonnet", "--safe-mode", true, None).is_err());
+    }
+    #[test]
+    fn claude_agent_system_prompt_carries_the_agents_identity() {
+        crate::attribution::register_agent_identity("agt_claude_id", "cla", "@_hagency_agt_claude_id:t");
+        let args = claude_agent_arguments("sonnet", "medium", true, Some("agt_claude_id")).unwrap();
+        let note = &args[args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+        assert!(note.starts_with(hagency_runtime::claude::AGENT_TOOLS_NOTE));
+        assert!(note.contains("Co-authored-by: cla <_hagency_agt_claude_id@agents.hagency.invalid>"));
     }
     use super::*;
 

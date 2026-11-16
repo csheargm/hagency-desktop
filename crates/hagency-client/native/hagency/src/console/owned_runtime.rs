@@ -590,6 +590,8 @@ fn verify_execution_device(
     {
         return Err(RuntimeError::ExecutionDevice);
     }
+    // The runtime signs this Agent's GitHub work with its own name and ID.
+    record.register_identity();
     Ok(())
 }
 impl OwnedRuntime {
