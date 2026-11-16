@@ -234,6 +234,11 @@ impl CardHost {
         Ok(())
     }
     pub(in crate::console) fn finish(&self, state: CardState) {
+        self.finish_answered(state, None);
+    }
+    /// Closes the card; a completed run's `answer` becomes its final text
+    /// when it fits, so the run stays one message.
+    pub(in crate::console) fn finish_answered(&self, state: CardState, answer: Option<&str>) {
         // The runtime future/stream must be dropped before this call. Its
         // unsent actions yield Unavailable; uncertain writes yield Unknown.
         // Keep their receivers outside serve(), which select may have dropped
@@ -252,6 +257,9 @@ impl CardHost {
                     progress.step.clear();
                     progress.elapsed_secs = Some(self.started.elapsed().as_secs_f64().round() as u64);
                     record.card.progress = Some(progress);
+                    if let Some(answer) = answer {
+                        record.card.set_answer(answer);
+                    }
                 }
                 if save(path, record).is_err() {
                     tracing::warn!("Run card outcome awaits recovery");
@@ -503,7 +511,14 @@ impl Controller {
         Ok(Self { sender: None, card: None, messages, text })
     }
     pub(super) fn finish(&self, state: CardState) {
-        if let Some(card) = &self.card { card.finish(state); }
+        self.finish_answered(state, None);
+    }
+    pub(super) fn finish_answered(&self, state: CardState, answer: Option<&str>) {
+        if let Some(card) = &self.card { card.finish_answered(state, answer); }
+    }
+    /// A run card shows the request is being worked on, so no 👀 is needed.
+    pub(super) fn has_card(&self) -> bool {
+        self.card.is_some()
     }
     pub(super) fn live_text(&self) -> hagency_runtime::live_text::LiveText {
         self.text.clone()
@@ -720,6 +735,30 @@ fn may_forget_closed_record(record: &Record, drained: bool, at: i64) -> bool {
     drained
         && !record.card.state.active()
         && at.saturating_sub(record.closed_at_ms.unwrap_or(i64::MAX)) >= CLOSED_RECEIPT_GRACE_MS
+}
+
+/// The run's own message, when its final edit carries exactly this answer:
+/// publishes that edit (the same idempotent transactions as the card flush)
+/// and returns the message's event ID to record as the reply. `Ok(None)`
+/// means the answer was not put on the card and must be sent as a reply.
+pub(super) async fn deliver_answer(
+    device: &e2ee::AgentDevice,
+    dispatch: &inbox::Dispatch,
+    execution: &str,
+    answer: &str,
+) -> Result<Option<String>, RuntimeError> {
+    let Some(id) = crate::agent_run_controls::personal_card_id(dispatch, execution) else {
+        return Ok(None);
+    };
+    let path = directory(device).join(format!("{:x}.json", Sha256::digest(id.as_bytes())));
+    let Ok(mut record) = read(&path) else { return Ok(None) };
+    if record.card.id != id || record.card.state.active() || record.card.answer != answer {
+        return Ok(None);
+    }
+    publish(device, &mut record).await.map_err(|()| RuntimeError::Transport)?;
+    // The flusher may forget a published record; saving here is best effort.
+    let _ = save(&path, &record);
+    record.event.ok_or(RuntimeError::Transport).map(Some)
 }
 
 /// Recover interrupted hosts without replaying any action. Retry original

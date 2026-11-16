@@ -90,6 +90,9 @@ pub struct Card {
     /// Live step and, once finished, how long the run took (presentation only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// The final answer, when the run's one message carries it (see `set_answer`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub answer: String,
 }
 // TODO(R4): agent_run_controls.rs is over budget; split Card display (preview, progress) out.
 /// What the run card shows beside its state: "Working… <step>" while it runs,
@@ -106,6 +109,25 @@ pub struct Progress {
 }
 /// Longest step text a card carries.
 pub const MAX_STEP_BYTES: usize = 256;
+/// Longest answer the run's message carries. An edit repeats it four times
+/// (body and card, outer and `m.new_content`); longer answers are posted as
+/// their own reply instead.
+pub const MAX_ANSWER_BYTES: usize = 8 * 1024;
+/// The largest answer edit, so its encrypted envelope stays under the
+/// homeserver's 64 KiB event limit (base64 adds a third).
+const MAX_ANSWER_EDIT_BYTES: usize = 40 * 1024;
+/// The card ID of one personal run: stable across restarts, so the answer
+/// delivery can find the run's message again.
+pub fn personal_card_id(dispatch: &hagency_agent_local::inbox::Dispatch, execution: &str) -> Option<String> {
+    let encoded = serde_json::to_vec(&(dispatch.scope(), &dispatch.id, execution)).ok()?;
+    Some(format!("run_{:x}", Sha256::digest(encoded)))
+}
+/// "✅ 2 s · 0 steps": the footer under a finished run's answer in the room body.
+pub fn done_footer(progress: Option<&Progress>) -> String {
+    let (secs, steps) = progress.map_or((0, 0), |p| (p.elapsed_secs.unwrap_or(0), p.steps));
+    let unit = if steps == 1 { "step" } else { "steps" };
+    format!("✅ {} s · {steps} {unit}", secs.max(1))
+}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Envelope {
@@ -141,6 +163,7 @@ impl Card {
         original.last_action = other.last_action.clone();
         original.action_receipts = other.action_receipts.clone();
         original.progress = other.progress.clone();
+        original.answer = other.answer.clone();
         original == *other
     }
     /// Shared-resource executors are not automatically the Agent's owner.
@@ -173,6 +196,7 @@ impl Card {
             last_action: None,
             action_receipts: Vec::new(),
             progress: None,
+            answer: String::new(),
         };
         card.validate()?;
         Ok(card)
@@ -183,11 +207,9 @@ impl Card {
         owner: &str,
         runtime: &str,
     ) -> Result<Self, &'static str> {
-        let encoded = serde_json::to_vec(&(dispatch.scope(), &dispatch.id, execution))
-            .map_err(|_| "run_identity")?;
         let card = Self {
             version: VERSION,
-            id: format!("run_{:x}", Sha256::digest(encoded)),
+            id: personal_card_id(dispatch, execution).ok_or("run_identity")?,
             dispatch_id: dispatch.id.clone(),
             execution_id: execution.into(),
             room_id: dispatch.room_id.clone(),
@@ -202,6 +224,7 @@ impl Card {
             last_action: None,
             action_receipts: Vec::new(),
             progress: None,
+            answer: String::new(),
         };
         card.validate()?;
         Ok(card)
@@ -226,6 +249,12 @@ impl Card {
             || self.progress.as_ref().is_some_and(|p| {
                 p.step.len() > MAX_STEP_BYTES || p.step.chars().any(char::is_control)
             })
+            || self.answer.len() > MAX_ANSWER_BYTES
+            || self
+                .answer
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
+            || (!self.answer.is_empty() && self.state != State::Completed)
             || self.action_receipts.len() > MAX_ACTION_RECEIPTS
             || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES)
             || self
@@ -280,14 +309,46 @@ impl Card {
         card.validate().ok()?;
         Some(card)
     }
+    /// Puts the final answer into the run's one message. False when it does
+    /// not fit, or the run did not complete; the answer is then its own reply.
+    pub fn set_answer(&mut self, answer: &str) -> bool {
+        if self.state != State::Completed || answer.trim().is_empty() {
+            return false;
+        }
+        let previous = std::mem::replace(&mut self.answer, answer.to_owned());
+        // A Matrix event ID is short; this one stands in for the real one.
+        let edit = self.edit_content(&format!("${}", "e".repeat(64)));
+        if self.validate().is_err()
+            || edit.map_or(true, |v| serde_json::to_vec(&v).map_or(true, |b| b.len() > MAX_ANSWER_EDIT_BYTES))
+        {
+            self.answer = previous;
+            return false;
+        }
+        true
+    }
+    /// What a client without run-card support (Element) shows: the current
+    /// step while it runs, then the answer with a one-line footer.
+    pub fn room_body(&self) -> String {
+        let step = self.progress.as_ref().map_or("", |p| p.step.as_str());
+        match self.state {
+            State::Running if step.is_empty() => "⏳ Thinking…".to_owned(),
+            State::Running => format!("⏳ {step}"),
+            State::Completed if !self.answer.is_empty() => {
+                format!("{}\n\n{}", self.answer, done_footer(self.progress.as_ref()))
+            }
+            State::Completed if self.progress.is_some() => done_footer(self.progress.as_ref()),
+            state => status_text(state).to_owned(),
+        }
+    }
+    /// One message per run: a reply to the request in the main timeline, or
+    /// in the request's own thread. The run never opens a thread itself.
     pub fn content(&self) -> Value {
-        let body = status_text(self.state);
-        let root = if event(&self.thread_root) {
-            &self.thread_root
+        let relation = if event(&self.thread_root) {
+            json!({"rel_type":"m.thread","event_id":self.thread_root,"is_falling_back":true,"m.in_reply_to":{"event_id":self.event_id}})
         } else {
-            &self.event_id
+            json!({"m.in_reply_to":{"event_id":self.event_id}})
         };
-        json!({"msgtype":MSGTYPE,"body":body,MSGTYPE:self,"m.relates_to":{"rel_type":"m.thread","event_id":root,"is_falling_back":true,"m.in_reply_to":{"event_id":self.event_id}}})
+        json!({"msgtype":MSGTYPE,"body":self.room_body(),MSGTYPE:self,"m.relates_to":relation})
     }
     pub fn edit_content(&self, card_event: &str) -> Result<Value, &'static str> {
         if !event(card_event) {
@@ -387,9 +448,43 @@ pub(crate) mod tests {
     fn run_card_body_defaults_to_english() {
         let mut card = card();
         card.state = State::Running;
-        assert_eq!(card.content()["body"], "Working… you can add instructions or stop this run");
+        assert_eq!(card.content()["body"], "⏳ Thinking…");
+        card.progress = Some(Progress { step: "running gh pr view".into(), steps: 1, elapsed_secs: None });
+        assert_eq!(card.content()["body"], "⏳ running gh pr view");
+        card.state = State::Stopping;
+        assert_eq!(card.content()["body"], State::Stopping.english_status());
         card.state = State::Completed;
+        card.progress = None;
         assert_eq!(card.content()["body"], "Done");
+    }
+    /// The run is one message: it replies to the request (no new thread),
+    /// and its final edit carries the answer with a one-line footer.
+    #[test]
+    fn a_run_is_one_reply_that_ends_as_the_answer() {
+        let mut card = card();
+        let content = card.content();
+        assert!(content["m.relates_to"]["rel_type"].is_null(), "a run never opens a thread");
+        assert_eq!(content["m.relates_to"]["m.in_reply_to"]["event_id"], "$trigger");
+        assert!(!card.set_answer("too early"), "only a completed run carries an answer");
+        card.state = State::Completed;
+        card.progress = Some(Progress { step: String::new(), steps: 0, elapsed_secs: Some(2) });
+        assert!(card.set_answer("**42**"));
+        let edit = card.edit_content("$card").unwrap();
+        assert_eq!(edit["m.new_content"]["body"], "**42**\n\n✅ 2 s · 0 steps");
+        assert_eq!(edit["m.relates_to"]["rel_type"], "m.replace");
+        assert_eq!(Card::from_content(&edit["m.new_content"]).unwrap().answer, "**42**");
+        assert!(!card.set_answer(&"x".repeat(MAX_ANSWER_BYTES + 1)));
+        assert_eq!(card.answer, "**42**", "a refused answer keeps the previous one");
+        let mut escaped = card.clone();
+        assert!(!escaped.set_answer(&"\\".repeat(MAX_ANSWER_BYTES)), "escaping counts toward the edit budget");
+        assert!(escaped.set_answer(&"\\".repeat(MAX_ANSWER_BYTES / 4)));
+        let encoded = serde_json::to_vec(&escaped.edit_content("$card").unwrap()).unwrap();
+        assert!(encoded.len().div_ceil(3) * 4 < 60 * 1024, "the answer edit fits the encrypted envelope");
+        card.thread_root = "$thread".into();
+        let threaded = card.content();
+        assert_eq!(threaded["m.relates_to"]["rel_type"], "m.thread");
+        assert_eq!(threaded["m.relates_to"]["event_id"], "$thread");
+        assert_eq!(done_footer(Some(&Progress { step: String::new(), steps: 1, elapsed_secs: Some(0) })), "✅ 1 s · 1 step");
     }
     #[test]
     fn receipt_history_keeps_card_edits_within_the_wire_budget() {
@@ -438,6 +533,7 @@ pub(crate) mod tests {
             last_action: None,
             action_receipts: Vec::new(),
             progress: None,
+            answer: String::new(),
         }
     }
 
