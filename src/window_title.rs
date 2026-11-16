@@ -16,18 +16,26 @@ pub fn title_for(display_name: Option<&str>, user: Option<&UserId>) -> String {
     format!("{APP_NAME} — {name} · {}", user.server_name())
 }
 
-/// Sets the window title for the current account. Returns true once it is final: signed out,
-/// or the display name was known (the localpart fallback is retried by the caller).
-pub fn refresh(cx: &mut Cx, window: &WindowRef, signed_in: bool) -> bool {
+/// Sets the window title for the current account when it differs from `shown`
+/// (the title last set). Called on every action pass, so a display name that
+/// arrives late or changes (here or on another device) retitles the window.
+pub fn refresh(cx: &mut Cx, window: &WindowRef, signed_in: bool, shown: &mut String) {
     let user = if signed_in { crate::sliding_sync::current_user_id() } else { None };
-    let Some(user) = user else {
-        window.set_title(cx, APP_NAME);
-        return true;
-    };
     // No fetch here: the account bar already requests the own profile.
-    let name = crate::profile::user_profile_cache::with_user_profile(cx, user.clone(), None, false, |profile, _| profile.username.clone()).flatten();
-    window.set_title(cx, &title_for(name.as_deref(), Some(&user)));
-    name.is_some_and(|name| !name.trim().is_empty())
+    let name = user.as_ref().and_then(|user| {
+        crate::profile::user_profile_cache::with_user_profile(cx, user.clone(), None, false, |profile, _| profile.username.clone()).flatten()
+    });
+    if let Some(title) = retitle(shown, title_for(name.as_deref(), user.as_deref())) {
+        window.set_title(cx, title);
+    }
+}
+/// The title to set, or None when the window already shows `title`.
+fn retitle(shown: &mut String, title: String) -> Option<&str> {
+    if *shown == title {
+        return None;
+    }
+    *shown = title;
+    Some(shown.as_str())
 }
 
 #[cfg(test)]
@@ -50,5 +58,15 @@ mod tests {
         let ben = user_id!("@ben:localhost:8452");
         assert_eq!(title_for(None, Some(ben)), "Hagency — ben · localhost:8452");
         assert_eq!(title_for(Some("  "), Some(ben)), "Hagency — ben · localhost:8452");
+    }
+
+    /// Regression: the title kept the first display name for the whole session.
+    #[test]
+    fn a_renamed_account_is_retitled_once() {
+        let user = user_id!("@ann:example.org");
+        let mut shown = String::new();
+        assert!(retitle(&mut shown, title_for(Some("Ann"), Some(user))).is_some());
+        assert_eq!(retitle(&mut shown, title_for(Some("Ann"), Some(user))), None);
+        assert_eq!(retitle(&mut shown, title_for(Some("Alice"), Some(user))), Some("Hagency — Alice · example.org"));
     }
 }
