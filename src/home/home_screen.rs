@@ -487,6 +487,18 @@ impl ScriptHook for HomeScreen {
     }
 }
 
+impl HomeScreen {
+    /// Logout teardown reaches the dock even when Settings or an overlay hides it (session_teardown).
+    fn deliver_teardown_to_hidden_dock(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        let Event::Actions(actions) = event else { return };
+        if !crate::home::session_teardown::dock_needs_delivery(actions) { return; }
+        let dock = self.view.widget(cx, ids!(desktop_ui));
+        if !dock.is_empty() {
+            dock.handle_event(cx, event, scope);
+        }
+    }
+}
+
 impl Widget for HomeScreen {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         if let Event::MouseDown(mouse) = event && mouse.button == MouseButton::PRIMARY {
@@ -742,7 +754,10 @@ impl Widget for HomeScreen {
         // Consume a contact-page Back before the StackNavigation widget sees
         // its generated Pop on the next event turn (it otherwise pops to root).
         // Keep every unrelated widget/backend action in the same batch.
+        // TODO(R4): home_screen.rs is over budget; split event routing out of handle_event.
+        crate::home::session_teardown::begin_batch();
         let mut generated = cx.capture_actions(|cx| self.view.handle_event(cx, event, scope));
+        self.deliver_teardown_to_hidden_dock(cx, event, scope);
         generated.retain(|action| {
             !(matches!(action.as_widget_action().cast(), StackNavigationAction::Pop)
                 && self.dismiss_mobile_profile(cx))
@@ -1314,6 +1329,24 @@ pub(crate) mod responsive_layout_tests {
             Some(if desktop { id!(Desktop) } else { id!(Mobile) }));
         assert_eq!(effective_is_desktop(cx), desktop);
         assert_eq!(crate::home::account_menu::is_desktop_layout(cx), desktop);
+    }
+
+    /// Regression: logging out from Settings timed out at "Closing all tabs",
+    /// because the hidden home page (and so the dock) never got CloseAllTabs.
+    #[test]
+    fn close_all_tabs_reaches_the_dock_while_settings_is_shown() {
+        use futures::FutureExt;
+        let (mut cx, mut home, mut state) = home();
+        state.selected_tab = SelectedTab::Home;
+        draw_pane(&mut cx, &mut home, &mut state, 1280.0);
+        let actions = cx.capture_actions(|cx| cx.action(NavigationBarAction::OpenSettings));
+        home.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::with_data(&mut state));
+        assert_eq!(state.selected_tab, SelectedTab::Settings);
+        let on_close_all = std::sync::Arc::new(tokio::sync::Notify::new());
+        let close = crate::home::main_desktop_ui::MainDesktopUiAction::CloseAllTabs { on_close_all: on_close_all.clone() };
+        let actions = cx.capture_actions(|cx| cx.action(close));
+        home.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::with_data(&mut state));
+        assert!(on_close_all.notified().now_or_never().is_some(), "the dock must ack CloseAllTabs");
     }
 
     #[test]

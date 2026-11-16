@@ -27,6 +27,7 @@ pub mod tombstone_footer;
 pub mod loading_pane;
 pub mod location_preview;
 pub mod main_desktop_ui;
+pub mod session_teardown;
 pub mod room_screen;
 pub mod agent_runtime_notice;
 pub mod agent_run_card;
