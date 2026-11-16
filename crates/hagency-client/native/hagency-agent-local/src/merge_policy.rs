@@ -13,13 +13,26 @@
 //! than the one that asks to merge the pull request, and at
 //! least one such approval is always required, whatever the file says.
 //! The per-Agent switch is OFF by default ([`gate`]).
+//!
+//! Tiers (ADR 0016): the default tier is today's low-risk paths under a line
+//! limit. `tier: trusted` is the repository's opt-in for any change
+//! (optionally narrowed by `paths:` and `max_lines:`), with CI always
+//! required; protected paths and `always_human:` globs still need a person.
+//! A maintainer's own rules ([`work`]) are judged too; every policy
+//! that applies must pass, so the file can only tighten them.
 pub mod gate;
 pub mod github;
+pub mod work;
+pub mod review_loop;
 
 /// Where the policy lives in a repository.
 pub const POLICY_PATH: &str = ".hagency/merge-policy.yml";
 /// Paths that are never low risk: the policy itself and CI/workflow config.
 const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];
+/// A file with this name, in any directory, assigns code owners: always a person.
+const CODEOWNERS: &str = "CODEOWNERS";
+/// The reason a merge waits rather than asks: CI has not finished.
+pub const CI_PENDING: &str = "CI checks are still running";
 const DEFAULT_MAX_CHANGED_LINES: u64 = 50;
 const MIN_AGENT_APPROVALS: u32 = 1;
 
@@ -30,7 +43,18 @@ pub struct MergePolicy {
     pub max_changed_lines: u64,
     pub required_agent_approvals: u32,
     pub require_ci: bool,
+    /// `tier: trusted`: any change in `trusted_paths` (empty: every path).
+    pub trusted: bool,
+    pub trusted_paths: Vec<String>,
+    /// `max_lines:` of the trusted tier; `None` means no line limit.
+    pub trusted_max_lines: Option<u64>,
+    /// Globs that always need a person, in either tier.
+    pub always_human: Vec<String>,
+    /// The owner rules' CI rule: a head with no checks at all passes; any
+    /// reported check must still be green.
+    pub ci_if_present: bool,
 }
+
 
 /// One changed file of the pull request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +121,11 @@ pub(crate) fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<Strin
     if facts.files.is_empty() {
         return Some("the pull request changes no files".into());
     }
-    let protected = |path: &str| PROTECTED_PREFIXES.iter().any(|p| path.starts_with(p));
+    let protected = |path: &str| {
+        PROTECTED_PREFIXES.iter().any(|p| path.starts_with(p))
+            || path.rsplit('/').next() == Some(CODEOWNERS)
+            || policy.always_human.iter().any(|g| glob_match(g, path))
+    };
     for file in &facts.files {
         if let Some(old) = &file.previous_path {
             return Some(format!("{} was renamed or copied from {old}", file.path));
@@ -108,36 +136,56 @@ pub(crate) fn file_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<Strin
         if protected(&file.path) {
             return Some(format!("{} is policy or CI configuration", file.path));
         }
-        if !policy.low_risk_paths.iter().any(|g| glob_match(g, &file.path)) {
+        if !in_tier_paths(policy, &file.path) {
             return Some(format!("{} is outside the low-risk paths", file.path));
         }
     }
     let lines = facts.files.iter().try_fold(0u64, |sum, f| sum.checked_add(f.additions)?.checked_add(f.deletions));
-    match lines {
-        None => Some("the changed line count overflows".into()),
-        Some(lines) => (lines > policy.max_changed_lines).then(|| format!("{lines} changed lines is over the limit of {}", policy.max_changed_lines)),
+    let limit = if policy.trusted { policy.trusted_max_lines } else { Some(policy.max_changed_lines) };
+    match (lines, limit) {
+        (None, _) => Some("the changed line count overflows".into()),
+        (Some(lines), Some(limit)) => (lines > limit).then(|| format!("{lines} changed lines is over the limit of {limit}")),
+        (Some(_), None) => None,
     }
+}
+
+/// The default tier needs a low-risk path; the trusted tier its `paths:` (all when empty).
+fn in_tier_paths(policy: &MergePolicy, path: &str) -> bool {
+    let globs = if policy.trusted { &policy.trusted_paths } else { &policy.low_risk_paths };
+    (policy.trusted && globs.is_empty()) || globs.iter().any(|g| glob_match(g, path))
 }
 
 pub(crate) fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String> {
     if !policy.require_ci {
         return None;
     }
-    if facts.checks.is_empty() {
+    if facts.checks.is_empty() && !policy.ci_if_present {
         return Some("no CI checks reported".into());
     }
     if facts.checks.contains(&Check::Failed) {
         return Some("a CI check failed".into());
     }
-    facts.checks.contains(&Check::Pending).then(|| "CI checks are still running".into())
+    facts.checks.contains(&Check::Pending).then(|| CI_PENDING.into())
 }
 
 /// Read the small YAML subset the policy uses: `key: value`, `key: [a, b]`
 /// and `key:` followed by `- item` lines. Unknown keys are refused, so a typo
-/// never silently loosens or drops a rule.
+/// never silently loosens or drops a rule; trusted-tier keys without
+/// `tier: trusted` are refused too, and that tier always requires CI.
 pub fn parse_policy(text: &str) -> Option<MergePolicy> {
-    let mut policy = MergePolicy { low_risk_paths: Vec::new(), max_changed_lines: DEFAULT_MAX_CHANGED_LINES, required_agent_approvals: MIN_AGENT_APPROVALS, require_ci: true };
-    let mut in_list = false;
+    let mut policy = MergePolicy {
+        low_risk_paths: Vec::new(),
+        max_changed_lines: DEFAULT_MAX_CHANGED_LINES,
+        required_agent_approvals: MIN_AGENT_APPROVALS,
+        require_ci: true,
+        trusted: false,
+        trusted_paths: Vec::new(),
+        trusted_max_lines: None,
+        always_human: Vec::new(),
+        ci_if_present: false,
+    };
+    let mut list: Option<&str> = None;
+    let mut tier_keys = false;
     for raw in text.lines() {
         let line = raw.split(" #").next()?.trim_end();
         let trimmed = line.trim();
@@ -145,25 +193,38 @@ pub fn parse_policy(text: &str) -> Option<MergePolicy> {
             continue;
         }
         if let Some(item) = trimmed.strip_prefix("- ") {
-            if !in_list {
-                return None;
-            }
-            policy.low_risk_paths.push(unquote(item)?);
+            list_of(&mut policy, list?)?.push(unquote(item)?);
             continue;
         }
-        in_list = false;
+        list = None;
         let (key, value) = trimmed.split_once(':')?;
-        let value = value.trim();
-        match key.trim() {
-            "low_risk_paths" if value.is_empty() => in_list = true,
-            "low_risk_paths" => policy.low_risk_paths = inline_list(value)?,
+        let (key, value) = (key.trim(), value.trim());
+        tier_keys |= matches!(key, "paths" | "max_lines");
+        match key {
+            "low_risk_paths" | "paths" | "always_human" if value.is_empty() => list = Some(key),
+            "low_risk_paths" | "paths" | "always_human" => *list_of(&mut policy, key)? = inline_list(value)?,
             "max_changed_lines" => policy.max_changed_lines = value.parse().ok()?,
+            "max_lines" => policy.trusted_max_lines = Some(value.parse().ok()?),
             "required_agent_approvals" => policy.required_agent_approvals = value.parse().ok()?,
             "require_ci" => policy.require_ci = value.parse().ok()?,
+            "tier" => policy.trusted = match unquote(value)?.as_str() { "trusted" => true, "default" => false, _ => return None },
             _ => return None,
         }
     }
+    if tier_keys && !policy.trusted {
+        return None;
+    }
+    policy.require_ci |= policy.trusted;
     Some(policy)
+}
+
+fn list_of<'a>(policy: &'a mut MergePolicy, key: &str) -> Option<&'a mut Vec<String>> {
+    match key {
+        "low_risk_paths" => Some(&mut policy.low_risk_paths),
+        "paths" => Some(&mut policy.trusted_paths),
+        "always_human" => Some(&mut policy.always_human),
+        _ => None,
+    }
 }
 
 fn inline_list(value: &str) -> Option<Vec<String>> {

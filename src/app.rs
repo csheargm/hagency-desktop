@@ -1525,6 +1525,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);
     crate::hagency::issue_watch::section::script_mod(vm);
+    crate::hagency::issue_watch::work_section::script_mod(vm);
     crate::hagency::github_access::script_mod(vm);
     crate::hagency::agent_panel::script_mod(vm);
     crate::hagency::ui::script_mod(vm);

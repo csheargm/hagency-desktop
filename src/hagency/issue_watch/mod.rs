@@ -9,6 +9,11 @@
 pub(crate) mod choices;
 mod handoff;
 pub(crate) mod live;
+pub mod loop_notice;
+mod review_loop;
+mod work;
+pub mod work_lines;
+pub mod work_section;
 pub mod notice;
 pub mod section;
 mod section_state;
@@ -16,6 +21,8 @@ mod section_state;
 mod tests;
 #[cfg(test)]
 mod notice_tests;
+#[cfg(test)]
+mod review_loop_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};
@@ -145,16 +152,25 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let id = agent["id"].as_str().unwrap_or_default();
     let saved = live::saved(service, id, None).await?;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
-    if watch.setting.mode == WatchMode::Off {
+    let has_work = saved["work"].as_array().is_some_and(|w| !w.is_empty());
+    if watch.setting.mode == WatchMode::Off && !has_work {
         return Ok(None);
     }
     let token = github_token(id).await?;
+    let worked = work::run(&work::Worker { service, client, agent, token: &token, epoch }, &saved).await;
+    if watch.setting.mode == WatchMode::Off {
+        return Ok(Some(Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }));
+    }
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
     let seen: HashSet<i64> = saved["issueSeen"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
     let picks = select(&watch, &issues, &seen);
     let auto_merge = !picks.is_empty() && live::auto_merge(id).await;
     let live = live::Live::new(service, agent, &watch, auto_merge, epoch)?;
-    Ok(Some(handoff::hand_off(&live, &picks).await))
+    let mut outcome = handoff::hand_off(&live, &picks).await;
+    outcome.handed += worked.handed;
+    let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).collect();
+    outcome.error = (!errors.is_empty()).then(|| errors.join(" · "));
+    Ok(Some(outcome))
 }
 
 /// The GitHub token the watcher reads `agent_id`'s repository with: the

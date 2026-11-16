@@ -13,7 +13,7 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// GitHub's compare API lists at most this many files; a full page may be truncated.
 const COMPARE_FILE_LIMIT: usize = 300;
-const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup";
+const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author";
 const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
 
 /// One pull request as the gate judges it.
@@ -22,6 +22,8 @@ pub struct PrView {
     pub url: String,
     pub base_sha: String,
     pub head_sha: String,
+    /// The GitHub login that opened the pull request ("" when not reported).
+    pub author: String,
     pub facts: PrFacts,
 }
 
@@ -41,7 +43,8 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
     }
     let files = files.iter().map(changed_file).collect::<Option<_>>()?;
     let checks = view["statusCheckRollup"].as_array().map(|all| all.iter().map(check_state).collect()).unwrap_or_default();
-    Some(PrView { url, base_sha, head_sha, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+    let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
+    Some(PrView { url, base_sha, head_sha, author, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }
 
 fn changed_file(file: &Value) -> Option<ChangedFile> {
@@ -82,6 +85,42 @@ pub trait PrSource {
     fn pull_request(&self, command: &GhPr) -> impl std::future::Future<Output = Option<PrView>>;
     /// The policy file at `base_sha`, the base commit the pull request was judged on.
     fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<String>>;
+    /// The policy file at `base_sha`: `Some(None)` when the repository has
+    /// none (GitHub answered 404), `None` when it cannot be read.
+    fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<Option<String>>> {
+        async move { self.policy(command, repo, base_sha).await.map(Some) }
+    }
+    /// The GitHub login this device's `gh` uses; `None` (the default) when unknown.
+    fn viewer_login(&self, _command: &GhPr) -> impl std::future::Future<Output = Option<String>> {
+        async { None }
+    }
+    /// GitHub's reviews of the pull request as `(login, state, commit)` in
+    /// order; `None` (the default) when they cannot be read, so a review
+    /// recorded on another device never counts unverified.
+    fn reviews(&self, _command: &GhPr, _repo: &str) -> impl std::future::Future<Output = Option<Vec<(String, String, String)>>> {
+        async { None }
+    }
+}
+
+/// Whether some GitHub user's latest decisive review (APPROVED,
+/// CHANGES_REQUESTED or DISMISSED; comments do not change it) approves
+/// exactly `head`.
+pub fn approved_on(reviews: &[(String, String, String)], head: &str) -> bool {
+    let mut latest: std::collections::HashMap<&str, (&str, &str)> = std::collections::HashMap::new();
+    for (login, state, commit) in reviews {
+        if matches!(state.as_str(), "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+            latest.insert(login, (state, commit));
+        }
+    }
+    latest.values().any(|(state, commit)| *state == "APPROVED" && *commit == head)
+}
+
+/// `login<TAB>state<TAB>commit` lines from `gh api --jq` into tuples.
+pub fn parse_reviews(text: &str) -> Option<Vec<(String, String, String)>> {
+    text.lines().filter(|l| !l.is_empty()).map(|line| {
+        let mut parts = line.split('\t');
+        Some((parts.next()?.to_owned(), parts.next()?.to_owned(), parts.next()?.to_owned()))
+    }).collect()
 }
 
 /// This device's `gh` login.
@@ -94,7 +133,28 @@ impl PrSource for GhCli {
         let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
         gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"]).await
     }
+    async fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<Option<String>> {
+        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
+        let run = tokio::process::Command::new("gh").args(["api", &path, "-H", "Accept: application/vnd.github.raw"]).current_dir(&command.dir).kill_on_drop(true).output();
+        let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
+        if output.status.success() {
+            return String::from_utf8(output.stdout).ok().map(Some);
+        }
+        // Only GitHub's own "no such file" means absent; anything else is unknown.
+        String::from_utf8_lossy(&output.stderr).contains("(HTTP 404)").then_some(None)
+    }
+    async fn viewer_login(&self, command: &GhPr) -> Option<String> {
+        let login = gh(&command.dir, &["api", "user", "--jq", ".login"]).await?;
+        Some(login.trim().to_owned()).filter(|l| !l.is_empty())
+    }
+    async fn reviews(&self, command: &GhPr, repo: &str) -> Option<Vec<(String, String, String)>> {
+        let path = format!("repos/{repo}/pulls/{}/reviews?per_page=100", command.number);
+        parse_reviews(&gh(&command.dir, &["api", &path, "--paginate", "--jq", REVIEW_FIELDS]).await?)
+    }
 }
+
+/// One review per line for [`parse_reviews`].
+const REVIEW_FIELDS: &str = ".[] | [.user.login, .state, .commit_id] | @tsv";
 
 async fn pull_request(command: &GhPr) -> Option<PrView> {
     let number = command.number.to_string();

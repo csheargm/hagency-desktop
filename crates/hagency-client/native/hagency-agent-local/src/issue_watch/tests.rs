@@ -188,3 +188,40 @@ fn an_older_watch_table_gains_push_trust_switched_off() {
     let trusted: i64 = db.query_row("SELECT push_trusted FROM issue_watch WHERE agent='a'", [], |r| r.get(0)).unwrap();
     assert_eq!(trusted, 0);
 }
+
+#[test]
+fn the_review_loop_reads_only_other_peoples_ready_pull_requests() {
+    use super::wire::{others_ready_pulls, parse_login, parse_permission, parse_pulls, pulls_url};
+    let sha = "1".repeat(40);
+    let body = json!([
+        {"number": 30, "html_url": "https://github.com/acme/app/pull/30", "draft": false, "head": {"sha": sha}, "user": {"login": "Anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 31, "html_url": "https://github.com/acme/app/pull/31", "draft": true, "head": {"sha": sha}, "user": {"login": "anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 32, "html_url": "https://github.com/acme/app/pull/32", "head": {"sha": sha}, "user": {"login": "mallory"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 33, "html_url": "https://github.com/acme/app/pull/33", "head": {"sha": sha}, "user": {"login": "anna"}, "created_at": "2020-01-01T00:00:00Z"}
+    ]).to_string();
+    let pulls = parse_pulls(&body).unwrap();
+    let theirs: Vec<u64> = others_ready_pulls(&pulls, "mallory", 1_700_000_000).iter().map(|p| p.number).collect();
+    assert_eq!(theirs, [30], "not drafts, not our own, not from before the watch");
+    assert!(parse_pulls("{}").is_err());
+    assert!(pulls_url("https://api.github.com", "acme/app/../x").is_err());
+    assert_eq!(parse_permission(&json!({"permission": "write", "role_name": "maintain"}).to_string()).unwrap(), "maintain");
+    assert_eq!(parse_permission(&json!({"permission": "read"}).to_string()).unwrap(), "read");
+    assert!(parse_permission("{}").is_err());
+    assert_eq!(parse_login(&json!({"login": "anna"}).to_string()).unwrap(), "anna");
+}
+
+#[test]
+fn the_earliest_unexpired_claim_holds_an_issue() {
+    use super::wire::{claim_holder, comments_url, parse_comments, CLAIM_MARKER, CLAIM_EXPIRY_SECS};
+    let body = json!([
+        {"user": {"login": "carl"}, "body": "me too", "created_at": "2026-11-16T09:00:00Z"},
+        {"user": {"login": "betty"}, "body": format!("{CLAIM_MARKER} — betty-claude"), "created_at": "2026-11-16T10:00:00Z"},
+        {"user": {"login": "anna"}, "body": format!("{CLAIM_MARKER} — anna-claude"), "created_at": "2026-11-16T10:00:05Z"}
+    ]).to_string();
+    let comments = parse_comments(&body).unwrap();
+    let now = comments[2].created_at + 10;
+    assert_eq!(claim_holder(&comments, now), Some("betty"));
+    assert_eq!(claim_holder(&comments[..1], now), None, "an ordinary comment is no claim");
+    assert_eq!(claim_holder(&comments, comments[1].created_at + CLAIM_EXPIRY_SECS + 1), Some("anna"), "betty's claim expired");
+    assert!(comments_url("https://api.github.com", "acme/app", 0).is_err());
+}

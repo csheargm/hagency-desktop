@@ -80,10 +80,12 @@ impl AgentPanel {
     pub(super) fn fill_settings_sections(&mut self, cx: &mut Cx) {
         use crate::hagency::issue_watch::section::IssueWatchSectionWidgetExt;
         use crate::hagency::github_access::GithubAccessSectionWidgetExt;
+        use crate::hagency::issue_watch::work_section::WorkSectionWidgetExt;
         let agent = self.agent_id();
         let rooms = mapping::watch_rooms(&self.status);
         // `None` until the status arrives, so the block says it is waiting instead of greying out silently.
         let editable = self.status.is_object().then(|| self.here());
+        self.view.work_section(cx, ids!(work)).set_context(cx, &agent, editable, rooms.clone());
         self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, editable, rooms);
         self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }

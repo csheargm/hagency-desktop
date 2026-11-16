@@ -95,6 +95,7 @@ script_mod! {
             // The int build's own blocks: issue watching (incl. Trusted mode and
             // Room choice) and the per-Agent GitHub access token with Check.
             Card {issue_watch := mod.widgets.IssueWatchSection {}}
+            Card {work := mod.widgets.WorkSection {}}
             Card {github_access := mod.widgets.GithubAccessSection {}}
             Card {
                 Title {text: #(crate::i18n::tr("Budget")) i18n_text: "Budget"}

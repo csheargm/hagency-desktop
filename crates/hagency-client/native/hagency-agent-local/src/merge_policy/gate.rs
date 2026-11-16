@@ -14,7 +14,7 @@
 //! commit and reviewing Agent (a new push voids them), because every Agent here shares one GitHub identity and
 //! GitHub refuses (and would not count) a self-approval.
 use super::github::PrSource;
-use super::{evaluate, parse_policy, Decision};
+use super::Decision;
 use crate::outside::{resolves_inside, shell};
 use crate::{key, Ledger, Result, ToolPolicy, ToolProposal};
 use serde_json::Value;
@@ -95,6 +95,8 @@ pub enum Kind {
     Merge,
     /// An approving `gh pr review`: recorded as this Agent's approval.
     Review,
+    /// `gh pr review --request-changes`: a verdict that blocks, never an approval.
+    RequestChanges,
     /// `gh pr ready`: a draft is marked ready so it can be reviewed and merged.
     Ready,
 }
@@ -121,12 +123,15 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
     let flags = Flags::read(rest, kind)?;
     let ok = match kind {
         Kind::Merge => flags.squash && flags.repo.is_some(),
-        Kind::Review => flags.approve != flags.comment && (flags.approve || flags.body.starts_with(APPROVE_MARKER)),
+        Kind::Review => [flags.approve, flags.comment, flags.request_changes].iter().filter(|f| **f).count() == 1
+            && (flags.approve || flags.request_changes || flags.body.starts_with(APPROVE_MARKER)),
         Kind::Ready => flags.repo.is_some(),
+        Kind::RequestChanges => false,
     };
     if !ok {
         return None;
     }
+    let kind = if flags.request_changes { Kind::RequestChanges } else { kind };
     Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind })
 }
 
@@ -185,6 +190,7 @@ struct Flags {
     squash: bool,
     approve: bool,
     comment: bool,
+    request_changes: bool,
     body: String,
     repo: Option<String>,
     head: Option<String>,
@@ -201,6 +207,7 @@ impl Flags {
                 "--match-head-commit" if merge => flags.head = Some(super::github::commit_sha(words.next()?)?.to_owned()),
                 "--approve" | "-a" if review => flags.approve = true,
                 "--comment" | "-c" if review => flags.comment = true,
+                "--request-changes" | "-r" if review => flags.request_changes = true,
                 "--body" | "-b" if review => flags.body = (*words.next()?).to_owned(),
                 "--repo" | "-R" => flags.repo = Some(repo_name(words.next()?)?.to_owned()),
                 _ => return None,
@@ -260,15 +267,15 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);
     }
-    let policy = parse_policy(&source.policy(command, repo, &view.base_sha).await?)?;
-    if super::file_reason(&policy, &view.facts).is_some() {
+    let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
+    if judged.policies.iter().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
         return Some(false);
     }
     // An approval is public and counts toward a merge, so CI must pass for
     // it as for a merge; readying a draft (CI may not have run yet) need not.
     match command.kind {
-        Kind::Ready => return Some(true),
-        Kind::Review => return Some(super::ci_reason(&policy, &view.facts).is_none()),
+        Kind::Ready | Kind::RequestChanges => return Some(true),
+        Kind::Review => return Some(judged.policies.iter().all(|policy| super::ci_reason(policy, &view.facts).is_none())),
         Kind::Merge => {}
     }
     // Unbound merges always go to the owner: without the flag GitHub
@@ -276,6 +283,6 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
     if command.head.as_deref() != Some(view.head_sha.as_str()) {
         return Some(false);
     }
-    let approvers = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
-    Some(evaluate(&policy, &view.facts, &approvers, agent) == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
+    let decision = super::review_loop::judge(ledger, command, repo, view, agent, source).await?;
+    Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
 }

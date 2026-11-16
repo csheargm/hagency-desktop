@@ -133,7 +133,7 @@ impl Fake {
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = facts(self.files.clone(), self.checks.clone());
-        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), facts })
+        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), facts })
     }
     async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {
         assert_eq!((repo, base), ("csheargm/hagency-demo-sandbox", BASE), "the policy comes from the base commit");
