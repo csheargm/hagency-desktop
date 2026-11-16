@@ -125,3 +125,12 @@ fn model_dropdown_shows_one_label_for_alias_and_display_name() {
         assert_eq!((model.selected_item(), model.selected_label()), (0, "Claude Sonnet".to_owned()), "{saved} with choices");
     }
 }
+
+/// Regression (live 2026-11-16): the status reply's Rooms had no `roomId`, so
+/// issue watching offered "No connected Rooms yet." for an Agent in "fix-it room".
+#[test]
+fn status_rooms_are_offered_to_issue_watching() {
+    let binding = json!({"id": "bnd_1", "roomId": "!fix:alpha", "state": "active", "scopeKind": "project"});
+    let status = json!({"rooms": [crate::host::hagency::local::room_entry(&binding, "fix-it room".into())]});
+    assert_eq!(super::mapping::watch_rooms(&status), vec![("!fix:alpha".to_owned(), "fix-it room".to_owned())]);
+}

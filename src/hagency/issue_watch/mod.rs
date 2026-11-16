@@ -11,6 +11,7 @@ mod handoff;
 pub(crate) mod live;
 pub mod notice;
 pub mod section;
+mod section_state;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -178,7 +179,7 @@ pub(crate) fn choose_token(saved: Result<Option<Token>, String>, env: impl Fn(&s
     Err(crate::i18n::tr(NO_TOKEN).to_owned())
 }
 /// Shown when neither the Agent nor the environment has a token.
-pub const NO_TOKEN: &str = "No GitHub token — add one in the Agent's GitHub access settings";
+pub const NO_TOKEN: &str = "Needs a GitHub token: create one at https://github.com/settings/tokens (repo scope), then add it under GitHub access below.";
 
 fn now() -> String {
     chrono::Local::now().format("%H:%M").to_string()

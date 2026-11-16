@@ -82,7 +82,9 @@ impl AgentPanel {
         use crate::hagency::github_access::GithubAccessSectionWidgetExt;
         let agent = self.agent_id();
         let rooms = mapping::watch_rooms(&self.status);
-        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, self.here(), rooms);
+        // `None` until the status arrives, so the block says it is waiting instead of greying out silently.
+        let editable = self.status.is_object().then(|| self.here());
+        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, editable, rooms);
         self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }
 
