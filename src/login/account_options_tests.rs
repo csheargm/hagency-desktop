@@ -55,3 +55,10 @@ fn pending_registration_keeps_the_submitted_credentials() {
     stored.registration_id = Some("reg".into());
     assert_eq!((stored.username.as_str(), stored.password.as_str(), stored.server.as_str()), ("alice", "pw1", "https://hs"));
 }
+
+#[test]
+fn signup_username_is_trimmed_and_lowercased() {
+    assert_eq!(normalize_signup_username("  Betty "), "betty");
+    assert_eq!(normalize_signup_username("alice"), "alice");
+    assert_eq!(normalize_signup_username(""), "");
+}

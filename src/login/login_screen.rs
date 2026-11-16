@@ -716,7 +716,10 @@ impl MatchEvent for LoginScreen {
             }
         }
         if !self.login_pending && self.registration_form_open && self.view.button(cx, ids!(submit_registration_button)).clicked(actions) {
-            let username = self.view.text_input(cx, ids!(registration_username)).text().trim().to_owned();
+            // TODO(R4): login_screen.rs is over budget; move the registration submit into login_screen_account.rs.
+            let username_input = self.view.text_input(cx, ids!(registration_username));
+            let username = super::account_options::normalize_signup_username(&username_input.text());
+            if username_input.text() != username { username_input.set_text(cx, &username); }
             let password = self.view.text_input(cx, ids!(registration_password)).text();
             let token = self.view.text_input(cx, ids!(registration_token)).text().trim().to_owned();
             if self.submit_email_registration(cx, &username, &password) {
