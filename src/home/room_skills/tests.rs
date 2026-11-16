@@ -78,3 +78,14 @@ fn only_a_real_agent_gets_a_card_and_accept_bumps_the_revision() {
     assert_eq!(second.content["rev"], 2);
     assert!(is_applied(&edit, &apply(&mut events, Storage::Timeline, second.content, "release")));
 }
+
+#[test]
+fn account_switch_loads_the_rooms_again() {
+    use matrix_sdk::ruma::room_id;
+    let room = room_id!("!r:example.test");
+    let mut store = crate::home::room_skills::ops::Store::default();
+    assert!(store.first_request(room, Some("@a:example.test")));
+    assert!(!store.first_request(room, Some("@a:example.test")));
+    assert!(store.first_request(room, Some("@b:example.test")), "account B must load its own skills");
+    assert!(store.was_requested(room, Some("@b:example.test")));
+}

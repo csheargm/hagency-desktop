@@ -220,4 +220,3 @@ mod tests {
         assert_eq!(dialog.view.label(&mut cx, ids!(rooms_hint)).text(), "Add it to other rooms later with Add agent in each room.");
     }
 }
-

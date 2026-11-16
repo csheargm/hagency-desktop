@@ -24,9 +24,16 @@ pub struct Store {
     pub errors: HashMap<OwnedRoomId, String>,
     /// (room, subject): a skill name, or a proposal id for a card.
     pub working: HashSet<(OwnedRoomId, String)>,
-    pub requested: HashSet<OwnedRoomId>,
+    /// Initial loads asked for, per (account, room), so a new account loads its own.
+    requested: HashSet<(String, OwnedRoomId)>,
 }
 impl Store {
+    pub fn first_request(&mut self, room: &RoomId, me: Option<&str>) -> bool {
+        self.requested.insert((me.unwrap_or_default().to_owned(), room.to_owned()))
+    }
+    pub fn was_requested(&self, room: &RoomId, me: Option<&str>) -> bool {
+        self.requested.contains(&(me.unwrap_or_default().to_owned(), room.to_owned()))
+    }
     pub fn current(&self, room: &RoomId, me: Option<&str>) -> Option<&Loaded> {
         self.loaded.get(room).filter(|l| Some(l.me.as_str()) == me)
     }
@@ -67,7 +74,7 @@ pub fn refresh(room_id: &RoomId) {
                 store.loaded.insert(room_id.clone(), loaded);
             }
             Err(message) => {
-                store.requested.remove(&room_id);
+                store.requested.retain(|(_, r)| r != &room_id);
                 store.errors.insert(room_id.clone(), message);
             }
         }
@@ -78,7 +85,7 @@ pub fn refresh(room_id: &RoomId) {
 
 /// Loads a room's skills the first time a card or the panel asks.
 pub fn ensure_loaded(room_id: &RoomId) {
-    if lock().requested.insert(room_id.to_owned()) {
+    if lock().first_request(room_id, crate::home::room_memory::store::me().as_deref()) {
         refresh(room_id);
     }
 }

@@ -63,10 +63,10 @@ pub fn attach(client: &Client) {
         if stale.from_notice && !OUTCOMES.lock().unwrap_or_else(|p| p.into_inner()).allow(room_id.as_str(), Instant::now()) {
             return;
         }
-        if stale.memory && super::store::lock().was_requested(room_id) {
+        if stale.memory && super::store::lock().was_requested(room_id, super::store::me().as_deref()) {
             super::ops::refresh(room_id);
         }
-        if stale.skills && crate::home::room_skills::ops::lock().requested.contains(room_id) {
+        if stale.skills && crate::home::room_skills::ops::lock().was_requested(room_id, super::store::me().as_deref()) {
             crate::home::room_skills::ops::refresh(room_id);
         }
     });

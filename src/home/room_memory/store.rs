@@ -59,7 +59,9 @@ pub struct Store {
     loaded: HashMap<OwnedRoomId, Loaded>,
     progress: HashMap<(OwnedRoomId, String), Progress>,
     errors: HashMap<OwnedRoomId, String>,
-    requested: HashSet<OwnedRoomId>,
+    /// Initial loads asked for, per (account, room): after an account switch
+    /// the new account still loads its own copy.
+    requested: HashSet<(String, OwnedRoomId)>,
     /// Newest load ticket per room; an older load finishing later is stale.
     generation: HashMap<OwnedRoomId, u64>,
     /// A write went through but the list could not be reloaded: not an error.
@@ -137,15 +139,15 @@ impl Store {
         self.stale.remove(room);
     }
     /// True once per room: the first card or panel asks for the room's memory.
-    pub fn first_request(&mut self, room: &RoomId) -> bool {
-        self.requested.insert(room.to_owned())
+    pub fn first_request(&mut self, room: &RoomId, me: Option<&str>) -> bool {
+        self.requested.insert((me.unwrap_or_default().to_owned(), room.to_owned()))
     }
     /// Whether a card or the panel has asked for this room's memory.
-    pub fn was_requested(&self, room: &RoomId) -> bool {
-        self.requested.contains(room)
+    pub fn was_requested(&self, room: &RoomId, me: Option<&str>) -> bool {
+        self.requested.contains(&(me.unwrap_or_default().to_owned(), room.to_owned()))
     }
     pub fn forget_requests(&mut self, room: &RoomId) {
-        self.requested.remove(room);
+        self.requested.retain(|(_, r)| r != room);
     }
     pub fn set_progress(&mut self, room: &RoomId, subject: &str, progress: Option<Progress>) {
         let key = (room.to_owned(), subject.to_owned());
