@@ -1,6 +1,6 @@
 //! "The Agent follows its owner into rooms": join rules and the saved setting.
 use super::super::{Follow, RoomFacts, active_agents, follow_on_join, offer_text, prefs::{FILE_NAME, Prefs}};
-use super::super::retry::{POWER_LEVELS_UNREADABLE, RETRY_DELAYS_MS, ROOM_NOT_LOADED, begin, bind_settles, delay_after, finish, lookup_retries};
+use super::super::retry::{POWER_LEVELS_UNREADABLE, RETRY_DELAYS_MS, ROOM_NOT_LOADED, begin, bind_settles, delay_after, lookup_retries};
 use serde_json::json;
 
 fn group_room() -> RoomFacts {
@@ -95,8 +95,8 @@ fn only_success_or_a_definitive_refusal_settles_a_pair() {
     assert!(bind_settles(&Ok(true)) && bind_settles(&Ok(false)));
     assert!(bind_settles(&Err("agent_retired".into())));
     assert!(!bind_settles(&Err("network_unavailable".into())), "transient: retry later");
-    assert!(begin("!r:s agt_1") && !begin("!r:s agt_1"), "one bind in flight per pair");
-    finish("!r:s agt_1");
-    assert!(begin("!r:s agt_1"));
-    finish("!r:s agt_1");
+    let first = begin("!r:s agt_1").expect("free");
+    assert!(begin("!r:s agt_1").is_none(), "one bind in flight per pair");
+    drop(first); // also what an aborted bind task does
+    assert!(begin("!r:s agt_1").is_some(), "the pair is free again");
 }

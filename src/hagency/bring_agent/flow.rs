@@ -102,11 +102,11 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<T, String>> {
 /// failure leaves it open for the next join or restart.
 fn follow_bind(room_id: OwnedRoomId, agent: AgentPick, room: String) {
     let key = prefs::pair(room_id.as_str(), &agent.id);
-    if !retry::begin(&key) { return; }
+    let Some(in_flight) = retry::begin(&key) else { return };
     let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
         let result = bind_with_retries(epoch, &room_id, &agent.puppet).await;
-        retry::finish(&key);
+        drop(in_flight);
         if retry::bind_settles(&result) { claim(&room_id, &agent); }
         Cx::post_action(BindDone { epoch, agent: agent.name, room, result });
     });

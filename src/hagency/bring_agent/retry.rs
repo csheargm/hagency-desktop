@@ -38,12 +38,18 @@ pub(crate) fn delay_after(attempt: usize) -> Option<Duration> {
     RETRY_DELAYS_MS.get(attempt).map(|ms| Duration::from_millis(*ms))
 }
 
-/// Marks a pair in flight; false when a bind for it is already running.
-pub(crate) fn begin(key: &str) -> bool {
-    PENDING.lock().unwrap_or_else(|p| p.into_inner()).insert(key.to_owned())
+/// A pair's in-flight mark; dropping it clears the mark, also when the bind
+/// task is aborted (sign-out), so a pair is never blocked for the process.
+#[derive(Debug)]
+pub(crate) struct InFlight(String);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        PENDING.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.0);
+    }
 }
 
-/// Clears the in-flight mark, whatever the outcome.
-pub(crate) fn finish(key: &str) {
-    PENDING.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
+/// Marks a pair in flight; None when a bind for it is already running.
+pub(crate) fn begin(key: &str) -> Option<InFlight> {
+    PENDING.lock().unwrap_or_else(|p| p.into_inner()).insert(key.to_owned()).then(|| InFlight(key.to_owned()))
 }
