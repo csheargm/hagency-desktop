@@ -4,6 +4,9 @@
 //! any time, so the step that talks to GitHub runs in a fresh, host-owned
 //! bare repository with no system or global config, whose only link to the
 //! checkout is `objects/info/alternates` (object files, never config).
+//! The host never writes into the checkout: what the checkout needs from a
+//! step (fetched objects and refs, an upstream) is applied by a pinned
+//! command the Agent's call runs instead, with the Agent's own rights.
 //! See docs/adr/0015-host-side-trusted-push.md.
 use super::git::query;
 use std::io::Write;
@@ -28,6 +31,15 @@ const HOST_CONFIG: [&str; 10] = [
 ];
 /// The only variables a host network command inherits (gh reads its login
 /// from HOME or GH_CONFIG_DIR, or a token variable).
+/// Config of the Agent-run command that applies a host step to the checkout.
+const AGENT_CONFIG: [&str; 6] = [
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "core.alternateRefsCommand=true",
+    "protocol.allow=never",
+    "protocol.file.allow=always",
+    "fetch.recurseSubmodules=false",
+];
 const HOST_ENV: [&str; 9] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"];
 
 /// A step the host runs itself when push trust answers the Agent's command.
@@ -51,7 +63,7 @@ impl Dest {
 }
 
 impl HostStep {
-    /// Run the step; the result is what the Agent is told.
+    /// Run the step; `Ok` is the command the Agent's call runs in its place.
     pub fn run(&self) -> Result<String, String> {
         let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
         self.run_to(&Dest::github(repo))
@@ -65,13 +77,30 @@ impl HostStep {
     }
 }
 
-/// The Bash command the Agent's tool call runs instead: it only prints what
-/// the host did (and fails when the host step failed).
+/// The Bash command the Agent's tool call runs instead: what the host step
+/// left for it, or a failure report.
 pub fn report_command(result: &Result<String, String>) -> String {
     match result {
-        Ok(done) => format!("printf '%s\\n' {}", super::quote(done)),
+        Ok(command) => command.clone(),
         Err(why) => format!("printf '%s\\n' {} >&2; exit 1", super::quote(&format!("Hagency could not run this step: {why}"))),
     }
+}
+
+/// `printf` of `message`.
+fn say(message: &str) -> String {
+    format!("printf '%s\\n' {}", super::quote(message))
+}
+
+/// `git -C dir <args>` as the Agent runs it: hooks, fsmonitor, lazy fetch
+/// and every transport but local files off, whatever the checkout says.
+fn agent_git(dir: &Path, args: &[&str]) -> String {
+    let mut words = vec!["git".to_owned(), "-C".to_owned(), dir.to_string_lossy().into_owned()];
+    for pin in AGENT_CONFIG {
+        words.extend(["-c".to_owned(), pin.to_owned()]);
+    }
+    words.extend(args.iter().map(|a| (*a).to_owned()));
+    let line = words.iter().map(|w| super::quote(w)).collect::<Vec<_>>().join(" ");
+    super::pin_env(&format!("GIT_NO_LAZY_FETCH=1 {line}"))
 }
 
 fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest) -> Result<String, String> {
@@ -88,66 +117,42 @@ fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest) -> 
     run(scratch.git(dest).args(["update-ref", &head, &sha]), None)?;
     run(scratch.git(dest).args(["push", "-q", &dest.url, &format!("{head}:{head}")]), None)?;
     let short = &sha[..sha.len().min(12)];
-    if upstream {
-        let tracking = format!("refs/remotes/{remote}/{branch}");
-        let set = query(dir, &["update-ref", "--no-deref", &tracking, &sha]).is_some()
-            && query(dir, &["config", &format!("branch.{branch}.remote"), remote]).is_some()
-            && query(dir, &["config", &format!("branch.{branch}.merge"), &head]).is_some();
-        if !set {
-            return Ok(format!("Pushed {branch} ({short}) to {}; its upstream could not be set.", dest.url));
-        }
+    let done = say(&format!("Pushed {branch} ({short}) to {}.", dest.url));
+    if !upstream {
+        return Ok(done);
     }
-    Ok(format!("Pushed {branch} ({short}) to {}.", dest.url))
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let record = [
+        agent_git(dir, &["update-ref", &tracking, &sha]),
+        agent_git(dir, &["config", &format!("branch.{branch}.remote"), remote]),
+        agent_git(dir, &["config", &format!("branch.{branch}.merge"), &head]),
+    ];
+    Ok(format!("{done} && {}", record.join(" && ")))
 }
 
+/// The host fetches into a scratch repository it keeps for the Agent's
+/// call, which then imports from that local path (no network, no host write
+/// into the checkout) and removes it.
 fn fetch(dir: &Path, remote: &str, dest: &Dest) -> Result<String, String> {
-    let objects = objects_dir(dir)?;
-    let scratch = Scratch::new(&objects)?;
+    let scratch = Scratch::new(&objects_dir(dir)?)?;
     let prefix = format!("refs/remotes/{remote}/");
     // What the checkout already has, so only new objects come down.
     let known = query(dir, &["for-each-ref", "--format=%(objectname) %(refname)", &prefix]).ok_or("cannot read the checkout's refs")?;
     let seed: String = known.lines().filter_map(|l| l.split_once(' ')).filter_map(|(sha, name)| Some(format!("update refs/heads/{} {sha}\n", name.strip_prefix(&prefix)?))).filter(|l| !l.contains(" refs/heads/HEAD ")).collect();
     run(scratch.git(dest).args(["update-ref", "--stdin"]), Some(&seed))?;
     run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--prune", &dest.url, "+refs/heads/*:refs/heads/*"]), None)?;
-    hand_over_packs(&scratch.0.join("objects/pack"), &objects.join("pack"))?;
-    let fetched = run(scratch.git(dest).args(["for-each-ref", "--format=%(objectname) %(refname:lstrip=2)", "refs/heads"]), None)?;
-    let updates: String = fetched.lines().filter_map(|l| l.split_once(' ')).map(|(sha, name)| format!("update {prefix}{name} {sha}\n")).collect();
-    // --no-deref: a planted symbolic tracking ref cannot steer the write to
-    // a local branch (GPT review, Nov 16).
-    local_stdin(dir, &["update-ref", "--no-deref", "--stdin"], &updates)?;
-    Ok(format!("Fetched {} branches of {} into {remote}.", fetched.lines().count(), dest.url))
-}
-
-/// Copy fetched packs into the checkout, each `.idx` after its `.pack` so a
-/// pack is visible only once complete.
-fn hand_over_packs(from: &Path, to: &Path) -> Result<(), String> {
-    let entries = std::fs::read_dir(from).map_err(|e| e.to_string())?;
-    let mut packs: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "pack")).collect();
-    packs.sort();
-    for pack in packs {
-        for ext in ["pack", "rev", "idx"] {
-            let file = pack.with_extension(ext);
-            let target = to.join(file.file_name().ok_or("pack name")?);
-            if file.exists() && target.symlink_metadata().is_err() {
-                copy_new(&file, &target)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// `from` copied to a new file `to`; never through a link or over a file.
-fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
-    let mut source = std::fs::File::open(from).map_err(|e| e.to_string())?;
-    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| format!("copy pack: {e}"))?;
-    std::io::copy(&mut source, &mut target).map_err(|e| format!("copy pack: {e}"))?;
-    target.sync_all().map_err(|e| e.to_string())
+    let count = run(scratch.git(dest).args(["for-each-ref", "--format=x", "refs/heads"]), None)?.lines().count();
+    let path = scratch.keep();
+    let local = path.to_string_lossy().into_owned();
+    let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
+    let done = say(&format!("Fetched {count} branches of {} into {remote}.", dest.url));
+    Ok(format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)))
 }
 
 /// The object directory of checkout `dir`, which must be a plain clone:
 /// `.git`, `objects` and `objects/pack` real directories (no links, no
-/// `.git` file, no `commondir`), so the host writes only inside `dir`
-/// (GPT review, Nov 16).
+/// `.git` file, no `commondir`), so the alternates link reads only `dir`'s
+/// objects (GPT review, Nov 16).
 fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
     let git_dir = dir.join(".git");
     let objects = git_dir.join("objects");
@@ -183,6 +188,15 @@ impl Scratch {
 
     fn git(&self, dest: &Dest) -> Command {
         host_command(&self.0, Some(dest.protocol))
+    }
+}
+
+impl Scratch {
+    /// Hand the repository over (the Agent's command removes it).
+    fn keep(self) -> PathBuf {
+        let path = self.0.clone();
+        std::mem::forget(self);
+        path
     }
 }
 
@@ -228,13 +242,6 @@ fn run(command: &mut Command, stdin: Option<&str>) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
     }
-}
-
-/// A local `git -C dir` with hooks and helpers off, fed `input`.
-fn local_stdin(dir: &Path, args: &[&str], input: &str) -> Result<String, String> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(dir).args(args).envs(crate::agent_env::GIT_HELPERS_OFF_ENV).env("GIT_TERMINAL_PROMPT", "0").env("GIT_NO_LAZY_FETCH", "1");
-    run(&mut command, Some(input))
 }
 
 #[cfg(test)]

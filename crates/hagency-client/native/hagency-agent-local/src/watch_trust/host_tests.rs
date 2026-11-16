@@ -66,6 +66,13 @@ fn poison(w: &World) {
     git(&w.app, &["config", "include.path", included.to_str().unwrap()]);
 }
 
+/// Run what the host left for the Agent's call, as the Agent's shell would.
+fn agent_runs(command: &str) -> String {
+    let out = Command::new("sh").arg("-c").arg(command).output().unwrap();
+    assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 fn push_step(w: &World) -> HostStep {
     HostStep::Push { dir: w.app.clone(), remote: "origin".into(), branch: "docs/faq".into(), repo: REPO.into(), upstream: true }
 }
@@ -74,7 +81,9 @@ fn push_step(w: &World) -> HostStep {
 fn the_host_push_reads_no_checkout_config() {
     let w = world();
     poison(&w);
-    let done = push_step(&w).run_to(&dest(&w)).unwrap();
+    let command = push_step(&w).run_to(&dest(&w)).unwrap();
+    assert_eq!(git(&w.app, &["for-each-ref", "refs/remotes/origin/docs"]), "", "the host wrote nothing into the checkout");
+    let done = agent_runs(&command);
     assert!(done.starts_with("Pushed docs/faq"), "{done}");
     let sha = git(&w.app, &["rev-parse", "refs/heads/docs/faq"]);
     assert_eq!(git(&w.target, &["rev-parse", "refs/heads/docs/faq"]), sha, "the push went to the checked destination");
@@ -93,7 +102,9 @@ fn the_host_fetch_reads_no_checkout_config_and_hands_over_objects() {
     let upstream = git(&other, &["rev-parse", "HEAD"]);
     poison(&w);
     let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
-    let done = step.run_to(&dest(&w)).unwrap();
+    let command = step.run_to(&dest(&w)).unwrap();
+    assert_ne!(git(&w.app, &["rev-parse", "refs/remotes/origin/main"]), upstream, "the host wrote nothing into the checkout");
+    let done = agent_runs(&command);
     assert!(done.starts_with("Fetched"), "{done}");
     assert_eq!(git(&w.app, &["rev-parse", "refs/remotes/origin/main"]), upstream);
     git(&w.app, &["cat-file", "-e", &format!("{upstream}^{{commit}}")]);
@@ -107,9 +118,7 @@ fn a_failed_host_step_is_reported_as_a_failed_call() {
     let result = push_step(&w).run_to(&bad);
     assert!(result.is_err());
     assert!(report_command(&result).ends_with("exit 1"));
-    let ok = report_command(&Ok("Pushed it's done".into()));
-    let out = Command::new("sh").arg("-c").arg(&ok).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "Pushed it's done\n");
+    assert_eq!(agent_runs(&say("Pushed it's done")), "Pushed it's done\n");
     // Only https leaves the machine in production.
     let https = host_command(&w.root, Some("https"));
     let args: Vec<_> = https.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
@@ -145,20 +154,6 @@ fn the_host_push_refuses_the_remotes_default_branch() {
     assert_eq!(git(&w.target, &["for-each-ref", "refs/heads/docs"]), "");
 }
 
-/// GPT review (Nov 16): a symbolic tracking ref cannot steer the fetch's
-/// ref writes to a local branch, and planted pack links are never written through.
-#[test]
-fn the_host_fetch_writes_only_tracking_refs_and_new_files() {
-    let w = world();
-    let faq = git(&w.app, &["rev-parse", "refs/heads/docs/faq"]);
-    git(&w.app, &["symbolic-ref", "refs/remotes/origin/main", "refs/heads/docs/faq"]);
-    let outside = w.root.join("outside-pack");
-    let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
-    step.run_to(&dest(&w)).unwrap();
-    assert_eq!(git(&w.app, &["rev-parse", "refs/heads/docs/faq"]), faq, "the local branch is untouched");
-    assert!(!outside.exists());
-}
-
 #[test]
 fn the_host_refuses_a_checkout_whose_storage_is_elsewhere() {
     let w = world();
@@ -170,16 +165,6 @@ fn the_host_refuses_a_checkout_whose_storage_is_elsewhere() {
     std::fs::remove_file(w.app.join(".git")).unwrap();
     std::fs::write(w.app.join(".git"), format!("gitdir: {}\n", elsewhere.display())).unwrap();
     assert!(step.run_to(&dest(&w)).is_err(), "a .git file");
-}
-
-#[test]
-fn copy_new_never_writes_through_a_link() {
-    let w = world();
-    let (from, link, outside) = (w.root.join("p.pack"), w.root.join("link.pack"), w.root.join("outside.pack"));
-    std::fs::write(&from, "x").unwrap();
-    std::os::unix::fs::symlink(&outside, &link).unwrap();
-    assert!(copy_new(&from, &link).is_err());
-    assert!(!outside.exists());
 }
 
 #[test]
