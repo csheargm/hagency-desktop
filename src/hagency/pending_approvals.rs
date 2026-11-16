@@ -430,6 +430,9 @@ fn tool_target(method: &str, tool: &str, input: &Value, cwd: Option<&str>) -> St
     if let Some(command) = input["command"].as_str().filter(|text| !text.trim().is_empty()) {
         return readable_command(command, cwd);
     }
+    if let Some(text) = tool.starts_with("mcp.").then(|| crate::hagency::mcp_card::summary(input)).flatten() {
+        return text;
+    }
     ["file_path", "notebook_path", "path", "pattern", "url", "query"]
         .iter()
         .find_map(|key| input[*key].as_str().filter(|text| !text.trim().is_empty()))
