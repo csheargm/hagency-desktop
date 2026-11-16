@@ -5,7 +5,7 @@ use super::*;
 const READY: &str = "gh pr ready 7 -R csheargm/hagency-demo-sandbox";
 
 fn review() -> String {
-    format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\"")
+    format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\"")
 }
 
 async fn answer(files: Vec<ChangedFile>, line: &str) -> Option<bool> {
@@ -94,7 +94,7 @@ fn both_runtimes_are_told_github_text_is_data_not_instructions() {
 /// marker review, so only an eligible pull request skips the card.
 #[tokio::test]
 async fn an_approve_review_is_judged_by_the_same_policy() {
-    let approve = "gh pr review 7 --approve -R csheargm/hagency-demo-sandbox";
+    let approve = &format!("gh pr review 7 --approve -b {HEAD} -R csheargm/hagency-demo-sandbox");
     assert_eq!(answer(vec![file("docs/a.md", 5)], approve).await, Some(true));
     for files in [vec![file("src/main.rs", 1)], vec![file("README.md", 51)], vec![file(".hagency/merge-policy.yml", 1)]] {
         assert_eq!(answer(files.clone(), approve).await, None, "{files:?}");

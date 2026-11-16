@@ -16,6 +16,12 @@ struct Change {
     /// One issue the desktop poller handed to the Agent (after the send succeeded).
     #[serde(default)]
     issue_seen: Option<SeenIssue>,
+    /// The Agent's whole work list (repositories and roles), replacing the old one.
+    #[serde(default)]
+    work: Option<Vec<hagency_agent_local::merge_policy::work::OwnerRules>>,
+    /// The review loop's records and questions (`review_loop`).
+    #[serde(default)]
+    review: Option<super::review_loop::ReviewChange>,
 }
 
 #[derive(Deserialize)]
@@ -50,22 +56,29 @@ pub(super) async fn handle(req: &mut Request, depot: &Depot, agent: String) -> R
         .state_directory()
         .ok_or_else(|| error(503, "local_state_unavailable"))?;
     recheck(depot).map_err(|_| error(401, "sign_in_required"))?;
-    tokio::task::spawn_blocking(move || apply(&root, &reply, &agent, change))
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || apply(&root, &reply, &agent, change, &runtime))
         .await
         .map_err(|_| error(503, "local_state_unavailable"))?
 }
 
-fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>) -> Result<Value, OwnerError> {
+fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, runtime: &tokio::runtime::Handle) -> Result<Value, OwnerError> {
     let path = ledger_path(root, &reply.origin, &reply.issuer, &reply.subject, &reply.owner)
         .map_err(|_| error(503, "local_state_unavailable"))?;
     let identity = profile_identity(&reply.origin, &reply.issuer, &reply.subject, &reply.owner)
         .map_err(|_| error(403, "owner_scope_required"))?;
     let mut ledger = Ledger::open_scoped(&path, &reply.owner, &identity).map_err(local_error)?;
-    if let Some(change) = change {
+    let mut review = Value::Null;
+    if let Some(mut change) = change {
+        let loop_change = change.review.take();
         // All parts of one POST commit together or not at all.
         ledger
             .atomically(|ledger| apply_change(ledger, &reply.owner, agent, change))
             .map_err(local_error)?;
+        if let Some(loop_change) = loop_change {
+            // Not in the transaction: a readiness question waits on GitHub.
+            review = super::review_loop::apply(&mut ledger, agent, loop_change, now(), runtime).map_err(local_error)?;
+        }
     }
     let watch = ledger.issue_watch(agent).map_err(local_error)?;
     let mut seen: Vec<i64> = ledger
@@ -74,12 +87,22 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>) -
         .into_iter()
         .collect();
     seen.sort_unstable();
-    Ok(json!({"agentId": agent, "issueWatch": watch, "issueSeen": seen}))
+    let work = ledger.all_owner_rules(agent).map_err(local_error)?;
+    let mut work_seen = serde_json::Map::new();
+    for entry in &work {
+        let mut numbers: Vec<i64> = ledger.seen_issues(agent, &entry.repo).map_err(local_error)?.into_iter().collect();
+        numbers.sort_unstable();
+        work_seen.insert(entry.repo.clone(), numbers.into());
+    }
+    Ok(json!({"agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review}))
 }
 
 fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -> hagency_agent_local::Result<()> {
     if let Some(setting) = change.issue_watch {
         ledger.set_issue_watch(owner, agent, setting, now())?;
+    }
+    if let Some(work) = change.work {
+        ledger.set_work(owner, agent, work)?;
     }
     if let Some(seen) = change.issue_seen {
         ledger.mark_issue_seen(agent, &seen.repo, seen.number)?;

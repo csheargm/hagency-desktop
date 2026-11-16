@@ -3492,5 +3492,12 @@
   "Add to rooms": "添加到房间",
   "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "停止你在此设备上的所有 Agent：停止其运行、拒绝等待中的审批并暂停它们",
   "Resume the agents you paused with Stop all agents": "恢复你用“停止所有 Agent”暂停的 Agent",
-  "Read whether you paused your agents on this device": "读取你是否已暂停此设备上的 Agent"
+  "Read whether you paused your agents on this device": "读取你是否已暂停此设备上的 Agent",
+  "Repositories and roles": "仓库与角色",
+  "Developer: claims new issues and opens pull requests. Reviewer: reviews other people's pull requests. Maintainer: reviews and merges them under your rules below; GitHub's own permissions and branch rules still apply.": "开发者：认领新议题并创建拉取请求。审阅者：审阅他人的拉取请求。维护者：按你下面的规则审阅并合并；GitHub 自身的权限和分支规则仍然适用。",
+  "Room for its notices": "发布通知的房间",
+  "Save repositories": "保存仓库",
+  "Signed out": "已退出登录",
+  "Could not save repositories: {error}": "无法保存仓库：{error}",
+  "Agent paused by the owner": "Agent 已被所有者暂停"
 }
