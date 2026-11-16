@@ -197,6 +197,14 @@ async fn route(room: &Room) -> Result<Vec<OwnedServerName>> {
     Ok(route)
 }
 
+/// Whether `parent` already lists `child`, from authoritative state, so a
+/// caller that rolls back a link removes only one it created.
+// TODO(R4): this file is over budget; split the link helpers into `space_links.rs`.
+pub(crate) async fn has_child(client: &Client, parent: &RoomId, child: &RoomId) -> Result<bool> {
+    let space = client.get_room(parent).ok_or_else(|| anyhow!("The space is no longer available."))?;
+    Ok(fresh_state(client, &space).await?.children.contains(child))
+}
+
 pub(crate) async fn link(client: &Client, parent: &RoomId, child: &RoomId, add: bool) -> Result<String> {
     ensure!(parent != child, "A space cannot contain itself.");
     let space = editable_space(client, parent, StateEventType::SpaceChild).await?;
