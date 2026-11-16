@@ -1380,7 +1380,7 @@ impl HagencyPanel {
         let bindings: Vec<Value> = self.bindings.iter().filter(|b| string(b, "agentId") == agent).cloned().collect();
         let rooms = super::issue_watch::choices::rooms(&bindings, |b| self.binding_label(cx, b));
         use super::issue_watch::section::IssueWatchSectionWidgetExt;
-        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, assigned_here, rooms);
+        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, Some(assigned_here), rooms);
         use super::github_access::GithubAccessSectionWidgetExt;
         self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }

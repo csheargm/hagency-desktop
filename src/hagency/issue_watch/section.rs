@@ -2,6 +2,7 @@
 //! Room, saved through the owner API (`{issueWatch}`) on the Agent's
 //! execution device. The poller (`super`) does the watching; its last result
 //! shows as `watch_status`, and a finished save says "Saved".
+use super::section_state::{State, TOKENS_URL, needs_read, saved_or_off, token_known};
 use super::{choices, live};
 use crate::hagency::backend::Service;
 use makepad_widgets::*;
@@ -27,6 +28,7 @@ script_mod! {
         save_watch := RobrixIconButton {height: 40 icon_walk: Walk{width: 0 height: 0} spacing: 0 padding: Inset{left: 14 right: 14 top: 0 bottom: 0} text: #(crate::i18n::tr("Save issue watching")) i18n_text: "Save issue watching"}
         watch_note := Text {}
         watch_status := Muted {}
+        open_tokens := RobrixIconButton {visible: false height: 32 icon_walk: Walk{width: 0 height: 0} spacing: 0 padding: Inset{left: 12 right: 12 top: 0 bottom: 0} text: #(crate::i18n::tr("Open GitHub tokens page")) i18n_text: "Open GitHub tokens page"}
     }
 }
 
@@ -37,6 +39,8 @@ struct Reply {
     agent_id: String,
     saving: bool,
     result: Result<Value, String>,
+    /// For a read: whether the Agent or the environment has a GitHub token.
+    token: Option<bool>,
 }
 
 #[derive(Script, ScriptHook, Widget)]
@@ -50,6 +54,11 @@ pub struct IssueWatchSection {
     /// Whether this device runs the Agent, so its ledger holds the watch.
     #[rust]
     editable: bool,
+    /// Whether the Agent panel has handed over this Agent's status yet.
+    #[rust]
+    known: bool,
+    #[rust]
+    token: Option<bool>,
     #[rust]
     rooms: Vec<(String, String)>,
     /// The saved `issueWatch`, `Null` until read.
@@ -88,6 +97,9 @@ impl Widget for IssueWatchSection {
             self.note.clear();
             self.render(cx);
         }
+        if self.view.button(cx, ids!(open_tokens)).clicked(actions) {
+            crate::utils::open_url(TOKENS_URL);
+        }
         if self.view.button(cx, ids!(save_watch)).clicked(actions) {
             self.save(cx);
         }
@@ -102,21 +114,23 @@ impl Widget for IssueWatchSection {
 }
 
 impl IssueWatchSection {
-    /// Shows `agent_id`'s watch; reads it again only when the Agent or
-    /// whether this device runs it changed, so typing is never overwritten.
-    pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: bool, rooms: Vec<(String, String)>) {
+    /// Shows `agent_id`'s watch; `editable` is `None` until the Agent's status
+    /// is loaded. Reads the watch once per Agent, so typing is never overwritten.
+    pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: Option<bool>, rooms: Vec<(String, String)>) {
         self.rooms = rooms;
         if self.agent_id != agent_id {
             self.agent_id = agent_id.to_owned();
             self.watch = Value::Null;
             self.note.clear();
             self.pending = false;
+            self.token = None;
         }
-        self.editable = editable;
+        self.known = editable.is_some();
+        self.editable = editable.unwrap_or(false);
         // Read once per Agent while it runs here. A device check that settles late (or
         // flips while the panel loads) no longer discards a pending read and starts over,
         // which left every control greyed out.
-        if needs_read(editable, &self.agent_id, &self.watch, self.pending) {
+        if needs_read(self.editable, &self.agent_id, &self.watch, self.pending) {
             self.send(None);
         }
         self.render(cx);
@@ -137,10 +151,13 @@ impl IssueWatchSection {
                 Ok(result) => result,
                 Err(_) => Err("no answer from this device's Agent host within 10 s".to_owned()),
             };
+            // The token itself stays in the poller; only whether one exists is kept.
+            // Bounded (the OS store may block or prompt); "unknown" shows no hint.
+            let token = if saving { None } else { token_known(&agent_id).await };
             if let Err(error) = &result {
                 makepad_widgets::log!("WARN issue_watch_request_failed saving={saving}: {error}");
             }
-            let reply = Reply { request, agent_id, saving, result };
+            let reply = Reply { request, agent_id, saving, result, token };
             // Also kept here: the section picks it up on its next draw even if the
             // action is not routed to it (it lives inside a nested settings page).
             LATEST.lock().unwrap_or_else(|p| p.into_inner()).replace(reply.clone());
@@ -153,6 +170,7 @@ impl IssueWatchSection {
             return;
         }
         self.pending = false;
+        self.token = reply.token.or(self.token);
         match &reply.result {
             Ok(value) => {
                 self.watch = saved_or_off(value);
@@ -206,36 +224,55 @@ impl IssueWatchSection {
         let room = self.view.drop_down(cx, ids!(watch_room)).selected_item().min(names.len() - 1);
         self.view.drop_down(cx, ids!(watch_room)).set_labels(cx, names);
         self.view.drop_down(cx, ids!(watch_room)).set_selected_item(cx, room);
-        let usable = self.editable && self.watch.is_object() && !self.pending;
+        let state = self.state();
+        let usable = state.usable();
         for id in [ids!(watch_mode), ids!(watch_repo)] {
             self.view.widget(cx, id).set_disabled(cx, !usable);
         }
         self.view.widget(cx, ids!(watch_room)).set_disabled(cx, !usable || self.rooms.is_empty());
         self.view.button(cx, ids!(save_watch)).set_enabled(cx, usable);
         self.view.label(cx, ids!(watch_note)).set_text(cx, &self.note);
-        self.view.label(cx, ids!(watch_status)).set_text(cx, &self.status_line());
+        self.view.label(cx, ids!(watch_status)).set_text(cx, &self.status_line(&state));
+        self.view.button(cx, ids!(open_tokens)).set_visible(cx, state.token == Some(false));
+        self.view.redraw(cx);
     }
-    fn status_line(&self) -> String {
-        if self.editable && self.pending && !self.watch.is_object() {
-            return crate::i18n::tr("Reading issue watching…").to_owned();
+    fn state(&self) -> State {
+        State {
+            known: self.known,
+            editable: self.editable,
+            read: self.watch.is_object(),
+            pending: self.pending,
+            no_rooms: self.rooms.is_empty(),
+            token: self.token,
         }
-        if !self.editable {
-            return crate::i18n::tr("Issue watching runs on the device that runs this Agent.").to_owned();
+    }
+    /// Why anything is disabled or missing, then the poller's last result.
+    fn status_line(&self, state: &State) -> String {
+        let mut lines: Vec<String> = state.reasons().into_iter().map(|r| crate::i18n::tr(r).to_owned()).collect();
+        if let Some(line) = self.watch_line() {
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
+    fn watch_line(&self) -> Option<String> {
+        if !self.usable_watch() {
+            return None;
         }
         let watching = self.watch["mode"].as_str().is_some_and(|m| m != "off");
         match super::status_line(&self.agent_id) {
-            Some(line) if watching => line,
-            // The token is read by the check itself (the OS store may block),
-            // so a missing one shows as the first check's line.
-            _ if watching => crate::i18n::tr("Waiting for the first check (every minute).").to_owned(),
-            _ => String::new(),
+            Some(line) if watching => Some(line),
+            _ if watching => Some(crate::i18n::tr("Waiting for the first check (every minute).").to_owned()),
+            _ => None,
         }
+    }
+    fn usable_watch(&self) -> bool {
+        self.known && self.editable && self.watch.is_object()
     }
 }
 
 impl IssueWatchSectionRef {
     /// See [`IssueWatchSection::set_context`].
-    pub fn set_context(&self, cx: &mut Cx, agent_id: &str, editable: bool, rooms: Vec<(String, String)>) {
+    pub fn set_context(&self, cx: &mut Cx, agent_id: &str, editable: Option<bool>, rooms: Vec<(String, String)>) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_context(cx, agent_id, editable, rooms);
         }
@@ -247,50 +284,11 @@ pub(super) mod test_support {
     use super::*;
     /// Feeds one answer as if the owner API had sent it for the current request.
     pub fn answer(section: &mut IssueWatchSection, cx: &mut Cx, saving: bool, result: Result<Value, String>) {
-        let reply = Reply { request: section.request, agent_id: section.agent_id.clone(), saving, result };
+        let reply = Reply { request: section.request, agent_id: section.agent_id.clone(), saving, result, token: None };
         section.apply_reply(cx, &reply);
     }
     pub fn stale_answer(section: &mut IssueWatchSection, cx: &mut Cx, result: Result<Value, String>) {
-        let reply = Reply { request: section.request + 1, agent_id: section.agent_id.clone(), saving: true, result };
+        let reply = Reply { request: section.request + 1, agent_id: section.agent_id.clone(), saving: true, result, token: None };
         section.apply_reply(cx, &reply);
-    }
-}
-
-/// The saved watch, or "off" for an Agent that never saved one: a missing
-/// watch (`issueWatch: null`) left every control disabled with no reason shown.
-fn saved_or_off(reply: &Value) -> Value {
-    match &reply["issueWatch"] {
-        watch if watch.is_object() => watch.clone(),
-        _ => serde_json::json!({"mode": "off"}),
-    }
-}
-
-#[cfg(test)]
-mod saved_tests {
-    use serde_json::json;
-    /// Regression (live 2026-11-15): a fresh local Agent's watch controls stayed greyed out.
-    #[test]
-    fn an_agent_without_a_saved_watch_is_editable_as_off() {
-        assert_eq!(super::saved_or_off(&json!({"issueWatch":null})), json!({"mode":"off"}));
-        assert_eq!(super::saved_or_off(&json!({})), json!({"mode":"off"}));
-        let saved = json!({"issueWatch":{"mode":"trusted","repo":"o/r"}});
-        assert_eq!(super::saved_or_off(&saved)["repo"], "o/r");
-    }
-}
-
-/// Whether the section should read the saved watch now.
-fn needs_read(editable: bool, agent_id: &str, watch: &Value, pending: bool) -> bool {
-    editable && !agent_id.is_empty() && !watch.is_object() && !pending
-}
-#[cfg(test)]
-mod read_tests {
-    use serde_json::{Value, json};
-    /// Regression (live 2026-11-15): a flip of the device check restarted the read forever.
-    #[test]
-    fn a_pending_or_finished_read_is_not_restarted() {
-        assert!(super::needs_read(true, "a1", &Value::Null, false));
-        assert!(!super::needs_read(true, "a1", &Value::Null, true), "pending: wait for it");
-        assert!(!super::needs_read(true, "a1", &json!({"mode":"off"}), false), "already read");
-        assert!(!super::needs_read(false, "a1", &Value::Null, false), "not on this device");
     }
 }

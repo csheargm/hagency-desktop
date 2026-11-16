@@ -236,7 +236,7 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
                 .and_then(|room_id| client.as_ref().and_then(|c| c.get_room(&room_id)))
                 .map(|room| room_name(&room))
                 .unwrap_or_default();
-            json!({"id": text(b, "id"), "name": name, "state": text(b, "state")})
+            room_entry(b, name)
         })
         .collect();
     // Daily and monthly limits reset at UTC midnight; show it in local time.
@@ -247,6 +247,11 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
     // Only the device that runs the Agent holds its approval settings.
     let approvals = if agent.here { approval_settings(&service, id, None).await.ok() } else { None };
     Ok(json!({"agentId": id, "here": agent.here, "deviceName": agent.device_name, "service": {"state": state}, "chat": chat, "rooms": rooms, "resetLocalTime": reset, "approvals": approvals}))
+}
+/// One project Room of the status reply. `roomId` is what issue watching
+/// saves; without it the Agent's Rooms were never offered there.
+pub(crate) fn room_entry(binding: &Value, name: String) -> Value {
+    json!({"id": text(binding, "id"), "roomId": text(binding, "roomId"), "name": name, "state": text(binding, "state")})
 }
 /// The Agent's approval mode and "Always allow" rules, after `change` if given.
 async fn approval_settings(service: &Service, id: &str, change: Option<Value>) -> Result<Value, String> {

@@ -202,7 +202,7 @@ fn saving_issue_watching_says_saved() {
     let mut cx = Cx::new(Box::new(|_, _| {}));
     let mut panel = section(&mut cx);
     let rooms = vec![("!r:s".to_owned(), "Project".to_owned())];
-    panel.set_context(&mut cx, "agt_1", true, rooms);
+    panel.set_context(&mut cx, "agt_1", Some(true), rooms);
     let saved = json!({"issueWatch": {"mode": "trusted", "label": "agent-fix", "repo": "acme/app", "roomId": "!r:s", "enabledAt": 5}, "issueSeen": []});
     answer(&mut panel, &mut cx, false, Ok(saved.clone()));
     assert_eq!(panel.label(&mut cx, ids!(watch_note)).text(), "", "a read is not a save");
@@ -221,9 +221,29 @@ fn another_device_cannot_edit_the_watch() {
     use makepad_widgets::*;
     let mut cx = Cx::new(Box::new(|_, _| {}));
     let mut panel = section(&mut cx);
-    panel.set_context(&mut cx, "agt_1", false, Vec::new());
+    panel.set_context(&mut cx, "agt_1", Some(false), Vec::new());
     assert!(!panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
     assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("runs on the device"));
+}
+
+/// Regression (live 2026-11-16, fresh Agent anna-fixer): a new Agent with no
+/// saved watch (`issueWatch: null`) gets editable controls at Off, and before
+/// its status arrives the block says it is waiting instead of greying out silently.
+#[test]
+fn a_new_agent_without_a_saved_watch_can_choose_and_save() {
+    use super::section::test_support::answer;
+    use makepad_widgets::*;
+    use serde_json::json;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = section(&mut cx);
+    panel.set_context(&mut cx, "agt_new", None, Vec::new());
+    assert!(!panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
+    assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("Waiting for this Agent's status"));
+    panel.set_context(&mut cx, "agt_new", Some(true), Vec::new());
+    answer(&mut panel, &mut cx, false, Ok(json!({"issueWatch": null, "issueSeen": []})));
+    assert!(panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
+    assert!(!panel.widget(&mut cx, ids!(watch_mode)).disabled(&cx), "mode is choosable");
+    assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("Add this Agent to a Room first"));
 }
 
 /// GPT integration review: Stop All during a check must fence the hand-off.

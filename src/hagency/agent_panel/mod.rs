@@ -95,6 +95,7 @@ impl AgentPanel {
         self.set_tab(cx, Tab::Identity);
         self.note(cx, "Loading…");
         self.call(Load::Status, false, Call::Status(self.agent_id()));
+        self.fill_settings_sections(cx);
         self.load_backups();
         self.render(cx);
     }
@@ -184,6 +185,10 @@ impl AgentPanel {
         }
     }
     fn set_tab(&mut self, cx: &mut Cx, tab: Tab) {
+        // Rooms the Agent joined after the panel opened (an auto-join) show up in Settings.
+        if tab == Tab::Settings && self.tab != tab && !self.busy && self.status.is_object() {
+            self.call(Load::Status, false, Call::Status(self.agent_id()));
+        }
         self.tab = tab;
         self.refresh_activity();
         let tabs = [(ids!(identity_tab), ids!(identity_page), Tab::Identity), (ids!(context_tab), ids!(context_page), Tab::Context),
