@@ -111,6 +111,11 @@ async fn the_maintainers_own_pull_request_still_needs_another_agent() {
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
     let own = Src { author: "anna", ..Src::new(vec![file("src/a.rs", 1)]) };
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &own).await.1, None, "its owner wrote it: self-approval does not count");
+    // Another local Agent's approval does not count either: any of them may have written it.
+    let temp = tempfile::tempdir().unwrap();
+    let mut both = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    both.record_agent_review("https://github.com/csheargm/hagency-demo-sandbox/pull/7", HEAD, "other").unwrap();
+    assert_eq!(gate::auto_answer(&mut both, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg2", 11, &own).await, None);
 }
 
 #[tokio::test]

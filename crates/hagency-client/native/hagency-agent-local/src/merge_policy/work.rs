@@ -221,6 +221,10 @@ pub(crate) struct Judged {
     pub excluded: String,
     /// Set when the owner's rules apply and the author is not trusted.
     pub author_reason: Option<String>,
+    /// Whether this device's Agents' approvals count under the owner's rules:
+    /// not when this owner's own login wrote the change, because any of its
+    /// Agents may be the author (they share that login). GPT review P1.
+    pub count_local: bool,
     /// The Agent is a developer or reviewer here: its ready and review steps
     /// skip the card, its merges never do.
     pub review_only: bool,
@@ -234,7 +238,7 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
         None => None,
     };
     let rules = ledger.owner_rules(agent, repo).ok()?;
-    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_only: false };
+    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_only: false, count_local: true };
     if let Some(rules) = rules.as_ref().filter(|r| r.role != Role::Maintainer) {
         judged.review_only = true;
         // Readying or reviewing any path (protected ones still ask); never a merge.
@@ -249,6 +253,7 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
         if own.as_deref().is_some_and(|o| !view.author.is_empty() && !o.eq_ignore_ascii_case(&view.author)) {
             judged.excluded = String::new();
         }
+        judged.count_local = own.as_deref().is_some_and(|o| !view.author.is_empty() && !o.eq_ignore_ascii_case(&view.author));
         judged.trusted_reviewers = rules.trusted_reviewers.clone();
         judged.rules = Some(rules.policy());
         judged.own_login = own;

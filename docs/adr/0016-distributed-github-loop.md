@@ -83,8 +83,12 @@ Separation and approvals:
 - When the PR author's GitHub login is not this owner's login (Betty's PR
   reaching Anna), the maintainer Agent's own approval of the exact head
   counts. That Agent did not write the change.
-- When this owner's login wrote the PR, the old rule applies: an Agent other
-  than the merger must approve.
+- When this owner's login wrote the PR, no approval from this device's own
+  Agents counts under the owner's rules, because they all share that login
+  and any of them may be the author. Only a trusted reviewer's bound GitHub
+  approval, or the owner, can carry it. The legacy file-only path still
+  excludes only the merger (the existing `TODO(pr-author)` in
+  `merge_policy.rs`).
 - An optional `reviewers=` list counts a trusted login's GitHub review when
   that login's latest decisive review APPROVES exactly the merged head. It
   never counts the PR author's own review. An unreadable review list counts
@@ -135,7 +139,8 @@ The file format also gained `tier: trusted` (`paths:`, `max_lines:`,
   by the head SHA and the merge is pinned with `--match-head-commit`.
 - **Claim races** are settled by GitHub's comment order. The worst case is two
   PRs for one issue, and that never leads to a merge without the rules.
-- **Residual risks.** The `author` comes from `gh pr view`. A login rename
+- **Residual risks.** The review loop reads the newest 100 open pull requests,
+  and claim comments up to the page cap (1,000). The `author` comes from `gh pr view`. A login rename
   between the read and the merge is not handled. An approval landing between
   readiness and merge is re-judged by the gate. The legacy per-agent issue
   watch keeps its single repository.

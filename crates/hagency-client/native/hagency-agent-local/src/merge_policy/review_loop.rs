@@ -35,8 +35,8 @@ impl Ledger {
 /// approved its head, plus `github:<login>` for each trusted reviewer whose
 /// latest decisive GitHub review approves exactly that head (never the
 /// pull request's own author). `None` when something cannot be read.
-pub(crate) async fn approvers(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, trusted: &[String], own_login: Option<&str>, source: &impl PrSource) -> Option<Vec<String>> {
-    let mut all = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
+pub(crate) async fn approvers(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, trusted: &[String], (own_login, count_local): (Option<&str>, bool), source: &impl PrSource) -> Option<Vec<String>> {
+    let mut all = if count_local { ledger.agent_reviewers(&view.url, &view.head_sha).ok()? } else { Vec::new() };
     if trusted.is_empty() {
         return Some(all);
     }
@@ -79,7 +79,7 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
         }
     }
     if let Some(rules) = &judged.rules {
-        let approvers = approvers(ledger, command, repo, view, &judged.trusted_reviewers, judged.own_login.as_deref(), source).await?;
+        let approvers = approvers(ledger, command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), judged.count_local), source).await?;
         if let decision @ Decision::NeedsHuman(_) = evaluate(rules, &view.facts, &approvers, &judged.excluded) {
             return Some(decision);
         }
