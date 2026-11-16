@@ -179,7 +179,7 @@ mod tests {
         info.view.drop_down(&mut cx, ids!(my_agents)).set_selected_item(&mut cx, 2);
         assert!(!info.selected_agent_in_room(&mut cx), "ben2agent is neither joined nor this room's private Agent");
         // A joined puppet counts too, once the panel's member list is loaded.
-        info.data = Some(ChatInfoData {room: RoomNameId::empty(room.clone()), topic: String::new(), mode: None, can_invite: true, banned_members: Default::default(),
+        info.data = Some(ChatInfoData {room: RoomNameId::empty(room.clone()), topic: String::new(), mode: None, can_invite: true, banned_members: Default::default(), removable: Default::default(),
             members: vec![crate::profile::user_profile::UserProfile {user_id: user_id!("@_hagency_agt_ben2:server").to_owned(), username: None, avatar_state: crate::shared::avatar::AvatarState::Known(None)}]});
         assert!(info.selected_agent_in_room(&mut cx));
         info.view.drop_down(&mut cx, ids!(my_agents)).set_selected_item(&mut cx, 1);

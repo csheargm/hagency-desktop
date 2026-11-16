@@ -3497,5 +3497,8 @@
   "Replying in a thread. Only people who open this thread see these messages.": "Replying in a thread. Only people who open this thread see these messages.",
   "Back to room": "Back to room",
   "Your agents": "Your agents",
-  "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room."
+  "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room.",
+  "Remove from room": "Remove from room",
+  "Remove my agent from this room": "Remove my agent from this room",
+  "Removing the agent from the room…": "Removing the agent from the room…"
 }

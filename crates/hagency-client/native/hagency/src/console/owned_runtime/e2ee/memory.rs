@@ -115,17 +115,20 @@ impl AgentDevice {
     }
 }
 
-/// Names this Agent in a memory proposal's fallback body, for clients that do
-/// not draw the card (Element). No profile yet keeps the generic "Agent".
+/// Names this Agent in a memory or skill proposal's fallback body, for clients
+/// that do not draw the card (Element). No profile yet keeps the generic "Agent".
 async fn with_display_name(room: &Room, client: &matrix_sdk::Client, mut content: Value) -> Value {
     let Some(me) = client.user_id() else { return content };
-    if content.get(hagency_runtime::room_memory::MEMORY_PROPOSAL_KEY).is_none() {
+    let memory = content.get(hagency_runtime::room_memory::MEMORY_PROPOSAL_KEY).is_some();
+    let skill = content.get(hagency_runtime::room_skills::SKILL_PROPOSAL_KEY).is_some();
+    if !memory && !skill {
         return content;
     }
     if let Ok(Some(member)) = room.get_member_no_sync(me).await
         && let Some(name) = member.display_name().filter(|n| !n.trim().is_empty())
     {
-        hagency_runtime::room_memory::name_proposal(&mut content, name);
+        if memory { hagency_runtime::room_memory::name_proposal(&mut content, name); }
+        if skill { hagency_runtime::room_skills::proposal::name_proposal(&mut content, name); }
     }
     content
 }

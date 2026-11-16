@@ -443,9 +443,6 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card_1 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -465,6 +462,8 @@ script_mod! {
                 thread_root_summary := mod.widgets.ThreadRootSummary {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
             }
         }
+        // The Agent's answer, as the Agent's own left-side message.
+        agent_runs := mod.widgets.AgentRunRow {}
     }
 
     let MobileMessageProfile = View {
@@ -497,9 +496,6 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {}
-                agent_run_card := mod.widgets.AgentRunCard {}
-                agent_run_card_1 := mod.widgets.AgentRunCard {}
-                agent_run_card_2 := mod.widgets.AgentRunCard {}
                 octos_action_card := mod.widgets.OctosActionCard {}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {}
                 skill_proposal_card := mod.widgets.SkillProposalCard {}
@@ -691,9 +687,6 @@ script_mod! {
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card_1 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_run_card_2 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -2111,6 +2104,7 @@ impl Widget for RoomScreen {
             list.set_skipped_ranges(&skipped_system_updates);
             self.agent_status_drawn = false;
 
+            let repeated_answers = repeated_answer_ids(&tl_state.kind, tl_items);
             while let Some(item_id) = list.next_visible_item(cx) {
                 if item_id == last_item_id && has_agent_status {
                     self.agent_status.draw_all(cx, scope);
@@ -2125,6 +2119,10 @@ impl Widget for RoomScreen {
                         list.item(cx, item_id, id!(Empty));
                         continue;
                     };
+                    if timeline_item.as_event().and_then(|e| e.event_id()).is_some_and(|id| repeated_answers.contains(id.as_str())) {
+                        list.item(cx, item_id, id!(Empty)).draw_all(cx, scope);
+                        continue;
+                    }
                     if cleared_through.is_some_and(|cutoff| {
                         timeline_item.as_event().map(|e| u64::from(e.timestamp().0) <= cutoff)
                             .unwrap_or_else(|| !tl_items.iter().skip(tl_idx + 1).find_map(|i| i.as_event())
@@ -5550,7 +5548,8 @@ fn populate_message_view(
                         // A memory proposal sent as text gives way to its intro too (the card shows it).
                         let (body, formatted) = match proposal_card_intro(event_tl_item, timeline_kind.room_id()) {
                             Some(intro) => (Cow::Owned(intro), None),
-                            None => (body, formatted),
+                            None => super::room_skills::named_fallback(&body, &super::room_memory::sender_name(event_tl_item))
+                                .map_or((body, formatted), |named| (Cow::Owned(named), None)),
                         };
                         // TODO(R4): this file is over budget; split per-msgtype drawing out of `populate_message_view`.
                         // The issue watcher's hand-off draws as its compact notice, without a link preview.
@@ -5625,7 +5624,8 @@ fn populate_message_view(
                         let memory_intro = proposal_card_intro(event_tl_item, timeline_kind.room_id());
                         let (body, formatted) = match memory_intro.as_deref() {
                             Some(intro) => (Cow::Borrowed(intro), None),
-                            None => (body, formatted),
+                            None => super::room_skills::named_fallback(&body, &super::room_memory::sender_name(event_tl_item))
+                                .map_or((body, formatted), |named| (Cow::Owned(named), None)),
                         };
                         new_drawn_status.content_drawn = populate_text_message_content(
                             cx,
@@ -6553,6 +6553,28 @@ fn populate_shared_permission_card(
     );
 }
 
+/// A plain text or notice message, the shape of a server's separate reply.
+fn is_plain_text(msgtype: &MessageType) -> bool {
+    matches!(msgtype, MessageType::Text(_) | MessageType::Notice(_))
+}
+
+/// The separate replies in this timeline that repeat an answered run card.
+// TODO(R4): move with the Agent run timeline helpers when room_screen splits.
+fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineItem>>) -> HashSet<String> {
+    let root = kind.thread_root_event_id().map_or_else(|| kind.room_id().to_string(), |id| id.to_string());
+    let runs: Vec<_> = crate::hagency::run_controls::for_event(kind.room_id(), &root, true)
+        .into_iter().filter(|e| e.card.thread_root == root).collect();
+    if runs.is_empty() { return HashSet::new(); }
+    let events: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(|e| {
+        let plain = e.content().as_message().is_some_and(|m| is_plain_text(m.msgtype()));
+        e.event_id().map(|id| (id.to_string(), e.sender().to_string(), plain))
+    }).collect();
+    let timeline: Vec<_> = events.iter().map(|(event_id, sender, plain)| super::agent_reply_dedupe::Sent {
+        event_id, sender, plain: *plain,
+    }).collect();
+    super::agent_reply_dedupe::duplicates(&runs, &timeline).into_iter().map(str::to_owned).collect()
+}
+
 /// The Agent run status event (`im.hagency.agent_run`); the run card displays it.
 fn is_agent_run_status(kind: &MsgLikeKind) -> bool {
     matches!(kind, MsgLikeKind::Message(message) if message.msgtype().msgtype() == ::hagency::agent_run_controls::MSGTYPE)
@@ -6564,7 +6586,6 @@ fn populate_agent_run_cards(
     event: &EventTimelineItem,
     kind: &TimelineKind,
 ) {
-    use super::agent_run_card::AgentRunCardWidgetRefExt;
     let entries = event
         .event_id()
         .map(|id| {
@@ -6575,10 +6596,7 @@ fn populate_agent_run_cards(
             )
         })
         .unwrap_or_default();
-    let paths = [ids!(content.agent_run_card), ids!(content.agent_run_card_1), ids!(content.agent_run_card_2)];
-    for (path, shown) in paths.into_iter().zip(super::agent_run_pager::slot_entries(&entries)) {
-        item.agent_run_card(cx, path).set_entries(cx, shown);
-    }
+    super::agent_run_row::populate(cx, item, &entries);
 }
 
 /// Shows the question an Agent asked during the run this message started (the
@@ -7248,6 +7266,19 @@ fn populate_thread_root_summary(
     let replies_count = fetched_summary
         .map(|f| f.num_replies)
         .unwrap_or(local_num_replies);
+    // Run cards draw on the request, and a server's repeat of a card's answer is hidden.
+    let replies_count = thread_root_event_id.as_ref().map_or(replies_count, |root| {
+        let runs: Vec<_> = crate::hagency::run_controls::for_event(timeline_kind.room_id(), root.as_str(), true)
+            .into_iter().filter(|e| e.card.thread_root == root.as_str()).collect();
+        let latest = match &thread_summary.latest_event { TimelineDetails::Ready(e) => Some(e), _ => None };
+        let plain = latest.and_then(|e| e.content.as_message()).is_some_and(|m| is_plain_text(m.msgtype()));
+        super::agent_reply_dedupe::shown_reply_count(replies_count, &runs, latest.map(|e| e.sender.as_str()), plain)
+    });
+    if replies_count == 0 {
+        // Not cached: a reply or a run update can bring the bar back.
+        thread_summary_view.set_visible(cx, false);
+        return false;
+    }
 
     let latest_preview: Cow<str> = match &thread_summary.latest_event {
         TimelineDetails::Ready(embedded_event) => {
@@ -8149,9 +8180,6 @@ impl Widget for Message {
             // A card under the text (a run, an approval, a question, usage, a download) needs
             // room of its own: a bubble shrunk to a two-letter message squeezed it into a strip.
             let card = [
-                ids!(content.agent_run_card).as_slice(),
-                ids!(content.agent_run_card_1).as_slice(),
-                ids!(content.agent_run_card_2).as_slice(),
                 ids!(content.agent_approval_card).as_slice(),
                 ids!(content.agent_question_card).as_slice(),
                 ids!(content.agent_question_card_1).as_slice(),
@@ -8228,22 +8256,8 @@ impl Message {
         let in_approval_card = false;
         in_approval_card
             || (self.is_toolbar_shown && self.hover_toolbar.as_message_hover_toolbar().contains(cx, abs))
-            || self.view.widget(cx, ids!(content.agent_run_card))
-                .area()
-                .clipped_rect(cx)
-                .contains(abs)
-            || self
-                .view
-                .widget(cx, ids!(content.agent_run_card_1))
-                .area()
-                .clipped_rect(cx)
-                .contains(abs)
-            || self
-                .view
-                .widget(cx, ids!(content.agent_run_card_2))
-                .area()
-                .clipped_rect(cx)
-                .contains(abs)
+            || super::agent_run_row::card_paths().into_iter()
+                .any(|path| self.view.widget(cx, path).area().clipped_rect(cx).contains(abs))
             || self
                 .view
                 .widget(cx, ids!(reaction_list)).as_reaction_list().contains_button(cx, abs)

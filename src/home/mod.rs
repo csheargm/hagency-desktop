@@ -31,6 +31,8 @@ pub mod session_teardown;
 pub mod room_screen;
 pub mod agent_runtime_notice;
 pub mod agent_run_card;
+pub mod agent_run_row;
+pub mod agent_reply_dedupe;
 pub mod agent_run_status;
 pub mod agent_run_preview;
 pub mod agent_run_pager;
@@ -102,6 +104,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     identity_reset_banner::script_mod(vm);
     agent_runtime_notice::script_mod(vm);
     agent_run_card::script_mod(vm);
+    agent_run_row::script_mod(vm);
     shared_permission_notice::script_mod(vm);
     room_screen::hover_toolbar::script_mod(vm);
     room_screen::script_mod(vm);

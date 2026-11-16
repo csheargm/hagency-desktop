@@ -90,3 +90,16 @@ fn account_switch_loads_the_rooms_again() {
     assert!(store.was_requested(room, Some("@b:example.test")));
     assert!(store.first_request(room, Some("@a:example.test")), "switching back to A loads again");
 }
+
+/// Live finding: proposal bodies showed raw Agent ids instead of the Agent's name.
+#[test]
+fn proposal_fallback_bodies_show_the_agents_name_not_its_id() {
+    use super::named_fallback;
+    assert_eq!(named_fallback("agt_01m7kxy proposes a new team skill \"r\": d\nReason: x", "Claude").as_deref(),
+        Some("Claude proposes a new team skill \"r\": d\nReason: x"));
+    assert_eq!(named_fallback("Memory proposal from agt_01m7: note", "Claude").as_deref(), Some("Memory proposal from Claude: note"));
+    assert_eq!(named_fallback("agt_9 suggests a note for this room's memory: hi", "Codex").as_deref(),
+        Some("Codex suggests a note for this room's memory: hi"));
+    assert_eq!(named_fallback("agt_9 is great", "Codex"), None, "only proposal bodies are rewritten");
+    assert_eq!(named_fallback("Claude proposes a new team skill", "Codex"), None);
+}

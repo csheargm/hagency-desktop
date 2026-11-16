@@ -26,6 +26,7 @@ use crate::{
 // TODO(R4): over budget; the Add agent picker (request_agents, finish_agent_request,
 // the agent_picker_modal) belongs in add_agent_picker, split along that seam.
 pub(super) mod add_agent_picker;
+mod member_remove;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -112,6 +113,7 @@ script_mod! {
                     }
                 }
                 Member := mod.widgets.MobileSection {
+                    flow: Right align: Align{y: 0.5}
                     // Clicking a member opens their profile (DM, block, ...).
                     row := NavigationBarButton {
                         width: Fill height: 56 flow: Right spacing: 8 padding: Inset{left: 16 right: 16}
@@ -133,6 +135,8 @@ script_mod! {
                             }
                         }
                     }
+                    remove_member := RobrixNegativeIconButton {visible: false height: 32 margin: Inset{right: 12} icon_walk: Walk{width: 0 height: 0}
+                        text: #(crate::i18n::tr("Remove from room")) i18n_text: "Remove from room"}
                 }
                 Back := mod.widgets.MobileSection {
                     padding: Inset{left: 16 right: 16 top: 8 bottom: 8}
@@ -225,6 +229,8 @@ struct ChatInfoData {
     topic: String,
     members: Vec<UserProfile>,
     banned_members: HashSet<OwnedUserId>,
+    /// Members this account may remove (kick) under the room's power levels.
+    removable: HashSet<OwnedUserId>,
     mode: Option<RoomNotificationMode>,
 }
 
@@ -530,6 +536,7 @@ impl MobileChatInfo {
                     .map_err(|e| e.to_string())?;
                 let banned_members = members.iter().filter(|m| *m.membership() == ruma::events::room::member::MembershipState::Ban)
                     .map(|m| m.user_id().to_owned()).collect();
+                let removable = member_remove::removable(&room, &members).await;
                 let mut members: Vec<_> = members
                     .into_iter()
                     .map(|member| UserProfile {
@@ -548,6 +555,7 @@ impl MobileChatInfo {
                     topic: room.topic().unwrap_or_default(),
                     members,
                     banned_members,
+                    removable,
                     mode: room.user_defined_notification_mode().await,
                 })
             }
@@ -917,6 +925,11 @@ impl Widget for MobileChatInfo {
             }
             let list = self.view.portal_list(cx, ids!(list));
             for (_index, widget) in list.items_with_actions(actions) {
+                if let (Some(data), Some(profile)) = (self.data.as_ref().filter(|_| self.pin_is_current()), self.rendered_members.get(&widget.widget_uid()))
+                    && let Some(open) = member_remove::clicked(cx, &widget, actions, &data.room, &data.removable, profile) {
+                    cx.action(open);
+                    return;
+                }
                 if widget.navigation_bar_button(cx, ids!(copy_room_id)).clicked(actions) {
                     if self.pin_is_current() && self.tab == self.drawn_tab
                         && self.rendered_rows.get(&widget.widget_uid()) == Some(&InfoRow::Overview)
@@ -1051,6 +1064,7 @@ impl Widget for MobileChatInfo {
                         let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
                         super::agent_ask_badge::show(cx, &widget, self.owner.as_ref(), &profile.user_id);
+                        member_remove::show(cx, &widget, &data.removable, profile);
                         let avatar = widget.avatar(cx, ids!(avatar));
                         let loaded =
                             profile
@@ -1111,7 +1125,7 @@ impl MobileChatInfoRef {
         panel.room=Some(RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Team room".into()),room.clone()));
         panel.tab=InfoTab::Members;
         if scenario=="members" {
-            panel.data=Some(ChatInfoData {can_invite:true,room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),banned_members:HashSet::new(),mode:None});
+            panel.data=Some(ChatInfoData {can_invite:true,room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
             panel.select_tab(cx,InfoTab::Members);
             panel.view.redraw(cx);
             return;
@@ -1191,7 +1205,7 @@ mod information_target_tests {
             let value=script_eval!(vm,{mod.widgets.MobileChatInfo {}});
             MobileChatInfo::script_from_value(vm,value)
         });
-        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,banned_members:HashSet::new(),mode:None});
+        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
         info.indented_members=indented;
         info.select_tab(&mut cx,InfoTab::Members);draw_information(&mut info,&mut cx);
         let list=info.view.portal_list(&mut cx,ids!(list));
@@ -1327,7 +1341,7 @@ mod information_target_tests {
             let info=MobileChatInfo::script_from_value(vm,value);assert!(vm.take_errors().is_empty());info
         });
         let room=RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Room A".into()),matrix_sdk::ruma::room_id!("!a:server").to_owned());
-        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],banned_members:HashSet::new(),mode:None,can_invite:true});
+        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],banned_members:HashSet::new(),removable:HashSet::new(),mode:None,can_invite:true});
         info.agent_command=Some(("exact-original-input".into(),"original-key".into()));
         draw_information(&mut info,&mut cx);
         assert_eq!(info.view.label(&mut cx,ids!(summary_name)).text(),"Room A");
@@ -1440,7 +1454,7 @@ mod information_target_tests {
                 can_invite: true,
                 room: RoomNameId::empty(room_a),
                 topic: String::new(),
-                members: vec![], banned_members: HashSet::new(),
+                members: vec![], banned_members: HashSet::new(), removable: HashSet::new(),
                 mode: None,
             }),
         };
