@@ -660,6 +660,8 @@ impl MainDesktopUI {
 
 impl WidgetMatchEvent for MainDesktopUI {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, scope: &mut Scope) {
+        // TODO(R4): main_desktop_ui.rs is over budget; split the dock's action routing out.
+        crate::home::session_teardown::dock_saw_batch();
         let mut should_save_dock_action: bool = false;
         for action in actions {
             if matches!(action.downcast_ref(),Some(NavigationBarAction::GoToHome)) {self.reveal_rooms(cx);}
