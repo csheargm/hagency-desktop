@@ -104,6 +104,11 @@ script_mod! {
                 save_budget := Primary {text: #(crate::i18n::tr("Save budget")) i18n_text: "Save budget"}
             }
             Card {
+                Title {text: #(crate::i18n::tr("Rooms")) i18n_text: "Rooms"}
+                join_rooms := CheckBox {text: #(crate::i18n::tr("Join rooms I join")) i18n_text: "Join rooms I join"}
+                Hint {text: #(crate::i18n::tr("When off, you are asked each time you join a room.")) i18n_text: "When off, you are asked each time you join a room."}
+            }
+            Card {
                 Title {text: #(crate::i18n::tr("Workspace folder")) i18n_text: "Workspace folder"}
                 workspace := Text {}
             }

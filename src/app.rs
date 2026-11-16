@@ -182,6 +182,7 @@ mod embedded_content {
 
                 // Last, so it opens above the mini-app panel whose buttons open it.
                 create_agent_modal := Modal {can_dismiss: false content := CreateAgentDialog {}}
+                bring_agent_modal := Modal {can_dismiss: false content := BringAgentPrompt {}}
 
                 PopupList {}
 
@@ -608,6 +609,10 @@ impl MatchEvent for App {
                 // which will open the login_status_modal to show the failure message.
             }
 
+            if let Some(action) = action.downcast_ref::<crate::hagency::bring_agent::BringAgentAction>() {
+                crate::hagency::bring_agent::route_prompt(cx, &self.ui, action);
+                continue;
+            }
             if let Some(action) = action.downcast_ref::<crate::hagency::create_agent::CreateAgentAction>() {
                 use crate::hagency::create_agent::CreateAgentDialogWidgetRefExt;
                 let modal = self.ui.modal(cx, ids!(create_agent_modal));
@@ -1389,6 +1394,7 @@ impl App {
             let modal = self.ui.modal(cx, ids!(create_agent_modal));
             self.ui.create_agent_dialog(cx, ids!(create_agent_modal.content)).action(cx, modal, &CreateAgentAction::Close);
         }
+        crate::hagency::bring_agent::route_prompt(cx, &self.ui, &crate::hagency::bring_agent::BringAgentAction::Close);
         let modal = self.ui.modal(cx, ids!(agent_access_modal));
         self.ui.agent_access_panel(cx, ids!(agent_access_modal.content)).action(cx, modal, &AgentAccessAction::Close, &self.app_state.agent_access);
         crate::agent_access::publish(None, &Default::default());
@@ -1514,6 +1520,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::join_leave_room_modal::script_mod(vm);
     crate::block_user_modal::script_mod(vm);
     crate::hagency::create_agent::script_mod(vm);
+    crate::hagency::bring_agent::script_mod(vm);
     crate::moderation_modal::script_mod(vm);
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);

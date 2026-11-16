@@ -3470,5 +3470,14 @@
   "Auto-accept is on": "Auto-accept is on",
   "✅ Added to room memory by {name}": "✅ Added to room memory by {name}",
   "✅ Saved as a team skill by {name}": "✅ Saved as a team skill by {name}",
-  "Saved, but could not post the outcome: {reason}": "Saved, but could not post the outcome: {reason}"
+  "Saved, but could not post the outcome: {reason}": "Saved, but could not post the outcome: {reason}",
+  "Join rooms I join": "Join rooms I join",
+  "When off, you are asked each time you join a room.": "When off, you are asked each time you join a room.",
+  "Bring {agent} into {room}?": "Bring {agent} into {room}?",
+  "Bring": "Bring",
+  "Not now": "Not now",
+  "{agent} was not added to {room}: you do not have permission to invite members there.": "{agent} was not added to {room}: you do not have permission to invite members there.",
+  "{agent} joined {room}.": "{agent} joined {room}.",
+  "{agent} is still joining {room}.": "{agent} is still joining {room}.",
+  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}"
 }

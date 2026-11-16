@@ -1,13 +1,20 @@
 //! "Bring your agent along": the owner's Agent follows them into rooms.
 //!
-//! Two entry points share one bind path (`Service::invite_agent_to_room`,
+//! Three entry points share one bind path (`Service::invite_agent_to_room`,
 //! the same one the room's Add agent picker and `/invite` use):
 //! - the Create agent dialog's "Add to rooms" checklist (`create_agent`);
-//! - rooms the owner creates with New room: the newest Agent joins at once.
+//! - rooms the owner creates with New room: the newest Agent joins at once
+//!   when its "Join rooms I join" setting is on;
+//! - group rooms the owner joins (accepted invite or join): every active
+//!   Agent with the setting on joins; one with it off gets a one-click prompt.
 //!
-//! This file holds the pure rules; `flow` runs the async steps.
+//! This file holds the pure rules; `prefs` keeps the per-account choices on
+//! disk, `flow` runs the async steps and `prompt` is the one-click prompt.
 mod flow;
+mod prefs;
+mod prompt;
 pub use flow::{bind_into_rooms, observe, owner_created_room};
+pub use prompt::{BringAgentAction, route as route_prompt, script_mod};
 
 use serde_json::Value;
 
@@ -38,24 +45,67 @@ pub(crate) fn active_agents_newest_first(listing: &Value) -> Vec<&Value> {
 
 /// The owner's default Agent (`Command::Agents` listing): the newest active one.
 pub(crate) fn default_agent(listing: &Value) -> Option<AgentPick> {
-    let row = active_agents_newest_first(listing).into_iter().next()?;
-    let text = |key: &str| row[key].as_str().unwrap_or_default().to_owned();
-    let name = row["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent").to_owned();
-    Some(AgentPick { id: text("id"), name, puppet: text("puppetMxid"), direct_room: row["ownerDirectRoomId"].as_str().map(str::to_owned) })
+    active_agents_newest_first(listing).into_iter().next().map(agent_pick)
 }
 
-/// What the desktop knows about a room the owner just created.
+/// Every active Agent with an identity, newest first.
+pub(crate) fn active_agents(listing: &Value) -> Vec<AgentPick> {
+    active_agents_newest_first(listing).into_iter().map(agent_pick).collect()
+}
+
+fn agent_pick(row: &Value) -> AgentPick {
+    let text = |key: &str| row[key].as_str().unwrap_or_default().to_owned();
+    let name = row["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent").to_owned();
+    AgentPick { id: text("id"), name, puppet: text("puppetMxid"), direct_room: row["ownerDirectRoomId"].as_str().map(str::to_owned) }
+}
+
+/// What the desktop knows about a room the owner just created or joined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RoomFacts {
     pub space: bool,
     pub direct: bool,
     /// The Agent is already joined or invited, or this is its private chat.
     pub agent_present: bool,
+    /// The owner may invite members here (room power levels).
+    pub can_invite: bool,
 }
 
 /// Whether a room the owner just created gets the default Agent at once.
-pub(crate) fn should_auto_join(room: RoomFacts) -> bool {
-    !room.space && !room.direct && !room.agent_present
+pub(crate) fn should_auto_join(joins_rooms: bool, room: RoomFacts) -> bool {
+    joins_rooms && room.can_invite && !room.space && !room.direct && !room.agent_present
+}
+
+/// What happens to one Agent after its owner joins a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Follow {
+    /// "Join rooms I join" is on: add it now.
+    Join,
+    /// The setting is off: ask "Bring <agent> into <room>?".
+    Offer,
+    /// The owner may not invite here: say so instead of trying.
+    NoInviteRights,
+    /// A DM, a space, already there, or this pair was handled before.
+    Skip,
+}
+
+/// The rule for one Agent after a join; `handled` is a pair already added or asked.
+pub(crate) fn follow_on_join(joins_rooms: bool, handled: bool, room: RoomFacts) -> Follow {
+    if handled || room.space || room.direct || room.agent_present { return Follow::Skip; }
+    match (room.can_invite, joins_rooms) {
+        (false, _) => Follow::NoInviteRights,
+        (true, true) => Follow::Join,
+        (true, false) => Follow::Offer,
+    }
+}
+
+/// Whether this Agent follows its owner into rooms (default on).
+pub(crate) fn joins_rooms(agent_id: &str) -> bool {
+    prefs::load_current().joins_rooms(agent_id)
+}
+
+/// Saves this Agent's "Join rooms I join" for the signed-in account.
+pub(crate) fn save_joins_rooms(agent_id: &str, on: bool) -> Result<(), String> {
+    prefs::update_current(|prefs| { prefs.set_joins_rooms(agent_id, on); Ok(()) })
 }
 
 /// One row of the Create agent dialog's "Add to rooms" checklist.
@@ -81,6 +131,16 @@ pub(crate) fn room_choices(mut rooms: Vec<(String, String)>, current: Option<&st
 /// The ticked rooms, in checklist order.
 pub(crate) fn ticked_rooms(choices: &[RoomChoice]) -> Vec<(String, String)> {
     choices.iter().filter(|c| c.ticked).map(|c| (c.room_id.clone(), c.name.clone())).collect()
+}
+
+/// The prompt line, e.g. "Bring ann-claude into fix-it?".
+pub(crate) fn offer_text(agent: &str, room: &str) -> String {
+    crate::i18n::format("Bring {agent} into {room}?", &[("agent", agent.to_owned()), ("room", room.to_owned())])
+}
+
+/// Why an Agent did not follow into a room where the owner cannot invite.
+pub(crate) fn no_invite_rights_text(agent: &str, room: &str) -> String {
+    crate::i18n::format("{agent} was not added to {room}: you do not have permission to invite members there.", &[("agent", agent.to_owned()), ("room", room.to_owned())])
 }
 
 /// The popup after one bind: joined, still joining, or why not.
