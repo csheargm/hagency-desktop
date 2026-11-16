@@ -3464,5 +3464,11 @@
   "{s} s": "{s} 秒",
   "{m} m {s} s": "{m} 分 {s} 秒",
   "That username is already taken on this server. Choose another name, or sign in if it is your account.": "该用户名在此服务器上已被占用。请换一个名字；如果这是你的账号，请直接登录。",
-  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。"
+  "The server did not accept this username and password. Check them and try again.": "服务器不接受此用户名和密码。请检查后重试。",
+  "Your decision (room moderators):": "你的决定（房间管理员）：",
+  "Always accept from my Agents": "始终接受我的智能体的建议",
+  "Auto-accept is on": "已开启自动接受",
+  "✅ Added to room memory by {name}": "✅ {name} 已将其加入房间记忆",
+  "✅ Saved as a team skill by {name}": "✅ {name} 已将其保存为团队技能",
+  "Saved, but could not post the outcome: {reason}": "已保存，但无法发布结果：{reason}"
 }

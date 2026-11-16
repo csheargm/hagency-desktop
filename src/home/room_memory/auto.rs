@@ -69,6 +69,15 @@ pub fn set(room: &RoomId, me: Option<&str>, on: bool) -> std::io::Result<()> {
     let me = me.ok_or_else(|| std::io::Error::other("not signed in"))?;
     rooms(&mut lock(), me).set(&path(me), room, on)
 }
+/// Turns it on or off for the room (the panel's switch and the card's link);
+/// pending cards of my own Agents are then accepted on their next sync.
+pub fn switch(room: &OwnedRoomId, on: bool) {
+    if let Err(error) = set(room, store::me().as_deref(), on) {
+        let message = crate::i18n::format("Could not save the automatic memory setting: {reason}", &[("reason", error.to_string())]);
+        crate::shared::popup_list::enqueue_popup_notification(message, crate::shared::popup_list::PopupKind::Error, None);
+    }
+    makepad_widgets::Cx::post_action(MemoryChanged { room_id: room.clone() });
+}
 /// Sets the switch in memory only (unit tests never touch the data folder).
 #[cfg(test)]
 pub fn set_for_test(room: &RoomId, me: &str, on: bool) {
@@ -104,6 +113,28 @@ pub fn claim(room: &RoomId, proposal: &Proposal, state: &CardState, can_write: b
         return false;
     }
     state_lock.claimed.insert(key)
+}
+
+/// Whether the proposing Agent is one of the signed-in account's own (`None`
+/// while unknown; a fresh listing is requested then).
+pub fn is_my_agent(room: &RoomId, author: &str) -> Option<bool> {
+    own_agent(room, store::me().as_deref(), author)
+}
+/// What the card offers about automatic Accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    Hidden,
+    TurnOn,
+    IsOn,
+}
+/// Only the owner of the proposing Agent, who may write memory, is offered it.
+pub fn offer(can_write: bool, my_agent: Option<bool>, on: bool, pending: bool) -> Offer {
+    match (can_write && my_agent == Some(true), on) {
+        (false, _) => Offer::Hidden,
+        (true, true) => Offer::IsOn,
+        (true, false) if pending => Offer::TurnOn,
+        (true, false) => Offer::Hidden,
+    }
 }
 
 /// `None` (never accept) while the listing is missing or older than

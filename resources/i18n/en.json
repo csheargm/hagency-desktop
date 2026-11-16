@@ -3464,5 +3464,11 @@
   "{s} s": "{s} s",
   "{m} m {s} s": "{m} m {s} s",
   "That username is already taken on this server. Choose another name, or sign in if it is your account.": "That username is already taken on this server. Choose another name, or sign in if it is your account.",
-  "The server did not accept this username and password. Check them and try again.": "The server did not accept this username and password. Check them and try again."
+  "The server did not accept this username and password. Check them and try again.": "The server did not accept this username and password. Check them and try again.",
+  "Your decision (room moderators):": "Your decision (room moderators):",
+  "Always accept from my Agents": "Always accept from my Agents",
+  "Auto-accept is on": "Auto-accept is on",
+  "✅ Added to room memory by {name}": "✅ Added to room memory by {name}",
+  "✅ Saved as a team skill by {name}": "✅ Saved as a team skill by {name}",
+  "Saved, but could not post the outcome: {reason}": "Saved, but could not post the outcome: {reason}"
 }

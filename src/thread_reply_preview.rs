@@ -30,7 +30,9 @@ pub fn preview_of_message(msgtype: &MessageType, sender_id: &UserId, sender_name
 /// the Agent runtime's fixed fallback body is recognized as well.
 pub(crate) fn proposal_line(msgtype: &MessageType) -> Option<&'static str> {
     crate::event_preview::proposal_preview(&msgtype.data()).or_else(|| match msgtype {
-        MessageType::Notice(notice) if notice.body.starts_with("Memory proposal from ") => {
+        MessageType::Notice(notice)
+            if notice.body.starts_with("Memory proposal from ") || notice.body.contains(::hagency::room_memory::PROPOSAL_BODY_MARK) =>
+        {
             Some(crate::i18n::tr("Suggested a note for this room's memory"))
         }
         MessageType::Notice(notice) if notice.body.contains(" proposes ") && notice.body.contains("\nReason: ") => {
@@ -242,5 +244,10 @@ mod proposal_tests {
         let line = escaped_plain_line(&msgtype).unwrap();
         assert!(!line.contains("agt_") && !line.contains("Reason"), "{line}");
         assert_eq!(line, crate::i18n::tr("Suggested a note for this room's memory"));
+    }
+    #[test]
+    fn the_named_fallback_body_previews_as_the_same_line() {
+        let body = format!("demoup-claude{}Demo Monday\nReason: asked", ::hagency::room_memory::PROPOSAL_BODY_MARK);
+        assert_eq!(proposal_line(&MessageType::notice_plain(body)), Some(crate::i18n::tr("Suggested a note for this room's memory")));
     }
 }

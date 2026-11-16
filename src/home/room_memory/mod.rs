@@ -8,14 +8,18 @@ pub mod card;
 pub(crate) mod io;
 pub mod model;
 pub(crate) mod ops;
+pub mod outcome;
 pub(crate) mod server_state;
 pub mod people;
 pub mod panel;
 pub(crate) mod store;
+pub mod watch;
 #[cfg(test)]
 mod auto_tests;
 #[cfg(test)]
 mod hardening_tests;
+#[cfg(test)]
+mod outcome_tests;
 #[cfg(test)]
 mod tests;
 

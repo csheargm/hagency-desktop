@@ -4,6 +4,7 @@
 use super::io::{self, Loaded};
 use super::model::WriteError;
 use crate::home::room_memory::model::Write;
+use crate::home::room_memory::outcome::Announce;
 use crate::shared::popup_list::{PopupKind, enqueue_popup_notification};
 use crate::sliding_sync::{current_user_id, get_client, spawn_async_task};
 use makepad_widgets::Cx;
@@ -84,6 +85,10 @@ pub fn ensure_loaded(room_id: &RoomId) {
 
 /// Runs one write for `subject`, then reloads.
 pub fn submit(room_id: &RoomId, subject: &str, plan: Planner) {
+    submit_announced(room_id, subject, plan, None);
+}
+/// A write that, once saved, posts the visible outcome of a proposal.
+pub fn submit_announced(room_id: &RoomId, subject: &str, plan: Planner, announce: Option<Announce>) {
     let (Some(client), Some(owner)) = (get_client(), current_user_id()) else {
         return fail(room_id, crate::i18n::tr("Sign in to change team skills.").to_owned());
     };
@@ -101,6 +106,9 @@ pub fn submit(room_id: &RoomId, subject: &str, plan: Planner) {
             return;
         }
         lock().working.remove(&key);
+        if outcome.is_ok() {
+            crate::home::room_memory::ops::announce_saved(&client, &room_id, announce.as_ref()).await;
+        }
         match outcome {
             Ok(Some(loaded)) => {
                 lock().loaded.insert(room_id.clone(), loaded);

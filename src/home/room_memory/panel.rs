@@ -197,12 +197,7 @@ impl RoomMemoryPanel {
     }
     fn toggle_auto(&mut self, on: bool) {
         let Some(room) = self.room.clone() else { return };
-        if let Err(error) = super::auto::set(&room, store::me().as_deref(), on) {
-            let message = crate::i18n::format("Could not save the automatic memory setting: {reason}", &[("reason", error.to_string())]);
-            crate::shared::popup_list::enqueue_popup_notification(message, crate::shared::popup_list::PopupKind::Error, None);
-        }
-        // Pending cards of my own Agents in this room are accepted on their next sync.
-        Cx::post_action(store::MemoryChanged { room_id: room });
+        super::auto::switch(&room, on);
     }
 }
 

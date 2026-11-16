@@ -5,6 +5,7 @@
 use super::model::{self, Proposal};
 use super::ops;
 use crate::home::room_memory::model::{CardState, can_accept, can_dismiss, card_state};
+use crate::home::room_memory::outcome::{Announce, Kind, Origin};
 use crate::home::room_memory::store as memory_store;
 use makepad_widgets::*;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
@@ -25,6 +26,11 @@ script_mod! {
         skill_summary := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: (mod.widgets.RBX_FG_PRIMARY)}
         skill_preview := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: (mod.widgets.RBX_FG_SECONDARY)}
         skill_status := Label {visible: false width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: (mod.widgets.RBX_FG_SECONDARY)}
+        skill_decision := Label {
+            visible: false width: Fill height: Fit
+            text: #(crate::i18n::tr("Your decision (room moderators):")) i18n_text: "Your decision (room moderators):"
+            draw_text +: {color: (mod.widgets.RBX_FG_SECONDARY) text_style: theme.font_bold{font_size: (9 * mod.widgets.RINX_TEXT_SCALE)}}
+        }
         skill_buttons := View {width: Fill height: Fit flow: Right spacing: 8
             skill_accept := RobrixPositiveIconButton {
                 width: Fit height: 32 padding: Inset{left: 12 right: 12 top: 0 bottom: 0} icon_walk: Walk{width: 0 height: 0}
@@ -44,6 +50,9 @@ pub struct SkillProposalCard {
     pub view: View,
     #[rust]
     pub context: Option<(OwnedRoomId, Proposal)>,
+    /// The proposal message, for the outcome reply posted on Accept.
+    #[rust]
+    pub origin: Option<Origin>,
 }
 
 /// Dismissals share memory's local store under their own namespace.
@@ -95,6 +104,7 @@ impl SkillProposalCard {
         let status = status_text(&state, can_write);
         self.view.label(cx, ids!(skill_status)).set_visible(cx, status.is_some());
         self.view.label(cx, ids!(skill_status)).set_text(cx, status.as_deref().unwrap_or_default());
+        self.view.label(cx, ids!(skill_decision)).set_visible(cx, can_accept(&state, can_write));
         self.view.button(cx, ids!(skill_accept)).set_visible(cx, can_accept(&state, can_write));
         self.view.view(cx, ids!(skill_buttons)).set_visible(cx, can_dismiss(&state));
         self.view.redraw(cx);
@@ -102,10 +112,11 @@ impl SkillProposalCard {
     fn accept(&self) {
         let Some((room, proposal)) = self.context.clone() else { return };
         let id = proposal.id.clone();
-        ops::submit(&room, &id, Box::new(move |loaded| {
+        let announce = self.origin.clone().map(|origin| Announce { origin, kind: Kind::Skill, proposal: id.clone() });
+        ops::submit_announced(&room, &id, Box::new(move |loaded| {
             let existing = loaded.skills.iter().find(|s| s.name == proposal.skill.name);
             model::accept_plan(&proposal, existing, &loaded.me, &loaded.levels, loaded.storage)
-        }));
+        }), announce);
     }
 }
 
@@ -134,11 +145,12 @@ impl Widget for SkillProposalCard {
 
 impl SkillProposalCardRef {
     /// Shows the card for `proposal`, or hides it (`None`: not a skill card).
-    pub fn show(&self, cx: &mut Cx, room: &RoomId, proposal: Option<Proposal>) {
+    pub fn show(&self, cx: &mut Cx, room: &RoomId, proposal: Option<Proposal>, origin: Option<Origin>) {
         let Some(mut card) = self.borrow_mut() else { return };
         if proposal.is_some() {
             ops::ensure_loaded(room);
         }
+        card.origin = origin;
         card.context = proposal.map(|p| (room.to_owned(), p));
         card.sync(cx);
     }

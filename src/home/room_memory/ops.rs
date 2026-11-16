@@ -4,6 +4,7 @@
 //! Every failure is kept for the panel and shown as a popup.
 use super::io::{self, Loaded};
 use super::model::{Write, WriteError};
+use super::outcome::Announce;
 use super::store::{self, MemoryChanged, Progress};
 use crate::shared::popup_list::{PopupKind, enqueue_popup_notification};
 use crate::sliding_sync::{current_user_id, get_client, spawn_async_task};
@@ -63,6 +64,10 @@ pub fn ensure_loaded(room_id: &RoomId) {
 
 /// Runs one write for `subject` (an entry id, or a proposal id for a card).
 pub fn submit(room_id: &RoomId, subject: &str, plan: Planner) {
+    submit_announced(room_id, subject, plan, None);
+}
+/// A write that, once saved, posts the visible outcome of a proposal.
+pub fn submit_announced(room_id: &RoomId, subject: &str, plan: Planner, announce: Option<Announce>) {
     let (Some(client), Some(owner)) = (get_client(), current_user_id()) else {
         return fail(room_id, Some(subject), signed_out());
     };
@@ -78,11 +83,22 @@ pub fn submit(room_id: &RoomId, subject: &str, plan: Planner) {
         if current_user_id().as_ref() != Some(&owner) {
             return;
         }
+        if outcome.is_ok() {
+            announce_saved(&client, &room_id, announce.as_ref()).await;
+        }
         match outcome {
             Ok((ticket, reloaded)) => finish(&room_id, &subject, ticket, reloaded),
             Err(message) => fail(&room_id, Some(&subject), message),
         }
     });
+}
+
+/// The write is saved either way: a failed notice is a warning, not a failure.
+pub(crate) async fn announce_saved(client: &matrix_sdk::Client, room_id: &RoomId, announce: Option<&Announce>) {
+    let Some(announce) = announce else { return };
+    if let Err(message) = super::outcome::post(client, room_id, announce).await {
+        enqueue_popup_notification(message, PopupKind::Warning, None);
+    }
 }
 
 fn finish(room_id: &OwnedRoomId, subject: &str, ticket: u64, reloaded: Option<Loaded>) {
