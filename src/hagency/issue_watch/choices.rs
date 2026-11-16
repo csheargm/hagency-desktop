@@ -16,8 +16,8 @@ pub(crate) const MODE_LABELS: [&str; 4] = [
 /// the Agent push branches and open pull requests in the watched repository,
 /// from the watched Room, without a card; merges stay with the merge policy.
 pub(crate) const PUSH_LABELS: [&str; 2] = [
-    "Ask before each push or pull request",
-    "Let this Agent push branches and open pull requests here without asking",
+    "Ask before pushes and PRs",
+    "Push and open PRs freely",
 ];
 
 /// The one-line explanation under the mode choice.
