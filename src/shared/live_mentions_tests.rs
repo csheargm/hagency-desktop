@@ -96,3 +96,17 @@ fn own_agents_reads_only_this_owners_active_agents() {
     assert_eq!(names, vec!["reviewer", "_hagency_agt_1"]);
     assert!(own_agents(&listing, user_id!("@other:a.server")).is_empty());
 }
+
+/// Regression (dev room): "@anna-fixer remember: …" must offer the Agent and,
+/// once added, become a real mention instead of plain text.
+#[test]
+fn typed_agent_name_with_colon_is_offered_and_located_for_the_mention() {
+    let anna = OwnAgent { name: "anna-fixer".into(), puppet: user_id!("@_hagency_agt_af1:a.server").to_owned() };
+    let agents = vec![anna.clone()];
+    let text = "@anna-fixer remember: ship on Friday";
+    assert_eq!(agent_not_in_room(text, &members(), &agents), Some(&anna));
+    assert_eq!(agent_mention_range(text, &anna), Some(0..11));
+    assert_eq!(agent_mention_range("see `@anna-fixer` and @Anna-Fixer!", &anna), Some(22..33), "code spans are skipped");
+    assert_eq!(agent_mention_range("hi @_hagency_agt_af1 now", &anna), Some(3..20), "localpart works too");
+    assert_eq!(agent_mention_range("hi @anna", &anna), None);
+}

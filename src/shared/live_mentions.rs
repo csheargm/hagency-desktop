@@ -11,7 +11,7 @@ use std::ops::Range;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use serde_json::Value;
 use super::mention_text::mention_label;
-use super::plain_mentions::{mention_token, typed_tokens, unique_match, PlainMentionCandidate};
+use super::plain_mentions::{mention_token, typed_token_ranges, typed_tokens, unique_match, PlainMentionCandidate};
 
 /// A typed `@name` the composer should replace with a pill right now.
 #[derive(Debug, PartialEq, Eq)]
@@ -102,6 +102,15 @@ pub(super) fn agent_not_in_room<'a>(text: &str, members: &[PlainMentionCandidate
         let unique = hits.next().is_none();
         (unique && !members.iter().any(|m| m.user_id == agent.puppet)).then_some(agent)
     })
+}
+
+/// The typed `@name` (including `@`) that names `agent`, so the composer can
+/// turn it into a real mention once the hint added that Agent to the room.
+pub(super) fn agent_mention_range(text: &str, agent: &OwnAgent) -> Option<Range<usize>> {
+    let same = |name: &str, token: &str| name.trim().to_lowercase() == token.to_lowercase();
+    typed_token_ranges(text).into_iter()
+        .find(|range| same(&agent.name, &text[range.clone()]) || same(agent.puppet.localpart(), &text[range.clone()]))
+        .map(|range| range.start - 1..range.end)
 }
 
 #[cfg(test)]
