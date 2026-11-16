@@ -37,6 +37,12 @@ const LEAKS: &[(&str, &[&str])] = &[
     ("echo a.b.c.secretvalue", &["secretvalue"]),
     ("echo eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl", &["eyJzdWIiOi"]),
     ("echo abc_def-ghi.jkl0123456789x", &["jkl0123456789x"]),
+    // Re-review: attached headers and JSON bodies.
+    ("curl -H'Authorization: Bearer hunter2' https://x/", &["hunter2"]),
+    ("curl --header='Authorization: Bearer hunter2' https://x/", &["hunter2"]),
+    ("curl -HAuthorization:Bearer hunter2 https://x/", &["hunter2"]),
+    ("curl --data '{\"password\":\"hunter2\"}' https://x/", &["hunter2"]),
+    ("curl -d '{\"api_key\": \"two words\"}' https://x/", &["two", "words"]),
     // Earlier review_cases (dotted bearer tokens inside header values).
     ("curl -H 'Authorization: Bearer sk.secret1234567890abcd' https://api.example/", &["secret1234567890abcd"]),
     ("curl -H \"Authorization: Bearer eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl\" https://x/", &["eyJzdWIiOi"]),
@@ -58,6 +64,7 @@ fn every_review_bypass_is_hidden() {
 fn common_safe_commands_read_unchanged() {
     for text in ["mkdir -p src/bin", "cargo test -p hagency-progress", "ls -la && echo hello world",
         "npm run build | tee out.log", "sudo apt-get install -y graphviz", "git checkout -b fix/redact",
+        "git checkout release-2026-11-15-hotfix", "git push fork integration/demo-2026-11-14",
         "cat crates/hagency-client/native/hagency-progress/src/step.rs"] {
         assert_eq!(redact(text), text);
     }

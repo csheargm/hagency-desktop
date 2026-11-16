@@ -17,6 +17,8 @@ const KEY_PREFIXES: [&str; 12] =
 const MIN_BLOB_CHARS: usize = 24;
 /// An opaque run of letters, digits, dots, dashes and underscores at least this long is a key.
 const MIN_OPAQUE_CHARS: usize = 20;
+/// A long run must hold one unbroken part at least this long to be a key.
+const MIN_KEY_SEGMENT: usize = 12;
 /// A dotted token (`a.b.c`, JWT) at least this long whose last part is this long is a key.
 const MIN_DOTTED_CHARS: usize = 16;
 const MIN_DOTTED_TAIL: usize = 8;
@@ -56,7 +58,11 @@ fn key_shaped(word: &str) -> bool {
     if KEY_PREFIXES.iter().any(|p| core.starts_with(p) && core.len() >= p.len() + 8) {
         return true;
     }
-    let mixed = core.chars().any(|c| c.is_ascii_digit()) && core.chars().any(|c| c.is_ascii_alphabetic());
+    // Branch and file names split into short words (`release-2026-11-15-hotfix`); keys do not.
+    let longest = core.split(['/', '-', '_', '.', '+', '=']).map(str::len).max().unwrap_or(0);
+    let mixed = longest >= MIN_KEY_SEGMENT
+        && core.chars().any(|c| c.is_ascii_digit())
+        && core.chars().any(|c| c.is_ascii_alphabetic());
     let blob = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-');
     if core.len() >= MIN_BLOB_CHARS && mixed && core.chars().all(blob) && !core.contains("//") {
         return true;
@@ -114,6 +120,20 @@ fn header(word: &str) -> Option<(String, bool)> {
     let quote = word.chars().next().filter(|c| quotes(*c)).map(String::from).unwrap_or_default();
     Some((format!("{quote}{name}: {REDACTED}{quote}"), false))
 }
+/// Conservative fallback: a secret name inside a word followed by `:` or `=`
+/// (`-H'Authorization: x'`, `--header=X-Api-Key:x`, `{"password":"x"}`)
+/// hides the rest of the word, and the next word if nothing followed.
+fn embedded(word: &str) -> Option<(String, bool)> {
+    let lower = word.to_ascii_lowercase();
+    let cut = SECRET_NAMES.iter().filter_map(|n| {
+        let at = lower.find(n)? + n.len();
+        let name_end = at + lower[at..].find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))?;
+        let gap = lower[name_end..].find(|c: char| !(quotes(c) || c == ' '))?;
+        matches!(lower[name_end + gap..].chars().next(), Some(':' | '=')).then_some(name_end + gap + 1)
+    }).min()?;
+    let rest = unquoted(&word[cut..]).trim();
+    Some((format!("{}{REDACTED}", &word[..cut]), rest.is_empty() || scheme(rest)))
+}
 /// A credential flag of a program named earlier: `-p` alone hides the next
 /// word, `-phunter2` and `--user=a:b` hide the attached value.
 fn program_flag(word: &str, programs: &[String]) -> Option<(String, bool)> {
@@ -145,6 +165,9 @@ fn word(tok: &str, programs: &[String]) -> (String, bool) {
         return (clean, false);
     }
     if let Some(found) = assignment(tok).map(|s| (s, false)).or_else(|| header(tok)) {
+        return found;
+    }
+    if let Some(found) = embedded(tok) {
         return found;
     }
     if let Some(clean) = url(tok).filter(|_| !tok.contains(char::is_whitespace)) {
