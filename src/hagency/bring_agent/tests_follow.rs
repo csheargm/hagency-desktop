@@ -75,6 +75,19 @@ fn an_unreadable_file_fails_closed_to_asking() {
     std::fs::write(&path, b"{not json").unwrap();
     assert!(!Prefs::load(&path).joins_rooms("agt_any"), "corrupt means ask, never join silently");
     assert!(path.with_extension("json.corrupt").exists());
+    assert!(!Prefs::load(&path).claim_catch_up("agt_any").unwrap(), "corrupt never catches up");
+}
+
+#[test]
+fn an_agent_catches_up_once_and_it_persists() {
+    let path = temp_file("catch_up");
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.claim_catch_up("agt_new").unwrap());
+    assert!(!prefs.claim_catch_up("agt_new").unwrap());
+    prefs.save(&path).unwrap();
+    let mut back = Prefs::load(&path);
+    assert!(!back.claim_catch_up("agt_new").unwrap(), "restart does not catch up again");
+    assert!(back.claim_catch_up("agt_other").unwrap());
 }
 
 /// Review fix: a room not loaded yet when Joined arrives is retried, and the

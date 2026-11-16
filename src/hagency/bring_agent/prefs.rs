@@ -25,6 +25,9 @@ pub(crate) struct Prefs {
     /// one add (or one prompt) per Agent per room.
     #[serde(default)]
     handled: BTreeSet<String>,
+    /// Agent ids that already joined the owner's earlier rooms once.
+    #[serde(default)]
+    caught_up: BTreeSet<String>,
     #[serde(skip)]
     corrupt: bool,
 }
@@ -57,7 +60,7 @@ impl Prefs {
         Self { corrupt: true, ..Self::default() }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), corrupt: false };
+        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), corrupt: false };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -75,6 +78,13 @@ impl Prefs {
     }
     pub fn is_handled(&self, room_id: &str, agent_id: &str) -> bool {
         self.handled.contains(&pair(room_id, agent_id))
+    }
+    /// Records that this Agent caught up on earlier rooms; false when it already had.
+    /// A corrupt file never catches up (fail closed, like the setting).
+    pub fn claim_catch_up(&mut self, agent_id: &str) -> Result<bool, String> {
+        if self.corrupt || self.caught_up.contains(agent_id) { return Ok(false); }
+        if self.caught_up.len() >= MAX_HANDLED { return Err("too_many_room_choices".into()); }
+        Ok(self.caught_up.insert(agent_id.to_owned()))
     }
     /// Records the pair; false when it was already handled (nothing to do again).
     pub fn claim(&mut self, room_id: &str, agent_id: &str) -> Result<bool, String> {

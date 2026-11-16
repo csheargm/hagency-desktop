@@ -3,8 +3,10 @@
 //! Three entry points share one bind path (`Service::invite_agent_to_room`,
 //! the same one the room's Add agent picker and `/invite` use):
 //! - the Create agent dialog's "Add to rooms" checklist (`create_agent`);
-//! - rooms the owner creates with New room: the newest Agent joins at once
-//!   when its "Join rooms I join" setting is on;
+//! - rooms the owner creates with New room: every active Agent with its
+//!   "Join rooms I join" setting on joins at once;
+//! - an Agent that is new to this device (just created, or never caught up)
+//!   joins the group rooms its owner created before it existed, once;
 //! - group rooms the owner joins (accepted invite or join): every active
 //!   Agent with the setting on joins; one with it off gets a one-click prompt.
 //!
@@ -14,7 +16,7 @@ mod flow;
 mod prefs;
 mod prompt;
 mod retry;
-pub use flow::{bind_into_rooms, observe, owner_created_room};
+pub use flow::{bind_into_rooms, catch_up_agents, observe, owner_created_room};
 pub use prompt::{BringAgentAction, route as route_prompt, script_mod};
 
 use serde_json::Value;
@@ -44,11 +46,6 @@ pub(crate) fn active_agents_newest_first(listing: &Value) -> Vec<&Value> {
     rows
 }
 
-/// The owner's default Agent (`Command::Agents` listing): the newest active one.
-pub(crate) fn default_agent(listing: &Value) -> Option<AgentPick> {
-    active_agents_newest_first(listing).into_iter().next().map(agent_pick)
-}
-
 /// Every active Agent with an identity, newest first.
 pub(crate) fn active_agents(listing: &Value) -> Vec<AgentPick> {
     active_agents_newest_first(listing).into_iter().map(agent_pick).collect()
@@ -74,6 +71,12 @@ pub(crate) struct RoomFacts {
 /// Whether a room the owner just created gets the default Agent at once.
 pub(crate) fn should_auto_join(joins_rooms: bool, room: RoomFacts) -> bool {
     joins_rooms && room.can_invite && !room.space && !room.direct && !room.agent_present
+}
+
+/// Whether an Agent catching up joins this already-existing room: only rooms
+/// the owner created, once per pair, with the same limits as a new room.
+pub(crate) fn should_catch_up(joins_rooms: bool, handled: bool, owner_created: bool, room: RoomFacts) -> bool {
+    owner_created && !handled && should_auto_join(joins_rooms, room)
 }
 
 /// What happens to one Agent after its owner joins a room.
