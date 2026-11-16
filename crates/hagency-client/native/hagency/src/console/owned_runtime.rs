@@ -2947,7 +2947,8 @@ async fn send_encrypted_reply<T: Transport>(
     let device = e2ee::device(console, lease, config, cancel).await?;
     // The run card's final edit may already carry this answer: record the
     // card as the reply instead of posting the answer a second time.
-    let matrix_event_id = match run_controls::deliver_answer(&device, &record.dispatch, &execution, body).await? {
+    let carded = run_controls::deliver_answer(&device, &record.dispatch, &execution, body).await?;
+    let matrix_event_id = match carded.clone() {
         Some(card_event) => card_event,
         None => device.send_reply(&record.dispatch, body).await?,
     };
@@ -2975,6 +2976,9 @@ async fn send_encrypted_reply<T: Transport>(
         }
         Err(error) => return Err(error),
         Ok(_) => return Err(RuntimeError::Transport),
+    }
+    if carded.is_some() {
+        run_controls::answer_recorded(&device, &record.dispatch, &execution);
     }
     local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))
 }

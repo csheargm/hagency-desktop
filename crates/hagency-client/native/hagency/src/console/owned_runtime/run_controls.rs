@@ -19,6 +19,8 @@ const RECORD_BYTES: u64 = 64 * 1024;
 // an operation sent during the last native poll gets an exact outcome too.
 // This background grace never retains the native process or its work slot.
 const CLOSED_RECEIPT_GRACE_MS: i64 = 60_000;
+/// How long an answered card's record outlives its run: a week of reply retries.
+const ANSWERED_RECORD_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -731,6 +733,32 @@ async fn close_actions(
     Ok(!device.run_actions_pending(&record.card.room_id, &event))
 }
 
+fn delivered_marker(path: &Path) -> PathBuf {
+    path.with_extension("delivered")
+}
+/// An answered card's record is how `deliver_answer` finds the run's message.
+/// It stays until the server recorded that reply, or for a week at most.
+fn keeps_answer(path: &Path, record: &Record, at: i64) -> bool {
+    let marker = delivered_marker(path);
+    let delivered = marker.exists();
+    let keep = !record.card.answer.is_empty()
+        && !delivered
+        && at.saturating_sub(record.closed_at_ms.unwrap_or(i64::MAX)) < ANSWERED_RECORD_GRACE_MS;
+    if !keep && delivered {
+        let _ = std::fs::remove_file(marker); // best effort: a stale marker only frees the record early
+    }
+    keep
+}
+/// The server recorded the run card as this run's reply.
+pub(super) fn answer_recorded(device: &e2ee::AgentDevice, dispatch: &inbox::Dispatch, execution: &str) {
+    if let Some(id) = crate::agent_run_controls::personal_card_id(dispatch, execution) {
+        let path = directory(device).join(format!("{:x}.json", Sha256::digest(id.as_bytes())));
+        if path.exists() {
+            // Best effort: without it the record is kept until its week ends.
+            let _ = hagency_store::private::write_new(&delivered_marker(&path), b"1");
+        }
+    }
+}
 fn may_forget_closed_record(record: &Record, drained: bool, at: i64) -> bool {
     drained
         && !record.card.state.active()
@@ -756,8 +784,16 @@ pub(super) async fn deliver_answer(
         return Ok(None);
     }
     publish(device, &mut record).await.map_err(|()| RuntimeError::Transport)?;
-    // The flusher may forget a published record; saving here is best effort.
-    let _ = save(&path, &record);
+    // Merge only publication facts into the current record, so a receipt the
+    // flusher saved meanwhile (a newer revision) is never overwritten.
+    if let Ok(mut current) = read(&path)
+        && current.card.revision == record.card.revision
+        && current.published != record.published
+    {
+        current.event = record.event.clone();
+        current.published = record.published;
+        let _ = save(&path, &current); // best effort: publication is idempotent
+    }
     record.event.ok_or(RuntimeError::Transport).map(Some)
 }
 
@@ -828,7 +864,13 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
                 let actions = close_actions(&device, &path, &mut record).await;
                 if publish(&device, &mut record).await.is_ok() {
                     if may_forget_closed_record(&record, actions == Ok(true), wall_ms()) {
-                        forget(&path);
+                        // Settled. An answered card stays (without more passes)
+                        // until its reply is recorded, so a retry finds it.
+                        if keeps_answer(&path, &record, wall_ms()) {
+                            let _ = save(&path, &record);
+                        } else {
+                            forget(&path);
+                        }
                     } else {
                         let _ = save(&path, &record);
                         pending = true;
@@ -1011,6 +1053,14 @@ mod tests {
             "unavailable"
         );
         assert!(may_forget_closed_record(&record, true, later));
+        // An answered card stays until its reply is recorded, then goes.
+        assert!(!keeps_answer(&path, &record, later));
+        record.card.answer = "42".into();
+        assert!(keeps_answer(&path, &record, later));
+        assert!(!keeps_answer(&path, &record, ANSWERED_RECORD_GRACE_MS + 10));
+        hagency_store::private::write_new(&delivered_marker(&path), b"1").unwrap();
+        assert!(!keeps_answer(&path, &record, later));
+        assert!(!delivered_marker(&path).exists());
     }
     /// Runtime steps reach the card the room sees: the current step and the
     /// count ride in the card content, bounded, and the card still validates.

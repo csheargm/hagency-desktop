@@ -291,6 +291,7 @@ impl Card {
     pub(crate) fn fit_display(&mut self) {
         while self.action_receipts.len() > 1
             && (self.action_receipts.len() > MAX_ACTION_RECEIPTS
+                || !self.answer_edit_fits()
                 || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES))
         {
             self.action_receipts.remove(0);
@@ -299,6 +300,11 @@ impl Card {
         // Presentation is optional: never make an admitted turn fail for it.
         if serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_CARD_BYTES) {
             self.preview.clear();
+        }
+        // Late receipts on an answered card: the answer outranks them.
+        if !self.answer_edit_fits() {
+            self.action_receipts.clear();
+            self.last_action = None;
         }
     }
     pub fn from_content(content: &Value) -> Option<Self> {
@@ -316,15 +322,19 @@ impl Card {
             return false;
         }
         let previous = std::mem::replace(&mut self.answer, answer.to_owned());
-        // A Matrix event ID is short; this one stands in for the real one.
-        let edit = self.edit_content(&format!("${}", "e".repeat(64)));
-        if self.validate().is_err()
-            || edit.map_or(true, |v| serde_json::to_vec(&v).map_or(true, |b| b.len() > MAX_ANSWER_EDIT_BYTES))
-        {
+        if self.validate().is_err() || !self.answer_edit_fits() {
             self.answer = previous;
             return false;
         }
         true
+    }
+    /// Whether this card's edit stays inside the encrypted event budget.
+    fn answer_edit_fits(&self) -> bool {
+        // A Matrix event ID is short; this one stands in for the real one.
+        self.answer.is_empty()
+            || self.edit_content(&format!("${}", "e".repeat(64))).is_ok_and(|v| {
+                serde_json::to_vec(&v).is_ok_and(|b| b.len() <= MAX_ANSWER_EDIT_BYTES)
+            })
     }
     /// What a client without run-card support (Element) shows: the current
     /// step while it runs, then the answer with a one-line footer.
@@ -480,6 +490,13 @@ pub(crate) mod tests {
         assert!(escaped.set_answer(&"\\".repeat(MAX_ANSWER_BYTES / 4)));
         let encoded = serde_json::to_vec(&escaped.edit_content("$card").unwrap()).unwrap();
         assert!(encoded.len().div_ceil(3) * 4 < 60 * 1024, "the answer edit fits the encrypted envelope");
+        let mut late = escaped.clone();
+        assert!(late.set_answer(&"x".repeat(MAX_ANSWER_BYTES)));
+        for i in 0..100 {
+            late.record_receipt(Receipt { event_id: format!("${i}{}", "x".repeat(900)),
+                sender: "@requester:test".into(), outcome: "unavailable".into() });
+        }
+        assert!(late.answer_edit_fits(), "late receipts never push the answer edit over budget");
         card.thread_root = "$thread".into();
         let threaded = card.content();
         assert_eq!(threaded["m.relates_to"]["rel_type"], "m.thread");
