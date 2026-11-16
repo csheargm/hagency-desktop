@@ -58,7 +58,7 @@ async fn added_edited_deleted_skill_reaches_the_agent_in_both_storages() {
         let injected = index(&room).await.unwrap();
         assert!(injected.starts_with(INLINE_HEADER));
         assert!(injected.contains("> release-notes: How we do release-notes"));
-        assert!(!injected.contains("three bullets"), "the index never carries bodies");
+        assert!(injected.contains(">     Use three bullets."), "a short body is inlined as quoted data");
         assert_eq!(read(&room, "release-notes").await["body"], "Use three bullets.");
 
         room.write("@amy:x", &skill("release-notes", "Use five bullets.", 2), false);

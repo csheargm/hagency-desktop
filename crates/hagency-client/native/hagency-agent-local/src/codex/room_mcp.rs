@@ -242,11 +242,11 @@ fn text_result(reply: RoomReply) -> Value {
 /// Codex call metadata differs by path: a direct MCP call carries an object
 /// in `x-codex-turn-metadata` with equal `callId`/`itemId`, while code-mode
 /// (scripted) calls may send it as a JSON string, omit `threadId`, carry a
-/// distinct `itemId`, or name only the root turn. Accept every shape that
+/// or a distinct `itemId`. Accept every shape that
 /// still names one thread, one turn and one call; reject contradictions.
 struct Identity {
     thread: String,
-    turns: Vec<String>,
+    turn: String,
     call: String,
 }
 fn identity(params: &Value) -> std::result::Result<Identity, &'static str> {
@@ -270,18 +270,13 @@ fn identity(params: &Value) -> std::result::Result<Identity, &'static str> {
     if valid(&meta["threadId"]).is_some_and(|t| t != thread) {
         return Err("thread_mismatch");
     }
-    let mut turns: Vec<String> = [&source["turn_id"], &source["root_turn_id"], &meta["x-codex-root-turn-id"]]
-        .into_iter()
-        .filter_map(valid)
-        .collect();
-    turns.dedup();
-    if turns.is_empty() {
-        return Err("turn_missing");
-    }
+    // Only the call's own turn: a root-turn hint proves no ancestry, and
+    // descendants are admitted once observed on the stream (Turn::observe).
+    let turn = valid(&source["turn_id"]).ok_or("turn_missing")?;
     let call = valid(&meta["callId"])
         .or_else(|| valid(&meta["itemId"]))
         .ok_or("call_missing")?;
-    Ok(Identity { thread, turns, call })
+    Ok(Identity { thread, turn, call })
 }
 fn refused(reason: &str) -> Value {
     // The model sees why, so it can tell the owner instead of guessing.
@@ -303,11 +298,8 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
         let mut locked = state.lock().unwrap_or_else(|e| e.into_inner());
         match locked.as_mut() {
             None => Err("no_active_turn"),
-            Some(active) => who
-                .turns
-                .iter()
-                .map(|turn| (who.thread.clone(), turn.clone()))
-                .find(|key| active.turns.contains_key(key))
+            Some(active) => Some((who.thread.clone(), who.turn.clone()))
+                .filter(|key| active.turns.contains_key(key))
                 .ok_or("turn_not_active")
                 .and_then(|key| {
                     let cancel = active.turns[&key].subscribe();
