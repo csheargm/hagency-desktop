@@ -127,14 +127,11 @@ pub(super) fn gh_without_data<'a>(words: &[&'a str]) -> Vec<&'a str> {
 /// any `$`. Matched loosely on purpose; a false hit only asks the owner.
 const GH_FILTER_DENIED: [&str; 4] = ["env", "$", "input", "__loc__"];
 
-/// No filter value of a gh read names anything in [`GH_FILTER_DENIED`].
+/// No word of a gh read names anything in [`GH_FILTER_DENIED`]. Every word
+/// is checked, not only parsed filter values: pflag also takes attached and
+/// clustered short values (`-qenv.X`, `-cqenv.X`).
 fn gh_filters_safe(words: &[&str]) -> bool {
-    let kept = gh_without_data(words);
-    let mut kept = kept.iter().peekable();
     words.iter().all(|w| {
-        if kept.next_if(|k| **k == *w).is_some() && !w.starts_with("--jq=") && !w.starts_with("--template=") {
-            return true;
-        }
         let lower = w.to_ascii_lowercase();
         !GH_FILTER_DENIED.iter().any(|d| lower.contains(d))
     })
