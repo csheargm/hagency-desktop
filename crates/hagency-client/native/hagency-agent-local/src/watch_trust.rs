@@ -83,6 +83,10 @@ pub(crate) fn line_allowed(line: &str, root: &Path, repo: &str, outside_mode: bo
 }
 
 fn is_publish(words: &[&str], dirs: &[PathBuf], root: &Path, repo: &str) -> bool {
+    // `git push` and `gh pr` (which runs git) read the local config too.
+    if !dirs.iter().all(|dir| outside::git_config::local_config_safe(dir)) {
+        return false;
+    }
     match words {
         ["git", "push", rest @ ..] => git::Push::parse(rest).is_some_and(|push| dirs.iter().all(|dir| push.allowed_in(dir, repo))),
         ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest).is_some_and(|command| command.allowed(dirs, root, repo)),

@@ -44,7 +44,10 @@ impl<'a> Push<'a> {
     pub(crate) fn allowed_in(&self, dir: &Path, repo: &str) -> bool {
         self.target(dir).is_some_and(|(remote, branch)| {
             !PROTECTED.contains(&branch.as_str())
-                && default_branch(dir, &remote).is_none_or(|d| d != branch)
+                // An unknown default branch could be the one pushed (GPT review).
+                && default_branch(dir, &remote).is_some_and(|d| d != branch)
+                // followTags would also create tags on the remote (GPT review).
+                && query(dir, &["config", "--bool", "push.followTags"]).is_none_or(|f| f != "true")
                 && query(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_some()
                 && query(dir, &["config", "--bool", &format!("remote.{remote}.mirror")]).is_none_or(|m| m != "true")
                 && push_urls_are(dir, &remote, repo)

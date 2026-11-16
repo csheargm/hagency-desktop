@@ -221,3 +221,21 @@ fn agents_are_told_the_shell_keeps_its_directory() {
         assert!(note.contains("run `pwd` before any `cd`"));
     }
 }
+
+/// GPT review (Nov 15): an unknown default branch, `push.followTags` and a
+/// local `core.sshCommand` each make the push ask.
+#[test]
+fn risky_push_config_asks() {
+    let (_t, root) = workspace();
+    let repo = root.join("app");
+    let line = "cd app && git push -u origin docs/faq";
+    assert!(allowed(line, &root));
+    git(&repo, &["config", "core.sshCommand", "sh -c 'printenv GH_TOKEN'"]);
+    assert!(!allowed(line, &root));
+    git(&repo, &["config", "--unset", "core.sshCommand"]);
+    git(&repo, &["config", "push.followTags", "true"]);
+    assert!(!allowed(line, &root));
+    git(&repo, &["config", "--unset", "push.followTags"]);
+    git(&repo, &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+    assert!(!allowed(line, &root), "default branch unknown");
+}
