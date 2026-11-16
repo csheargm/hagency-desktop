@@ -1047,9 +1047,16 @@ async fn permission(
         return ToolAnswer::allowed(allowed);
     }
     match ledger.tool_disposition(&proposal, now()) {
-        Ok(ToolPolicy::AllowWithRules { .. }) => {
-            ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
-        }
+        Ok(ToolPolicy::AllowWithRules { .. }) => match ledger.authorize_tool(&proposal, now()) {
+            Err(_) => ToolAnswer::Deny,
+            // Push trust answered it: run exactly the command it checked.
+            Ok(_) => match ledger.push_trust_command(owner, &proposal) {
+                Ok(Some(command)) => ToolAnswer::AllowCommand(command),
+                Ok(None) => ToolAnswer::Allow,
+                // Cannot tell whether trust answered it: refuse rather than run unpinned.
+                Err(_) => ToolAnswer::Deny,
+            },
+        },
         Ok(ToolPolicy::AskOwner) => {
             let (pending, decision) = codex::pending_approval(proposal.clone());
             if !queue.offer(pending) {

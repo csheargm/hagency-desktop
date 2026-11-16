@@ -221,6 +221,11 @@ pub(crate) fn repo_name(text: &str) -> Option<&str> {
 /// `call` is the tool call's id; an allowed review is held under it and
 /// counts only after that call succeeds (an empty id never counts).
 pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, call: &str, now: i64, source: &impl PrSource) -> Option<bool> {
+    // A background call's launch result is not the command's outcome, so it
+    // must never settle a review, merge or ready (GPT review): the card asks.
+    if proposal.arguments["run_in_background"] == true {
+        return None;
+    }
     let command = parse_command(proposal)?;
     let agent = proposal.scope.agent.clone();
     if !ledger.auto_merge(&agent).ok()? {

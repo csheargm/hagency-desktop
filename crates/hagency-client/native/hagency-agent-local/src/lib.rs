@@ -1179,6 +1179,12 @@ impl Ledger {
         read().unwrap_or(false)
     }
     /// Read the effective current+dispatch-initial policy without consuming confirmation.
+    /// The pinned command owner push trust answers `proposal` with, if any:
+    /// the runtime must run it in place of the requested one.
+    pub fn push_trust_command(&self, owner: &str, proposal: &ToolProposal) -> Result<Option<String>> {
+        watch_trust::pinned(&self.db, proposal, owner)
+    }
+
     pub fn tool_disposition(&mut self, proposal: &ToolProposal, now: i64) -> Result<ToolPolicy> {
         let tx = self
             .db
@@ -1419,7 +1425,7 @@ fn validate_tool(
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
             // Issue-watch push trust (owner opt-in): publishing a branch or PR to the watched repository.
             // TODO(R4): lib.rs is over budget; move these approval shortcuts with the tool methods.
-            ToolPolicy::AskOwner if watch_trust::allows(db, proposal, approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE)? => {}
+            ToolPolicy::AskOwner if watch_trust::allows(db, proposal, owner)? => {}
             // "Always allow": the owner remembered exactly this request here.
             ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref(), now)? => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,

@@ -7,76 +7,69 @@ use std::path::Path;
 const PUSH_FLAGS: [&str; 4] = ["-u", "--set-upstream", "-q", "--quiet"];
 /// Branches that are never pushed under trust, whatever the remote says.
 const PROTECTED: [&str; 2] = ["main", "master"];
-/// `push.default` values that push only the current branch to its same-named
-/// remote branch (`matching` pushes every branch; `upstream` may target main).
-const SAFE_PUSH_DEFAULTS: [&str; 3] = ["", "simple", "current"];
+/// Config the trusted push runs with, whatever the checkout's config says by
+/// then: no hooks, no fsmonitor, no ssh command, no extra tags.
+const PINNED_CONFIG: [&str; 4] = ["core.hooksPath=/dev/null", "core.fsmonitor=false", "core.sshCommand=false", "push.followTags=false"];
 
-/// `git push [flags] [<remote> [<branch>]]`.
+/// `git push [flags] <remote> <branch>`: both named, so neither HEAD nor
+/// `push.default` decides what goes (GPT review: `git switch -c master &&
+/// git push origin HEAD`).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Push<'a> {
-    remote: Option<&'a str>,
-    branch: Option<&'a str>,
+    remote: &'a str,
+    branch: &'a str,
+    upstream: bool,
 }
 
 impl<'a> Push<'a> {
     pub(crate) fn parse(rest: &[&'a str]) -> Option<Self> {
         let mut positional = Vec::new();
+        let mut upstream = false;
         for word in rest {
             if word.starts_with('-') {
                 if !PUSH_FLAGS.contains(word) {
                     return None;
                 }
+                upstream |= matches!(*word, "-u" | "--set-upstream");
             } else {
                 positional.push(*word);
             }
         }
-        let (remote, branch) = match positional.as_slice() {
-            [] => (None, None),
-            [remote] => (Some(*remote), None),
-            [remote, branch] => (Some(*remote), Some(*branch)),
-            _ => return None,
-        };
-        (remote.is_none_or(remote_name) && branch.is_none_or(branch_name)).then_some(Self { remote, branch })
+        let [remote, branch] = positional.as_slice() else { return None };
+        (remote_name(remote) && branch_name(branch) && *branch != "HEAD").then_some(Self { remote, branch, upstream })
     }
 
-    /// The branch it pushes is a local, non-default branch, and every push URL
-    /// of the remote it pushes to is `repo` on github.com.
+    /// The branch is a local, non-default branch, and every push URL of the
+    /// remote is `repo` on github.com.
     pub(crate) fn allowed_in(&self, dir: &Path, repo: &str) -> bool {
-        self.target(dir).is_some_and(|(remote, branch)| {
-            !PROTECTED.contains(&branch.as_str())
-                // An unknown default branch could be the one pushed (GPT review).
-                && default_branch(dir, &remote).is_some_and(|d| d != branch)
-                // followTags would also create tags on the remote (GPT review).
-                && query(dir, &["config", "--bool", "push.followTags"]).is_none_or(|f| f != "true")
-                && query(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_some()
-                && query(dir, &["config", "--bool", &format!("remote.{remote}.mirror")]).is_none_or(|m| m != "true")
-                && push_urls_are(dir, &remote, repo)
-        })
+        !PROTECTED.contains(&self.branch)
+            // An unknown default branch could be the one pushed (GPT review).
+            && default_branch(dir, self.remote).is_some_and(|d| d != self.branch)
+            && query(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{}", self.branch)]).is_some()
+            && push_urls_are(dir, self.remote, repo)
     }
 
-    /// `(remote, branch)` git will push, or `None` when config could widen it.
-    fn target(&self, dir: &Path) -> Option<(String, String)> {
-        let current = || query(dir, &["symbolic-ref", "--short", "-q", "HEAD"]);
-        let branch = match self.branch {
-            Some("HEAD") | None => current()?,
-            Some(name) => name.to_owned(),
-        };
-        if self.branch.is_none() {
-            // No refspec: push.default and remote.<name>.push decide what goes.
-            let mode = query(dir, &["config", "push.default"]).unwrap_or_default();
-            if !SAFE_PUSH_DEFAULTS.contains(&mode.as_str()) {
-                return None;
-            }
+    /// The command that runs: the checked checkout, pinned config, the
+    /// watched repository's URL in place of the remote name and an explicit
+    /// refspec, so a config change after the check cannot redirect it.
+    pub(crate) fn pinned(&self, dir: &Path, repo: &str) -> String {
+        let mut words = vec!["git".to_owned(), "-C".to_owned(), dir.to_string_lossy().into_owned()];
+        for pin in PINNED_CONFIG {
+            words.extend(["-c".to_owned(), pin.to_owned()]);
         }
-        let remote = match self.remote {
-            Some(remote) => remote.to_owned(),
-            None => query(dir, &["for-each-ref", "--format=%(push:remotename)", &format!("refs/heads/{branch}")]).filter(|r| !r.is_empty())?,
-        };
-        if self.branch.is_none() && query(dir, &["config", "--get-all", &format!("remote.{remote}.push")]).is_some() {
-            return None;
+        words.push("push".to_owned());
+        if self.upstream {
+            words.push("--set-upstream".to_owned());
         }
-        Some((remote, branch))
+        words.push(format!("https://github.com/{repo}.git"));
+        words.push(format!("refs/heads/{0}:refs/heads/{0}", self.branch));
+        words.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
     }
+}
+
+/// `word` in single quotes, safe for any shell.
+fn quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// A plain remote name (never a URL or path).
@@ -109,19 +102,6 @@ fn push_urls_are(dir: &Path, remote: &str, repo: &str) -> bool {
         let urls: Vec<&str> = urls.lines().collect();
         !urls.is_empty() && urls.iter().all(|url| super::github_repo_of(url).is_some_and(|r| r.eq_ignore_ascii_case(repo)))
     })
-}
-
-/// Every fetch and push URL of every remote in `dir` is `repo` (so whichever
-/// remote `gh` picks as the base repository, it is `repo`).
-pub(crate) fn all_remotes_are(dir: &Path, repo: &str) -> bool {
-    let Some(remotes) = query(dir, &["remote"]) else { return false };
-    let remotes: Vec<&str> = remotes.lines().collect();
-    !remotes.is_empty()
-        && remotes.iter().all(|remote| {
-            push_urls_are(dir, remote, repo)
-                && query(dir, &["remote", "get-url", "--all", remote])
-                    .is_some_and(|urls| urls.lines().all(|url| super::github_repo_of(url).is_some_and(|r| r.eq_ignore_ascii_case(repo))))
-        })
 }
 
 /// Trimmed stdout of a successful read-only `git -C dir ...`; `None` on failure.

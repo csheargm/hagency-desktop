@@ -2,6 +2,7 @@ use super::*;
 use crate::issue_watch::{WatchMode, WatchSetting};
 use crate::{Ledger, Scope};
 use serde_json::json;
+use std::path::PathBuf;
 
 const OWNER: &str = "@alice:example.org";
 const ROOM: &str = "!watch:example.org";
@@ -26,69 +27,94 @@ fn workspace() -> (tempfile::TempDir, PathBuf) {
     (temp, root)
 }
 fn allowed(line: &str, root: &Path) -> bool {
-    line_allowed(line, root, REPO, true)
+    pinned_line(line, root, REPO).is_some()
 }
+const PUSH: &str = "git -C app push -u origin docs/faq";
 
 #[test]
-fn a_branch_push_and_draft_pr_in_the_watched_repo_are_allowed() {
+fn a_named_branch_push_and_named_repo_prs_are_allowed() {
     let (_t, root) = workspace();
+    let abs = format!("git -C {} push origin docs/faq", root.join("app").display());
     for line in [
-        "cd app && git push -u origin docs/faq",
-        "cd app && git push --set-upstream origin HEAD",
-        "cd app && git add README.md && git commit -m 'docs: faq' && git push -u origin docs/faq",
-        "cd app && gh pr create --draft --repo acme/app --title 'docs: FAQ' --body 'Fixes #27' --base main",
-        "cd app && gh pr create --draft --title t --body b",
-        "cd app && gh pr ready 28 --repo acme/app",
+        PUSH,
+        "git -C app push --set-upstream origin docs/faq",
+        abs.as_str(),
+        "gh pr create --draft --repo acme/app --title 'docs: FAQ' --body 'Fixes #27' --base main",
+        "gh pr ready 28 --repo acme/app",
         "gh pr ready https://github.com/acme/app/pull/28",
-        "cd app && gh pr edit 28 --add-label docs -R acme/app",
+        "gh pr edit 28 --add-label docs -R acme/app",
     ] {
         assert!(allowed(line, &root), "{line}");
     }
 }
 
+/// The pinned push names the checked checkout, the watched repository's URL
+/// and an explicit refspec, so config written after the check cannot steer it.
 #[test]
-fn a_bare_push_follows_the_current_branch_only_with_safe_config() {
+fn the_push_runs_pinned_to_the_checked_destination() {
     let (_t, root) = workspace();
-    let repo = root.join("app");
-    git(&repo, &["config", "branch.docs/faq.remote", "origin"]);
-    git(&repo, &["config", "branch.docs/faq.merge", "refs/heads/docs/faq"]);
-    assert!(allowed("cd app && git push", &root));
-    git(&repo, &["config", "push.default", "matching"]);
-    assert!(!allowed("cd app && git push", &root), "matching pushes every branch, main included");
-    git(&repo, &["config", "push.default", "simple"]);
-    git(&repo, &["config", "remote.origin.push", "refs/heads/*:refs/heads/*"]);
-    assert!(!allowed("cd app && git push", &root), "a configured refspec widens it");
+    let dir = root.join("app");
+    let pinned = pinned_line(PUSH, &root, REPO).unwrap();
+    let expected = format!(
+        "'git' '-C' '{}' '-c' 'core.hooksPath=/dev/null' '-c' 'core.fsmonitor=false' '-c' 'core.sshCommand=false' '-c' 'push.followTags=false' 'push' '--set-upstream' 'https://github.com/acme/app.git' 'refs/heads/docs/faq:refs/heads/docs/faq'",
+        dir.display()
+    );
+    assert_eq!(pinned, expected);
+    let gh = "gh pr ready 28 --repo acme/app";
+    assert_eq!(pinned_line(gh, &root, REPO).as_deref(), Some(gh));
+}
+
+/// GPT review P1s: branch switches before the push, the shell's persistent
+/// directory, chained steps and unnamed destinations all ask.
+#[test]
+fn chained_unnamed_or_directory_relative_publishing_asks() {
+    let (_t, root) = workspace();
+    for line in [
+        "git switch -c master && git -C app push origin HEAD",
+        "git -C app switch -c master && git -C app push origin master",
+        "git -C app commit -m x && git -C app push origin docs/faq",
+        "cd app && git push -u origin docs/faq",
+        "git push -u origin docs/faq",
+        "git -C app push",
+        "git -C app push origin",
+        "git -C app push origin HEAD",
+        "git -C app push origin HEAD:refs/heads/docs/faq",
+        "git -C /tmp push origin docs/faq",
+        "git -C ../ push origin docs/faq",
+        "cd app && gh pr create --draft --title t --body b",
+        "gh pr create --repo acme/app --title t --body-file body.md",
+        "gh pr ready 28 --repo acme/app && git -C app push origin docs/faq",
+    ] {
+        assert!(!allowed(line, &root), "{line}");
+    }
 }
 
 #[test]
 fn force_delete_tags_default_branch_and_refspecs_still_ask() {
     let (_t, root) = workspace();
     for line in [
-        "cd app && git push --force origin docs/faq",
-        "cd app && git push -f origin docs/faq",
-        "cd app && git push --force-with-lease origin docs/faq",
-        "cd app && git push --mirror origin",
-        "cd app && git push --delete origin docs/faq",
-        "cd app && git push origin :docs/faq",
-        "cd app && git push origin +docs/faq",
-        "cd app && git push --tags origin",
-        "cd app && git push origin main",
-        "cd app && git push origin master",
-        "cd app && git push origin docs/faq:main",
-        "cd app && git push origin refs/heads/docs/faq",
-        "cd app && git push origin no-such-branch",
-        "cd app && git push https://github.com/acme/app.git docs/faq",
-        "cd app && git push origin docs/faq || git push -f origin docs/faq",
-        "cd app && gh pr create --web",
-        "cd app && gh pr create -w",
-        "cd app && gh pr create --editor",
-        "cd app && gh pr create --repo acme/other --title t --body b",
-        "cd app && gh pr create --body-file /etc/passwd --title t",
-        "cd app && gh pr merge 28 --squash --repo acme/app",
+        "git -C app push --force origin docs/faq",
+        "git -C app push -f origin docs/faq",
+        "git -C app push --force-with-lease origin docs/faq",
+        "git -C app push --mirror origin",
+        "git -C app push --delete origin docs/faq",
+        "git -C app push origin :docs/faq",
+        "git -C app push origin +docs/faq",
+        "git -C app push --tags origin",
+        "git -C app push origin main",
+        "git -C app push origin master",
+        "git -C app push origin docs/faq:main",
+        "git -C app push origin refs/heads/docs/faq",
+        "git -C app push origin no-such-branch",
+        "git -C app push https://github.com/acme/app.git docs/faq",
+        "gh pr create --web --repo acme/app",
+        "gh pr create --editor --repo acme/app",
+        "gh pr create --repo acme/other --title t --body b",
+        "gh pr create --repo acme/app --body-file /etc/passwd --title t",
+        "gh pr merge 28 --squash --repo acme/app",
         "gh pr ready https://github.com/acme/other/pull/28",
-        "cd app && gh pr ready 28 --repo acme/other",
-        "cd app && git status",
-        "git -C app push origin docs/faq",
+        "gh pr ready 28 --repo acme/other",
+        "git -C app status",
     ] {
         assert!(!allowed(line, &root), "{line}");
     }
@@ -101,7 +127,7 @@ fn the_default_branch_named_by_the_remote_is_protected() {
     git(&repo, &["branch", "trunk"]);
     git(&repo, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
     git(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
-    assert!(!allowed("cd app && git push origin trunk", &root));
+    assert!(!allowed("git -C app push origin trunk", &root));
 }
 
 #[test]
@@ -109,24 +135,13 @@ fn a_remote_or_push_url_of_another_repository_asks() {
     let (_t, root) = workspace();
     let repo = root.join("app");
     git(&repo, &["remote", "add", "fork", "https://github.com/mallory/app.git"]);
-    assert!(!allowed("cd app && git push -u fork docs/faq", &root));
-    assert!(!allowed("cd app && gh pr create --title t --body b", &root), "gh could pick the fork: name --repo");
-    assert!(allowed("cd app && gh pr create --repo acme/app --title t --body b", &root));
+    assert!(!allowed("git -C app push -u fork docs/faq", &root));
     git(&repo, &["config", "--add", "remote.origin.pushurl", "https://github.com/mallory/app.git"]);
-    assert!(!allowed("cd app && git push -u origin docs/faq", &root), "the push URL is what counts");
+    assert!(!allowed(PUSH, &root), "the push URL is what counts");
     git(&repo, &["config", "--unset-all", "remote.origin.pushurl"]);
     git(&repo, &["config", "url.https://evil.example/.pushInsteadOf", "https://github.com/"]);
-    assert!(!allowed("cd app && git push -u origin docs/faq", &root), "insteadOf rewriting is seen");
-}
-
-#[test]
-fn in_workspace_steps_chain_only_in_outside_mode() {
-    let (_t, root) = workspace();
-    let line = "cd app && git commit -m x && git push -u origin docs/faq";
-    assert!(line_allowed(line, &root, REPO, true));
-    assert!(!line_allowed(line, &root, REPO, false), "ask mode: the commit would have asked");
-    assert!(line_allowed("cd app && git push -u origin docs/faq", &root, REPO, false));
-    assert!(!line_allowed("cd app && git push -u origin docs/faq", &root, "acme/other", true));
+    assert!(!allowed(PUSH, &root), "insteadOf rewriting is seen");
+    assert!(pinned_line(PUSH, &root, "acme/other").is_none());
 }
 
 #[test]
@@ -142,7 +157,7 @@ fn github_urls_are_read_in_every_form() {
 fn proposal(root: &Path, room: &str, tool: &str, risk: &str) -> ToolProposal {
     ToolProposal {
         scope: Scope { agent: "a".into(), binding: "b".into(), room: room.into(), requester: OWNER.into(), thread: "t".into() },
-        dispatch: "d".into(), tool: tool.into(), arguments: json!({"command": "cd app && git push -u origin docs/faq"}),
+        dispatch: "d".into(), tool: tool.into(), arguments: json!({"command": PUSH}),
         canonical_directory: root.to_string_lossy().into(), risk: risk.into(), policy_revision: [1, 1, 1], expires: 1,
     }
 }
@@ -157,18 +172,23 @@ fn only_the_watched_room_with_the_switch_on_skips_the_card() {
     let db = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(db.path().join("local.db"), OWNER).unwrap();
     let here = proposal(&root, ROOM, "claude.Bash", "high");
-    assert!(!allows(&ledger.db, &here, true).unwrap(), "no watch");
+    assert!(!allows(&ledger.db, &here, OWNER).unwrap(), "no watch");
     watch(&mut ledger, WatchMode::Trusted, false);
-    assert!(!allows(&ledger.db, &here, true).unwrap(), "switch off (the default)");
+    assert!(!allows(&ledger.db, &here, OWNER).unwrap(), "switch off (the default)");
     watch(&mut ledger, WatchMode::Trusted, true);
     assert!(ledger.issue_watch("a").unwrap().setting.push_trusted);
-    assert!(allows(&ledger.db, &here, true).unwrap());
-    assert!(!allows(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), true).unwrap(), "another Room");
-    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Bash", "permission_expansion"), true).unwrap());
-    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Write", "high"), true).unwrap());
+    assert!(allows(&ledger.db, &here, OWNER).unwrap());
+    assert!(!allows(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap(), "another Room");
+    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Bash", "permission_expansion"), OWNER).unwrap());
+    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "codex.command", "high"), OWNER).unwrap(), "Codex cannot pin the command");
+    assert!(!allows(&ledger.db, &here, "@bob:example.org").unwrap(), "a non-owner requester asks");
+    let mut background = proposal(&root, ROOM, "claude.Bash", "high");
+    background.arguments["run_in_background"] = json!(true);
+    assert!(!allows(&ledger.db, &background, OWNER).unwrap(), "a background call asks");
+    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Write", "high"), OWNER).unwrap());
     watch(&mut ledger, WatchMode::Off, true);
     assert!(!ledger.issue_watch("a").unwrap().setting.push_trusted, "switching the watch off drops the trust");
-    assert!(!allows(&ledger.db, &here, true).unwrap());
+    assert!(!allows(&ledger.db, &here, OWNER).unwrap());
 }
 
 /// The user flow: an Ask-owner Agent in the watched Room. The push and draft
@@ -198,14 +218,19 @@ fn ledger_skips_the_card_for_trusted_publishing_only() {
         p.expires = 100;
         p
     };
-    let push = make("cd app && git commit -m 'docs: faq' && git push -u origin docs/faq");
-    let pr = make("cd app && gh pr create --draft --repo acme/app --title t --body b");
-    let risky = [make("cd app && git push -f origin docs/faq"), make("cd app && git push origin main")];
+    let push = make(PUSH);
+    let pr = make("gh pr create --draft --repo acme/app --title t --body b");
+    let risky = [make("git -C app push -f origin docs/faq"), make("git -C app push origin main"), make("git switch -c master && git -C app push origin HEAD")];
     assert_eq!(ledger.tool_disposition(&push, 11).unwrap(), ToolPolicy::AskOwner, "trust off: asks");
     watch(&mut ledger, WatchMode::Trusted, true);
     for allowed in [&push, &pr] {
         assert!(matches!(ledger.tool_disposition(allowed, 11).unwrap(), ToolPolicy::AllowWithRules { .. }));
     }
+    let pinned = ledger.push_trust_command(OWNER, &push).unwrap().unwrap();
+    assert!(pinned.contains("'https://github.com/acme/app.git'"), "the runtime runs the pinned push: {pinned}");
+    let mut stranger = push.clone();
+    stranger.scope.requester = "@bob:example.org".into();
+    assert_eq!(ledger.push_trust_command(OWNER, &stranger).unwrap(), None);
     for risky in &risky {
         assert_eq!(ledger.tool_disposition(risky, 11).unwrap(), ToolPolicy::AskOwner);
         assert!(ledger.authorize_tool(risky, 11).is_err());
@@ -219,7 +244,11 @@ fn agents_are_told_the_shell_keeps_its_directory() {
     for note in [hagency_runtime::claude::AGENT_TOOLS_NOTE, hagency_runtime::AGENT_MERGE_NOTE] {
         assert!(note.contains("keeps its working directory between commands"));
         assert!(note.contains("run `pwd` before any `cd`"));
+        assert!(note.contains(hagency_runtime::TRUSTED_PUSH), "agents are told the one push shape trust answers");
     }
+    let (_t, root) = workspace();
+    let told = hagency_runtime::TRUSTED_PUSH.replace("<repo path>", "app").replace("<branch>", "docs/faq");
+    assert!(allowed(&told, &root), "the shape the note teaches is the shape trust allows");
 }
 
 /// GPT review (Nov 15): an unknown default branch, `push.followTags` and a
@@ -228,7 +257,7 @@ fn agents_are_told_the_shell_keeps_its_directory() {
 fn risky_push_config_asks() {
     let (_t, root) = workspace();
     let repo = root.join("app");
-    let line = "cd app && git push -u origin docs/faq";
+    let line = PUSH;
     assert!(allowed(line, &root));
     git(&repo, &["config", "core.sshCommand", "sh -c 'printenv GH_TOKEN'"]);
     assert!(!allowed(line, &root));

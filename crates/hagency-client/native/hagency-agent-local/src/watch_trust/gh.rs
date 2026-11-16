@@ -2,7 +2,7 @@
 //! matched exactly (no clusters, no `--web`/`--editor`, no host), and a
 //! file-reading option must name a file inside the workspace.
 use crate::outside;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// `gh pr create` options that take a value / take none.
 const CREATE_VALUED: [&str; 22] = [
@@ -80,15 +80,14 @@ impl<'a> PrCommand<'a> {
         Some(())
     }
 
-    /// Aimed at `repo` from every directory the line may be in, and every
-    /// body file stays in the workspace (`-` is stdin).
-    pub(crate) fn allowed(&self, dirs: &[PathBuf], root: &Path, repo: &str) -> bool {
+    /// Names `repo` (never left to the checkout's remotes or the shell's
+    /// directory), and every body file is `-` (stdin) or an absolute path
+    /// inside the workspace.
+    pub(crate) fn allowed(&self, root: &Path, repo: &str) -> bool {
         let named = self.url_repo.or(self.repo);
-        let aimed = match named {
-            Some(named) => named.eq_ignore_ascii_case(repo) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo)),
-            None => dirs.iter().all(|dir| super::git::all_remotes_are(dir, repo)),
-        };
-        aimed && self.files.iter().all(|file| *file == "-" || outside::inside_all(file, dirs, root))
+        let aimed = named.is_some_and(|named| named.eq_ignore_ascii_case(repo)) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo));
+        let roots = [root.to_path_buf()];
+        aimed && self.files.iter().all(|file| *file == "-" || (Path::new(file).is_absolute() && outside::inside_all(file, &roots, root)))
     }
 }
 
