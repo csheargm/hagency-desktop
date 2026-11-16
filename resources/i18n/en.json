@@ -3179,7 +3179,7 @@
   "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.": "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.",
   "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.": "Every tool in every directory is full trust. Choose Full trust (unrestricted) instead.",
   "Issue watching": "Issue watching",
-  "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub.": "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub.",
+  "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules.": "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules.",
   "Repository": "Repository",
   "Save issue watching": "Save issue watching",
   "Could not save issue watching: {error}": "Could not save issue watching: {error}",

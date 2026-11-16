@@ -18,7 +18,7 @@ script_mod! {
     mod.widgets.IssueWatchSection = #(IssueWatchSection::register_widget(vm)) {
         width: Fill height: Fit flow: Down spacing: 8
         Text {text: #(crate::i18n::tr("Issue watching")) i18n_text: "Issue watching" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
-        Muted {text: #(crate::i18n::tr("New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub.")) i18n_text: "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply; nothing is merged or written to GitHub."}
+        Muted {text: #(crate::i18n::tr("New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules.")) i18n_text: "New GitHub issues are posted to the chosen Room as a request to this Agent. Its normal approvals apply unless you allow pushes below; merges follow the repository's rules."}
         watch_mode := Select {labels: ["Off"]}
         watch_hint := Muted {}
         Text {text: #(crate::i18n::tr("Repository")) i18n_text: "Repository"}
