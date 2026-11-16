@@ -6,17 +6,29 @@
 /// What a removed secret reads as.
 pub const REDACTED: &str = "[redacted]";
 /// Names that mark the value after them as secret.
-const SECRET_NAMES: [&str; 9] =
-    ["token", "secret", "passw", "pwd", "apikey", "api_key", "api-key", "auth", "credential"];
-/// Prefixes of well-known credentials (OpenAI, Anthropic, GitHub, Slack, AWS, JWT).
-const KEY_PREFIXES: [&str; 9] =
-    ["sk-", "sk_", "ghp_", "gho_", "ghs_", "github_pat_", "xox", "AKIA", "eyJ"];
-/// A run of key-like characters at least this long is treated as a key.
+const SECRET_NAMES: [&str; 10] =
+    ["token", "secret", "passw", "pwd", "apikey", "api_key", "api-key", "auth", "credential", "cookie"];
+/// Words that announce a credential right after them (`Bearer x`, `Basic x`).
+const AUTH_SCHEMES: [&str; 4] = ["bearer", "basic", "token", "digest"];
+/// Prefixes of well-known credentials (OpenAI, Anthropic, GitHub, GitLab, Slack, AWS, Google, JWT).
+const KEY_PREFIXES: [&str; 12] =
+    ["sk-", "sk_", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "xox", "AKIA", "AIza", "npm_", "eyJ"];
+/// A run of base64/hex characters at least this long is treated as a key.
 const MIN_BLOB_CHARS: usize = 24;
-/// Short flags that take a password in these programs only (`-p` is a port or
-/// a package elsewhere): `mysql -p secret`, `curl -u user:pass`.
-const SECRET_SHORT_FLAGS: [(&str, &str); 6] =
-    [("mysql", "-p"), ("mysqldump", "-p"), ("mariadb", "-p"), ("sshpass", "-p"), ("curl", "-u"), ("wget", "--password")];
+/// An opaque run of letters, digits, dots, dashes and underscores at least this long is a key.
+const MIN_OPAQUE_CHARS: usize = 20;
+/// A dotted token (`a.b.c`, JWT) at least this long whose last part is this long is a key.
+const MIN_DOTTED_CHARS: usize = 16;
+const MIN_DOTTED_TAIL: usize = 8;
+/// Flags that take a credential in these programs only (`-p` is a port or a
+/// package elsewhere). The program may appear anywhere earlier in the same
+/// command, so wrappers (`sudo`, `env X=1`, `nice`, `time`, `xargs`) still count.
+const SECRET_PROGRAM_FLAGS: [(&str, &str); 10] = [
+    ("mysql", "-p"), ("mysqldump", "-p"), ("mariadb", "-p"), ("sshpass", "-p"), ("curl", "-u"),
+    ("curl", "-U"), ("curl", "--user"), ("curl", "--proxy-user"), ("wget", "--user"), ("wget", "--password"),
+];
+/// Tokens that start a new command, so earlier programs stop applying.
+const SEPARATORS: [&str; 5] = ["|", "||", "&&", ";", "&"];
 
 fn secret_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
@@ -25,18 +37,37 @@ fn secret_name(name: &str) -> bool {
 fn quotes(c: char) -> bool {
     matches!(c, '\'' | '"' | '`')
 }
-/// A credential-shaped word: a known key prefix, or a long base64/hex run.
+fn unquoted(word: &str) -> &str {
+    word.trim_matches(quotes)
+}
+fn scheme(word: &str) -> bool {
+    AUTH_SCHEMES.contains(&unquoted(word).to_ascii_lowercase().as_str())
+}
+/// `name.ext` with a short alphabetic extension reads as a file, not a key.
+fn file_like(core: &str) -> bool {
+    core.rsplit_once('.').is_some_and(|(stem, ext)| {
+        (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphabetic()) && !stem.contains('.')
+    })
+}
+/// A credential-shaped word: a known prefix, a long base64/hex run, a long
+/// opaque token, or a dotted token such as a JWT.
 fn key_shaped(word: &str) -> bool {
     let core = word.trim_matches(|c: char| quotes(c) || matches!(c, ',' | ';' | ')' | '('));
     if KEY_PREFIXES.iter().any(|p| core.starts_with(p) && core.len() >= p.len() + 8) {
         return true;
     }
-    let keyish = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-');
-    core.len() >= MIN_BLOB_CHARS
-        && core.chars().all(keyish)
-        && core.chars().any(|c| c.is_ascii_digit())
-        && core.chars().any(|c| c.is_ascii_alphabetic())
-        && !core.contains("//")
+    let mixed = core.chars().any(|c| c.is_ascii_digit()) && core.chars().any(|c| c.is_ascii_alphabetic());
+    let blob = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-');
+    if core.len() >= MIN_BLOB_CHARS && mixed && core.chars().all(blob) && !core.contains("//") {
+        return true;
+    }
+    let opaque = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    if !core.chars().all(opaque) {
+        return false;
+    }
+    let tail = core.rsplit('.').next().unwrap_or("");
+    let dotted = core.matches('.').count() >= 2 && core.len() >= MIN_DOTTED_CHARS && tail.len() >= MIN_DOTTED_TAIL;
+    dotted || (core.len() >= MIN_OPAQUE_CHARS && mixed && !file_like(core))
 }
 /// `https://user:pass@host/p?q=1#f` -> `https://[redacted]@host/p?[redacted]`.
 fn url(word: &str) -> Option<String> {
@@ -67,41 +98,129 @@ fn assignment(word: &str) -> Option<String> {
     let bare = name.trim_start_matches(|c: char| c == '-' || quotes(c));
     (secret_name(bare) && !bare.is_empty()).then(|| format!("{name}={REDACTED}"))
 }
-/// Whether the word makes the next one secret (`Bearer x`, `--token x`, `Authorization: x`).
-fn marks_next(word: &str, first: &str) -> bool {
-    let bare = word.trim_matches(quotes).to_ascii_lowercase();
-    if matches!(bare.as_str(), "bearer" | "basic" | "token") {
-        return true;
+/// `X-Api-Key:v`, `'Authorization: Bearer v'`: everything after the colon is
+/// hidden. Returns the shown word and whether the next word is secret too
+/// (the value was empty or only a scheme such as `Authorization:Basic`).
+fn header(word: &str) -> Option<(String, bool)> {
+    let (name, value) = unquoted(word).split_once(':')?;
+    let header_chars = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
+    if name.is_empty() || !name.chars().all(header_chars) || !secret_name(name) {
+        return None;
     }
-    if let Some(name) = bare.strip_suffix(':') {
-        return secret_name(name);
+    let value = value.trim();
+    if value.is_empty() || scheme(value) {
+        return Some((word.to_owned(), true));
     }
-    if let Some(flag) = bare.strip_prefix("--") {
-        return secret_name(flag) && !flag.contains('=');
+    let quote = word.chars().next().filter(|c| quotes(*c)).map(String::from).unwrap_or_default();
+    Some((format!("{quote}{name}: {REDACTED}{quote}"), false))
+}
+/// A credential flag of a program named earlier: `-p` alone hides the next
+/// word, `-phunter2` and `--user=a:b` hide the attached value.
+fn program_flag(word: &str, programs: &[String]) -> Option<(String, bool)> {
+    let flags = SECRET_PROGRAM_FLAGS.iter().filter(|(p, _)| programs.iter().any(|q| q == p));
+    for (_, flag) in flags {
+        if word == *flag {
+            return Some((word.to_owned(), true));
+        }
+        let Some(rest) = word.strip_prefix(flag) else { continue };
+        if !flag.starts_with("--") || rest.starts_with('=') {
+            let joint = if flag.starts_with("--") { "=" } else { "" };
+            return Some((format!("{flag}{joint}{REDACTED}"), false));
+        }
     }
-    let program = first.rsplit('/').next().unwrap_or(first);
-    SECRET_SHORT_FLAGS.iter().any(|(p, f)| *p == program && *f == bare)
+    None
+}
+/// One word as shown, and whether the word after it is secret.
+fn word(tok: &str, programs: &[String]) -> (String, bool) {
+    if let Some(found) = program_flag(tok, programs) {
+        return found;
+    }
+    let bare = unquoted(tok).to_ascii_lowercase();
+    if scheme(tok) || bare.strip_prefix("--").is_some_and(|f| secret_name(f) && !f.contains('=')) {
+        return (tok.to_owned(), true);
+    }
+    // A bare URL (no `NAME=` before it, no spaces) keeps its host and path.
+    let lone_url = !tok.contains(char::is_whitespace) && tok.split("://").next().is_some_and(|s| !s.contains('='));
+    if let Some(clean) = url(tok).filter(|_| lone_url) {
+        return (clean, false);
+    }
+    if let Some(found) = assignment(tok).map(|s| (s, false)).or_else(|| header(tok)) {
+        return found;
+    }
+    if let Some(clean) = url(tok).filter(|_| !tok.contains(char::is_whitespace)) {
+        return (clean, false);
+    }
+    if key_shaped(tok) {
+        return (REDACTED.to_owned(), false);
+    }
+    match tok.chars().next() {
+        // A quoted span such as `sh -c "curl -u a:b x"` is scrubbed as its own command.
+        Some(q) if quotes(q) && tok.contains(char::is_whitespace) => (format!("{q}{}{q}", redact(unquoted(tok))), false),
+        _ => (tok.to_owned(), false),
+    }
+}
+/// Words split on whitespace outside quotes; a quoted span stays one word,
+/// and an unclosed quote runs to the end, so hiding it hides everything after.
+fn words(text: &str) -> Vec<String> {
+    let (mut out, mut cur, mut open) = (Vec::new(), String::new(), None);
+    for c in text.chars() {
+        match open {
+            Some(q) => {
+                cur.push(c);
+                if c == q {
+                    open = None;
+                }
+            }
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            None => {
+                open = Some(c).filter(|c| quotes(*c));
+                cur.push(c);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
-/// The text with every secret replaced by [`REDACTED`]; whitespace is folded.
+/// The text with every secret replaced by [`REDACTED`]; whitespace between
+/// words is folded. A secret flag or header hides its whole (quoted) value.
 pub fn redact(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let first = words.first().copied().unwrap_or("");
-    let mut out = Vec::with_capacity(words.len());
+    let mut programs: Vec<String> = Vec::new();
     let mut hide_next = false;
-    for word in &words {
-        let shown = if std::mem::take(&mut hide_next) || key_shaped(word) {
-            REDACTED.to_owned()
-        } else if let Some(clean) = url(word).or_else(|| assignment(word)) {
-            clean
-        } else {
-            word.to_string()
-        };
-        hide_next = marks_next(word, first);
+    let mut out = Vec::new();
+    for tok in words(text) {
+        if std::mem::take(&mut hide_next) {
+            hide_next = scheme(&tok);
+            out.push(REDACTED.to_owned());
+            continue;
+        }
+        if SEPARATORS.contains(&tok.as_str()) {
+            programs.clear();
+            out.push(tok);
+            continue;
+        }
+        let (shown, next) = word(&tok, &programs);
+        hide_next = next;
+        if !tok.starts_with('-') && !tok.contains('=') {
+            programs.push(unquoted(&tok).rsplit('/').next().unwrap_or("").to_owned());
+        }
+        if tok.ends_with(';') {
+            programs.clear();
+        }
         out.push(shown);
     }
     out.join(" ")
 }
+
+#[cfg(test)]
+#[path = "redact_cases.rs"]
+mod adversarial;
 
 #[cfg(test)]
 mod tests {
