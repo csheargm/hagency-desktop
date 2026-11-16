@@ -136,7 +136,6 @@ impl LoginScreen {
                 _ => {}
             }
         }
-        self.view.button(cx, ids!(github_login_button)).set_enabled(cx, !self.login_pending);
     }
 
     fn send_recovery(&mut self, cx: &mut Cx) {
