@@ -1,6 +1,8 @@
 //! A live step in plain words for the run card ("running gh pr create",
-//! "reading src/main.rs"). Presentation only: a step carries no authority,
-//! is never persisted as task truth, and a lost step never changes the run.
+//! "reading src/main.rs"). Presentation only: a step carries no authority and
+//! a lost step never changes the run. It IS shown to the room and kept in the
+//! run card record and room history, so every detail is passed through
+//! [`crate::redact`] before it is shortened.
 //! Ported from the original Hagency demo (agent-local `progress.rs`); the
 //! verbs follow [`crate::Verb::for_tool`] so the summary and the card agree.
 use serde_json::Value;
@@ -8,9 +10,10 @@ use serde_json::Value;
 /// Longest detail (file, pattern, command) shown in one step.
 pub const MAX_STEP_DETAIL_CHARS: usize = 60;
 
-/// First line, trimmed, at most [`MAX_STEP_DETAIL_CHARS`] characters.
+/// First line, secrets redacted, at most [`MAX_STEP_DETAIL_CHARS`] characters.
 fn short(text: &str) -> String {
-    let line = text.trim().lines().next().unwrap_or("").trim();
+    let line = crate::redact(text.trim().lines().next().unwrap_or(""));
+    let line = line.as_str();
     if line.chars().count() <= MAX_STEP_DETAIL_CHARS {
         return line.to_owned();
     }
@@ -113,5 +116,19 @@ mod tests {
         let item = json!({"type": "fileChange", "changes": [{"kind": "add", "path": "a/b/c.md"}]});
         assert_eq!(codex_item_step(&item).as_deref(), Some("writing b/c.md"));
         assert_eq!(codex_item_step(&json!({"type": "agentMessage"})), None);
+    }
+    /// Regression: a step published the start of a command with its token.
+    #[test]
+    fn steps_never_carry_credentials() {
+        let bash = json!({"command": "curl -H 'Authorization: Bearer sk-live1234567890abcdef' https://api.x/"});
+        let step = claude_tool_step("Bash", &bash);
+        assert!(step.starts_with("running curl") && !step.contains("sk-live"), "{step}");
+        let fetch = claude_tool_step("WebFetch", &json!({"url": "https://x.io/cb?access_token=hunter2"}));
+        assert_eq!(fetch, format!("fetching https://x.io/cb?{}", crate::REDACTED));
+        let codex = codex_item_step(&json!({"type": "commandExecution", "command": "bash -lc 'GH_TOKEN=hunter2 gh pr create'"})).unwrap();
+        assert!(!codex.contains("hunter2"), "{codex}");
+        let grep = claude_tool_step("Grep", &json!({"pattern": "ghp_abcdefghijklmnopqrstu"}));
+        assert!(!grep.contains("ghp_"), "{grep}");
+        assert!(command_step(&format!("echo {}", "word ".repeat(100))).chars().count() <= MAX_STEP_DETAIL_CHARS + 8);
     }
 }

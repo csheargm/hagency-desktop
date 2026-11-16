@@ -43,7 +43,7 @@ mod tests {
     fn status_of_message(data: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
         let card = data.get(MSGTYPE)?;
         let state = serde_json::from_value(card.get("state")?.clone()).ok()?;
-        let progress = card.get("progress").and_then(|p| serde_json::from_value(p.clone()).ok());
+        let progress = data.get(::hagency::agent_run_controls::PROGRESS_KEY).and_then(|p| serde_json::from_value(p.clone()).ok());
         Some(status_text(state, progress.as_ref()))
     }
 
@@ -51,17 +51,26 @@ mod tests {
     /// summary once it is done; a run without steps keeps the upstream words.
     #[test]
     fn a_run_shows_its_current_step_then_how_long_it_took() {
-        let working = serde_json::json!({"im.hagency.agent_run":{"state":"running",
-            "progress":{"step":"running gh pr create","steps":8}}});
+        let working = serde_json::json!({"im.hagency.agent_run":{"state":"running"},
+            "im.hagency.agent_run.progress":{"step":"running gh pr create","steps":8}});
         let status = status_of_message(working.as_object().unwrap()).unwrap();
         assert!(status.ends_with("running gh pr create"), "{status}");
-        let done = serde_json::json!({"im.hagency.agent_run":{"state":"completed",
-            "progress":{"steps":9,"elapsedSecs":41}}});
+        let done = serde_json::json!({"im.hagency.agent_run":{"state":"completed"},
+            "im.hagency.agent_run.progress":{"steps":9,"elapsedSecs":41}});
         assert_eq!(status_of_message(done.as_object().unwrap()).unwrap(),
             crate::i18n::tr("Done in {s} s · {n} steps").replace("{s}", "41").replace("{n}", "9"));
         assert_eq!(status_text(State::Completed, Some(&Progress { step: String::new(), steps: 1, elapsed_secs: Some(0) })),
             crate::i18n::tr("Done in {s} s · 1 step").replace("{s}", "1"));
         assert_eq!(status_text(State::Running, None), status_label(State::Running));
+    }
+    /// Regression: the running label had no catalog entry, so Chinese fell back to English.
+    #[test]
+    fn every_run_state_has_a_chinese_label() {
+        use ::hagency::agent_run_controls::State::*;
+        for state in [Running, Stopping, Completed, Interrupted, Failed, Unknown] {
+            let key = state.english_status();
+            assert_ne!(text_for(Language::Chinese, key), key, "{key} has no Chinese text");
+        }
     }
     #[test]
     fn progress_words_are_english_keys_with_a_chinese_translation() {

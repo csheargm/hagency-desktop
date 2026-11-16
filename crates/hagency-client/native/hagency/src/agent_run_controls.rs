@@ -8,6 +8,11 @@ use sha2::{Digest, Sha256};
 pub const MSGTYPE: &str = "im.hagency.agent_run";
 pub const ACTION_EVENT: &str = "im.hagency.agent_run.action";
 pub const VERSION: u64 = 1;
+/// Where a run card's live step and summary travel: beside the card, not in
+/// it. The card is a closed schema (`deny_unknown_fields`), so a field inside
+/// it would make every earlier desktop drop the card; a sibling content key is
+/// ignored by them and keeps the card at version 1.
+pub const PROGRESS_KEY: &str = "im.hagency.agent_run.progress";
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
 pub const MAX_ACTION_RECEIPTS: usize = 64;
 // Edits carry both the outer card and m.new_content. Keep enough room for
@@ -87,8 +92,9 @@ pub struct Card {
     pub last_action: Option<Receipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_receipts: Vec<Receipt>,
-    /// Live step and, once finished, how long the run took (presentation only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Live step and, once finished, how long the run took (presentation
+    /// only). Sent under [`PROGRESS_KEY`], never inside the card object.
+    #[serde(skip)]
     pub progress: Option<Progress>,
 }
 // TODO(R4): agent_run_controls.rs is over budget; split Card display (preview, progress) out.
@@ -276,7 +282,9 @@ impl Card {
         if content["msgtype"] != MSGTYPE {
             return None;
         }
-        let card: Self = serde_json::from_value(content[MSGTYPE].clone()).ok()?;
+        let mut card: Self = serde_json::from_value(content[MSGTYPE].clone()).ok()?;
+        // Presentation only: a malformed progress is dropped, not the card.
+        card.progress = content.get(PROGRESS_KEY).and_then(|p| serde_json::from_value(p.clone()).ok());
         card.validate().ok()?;
         Some(card)
     }
@@ -287,16 +295,22 @@ impl Card {
         } else {
             &self.event_id
         };
-        json!({"msgtype":MSGTYPE,"body":body,MSGTYPE:self,"m.relates_to":{"rel_type":"m.thread","event_id":root,"is_falling_back":true,"m.in_reply_to":{"event_id":self.event_id}}})
+        let mut content = json!({"msgtype":MSGTYPE,"body":body,MSGTYPE:self,"m.relates_to":{"rel_type":"m.thread","event_id":root,"is_falling_back":true,"m.in_reply_to":{"event_id":self.event_id}}});
+        if let Some(progress) = &self.progress {
+            content[PROGRESS_KEY] = json!(progress);
+        }
+        content
     }
     pub fn edit_content(&self, card_event: &str) -> Result<Value, &'static str> {
         if !event(card_event) {
             return Err("invalid_run_event");
         }
         let content = self.content();
-        Ok(
-            json!({"msgtype":MSGTYPE,"body":content["body"],MSGTYPE:self,"m.new_content":content,"m.relates_to":{"rel_type":"m.replace","event_id":card_event}}),
-        )
+        let mut edit = json!({"msgtype":MSGTYPE,"body":content["body"],MSGTYPE:self,"m.new_content":content,"m.relates_to":{"rel_type":"m.replace","event_id":card_event}});
+        if let Some(progress) = &self.progress {
+            edit[PROGRESS_KEY] = json!(progress);
+        }
+        Ok(edit)
     }
     pub fn permits(&self, sender: &str, action: &Action) -> bool {
         self.state == State::Running
@@ -390,6 +404,23 @@ pub(crate) mod tests {
         assert_eq!(card.content()["body"], "Working… you can add instructions or stop this run");
         card.state = State::Completed;
         assert_eq!(card.content()["body"], "Done");
+    }
+    /// Regression: progress inside the closed card made earlier desktops
+    /// (deny_unknown_fields, version 1) reject every live card update.
+    #[test]
+    fn progress_rides_beside_the_card_so_earlier_desktops_still_parse_it() {
+        let mut card = card();
+        card.progress = Some(Progress { step: "running gh pr create".into(), steps: 3, elapsed_secs: None });
+        let content = card.content();
+        assert!(content[MSGTYPE].get("progress").is_none(), "{content}");
+        assert_eq!(content[PROGRESS_KEY]["step"], "running gh pr create");
+        // The card object alone still parses: the schema an earlier desktop has.
+        let alone = json!({"msgtype":MSGTYPE,MSGTYPE:content[MSGTYPE].clone()});
+        assert_eq!(Card::from_content(&alone).unwrap().progress, None);
+        assert_eq!(Card::from_content(&content).unwrap(), card);
+        let edit = card.edit_content("$card:x").unwrap();
+        assert_eq!(edit[PROGRESS_KEY]["steps"], 3);
+        assert_eq!(edit["m.new_content"][PROGRESS_KEY]["steps"], 3);
     }
     #[test]
     fn receipt_history_keeps_card_edits_within_the_wire_budget() {

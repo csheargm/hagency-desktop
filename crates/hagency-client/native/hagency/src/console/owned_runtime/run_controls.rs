@@ -166,6 +166,27 @@ fn live_progress(
     let step = step[..end].to_owned();
     Some(crate::agent_run_controls::Progress { step, steps, elapsed_secs: None })
 }
+/// The finished summary ("Done in 41 s · 9 steps"); a run without steps
+/// keeps the plain "Done" instead of a "0 steps" summary.
+fn completed_progress(
+    live: Option<crate::agent_run_controls::Progress>,
+    elapsed_secs: u64,
+) -> Option<crate::agent_run_controls::Progress> {
+    live.filter(|progress| progress.steps > 0).map(|mut progress| {
+        progress.step.clear();
+        progress.elapsed_secs = Some(elapsed_secs);
+        progress
+    })
+}
+#[cfg(test)]
+#[test]
+fn a_run_without_steps_finishes_without_a_summary() {
+    use crate::agent_run_controls::Progress;
+    assert_eq!(completed_progress(None, 3), None);
+    assert_eq!(completed_progress(Some(Progress::default()), 3), None);
+    let live = Progress { step: "running x".into(), steps: 2, elapsed_secs: None };
+    assert_eq!(completed_progress(Some(live), 3), Some(Progress { step: String::new(), steps: 2, elapsed_secs: Some(3) }));
+}
 impl CardHost {
     pub(in crate::console) fn new(card: Card) -> Self {
         Self {
@@ -247,11 +268,10 @@ impl CardHost {
                 record.card.revision += 1;
                 if state == CardState::Completed {
                     record.card.preview.clear();
-                    let mut progress = live_progress(&self.text, record.card.progress.as_ref())
-                        .unwrap_or_default();
-                    progress.step.clear();
-                    progress.elapsed_secs = Some(self.started.elapsed().as_secs_f64().round() as u64);
-                    record.card.progress = Some(progress);
+                    record.card.progress = completed_progress(
+                        live_progress(&self.text, record.card.progress.as_ref()),
+                        self.started.elapsed().as_secs_f64().round() as u64,
+                    );
                 }
                 if save(path, record).is_err() {
                     tracing::warn!("Run card outcome awaits recovery");

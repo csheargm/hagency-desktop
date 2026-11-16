@@ -6465,9 +6465,19 @@ fn populate_shared_permission_card(
     );
 }
 
-/// The Agent run status event (`im.hagency.agent_run`); the run card displays it.
+/// A valid Agent run status event (`im.hagency.agent_run`); the run card
+/// displays it. A message that only claims the msgtype but carries no valid
+/// card is not hidden: its plain body still shows.
 fn is_agent_run_status(kind: &MsgLikeKind) -> bool {
-    matches!(kind, MsgLikeKind::Message(message) if message.msgtype().msgtype() == ::hagency::agent_run_controls::MSGTYPE)
+    let MsgLikeKind::Message(message) = kind else { return false };
+    let msgtype = message.msgtype();
+    msgtype.msgtype() == ::hagency::agent_run_controls::MSGTYPE && is_run_card_data(msgtype.msgtype(), &msgtype.data())
+}
+/// Whether a custom message's data parses as a valid run card.
+fn is_run_card_data(msgtype: &str, data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let mut content = serde_json::Value::Object(data.clone());
+    content["msgtype"] = msgtype.into();
+    ::hagency::agent_run_controls::Card::from_content(&content).is_some()
 }
 
 fn populate_agent_run_cards(
@@ -8835,5 +8845,23 @@ mod retention_ui_tests {
         assert!(parked.content_drawn_since_last_update.contains(&0));
         drop(newer);
         timeline_state_store::clear_all(&mut cx);
+    }
+}
+
+#[cfg(test)]
+mod run_status_visibility_tests {
+    use super::is_run_card_data;
+    use ::hagency::agent_run_controls::MSGTYPE;
+
+    /// Regression: any message claiming the run msgtype vanished from the timeline.
+    #[test]
+    fn only_a_valid_run_card_is_hidden() {
+        let data = |card: serde_json::Value| serde_json::json!({"body": "hi", MSGTYPE: card}).as_object().unwrap().clone();
+        assert!(!is_run_card_data(MSGTYPE, &data(serde_json::Value::Null)));
+        assert!(!is_run_card_data(MSGTYPE, &data(serde_json::json!({"state": "running"}))));
+        let card = serde_json::json!({"version": 1, "id": "run_fixture", "dispatchId": "dispatch", "executionId": "execution",
+            "roomId": "!room:test", "eventId": "$trigger", "threadRoot": "!room:test", "requester": "@requester:test",
+            "owner": "@owner:test", "runtime": "codex", "state": "running", "revision": 0});
+        assert!(is_run_card_data(MSGTYPE, &data(card)));
     }
 }

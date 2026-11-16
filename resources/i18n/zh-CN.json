@@ -3180,7 +3180,7 @@
   "The shared project folder was not confirmed; each Agent may keep its own folder.": "共享项目文件夹未获确认，各 Agent 可能仍使用自己的文件夹。",
   "Could not check whether this room is encrypted. Your message was not sent. Try again.": "无法确认此聊天室是否已加密，消息未发送，请重试。",
   "Try again; the Agent may already exist in your list.": "请重试；该 Agent 可能已经出现在列表中。",
-  "Running. New instructions join this run.": "运行中。追加指令会加入当前运行。",
+  "Working… you can add instructions or stop this run": "运行中…可以追加指令或停止本次运行",
   "Stopping; waiting for the runtime to finish and settle.": "正在停止，等待运行时结束并结算。",
   "Stopped": "已停止",
   "Failed": "执行失败",
