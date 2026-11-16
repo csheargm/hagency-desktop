@@ -235,6 +235,9 @@ fn explore_rooms_keeps_chats_marked() {
 }
 #[test]
 fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_changes() {
+    // The first-Agent hint also draws the dot; pin it off so only the approval alert is tested.
+    let _turn = crate::hagency::agent_presence::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::hagency::agent_presence::set_has_agent(true);
     let (mut cx, mut bar) = rail();
     cx.with_vm(|vm| vm.bx.captured_errors = Some(Vec::new()));
     bar.apply_view_mode(ViewModeOverride::ForceNarrow);
@@ -271,4 +274,9 @@ fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_
     assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
     bar.apply_approval_alert_state(&mut cx, false);
     assert!(!bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
+    // An account known to have no Agent keeps the dot as a first-run invitation.
+    crate::hagency::agent_presence::set_has_agent(false);
+    bar.apply_approval_alert_state(&mut cx, false);
+    assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
+    crate::hagency::agent_presence::reset();
 }

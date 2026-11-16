@@ -72,11 +72,14 @@ pub fn refresh() {
     });
 }
 
+/// The flags are process-wide; every test that reads or writes them takes turns.
+#[cfg(test)]
+pub(crate) static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The flags are process-wide; tests touching them take turns.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::TEST_SERIAL as SERIAL;
     #[test]
     fn guidance_only_after_an_empty_listing() {
         let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
