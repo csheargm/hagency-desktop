@@ -13,9 +13,9 @@
 //!   branch named explicitly, from a checkout inside the Room workspace whose
 //!   remote pushes to the watched repository (see [`git`]). The HOST pushes
 //!   it ([`host_git`]), so no checkout config is read for the network step;
-//! - `git [-C <checkout>] fetch [-q] [<remote>]` from the watched repository
-//!   and `git [-C <checkout>] checkout -b <new> <remote>/<default>`, also run
-//!   by the host (the fix steps of an issue);
+//! - `git [-C <checkout>] fetch [-q] [<remote>]` from the watched repository,
+//!   also run by the host, and `git [-C <checkout>] checkout -b <new>
+//!   <remote>/<default>`, pinned (the fix steps of an issue, see [`git`]);
 //! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]);
 //! - Write/Edit/MultiEdit of a file inside the workspace, never git metadata.
 //!
@@ -88,8 +88,8 @@ pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<Trusted
             let push = git::Push::parse(rest)?;
             (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| TrustedStep::Host(push.host_step(&dir, repo)))
         }
-        ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, repo).map(TrustedStep::Host),
-        ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, repo).map(TrustedStep::Host),
+        ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, repo),
+        ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, repo),
         ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| TrustedStep::Command(pin_env(line))),
         _ => None,
     }

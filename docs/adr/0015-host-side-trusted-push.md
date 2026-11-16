@@ -25,10 +25,16 @@ tool call is then rewritten to `printf` of the outcome (or a failing exit).
   `refs/remotes/<remote>/*` (haves), fetches `+refs/heads/*` over https; the
   resulting pack is copied into the checkout and the tracking refs are
   updated with a local `update-ref --stdin` (hooks off).
-- New branch (`checkout -b <new> <remote>/<default>`): local only; the host
-  re-checks that the checkout's config holds data keys only (no filter
-  drivers, no promisor remote) immediately before, with hooks, fsmonitor and
-  lazy fetch off.
+- New branch (`checkout -b <new> <remote>/<default>`): no network, so it
+  runs as the Agent (never in the host process), pinned: attributes from the
+  empty tree (`GIT_ATTR_SOURCE`), `core.attributesFile=/dev/null`, hooks,
+  fsmonitor and lazy fetch off, and only when the config holds data keys and
+  there is no `info/attributes`, so no filter driver is selected.
+- The push refuses the remote's own default branch (from `ls-remote
+  --symref`, not the checkout's forgeable `origin/HEAD`). Host writes into
+  the checkout use `update-ref --no-deref` and `create_new` files, and only a
+  plain clone (real `.git`, `objects`, `objects/pack`, no `commondir`) is
+  served. Trusted edits resolve every existing link and refuse dangling ones.
 - Every network git runs with `env_clear` (PATH, HOME, user, TMPDIR, LANG and
   gh's token/config variables only), `GIT_CONFIG_NOSYSTEM=1`,
   `GIT_CONFIG_GLOBAL=/dev/null`, `protocol.allow=never` plus
@@ -47,7 +53,8 @@ tool call is then rewritten to `printf` of the outcome (or a failing exit).
 - `-u` is recorded by the host (tracking ref and `branch.*` data keys).
 - Fetches without haves for unknown history download more; fine for issue
   fixes. Stale remote-tracking refs are not pruned in the checkout.
-- Residual: the branch step's config check and run are not atomic; a
-  concurrent writer could add a filter key in between. Accepted for the demo.
+- Residual: the checks before a pinned branch step and the edit target checks
+  are not atomic against a concurrent writer; that writer already needs an
+  owner-approved command, and runs only as the Agent.
 - Codex stays untrusted: its approvals cannot replace the command with the
   host's report, so the Agent's own push would still run.

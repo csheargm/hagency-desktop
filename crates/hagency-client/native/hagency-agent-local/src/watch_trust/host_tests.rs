@@ -27,7 +27,7 @@ fn world() -> World {
     let root = temp.path().canonicalize().unwrap();
     let (app, target, evil) = (root.join("app"), root.join("target.git"), root.join("evil.git"));
     std::fs::create_dir(&app).unwrap();
-    git(&root, &["init", "-q", "--bare", "target.git"]);
+    git(&root, &["init", "-q", "--bare", "-b", "main", "target.git"]);
     git(&root, &["init", "-q", "--bare", "evil.git"]);
     git(&app, &["init", "-q", "-b", "main"]);
     commit(&app, "init");
@@ -117,15 +117,69 @@ fn a_failed_host_step_is_reported_as_a_failed_call() {
 }
 
 #[test]
-fn the_host_branch_step_rechecks_the_config_and_runs_no_hook() {
+fn the_branch_step_is_pinned_and_refuses_filter_config() {
     let w = world();
-    let step = HostStep::Branch { dir: w.app.clone(), name: "fix/27".into(), start: "refs/remotes/origin/main".into() };
+    let line = "git -C app checkout -b fix/27 origin/main";
     git(&w.app, &["config", "filter.x.smudge", &format!("touch {}", w.marker.display())]);
-    assert!(step.run().is_err(), "a filter driver in config refuses");
+    assert_eq!(pinned_line(line, &w.root, REPO), None, "a filter driver in config asks");
     git(&w.app, &["config", "--unset", "filter.x.smudge"]);
-    assert!(step.run().unwrap().contains("fix/27"));
+    std::fs::write(w.app.join(".git/info/attributes"), "* filter=x\n").unwrap();
+    assert_eq!(pinned_line(line, &w.root, REPO), None, "info/attributes asks");
+    std::fs::remove_file(w.app.join(".git/info/attributes")).unwrap();
+    let Some(TrustedStep::Command(pinned)) = pinned_line(line, &w.root, REPO) else { panic!("trusted") };
+    assert!(pinned.contains("GIT_ATTR_SOURCE=4b825dc642cb6eb9a060e54bf8d69288fbee4904") && pinned.contains("'core.attributesFile=/dev/null'"));
+    let out = Command::new("sh").arg("-c").arg(&pinned).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(git(&w.app, &["branch", "--show-current"]), "fix/27");
     assert!(!w.marker.exists());
+}
+
+/// GPT review (Nov 16): the remote's own default branch counts, not the
+/// checkout's forgeable `origin/HEAD`.
+#[test]
+fn the_host_push_refuses_the_remotes_default_branch() {
+    let w = world();
+    git(&w.target, &["symbolic-ref", "HEAD", "refs/heads/docs/faq"]);
+    let result = push_step(&w).run_to(&dest(&w));
+    assert!(result.as_ref().is_err_and(|e| e.contains("default branch")), "{result:?}");
+    assert_eq!(git(&w.target, &["for-each-ref", "refs/heads/docs"]), "");
+}
+
+/// GPT review (Nov 16): a symbolic tracking ref cannot steer the fetch's
+/// ref writes to a local branch, and planted pack links are never written through.
+#[test]
+fn the_host_fetch_writes_only_tracking_refs_and_new_files() {
+    let w = world();
+    let faq = git(&w.app, &["rev-parse", "refs/heads/docs/faq"]);
+    git(&w.app, &["symbolic-ref", "refs/remotes/origin/main", "refs/heads/docs/faq"]);
+    let outside = w.root.join("outside-pack");
+    let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
+    step.run_to(&dest(&w)).unwrap();
+    assert_eq!(git(&w.app, &["rev-parse", "refs/heads/docs/faq"]), faq, "the local branch is untouched");
+    assert!(!outside.exists());
+}
+
+#[test]
+fn the_host_refuses_a_checkout_whose_storage_is_elsewhere() {
+    let w = world();
+    let elsewhere = w.root.join("elsewhere");
+    std::fs::rename(w.app.join(".git"), &elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, w.app.join(".git")).unwrap();
+    let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
+    assert!(step.run_to(&dest(&w)).is_err(), "a linked .git");
+    std::fs::remove_file(w.app.join(".git")).unwrap();
+    std::fs::write(w.app.join(".git"), format!("gitdir: {}\n", elsewhere.display())).unwrap();
+    assert!(step.run_to(&dest(&w)).is_err(), "a .git file");
+}
+
+#[test]
+fn copy_new_never_writes_through_a_link() {
+    let w = world();
+    let (from, link, outside) = (w.root.join("p.pack"), w.root.join("link.pack"), w.root.join("outside.pack"));
+    std::fs::write(&from, "x").unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    assert!(copy_new(&from, &link).is_err());
+    assert!(!outside.exists());
 }
 
 #[test]
@@ -135,9 +189,9 @@ fn fix_steps_in_the_watched_checkout_are_the_hosts() {
     assert_eq!(pinned_line("git -C app fetch origin", &w.root, REPO), fetch);
     assert_eq!(pinned_line("git -C app fetch", &w.root, REPO), fetch);
     assert_eq!(pinned_line("git fetch origin", &w.app, REPO), fetch, "inside the checkout");
-    let branch = Some(TrustedStep::Host(HostStep::Branch { dir: w.app.clone(), name: "fix/27".into(), start: "refs/remotes/origin/main".into() }));
-    assert_eq!(pinned_line("git -C app checkout -b fix/27 origin/main", &w.root, REPO), branch);
-    assert_eq!(pinned_line("git switch -c fix/27 origin/main", &w.app, REPO), branch);
+    let branch = pinned_line("git -C app checkout -b fix/27 origin/main", &w.root, REPO);
+    assert!(matches!(&branch, Some(TrustedStep::Command(c)) if c.contains("'refs/remotes/origin/main'")), "{branch:?}");
+    assert!(pinned_line("git switch -c fix/27 origin/main", &w.app, REPO).is_some());
     git(&w.app, &["remote", "add", "fork", "https://github.com/mallory/app.git"]);
     for line in [
         "git fetch origin",

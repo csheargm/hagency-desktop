@@ -60,7 +60,9 @@ fn path_in(value: Option<&Value>, cwd: &Path, absent_ok: bool) -> bool {
 pub(crate) fn writable_in(value: Option<&Value>, cwd: &Path) -> bool {
     let Some(path) = value.and_then(Value::as_str) else { return false };
     let joined = shell::lexical_join(cwd, path);
-    let real = std::fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
+    // The real target through every existing link (GPT review, Nov 16: an
+    // alias of `.git/hooks` hid a new hook file from the lexical check).
+    let Some(real) = physical_join(cwd, path).and_then(|p| real_target(&p)) else { return false };
     resolves_inside(path, cwd) && !is_git_metadata(&joined) && !is_git_metadata(&real)
 }
 
@@ -80,15 +82,23 @@ pub(crate) fn resolves_inside(path: &str, cwd: &Path) -> bool {
 /// resolve symlinks through the deepest existing ancestor so a link cannot lead out.
 fn resolves_within(path: &str, base: &Path, root: &Path) -> bool {
     let Ok(root) = std::fs::canonicalize(root) else { return false };
-    let Some(resolved) = physical_join(base, path) else { return false };
-    let mut existing = resolved.as_path();
+    physical_join(base, path).and_then(|p| real_target(&p)).is_some_and(|real| real.starts_with(&root))
+}
+
+/// `path` with symlinks resolved through its deepest existing ancestor; a
+/// dangling link on the way is refused (opening it would create its target).
+fn real_target(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
     let mut tail = PathBuf::new();
     while !existing.exists() {
-        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else { return false };
+        if existing.symlink_metadata().is_ok() {
+            return None;
+        }
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else { return None };
         tail = Path::new(name).join(&tail);
         existing = parent;
     }
-    std::fs::canonicalize(existing).is_ok_and(|real| real.join(tail).starts_with(&root))
+    std::fs::canonicalize(existing).ok().map(|real| real.join(tail))
 }
 
 /// Join `path` onto `base` the way the OS opens it: a `..` steps out of the

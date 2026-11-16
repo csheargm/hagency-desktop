@@ -1,6 +1,5 @@
-//! The git steps push trust answers that touch the network (push, fetch) or
-//! move the checkout (a new branch) are run by the host, never by the Agent's
-//! git. The checkout's config (`url.*.insteadOf`, `credential.helper`,
+//! The git steps push trust answers that touch the network (push, fetch)
+//! are run by the host, never by the Agent's git. The checkout's config (`url.*.insteadOf`, `credential.helper`,
 //! `core.sshCommand`, `include.path`, hooks) is data the Agent can write at
 //! any time, so the step that talks to GitHub runs in a fresh, host-owned
 //! bare repository with no system or global config, whose only link to the
@@ -36,7 +35,6 @@ const HOST_ENV: [&str; 9] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"
 pub enum HostStep {
     Push { dir: PathBuf, remote: String, branch: String, repo: String, upstream: bool },
     Fetch { dir: PathBuf, remote: String, repo: String },
-    Branch { dir: PathBuf, name: String, start: String },
 }
 
 /// Where a network step goes: the watched repository on github.com over
@@ -55,17 +53,14 @@ impl Dest {
 impl HostStep {
     /// Run the step; the result is what the Agent is told.
     pub fn run(&self) -> Result<String, String> {
-        match self {
-            Self::Push { repo, .. } | Self::Fetch { repo, .. } => self.run_to(&Dest::github(repo)),
-            Self::Branch { dir, name, start } => branch(dir, name, start),
-        }
+        let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
+        self.run_to(&Dest::github(repo))
     }
 
     pub(crate) fn run_to(&self, dest: &Dest) -> Result<String, String> {
         match self {
             Self::Push { dir, remote, branch, upstream, .. } => push(dir, remote, branch, *upstream, dest),
             Self::Fetch { dir, remote, .. } => fetch(dir, remote, dest),
-            Self::Branch { dir, name, start } => branch(dir, name, start),
         }
     }
 }
@@ -83,12 +78,19 @@ fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest) -> 
     let head = format!("refs/heads/{branch}");
     let sha = query(dir, &["rev-parse", "--verify", "-q", &format!("{head}^{{commit}}")]).ok_or("the branch has no commit")?;
     let scratch = Scratch::new(&objects_dir(dir)?)?;
+    // The remote's own default branch, not the checkout's forgeable
+    // `refs/remotes/<remote>/HEAD` (GPT review, Nov 16).
+    let advertised = run(scratch.git(dest).args(["ls-remote", "--symref", &dest.url, "HEAD"]), None)?;
+    let default = advertised.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD")).ok_or("the remote's default branch is unknown")?;
+    if default == branch {
+        return Err(format!("{branch} is the repository's default branch"));
+    }
     run(scratch.git(dest).args(["update-ref", &head, &sha]), None)?;
     run(scratch.git(dest).args(["push", "-q", &dest.url, &format!("{head}:{head}")]), None)?;
     let short = &sha[..sha.len().min(12)];
     if upstream {
         let tracking = format!("refs/remotes/{remote}/{branch}");
-        let set = query(dir, &["update-ref", &tracking, &sha]).is_some()
+        let set = query(dir, &["update-ref", "--no-deref", &tracking, &sha]).is_some()
             && query(dir, &["config", &format!("branch.{branch}.remote"), remote]).is_some()
             && query(dir, &["config", &format!("branch.{branch}.merge"), &head]).is_some();
         if !set {
@@ -110,19 +112,10 @@ fn fetch(dir: &Path, remote: &str, dest: &Dest) -> Result<String, String> {
     hand_over_packs(&scratch.0.join("objects/pack"), &objects.join("pack"))?;
     let fetched = run(scratch.git(dest).args(["for-each-ref", "--format=%(objectname) %(refname:lstrip=2)", "refs/heads"]), None)?;
     let updates: String = fetched.lines().filter_map(|l| l.split_once(' ')).map(|(sha, name)| format!("update {prefix}{name} {sha}\n")).collect();
-    local_stdin(dir, &["update-ref", "--stdin"], &updates)?;
+    // --no-deref: a planted symbolic tracking ref cannot steer the write to
+    // a local branch (GPT review, Nov 16).
+    local_stdin(dir, &["update-ref", "--no-deref", "--stdin"], &updates)?;
     Ok(format!("Fetched {} branches of {} into {remote}.", fetched.lines().count(), dest.url))
-}
-
-/// A new branch at `start`, checked out. Local only; the checkout's config
-/// is re-checked to hold data keys only (no filters, no lazy-fetch remote)
-/// right before, and hooks and fsmonitor are off whatever it says.
-fn branch(dir: &Path, name: &str, start: &str) -> Result<String, String> {
-    if !crate::outside::git_config::local_config_safe(dir) {
-        return Err("the checkout's git config has non-data keys".into());
-    }
-    query(dir, &["checkout", "-q", "--no-track", "-b", name, start]).ok_or("git checkout failed")?;
-    Ok(format!("Switched to a new branch '{name}' at {start}."))
 }
 
 /// Copy fetched packs into the checkout, each `.idx` after its `.pack` so a
@@ -135,20 +128,36 @@ fn hand_over_packs(from: &Path, to: &Path) -> Result<(), String> {
         for ext in ["pack", "rev", "idx"] {
             let file = pack.with_extension(ext);
             let target = to.join(file.file_name().ok_or("pack name")?);
-            if file.exists() && !target.exists() {
-                std::fs::copy(&file, &target).map_err(|e| format!("copy pack: {e}"))?;
+            if file.exists() && target.symlink_metadata().is_err() {
+                copy_new(&file, &target)?;
             }
         }
     }
     Ok(())
 }
 
-/// The checkout's (common) object directory, absolute.
+/// `from` copied to a new file `to`; never through a link or over a file.
+fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
+    let mut source = std::fs::File::open(from).map_err(|e| e.to_string())?;
+    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| format!("copy pack: {e}"))?;
+    std::io::copy(&mut source, &mut target).map_err(|e| format!("copy pack: {e}"))?;
+    target.sync_all().map_err(|e| e.to_string())
+}
+
+/// The object directory of checkout `dir`, which must be a plain clone:
+/// `.git`, `objects` and `objects/pack` real directories (no links, no
+/// `.git` file, no `commondir`), so the host writes only inside `dir`
+/// (GPT review, Nov 16).
 fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
-    let common = query(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok_or("not a git checkout")?;
-    let objects = Path::new(&common).join("objects").canonicalize().map_err(|e| e.to_string())?;
-    if objects.to_string_lossy().contains('\n') {
-        return Err("unusable checkout path".into());
+    let git_dir = dir.join(".git");
+    let objects = git_dir.join("objects");
+    let real_dirs = [&git_dir, &objects, &objects.join("pack")].iter().all(|d| d.symlink_metadata().is_ok_and(|m| m.is_dir()));
+    if !real_dirs || git_dir.join("commondir").symlink_metadata().is_ok() || objects.to_string_lossy().contains('\n') {
+        return Err("the checkout is not a plain clone".into());
+    }
+    let top = query(dir, &["rev-parse", "--path-format=absolute", "--git-dir"]).ok_or("not a git checkout")?;
+    if Path::new(&top).canonicalize().ok() != git_dir.canonicalize().ok() {
+        return Err("the checkout's git directory is elsewhere".into());
     }
     Ok(objects)
 }

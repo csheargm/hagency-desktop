@@ -286,7 +286,10 @@ fn workspace_edits_are_trusted_only_in_the_watched_room() {
     watch(&mut ledger, WatchMode::Trusted, true);
     assert_eq!(pinned(&ledger.db, &edit(ROOM, &readme), OWNER).unwrap(), Some(TrustedStep::Allow));
     assert_eq!(pinned(&ledger.db, &edit(ROOM, "app/docs/faq.md"), OWNER).unwrap(), Some(TrustedStep::Allow));
-    for path in ["app/.git/config", "app/.gitattributes", "/etc/hosts", "../x.md"] {
+    std::os::unix::fs::symlink(root.join("app/.git/hooks"), root.join("alias")).unwrap();
+    std::os::unix::fs::symlink(root.join("nowhere"), root.join("dangling.md")).unwrap();
+    // GPT review (Nov 16): an alias of .git/hooks and a dangling link ask.
+    for path in ["app/.git/config", "app/.gitattributes", "/etc/hosts", "../x.md", "alias/pre-push", "dangling.md"] {
         assert_eq!(pinned(&ledger.db, &edit(ROOM, path), OWNER).unwrap(), None, "{path}");
     }
     assert_eq!(pinned(&ledger.db, &edit("!other:example.org", &readme), OWNER).unwrap(), None);
