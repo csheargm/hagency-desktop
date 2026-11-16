@@ -817,13 +817,37 @@ impl MatchEvent for LoginScreen {
                 _ => {}
             }
         }
+        self.refresh_button_states(cx);
+    }
+}
+
+impl LoginScreen {
+    fn refresh_button_states(&mut self, cx: &mut Cx) {
         self.view.button(cx, ids!(login_button)).set_enabled(cx, !self.login_pending && !crate::sliding_sync::account_changing());
         self.view.button(cx, ids!(browser_login_button)).set_enabled(cx, !self.login_pending);
         self.view.button(cx, ids!(edit_server_button)).set_enabled(cx, !self.login_pending);
         self.view.button(cx, ids!(continue_server_button)).set_enabled(cx, !self.login_pending && !self.discovery_pending);
         self.view.button(cx, ids!(register_option_button)).set_enabled(cx, !self.login_pending);
         self.view.button(cx, ids!(submit_registration_button)).set_enabled(cx, !self.login_pending);
+        self.view.button(cx, ids!(github_login_button)).set_enabled(cx, !self.login_pending);
         self.redraw(cx);
+    }
+
+    /// Forgets any sign-in that was in flight. The app hides this screen in the
+    /// same action batch as `LoginSuccess`, so a hidden screen never sees it and
+    /// its pending flags would block every button after a later sign-out.
+    fn clear_in_flight(&mut self, cx: &mut Cx) {
+        self.login_pending = false;
+        self.sso_pending = false;
+        self.refresh_button_states(cx);
+    }
+}
+
+// TODO(R4): login_screen.rs is over budget; split pending-state handling into its own module.
+impl LoginScreenRef {
+    /// Called by the app whenever it switches between the login and home screens.
+    pub fn clear_in_flight(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() { inner.clear_in_flight(cx); }
     }
 }
 
@@ -927,6 +951,26 @@ mod browser_login_tests {
         screen.sync_recent_servers(&mut cx, servers);
         assert!(!screen.view.view(&mut cx, ids!(manual_server_row)).visible());
         assert_eq!(screen.recent_server_selected, "https://hagency.local");
+    }
+
+    #[test]
+    fn hidden_screen_unblocks_buttons_after_sign_out() {
+        use super::*;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut screen = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.LoginScreen {}});
+            LoginScreen::script_from_value(vm, value)
+        });
+        // Restore posts Status (pending) and the app hides the screen before LoginSuccess reaches it.
+        let actions = cx.capture_actions(|cx| cx.action(LoginAction::Status { title: "t".into(), status: "s".into() }));
+        screen.handle_actions(&mut cx, &actions);
+        assert!(screen.login_pending);
+        screen.clear_in_flight(&mut cx);
+        assert!(!screen.login_pending && !screen.sso_pending);
+        assert!(screen.view.button(&mut cx, ids!(browser_login_button)).borrow().is_some_and(|b| b.enabled()));
+        assert!(screen.view.button(&mut cx, ids!(register_option_button)).borrow().is_some_and(|b| b.enabled()));
     }
 
     #[test]
