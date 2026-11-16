@@ -3479,5 +3479,6 @@
   "{agent} was not added to {room}: you do not have permission to invite members there.": "未将 {agent} 加入 {room}：你没有在该聊天室邀请成员的权限。",
   "{agent} joined {room}.": "{agent} 已加入 {room}。",
   "{agent} is still joining {room}.": "{agent} 仍在加入 {room}。",
-  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 加入 {room}：{reason}"
+  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 加入 {room}：{reason}",
+  "{0} isn't in this room. Add it?": "{0} 不在此房间中。要添加吗？"
 }

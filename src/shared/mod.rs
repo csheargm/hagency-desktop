@@ -23,6 +23,8 @@ pub mod mentionable_text_input;
 mod mention_text;
 mod mention_insertion;
 mod plain_mentions;
+mod live_mentions;
+pub mod composer_agent_hint;
 pub(crate) mod mention_candidates;
 pub mod navigation_bar_button;
 pub mod popup_list;
@@ -80,6 +82,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     popup_list::script_mod(vm);
     verification_badge::script_mod(vm);
     mention_popup::script_mod(vm);
+    composer_agent_hint::script_mod(vm);
     mentionable_text_input::script_mod(vm);
     restore_status_view::script_mod(vm);
     confirmation_modal::script_mod(vm);

@@ -142,6 +142,11 @@ impl MentionText {
         self.current.mentions.sort_by_key(|m| m.range.start);
     }
 
+    /// Whether `index` falls inside a bound mention.
+    pub fn covers(&self, index: usize) -> bool {
+        self.current.mentions.iter().any(|m| m.range.contains(&index))
+    }
+
     pub fn clear(&mut self) {
         self.current.mentions.clear();
         self.undo.clear();

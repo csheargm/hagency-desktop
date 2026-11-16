@@ -3479,5 +3479,6 @@
   "{agent} was not added to {room}: you do not have permission to invite members there.": "{agent} was not added to {room}: you do not have permission to invite members there.",
   "{agent} joined {room}.": "{agent} joined {room}.",
   "{agent} is still joining {room}.": "{agent} is still joining {room}.",
-  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}"
+  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}",
+  "{0} isn't in this room. Add it?": "{0} isn't in this room. Add it?"
 }
