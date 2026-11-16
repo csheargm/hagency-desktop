@@ -1,6 +1,7 @@
 //! Local-agent controls for the Agent menu: service, private chat, encryption
 //! and Rooms. Uses the same native owner engine and Matrix client as the
 //! native panel. Scripts pass only an Agent ID; Room IDs come from bindings.
+// TODO(R4): over budget; split the tests into local_tests.rs and the device/binding reads into local_agent.rs.
 use super::{parse, Id, ManagementPermission, Value};
 use crate::hagency::{
     backend::{LocalAgentHost, Service},
@@ -157,29 +158,55 @@ struct Agent {
     device_name: String,
     bindings: Vec<Value>,
 }
-async fn agent(service: &Service, id: &str) -> Result<Agent, String> {
-    let details = service.execute(Command::AgentDetails { agent_id: id.into() }).await?;
+/// `tolerate`: a failed Rooms read leaves the Rooms empty (status, service,
+/// approvals); chat actions need the bindings and pass the failure on.
+async fn agent(service: &Service, id: &str, tolerate: bool) -> Result<Agent, String> {
+    let details = service.execute(Command::AgentDetails { agent_id: id.into() }).await.inspect_err(|code| log_failure("details", code))?;
     let record = &details["agent"];
     if text(record, "id") != id {
         return Err("personal_agent_not_found".into());
     }
-    let devices = service.execute(Command::Devices).await?;
-    let current = text(&devices, "currentDeviceId");
-    let device = text(record, "executionDeviceId");
-    let record = devices["devices"]
-        .as_array()
-        .and_then(|all| all.iter().find(|d| text(d, "id") == device && d["revoked"] == false));
-    let here = !current.is_empty() && device == current && record.is_some();
-    let device_name = record.map(|d| text(d, "name").to_owned()).unwrap_or_default();
-    let bindings = service.execute(Command::Bindings { agent_id: id.into() }).await?;
-    let bindings = bindings["bindings"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|b| text(b, "agentId") == id)
-        .collect();
+    let devices = service.execute(Command::Devices).await.inspect_err(|code| log_failure("devices", code))?;
+    let (here, device_name) = device_of(record, &devices);
+    // Rooms are a part of the status, not a condition for it: a failed read
+    // must not hide that the Agent runs here.
+    let bindings = match service.execute(Command::Bindings { agent_id: id.into() }).await {
+        Ok(reply) => agent_bindings(&reply, id),
+        Err(code) if tolerate => {
+            log_failure("bindings", &code);
+            Vec::new()
+        }
+        Err(code) => return Err(code),
+    };
     Ok(Agent { here, device_name, bindings })
+}
+/// Whether `record` runs on this device, by the same check as My Agents'
+/// "This device" badge, and the assigned device's name.
+fn device_of(record: &Value, devices: &Value) -> (bool, String) {
+    use crate::hagency::ui::{AgentDeviceState, agent_device_state};
+    let current = text(devices, "currentDeviceId");
+    let all = devices["devices"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let here = agent_device_state(record, current, all, devices["devices"].is_array()) == AgentDeviceState::Here;
+    let device = text(record, "executionDeviceId");
+    let name = all.iter().find(|d| text(d, "id") == device && d["revoked"] == false).map(|d| text(d, "name").to_owned());
+    (here, name.unwrap_or_default())
+}
+fn agent_bindings(reply: &Value, id: &str) -> Vec<Value> {
+    reply["bindings"].as_array().into_iter().flatten().filter(|b| text(b, "agentId") == id).cloned().collect()
+}
+/// Codes the status reads are known to return; only these are ever logged.
+const LOGGED_CODES: &[&str] = &[
+    "personal_agent_not_found", "matrix_account_changing", "sign_in_required", "owner_authorization_required",
+    "local_state_unavailable", "invalid_server_response", "invalid_arguments", "not_found", "device_setup_required",
+    "native_owner_drain_required", "management_outcome_unknown", "agent_paused", "storage_unavailable",
+];
+/// The logged form of `code`: a known static code, else "unrecognized".
+fn logged_code(code: &str) -> &'static str {
+    LOGGED_CODES.iter().copied().find(|known| *known == code).unwrap_or("unrecognized")
+}
+/// Logs which part of the panel's status failed, without echoing any reply text.
+fn log_failure(stage: &'static str, code: &str) {
+    makepad_widgets::warning!("Agent panel status: {stage} failed: {}", logged_code(code));
 }
 /// The Agent's active owner-direct Room, never a Room the script names.
 fn direct_room(agent: &Agent) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
@@ -192,29 +219,15 @@ fn direct_room(agent: &Agent) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
 }
 
 async fn status(account: &str, id: &str) -> Result<Value, String> {
-    let service = service_for(account)?;
-    let agent = agent(&service, id).await?;
+    let service = service_for(account).inspect_err(|code| log_failure("account", code))?;
+    let agent = agent(&service, id, true).await?;
     let state = if agent.here && service.local_agent_host().is_ok_and(|host| host != LocalAgentHost::Here) {
         // The Agent is assigned to this device, but nothing on this computer
         // runs this account's Agents (another account is hosted here, or
         // hosting is not set up). Its saved service state would only mislead.
         "no_host"
     } else if agent.here {
-        let status = service
-            .execute(Command::Local {
-                agent_id: id.into(),
-                action: LocalAction::AgentServiceStatus,
-                input: None,
-                binding_id: None,
-                requester: None,
-            })
-            .await;
-        match status {
-            // Stopped by the owner's Stop all: shown as "Paused by you".
-            Ok(value) if service_state(&value, id) == "stopped" && crate::hagency::kill_switch::is_paused(&crate::hagency::kill_switch::default_path(), account, id) => "paused",
-            Ok(value) => service_state(&value, id),
-            Err(_) => "unknown",
-        }
+        local_service_state(&service, account, id).await
     } else {
         "elsewhere"
     };
@@ -245,8 +258,29 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
         .and_hms_opt(0, 0, 0)
         .map(|midnight| midnight.and_utc().with_timezone(&chrono::Local).format("%H:%M").to_string());
     // Only the device that runs the Agent holds its approval settings.
-    let approvals = if agent.here { approval_settings(&service, id, None).await.ok() } else { None };
+    let approvals = if agent.here { approval_settings(&service, id, None).await.inspect_err(|code| log_failure("approvals", code)).ok() } else { None };
     Ok(json!({"agentId": id, "here": agent.here, "deviceName": agent.device_name, "service": {"state": state}, "chat": chat, "rooms": rooms, "resetLocalTime": reset, "approvals": approvals}))
+}
+/// The running service's state on this device, worded for the mini app.
+async fn local_service_state(service: &Service, account: &str, id: &str) -> &'static str {
+    let status = service
+        .execute(Command::Local {
+            agent_id: id.into(),
+            action: LocalAction::AgentServiceStatus,
+            input: None,
+            binding_id: None,
+            requester: None,
+        })
+        .await;
+    match status {
+        // Stopped by the owner's Stop all: shown as "Paused by you".
+        Ok(value) if service_state(&value, id) == "stopped" && crate::hagency::kill_switch::is_paused(&crate::hagency::kill_switch::default_path(), account, id) => "paused",
+        Ok(value) => service_state(&value, id),
+        Err(code) => {
+            log_failure("service", &code);
+            "unknown"
+        }
+    }
 }
 /// One project Room of the status reply. `roomId` is what issue watching
 /// saves; without it the Agent's Rooms were never offered there.
@@ -265,7 +299,7 @@ impl Call {
             Self::Status(id) => status(account, &id).await,
             Self::Service(id, running) => {
                 let service = service_for(account)?;
-                if !agent(&service, &id).await?.here {
+                if !agent(&service, &id, true).await?.here {
                     return Err("personal_agent_not_on_this_device".into());
                 }
                 service
@@ -281,7 +315,7 @@ impl Call {
             }
             Self::Approvals(id, change) => {
                 let service = service_for(account)?;
-                if !agent(&service, &id).await?.here {
+                if !agent(&service, &id, true).await?.here {
                     return Err("personal_agent_not_on_this_device".into());
                 }
                 approval_settings(&service, &id, Some(change)).await?;
@@ -289,13 +323,13 @@ impl Call {
             }
             Self::ChatOpen(id) => {
                 let service = service_for(account)?;
-                let room_id = direct_room(&agent(&service, &id).await?)?;
+                let room_id = direct_room(&agent(&service, &id, false).await?)?;
                 makepad_widgets::Cx::post_action(crate::hagency::ui::OpenAgentChat { room_id: room_id.clone() });
                 Ok(json!({"roomId": room_id.to_string()}))
             }
             Self::ChatEncrypt(id) => {
                 let service = service_for(account)?;
-                let room_id = direct_room(&agent(&service, &id).await?)?;
+                let room_id = direct_room(&agent(&service, &id, false).await?)?;
                 let room = crate::sliding_sync::get_client()
                     .and_then(|client| client.get_room(&room_id))
                     .ok_or("personal_agent_chat_unavailable")?;
@@ -352,6 +386,36 @@ mod tests {
         let mut odd = json!("text");
         host_fields(&mut odd, LocalAgentHost::OtherAccount);
         assert_eq!(odd, json!("text"));
+    }
+    /// The panel's `here` and My Agents' "This device" are one check: an
+    /// Agent shown as running on this device is editable in the panel.
+    #[test]
+    fn panel_here_matches_my_agents_badge() {
+        let devices = json!({"currentDeviceId": "dev_a", "devices": [
+            {"id": "dev_a", "name": "Hagency Desktop", "revoked": false}, {"id": "dev_b", "name": "Old", "revoked": true}]});
+        let agent = |device: &str| json!({"id": "agt_1", "executionDeviceId": device, "state": "active", "generation": 1});
+        assert_eq!(device_of(&agent("dev_a"), &devices), (true, "Hagency Desktop".to_owned()));
+        assert_eq!(device_of(&agent("dev_b"), &devices), (false, String::new()), "a revoked device is not here");
+        assert_eq!(device_of(&agent("dev_c"), &devices).0, false);
+        assert_eq!(device_of(&agent("dev_a"), &json!({"devices": []})).0, false, "no current device");
+    }
+    /// A Room joined by auto-join is a project binding of this Agent and is listed.
+    #[test]
+    fn bindings_keep_only_this_agents_rows() {
+        let reply = json!({"bindings": [
+            {"id": "b1", "agentId": "agt_1", "scopeKind": "owner_direct", "roomId": "!dm:x", "state": "active"},
+            {"id": "b2", "agentId": "agt_1", "scopeKind": "project", "roomId": "!fix:x", "state": "active"},
+            {"id": "b3", "agentId": "agt_2", "scopeKind": "project", "roomId": "!other:x", "state": "active"}]});
+        let ids: Vec<_> = agent_bindings(&reply, "agt_1").iter().map(|b| text(b, "id").to_owned()).collect();
+        assert_eq!(ids, ["b1", "b2"]);
+        assert!(agent_bindings(&json!({}), "agt_1").is_empty());
+    }
+    /// Only known static codes reach the log; reply text never does.
+    #[test]
+    fn only_known_codes_are_logged() {
+        assert_eq!(logged_code("personal_agent_not_found"), "personal_agent_not_found");
+        assert_eq!(logged_code("secret_value"), "unrecognized");
+        assert_eq!(logged_code("token=abc"), "unrecognized");
     }
     #[test]
     fn only_agent_ids_are_accepted() {

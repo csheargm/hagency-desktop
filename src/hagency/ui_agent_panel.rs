@@ -6,6 +6,17 @@ use super::*;
 use crate::hagency::agent_panel::{AgentPanelAction, AgentPanelWidgetRefExt};
 
 impl HagencyPanel {
+    // TODO(id-collision): limit_mode, model, period, retire_confirm, token_limit,
+    // workspace and service_toggle are also bare ids in both pages; scope them too.
+    /// The detail page's own issue-watch block. A bare `ids!(issue_watch)`
+    /// finds the native panel's block first and overwrote its context.
+    pub(super) fn detail_issue_watch(&self, cx: &mut Cx) -> WidgetRef {
+        self.view.widget(cx, ids!(model_section)).widget(cx, ids!(issue_watch))
+    }
+    /// The detail page's own GitHub access block (same collision).
+    pub(super) fn detail_github_access(&self, cx: &mut Cx) -> WidgetRef {
+        self.view.widget(cx, ids!(model_section)).widget(cx, ids!(github_access))
+    }
     /// Opens the Agent at `index` in the native agent panel.
     pub(super) fn open_agent_panel(&mut self, cx: &mut Cx, index: usize) {
         let Some(a) = self.agents.get(index).cloned() else { return };
@@ -111,5 +122,28 @@ mod tests {
         panel.open_agent_panel(&mut cx, 0);
         let emitted = cx.capture_actions(|cx| assert!(!panel.leave_for_my_agents(cx)));
         assert!(emitted.is_empty());
+    }
+
+    /// Regression: the detail page's own issue-watch/GitHub blocks were looked
+    /// up by bare id, which found the native panel's copies first (the panel
+    /// sits earlier in the tree). Every `sync_navigation` then reset the open
+    /// panel's issue watching to "not on this device" with no Rooms.
+    #[test]
+    fn detail_page_settings_blocks_are_not_the_open_panels() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = panel(&mut cx);
+        panel.identity = "owner".into();
+        panel.agents = vec![json!({"id": "a", "displayName": "First"})];
+        panel.set_page(&mut cx, Page::Agents);
+        panel.open_agent_panel(&mut cx, 0);
+        let inner = panel.view.widget(&mut cx, ids!(agent_panel));
+        // The collision itself: a bare id resolves into the native panel.
+        assert_eq!(panel.view.widget(&mut cx, ids!(issue_watch)).widget_uid(), inner.widget(&mut cx, ids!(issue_watch)).widget_uid());
+        for id in [ids!(issue_watch), ids!(github_access)] {
+            let theirs = inner.widget(&mut cx, id).widget_uid();
+            assert_ne!(panel.view.widget(&mut cx, ids!(model_section)).widget(&mut cx, id).widget_uid(), theirs);
+        }
+        assert_ne!(panel.detail_issue_watch(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(issue_watch)).widget_uid());
+        assert_ne!(panel.detail_github_access(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(github_access)).widget_uid());
     }
 }

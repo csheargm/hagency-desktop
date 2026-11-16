@@ -329,8 +329,9 @@ fn visible_error(error: &str) -> String {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AgentDeviceState { Here, Other, Unassigned, Unavailable, Checking }
-fn agent_device_state(agent: &Value, current: &str, devices: &[Value], loaded: bool) -> AgentDeviceState {
+pub(crate) enum AgentDeviceState { Here, Other, Unassigned, Unavailable, Checking }
+/// The one device check: My Agents' badge and the native panel's `here` both use it.
+pub(crate) fn agent_device_state(agent: &Value, current: &str, devices: &[Value], loaded: bool) -> AgentDeviceState {
     if !loaded || current.is_empty() || agent["generation"].as_i64().is_none_or(|generation|generation <= 0) {return AgentDeviceState::Checking;}
     let Some(device) = agent["executionDeviceId"].as_str().filter(|id|!id.is_empty()) else {return AgentDeviceState::Unassigned;};
     let Some(record) = devices.iter().find(|d|string(d,"id") == device) else {return AgentDeviceState::Unavailable;};
@@ -1379,10 +1380,10 @@ impl HagencyPanel {
         let agent = self.agent(cx).unwrap_or_default();
         let bindings: Vec<Value> = self.bindings.iter().filter(|b| string(b, "agentId") == agent).cloned().collect();
         let rooms = super::issue_watch::choices::rooms(&bindings, |b| self.binding_label(cx, b));
-        use super::issue_watch::section::IssueWatchSectionWidgetExt;
-        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, Some(assigned_here), rooms);
-        use super::github_access::GithubAccessSectionWidgetExt;
-        self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
+        use super::issue_watch::section::IssueWatchSectionWidgetRefExt;
+        self.detail_issue_watch(cx).as_issue_watch_section().set_context(cx, &agent, Some(assigned_here), rooms);
+        use super::github_access::GithubAccessSectionWidgetRefExt;
+        self.detail_github_access(cx).as_github_access_section().set_context(cx, &agent);
     }
     fn binding_label(&self, cx:&mut Cx, binding:&Value)->String {
         if string(binding,"scopeKind") == "owner_direct" {return crate::i18n::tr("Private chat with this Agent").into();}
