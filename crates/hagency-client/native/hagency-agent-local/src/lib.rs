@@ -1183,7 +1183,7 @@ impl Ledger {
     /// the pinned command the runtime must run in its place (one check, so
     /// what runs is what was checked). `None`: ask as usual.
     // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
-    pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<String>> {
+    pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<watch_trust::TrustedStep>> {
         let Some(command) = watch_trust::pinned(&self.db, proposal, owner)? else { return Ok(None) };
         match self.tool_disposition(proposal, now) {
             Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
