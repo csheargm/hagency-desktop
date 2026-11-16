@@ -137,3 +137,20 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod review_cases {
+    /// GPT/Ollama review (Nov 15): dotted bearer tokens (JWT-like) and secrets
+    /// inside header values must not survive.
+    #[test]
+    fn dotted_bearer_tokens_are_hidden() {
+        for line in [
+            "curl -H 'Authorization: Bearer sk.secret1234567890abcd' https://api.example/",
+            "curl -H \"Authorization: Bearer eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl\" https://x/",
+            "curl -H 'X-Api-Key: a.b.c.secretvalue123' https://x/",
+        ] {
+            let out = super::redact(line);
+            assert!(!out.contains("secret1234567890abcd") && !out.contains("eyJzdWIiOi") && !out.contains("secretvalue123"), "{line} -> {out}");
+        }
+    }
+}
