@@ -143,3 +143,15 @@ fn short_bodies_are_quoted_and_long_ones_point_at_skill_read() {
     assert!(!block.contains("xxxx"), "a long body is never inlined");
     assert!(block.lines().skip(1).all(|line| line.starts_with('>')), "every skill line is quoted data");
 }
+
+/// Live finding: a skill card's fallback body read "agt_01m7k… proposes a new team skill".
+#[test]
+fn skill_proposal_fallback_body_names_the_agent_never_its_raw_id() {
+    let skill = Skill { name: "release".into(), description: "Cut a release".into(), body: "1. tag".into(), author: String::new(), rev: 0 };
+    let mut card = proposal::proposal_content("sk_1", &skill, "asked", "$e", "agt_01m7", true);
+    assert_eq!(card["body"], "Agent proposes an edit of team skill \"release\": Cut a release\nReason: asked");
+    proposal::name_proposal(&mut card, "demoup-claude");
+    let body = card["body"].as_str().unwrap();
+    assert!(body.starts_with("demoup-claude proposes an edit of team skill") && !body.contains("agt_"), "{body}");
+    assert_eq!(proposal::proposal_from_content(&card).unwrap().1.name, "release", "the card payload is unchanged");
+}

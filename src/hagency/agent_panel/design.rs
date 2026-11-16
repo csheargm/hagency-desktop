@@ -69,6 +69,14 @@ script_mod! {
             Card {
                 Title {text: #(crate::i18n::tr("Rooms")) i18n_text: "Rooms"}
                 rooms := Text {}
+                // Ticked: the Agent is in that room. Unticking makes it leave.
+                room_ticks := View {width: Fill height: Fit flow: Down spacing: 4
+                    room_tick_0 := CheckBox {visible: false} room_tick_1 := CheckBox {visible: false}
+                    room_tick_2 := CheckBox {visible: false} room_tick_3 := CheckBox {visible: false}
+                    room_tick_4 := CheckBox {visible: false} room_tick_5 := CheckBox {visible: false}
+                    room_tick_6 := CheckBox {visible: false} room_tick_7 := CheckBox {visible: false}
+                }
+                leave_open_room := Danger {visible: false text: #(crate::i18n::tr("Remove my agent from this room")) i18n_text: "Remove my agent from this room"}
                 Hint {text: #(crate::i18n::tr("Saved conversation contexts per room, each with Forget, come next.")) i18n_text: "Saved conversation contexts per room, each with Forget, come next."}
             }
         }
