@@ -35,11 +35,6 @@ fn trusted_repo(db: &Connection, proposal: &ToolProposal) -> crate::Result<Optio
     Ok(row.and_then(|(mode, repo, room, trusted)| (mode != "off" && trusted == 1 && room == proposal.scope.room).then_some(repo)))
 }
 
-/// True when the owner's push trust answers `proposal` without a card.
-pub(crate) fn allows(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<bool> {
-    Ok(pinned(db, proposal, owner)?.is_some())
-}
-
 /// The command that must run in place of `proposal`'s when push trust answers
 /// it. The Claude permission reply carries it as `updatedInput`, so what runs
 /// is exactly what was checked; Codex cannot do that, so it is never trusted.
@@ -72,9 +67,21 @@ pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<String>
             let push = git::Push::parse(rest)?;
             (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| push.pinned(&dir, repo))
         }
-        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| line.to_owned()),
+        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| pin_env(line)),
         _ => None,
     }
+}
+
+/// `command` run with git's hooks and helpers off, whatever the checkout's
+/// config says (`gh` runs git in the shell's directory).
+pub(crate) fn pin_env(command: &str) -> String {
+    let env: Vec<String> = crate::agent_env::GIT_HELPERS_OFF_ENV.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    format!("{} {command}", env.join(" "))
+}
+
+/// `word` in single quotes, safe for any POSIX shell.
+pub(crate) fn quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// `dir` (absolute, or relative to `root`) resolved to a directory inside `root`.

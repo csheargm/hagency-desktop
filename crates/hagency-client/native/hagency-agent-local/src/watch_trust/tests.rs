@@ -26,6 +26,9 @@ fn workspace() -> (tempfile::TempDir, PathBuf) {
     git(&repo, &["checkout", "-q", "-b", "docs/faq"]);
     (temp, root)
 }
+fn env_prefix() -> &'static str {
+    "GIT_CONFIG_COUNT='3' GIT_CONFIG_KEY_0='core.hooksPath' GIT_CONFIG_VALUE_0='/dev/null' GIT_CONFIG_KEY_1='core.fsmonitor' GIT_CONFIG_VALUE_1='false' GIT_CONFIG_KEY_2='commit.gpgSign' GIT_CONFIG_VALUE_2='false'"
+}
 fn allowed(line: &str, root: &Path) -> bool {
     pinned_line(line, root, REPO).is_some()
 }
@@ -56,12 +59,13 @@ fn the_push_runs_pinned_to_the_checked_destination() {
     let dir = root.join("app");
     let pinned = pinned_line(PUSH, &root, REPO).unwrap();
     let expected = format!(
-        "'git' '-C' '{}' '-c' 'core.hooksPath=/dev/null' '-c' 'core.fsmonitor=false' '-c' 'core.sshCommand=false' '-c' 'push.followTags=false' 'push' '--set-upstream' 'https://github.com/acme/app.git' 'refs/heads/docs/faq:refs/heads/docs/faq'",
+        "{} 'git' '-C' '{}' '-c' 'core.hooksPath=/dev/null' '-c' 'core.fsmonitor=false' '-c' 'core.sshCommand=false' '-c' 'push.followTags=false' 'push' '--set-upstream' 'https://github.com/acme/app.git' 'refs/heads/docs/faq:refs/heads/docs/faq'",
+        env_prefix(),
         dir.display()
     );
     assert_eq!(pinned, expected);
     let gh = "gh pr ready 28 --repo acme/app";
-    assert_eq!(pinned_line(gh, &root, REPO).as_deref(), Some(gh));
+    assert_eq!(pinned_line(gh, &root, REPO), Some(format!("{} {gh}", env_prefix())), "gh runs git with hooks and fsmonitor off");
 }
 
 /// GPT review P1s: branch switches before the push, the shell's persistent
@@ -172,23 +176,23 @@ fn only_the_watched_room_with_the_switch_on_skips_the_card() {
     let db = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(db.path().join("local.db"), OWNER).unwrap();
     let here = proposal(&root, ROOM, "claude.Bash", "high");
-    assert!(!allows(&ledger.db, &here, OWNER).unwrap(), "no watch");
+    assert!(!pinned(&ledger.db, &here, OWNER).unwrap().is_some(), "no watch");
     watch(&mut ledger, WatchMode::Trusted, false);
-    assert!(!allows(&ledger.db, &here, OWNER).unwrap(), "switch off (the default)");
+    assert!(!pinned(&ledger.db, &here, OWNER).unwrap().is_some(), "switch off (the default)");
     watch(&mut ledger, WatchMode::Trusted, true);
     assert!(ledger.issue_watch("a").unwrap().setting.push_trusted);
-    assert!(allows(&ledger.db, &here, OWNER).unwrap());
-    assert!(!allows(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap(), "another Room");
-    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Bash", "permission_expansion"), OWNER).unwrap());
-    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "codex.command", "high"), OWNER).unwrap(), "Codex cannot pin the command");
-    assert!(!allows(&ledger.db, &here, "@bob:example.org").unwrap(), "a non-owner requester asks");
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some());
+    assert!(!pinned(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap().is_some(), "another Room");
+    assert!(!pinned(&ledger.db, &proposal(&root, ROOM, "claude.Bash", "permission_expansion"), OWNER).unwrap().is_some());
+    assert!(!pinned(&ledger.db, &proposal(&root, ROOM, "codex.command", "high"), OWNER).unwrap().is_some(), "Codex cannot pin the command");
+    assert!(!pinned(&ledger.db, &here, "@bob:example.org").unwrap().is_some(), "a non-owner requester asks");
     let mut background = proposal(&root, ROOM, "claude.Bash", "high");
     background.arguments["run_in_background"] = json!(true);
-    assert!(!allows(&ledger.db, &background, OWNER).unwrap(), "a background call asks");
-    assert!(!allows(&ledger.db, &proposal(&root, ROOM, "claude.Write", "high"), OWNER).unwrap());
+    assert!(!pinned(&ledger.db, &background, OWNER).unwrap().is_some(), "a background call asks");
+    assert!(!pinned(&ledger.db, &proposal(&root, ROOM, "claude.Write", "high"), OWNER).unwrap().is_some());
     watch(&mut ledger, WatchMode::Off, true);
     assert!(!ledger.issue_watch("a").unwrap().setting.push_trusted, "switching the watch off drops the trust");
-    assert!(!allows(&ledger.db, &here, OWNER).unwrap());
+    assert!(!pinned(&ledger.db, &here, OWNER).unwrap().is_some());
 }
 
 /// The user flow: an Ask-owner Agent in the watched Room. The push and draft
@@ -221,20 +225,19 @@ fn ledger_skips_the_card_for_trusted_publishing_only() {
     let push = make(PUSH);
     let pr = make("gh pr create --draft --repo acme/app --title t --body b");
     let risky = [make("git -C app push -f origin docs/faq"), make("git -C app push origin main"), make("git switch -c master && git -C app push origin HEAD")];
-    assert_eq!(ledger.tool_disposition(&push, 11).unwrap(), ToolPolicy::AskOwner, "trust off: asks");
+    assert_eq!(ledger.trusted_publish(OWNER, &push, 11).unwrap(), None, "trust off: asks");
     watch(&mut ledger, WatchMode::Trusted, true);
-    for allowed in [&push, &pr] {
-        assert!(matches!(ledger.tool_disposition(allowed, 11).unwrap(), ToolPolicy::AllowWithRules { .. }));
-    }
-    let pinned = ledger.push_trust_command(OWNER, &push).unwrap().unwrap();
-    assert!(pinned.contains("'https://github.com/acme/app.git'"), "the runtime runs the pinned push: {pinned}");
     let mut stranger = push.clone();
     stranger.scope.requester = "@bob:example.org".into();
-    assert_eq!(ledger.push_trust_command(OWNER, &stranger).unwrap(), None);
+    assert_eq!(ledger.trusted_publish(OWNER, &stranger, 11).unwrap(), None, "a non-owner requester asks");
     for risky in &risky {
-        assert_eq!(ledger.tool_disposition(risky, 11).unwrap(), ToolPolicy::AskOwner);
+        assert_eq!(ledger.trusted_publish(OWNER, risky, 11).unwrap(), None);
         assert!(ledger.authorize_tool(risky, 11).is_err());
     }
+    // GPT review: one check authorizes and returns what must run.
+    let pinned = ledger.trusted_publish(OWNER, &push, 11).unwrap().unwrap();
+    assert!(pinned.contains("'https://github.com/acme/app.git'"), "the runtime runs the pinned push: {pinned}");
+    assert!(ledger.trusted_publish(OWNER, &pr, 11).unwrap().unwrap().starts_with("GIT_CONFIG_COUNT="));
 }
 
 /// Regression (live 2026-11-15): an Agent ran `cd <repo>` while already in it,

@@ -1046,17 +1046,16 @@ async fn permission(
     if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), &crate::merge_policy::github::GhCli).await {
         return ToolAnswer::allowed(allowed);
     }
+    // Owner push trust: checked once, authorized, and run exactly as pinned.
+    match ledger.trusted_publish(owner, &proposal, now()) {
+        Ok(Some(command)) => return ToolAnswer::AllowCommand(command),
+        Ok(None) => {}
+        Err(_) => return ToolAnswer::Deny,
+    }
     match ledger.tool_disposition(&proposal, now()) {
-        Ok(ToolPolicy::AllowWithRules { .. }) => match ledger.authorize_tool(&proposal, now()) {
-            Err(_) => ToolAnswer::Deny,
-            // Push trust answered it: run exactly the command it checked.
-            Ok(_) => match ledger.push_trust_command(owner, &proposal) {
-                Ok(Some(command)) => ToolAnswer::AllowCommand(command),
-                Ok(None) => ToolAnswer::Allow,
-                // Cannot tell whether trust answered it: refuse rather than run unpinned.
-                Err(_) => ToolAnswer::Deny,
-            },
-        },
+        Ok(ToolPolicy::AllowWithRules { .. }) => {
+            ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
+        }
         Ok(ToolPolicy::AskOwner) => {
             let (pending, decision) = codex::pending_approval(proposal.clone());
             if !queue.offer(pending) {

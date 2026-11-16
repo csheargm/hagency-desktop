@@ -1179,10 +1179,20 @@ impl Ledger {
         read().unwrap_or(false)
     }
     /// Read the effective current+dispatch-initial policy without consuming confirmation.
-    /// The pinned command owner push trust answers `proposal` with, if any:
-    /// the runtime must run it in place of the requested one.
-    pub fn push_trust_command(&self, owner: &str, proposal: &ToolProposal) -> Result<Option<String>> {
-        watch_trust::pinned(&self.db, proposal, owner)
+    /// Owner push trust: when it answers `proposal`, authorize it and return
+    /// the pinned command the runtime must run in its place (one check, so
+    /// what runs is what was checked). `None`: ask as usual.
+    // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
+    pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<String>> {
+        let Some(command) = watch_trust::pinned(&self.db, proposal, owner)? else { return Ok(None) };
+        match self.tool_disposition(proposal, now) {
+            Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
+            Ok(ToolPolicy::Deny) | Err(Error::Denied) => return Ok(None),
+            Ok(_) => {}
+            Err(other) => return Err(other),
+        }
+        self.authorize_tool(proposal, now)?;
+        Ok(Some(command))
     }
 
     pub fn tool_disposition(&mut self, proposal: &ToolProposal, now: i64) -> Result<ToolPolicy> {
@@ -1423,9 +1433,6 @@ fn validate_tool(
             // "Ask only for outside changes" (this Agent, this device) skips the
             // question for a request that cannot leave the workspace.
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
-            // Issue-watch push trust (owner opt-in): publishing a branch or PR to the watched repository.
-            // TODO(R4): lib.rs is over budget; move these approval shortcuts with the tool methods.
-            ToolPolicy::AskOwner if watch_trust::allows(db, proposal, owner)? => {}
             // "Always allow": the owner remembered exactly this request here.
             ToolPolicy::AskOwner if remembered::remembered(db, proposal, saved_mode(db, &proposal.scope.agent)?.as_deref(), now)? => {}
             ToolPolicy::AskOwner => effective.high_risk = ToolPolicy::AskOwner,

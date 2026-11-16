@@ -63,13 +63,8 @@ impl<'a> Push<'a> {
         }
         words.push(format!("https://github.com/{repo}.git"));
         words.push(format!("refs/heads/{0}:refs/heads/{0}", self.branch));
-        words.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
+        super::pin_env(&words.iter().map(|w| super::quote(w)).collect::<Vec<_>>().join(" "))
     }
-}
-
-/// `word` in single quotes, safe for any shell.
-fn quote(word: &str) -> String {
-    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// A plain remote name (never a URL or path).
