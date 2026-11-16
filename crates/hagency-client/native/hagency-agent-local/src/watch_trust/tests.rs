@@ -51,21 +51,16 @@ fn a_named_branch_push_and_named_repo_prs_are_allowed() {
     }
 }
 
-/// The pinned push names the checked checkout, the watched repository's URL
-/// and an explicit refspec, so config written after the check cannot steer it.
+/// The push is the host's: it names the checked checkout, branch and the
+/// watched repository, so config written after the check cannot steer it.
 #[test]
-fn the_push_runs_pinned_to_the_checked_destination() {
+fn the_push_is_run_by_the_host_to_the_checked_destination() {
     let (_t, root) = workspace();
     let dir = root.join("app");
-    let pinned = pinned_line(PUSH, &root, REPO).unwrap();
-    let expected = format!(
-        "{} 'git' '-C' '{}' '-c' 'core.hooksPath=/dev/null' '-c' 'core.fsmonitor=false' '-c' 'core.sshCommand=false' '-c' 'push.followTags=false' 'push' '--set-upstream' 'https://github.com/acme/app.git' 'refs/heads/docs/faq:refs/heads/docs/faq'",
-        env_prefix(),
-        dir.display()
-    );
-    assert_eq!(pinned, expected);
+    let push = host_git::HostStep::Push { dir, remote: "origin".into(), branch: "docs/faq".into(), repo: REPO.into(), upstream: true };
+    assert_eq!(pinned_line(PUSH, &root, REPO), Some(TrustedStep::Host(push)));
     let gh = "gh pr ready 28 --repo acme/app";
-    assert_eq!(pinned_line(gh, &root, REPO), Some(format!("{} {gh}", env_prefix())), "gh runs git with hooks and fsmonitor off");
+    assert_eq!(pinned_line(gh, &root, REPO), Some(TrustedStep::Command(format!("{} {gh}", env_prefix()))), "gh runs git with hooks and fsmonitor off");
 }
 
 /// GPT review P1s: branch switches before the push, the shell's persistent
@@ -236,9 +231,10 @@ fn ledger_skips_the_card_for_trusted_publishing_only() {
         assert!(ledger.authorize_tool(risky, 11).is_err());
     }
     // GPT review: one check authorizes and returns what must run.
-    let pinned = ledger.trusted_publish(OWNER, &push, 11).unwrap().unwrap();
-    assert!(pinned.contains("'https://github.com/acme/app.git'"), "the runtime runs the pinned push: {pinned}");
-    assert!(ledger.trusted_publish(OWNER, &pr, 11).unwrap().unwrap().starts_with("GIT_CONFIG_COUNT="));
+    let step = ledger.trusted_publish(OWNER, &push, 11).unwrap().unwrap();
+    assert!(matches!(&step, TrustedStep::Host(host_git::HostStep::Push { repo, .. }) if repo == REPO), "the host runs the push: {step:?}");
+    let Some(TrustedStep::Command(pr)) = ledger.trusted_publish(OWNER, &pr, 11).unwrap() else { panic!("gh pr create is pinned") };
+    assert!(pr.starts_with("GIT_CONFIG_COUNT="));
 }
 
 /// Regression (live 2026-11-15): an Agent ran `cd <repo>` while already in it,
@@ -271,4 +267,27 @@ fn risky_push_config_asks() {
     git(&repo, &["config", "--unset", "push.followTags"]);
     git(&repo, &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
     assert!(!allowed(line, &root), "default branch unknown");
+}
+
+/// Issue fix flow: file edits inside the workspace skip the card in the
+/// watched Room; git metadata, outside paths and other Rooms still ask.
+#[test]
+fn workspace_edits_are_trusted_only_in_the_watched_room() {
+    let (_t, root) = workspace();
+    let db = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(db.path().join("local.db"), OWNER).unwrap();
+    let edit = |room: &str, path: &str| {
+        let mut p = proposal(&root, room, "claude.Edit", "high");
+        p.arguments = json!({"file_path": path, "old_string": "a", "new_string": "b"});
+        p
+    };
+    let readme = root.join("app/README.md").to_string_lossy().into_owned();
+    assert_eq!(pinned(&ledger.db, &edit(ROOM, &readme), OWNER).unwrap(), None, "no trust");
+    watch(&mut ledger, WatchMode::Trusted, true);
+    assert_eq!(pinned(&ledger.db, &edit(ROOM, &readme), OWNER).unwrap(), Some(TrustedStep::Allow));
+    assert_eq!(pinned(&ledger.db, &edit(ROOM, "app/docs/faq.md"), OWNER).unwrap(), Some(TrustedStep::Allow));
+    for path in ["app/.git/config", "app/.gitattributes", "/etc/hosts", "../x.md"] {
+        assert_eq!(pinned(&ledger.db, &edit(ROOM, path), OWNER).unwrap(), None, "{path}");
+    }
+    assert_eq!(pinned(&ledger.db, &edit("!other:example.org", &readme), OWNER).unwrap(), None);
 }

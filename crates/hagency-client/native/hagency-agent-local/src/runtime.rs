@@ -1046,9 +1046,10 @@ async fn permission(
     if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), &crate::merge_policy::github::GhCli).await {
         return ToolAnswer::allowed(allowed);
     }
-    // Owner push trust: checked once, authorized, and run exactly as pinned.
+    // Owner push trust: checked once, authorized, and run exactly as pinned;
+    // network and branch steps are run by the host itself (ADR 0015).
     match ledger.trusted_publish(owner, &proposal, now()) {
-        Ok(Some(command)) => return ToolAnswer::AllowCommand(command),
+        Ok(Some(step)) => return trusted_answer(step).await,
         Ok(None) => {}
         Err(_) => return ToolAnswer::Deny,
     }
@@ -2051,6 +2052,20 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
         .unwrap_or(path)
 }
 
+/// The answer for a push-trust step; a host step runs here, off the async
+/// threads, and the call only reports its outcome.
+async fn trusted_answer(step: crate::watch_trust::TrustedStep) -> claude_turn::ToolAnswer {
+    use crate::watch_trust::{TrustedStep, host_git};
+    match step {
+        TrustedStep::Allow => claude_turn::ToolAnswer::Allow,
+        TrustedStep::Command(command) => claude_turn::ToolAnswer::AllowCommand(command),
+        TrustedStep::Host(step) => {
+            let result = tokio::task::spawn_blocking(move || step.run()).await.unwrap_or_else(|e| Err(e.to_string()));
+            claude_turn::ToolAnswer::AllowCommand(host_git::report_command(&result))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2206,3 +2221,4 @@ read rest"#,
         }
     }
 }
+

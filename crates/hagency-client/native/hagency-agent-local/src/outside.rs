@@ -57,7 +57,7 @@ fn path_in(value: Option<&Value>, cwd: &Path, absent_ok: bool) -> bool {
 /// A write target inside `cwd` that is not git metadata: a `.git` directory
 /// (config, hooks) or a `.gitattributes`/`.gitmodules`/`.gitconfig` file can make
 /// a later auto-allowed git command run a program, so those writes ask.
-fn writable_in(value: Option<&Value>, cwd: &Path) -> bool {
+pub(crate) fn writable_in(value: Option<&Value>, cwd: &Path) -> bool {
     let Some(path) = value.and_then(Value::as_str) else { return false };
     let joined = shell::lexical_join(cwd, path);
     let real = std::fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
