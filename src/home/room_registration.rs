@@ -62,8 +62,15 @@ where
     lookup().await
 }
 
+/// One registration at a time in this app, so two concurrent ones cannot both
+/// see "not linked" and one roll back the link the other is using. (An edit
+/// made in another client in between is not covered: Matrix state has no
+/// compare-and-set; the window is one state read.)
+static REGISTERING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// [`context_registering`] against the signed-in Matrix client and owner.
 pub async fn agents_for_room(service: &Service, room: &str) -> Result<Value, String> {
+    let _one_at_a_time = REGISTERING.lock().await;
     context_registering(
         room,
         || service.agents_for_registered_room(room),
