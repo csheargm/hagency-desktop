@@ -127,6 +127,8 @@ async fn a_trusted_reviewers_github_approval_counts_only_on_the_exact_head() {
     assert_eq!(merge!(&src).await, None, "an untrusted reviewer");
     src.reviews = None;
     assert_eq!(merge!(&src).await, None, "reviews unreadable");
+    src.reviews = Some(vec![("carl".into(), "APPROVED".into(), HEAD.into()), ("carl".into(), "UNBOUND".into(), HEAD.into())]);
+    assert_eq!(merge!(&src).await, None, "a later approval that does not name its head is not counted");
     src.reviews = Some(vec![("Carl".into(), "APPROVED".into(), HEAD.into())]);
     assert_eq!(merge!(&src).await, Some(true));
 }

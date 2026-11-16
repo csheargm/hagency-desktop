@@ -52,15 +52,23 @@ pub async fn fetch_permission(client: &Client, api: &str, repo: &str, login: &st
     parse_permission(&get(client, &format!("{api}/repos/{repo}/collaborators/{login}/permission"), token).await?)
 }
 
-/// An issue's comments (first page: a claim is posted early).
+/// All of an issue's comments, oldest first, following full pages up to the
+/// engine's page cap: a claim may sit beyond the first page.
 pub async fn fetch_comments(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<Vec<Comment>, FetchError> {
-    parse_comments(&get(client, &comments_url(api, repo, number)?, token).await?)
+    let mut comments = Vec::new();
+    let mut page = Some(1);
+    while let Some(current) = page {
+        let batch = parse_comments(&get(client, &comments_url(api, repo, number, current)?, token).await?)?;
+        page = next_page(current, batch.len());
+        comments.extend(batch);
+    }
+    Ok(comments)
 }
 
 /// Post a comment on an issue with the owner's own token (the claim).
 pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, token: &str, body: &str) -> Result<(), FetchError> {
     let http = |e: reqwest::Error| FetchError::Http(e.to_string());
-    let url = comments_url(api, repo, number)?;
+    let url = comments_url(api, repo, number, 1)?;
     let url = url.split('?').next().unwrap_or_default();
     let response = client.post(url).bearer_auth(token).header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)

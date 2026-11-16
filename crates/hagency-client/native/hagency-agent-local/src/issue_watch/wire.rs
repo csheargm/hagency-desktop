@@ -180,11 +180,11 @@ pub fn claim_holder(comments: &[Comment], now: i64) -> Option<&str> {
 }
 
 /// The URL of an issue's comments (`repo` checked as everywhere here).
-pub fn comments_url(api: &str, repo: &str, number: i64) -> Result<String, FetchError> {
+pub fn comments_url(api: &str, repo: &str, number: i64, page: u32) -> Result<String, FetchError> {
     if !super::valid_repo(repo) || number <= 0 {
         return Err(FetchError::Repo(repo.to_owned()));
     }
-    Ok(format!("{api}/repos/{repo}/issues/{number}/comments?per_page={PAGE_SIZE}"))
+    Ok(format!("{api}/repos/{repo}/issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"))
 }
 
 /// `login` and `permission` of `GET /repos/{repo}/collaborators/{login}/permission`.

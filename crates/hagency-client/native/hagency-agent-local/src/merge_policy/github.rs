@@ -103,13 +103,13 @@ pub trait PrSource {
     }
 }
 
-/// Whether some GitHub user's latest decisive review (APPROVED,
+/// Whether some GitHub user's latest decisive review (APPROVED, UNBOUND,
 /// CHANGES_REQUESTED or DISMISSED; comments do not change it) approves
 /// exactly `head`.
 pub fn approved_on(reviews: &[(String, String, String)], head: &str) -> bool {
     let mut latest: std::collections::HashMap<&str, (&str, &str)> = std::collections::HashMap::new();
     for (login, state, commit) in reviews {
-        if matches!(state.as_str(), "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+        if matches!(state.as_str(), "APPROVED" | "UNBOUND" | "CHANGES_REQUESTED" | "DISMISSED") {
             latest.insert(login, (state, commit));
         }
     }
@@ -155,7 +155,10 @@ impl PrSource for GhCli {
 }
 
 /// One review per line for [`parse_reviews`].
-const REVIEW_FIELDS: &str = ".[] | [.user.login, .state, .commit_id] | @tsv";
+/// An APPROVED review whose body does not name the commit GitHub attached it
+/// to reads as `UNBOUND`: the reviewer may have read another head (a push
+/// can land between its read and its `gh pr review`), so it never counts.
+const REVIEW_FIELDS: &str = ".[] | . as $r | [$r.user.login, (if $r.state == \"APPROVED\" and (($r.body // \"\") | contains($r.commit_id)) then \"APPROVED\" elif $r.state == \"APPROVED\" then \"UNBOUND\" else $r.state end), $r.commit_id] | @tsv";
 
 async fn pull_request(command: &GhPr) -> Option<PrView> {
     let number = command.number.to_string();

@@ -88,7 +88,10 @@ Separation and approvals:
 - An optional `reviewers=` list counts a trusted login's GitHub review when
   that login's latest decisive review APPROVES exactly the merged head. It
   never counts the PR author's own review. An unreadable review list counts
-  nothing.
+  nothing. An APPROVED review whose body does not name the commit GitHub
+  attached it to reads as `UNBOUND` and never counts: `gh pr review` cannot
+  pin a commit, so a push between the reviewer's read and its review would
+  otherwise attach an approval to an unread head.
 - The author must be on `authors=` (`*` = anyone), or be this owner's own login.
 - An approving review skips the card only if its body names the current head
   SHA (`review_names_head`). This is the commit the reviewer read; an

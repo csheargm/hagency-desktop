@@ -223,5 +223,5 @@ fn the_earliest_unexpired_claim_holds_an_issue() {
     assert_eq!(claim_holder(&comments, now), Some("betty"));
     assert_eq!(claim_holder(&comments[..1], now), None, "an ordinary comment is no claim");
     assert_eq!(claim_holder(&comments, comments[1].created_at + CLAIM_EXPIRY_SECS + 1), Some("anna"), "betty's claim expired");
-    assert!(comments_url("https://api.github.com", "acme/app", 0).is_err());
+    assert!(comments_url("https://api.github.com", "acme/app", 0, 1).is_err());
 }
