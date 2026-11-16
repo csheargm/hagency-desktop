@@ -1,7 +1,7 @@
 use super::*;
 use hagency_runtime::room_memory::PowerLevels;
 use hagency_runtime::room_memory_timeline::TimelineScan;
-use hagency_runtime::room_skills::{INDEX_HEADER, NO_SKILLS_NOTE, SKILL_RESULT_BYTES, SKILL_STATE_TYPE, content};
+use hagency_runtime::room_skills::{inline::INLINE_HEADER, NO_SKILLS_NOTE, SKILL_RESULT_BYTES, SKILL_STATE_TYPE, content};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
@@ -56,9 +56,9 @@ async fn added_edited_deleted_skill_reaches_the_agent_in_both_storages() {
         assert_eq!(index(&room).await.as_deref(), Some(NO_SKILLS_NOTE), "no skills says none");
         room.write("@amy:x", &skill("release-notes", "Use three bullets.", 1), false);
         let injected = index(&room).await.unwrap();
-        assert!(injected.starts_with(INDEX_HEADER));
+        assert!(injected.starts_with(INLINE_HEADER));
         assert!(injected.contains("> release-notes: How we do release-notes"));
-        assert!(!injected.contains("three bullets"), "the index never carries bodies");
+        assert!(injected.contains(">     Use three bullets."), "a short body is inlined as quoted data");
         assert_eq!(read(&room, "release-notes").await["body"], "Use three bullets.");
 
         room.write("@amy:x", &skill("release-notes", "Use five bullets.", 2), false);

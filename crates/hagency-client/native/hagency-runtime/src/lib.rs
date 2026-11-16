@@ -15,5 +15,6 @@ pub mod task_mcp;
 pub mod room_memory;
 pub mod room_memory_timeline;
 pub mod room_skills;
+pub mod room_context;
 pub mod room_tools;
 pub mod live_text;

@@ -39,7 +39,7 @@ fn current(room: &MemoryRoom) -> Vec<Skill> {
 /// failed turn.
 pub(super) async fn index<I: SkillIo>(io: &I) -> Option<String> {
     let room = io.room().await.ok()?;
-    skills::render_index(&current(&room))
+    Some(skills::render_inline(&current(&room)))
 }
 
 pub(super) async fn handle<I: SkillIo>(io: &I, operation: &SkillOperation) -> String {

@@ -215,10 +215,7 @@ impl Host {
             };
             let memory_block = memory::block(&*state.source).await;
             let skill_index = skills::index(&*state.source).await;
-            let memory_block = match (memory_block, skill_index) {
-                (Some(memory), Some(index)) => Some(format!("{memory}\n\n{index}")),
-                (memory, index) => memory.or(index),
-            };
+            let memory_block = hagency_runtime::room_context::join(memory_block, skill_index);
             // Native warm and cold sessions own their conversation history.
             // Leave earlier room pages for explicit reads instead of appending
             // the same recent transcript to every new user turn.
