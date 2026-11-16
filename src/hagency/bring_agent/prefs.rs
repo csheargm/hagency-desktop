@@ -12,6 +12,8 @@ pub(crate) const FILE_NAME: &str = "agent_follow.json";
 const VERSION: u32 = 1;
 /// More (room, Agent) pairs than anyone joins by hand; a hostile file cannot grow past it.
 const MAX_HANDLED: usize = 8192;
+/// Failed catch-up passes (each with its own bounded retries) before a pair is given up.
+pub(crate) const MAX_CATCH_UP_FAILURES: u32 = 5;
 /// Serializes load-modify-save between the UI thread and backend tasks.
 static WRITE: Mutex<()> = Mutex::new(());
 
@@ -25,9 +27,14 @@ pub(crate) struct Prefs {
     /// one add (or one prompt) per Agent per room.
     #[serde(default)]
     handled: BTreeSet<String>,
-    /// Agent ids that already joined the owner's earlier rooms once.
+    /// Agent ids whose earlier rooms were chosen explicitly (Create agent
+    /// checklist): the catch-up never adds them.
     #[serde(default)]
     caught_up: BTreeSet<String>,
+    /// Catch-up passes that failed to bind a pair, by pair; at
+    /// [`MAX_CATCH_UP_FAILURES`] the pair is given up and noticed.
+    #[serde(default)]
+    catch_up_failures: BTreeMap<String, u32>,
     #[serde(skip)]
     corrupt: bool,
 }
@@ -60,7 +67,7 @@ impl Prefs {
         Self { corrupt: true, ..Self::default() }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), corrupt: false };
+        let file = Prefs { version: VERSION, join_rooms: self.join_rooms.clone(), handled: self.handled.clone(), caught_up: self.caught_up.clone(), catch_up_failures: self.catch_up_failures.clone(), corrupt: false };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -89,6 +96,26 @@ impl Prefs {
         if self.corrupt || self.caught_up.contains(agent_id) { return Ok(false); }
         if self.caught_up.len() >= MAX_HANDLED { return Err("too_many_room_choices".into()); }
         Ok(self.caught_up.insert(agent_id.to_owned()))
+    }
+    /// Whether the catch-up should still try this pair (never once given up).
+    pub fn catch_up_pending(&self, room_id: &str, agent_id: &str) -> bool {
+        !self.is_handled(room_id, agent_id) && self.catch_up_failures.get(&pair(room_id, agent_id)).is_none_or(|n| *n < MAX_CATCH_UP_FAILURES)
+    }
+    /// One more failed pass for the pair; returns true when this gave it up.
+    pub fn note_catch_up_failure(&mut self, room_id: &str, agent_id: &str) -> bool {
+        if self.catch_up_failures.len() >= MAX_HANDLED { return false; }
+        let count = self.catch_up_failures.entry(pair(room_id, agent_id)).or_insert(0);
+        *count = count.saturating_add(1);
+        *count == MAX_CATCH_UP_FAILURES
+    }
+    /// The pair settled: forget its failures.
+    pub fn clear_catch_up_failures(&mut self, room_id: &str, agent_id: &str) {
+        self.catch_up_failures.remove(&pair(room_id, agent_id));
+    }
+    /// Rooms the catch-up gave up on for this Agent.
+    pub fn catch_up_given_up(&self, agent_id: &str) -> usize {
+        let suffix = format!(" {agent_id}");
+        self.catch_up_failures.iter().filter(|(key, n)| key.ends_with(&suffix) && **n >= MAX_CATCH_UP_FAILURES).count()
     }
     /// Records the pair; false when it was already handled (nothing to do again).
     pub fn claim(&mut self, room_id: &str, agent_id: &str) -> Result<bool, String> {

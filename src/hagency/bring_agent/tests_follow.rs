@@ -116,3 +116,28 @@ fn only_success_or_a_definitive_refusal_settles_a_pair() {
     drop(first); // also what an aborted bind task does
     assert!(begin("!r:s agt_1").is_some(), "the pair is free again");
 }
+
+/// Owner ask: a failed catch-up join stays pending (also across a restart)
+/// and is given up, with a notice, only after the cap.
+#[test]
+fn a_failed_catch_up_join_is_retried_across_restarts_until_the_cap() {
+    use super::super::prefs::MAX_CATCH_UP_FAILURES;
+    let path = temp_file("catch_up_retry");
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.catch_up_pending("!dev:s", "agt_anna"));
+    assert!(!prefs.note_catch_up_failure("!dev:s", "agt_anna"));
+    prefs.save(&path).unwrap();
+    // Restart mid-catch-up: the room is still pending.
+    let mut prefs = Prefs::load(&path);
+    assert!(prefs.catch_up_pending("!dev:s", "agt_anna"), "a failed join is retried later");
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 0);
+    for _ in 2..MAX_CATCH_UP_FAILURES { assert!(!prefs.note_catch_up_failure("!dev:s", "agt_anna")); }
+    assert!(prefs.note_catch_up_failure("!dev:s", "agt_anna"), "the cap gives it up once");
+    assert!(!prefs.catch_up_pending("!dev:s", "agt_anna"));
+    assert_eq!(prefs.catch_up_given_up("agt_anna"), 1);
+    // Success on another room settles it and forgets failures.
+    prefs.note_catch_up_failure("!ops:s", "agt_anna");
+    prefs.clear_catch_up_failures("!ops:s", "agt_anna");
+    prefs.claim("!ops:s", "agt_anna").unwrap();
+    assert!(!prefs.catch_up_pending("!ops:s", "agt_anna"), "a settled room is never re-joined");
+}

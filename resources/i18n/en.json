@@ -3492,5 +3492,6 @@
   "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them": "Stop all your agents on this device: stop their runs, deny their waiting approvals and pause them",
   "Resume the agents you paused with Stop all agents": "Resume the agents you paused with Stop all agents",
   "Read whether you paused your agents on this device": "Read whether you paused your agents on this device",
-  "Your agents": "Your agents"
+  "Your agents": "Your agents",
+  "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room."
 }

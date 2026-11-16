@@ -98,24 +98,44 @@ async fn catch_up(epoch: u64) -> Result<(), String> {
     let agents = active_agents(&Service::for_current()?.execute(Command::Agents).await?);
     let saved = prefs::load_current();
     for agent in agents.into_iter().filter(|a| saved.joins_rooms(&a.id) && saved.needs_catch_up(&a.id)) {
-        // Every room is read before anything is recorded: a room still loading
-        // fails this pass, and the Agent is caught up on a later listing.
-        let mut joins = Vec::new();
+        // Nothing is recorded per Agent: each room is settled on its own, so a
+        // room still loading, a failed join or a restart leaves it for the next pass.
         for room in client.joined_rooms() {
             if epoch != crate::account_session::epoch() { return Err("account_changed".into()); }
-            let owner_created = room.creators().is_some_and(|c| c.contains(&me));
-            if !owner_created { continue; }
-            let facts = room_facts(&room, &agent).await?;
-            if should_catch_up(true, saved.is_handled(room.room_id().as_str(), &agent.id), true, facts) {
-                joins.push((room.room_id().to_owned(), RoomNameId::from_room(&room).await.to_string()));
+            let room_id = room.room_id().to_owned();
+            if !room.creators().is_some_and(|c| c.contains(&me)) || !saved.catch_up_pending(room_id.as_str(), &agent.id) { continue; }
+            let Ok(facts) = room_facts(&room, &agent).await else { continue };
+            if facts.agent_present {
+                // Already there: settled without a bind.
+                let _ = claim(&room_id, &agent);
+            } else if should_catch_up(true, false, true, facts) {
+                let name = RoomNameId::from_room(&room).await.to_string();
+                catch_up_bind(room_id, agent.clone(), name);
             }
         }
-        // Each pair is recorded only when its bind settles (`follow_bind`), so a
-        // failed bind is retried by the next join of that room.
-        if !prefs::update_current(|prefs| prefs.claim_catch_up(&agent.id))? { continue; }
-        for (room_id, name) in joins { follow_bind(room_id, agent.clone(), name); }
     }
     Ok(())
+}
+
+/// One catch-up bind: settled pairs are recorded; a failure counts toward the
+/// cap and stays pending for the next pass (startup, Agents listing).
+fn catch_up_bind(room_id: OwnedRoomId, agent: AgentPick, room: String) {
+    let key = prefs::pair(room_id.as_str(), &agent.id);
+    let Some(in_flight) = retry::begin(&key) else { return };
+    let epoch = crate::account_session::epoch();
+    crate::account_session::spawn(async move {
+        let result = bind_with_retries(epoch, &room_id, &agent.puppet).await;
+        drop(in_flight);
+        let (r, a) = (room_id.as_str(), agent.id.as_str());
+        let saved = if retry::bind_settles(&result) {
+            prefs::update_current(|p| { p.clear_catch_up_failures(r, a); p.claim(r, a).map(|_| ()) })
+        } else {
+            prefs::update_current(|p| { p.note_catch_up_failure(r, a); Ok(()) })
+        };
+        if let Err(code) = saved { warning!("Bring agent: catch-up of {a} in {r} not recorded: {code}"); }
+        // Failures stay quiet here; the Agent panel notes rooms given up on.
+        if result.is_ok() { Cx::post_action(BindDone { epoch, agent: agent.name, room, result }); }
+    });
 }
 
 /// Records the pair as handled; false when it already was. A failed save

@@ -115,6 +115,12 @@ pub(crate) fn skip_catch_up(agent_id: &str) {
     }
 }
 
+/// The Agent panel's quiet notice: earlier rooms the catch-up gave up on.
+pub(crate) fn catch_up_notice(agent_id: &str) -> Option<String> {
+    let given_up = prefs::load_current().catch_up_given_up(agent_id);
+    (given_up > 0).then(|| crate::i18n::format("Could not join {count} of your earlier rooms. Use Add agent in each room.", &[("count", given_up.to_string())]))
+}
+
 /// Saves this Agent's "Join rooms I join" for the signed-in account.
 pub(crate) fn save_joins_rooms(agent_id: &str, on: bool) -> Result<(), String> {
     prefs::update_current(|prefs| { prefs.set_joins_rooms(agent_id, on); Ok(()) })
