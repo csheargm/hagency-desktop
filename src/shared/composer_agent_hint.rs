@@ -102,6 +102,7 @@ fn refresh_if_stale() {
 struct HintBound {
     hint: WidgetUid,
     epoch: u64,
+    room: OwnedRoomId,
     agent: OwnAgent,
     ok: bool,
 }
@@ -150,9 +151,9 @@ impl Widget for ComposerAgentHint {
 impl ComposerAgentHint {
     fn add_shown(&mut self, cx: &mut Cx) {
         let (Some(agent), Some((room_id, room_name))) = (self.shown.take(), self.room.clone()) else { return };
-        let (hint, epoch, bound) = (self.widget_uid(), crate::account_session::epoch(), agent.clone());
+        let (hint, epoch, bound, room) = (self.widget_uid(), crate::account_session::epoch(), agent.clone(), room_id.clone());
         crate::hagency::bring_agent::bind_into_rooms_then(agent.name, agent.puppet.to_string(), vec![(room_id.to_string(), room_name)], move |result| {
-            Cx::post_action(HintBound { hint, epoch, agent: bound.clone(), ok: result.is_ok() });
+            Cx::post_action(HintBound { hint, epoch, room: room.clone(), agent: bound.clone(), ok: result.is_ok() });
         });
         self.added.push(agent.puppet);
         self.show(cx, None);
@@ -189,7 +190,9 @@ impl ComposerAgentHintRef {
 
     /// The Agent this hint added once its bind succeeded, if `actions` carry it.
     pub(super) fn added(&self, actions: &Actions) -> Option<OwnAgent> {
-        bound_here(actions, self.widget_uid()).filter(|b| b.ok).map(|b| b.agent.clone())
+        let room = self.borrow().and_then(|inner| inner.room.as_ref().map(|(id, _)| id.clone()))?;
+        // A bind for the room the user has since left must not mention here.
+        bound_here(actions, self.widget_uid()).filter(|b| b.ok && b.room == room).map(|b| b.agent.clone())
     }
 
     /// Re-evaluates the hint for the current draft `text`.
