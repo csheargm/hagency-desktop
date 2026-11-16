@@ -144,10 +144,34 @@ impl Widget for LogoutConfirmModal {
     }
 }
 
+impl LogoutConfirmModal {
+    /// After the point of no return the only way on is to quit: say so with the
+    /// app's name, and label the (filled red) button in a colour readable on it.
+    fn show_quit_required(&mut self, cx: &mut Cx, message: &str) {
+        let app = crate::window_title::APP_NAME.to_string();
+        self.label(cx, ids!(title)).set_text(cx, &quit_required_title());
+        self.set_message(cx, message);
+        let mut confirm_button = self.button(cx, ids!(confirm_button));
+        confirm_button.set_text(cx, &crate::i18n::format("Quit {0}", &[("0", app)]));
+        script_apply_eval!(cx, confirm_button, {
+            draw_bg +: { color: mod.widgets.COLOR_FG_DANGER_RED }
+            draw_text +: { color: mod.widgets.COLOR_PRIMARY, color_hover: mod.widgets.COLOR_PRIMARY, color_down: mod.widgets.COLOR_PRIMARY }
+            draw_icon +: { color: mod.widgets.COLOR_PRIMARY }
+        });
+        confirm_button.set_enabled(cx, true);
+        self.button(cx, ids!(cancel_button)).set_visible(cx, false);
+    }
+}
+
+/// "Logout error, please restart Hagency." in the UI language.
+fn quit_required_title() -> String {
+    crate::i18n::format("Logout error, please restart {0}.", &[("0", crate::window_title::APP_NAME.to_string())])
+}
+
 impl WidgetMatchEvent for LogoutConfirmModal {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
         let cancel_button = self.button(cx, ids!(cancel_button));
-        let mut confirm_button = self.button(cx, ids!(confirm_button));
+        let confirm_button = self.button(cx, ids!(confirm_button));
 
         let modal_dismissed = actions.iter().any(|a| matches!(a.downcast_ref(), Some(ModalAction::Dismissed)));
         let cancel_clicked = cancel_button.clicked(actions);
@@ -208,19 +232,7 @@ impl WidgetMatchEvent for LogoutConfirmModal {
                     self.running = false;
                     self.running_epoch = None;
                     if is_logout_past_point_of_no_return() {
-                        self.label(cx, ids!(title)).set_text(cx, crate::i18n::tr("Logout error, please restart Rinx."));
-                        self.set_message(cx, &crate::i18n::format("Logout failed: {0}", &[("0", error.clone())]));
-
-                        confirm_button.set_text(cx, crate::i18n::tr("Restart now"));
-                        script_apply_eval!(cx, confirm_button, {
-                            draw_bg +: {
-                                color: mod.widgets.COLOR_FG_DANGER_RED
-                            }
-                        });
-                        confirm_button.set_enabled(cx, true);
-
-                        cancel_button.set_visible(cx, false);
-
+                        self.show_quit_required(cx, &crate::i18n::format("Logout failed: {0}", &[("0", error.clone())]));
                     } else {
                         self.set_message(cx, &crate::i18n::format("Logout failed: {0}", &[("0", (error).to_string())]));
                         confirm_button.set_text(cx, crate::i18n::tr("Okay"));
@@ -236,17 +248,7 @@ impl WidgetMatchEvent for LogoutConfirmModal {
                     if *epoch != crate::account_session::epoch() { continue; }
                     self.running = false;
                     self.running_epoch = None;
-                    self.label(cx, ids!(title)).set_text(cx, crate::i18n::tr("Logout error, please restart Rinx."));
-                    self.set_message(cx, "Application is in an inconsistent state and needs to be restarted to continue.");
-
-                    confirm_button.set_text(cx, crate::i18n::tr("Restart now"));
-                    script_apply_eval!(cx, confirm_button, {
-                        draw_bg +: {
-                            color: mod.widgets.COLOR_FG_DANGER_RED
-                        }
-                    });
-                    confirm_button.set_enabled(cx, true);
-                    cancel_button.set_visible(cx, false);
+                    self.show_quit_required(cx, crate::i18n::tr("Application is in an inconsistent state and needs to be restarted to continue."));
 
                     self.final_success = Some(false);
                     needs_redraw = true;
@@ -320,4 +322,13 @@ impl LogoutConfirmModalRef {
         }
     }
 
+}
+
+#[cfg(test)]
+mod quit_required_tests {
+    /// Regression: the dialog named the old app ("Rinx").
+    #[test]
+    fn the_title_names_the_app() {
+        assert_eq!(super::quit_required_title(), "Logout error, please restart Hagency.");
+    }
 }
