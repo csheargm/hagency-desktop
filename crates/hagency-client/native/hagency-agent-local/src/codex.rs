@@ -298,6 +298,12 @@ impl Profile {
 /// every path, the file's previous content and the owner's approval. So the
 /// native sandbox is read-only there and has no execution environment, the
 /// policy a sealed Room assistant ran under.
+/// Adds the Agent's identity rules to a thread's developer instructions.
+fn sign_instructions(params: &mut Value, agent: &str) {
+    if let Some(base) = params["developerInstructions"].as_str() {
+        params["developerInstructions"] = crate::attribution::with_identity(base, agent).into();
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeSandbox {
     RoomFolder,
@@ -1096,6 +1102,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         params["config"]["features.default_mode_request_user_input"] = true.into();
         let sandbox = self.native_sandbox();
         sandbox.apply_to_thread(&mut params);
+        sign_instructions(&mut params, &scope.agent);
         if let Some(bridge) = &self.room_mcp {
             params["config"][format!("mcp_servers.{}", room_mcp::SERVER)] = bridge.config();
         }
@@ -1461,7 +1468,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         }
         self.items.clear();
         self.server_ids.clear();
-        let mut turn_start = value!({"threadId":thread,"input":[{"type":"text","text":input,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user"});
+        let text = crate::attribution::turn_context(owner, scope, input);
+        let mut turn_start = value!({"threadId":thread,"input":[{"type":"text","text":text,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user"});
         self.native_sandbox().apply_to_turn(&mut turn_start, cwd);
         // The owner's full trust lifts the Room folder's sandbox and its
         // questions for this turn only: every turn states both again, so the
@@ -2087,6 +2095,22 @@ mod tests {
     mod controls;
     #[cfg(unix)]
     mod shared_project;
+    #[test]
+    fn codex_developer_instructions_carry_the_agents_identity() {
+        crate::attribution::register_agent_identity("agt_codex_id", "cod", "@_hagency_agt_codex_id:t");
+        for sandbox in [super::NativeSandbox::RoomFolder, super::NativeSandbox::SharedProject] {
+            let mut params = serde_json::json!({});
+            sandbox.apply_to_thread(&mut params);
+            super::sign_instructions(&mut params, "agt_codex_id");
+            let text = params["developerInstructions"].as_str().unwrap();
+            assert!(text.contains("\"cod\" (@_hagency_agt_codex_id:t)"));
+            assert!(text.contains("Co-authored-by: cod <_hagency_agt_codex_id@agents.hagency.invalid>"));
+        }
+        let mut plain = serde_json::json!({});
+        super::NativeSandbox::RoomFolder.apply_to_thread(&mut plain);
+        super::sign_instructions(&mut plain, "agt_never_registered");
+        assert_eq!(plain["developerInstructions"], hagency_runtime::AGENT_MERGE_NOTE);
+    }
     #[test]
     fn provider_diagnostics_exclude_dynamic_error_bodies() {
         for error in [
