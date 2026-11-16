@@ -1200,6 +1200,7 @@ impl Transport for PinnedConsole {
                 | Op::Reply { .. }
                 | Op::ReconcileKnownReply { .. }
                 | Op::EncryptedReply { .. }
+                | Op::CardReply { .. }
                 | Op::Finish { .. }
         );
         self.console
@@ -1238,6 +1239,9 @@ fn transport_error(status: u16, code: &str, acquiring: bool, request: bool) -> R
                 | "encrypted_reply_requires_encrypted_room"
         )
     {
+        RuntimeError::Request
+    } else if request && status == 400 && code == "unsupported_operation" {
+        // A server older than this operation (the run card reply record).
         RuntimeError::Request
     } else if matches!(status, 401 | 403 | 409) {
         RuntimeError::Authorization
@@ -2805,11 +2809,11 @@ async fn run_turn<T: Transport>(
             tracing::warn!(code = "agent_message_delivery_pending", "Native messages remain in encrypted local custody");
         }
         use crate::agent_run_controls::State;
-        // An encrypted request's answer is sent by this device, so it can be
-        // the run card's final edit: one message per answer. A plaintext
-        // Room's answer is posted by the server and stays its own reply.
+        // The run card's final edit carries the answer: one message per
+        // answer. The reply then records the card (encrypted: this device's
+        // event; plaintext: `send_card_reply`) instead of posting it again.
         let answer = match &result {
-            Ok(Ok(completed)) if prepared.dispatch.body.is_empty() => Some(reply_text(completed, tools_unavailable)),
+            Ok(Ok(completed)) => Some(reply_text(completed, tools_unavailable)),
             _ => None,
         };
         controls.finish_answered(match &result {
@@ -2852,6 +2856,49 @@ async fn run_turn<T: Transport>(
     ))?;
     if retain { sessions.retain(session_key, provider); }
     Ok(None)
+}
+
+/// Plaintext Room: when the run card's final edit already carries this answer,
+/// the server records the card as the reply and posts nothing. `Ok(false)`
+/// means no such card (or an older server): post the reply as before.
+async fn send_card_reply<T: Transport>(
+    console: &T,
+    owner: &str,
+    ledger: &mut Ledger,
+    lease: &LeaseRef,
+    cancel: &mut watch::Receiver<bool>,
+    config: &StartConfig,
+    record: &inbox::Record,
+) -> Result<bool, RuntimeError> {
+    let (Some(execution), Some(body)) = (record.execution_id.clone(), record.reply.clone()) else { return Ok(false) };
+    if console.approval_host().is_none() || record.dispatch.dispatch_epoch != Some(lease.epoch) {
+        return Ok(false);
+    }
+    let device = match e2ee::device(console, lease, config, cancel).await {
+        Ok(device) => device,
+        Err(RuntimeError::Stopped) => return Err(RuntimeError::Stopped),
+        Err(_) => return Ok(false), // no device now: the server posts the answer
+    };
+    let Some(card) = run_controls::deliver_answer(&device, &record.dispatch, &execution, &body).await? else {
+        return Ok(false);
+    };
+    let op = Op::CardReply {
+        lease: lease.clone(), dispatch_id: record.dispatch.id.clone(),
+        execution_id: execution.clone(), body, matrix_event_id: card,
+    };
+    match operation(console, cancel, op).await {
+        Ok(Response::ReplyQueued(receipt))
+            if receipt.binding_id == record.dispatch.binding_id
+                && receipt.room_id == record.dispatch.room_id
+                && receipt.binding_generation == record.dispatch.binding_generation => {}
+        // An older server without the card record: its own reply still delivers.
+        Err(RuntimeError::Request) => return Ok(false),
+        Err(error) => return Err(error),
+        Ok(_) => return Err(RuntimeError::Transport),
+    }
+    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))?;
+    run_controls::answer_recorded(&device, &record.dispatch, &execution);
+    Ok(true)
 }
 
 /// The chat answer for a finished turn.
@@ -2919,7 +2966,12 @@ async fn retry_reply<T: Transport>(
     let sent = if record.dispatch.body.is_empty() {
         send_encrypted_reply(console, owner, ledger, lease, cancel, config, record).await
     } else {
-        send_reply(console, owner, ledger, lease, cancel, record).await
+        // Card failures go to the reply-error handling below, like any reply.
+        match send_card_reply(console, owner, ledger, lease, cancel, config, record).await {
+            Ok(true) => Ok(()),
+            Ok(false) => send_reply(console, owner, ledger, lease, cancel, record).await,
+            Err(error) => Err(error),
+        }
     };
     match sent {
         Err(RuntimeError::Stopped) => Err(RuntimeError::Stopped),
