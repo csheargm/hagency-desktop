@@ -12,6 +12,8 @@
 //! `HOST/OWNER/REPO` repository and `gh auth status -h` ask) and never opening
 //! a browser (`--web`/`-w`).
 
+use super::filters;
+
 const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
 /// Git subcommands that only read local history. `fetch` is deliberately not
 /// here: `-u`/`--upload-pack`, URLs, `remote::` helpers, remotes, submodules
@@ -56,9 +58,11 @@ pub(super) fn segment_allowed(words: &[&str]) -> bool {
         ["gh", ..] if !gh_options_safe(words) => false,
         ["gh", "repo", "clone", repo, _path] => !repo.starts_with('-'),
         ["gh", "auth", "status", rest @ ..] => rest.is_empty(),
+        ["gh", "api", rest @ ..] => filters::gh_api_read(rest) && gh_filters_safe(rest),
         ["gh", area, verb, rest @ ..] => READ_ONLY_GH.contains(&(*area, *verb)) && gh_targets_safe(&gh_without_data(rest)) && gh_filters_safe(rest),
         ["rg", ..] if words.iter().any(|w| RG_DENIED.iter().any(|d| option_is(w, d))) => false,
         ["mkdir", rest @ ..] => !rest.is_empty() && words[1..].iter().filter(|w| w.starts_with('-')).all(|w| *w == "-p"),
+        [program, rest @ ..] if filters::FILTERS.contains(program) => filters::filter_allowed(program, rest) && (*program != "jq" || gh_filters_safe(rest)),
         [program, ..] => READ_ONLY_PROGRAMS.contains(program),
         [] => false,
     }
@@ -164,7 +168,17 @@ fn github_repo_name(value: &str) -> bool {
 /// `git commit -m` message.
 pub(super) fn paths<'a>(words: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
     let gh: Option<Vec<&'a str>> = (words.first() == Some(&"gh")).then(|| gh_without_data(words));
-    let words: Vec<&'a str> = gh.unwrap_or_else(|| words.to_vec());
+    let mut words: Vec<&'a str> = gh.unwrap_or_else(|| words.to_vec());
+    match words.as_slice() {
+        // `gh api` names an endpoint and filters, never a file.
+        ["gh", "api", ..] => words.clear(),
+        // jq's first positional word is its filter program, not a file.
+        ["jq", rest @ ..] => {
+            let filter = filters::jq_filter(rest);
+            if let Some(at) = words.iter().skip(1).position(|w| Some(*w) == filter) { words.remove(at + 1); }
+        }
+        _ => {}
+    }
     let skip = match words.as_slice() {
         ["gh", "repo", "clone", ..] | ["git", "checkout", "-b", ..] | ["git", "switch", "-c", ..] => 4,
         _ => 1,

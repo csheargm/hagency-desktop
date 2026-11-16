@@ -103,23 +103,34 @@ fn read_only_shell(line: &str, root: &Path) -> bool {
             return false;
         }
         match words.as_slice() {
-            ["cd", target] => {
-                if target.starts_with('-') || !inside_all(target, &dirs, root) { return false; }
-                let next: Vec<PathBuf> = dirs.iter().map(|dir| shell::lexical_join(dir, target)).collect();
-                dirs.extend(next);
-                true
-            }
-            _ => rules::segment_allowed(&words) && rules::paths(&words).all(|w| inside_all(w, &dirs, root)),
+            ["cd", target] => enter_dir(target, &mut dirs, root),
+            _ => segment_in_workspace(&words, &dirs, root),
         }
     })
 }
 
-fn inside_all(path: &str, dirs: &[PathBuf], root: &Path) -> bool {
+/// A `cd <target>` inside `root` from every directory in `dirs`; on success
+/// `dirs` also holds where it leads (the line may be in either afterwards).
+pub(crate) fn enter_dir(target: &str, dirs: &mut Vec<PathBuf>, root: &Path) -> bool {
+    if target.starts_with('-') || !inside_all(target, dirs, root) {
+        return false;
+    }
+    let next: Vec<PathBuf> = dirs.iter().map(|dir| shell::lexical_join(dir, target)).collect();
+    dirs.extend(next);
+    true
+}
+
+/// One non-`cd` segment that outside mode lets run from any of `dirs`.
+pub(crate) fn segment_in_workspace(words: &[&str], dirs: &[PathBuf], root: &Path) -> bool {
+    rules::segment_allowed(words) && rules::paths(words).all(|w| inside_all(w, dirs, root))
+}
+
+pub(crate) fn inside_all(path: &str, dirs: &[PathBuf], root: &Path) -> bool {
     dirs.iter().all(|dir| resolves_within(path, dir, root))
 }
 
 /// `git commit ... -F -` (the heredoc is its message).
-fn is_commit_from_stdin(words: &[&str]) -> bool {
+pub(crate) fn is_commit_from_stdin(words: &[&str]) -> bool {
     words.starts_with(&["git", "commit"]) && words.windows(2).any(|pair| matches!(pair, ["-F" | "--file", "-"]))
 }
 
@@ -127,5 +138,8 @@ fn is_commit_from_stdin(words: &[&str]) -> bool {
 mod tests;
 #[cfg(test)]
 mod bypass_tests;
+#[cfg(test)]
+mod filter_tests;
+mod filters;
 pub(crate) mod rules;
 pub(crate) mod shell;

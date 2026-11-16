@@ -25,9 +25,19 @@ pub const DEFAULT_LABEL: &str = "agent-fix";
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS issue_watch (agent TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('off','labelled','trusted','all')), label TEXT NOT NULL, repo TEXT NOT NULL, room_id TEXT NOT NULL, enabled_at INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS issue_watch_seen (agent TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, PRIMARY KEY(agent,repo,number)) STRICT;";
 
-/// Create the issue-watch tables (new in this build; nothing to migrate).
+/// Added after the first release: the owner's opt-in that lets the Agent push
+/// branches and open pull requests in the watched repository without a card
+/// (see `crate::watch_trust`). Off for every existing row.
+const PUSH_TRUST_COLUMN: &str = "ALTER TABLE issue_watch ADD COLUMN push_trusted INTEGER NOT NULL DEFAULT 0 CHECK(push_trusted IN (0,1))";
+
+/// Create the issue-watch tables and add the push-trust column when missing.
 pub(crate) fn ensure_schema(db: &rusqlite::Connection) -> Result<()> {
-    Ok(db.execute_batch(SCHEMA)?)
+    db.execute_batch(SCHEMA)?;
+    let has_column: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('issue_watch') WHERE name='push_trusted')", [], |r| r.get(0))?;
+    if !has_column {
+        db.execute_batch(PUSH_TRUST_COLUMN)?;
+    }
+    Ok(())
 }
 
 /// Which issues the watch hands to the Agent.
@@ -71,6 +81,10 @@ pub struct WatchSetting {
     pub repo: String,
     #[serde(default)]
     pub room_id: String,
+    /// "Let this Agent push branches and open pull requests here without
+    /// asking": only for this watch's repository and Room. Off by default.
+    #[serde(default)]
+    pub push_trusted: bool,
 }
 
 /// The stored watch: the setting plus when it was last switched on (unix
@@ -127,6 +141,8 @@ fn valid_room_id(room_id: &str) -> bool {
 pub fn validate(mut setting: WatchSetting) -> Result<WatchSetting> {
     setting.label = setting.label.trim().to_owned();
     if setting.mode == WatchMode::Off {
+        // Trust belongs to an active watch; switching the watch off drops it.
+        setting.push_trusted = false;
         return Ok(setting);
     }
     if setting.mode == WatchMode::Labelled && setting.label.is_empty() {
@@ -165,10 +181,10 @@ impl Ledger {
     pub fn issue_watch(&self, agent: &str) -> Result<IssueWatch> {
         let row = self
             .db
-            .query_row("SELECT mode,label,repo,room_id,enabled_at FROM issue_watch WHERE agent=?", [agent], |r| {
+            .query_row("SELECT mode,label,repo,room_id,enabled_at,push_trusted FROM issue_watch WHERE agent=?", [agent], |r| {
                 let mode: String = r.get(0)?;
                 Ok(IssueWatch {
-                    setting: WatchSetting { mode: WatchMode::from_stored(&mode), label: r.get(1)?, repo: r.get(2)?, room_id: r.get(3)? },
+                    setting: WatchSetting { mode: WatchMode::from_stored(&mode), label: r.get(1)?, repo: r.get(2)?, room_id: r.get(3)?, push_trusted: r.get::<_, i64>(5)? == 1 },
                     enabled_at: r.get(4)?,
                 })
             })
@@ -184,8 +200,8 @@ impl Ledger {
         let restart = old.setting.mode == WatchMode::Off || old.setting.repo != setting.repo;
         let enabled_at = if setting.mode == WatchMode::Off { old.enabled_at } else if restart { now } else { old.enabled_at };
         self.db.execute(
-            "INSERT INTO issue_watch VALUES (?,?,?,?,?,?) ON CONFLICT(agent) DO UPDATE SET mode=excluded.mode,label=excluded.label,repo=excluded.repo,room_id=excluded.room_id,enabled_at=excluded.enabled_at",
-            (agent, setting.mode.stored(), &setting.label, &setting.repo, &setting.room_id, enabled_at),
+            "INSERT INTO issue_watch (agent,mode,label,repo,room_id,enabled_at,push_trusted) VALUES (?,?,?,?,?,?,?) ON CONFLICT(agent) DO UPDATE SET mode=excluded.mode,label=excluded.label,repo=excluded.repo,room_id=excluded.room_id,enabled_at=excluded.enabled_at,push_trusted=excluded.push_trusted",
+            (agent, setting.mode.stored(), &setting.label, &setting.repo, &setting.room_id, enabled_at, setting.push_trusted as i64),
         )?;
         Ok(IssueWatch { setting, enabled_at })
     }

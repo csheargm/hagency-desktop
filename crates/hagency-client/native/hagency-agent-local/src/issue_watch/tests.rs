@@ -11,7 +11,7 @@ fn ledger() -> (tempfile::TempDir, Ledger) {
     (temp, ledger)
 }
 fn setting(mode: WatchMode, label: &str) -> WatchSetting {
-    WatchSetting { mode, label: label.into(), repo: "acme/app".into(), room_id: ROOM.into() }
+    WatchSetting { mode, label: label.into(), repo: "acme/app".into(), room_id: ROOM.into(), push_trusted: false }
 }
 fn issue(number: i64, labels: &[&str], is_pr: bool, created_at: i64) -> Issue {
     by("NONE", number, labels, is_pr, created_at)
@@ -141,7 +141,7 @@ fn watch_settings_use_camel_case_on_the_wire() {
     let parsed: WatchSetting = serde_json::from_value(json!({"mode": "labelled", "label": "x", "repo": "acme/app", "roomId": ROOM})).unwrap();
     assert_eq!(parsed, setting(WatchMode::Labelled, "x"));
     let wire = serde_json::to_value(IssueWatch { setting: parsed, enabled_at: 3 }).unwrap();
-    assert_eq!(wire, json!({"mode": "labelled", "label": "x", "repo": "acme/app", "roomId": ROOM, "enabledAt": 3}));
+    assert_eq!(wire, json!({"mode": "labelled", "label": "x", "repo": "acme/app", "roomId": ROOM, "pushTrusted": false, "enabledAt": 3}));
 }
 
 #[test]
@@ -175,4 +175,16 @@ fn page_urls_are_built_only_for_owner_name_repositories() {
         "https://api.github.com/repos/acme/app/issues?state=open&sort=created&direction=desc&per_page=100&page=2"
     );
     assert!(matches!(page_url("https://api.github.com", "acme/app/../x", 1), Err(FetchError::Repo(_))));
+}
+
+/// A ledger from before push trust gains the column, off for its saved watch.
+#[test]
+fn an_older_watch_table_gains_push_trust_switched_off() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    db.execute("INSERT INTO issue_watch VALUES ('a','all','','acme/app','!r:x',1)", []).unwrap();
+    ensure_schema(&db).unwrap();
+    ensure_schema(&db).unwrap();
+    let trusted: i64 = db.query_row("SELECT push_trusted FROM issue_watch WHERE agent='a'", [], |r| r.get(0)).unwrap();
+    assert_eq!(trusted, 0);
 }

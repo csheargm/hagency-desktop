@@ -3188,6 +3188,8 @@
   "Labelled issues (agent-fix)": "带标签的议题（agent-fix）",
   "Trusted team: issues from the repository's owner, members and collaborators": "受信任团队：仓库所有者、成员和协作者提交的议题",
   "Fully automatic: every new issue": "全自动：每个新议题",
+  "Ask before each push or pull request": "每次推送或创建拉取请求前都询问",
+  "Let this Agent push branches and open pull requests here without asking": "允许此 Agent 在这里推送分支并创建拉取请求，无需询问",
   "Hands off open issues that carry the agent-fix label.": "把带有 agent-fix 标签的未关闭议题交给 Agent。",
   "Hands off new issues opened by the repository's owner, members and collaborators.": "把仓库所有者、成员和协作者新开的议题交给 Agent。",
   "Hands off every new issue, from anyone. Use only on repositories you trust.": "把任何人新开的议题都交给 Agent。仅用于你信任的仓库。",

@@ -145,12 +145,14 @@ fn issue_watch_modes_map_to_saved_modes() {
 fn issue_watch_change_needs_a_repo_and_room_unless_off() {
     use super::choices::change;
     use serde_json::json;
-    let saved = change(2, " acme/app ", Some("!r:s")).unwrap();
-    assert_eq!(saved, json!({"issueWatch": {"mode": "trusted", "label": "agent-fix", "repo": "acme/app", "roomId": "!r:s"}}));
-    assert_eq!(change(0, "", None).unwrap()["issueWatch"]["mode"], "off");
-    assert!(change(3, "acme", Some("!r:s")).is_err());
-    assert!(change(3, "acme/app/x", Some("!r:s")).is_err());
-    assert!(change(1, "acme/app", None).is_err());
+    let saved = change(2, " acme/app ", Some("!r:s"), 0).unwrap();
+    assert_eq!(saved, json!({"issueWatch": {"mode": "trusted", "label": "agent-fix", "repo": "acme/app", "roomId": "!r:s", "pushTrusted": false}}));
+    assert_eq!(change(2, "acme/app", Some("!r:s"), 1).unwrap()["issueWatch"]["pushTrusted"], true);
+    assert_eq!(change(0, "", None, 1).unwrap()["issueWatch"]["pushTrusted"], false, "no trust without a watch");
+    assert_eq!(change(0, "", None, 0).unwrap()["issueWatch"]["mode"], "off");
+    assert!(change(3, "acme", Some("!r:s"), 0).is_err());
+    assert!(change(3, "acme/app/x", Some("!r:s"), 0).is_err());
+    assert!(change(1, "acme/app", None, 0).is_err());
 }
 
 #[test]

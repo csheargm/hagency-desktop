@@ -25,6 +25,7 @@ script_mod! {
         watch_repo := RobrixTextInput {width: Fill height: 40 margin: 0 padding: Inset{left: 12 right: 12 top: 8 bottom: 8} empty_text: "owner/name"}
         Text {text: #(crate::i18n::tr("Room")) i18n_text: "Room"}
         watch_room := Select {labels: ["-"]}
+        watch_push := Select {labels: ["-"]}
         save_watch := RobrixIconButton {height: 40 icon_walk: Walk{width: 0 height: 0} spacing: 0 padding: Inset{left: 14 right: 14 top: 0 bottom: 0} text: #(crate::i18n::tr("Save issue watching")) i18n_text: "Save issue watching"}
         watch_note := Text {}
         watch_status := Muted {}
@@ -197,12 +198,13 @@ impl IssueWatchSection {
         let saved_room = self.watch["roomId"].as_str().unwrap_or("");
         let room = self.rooms.iter().position(|(id, _)| id == saved_room).unwrap_or(0);
         self.view.drop_down(cx, ids!(watch_room)).set_selected_item(cx, room);
+        self.view.drop_down(cx, ids!(watch_push)).set_selected_item(cx, usize::from(self.watch["pushTrusted"] == true));
     }
     fn save(&mut self, cx: &mut Cx) {
         let index = self.view.drop_down(cx, ids!(watch_mode)).selected_item();
         let repo = self.view.text_input(cx, ids!(watch_repo)).text();
         let room = self.rooms.get(self.view.drop_down(cx, ids!(watch_room)).selected_item()).map(|(id, _)| id.as_str());
-        match choices::change(index, &repo, room) {
+        match choices::change(index, &repo, room, self.view.drop_down(cx, ids!(watch_push)).selected_item()) {
             Ok(change) => {
                 self.note = crate::i18n::tr("Saving…").to_owned();
                 self.send(Some(change));
@@ -216,6 +218,7 @@ impl IssueWatchSection {
         self.view.drop_down(cx, ids!(watch_mode)).set_labels(cx, labels);
         let index = self.view.drop_down(cx, ids!(watch_mode)).selected_item();
         self.view.label(cx, ids!(watch_hint)).set_text(cx, crate::i18n::tr(choices::hint(index)));
+        self.view.drop_down(cx, ids!(watch_push)).set_labels(cx, choices::PUSH_LABELS.iter().map(|l| crate::i18n::tr(l).to_owned()).collect());
         let names = if self.rooms.is_empty() {
             vec![crate::i18n::tr("No connected Rooms yet.").to_owned()]
         } else {
@@ -226,7 +229,7 @@ impl IssueWatchSection {
         self.view.drop_down(cx, ids!(watch_room)).set_selected_item(cx, room);
         let state = self.state();
         let usable = state.usable();
-        for id in [ids!(watch_mode), ids!(watch_repo)] {
+        for id in [ids!(watch_mode), ids!(watch_repo), ids!(watch_push)] {
             self.view.widget(cx, id).set_disabled(cx, !usable);
         }
         self.view.widget(cx, ids!(watch_room)).set_disabled(cx, !usable || self.rooms.is_empty());

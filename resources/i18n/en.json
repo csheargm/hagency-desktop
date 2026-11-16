@@ -3188,6 +3188,8 @@
   "Labelled issues (agent-fix)": "Labelled issues (agent-fix)",
   "Trusted team: issues from the repository's owner, members and collaborators": "Trusted team: issues from the repository's owner, members and collaborators",
   "Fully automatic: every new issue": "Fully automatic: every new issue",
+  "Ask before each push or pull request": "Ask before each push or pull request",
+  "Let this Agent push branches and open pull requests here without asking": "Let this Agent push branches and open pull requests here without asking",
   "Hands off open issues that carry the agent-fix label.": "Hands off open issues that carry the agent-fix label.",
   "Hands off new issues opened by the repository's owner, members and collaborators.": "Hands off new issues opened by the repository's owner, members and collaborators.",
   "Hands off every new issue, from anyone. Use only on repositories you trust.": "Hands off every new issue, from anyone. Use only on repositories you trust.",
