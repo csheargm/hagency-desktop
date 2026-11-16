@@ -3480,5 +3480,7 @@
   "{agent} joined {room}.": "{agent} joined {room}.",
   "{agent} is still joining {room}.": "{agent} is still joining {room}.",
   "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}",
-  "{0} isn't in this room. Add it?": "{0} isn't in this room. Add it?"
+  "{0} isn't in this room. Add it?": "{0} isn't in this room. Add it?",
+  "Agent sign-in expired": "Agent sign-in expired",
+  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept."
 }

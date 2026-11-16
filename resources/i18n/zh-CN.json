@@ -3484,5 +3484,7 @@
   "{agent} joined {room}.": "{agent} 已加入 {room}。",
   "{agent} is still joining {room}.": "{agent} 仍在加入 {room}。",
   "Could not add {agent} to {room}: {reason}": "无法将 {agent} 加入 {room}：{reason}",
-  "{0} isn't in this room. Add it?": "{0} 不在此房间中。要添加吗？"
+  "{0} isn't in this room. Add it?": "{0} 不在此房间中。要添加吗？",
+  "Agent sign-in expired": "Agent 登录已过期",
+  "Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.": "此 Mac 上的 Agent 登录已过期。点击“重新登录”以重新连接你的 Agent；房间和 Agent 都会保留。"
 }

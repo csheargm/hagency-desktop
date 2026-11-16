@@ -57,6 +57,7 @@ script_mod! {
         }
         status := Text {}
         ModalButtonsRow {
+            sign_in := Primary {visible: false text: #(crate::i18n::tr("Sign in again")) i18n_text: "Sign in again"}
             cancel := Action {text: #(crate::i18n::tr("Cancel")) i18n_text: "Cancel"}
             create := Primary {text: #(crate::i18n::tr("Create agent")) i18n_text: "Create agent"}
         }
@@ -122,6 +123,10 @@ impl CreateAgentDialog {
         self.handle_room_actions(cx, actions);
         self.handle_backup_actions(cx, actions);
         if self.view.button(cx, ids!(cancel)).clicked(actions) { cx.action(CreateAgentAction::Close); }
+        if self.view.button(cx, ids!(sign_in)).clicked(actions) {
+            cx.action(CreateAgentAction::Close);
+            cx.action(crate::accounts::AccountAction::Reauthenticate);
+        }
         if self.view.button(cx, ids!(create)).clicked(actions) { self.create(cx); }
         if let Some(name) = self.view.text_input(cx, ids!(name)).changed(actions) { self.state.name = name; self.render_create(cx); }
         if let Some(index) = self.view.drop_down(cx, ids!(harness)).selected(actions) { self.choose_harness(cx, index); }
@@ -173,7 +178,7 @@ impl CreateAgentDialog {
         let available = self.state.available();
         self.state.harness = self.state.harness.min(available.len().saturating_sub(1));
         let labels: Vec<String> = if available.is_empty() {
-            vec![crate::i18n::tr(if self.state.checking() { "Checking this Mac's logins…" } else { "No Claude Code or Codex login found" }).into()]
+            vec![crate::i18n::tr(if self.state.needs_sign_in() { "Agent sign-in expired" } else if self.state.checking() { "Checking this Mac's logins…" } else { "No Claude Code or Codex login found" }).into()]
         } else {
             available.iter().map(|i| format!("{} · {}", crate::i18n::tr("Local"), harness_label(&super::HARNESSES[*i]))).collect()
         };
@@ -190,10 +195,13 @@ impl CreateAgentDialog {
     fn render_lines(&mut self, cx: &mut Cx) {
         let runs_on = match self.state.runtime() {
             Some(runtime) => crate::i18n::tr("Runs on this Mac with your {harness} login; usage counts against that account.").replace("{harness}", harness_label(&runtime)),
+            None if self.state.needs_sign_in() => crate::i18n::tr("Your Agent sign-in on this Mac expired. Click Sign in again to reconnect your Agents; your rooms and Agents are kept.").into(),
             None if self.state.checking() => String::new(),
             None => crate::i18n::tr("Sign in on this Mac first: run `claude login` or `codex login` in a terminal, then reopen this dialog.").into(),
         };
         self.view.label(cx, ids!(runs_on)).set_text(cx, &runs_on);
+        let sign_in = self.state.available().is_empty() && self.state.needs_sign_in();
+        self.view.button(cx, ids!(sign_in)).set_visible(cx, sign_in);
     }
     fn render_create(&mut self, cx: &mut Cx) {
         let ready = !self.busy && self.state.spec(quick_setup::default_spec).is_ok();

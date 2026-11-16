@@ -119,6 +119,13 @@ fn recovery_error_code(code: &str) -> &'static str {
         "matrix_oauth_sign_in_required" => "matrix_oauth_sign_in_required",
         "runtime_recovery_state_unavailable" => "runtime_recovery_state_unavailable",
         "server_unavailable" => "server_unavailable",
+        // The owner's saved server sign-in was revoked or lost; only a fresh
+        // sign-in in this window re-enrolls it (sdk_resume.rs).
+        "native_resume_missing" => "native_resume_missing",
+        "native_resume_revoked" => "native_resume_revoked",
+        "native_resume_unavailable" => "native_resume_unavailable",
+        "native_device_registration_unknown" => "native_device_registration_unknown",
+        "matrix_account_mismatch" => "matrix_account_mismatch",
         _ => "runtime_recovery_unrecognized_error",
     }
 }
@@ -854,6 +861,9 @@ mod tests {
     fn startup_recovery_diagnostic_never_logs_provider_or_source_text() {
         assert_eq!(recovery_error_code("runtime_profile_unavailable"),"runtime_profile_unavailable");
         assert_eq!(recovery_error_code("owner_authorization_required"),"owner_authorization_required");
+        // Regression: a revoked server sign-in was logged as unrecognized, hiding the fix (sign in again).
+        assert_eq!(recovery_error_code("native_resume_revoked"),"native_resume_revoked");
+        assert_eq!(recovery_error_code("native_resume_missing"),"native_resume_missing");
         assert_eq!(recovery_error_code("/Users/example/.codex/auth.json bearer secret"),"runtime_recovery_unrecognized_error");
         assert_eq!(recovery_error_code("provider_error: access_token=secret"),"runtime_recovery_unrecognized_error");
     }
