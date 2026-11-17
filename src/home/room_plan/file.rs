@@ -6,7 +6,7 @@
 use crate::hagency::backend::Service;
 use crate::hagency::issue_watch::{active_agents, github_token, live};
 use crate::hagency::model::Command;
-use ::hagency::issue_watch::{Client, GITHUB_API, create_issue};
+use ::hagency::issue_watch::{Client, GITHUB_API, create_issue, fetch_login, find_issue_by_marker};
 use ::hagency::room_plan::Plan;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedTransactionId, events::room::message::RoomMessageEventContent};
 use serde_json::{Value, json};
@@ -31,7 +31,8 @@ pub async fn file(room: OwnedRoomId, sender: String, id: String, plan: Plan) -> 
     let reply = live::saved(&service, &agent, Some(json!({"plan": {"filed": reserve}}))).await?;
     let mut numbers = stored_numbers(&reply, plan.issues.len())?;
     let client = Client::new();
-    for (index, issue) in plan.issues.iter().enumerate() {
+    let login = fetch_login(&client, GITHUB_API, &token).await.map_err(|e| ::hagency::github_access::redact(&e.to_string(), &token))?;
+    for index in 0..plan.issues.len() {
         if numbers[index] != 0 {
             continue;
         }
@@ -39,7 +40,7 @@ pub async fn file(room: OwnedRoomId, sender: String, id: String, plan: Plan) -> 
         if crate::hagency::kill_switch::paused_here(&agent) {
             return Err(failed(index, plan.issues.len(), crate::i18n::tr("Agent paused by the owner")));
         }
-        let number = create_issue(&client, GITHUB_API, &plan.repo, &token, &issue.title, &plan.issue_body(index, &id)).await
+        let number = file_step(&client, &plan, index, &id, (&login, &token)).await
             .map_err(|error| failed(index, plan.issues.len(), &::hagency::github_access::redact(&error.to_string(), &token)))?;
         // Saved at once: a crash after this step never files it again.
         live::saved(&service, &agent, Some(json!({"plan": {"issue": {"id": id, "index": index, "number": number}}}))).await
@@ -53,6 +54,16 @@ pub async fn file(room: OwnedRoomId, sender: String, id: String, plan: Plan) -> 
     let text = crate::i18n::format("Filed on {repo}: {issues}", &[("repo", plan.repo.clone()), ("issues", list.join(", "))]);
     crate::hagency::room_send::send_routed_with(room, RoomMessageEventContent::notice_plain(text), Default::default(), filed_txn_id(&id)).await?;
     Ok(numbers)
+}
+
+/// Files step `index`, or adopts the issue a run that failed before saving
+/// its number already filed (the step's marker, by this login), so a retry
+/// never files a duplicate (GPT review P2).
+async fn file_step(client: &Client, plan: &Plan, index: usize, id: &str, (login, token): (&str, &str)) -> Result<u64, ::hagency::issue_watch::FetchError> {
+    if let Some(number) = find_issue_by_marker(client, GITHUB_API, &plan.repo, login, &plan.step_marker(index, id), token).await? {
+        return Ok(number);
+    }
+    create_issue(client, GITHUB_API, &plan.repo, token, &plan.issues[index].title, &plan.issue_body(index, id)).await
 }
 
 fn failed(count: usize, total: usize, error: &str) -> String {

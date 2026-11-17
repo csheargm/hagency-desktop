@@ -3,6 +3,7 @@
 //! open issues, sent with this crate's TLS client so the desktop needs no
 //! second HTTP stack. Nothing here writes to GitHub.
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API};
+use hagency_agent_local::issue_watch::wire::PAGE_SIZE;
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, parse_reviews, pulls_url, comments_url, reviews_url};
 pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
@@ -95,6 +96,27 @@ pub async fn create_issue(client: &Client, api: &str, repo: &str, token: &str, t
     }
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
     value["number"].as_u64().ok_or_else(|| FetchError::Parse("no number in the created issue".into()))
+}
+
+/// The issue `creator` filed on `repo` whose body carries `marker` (a plan
+/// step's line), open or closed, newest first; `None` when there is none.
+/// Only `creator`'s own issues count, so nobody else can plant a match.
+pub async fn find_issue_by_marker(client: &Client, api: &str, repo: &str, creator: &str, marker: &str, token: &str) -> Result<Option<u64>, FetchError> {
+    pulls_url(api, repo)?;
+    if creator.is_empty() || !creator.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(FetchError::Parse(format!("unexpected GitHub login `{creator}`")));
+    }
+    let mut page = Some(1);
+    while let Some(current) = page {
+        let url = format!("{api}/repos/{repo}/issues?state=all&creator={creator}&sort=created&direction=desc&per_page={PAGE_SIZE}&page={current}");
+        let batch: Vec<serde_json::Value> = serde_json::from_str(&get(client, &url, token).await?).map_err(|e| FetchError::Parse(e.to_string()))?;
+        let found = batch.iter().find(|i| i["pull_request"].is_null() && i["user"]["login"].as_str().is_some_and(|l| l.eq_ignore_ascii_case(creator)) && i["body"].as_str().is_some_and(|b| b.contains(marker)));
+        if let Some(issue) = found {
+            return issue["number"].as_u64().map(Some).ok_or_else(|| FetchError::Parse("no number in the issue".into()));
+        }
+        page = next_page(current, batch.len());
+    }
+    Ok(None)
 }
 
 /// Whether issue `number` is closed as completed (its pull request merged

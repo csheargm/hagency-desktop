@@ -65,8 +65,13 @@ impl Plan {
                 body.push_str(&format!("- [ ] {}\n", item.trim()));
             }
         }
-        body.push_str(&format!("\n---\n{PLAN_MARKER} `{id}` ({}), step {} of {}.", self.title.trim(), index + 1, self.issues.len()));
+        body.push_str(&format!("\n---\n{}", self.step_marker(index, id)));
         body.trim_start().to_owned()
+    }
+    /// The line that marks issue `index` of plan `id` on GitHub, so a retry
+    /// can find an issue filed before its number was saved.
+    pub fn step_marker(&self, index: usize, id: &str) -> String {
+        format!("{PLAN_MARKER} `{id}` ({}), step {} of {}.", self.title.trim(), index + 1, self.issues.len())
     }
 }
 

@@ -112,6 +112,7 @@ async fn fake_github() -> String {
                 (true, "/repos/a/b/issues/4") => ("200 OK", r#"{"number":4,"state":"closed","state_reason":"completed"}"#),
                 (true, "/repos/a/b/issues/5") => ("200 OK", r#"{"number":5,"state":"closed","state_reason":"not_planned"}"#),
                 (true, "/repos/a/b/issues") => ("201 Created", r#"{"number":42}"#),
+                (true, p) if p.starts_with("/repos/a/b/issues?state=all&creator=csheargm") && p.ends_with("page=1") => ("200 OK", r#"[{"number":9,"pull_request":{},"user":{"login":"csheargm"},"body":"Part of Hagency plan `p1` (G), step 1 of 2."},{"number":8,"user":{"login":"csheargm"},"body":"x\n---\nPart of Hagency plan `p1` (G), step 1 of 2."}]"#),
                 (true, p) if p.starts_with("/search/issues?q=repo:a/b+is:pr+is:open+author:csheargm") => ("200 OK", r#"{"total_count":140,"items":[]}"#),
                 _ => ("404 Not Found", r#"{"message":"Not Found"}"#),
             };
@@ -178,4 +179,14 @@ async fn a_plan_issue_is_filed_and_only_a_completed_close_counts_as_done() {
     assert!(crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 4, TOKEN).await.unwrap());
     assert!(!crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 5, TOKEN).await.unwrap(), "not planned is not done");
     assert!(crate::issue_watch::create_issue(&client, &api, "a/b", "github_pat_WRONG", "x", "y").await.is_err());
+}
+
+#[tokio::test]
+async fn a_plan_step_filed_before_its_number_was_saved_is_found_not_filed_again() {
+    let api = fake_github().await;
+    let client = reqwest::Client::new();
+    let find = |marker: &'static str| crate::issue_watch::find_issue_by_marker(&client, &api, "a/b", "csheargm", marker, TOKEN);
+    assert_eq!(find("Part of Hagency plan `p1` (G), step 1 of 2.").await.unwrap(), Some(8), "the issue, never the pull request");
+    assert_eq!(find("Part of Hagency plan `p1` (G), step 2 of 2.").await.unwrap(), None);
+    assert!(crate::issue_watch::find_issue_by_marker(&client, &api, "a/b", "bad login", "m", TOKEN).await.is_err());
 }
