@@ -1581,6 +1581,7 @@ pub(super) enum OwnerOperation {
     Retire {
         agent: String,
     },
+    // TODO(R4): server_login.rs is over budget; split OwnerOperation into server_login/owner_operation.rs.
     /// Owner-only display name change; the server also renames the Matrix puppet.
     Rename {
         agent: String,
