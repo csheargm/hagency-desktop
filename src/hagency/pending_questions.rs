@@ -333,17 +333,17 @@ const MAX_DEFERRED: usize = 256;
 const DEFERRED_CONCURRENCY: usize = 4;
 /// Timed-out lookups are tried this many times in all (5 s, 15 s, 45 s pauses).
 const DEFERRED_ATTEMPTS: u32 = 4;
-static DEFERRED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+static DEFERRED: LazyLock<Mutex<HashSet<(u64, String)>>> = LazyLock::new(Default::default);
 static DEFERRED_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(DEFERRED_CONCURRENCY));
 
 /// Membership not cached: look it up off the sync handler, keeping the
-/// event's encryption evidence. Each event is queued once, within a bound.
+/// event's encryption evidence. Each event is queued once per login, within a bound.
 fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: &Value, info: Option<&EncryptionInfo>) {
     let Some(event_id) = value["event_id"].as_str().map(str::to_owned) else { return };
     {
         let mut queued = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
-        if queued.len() >= MAX_DEFERRED || !queued.insert(event_id.clone()) {
+        if queued.len() >= MAX_DEFERRED || !queued.insert((generation, event_id.clone())) {
             // Full: the card stays an ordinary message until it is seen again.
             makepad_widgets::warning!("run_card_membership_check_deferred_full");
             return;
@@ -366,7 +366,7 @@ fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: 
                 }
             }
         }
-        DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&event_id);
+        DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&(generation, event_id));
         if changed {
             Cx::post_action(PendingQuestionsChanged);
         }
