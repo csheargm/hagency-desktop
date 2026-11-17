@@ -174,8 +174,12 @@ pub fn poll() {
     if POLLING.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
+    // Released however the task ends: finished, panicked, or aborted (even
+    // before its first poll) when the account session closes.
+    let polling = Polling;
     let identity = service.identity();
     crate::sliding_sync::spawn_async_task(async move {
+        let _polling = polling;
         let read = async {
             let result = service
                 .shared_permissions(ManagementCommand::SharedApprovals { room_id: None })
@@ -187,11 +191,17 @@ pub fn poll() {
         let result = tokio::time::timeout(std::time::Duration::from_secs(READ_TIMEOUT_SECONDS), read)
             .await
             .unwrap_or_else(|_| Err(READ_TIMEOUT.into()));
-        POLLING.store(false, std::sync::atomic::Ordering::Release);
         Cx::post_action(PendingApprovalsUpdate { identity, result });
     });
 }
 static POLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Holds `POLLING` for one reading.
+struct Polling;
+impl Drop for Polling {
+    fn drop(&mut self) {
+        POLLING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 /// The longest one app-wide reading may take before it counts as failed.
 const READ_TIMEOUT_SECONDS: u64 = 20;
 /// The code of a reading that took longer than `READ_TIMEOUT_SECONDS`.
@@ -226,16 +236,21 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
     };
     let now = now_ms();
     let fresh = open_rows(value, now);
-    let (changed, announce, expired) = {
+    let decided = decided_ids(value);
+    let (changed, announce) = {
         let Ok(mut state) = STATE.lock() else { return false };
         state.for_identity(&update.identity);
         state.forget_old_decisions(now);
         let before = shape(state.rows.iter());
         let rows: Vec<PendingApproval> = fresh.into_iter().map(|row| state.pending(row)).collect();
-        let problems = (state.read_error.take().is_some(), unreadable_agents(value));
-        let problems_changed = problems.0 || problems.1 != state.unreadable;
-        state.unreadable = problems.1;
-        let expired = newly_expired(&state.rows, &rows, now);
+        // Management failed but this app's own Agent was read: say so.
+        let error = value[super::local_approvals::MANAGEMENT_ERROR].as_str().map(str::to_owned);
+        let unreadable = unreadable_agents(value);
+        let complete = error.is_none() && unreadable.is_empty();
+        let problems_changed = state.read_error != error || unreadable != state.unreadable;
+        (state.read_error, state.unreadable) = (error, unreadable);
+        // Only a complete reading can tell that a request ended.
+        let expired = if complete { newly_expired(&state.rows, &rows, &decided, now) } else { 0 };
         state.rows = rows;
         let after = shape(state.rows.iter());
         let announce: Vec<PendingApproval> = state
@@ -247,9 +262,9 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
         for p in &announce {
             state.announced.insert(p.id().to_owned());
         }
-        (before != after || problems_changed || !expired.is_empty(), announce, expired)
+        (before != after || problems_changed || expired > 0, announce)
     };
-    announce_expired(cx, &expired);
+    announce_expired(cx);
     for p in announce {
         let (title, summary) = describe(&p.row);
         enqueue_popup_notification(
@@ -278,20 +293,29 @@ fn unreadable_agents(value: &Value) -> Vec<(String, String)> {
         .map(|u| (u["agent"].as_str().unwrap_or("Agent").to_owned(), u["code"].as_str().unwrap_or_default().to_owned()))
         .collect()
 }
-/// Requests that left the list unanswered by this client because they ran
-/// out of time, recorded once each in `expired_approvals`.
-fn newly_expired(before: &[PendingApproval], after: &[PendingApproval], now: u64) -> Vec<Value> {
-    before.iter()
-        .filter(|p| p.local == LocalDecision::None && p.can_decide() && !after.iter().any(|a| a.id() == p.id()))
-        .filter(|p| super::expired_approvals::ran_out(&p.row, now) && super::expired_approvals::record(&p.row, now))
-        .map(|p| p.row.clone())
+/// Ids the answer lists with a recorded decision (someone answered them).
+fn decided_ids(value: &Value) -> HashSet<String> {
+    value["approvals"].as_array().into_iter().flatten()
+        .filter(|row| !row["decision"].is_null())
+        .filter_map(|row| row["approval"]["id"].as_str().map(str::to_owned))
         .collect()
 }
-/// Tell the owner a request ended without their answer: a popup and a
-/// desktop notification, beside the record the inbox and the card keep.
-fn announce_expired(cx: &mut Cx, rows: &[Value]) {
-    for row in rows {
-        let (title, summary) = describe(row);
+/// Record the requests that left the list unanswered (by this client or,
+/// as far as the answer says, anyone) because they ran out of time. Returns
+/// how many were recorded; `announce_expired` tells the owner.
+fn newly_expired(before: &[PendingApproval], after: &[PendingApproval], decided: &HashSet<String>, now: u64) -> usize {
+    before.iter()
+        .filter(|p| matches!(p.local, LocalDecision::None | LocalDecision::Failed(..)) && p.can_decide())
+        .filter(|p| !after.iter().any(|a| a.id() == p.id()) && !decided.contains(p.id()))
+        .filter(|p| super::expired_approvals::ran_out(&p.row, now) && super::expired_approvals::record(&p.row, now))
+        .count()
+}
+/// Tell the owner, once each, that requests ended without their answer: a
+/// popup and a desktop notification, beside the record the inbox and the
+/// card keep. Either reading (app-wide or the open room's) may have noticed.
+pub fn announce_expired(cx: &mut Cx) {
+    for row in super::expired_approvals::take_unannounced() {
+        let (title, summary) = describe(&row);
         let heading = crate::i18n::format("Expired, not answered: {title}", &[("title", title)]);
         enqueue_popup_notification(format!("{heading}\n{summary}"), PopupKind::Warning, Some(20.0));
         crate::jit_compat::show_notification(cx, &heading, &summary);
@@ -317,11 +341,12 @@ pub fn merge_room(identity: &str, room: &str, value: &Value, on_screen: bool) ->
         }
     }
     let previous: Vec<PendingApproval> = state.rows.iter().filter(|p| p.room_id() == room).cloned().collect();
-    let expired = newly_expired(&previous, &fresh, now);
+    let complete = value[super::local_approvals::MANAGEMENT_ERROR].is_null() && unreadable_agents(value).is_empty();
+    let expired = if complete { newly_expired(&previous, &fresh, &decided_ids(value), now) } else { 0 };
     state.rows.retain(|p| p.room_id() != room);
     state.rows.extend(fresh);
-    // The app-wide reading announces nothing for these: they are already kept.
-    before != after || !expired.is_empty()
+    // Announced by the next `announce_expired` (the inbox calls it on every change).
+    before != after || expired > 0
 }
 
 /// Record the outcome of a decision this client sent.

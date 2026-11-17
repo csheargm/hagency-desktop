@@ -83,10 +83,15 @@ fn a_request_from_a_federated_room_reaches_the_inbox_and_the_approval_reaches_th
         local_approvals::decision_command(&row_value, "approve_once") else { panic!("not routed to the runtime") };
     assert_eq!((agent_id.as_str(), approval_id.as_str()), ("agt_bird", "p1"));
     assert_eq!(input.unwrap()["approved"], true);
-    assert!(inbox.decide(&mut cx, 0, "approve_once"));
+    // A click on a slot that now shows a different request sends nothing.
+    let mut other = pending_approvals::waiting()[0].clone();
+    other.row["digest"] = json!("changed");
+    assert!(!inbox.decide(&mut cx, &[Entry::Waiting(other)], 0, "approve_once"));
+    let shown = inbox.entries.clone();
+    assert!(inbox.decide(&mut cx, &shown, 0, "approve_once"));
     assert_eq!(pending_approvals::local_decision(row_value["approval"]["id"].as_str().unwrap()), LocalDecision::Sending("approve_once".into()));
     assert_eq!(pending_approvals::total(), 0, "an answered request no longer counts");
-    assert!(!inbox.decide(&mut cx, 0, "deny"), "answered once is enough");
+    assert!(!inbox.decide(&mut cx, &shown, 0, "deny"), "answered once is enough");
 
     // 4. The runtime took it; the Agent continues and the request leaves the list.
     let id = row_value["approval"]["id"].as_str().unwrap().to_owned();

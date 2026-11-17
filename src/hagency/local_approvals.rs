@@ -16,6 +16,9 @@ pub(crate) const SOURCE: &str = "localRuntime";
 /// Added to an answer: this app's Agents whose waiting requests could not be
 /// read (`[{agent, code}]`), so the inbox says requests may be missing.
 pub(crate) const UNREADABLE: &str = "unreadableAgents";
+/// Added to an answer whose management part failed while this app's own
+/// Agents were read: the failure code, so it is not mistaken for "none".
+pub(crate) const MANAGEMENT_ERROR: &str = "managementError";
 /// The decision that approves and remembers exactly this request.
 pub const ALWAYS: &str = "approve_always";
 /// At most this many Agents are read per poll (the listing is bounded too).
@@ -82,7 +85,7 @@ pub async fn with_local(service: &crate::hagency::backend::Service, room: Option
         Ok(value) => value,
         Err(code) if rows.is_empty() => return Err(code),
         // Management is unreachable but this app's own Agent is waiting.
-        Err(_) => json!({"approvals": []}),
+        Err(code) => json!({"approvals": [], MANAGEMENT_ERROR: code}),
     };
     if let Some(list) = value["approvals"].as_array_mut() {
         list.extend(rows);

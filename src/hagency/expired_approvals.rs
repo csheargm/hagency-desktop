@@ -40,6 +40,8 @@ struct Store {
     kept: Vec<Expired>,
     /// Ids the owner dismissed from the inbox; the record stays on its card.
     dismissed: Vec<String>,
+    /// Recorded but not yet announced to the owner.
+    unannounced: Vec<Value>,
 }
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
 
@@ -60,6 +62,7 @@ pub fn record(row: &Value, now: u64) -> bool {
     let mut row = row.clone();
     let ended = row["approval"]["expiresAtMs"].as_u64().map_or(now, |t| t.min(now));
     row["approval"]["expiresAtMs"] = ended.into();
+    store.unannounced.push(row.clone());
     store.kept.push(Expired { row, noticed_ms: now });
     prune(&mut store, now);
     true
@@ -69,7 +72,7 @@ fn prune(store: &mut Store, now: u64) {
     store.kept.retain(|e| now.saturating_sub(e.noticed_ms) < KEEP_MS);
     let excess = store.kept.len().saturating_sub(MAX_KEPT);
     store.kept.drain(..excess);
-    let Store { kept, dismissed } = store;
+    let Store { kept, dismissed, .. } = store;
     dismissed.retain(|id| kept.iter().any(|e| e.id() == id));
 }
 
@@ -93,6 +96,11 @@ pub fn latest_in(room: &str, thread: &str) -> Option<Expired> {
     store.kept.iter().rev()
         .find(|e| e.room_id() == room && (thread.is_empty() || e.row["approval"]["threadRoot"] == thread))
         .cloned()
+}
+
+/// The records not yet announced, each returned once.
+pub fn take_unannounced() -> Vec<Value> {
+    STORE.lock().map_or(Vec::new(), |mut store| std::mem::take(&mut store.unannounced))
 }
 
 /// Hide `id` from the inbox.
@@ -128,6 +136,8 @@ mod tests {
         assert!(!ran_out(&json!({"approval":{"id":"a"}}), 1_000), "no expiry, no claim");
         assert!(record(&row("a", 1_000), 2_000));
         assert!(!record(&row("a", 1_000), 2_100), "kept once");
+        assert_eq!(take_unannounced().len(), 1, "announced once");
+        assert!(take_unannounced().is_empty());
         assert_eq!(listed(3_000).len(), 1);
         assert!(for_event("!r:x", "$t", false).is_some(), "the thread root shows it in its own thread");
         assert!(record(&row("b", 50_000), 2_000));

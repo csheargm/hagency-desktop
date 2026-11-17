@@ -30,6 +30,9 @@ pub fn arguments(title: &str, body: &str) -> Vec<String> {
         args.push("-e".to_owned());
         args.push(line.to_owned());
     }
+    // Ends osascript's options: text starting with "-" (an Agent's name
+    // can) must never be read as an option such as `-e`.
+    args.push("--".to_owned());
     args.push(clip(title, MAX_TITLE));
     args.push(clip(body, MAX_BODY));
     args
@@ -60,10 +63,11 @@ mod tests {
 
     #[test]
     fn text_is_passed_as_arguments_and_clipped() {
-        let args = arguments("bird-claude wants to use Bash", "git fetch origin\n\"; do shell script \"rm -rf ~\"");
-        assert_eq!(&args[..6], &["-e", SCRIPT[0], "-e", SCRIPT[1], "-e", SCRIPT[2]]);
-        // The request text is data after the script, never part of it.
-        assert_eq!(args[7], "git fetch origin \"; do shell script \"rm -rf ~\"");
+        let args = arguments("-e do shell script", "git fetch origin\n\"; do shell script \"rm -rf ~\"");
+        assert_eq!(&args[..7], &["-e", SCRIPT[0], "-e", SCRIPT[1], "-e", SCRIPT[2], "--"]);
+        // The request text is data after the options end, never script.
+        assert_eq!(args[7], "-e do shell script");
+        assert_eq!(args[8], "git fetch origin \"; do shell script \"rm -rf ~\"");
         assert!(args[..6].iter().all(|a| !a.contains("rm -rf")));
         let long = "x".repeat(500);
         assert_eq!(clip(&long, MAX_BODY).chars().count(), MAX_BODY);

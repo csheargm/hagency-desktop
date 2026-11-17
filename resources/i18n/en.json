@@ -3581,10 +3581,10 @@
   "No approvals waiting": "No approvals waiting",
   "1 approval waiting for you": "1 approval waiting for you",
   "{n} approvals waiting for you": "{n} approvals waiting for you",
-  "{n} more below the first {shown}": "{n} more below the first {shown}",
   "Could not check for approvals ({code}); retrying.": "Could not check for approvals ({code}); retrying.",
   "Could not read {agent}'s requests ({code}); some may be missing.": "Could not read {agent}'s requests ({code}); some may be missing.",
   "Show": "Show",
   "Open room": "Open room",
-  "{n} waiting for approval": "{n} waiting for approval"
+  "{n} waiting for approval": "{n} waiting for approval",
+  "{n} more after these; answer or dismiss one to see the next.": "{n} more after these; answer or dismiss one to see the next."
 }

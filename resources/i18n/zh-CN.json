@@ -3581,10 +3581,10 @@
   "No approvals waiting": "没有待批准的请求",
   "1 approval waiting for you": "有 1 个请求等待你批准",
   "{n} approvals waiting for you": "有 {n} 个请求等待你批准",
-  "{n} more below the first {shown}": "前 {shown} 个之外还有 {n} 个",
   "Could not check for approvals ({code}); retrying.": "无法检查待批准的请求（{code}），正在重试。",
   "Could not read {agent}'s requests ({code}); some may be missing.": "无法读取 {agent} 的请求（{code}），可能有遗漏。",
   "Show": "显示",
   "Open room": "打开房间",
-  "{n} waiting for approval": "{n} 个待批准"
+  "{n} waiting for approval": "{n} 个待批准",
+  "{n} more after these; answer or dismiss one to see the next.": "另有 {n} 个；答复或关闭一个即可看到下一个。"
 }

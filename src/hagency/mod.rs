@@ -19,6 +19,7 @@ pub mod approval_text;
 pub mod pending_approvals;
 pub mod expired_approvals;
 pub mod owner_inbox;
+pub mod owner_inbox_model;
 pub mod pending_questions;
 pub mod run_controls;
 pub mod kill_switch;
