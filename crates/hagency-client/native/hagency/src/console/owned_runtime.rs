@@ -3,6 +3,7 @@ mod drain;
 pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod encrypted_context;
+mod journal_lock;
 mod provider_custody;
 pub(in crate::console) mod questions;
 mod room_tools;
@@ -224,11 +225,7 @@ fn change_intent_checked(
     intent: Option<RuntimeIntent>,
     expected_consent: Option<&str>,
 ) -> Result<(), RuntimeError> {
-    let lock_path = path.with_file_name("runtime-intents.lock");
-    let lock = hagency_store::private::open(&lock_path, true)
-        .or_else(|_| hagency_store::private::open(&lock_path, false))
-        .map_err(|_| RuntimeError::Profile)?;
-    lock.try_lock().map_err(|_| RuntimeError::Profile)?;
+    let _lock = journal_lock::acquire(&path.with_file_name("runtime-intents.lock"))?;
     let mut values = read_intents(path, identity)?;
     // This comparison and publication share the journal lock with Stop, even
     // when a different manager read its recovery snapshot before the deletion.

@@ -125,11 +125,7 @@ fn save_options(
     identity: &str,
     option: ServiceOptions,
 ) -> Result<(), RuntimeError> {
-    let lock_path = path.with_file_name("agent-service-options.lock");
-    let lock = hagency_store::private::open(&lock_path, true)
-        .or_else(|_| hagency_store::private::open(&lock_path, false))
-        .map_err(|_| RuntimeError::Profile)?;
-    lock.try_lock().map_err(|_| RuntimeError::Profile)?;
+    let _lock = super::journal_lock::acquire(&path.with_file_name("agent-service-options.lock"))?;
     let mut values = read_options(path, identity)?;
     values
         .options
@@ -155,11 +151,7 @@ fn remove_agent_intents(
     identity: &str,
     agent: &str,
 ) -> Result<(), RuntimeError> {
-    let lock_path = path.with_file_name("runtime-intents.lock");
-    let lock = hagency_store::private::open(&lock_path, true)
-        .or_else(|_| hagency_store::private::open(&lock_path, false))
-        .map_err(|_| RuntimeError::Profile)?;
-    lock.try_lock().map_err(|_| RuntimeError::Profile)?;
+    let _lock = super::journal_lock::acquire(&path.with_file_name("runtime-intents.lock"))?;
     let mut values = read_intents(path, identity)?;
     values.intents.retain(|intent| intent.agent_id != agent);
     hagency_store::private::replace(
