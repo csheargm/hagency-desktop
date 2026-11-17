@@ -77,13 +77,14 @@ fn puppet(agent: &Value) -> Result<OwnedUserId, String> {
 async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>) -> Result<usize, String> {
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
-    if let Some(limit) = entry.open_prs {
+    let mut slots = match entry.open_prs {
         // Counted by GitHub's search, so an older pull request beyond the
         // newest page still counts (GPT review). An error fails the pass.
-        let open = ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?;
-        if open >= u64::from(limit) {
-            return Ok(0); // claims resume once one of them merges or closes
-        }
+        Some(limit) => PrSlots::left(limit, ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?),
+        None => PrSlots::Unlimited,
+    };
+    if slots.is_full() {
+        return Ok(0); // claims resume once one of them merges or closes
     }
     let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
     // The daily limit is enforced by each reservation below, which also lets
@@ -93,6 +94,11 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     let live = super::live::Live::new(worker.service, worker.agent, &watch, true, worker.epoch)?;
     let mut handed = 0;
     for issue in picks {
+        // Each hand-off becomes an open pull request: one slot each, so a
+        // single pass never opens more than the cap (GPT review P1).
+        if slots.is_full() {
+            break;
+        }
         if live.paused() {
             return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
         }
@@ -115,8 +121,30 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
             return Err(error);
         }
         handed += outcome.handed;
+        slots.take(outcome.handed);
     }
     Ok(handed)
+}
+
+/// The open-pull-request slots one pass may still fill (`open_prs` minus
+/// the ones already open), reserved one per hand-off.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PrSlots {
+    Unlimited,
+    Left(u64),
+}
+impl PrSlots {
+    pub(crate) fn left(limit: u32, open: u64) -> Self {
+        Self::Left(u64::from(limit).saturating_sub(open))
+    }
+    pub(crate) fn is_full(&self) -> bool {
+        *self == Self::Left(0)
+    }
+    pub(crate) fn take(&mut self, handed: usize) {
+        if let Self::Left(left) = self {
+            *left = left.saturating_sub(handed as u64);
+        }
+    }
 }
 
 /// Who holds an issue, as this Agent sees it.
@@ -233,3 +261,7 @@ impl LoopIo for LiveLoop<'_> {
         crate::hagency::kill_switch::paused_here(&self.agent_id)
     }
 }
+
+#[cfg(test)]
+#[path = "work_tests.rs"]
+mod tests;
