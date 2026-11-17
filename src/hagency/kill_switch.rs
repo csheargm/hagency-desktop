@@ -273,7 +273,9 @@ impl Agents for Live {
         Ok(here(&agents, &devices))
     }
     async fn pending_approvals(&self) -> Result<Vec<Value>, String> {
-        crate::hagency::local_approvals::read(&self.0).await
+        // An unreadable queue is logged by `read`; stopping the Agent's
+        // service below ends its waiting requests anyway.
+        crate::hagency::local_approvals::read(&self.0).await.map(|(rows, _)| rows)
     }
     async fn deny(&self, row: &Value) -> Result<(), String> {
         let command = crate::hagency::local_approvals::decision_command(row, DENY).ok_or("approval_not_local")?;

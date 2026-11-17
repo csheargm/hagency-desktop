@@ -135,6 +135,14 @@ impl SharedPermissionNotice {
                     format("Last request: {result}. The Agent is continuing.",&[("result",tr(approvals::decided_label(decision)).to_owned())]),
                 _=>String::new(),
             };
+            // A request that ended unanswered says so here until a newer one comes.
+            let expired=crate::hagency::expired_approvals::latest_in(&self.room,&self.thread)
+                .filter(|_|self.execution_text.is_empty() && self.error.is_empty());
+            if let Some(expired)=expired {
+                let (asked,details)=approvals::describe(&expired.row);
+                return Display {visible:true,title:format("Expired, not answered: {title}",&[("title",asked)]),details,
+                    hint:tr("The Agent was told nobody answered. Ask it again when you are here.").to_owned(),..Display::default()};
+            }
             return Display {
                 visible:!self.execution_text.is_empty() || !self.error.is_empty(),
                 waiting:self.execution_busy && self.error.is_empty(),

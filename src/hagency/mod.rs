@@ -17,6 +17,8 @@ pub mod local_approvals;
 pub mod mcp_card;
 pub mod approval_text;
 pub mod pending_approvals;
+pub mod expired_approvals;
+pub mod owner_inbox;
 pub mod pending_questions;
 pub mod run_controls;
 pub mod kill_switch;

@@ -4322,7 +4322,10 @@ impl Widget for HagencyPanel {
                     let runtime=row.view(cx,ids!(runtime_badge));runtime.set_visible(cx,state==AgentDeviceState::Here);
                     let label=runtime_list_label(self.runtime_list.get(string(value,"id")),string(value,"id"));
                     let badge=if label.starts_with("Not running") {"Not running"} else if label.starts_with("Running") || label.starts_with("Processing") {"Running"} else if label.starts_with("Service enabled") {"Enabled"} else if label.starts_with("Starting") {"Starting…"} else if label.starts_with("Checking") {"Checking…"} else if label=="Waiting for the previous runtime lease to be released…" {"Waiting for lease"} else {"Needs attention"};
-                    runtime.label(cx,ids!(device_label)).set_text(cx,crate::i18n::tr(badge));
+                    // Waiting approvals of this Agent outrank its runtime state.
+                    let waiting=crate::hagency::pending_approvals::count_for_agent(string(value,"id"));
+                    let badge=if waiting>0 {crate::i18n::format("{n} waiting for approval",&[("n",waiting.to_string())])} else {crate::i18n::tr(badge).to_owned()};
+                    runtime.label(cx,ids!(device_label)).set_text(cx,&badge);
                 }
                 self.agent_card_targets.insert(row.widget_uid(),string(value,"id").into());
                 let control=row.button(cx,ids!(service_control));

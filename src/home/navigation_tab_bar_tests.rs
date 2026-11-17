@@ -271,4 +271,7 @@ fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_
     assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
     bar.apply_approval_alert_state(&mut cx, false);
     assert!(!bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with('●'));
+    // Waiting approvals are counted on the rail.
+    bar.apply_approval_alert_count(&mut cx, true, 2);
+    assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with(" 2 ●"));
 }

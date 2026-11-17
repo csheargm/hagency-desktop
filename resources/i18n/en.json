@@ -3574,5 +3574,17 @@
   "{n} steps": "{n} steps",
   "Last step: {step}": "Last step: {step}",
   "Time: {t}": "Time: {t}",
-  "Runtime: {runtime}": "Runtime: {runtime}"
+  "Runtime: {runtime}": "Runtime: {runtime}",
+  "Expired, not answered: {title}": "Expired, not answered: {title}",
+  "The Agent was told nobody answered. Ask it again when you are here.": "The Agent was told nobody answered. Ask it again when you are here.",
+  "In {room} · {agent}": "In {room} · {agent}",
+  "No approvals waiting": "No approvals waiting",
+  "1 approval waiting for you": "1 approval waiting for you",
+  "{n} approvals waiting for you": "{n} approvals waiting for you",
+  "{n} more below the first {shown}": "{n} more below the first {shown}",
+  "Could not check for approvals ({code}); retrying.": "Could not check for approvals ({code}); retrying.",
+  "Could not read {agent}'s requests ({code}); some may be missing.": "Could not read {agent}'s requests ({code}); some may be missing.",
+  "Show": "Show",
+  "Open room": "Open room",
+  "{n} waiting for approval": "{n} waiting for approval"
 }

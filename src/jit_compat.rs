@@ -2,9 +2,12 @@
 
 use makepad_widgets::*;
 
-/// The fork queued a system notification; only its iOS, tvOS and Android
-/// backends showed one, and macOS ignored it. Upstream has no notification op.
-pub fn show_notification(_cx: &mut Cx, _title: &str, _body: &str) {}
+/// The fork queued a system notification that macOS ignored, and upstream
+/// has no notification op; on macOS this now shows one (see
+/// `shared::desktop_notification`).
+pub fn show_notification(_cx: &mut Cx, title: &str, body: &str) {
+    crate::shared::desktop_notification::show(title, body);
+}
 
 /// Redraw `pass` and every pass it is drawn into, up to its window.
 pub fn redraw_pass_and_parent_passes(cx: &mut Cx, pass: DrawPassId) {

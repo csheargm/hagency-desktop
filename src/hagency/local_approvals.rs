@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Marks a row that came from this app's own Agent runtime.
-const SOURCE: &str = "localRuntime";
+pub(crate) const SOURCE: &str = "localRuntime";
+/// Added to an answer: this app's Agents whose waiting requests could not be
+/// read (`[{agent, code}]`), so the inbox says requests may be missing.
+pub(crate) const UNREADABLE: &str = "unreadableAgents";
 /// The decision that approves and remembers exactly this request.
 pub const ALWAYS: &str = "approve_always";
 /// At most this many Agents are read per poll (the listing is bounded too).
@@ -66,28 +69,28 @@ pub fn decision_command(row: &Value, decision: &str) -> Option<Command> {
 /// management answer. A failed listing leaves the answer as it was: the
 /// management rows must still show, and the next poll reads the queue again.
 pub async fn with_local(service: &crate::hagency::backend::Service, room: Option<&str>, answer: Result<Value, String>) -> Result<Value, String> {
-    let rows = match read(service).await {
-        Ok(rows) => rows,
+    let (rows, unreadable) = match read(service).await {
+        Ok(read) => read,
         Err(code) => {
-            // Shown nowhere else: the poll repeats within seconds.
+            // The inbox says so too (`UNREADABLE`); the poll repeats within seconds.
             makepad_widgets::log!("Local Agent approvals unreadable: {code}");
-            Vec::new()
+            (Vec::new(), vec![json!({"agent": "", "code": code})])
         }
     };
     let rows: Vec<Value> = rows.into_iter().filter(|r| room.is_none_or(|room| r["approval"]["roomId"] == room)).collect();
-    match answer {
-        Ok(mut value) => {
-            if let Some(list) = value["approvals"].as_array_mut() {
-                list.extend(rows);
-            } else {
-                value["approvals"] = Value::Array(rows);
-            }
-            Ok(value)
-        }
-        Err(code) if rows.is_empty() => Err(code),
+    let mut value = match answer {
+        Ok(value) => value,
+        Err(code) if rows.is_empty() => return Err(code),
         // Management is unreachable but this app's own Agent is waiting.
-        Err(_) => Ok(json!({"approvals": rows})),
+        Err(_) => json!({"approvals": []}),
+    };
+    if let Some(list) = value["approvals"].as_array_mut() {
+        list.extend(rows);
+    } else {
+        value["approvals"] = Value::Array(rows);
     }
+    value[UNREADABLE] = Value::Array(unreadable);
+    Ok(value)
 }
 
 /// Posted when this app's own Agent runtime queued, decided or dropped a
@@ -121,21 +124,30 @@ pub fn ensure_watching() {
     });
 }
 
-pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<Vec<Value>, String> {
+/// The waiting requests of this app's Agents, and the Agents whose queue
+/// could not be read (`{agent, code}`), which are logged, never skipped silently.
+pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(Vec<Value>, Vec<Value>), String> {
     let listed = service.execute(Command::Agents).await?;
-    let mut rows = Vec::new();
+    let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
     for agent in listed["agents"].as_array().into_iter().flatten().take(MAX_AGENTS) {
         let Some(id) = agent["id"].as_str() else { continue };
         if agent["state"] != "active" {
             continue;
         }
         let local = Command::Local { agent_id: id.into(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
-        // An Agent that does not run on this device has no queue here.
-        let Ok(answer) = service.execute(local).await else { continue };
         let name = agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent");
+        // An Agent that does not run on this device answers an empty queue.
+        let answer = match service.execute(local).await {
+            Ok(answer) => answer,
+            Err(code) => {
+                makepad_widgets::log!("Approvals of Agent {id} unreadable: {code}");
+                unreadable.push(json!({"agent": name, "code": code}));
+                continue;
+            }
+        };
         rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, name)));
     }
-    Ok(rows)
+    Ok((rows, unreadable))
 }
 
 #[cfg(test)]

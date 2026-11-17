@@ -73,6 +73,8 @@ mod embedded_content {
                     visible: true
                     login_screen := LoginScreen {}
                 }
+                // Every approval waiting for this owner, over any page (owner approvals inbox ADR).
+                owner_approvals_inbox := OwnerApprovalsInbox {}
 
                 image_viewer_modal := Modal {
                     content := ImageViewer {}
@@ -1530,6 +1532,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::hagency::github_access::script_mod(vm);
     crate::hagency::agent_panel::script_mod(vm);
     crate::hagency::ui::script_mod(vm);
+    crate::hagency::owner_inbox::script_mod(vm);
     crate::hagency::owner_dashboard::register(vm);
     // A mini-apps host body, the docked region holding them, and the pop-out window.
     crate::miniapps::surface::script_mod(vm);
