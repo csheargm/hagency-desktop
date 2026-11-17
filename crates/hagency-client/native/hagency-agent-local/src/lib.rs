@@ -3,6 +3,7 @@
 //! interception before using this library. Each call ID denotes ONE provider invocation:
 //! a retry which can charge again requires a fresh call ID under the original requester.
 pub mod activity;
+pub mod ollama_caps;
 pub mod attribution;
 pub mod agent_env;
 pub mod codex;

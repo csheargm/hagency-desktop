@@ -3558,7 +3558,7 @@ mod tests {
                 cwd: path.into(),
                 model: "test-model".into(),
                 effort: "low".into(),
-                shared_auth: false,
+                shared_auth: false, local_model: None,
                 web_search: true,
                 environment: Default::default(),
             },

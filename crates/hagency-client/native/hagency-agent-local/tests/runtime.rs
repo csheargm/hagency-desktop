@@ -74,7 +74,7 @@ impl Fixture {
                 "medium"
             }
             .into(),
-            shared_auth: true,
+            shared_auth: true, local_model: None,
             web_search: true,
             environment: Default::default(),
         };

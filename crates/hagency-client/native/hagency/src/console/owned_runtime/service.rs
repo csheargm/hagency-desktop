@@ -735,7 +735,7 @@ mod tests {
                 cwd: root.join("work"),
                 model: "haiku".into(),
                 effort: "low".into(),
-                shared_auth: true,
+                shared_auth: true, local_model: None,
                 web_search: false,
                 environment: Default::default(),
             },

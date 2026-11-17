@@ -62,6 +62,15 @@ class Provider(http.server.BaseHTTPRequestHandler):
             assert 'SQLite' in json.dumps(body['input'])
             item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
                     'content':[{'type':'output_text','text':'QUESTION_REPLY','annotations':[]}]}
+        elif mode == "shell" and n == 0:
+            # Shaped like an Ollama /v1/responses tool call from a small model.
+            names = [t.get('name') for t in body['tools']]
+            assert 'exec_command' in names, names
+            item = {'type':'function_call','id':response_id+'-sh','call_id':response_id+'-sh',
+                    'name':'exec_command','arguments':json.dumps({'cmd':'echo hi > hello.txt'})}
+        elif mode == "shell":
+            item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
+                    'content':[{'type':'output_text','text':'SHELL_REPLY','annotations':[]}]}
         elif is_root and n == 0:
             namespace = next(tool['name'] for tool in body['tools']
                              if tool.get('type') == 'namespace'

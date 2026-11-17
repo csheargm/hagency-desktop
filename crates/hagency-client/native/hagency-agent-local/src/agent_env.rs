@@ -107,7 +107,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             model: "m".into(),
             effort: "low".into(),
-            shared_auth: false,
+            shared_auth: false, local_model: None,
             web_search: false,
             environment,
         }

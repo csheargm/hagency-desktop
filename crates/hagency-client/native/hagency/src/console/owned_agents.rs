@@ -1086,7 +1086,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         } else {
                             profile.reasoning_effort
                         },
-                        shared_auth: provider.shared,
+                        shared_auth: provider.shared, local_model: None,
                         web_search: profile.web_search,
                         environment,
                     },
@@ -1225,7 +1225,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         } else {
                             profile.reasoning_effort
                         },
-                        shared_auth: provider.shared,
+                        shared_auth: provider.shared, local_model: None,
                         web_search: profile.web_search,
                         environment,
                     },
