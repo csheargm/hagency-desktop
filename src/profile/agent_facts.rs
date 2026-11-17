@@ -50,6 +50,8 @@ pub fn own_status(state: &str, service: Option<&str>) -> Option<&'static str> {
         "running" | "processing" | "waiting" | "starting" | "attention" => "Running",
         "stopped" | "paused" => "Paused",
         "elsewhere" => "On another device",
+        // The host could not read the service: claim nothing.
+        "unknown" => return None,
         _ => "Offline",
     })
 }
@@ -82,7 +84,7 @@ pub fn roster_rows(rows: &Value) -> HashMap<OwnedUserId, RosterRow> {
 
 /// An own Agent's local reply: its service state, and its runtime if known.
 #[derive(Clone, Debug)]
-struct Local { at: Instant, service: String, runtime: Option<&'static str> }
+struct Local { at: Instant, service: Option<String>, runtime: Option<&'static str> }
 
 #[derive(Default)]
 struct Cache {
@@ -94,6 +96,14 @@ struct Cache {
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
 
+/// The cache only if it still belongs to `account`: a reply that comes back
+/// after an account change is dropped instead of resetting the new cache.
+fn cache_if(account: &OwnedUserId) -> Option<std::sync::MutexGuard<'static, Cache>> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    (cache.account.as_ref() == Some(account)).then_some(cache)
+}
+
+/// The cache, reset for `account` if it belonged to another one (readers).
 fn cache_for(account: &OwnedUserId) -> std::sync::MutexGuard<'static, Cache> {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if cache.account.as_ref() != Some(account) {
@@ -117,7 +127,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
             own_agent_id: Some(row.agent_id),
             owner: Some(account),
             runtime: local.as_ref().and_then(|l| l.runtime),
-            status: own_status(&row.state, local.as_ref().map(|l| l.service.as_str())),
+            status: own_status(&row.state, local.as_ref().and_then(|l| l.service.as_deref())),
         };
     }
     let roster = {
@@ -143,12 +153,12 @@ fn load_local(account: &OwnedUserId, agent_id: &str) {
             Ok(status) if status["here"] == true => saved_runtime(&agent_id).await,
             _ => None,
         };
-        let mut cache = cache_for(&account);
+        let Some(mut cache) = cache_if(&account) else { return };
         cache.local_loading.remove(&agent_id);
         let service = match status {
-            Ok(status) => status["service"]["state"].as_str().unwrap_or("unknown").to_owned(),
-            // Shown as Offline until the next hover asks again.
-            Err(code) => { log!("Agent status for the hover card failed: {code}"); "unknown".to_owned() }
+            Ok(status) => Some(status["service"]["state"].as_str().unwrap_or("unknown").to_owned()),
+            // An unread status is not "Offline": show none until a later hover asks again.
+            Err(code) => { log!("Agent status for the hover card failed: {code}"); None }
         };
         cache.local.insert(agent_id, Local { at: Instant::now(), service, runtime });
         drop(cache);
@@ -176,7 +186,7 @@ fn load_roster(account: &OwnedUserId, room: OwnedRoomId) {
             // A Room outside any project has no roster: owners stay unknown.
             Err(code) => { log!("Room Agent roster for the hover card unavailable: {code}"); HashMap::new() }
         };
-        let mut cache = cache_for(&account);
+        let Some(mut cache) = cache_if(&account) else { return };
         cache.roster_loading.remove(&room);
         cache.rosters.insert(room, (Instant::now(), rows));
         drop(cache);

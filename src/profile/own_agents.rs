@@ -10,6 +10,9 @@ use serde_json::Value;
 
 /// Upper bound of listed Agents read into the map (the roster caps alike).
 const MAX_AGENTS: usize = 128;
+/// How long a listing answers "is this one ours?" before a hover or click
+/// asks again, so an Agent created meanwhile is found without a reload loop.
+const LISTING_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Posted when a listing changed what the map knows, so open panels can re-check.
 #[derive(Clone, Debug)]
@@ -28,8 +31,8 @@ struct Cache {
     owner: Option<OwnedUserId>,
     puppets: HashMap<OwnedUserId, OwnRow>,
     loading: bool,
-    /// Whether a listing for `owner` has come back at least once.
-    listed: bool,
+    /// When a listing for `owner` last came back.
+    listed: Option<std::time::Instant>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
 
@@ -72,14 +75,15 @@ pub fn row_as(owner: &UserId, user: &UserId) -> Option<OwnRow> {
 #[cfg(test)]
 pub fn set_test_listing(owner: &UserId, rows: &Value) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    *cache = Cache { owner: Some(owner.to_owned()), puppets: own_puppets(rows, owner), loading: false, listed: true };
+    *cache = Cache { owner: Some(owner.to_owned()), puppets: own_puppets(rows, owner), loading: false, listed: Some(std::time::Instant::now()) };
 }
 
-/// Lists this account's Agents once, so a hover or click can tell ours apart.
+/// Lists this account's Agents unless a recent listing exists, so a hover
+/// or click can tell ours apart (and a listing's reply cannot re-trigger it).
 pub fn ensure_listed() {
     let listed = crate::sliding_sync::current_user_id().is_some_and(|owner| {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache.owner.as_ref() == Some(&owner) && cache.listed
+        cache.owner.as_ref() == Some(&owner) && cache.listed.is_some_and(|at| at.elapsed() < LISTING_TTL)
     });
     if !listed { refresh(); }
 }
@@ -102,12 +106,14 @@ pub fn refresh() {
             Err(code) => Err(code),
         };
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache.loading = false;
         if cache.owner.as_ref() != Some(&owner) {
             return; // The account changed meanwhile; its own listing owns the cache.
         }
+        cache.loading = false;
+        // The service may already serve another account: only its own listing counts.
+        let listed = listed.and_then(|l| if l["ownerMxid"].as_str().is_some_and(|o| o != owner.as_str()) { Err("matrix_account_changed".into()) } else { Ok(l) });
         match listed {
-            Ok(listed) => (cache.puppets, cache.listed) = (own_puppets(&listed["agents"], &owner), true),
+            Ok(listed) => (cache.puppets, cache.listed) = (own_puppets(&listed["agents"], &owner), Some(std::time::Instant::now())),
             // No listing yet (signing in, owner engine not ready): own Agents
             // fall back to the user panel, and the next click asks again.
             Err(code) => { log!("Own Agents listing failed: {code}"); return; }

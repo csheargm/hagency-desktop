@@ -120,10 +120,10 @@ impl ProfileSidePanel {
     }
 
     /// "Agent details" for this account's own Agents; an unknown Agent asks
-    /// for the listing once and shows the button when it arrives.
+    /// for a listing (at most once a minute) and shows the button when it arrives.
     fn show_agent_settings(&mut self, cx: &mut Cx, user_id: &matrix_sdk::ruma::UserId) {
         let own = super::own_agents::agent_for(user_id).is_some();
-        if !own && profile_route::is_agent(user_id) { super::own_agents::refresh(); }
+        if !own && profile_route::is_agent(user_id) { super::own_agents::ensure_listed(); }
         self.view.button(cx, ids!(open_agent_panel_button)).set_visible(cx, own);
     }
 

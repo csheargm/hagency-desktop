@@ -10,7 +10,8 @@ fn own_status_reads_running_offline_and_paused() {
     assert_eq!(own_status("active", Some("stopped")), Some("Paused"));
     assert_eq!(own_status("active", Some("paused")), Some("Paused"));
     assert_eq!(own_status("active", Some("no_host")), Some("Offline"));
-    assert_eq!(own_status("active", Some("unknown")), Some("Offline"));
+    assert_eq!(own_status("active", Some("host_restarting")), Some("Offline"));
+    assert_eq!(own_status("active", Some("unknown")), None, "an unread service is not claimed Offline");
     assert_eq!(own_status("active", Some("elsewhere")), Some("On another device"));
     assert_eq!(own_status("suspended", Some("running")), Some("Paused"), "a suspended Agent is paused whatever its service says");
 }

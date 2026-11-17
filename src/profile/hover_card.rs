@@ -92,7 +92,8 @@ impl AvatarHoverCard {
         if !crate::home::home_screen::effective_is_desktop(cx) {
             return;
         }
-        let switched = self.target.as_ref().is_none_or(|t| t.user_id != info.user_id);
+        // An Agent's owner and status are per room: another room is a switch too.
+        let switched = self.target.as_ref().is_none_or(|t| t.user_id != info.user_id || t.room_id != info.room_id);
         self.anchor_uid = Some(uid);
         self.anchor = anchor;
         self.target = Some(info);
@@ -206,7 +207,9 @@ impl AvatarHoverCard {
         };
         let Some(info) = self.target.clone() else { return };
         let room_name = room_name(cx, &info);
-        let Some(request) = request_for(button, &info, room_name, self.own_agent()) else { return };
+        // Re-check ownership now: the account may have changed since the card opened.
+        let own_agent = super::own_agents::agent_for(&info.user_id).filter(|id| self.own_agent() == Some(id.as_str()));
+        let Some(request) = request_for(button, &info, room_name, own_agent.as_deref()) else { return };
         // Copying keeps the card open; every other button leaves it.
         if button != CardButton::CopyId { self.step(cx, HoverInput::Dismiss); }
         dispatch(cx, request);
