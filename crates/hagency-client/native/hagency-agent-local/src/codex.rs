@@ -19,6 +19,7 @@ mod approvals;
 mod controls;
 mod native_usage;
 pub mod ollama;
+pub mod ollama_verify;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

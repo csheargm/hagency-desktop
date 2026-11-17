@@ -142,3 +142,52 @@ async fn live_ollama_model_runs_an_approved_shell_command() {
     assert!(r.profile.cwd.join("hello.txt").exists());
     assert!(reply.usage.is_reported() && spent(&r) > 0);
 }
+
+#[tokio::test]
+#[ignore = "requires explicit installed Codex; localhost fixture"]
+async fn kill_switch_mid_run_stops_the_tool_and_is_not_replayed_after_restart() {
+    let (mut model, endpoint) = fake_ollama().await;
+    let mut r = rig(&endpoint, "qwen3:4b");
+    let guardian = Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let mut process = runtime::spawn_for_scope_with_guardian(&r.profile, "ollama-test", &mut r.ledger, &r.scope, Some(guardian))
+        .await.unwrap();
+    process.session.initialize().await.unwrap();
+    process.session.open_context(&mut r.ledger, &r.scope, &r.profile).await.unwrap();
+    let (queue, mut pending) = codex::approval_queue(4).unwrap();
+    {
+        let run = process.session.run_with_started(&mut r.ledger, "@owner:test", &r.scope, "killed", "killed",
+            "make hello.txt", BudgetMode::Postpaid, &queue, None);
+        tokio::pin!(run);
+        tokio::select! {
+            // The kill switch fires while the tool call waits for approval.
+            Some(waiting) = pending.recv() => drop(waiting),
+            done = &mut run => panic!("run ended before its tool call: {:?}", done.map(|c| c.text)),
+        }
+    }
+    process.stop().await.unwrap();
+    assert!(!r.profile.cwd.join("hello.txt").exists(), "stopped run executed no tool");
+    r.ledger = Ledger::open(r.tmp.path().canonicalize().unwrap().join("ledger"), "@owner:test").unwrap();
+    let mut process = runtime::spawn_for_scope_with_guardian(&r.profile, "ollama-test", &mut r.ledger, &r.scope, Some(guardian))
+        .await.unwrap();
+    process.session.initialize().await.unwrap();
+    process.session.open_context(&mut r.ledger, &r.scope, &r.profile).await.unwrap();
+    let again = process.session.run_with_started(&mut r.ledger, "@owner:test", &r.scope, "killed", "killed",
+        "make hello.txt", BudgetMode::Postpaid, &queue, None).await;
+    let refused = again.err().expect("a stopped call is not replayed after restart");
+    // The stopped call is outcome-unknown in the ledger, which refuses to run it again.
+    assert!(matches!(refused, codex::Error::Ledger(hagency_agent_local::Error::Unknown)), "{refused:?}");
+    assert!(pending.try_recv().is_err(), "no further tool call reached approval");
+    assert!(!r.profile.cwd.join("hello.txt").exists());
+    process.stop().await.unwrap();
+    model.kill().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "real Ollama on 127.0.0.1:11434 with qwen3:4b and gpt-oss:120b-cloud"]
+async fn live_ollama_provenance_refuses_cloud_models() {
+    let local = LocalModel::new(codex::ollama::DEFAULT_ENDPOINT).unwrap();
+    codex::ollama_verify::verify_model(&local, "qwen3:4b").await.unwrap();
+    assert!(codex::ollama_verify::verify_model(&local, "gpt-oss:120b-cloud").await.is_err());
+    let models = codex::ollama_verify::list_models(&local).await.unwrap();
+    assert!(models.contains(&"qwen3:4b".to_string()) && !models.iter().any(|m| m.contains("cloud")), "{models:?}");
+}

@@ -20,7 +20,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["std", "parsing"] }
-tokio = { workspace = true, features = ["process", "io-util"] }
+tokio = { workspace = true, features = ["process", "io-util", "net", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }

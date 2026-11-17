@@ -18,6 +18,9 @@ pub struct CapsConfig {
     /// Concurrent runs across the server (1-2 on a CPU host).
     pub server_concurrency: usize,
     pub max_run_seconds: u64,
+    /// Charged when a run starts and settled to actual usage when it ends, so
+    /// a crash mid-run keeps the run charged.
+    pub reserve_tokens_per_run: u64,
     /// Admin-exempt Matrix user IDs (no per-user caps; server caps still apply).
     pub exempt_users: BTreeSet<String>,
 }
@@ -29,6 +32,7 @@ impl Default for CapsConfig {
             server_tokens_per_day: 2_000_000,
             server_concurrency: 1,
             max_run_seconds: 600,
+            reserve_tokens_per_run: 16_000,
             exempt_users: BTreeSet::new(),
         }
     }
@@ -41,6 +45,7 @@ pub enum Refusal {
     UserDailyLimit { resets_at: i64 },
     ServerDailyLimit { resets_at: i64 },
     AlreadyRunning,
+    Storage,
 }
 impl Refusal {
     /// The user-facing message. Times are UTC `HH:MM`.
@@ -53,6 +58,7 @@ impl Refusal {
                 format!("The server's daily AI budget is used up — resets at {} UTC.", clock(*resets_at))
             }
             Self::AlreadyRunning => "You already have a run in progress — wait for it to finish.".into(),
+            Self::Storage => "AI usage could not be recorded, so the run did not start.".into(),
         }
     }
 }
@@ -69,6 +75,9 @@ struct Persisted {
     day: i64,
     users: BTreeMap<String, u64>,
     server: u64,
+    /// Reservations of runs in progress (already included in the totals).
+    #[serde(default)]
+    reserved: BTreeMap<String, u64>,
 }
 
 /// Outcome of [`Caps::request`]: run now, or wait in the fair queue.
@@ -93,12 +102,14 @@ impl Caps {
         if config.requests_per_minute == 0 || config.server_concurrency == 0 || config.max_run_seconds == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "caps must be at least 1"));
         }
-        let tokens = match std::fs::read(&path) {
+        let mut tokens: Persisted = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Persisted::default(),
             Err(e) => return Err(e),
         };
+        // A reservation left by a crash stays charged; no run is in progress now.
+        tokens.reserved.clear();
         Ok(Self { config, path, tokens, stopped: false, recent: BTreeMap::new(),
             running: BTreeSet::new(), queue: VecDeque::new() })
     }
@@ -143,7 +154,7 @@ impl Caps {
             recent.push_back(now);
         }
         if self.running.len() < self.config.server_concurrency && self.queue.is_empty() {
-            self.running.insert(user.into());
+            self.start(user).map_err(|_| Refusal::Storage)?;
             return Ok(Admission::Run);
         }
         self.queue.push_back(user.into());
@@ -154,8 +165,10 @@ impl Caps {
     pub fn finish(&mut self, user: &str, tokens: u64, now: i64) -> std::io::Result<Option<String>> {
         self.roll(now);
         self.running.remove(user);
-        *self.tokens.users.entry(user.into()).or_default() += tokens;
-        self.tokens.server += tokens;
+        let reserved = self.tokens.reserved.remove(user).unwrap_or(0);
+        let total = self.tokens.users.entry(user.into()).or_default();
+        *total = total.saturating_sub(reserved) + tokens;
+        self.tokens.server = self.tokens.server.saturating_sub(reserved) + tokens;
         self.save()?;
         if self.tokens.server >= self.config.server_tokens_per_day {
             // Waiting users are refused on their next request with the reset time.
@@ -166,9 +179,18 @@ impl Caps {
         }
         let next = self.queue.pop_front();
         if let Some(next) = &next {
-            self.running.insert(next.clone());
+            self.start(next)?;
         }
         Ok(next)
+    }
+    /// Marks `user` running and durably charges the reservation first.
+    fn start(&mut self, user: &str) -> std::io::Result<()> {
+        let reserve = self.config.reserve_tokens_per_run;
+        *self.tokens.users.entry(user.into()).or_default() += reserve;
+        self.tokens.server += reserve;
+        self.tokens.reserved.insert(user.into(), reserve);
+        self.running.insert(user.into());
+        self.save()
     }
     pub fn user_tokens_today(&self, user: &str) -> u64 {
         self.tokens.users.get(user).copied().unwrap_or(0)
@@ -181,103 +203,4 @@ impl Caps {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    const NOON: i64 = 20_000 * SECONDS_PER_DAY + 12 * 3600;
-    fn caps(config: CapsConfig) -> (tempfile::TempDir, Caps) {
-        let dir = tempfile::tempdir().unwrap();
-        let caps = Caps::open(config, dir.path().join("caps.json")).unwrap();
-        (dir, caps)
-    }
-    fn wide() -> CapsConfig {
-        CapsConfig { server_concurrency: 8, ..Default::default() }
-    }
-    #[test]
-    fn requests_per_minute_are_limited_per_user() {
-        let (_d, mut c) = caps(CapsConfig { requests_per_minute: 2, ..wide() });
-        for t in [0, 1] {
-            assert_eq!(c.request("@a:x", NOON + t), Ok(Admission::Run));
-            c.finish("@a:x", 0, NOON + t).unwrap();
-        }
-        let refused = c.request("@a:x", NOON + 2).unwrap_err();
-        assert_eq!(refused, Refusal::RateLimited { retry_at: NOON + 60 });
-        assert_eq!(refused.message(), "Too many requests — try again at 12:01.");
-        assert_eq!(c.request("@b:x", NOON + 2), Ok(Admission::Run));
-        assert_eq!(c.request("@a:x", NOON + 61), Ok(Admission::Run));
-    }
-    #[test]
-    fn one_concurrent_run_per_user() {
-        let (_d, mut c) = caps(wide());
-        assert_eq!(c.request("@a:x", NOON), Ok(Admission::Run));
-        assert_eq!(c.request("@a:x", NOON), Err(Refusal::AlreadyRunning));
-    }
-    #[test]
-    fn user_daily_tokens_persist_across_restart_and_reset_next_day() {
-        let (dir, mut c) = caps(CapsConfig { user_tokens_per_day: 100, ..wide() });
-        c.request("@a:x", NOON).unwrap();
-        c.finish("@a:x", 150, NOON).unwrap();
-        let mut c = Caps::open(CapsConfig { user_tokens_per_day: 100, ..wide() }, dir.path().join("caps.json")).unwrap();
-        let refused = c.request("@a:x", NOON + 5).unwrap_err();
-        assert_eq!(refused.message(), "Daily limit reached — resets at 00:00 UTC.");
-        assert_eq!(c.request("@a:x", NOON + SECONDS_PER_DAY), Ok(Admission::Run));
-    }
-    #[test]
-    fn server_daily_budget_stops_everyone() {
-        let (_d, mut c) = caps(CapsConfig { server_tokens_per_day: 10, ..wide() });
-        c.request("@a:x", NOON).unwrap();
-        c.finish("@a:x", 10, NOON).unwrap();
-        assert!(matches!(c.request("@b:x", NOON), Err(Refusal::ServerDailyLimit { .. })));
-    }
-    #[test]
-    fn queued_runs_do_not_start_once_the_server_budget_is_spent() {
-        let (_d, mut c) = caps(CapsConfig { server_tokens_per_day: 10, server_concurrency: 1, ..Default::default() });
-        c.request("@a:x", NOON).unwrap();
-        c.request("@b:x", NOON).unwrap();
-        assert_eq!(c.finish("@a:x", 10, NOON).unwrap(), None);
-        assert!(matches!(c.request("@b:x", NOON + 1), Err(Refusal::ServerDailyLimit { .. })));
-    }
-    #[test]
-    fn zero_caps_are_rejected_at_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let zero = CapsConfig { requests_per_minute: 0, ..Default::default() };
-        assert!(Caps::open(zero, dir.path().join("c.json")).is_err());
-    }
-    #[test]
-    fn server_queue_is_fair_across_users() {
-        let (_d, mut c) = caps(CapsConfig { server_concurrency: 1, ..Default::default() });
-        assert_eq!(c.request("@a:x", NOON), Ok(Admission::Run));
-        assert_eq!(c.request("@b:x", NOON), Ok(Admission::Queued { position: 1 }));
-        assert_eq!(c.request("@c:x", NOON), Ok(Admission::Queued { position: 2 }));
-        // @a cannot jump the queue with a second request.
-        assert_eq!(c.request("@a:x", NOON), Err(Refusal::AlreadyRunning));
-        assert_eq!(c.finish("@a:x", 1, NOON).unwrap().as_deref(), Some("@b:x"));
-        assert_eq!(c.request("@a:x", NOON + 1), Ok(Admission::Queued { position: 2 }));
-        assert_eq!(c.finish("@b:x", 1, NOON).unwrap().as_deref(), Some("@c:x"));
-        assert_eq!(c.finish("@c:x", 1, NOON).unwrap().as_deref(), Some("@a:x"));
-    }
-    #[test]
-    fn kill_switch_refuses_and_drops_the_queue() {
-        let (_d, mut c) = caps(CapsConfig { server_concurrency: 1, ..Default::default() });
-        c.request("@a:x", NOON).unwrap();
-        c.request("@b:x", NOON).unwrap();
-        c.set_stopped(true);
-        assert_eq!(c.request("@c:x", NOON), Err(Refusal::Stopped));
-        assert_eq!(c.finish("@a:x", 0, NOON).unwrap(), None);
-        c.set_stopped(false);
-        assert_eq!(c.request("@b:x", NOON + 1), Ok(Admission::Run));
-    }
-    #[test]
-    fn admin_exempt_user_skips_user_caps_but_not_server_budget() {
-        let config = CapsConfig { requests_per_minute: 1, user_tokens_per_day: 1, server_tokens_per_day: 100,
-            exempt_users: ["@admin:x".to_string()].into(), ..wide() };
-        let (_d, mut c) = caps(config);
-        assert_eq!(c.request("@admin:x", NOON), Ok(Admission::Run));
-        assert_eq!(c.request("@admin:x", NOON), Err(Refusal::AlreadyRunning), "admins hold one slot too");
-        c.finish("@admin:x", 0, NOON).unwrap();
-        for _ in 0..2 {
-            assert_eq!(c.request("@admin:x", NOON), Ok(Admission::Run));
-            c.finish("@admin:x", 50, NOON).unwrap();
-        }
-        assert!(matches!(c.request("@admin:x", NOON), Err(Refusal::ServerDailyLimit { .. })));
-    }
-}
+mod tests;

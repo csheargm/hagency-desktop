@@ -72,6 +72,10 @@ impl LocalModel {
     pub fn origin(&self) -> Origin {
         self.origin
     }
+    /// `scheme://host:port` with no path.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
     pub fn base_url(&self) -> String {
         format!("{}/v1", self.endpoint)
     }
