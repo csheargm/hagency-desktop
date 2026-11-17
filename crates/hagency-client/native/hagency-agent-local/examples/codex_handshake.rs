@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         effort: "low".into(),
         shared_auth: false,
         web_search: true,
+        environment: Default::default(),
     };
     let scope = Scope {
         agent: "handshake".into(),

@@ -174,6 +174,7 @@ mod tests {
             executable: owner.join("provider"), home: owner.join("provider-home"),
             codex_home: owner.join("codex-home"), cwd: work.clone(), model: "fixture".into(),
             effort: "low".into(), shared_auth: false, web_search: false,
+            environment: Default::default(),
         };
         let scope = Scope { agent:"agent".into(), binding:"room".into(), room:"!room:test".into(), requester:"@owner:test".into(), thread:"$thread".into() };
         let (turn, files) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, Some(&space)).unwrap();
