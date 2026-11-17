@@ -196,7 +196,8 @@ impl AgentPanel {
     }
     fn set_tab(&mut self, cx: &mut Cx, tab: Tab) {
         // Rooms the Agent joined after the panel opened (an auto-join) show up in Settings.
-        if tab == Tab::Settings && self.tab != tab && !self.busy && self.status.is_object() {
+        // The Context tab too: a private Agent's later consent may have added a room.
+        if matches!(tab, Tab::Settings | Tab::Context) && self.tab != tab && !self.busy && self.status.is_object() {
             self.call(Load::Status, false, Call::Status(self.agent_id()));
         }
         self.tab = tab;

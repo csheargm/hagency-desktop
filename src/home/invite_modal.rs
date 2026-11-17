@@ -215,6 +215,9 @@ mod permission_tests {
         assert_eq!(typed_user("yue-claud", Some(&picked)), None, "an edited name is a new search");
         assert_eq!(typed_user("@alex:test", Some(&picked)).as_deref(), Some(ruma::user_id!("@alex:test")));
         assert_eq!(person_label(ruma::user_id!("@alex:test"), Some("  ")), "alex");
+        // GPT review: an ID-shaped display name must not redirect a typed ID.
+        let spoof = ("@alice:test".to_owned(), ruma::user_id!("@attacker:test").to_owned());
+        assert_eq!(typed_user("@alice:test", Some(&spoof)).as_deref(), Some(ruma::user_id!("@alice:test")));
     }
 }
 
@@ -320,6 +323,8 @@ impl WidgetMatchEvent for InviteModal {
         if !matches!(self.state, InviteModalState::WaitingForInvite(_)) {
             let input = self.view.text_input(cx, ids!(user_id_input));
             if let Some(query) = input.changed(actions) {
+                // An edit away from the picked name drops the pick.
+                if self.picked.as_ref().is_some_and(|(label, _)| label != query.trim()) { self.picked = None; }
                 // A directory reply for the old text is discarded. Its
                 // progress message must not remain after the person edits.
                 self.view.view(cx, ids!(status_label_view)).set_visible(cx, false);
@@ -699,14 +704,15 @@ fn found_text(id: &ruma::UserId, label: &str) -> String {
     crate::i18n::format("Found {0}. Press Invite to send.", &[("0", who)])
 }
 
-/// Who the field names: the picked person while it still shows their name,
-/// else a full Matrix ID typed as is.
+/// Who the field names: a full Matrix ID typed as is, else the picked person
+/// while the field still shows their name. A typed ID always wins, so a
+/// display name shaped like someone's ID can never redirect an invite.
 fn typed_user(text: &str, picked: Option<&(String, OwnedUserId)>) -> Option<OwnedUserId> {
     let text = text.trim();
-    match picked {
+    ruma::UserId::parse(text).ok().or_else(|| match picked {
         Some((label, id)) if label == text => Some(id.clone()),
-        _ => ruma::UserId::parse(text).ok(),
-    }
+        _ => None,
+    })
 }
 
 impl InviteModalRef {
