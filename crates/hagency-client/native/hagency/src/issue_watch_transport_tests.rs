@@ -1,12 +1,9 @@
 //! A GitHub request that cannot connect is reported as "can't reach GitHub"
-//! with its whole cause chain, and counts toward rebuilding the client; a
-//! request that reaches the server starts the count again.
-use super::{FetchError, fetch_open_issues, new_client, reset_transport_failures, transport_failures};
+//! with its whole cause chain; the same client still works once the server
+//! answers.
+use super::{FetchError, UNREACHABLE, fetch_open_issues, new_client};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-
-/// One test at a time: the failure count is process-wide.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// An address nothing listens on (bound, then released).
 async fn closed_api() -> String {
@@ -18,25 +15,19 @@ async fn closed_api() -> String {
 
 #[tokio::test]
 async fn refused_connection_is_unreachable_with_its_cause_chain() {
-    let _serial = SERIAL.lock().await;
-    reset_transport_failures();
     let error = fetch_open_issues(&new_client(), &closed_api().await, "owner/repo", "t").await.unwrap_err();
     let FetchError::Unreachable(chain) = &error else { panic!("expected Unreachable, got {error:?}") };
     // The chain names the cause, not only reqwest's "error sending request".
     assert!(chain.contains("error sending request"), "{chain}");
     assert!(chain.matches(": ").count() >= 2, "cause chain missing: {chain}");
-    assert!(error.to_string().starts_with("Can't reach GitHub (network/DNS)"), "{error}");
-    assert_eq!(transport_failures(), 1);
+    assert!(error.to_string().starts_with(UNREACHABLE), "{error}");
 }
 
 #[tokio::test]
-async fn a_request_that_reaches_github_resets_the_failure_count() {
-    let _serial = SERIAL.lock().await;
-    reset_transport_failures();
+async fn the_client_works_again_once_the_server_answers() {
     let client = new_client();
-    let _ = fetch_open_issues(&client, &closed_api().await, "owner/repo", "t").await;
-    let _ = fetch_open_issues(&client, &closed_api().await, "owner/repo", "t").await;
-    assert_eq!(transport_failures(), 2);
+    let failed = fetch_open_issues(&client, &closed_api().await, "owner/repo", "t").await;
+    assert!(matches!(failed, Err(FetchError::Unreachable(_))), "{failed:?}");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -48,5 +39,4 @@ async fn a_request_that_reaches_github_resets_the_failure_count() {
     let issues = fetch_open_issues(&client, &api, "owner/repo", "t").await.unwrap();
     server.await.unwrap();
     assert!(issues.is_empty());
-    assert_eq!(transport_failures(), 0);
 }

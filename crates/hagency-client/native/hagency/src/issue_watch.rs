@@ -2,9 +2,8 @@
 //! (`hagency_agent_local::issue_watch`) plus the HTTP read of a repository's
 //! open issues, sent with this crate's TLS client so the desktop needs no
 //! second HTTP stack. Nothing here writes to GitHub.
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API, MAX_PAGES, PAGE_SIZE};
+pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API, UNREACHABLE, MAX_PAGES, PAGE_SIZE};
 /// What an Agent watches, for the room info "Watches" tab (ADR 0019).
 pub use hagency_agent_local::watch_info::{RoomWatch, WatchEntry, entries as watch_entries};
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
@@ -21,8 +20,6 @@ pub type Client = reqwest::Client;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest wait for one whole GitHub request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Transport failures in a row since the last request that reached GitHub.
-static TRANSPORT_FAILURES: AtomicU32 = AtomicU32::new(0);
 
 /// A client with bounded connect and request times, so a stuck resolver or
 /// network fails one check instead of hanging the poller.
@@ -30,14 +27,6 @@ pub fn new_client() -> Client {
     reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).timeout(REQUEST_TIMEOUT).build()
         // The builder fails only when the TLS backend cannot start; the default client then still works.
         .unwrap_or_else(|_| reqwest::Client::new())
-}
-/// Transport failures in a row (any caller); a caller rebuilds its client past a limit.
-pub fn transport_failures() -> u32 {
-    TRANSPORT_FAILURES.load(Ordering::Relaxed)
-}
-/// Starts the count again, after the caller rebuilt its client.
-pub fn reset_transport_failures() {
-    TRANSPORT_FAILURES.store(0, Ordering::Relaxed);
 }
 /// `error` with its whole cause chain ("error sending request: ... : dns error: ...").
 pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -54,10 +43,18 @@ pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 fn transport(error: reqwest::Error) -> FetchError {
     let chain = error_chain(&error);
     if error.is_connect() || error.is_timeout() {
-        TRANSPORT_FAILURES.fetch_add(1, Ordering::Relaxed);
         FetchError::Unreachable(chain)
     } else {
         FetchError::Http(chain)
+    }
+}
+/// A failed write: a timeout may come after GitHub already applied it, so it
+/// is reported as an unknown outcome, never as safe to repeat.
+fn write_transport(error: reqwest::Error) -> FetchError {
+    if error.is_timeout() {
+        FetchError::Http(format!("no answer from GitHub, the change may have been made (check before retrying): {}", error_chain(&error)))
+    } else {
+        transport(error)
     }
 }
 
@@ -137,9 +134,9 @@ pub async fn create_issue(client: &Client, api: &str, repo: &str, token: &str, t
     pulls_url(api, repo)?; // refuses anything but owner/name
     let response = client.post(format!("{api}/repos/{repo}/issues")).bearer_auth(token).header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({"title": title, "body": body})).send().await.map_err(transport)?;
+        .json(&serde_json::json!({"title": title, "body": body})).send().await.map_err(write_transport)?;
     let status = response.status();
-    let text = response.text().await.map_err(transport)?;
+    let text = response.text().await.map_err(write_transport)?;
     if !status.is_success() {
         return Err(FetchError::Status { status: status.as_u16(), body: text });
     }
@@ -220,7 +217,7 @@ pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, t
     let url = url.split('?').next().unwrap_or_default();
     let response = client.post(url).bearer_auth(token).header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({"body": body})).send().await.map_err(transport)?;
+        .json(&serde_json::json!({"body": body})).send().await.map_err(write_transport)?;
     let status = response.status();
     if !status.is_success() {
         return Err(FetchError::Status { status: status.as_u16(), body: response.text().await.unwrap_or_default() });
@@ -238,7 +235,6 @@ async fn get(client: &Client, url: &str, token: &str) -> Result<String, FetchErr
         .send()
         .await
         .map_err(transport)?;
-    reset_transport_failures();
     let status = response.status();
     let body = response.text().await.map_err(transport)?;
     if !status.is_success() {

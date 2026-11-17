@@ -269,16 +269,17 @@ fn stop_all_between_post_and_record_leaves_the_issue_for_after_resume() {
 }
 
 #[test]
-fn the_poller_rebuilds_its_client_after_repeated_transport_failures() {
-    assert!(!super::should_recreate_client(0));
-    assert!(!super::should_recreate_client(2));
-    assert!(super::should_recreate_client(3));
+fn only_unreachable_checks_count_toward_a_fresh_client() {
+    let unreachable = ::hagency::issue_watch::FetchError::Unreachable("dns error".into()).to_string();
+    assert_eq!(super::next_streak(0, &Err(&unreachable)), 1);
+    assert_eq!(super::next_streak(2, &Err(&format!("#33: {unreachable}"))), 3);
+    assert_eq!(super::next_streak(2, &Err("GitHub answered 401: bad")), 2);
+    assert_eq!(super::next_streak(2, &Ok(())), 0);
 }
 
 #[test]
 fn an_unreachable_github_reads_plainly_in_the_status_line() {
     let error = ::hagency::issue_watch::FetchError::Unreachable("error sending request: dns error: failed to lookup".into());
     let line = failed_line("9:00", &error.to_string());
-    assert!(line.starts_with("Last check 9:00 failed: Can't reach GitHub (network/DNS) \u{2014} retrying"), "{line}");
-    assert!(line.contains("dns error"), "{line}");
+    assert_eq!(line, "Last check 9:00 failed: Can't reach GitHub (network/DNS): error sending request: dns error: failed to lookup \u{2014} retrying");
 }
