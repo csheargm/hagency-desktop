@@ -46,6 +46,7 @@ pub mod pane_splitter;
 pub mod image_viewer;
 pub mod mobile_details;
 pub mod system_browser;
+pub mod desktop_notification;
 pub mod web_browser;
 pub mod web_browser_session;
 pub mod web_browser_window;

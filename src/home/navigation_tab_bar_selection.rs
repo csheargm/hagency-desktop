@@ -65,12 +65,19 @@ impl NavigationTabBar {
     /// red, with a dot after its label, until the request is decided or gone.
     pub(super) fn apply_approval_alert(&mut self, cx: &mut Cx) {
         // So does a resource admission request that waits for the server's administrator.
-        let alert = crate::hagency::pending_approvals::total() > 0
-            || crate::hagency::pending_admissions::total() > 0;
-        self.apply_approval_alert_state(cx, alert);
+        let approvals = crate::hagency::pending_approvals::total();
+        let alert = approvals > 0 || crate::hagency::pending_admissions::total() > 0;
+        self.apply_approval_alert_count(cx, alert, approvals);
     }
 
+    #[cfg(test)]
     pub(super) fn apply_approval_alert_state(&mut self, cx: &mut Cx, alert: bool) {
+        self.apply_approval_alert_count(cx, alert, 0);
+    }
+
+    /// As `apply_approval_alert_state`, also saying how many approvals wait
+    /// ("Agents 2 ●"), so the owner sees the count from any page.
+    pub(super) fn apply_approval_alert_count(&mut self, cx: &mut Cx, alert: bool, approvals: u64) {
         // A dot also invites a first Agent; the rail item itself always shows.
         let first_agent = crate::hagency::agent_presence::needs_first_agent();
         let label = self.view.label(cx, ids!(agent_button.label));
@@ -81,7 +88,11 @@ impl NavigationTabBar {
             self.approval_alert = None;
             return;
         }
-        let text = if alert || first_agent { format!("{} ●", crate::i18n::tr("Agents")) } else { crate::i18n::tr("Agents").to_owned() };
+        let text = match (alert || first_agent, approvals) {
+            (true, n) if n > 0 => format!("{} {n} ●", crate::i18n::tr("Agents")),
+            (true, _) => format!("{} ●", crate::i18n::tr("Agents")),
+            _ => crate::i18n::tr("Agents").to_owned(),
+        };
         if self.approval_alert == Some(alert) && label.text() == text {
             return;
         }

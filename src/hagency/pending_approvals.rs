@@ -15,7 +15,8 @@
 //! Nothing here grants authority: every decision still goes through
 //! `hagency.shared_approvals.decide`, where the management server re-checks the
 //! deciding account, the request digest and expiry.
-// TODO(R4): over budget; split describe()/tool_target() wording out from the poll store.
+// TODO(R4): over budget; split describe()/tool_target() wording, and the read-problem
+// and expiry bookkeeping (record_read_error, newly_expired), out from the poll store.
 use super::approval_text::{readable_command, relative_to_workspace};
 use crate::shared::popup_list::{PopupKind, enqueue_popup_notification};
 use ::hagency::native_owner::ManagementCommand;
@@ -76,6 +77,24 @@ impl PendingApproval {
     pub fn owner_mxid(&self) -> &str {
         self.row["approval"]["ownerMxid"].as_str().unwrap_or_default()
     }
+    /// The Agent that asked: this app's own runtime names it; a management
+    /// row may carry `agentId`.
+    pub fn agent_id(&self) -> &str {
+        self.row[super::local_approvals::SOURCE]["agent"].as_str()
+            .or_else(|| self.row["approval"]["agentId"].as_str())
+            .unwrap_or_default()
+    }
+}
+
+/// Whether `row` was raised by the message `event_id`. A thread's root also
+/// carries its thread's requests in the room timeline (the triggering reply is
+/// not shown there), and always carries a request that names no message of
+/// its own (this app's Agent knows only the thread it works in).
+pub(crate) fn raised_by(row: &Value, event_id: &str, include_thread_root: bool) -> bool {
+    let a = &row["approval"];
+    let own = a["eventId"].as_str().unwrap_or_default();
+    let root = a["threadRoot"].as_str().unwrap_or_default();
+    own == event_id || ((include_thread_root || own.is_empty()) && !root.is_empty() && root == event_id && root != own)
 }
 
 /// What this client has done with a request.
@@ -96,10 +115,17 @@ struct State {
     /// Kept apart from `rows`: a poll answer read before a click must not
     /// offer the buttons of a request that was already answered.
     decisions: HashMap<String, (LocalDecision, u64)>,
+    /// Why the last app-wide reading failed, shown by the approvals inbox.
+    /// `None` after a reading that succeeded.
+    read_error: Option<String>,
+    /// Agents on this device whose waiting requests could not be read, with
+    /// the code, from the last reading.
+    unreadable: Vec<(String, String)>,
 }
 impl State {
     fn for_identity(&mut self, identity: &str) {
         if self.identity != identity {
+            super::expired_approvals::forget();
             *self = State { identity: identity.to_owned(), ..State::default() };
         }
     }
@@ -144,15 +170,42 @@ pub struct PendingApprovalDecided {
 /// Silently does nothing without a signed-in Hagency identity.
 pub fn poll() {
     let Ok(service) = crate::hagency::backend::Service::for_current() else { return };
+    // One reading at a time: a reading that hangs must not pile up others.
+    if POLLING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    // Released however the task ends: finished, panicked, or aborted (even
+    // before its first poll) when the account session closes.
+    let polling = Polling;
     let identity = service.identity();
     crate::sliding_sync::spawn_async_task(async move {
-        let result = service
-            .shared_permissions(ManagementCommand::SharedApprovals { room_id: None })
-            .await;
-        let result = crate::hagency::local_approvals::with_local(&service, None, result).await;
+        let _polling = polling;
+        let read = async {
+            let result = service
+                .shared_permissions(ManagementCommand::SharedApprovals { room_id: None })
+                .await;
+            crate::hagency::local_approvals::with_local(&service, None, result).await
+        };
+        // A stalled reading is reported, never waited on silently: the
+        // owner has about four minutes to answer.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(READ_TIMEOUT_SECONDS), read)
+            .await
+            .unwrap_or_else(|_| Err(READ_TIMEOUT.into()));
         Cx::post_action(PendingApprovalsUpdate { identity, result });
     });
 }
+static POLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Holds `POLLING` for one reading.
+struct Polling;
+impl Drop for Polling {
+    fn drop(&mut self) {
+        POLLING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+/// The longest one app-wide reading may take before it counts as failed.
+const READ_TIMEOUT_SECONDS: u64 = 20;
+/// The code of a reading that took longer than `READ_TIMEOUT_SECONDS`.
+pub const READ_TIMEOUT: &str = "approvals_read_timeout";
 
 /// The requests in a management answer that still wait for a decision.
 fn open_rows(value: &Value, now: u64) -> Vec<Value> {
@@ -177,15 +230,27 @@ fn shape<'a>(rows: impl Iterator<Item = &'a PendingApproval>) -> Vec<(String, bo
 /// Record a poll answer. Returns true when the pending set changed, so callers
 /// can redraw lists and timelines. New actionable requests are announced once.
 pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
-    let Ok(value) = &update.result else { return false };
+    let value = match &update.result {
+        Ok(value) => value,
+        Err(code) => return record_read_error(&update.identity, code),
+    };
     let now = now_ms();
     let fresh = open_rows(value, now);
+    let decided = decided_ids(value);
     let (changed, announce) = {
         let Ok(mut state) = STATE.lock() else { return false };
         state.for_identity(&update.identity);
         state.forget_old_decisions(now);
         let before = shape(state.rows.iter());
         let rows: Vec<PendingApproval> = fresh.into_iter().map(|row| state.pending(row)).collect();
+        // Management failed but this app's own Agent was read: say so.
+        let error = value[super::local_approvals::MANAGEMENT_ERROR].as_str().map(str::to_owned);
+        let unreadable = unreadable_agents(value);
+        let complete = error.is_none() && unreadable.is_empty();
+        let problems_changed = state.read_error != error || unreadable != state.unreadable;
+        (state.read_error, state.unreadable) = (error, unreadable);
+        // Only a complete reading can tell that a request ended.
+        let expired = if complete { newly_expired(&state.rows, &rows, &decided, now) } else { 0 };
         state.rows = rows;
         let after = shape(state.rows.iter());
         let announce: Vec<PendingApproval> = state
@@ -197,8 +262,9 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
         for p in &announce {
             state.announced.insert(p.id().to_owned());
         }
-        (before != after, announce)
+        (before != after || problems_changed || expired > 0, announce)
     };
+    announce_expired(cx);
     for p in announce {
         let (title, summary) = describe(&p.row);
         enqueue_popup_notification(
@@ -206,10 +272,54 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
             PopupKind::Info,
             Some(20.0),
         );
-        // A no-op on backends without system notifications; iOS shows it.
         crate::jit_compat::show_notification(cx, &title, &summary);
     }
     changed
+}
+
+/// Remember why a reading failed, so the inbox can say so. Returns true when
+/// what the inbox shows changed.
+fn record_read_error(identity: &str, code: &str) -> bool {
+    makepad_widgets::log!("Pending approvals unreadable: {code}");
+    let Ok(mut state) = STATE.lock() else { return false };
+    state.for_identity(identity);
+    let changed = state.read_error.as_deref() != Some(code);
+    state.read_error = Some(code.to_owned());
+    changed
+}
+/// `unreadable` rows that `local_approvals::with_local` adds to an answer.
+fn unreadable_agents(value: &Value) -> Vec<(String, String)> {
+    value[super::local_approvals::UNREADABLE].as_array().into_iter().flatten()
+        .map(|u| (u["agent"].as_str().unwrap_or("Agent").to_owned(), u["code"].as_str().unwrap_or_default().to_owned()))
+        .collect()
+}
+/// Ids the answer lists with a recorded decision (someone answered them).
+fn decided_ids(value: &Value) -> HashSet<String> {
+    value["approvals"].as_array().into_iter().flatten()
+        .filter(|row| !row["decision"].is_null())
+        .filter_map(|row| row["approval"]["id"].as_str().map(str::to_owned))
+        .collect()
+}
+/// Record the requests that left the list unanswered (by this client or,
+/// as far as the answer says, anyone) because they ran out of time. Returns
+/// how many were recorded; `announce_expired` tells the owner.
+fn newly_expired(before: &[PendingApproval], after: &[PendingApproval], decided: &HashSet<String>, now: u64) -> usize {
+    before.iter()
+        .filter(|p| matches!(p.local, LocalDecision::None | LocalDecision::Failed(..)) && p.can_decide())
+        .filter(|p| !after.iter().any(|a| a.id() == p.id()) && !decided.contains(p.id()))
+        .filter(|p| super::expired_approvals::ran_out(&p.row, now) && super::expired_approvals::record(&p.row, now))
+        .count()
+}
+/// Tell the owner, once each, that requests ended without their answer: a
+/// popup and a desktop notification, beside the record the inbox and the
+/// card keep. Either reading (app-wide or the open room's) may have noticed.
+pub fn announce_expired(cx: &mut Cx) {
+    for row in super::expired_approvals::take_unannounced() {
+        let (title, summary) = describe(&row);
+        let heading = crate::i18n::format("Expired, not answered: {title}", &[("title", title)]);
+        enqueue_popup_notification(format!("{heading}\n{summary}"), PopupKind::Warning, Some(20.0));
+        crate::jit_compat::show_notification(cx, &heading, &summary);
+    }
 }
 
 /// Record the open room's own reading (its permission notice reads every two
@@ -230,9 +340,13 @@ pub fn merge_room(identity: &str, room: &str, value: &Value, on_screen: bool) ->
             state.announced.insert(p.id().to_owned());
         }
     }
+    let previous: Vec<PendingApproval> = state.rows.iter().filter(|p| p.room_id() == room).cloned().collect();
+    let complete = value[super::local_approvals::MANAGEMENT_ERROR].is_null() && unreadable_agents(value).is_empty();
+    let expired = if complete { newly_expired(&previous, &fresh, &decided_ids(value), now) } else { 0 };
     state.rows.retain(|p| p.room_id() != room);
     state.rows.extend(fresh);
-    before != after
+    // Announced by the next `announce_expired` (the inbox calls it on every change).
+    before != after || expired > 0
 }
 
 /// Record the outcome of a decision this client sent.
@@ -260,7 +374,9 @@ pub fn apply_decided(update: &PendingApprovalDecided) {
 pub fn decide(row: &Value, decision: &str) -> bool {
     let id = row["approval"]["id"].as_str().unwrap_or_default().to_owned();
     let digest = row["digest"].as_str().unwrap_or_default().to_owned();
-    if id.is_empty() || digest.is_empty() || row["canDecide"] != true || row["encryptedPending"] == true || !row["decision"].is_null() {
+    if id.is_empty() || digest.is_empty() || row["canDecide"] != true || row["encryptedPending"] == true || !row["decision"].is_null()
+        || row["approval"]["expiresAtMs"].as_u64().is_some_and(|t| t <= now_ms())
+    {
         return false;
     }
     {
@@ -344,13 +460,28 @@ pub fn total() -> u64 {
 /// room timeline a thread's root message also carries its thread's requests,
 /// because the triggering reply is not shown there.
 pub fn for_event(room: &RoomId, event_id: &str, include_thread_root: bool) -> Option<PendingApproval> {
-    let state = STATE.lock().ok()?;
-    state
-        .rows
-        .iter()
-        .filter(|p| p.room_id() == room.as_str())
-        .find(|p| p.event_id() == event_id || (include_thread_root && p.thread_root() == event_id && p.thread_root() != p.event_id()))
-        .cloned()
+    let open = STATE.lock().ok()?.rows.iter()
+        .find(|p| p.room_id() == room.as_str() && raised_by(&p.row, event_id, include_thread_root))
+        .cloned();
+    // An expired request keeps its card, saying so.
+    open.or_else(|| super::expired_approvals::for_event(room.as_str(), event_id, include_thread_root)
+        .map(|e| PendingApproval { row: e.row, local: LocalDecision::None }))
+}
+/// Every request waiting for this client's answer, oldest first, for the
+/// approvals inbox.
+pub fn waiting() -> Vec<PendingApproval> {
+    STATE.lock().map_or(Vec::new(), |s| s.rows.clone())
+}
+/// Actionable requests of the Agent `agent_id`, for its card on the Agents page.
+pub fn count_for_agent(agent_id: &str) -> u64 {
+    STATE.lock().map_or(0, |s| {
+        s.rows.iter().filter(|p| p.agent_id() == agent_id && p.can_decide() && p.local == LocalDecision::None).count() as u64
+    })
+}
+/// Why requests may be missing from the inbox: the last reading failed, or
+/// some Agents' requests could not be read. Empty when all was read.
+pub fn read_problems() -> (Option<String>, Vec<(String, String)>) {
+    STATE.lock().map_or((None, Vec::new()), |s| (s.read_error.clone(), s.unreadable.clone()))
 }
 /// Every pending request in `room`, newest first.
 pub fn for_room(room: &RoomId) -> Vec<PendingApproval> {
@@ -360,6 +491,7 @@ pub fn forget_identity() {
     if let Ok(mut state) = STATE.lock() {
         *state = State::default();
     }
+    super::expired_approvals::forget();
 }
 
 /// A title and a short summary of what the Agent asked for: the tool and the
