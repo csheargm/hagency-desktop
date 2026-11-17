@@ -9,7 +9,7 @@ use super::loop_notice::LoopNotice;
 use super::review_loop::{self, LoopCtx, LoopIo};
 use crate::hagency::backend::Service;
 use ::hagency::issue_watch::{
-    CLAIM_MARKER, Client, GITHUB_API, Issue, IssueWatch, WatchMode, WatchSetting, claim_holder, fetch_comments, fetch_login, fetch_open_issues,
+    Client, Comment, GITHUB_API, Issue, IssueWatch, WatchMode, WatchSetting, claim_authors, claim_body, claim_holder, fetch_comments, fetch_login, fetch_open_issues,
     fetch_open_pulls, fetch_permission, others_ready_pulls, post_comment, select,
 };
 use ::hagency::issue_watch::{IssueFilter, OwnerRules, Role};
@@ -87,16 +87,19 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
         if live.paused() {
             return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
         }
-        // Reserved first, so the daily limit holds before anything is posted
+        // Held by another eligible claimant: skipped, never marked seen, so
+        // it is tried again once that claim expires (GPT review, Nov 16).
+        if claim(worker, entry, issue.number, login, false).await? == Holder::Other {
+            continue;
+        }
+        // Reserved next, so the daily limit holds before anything is posted
         // on GitHub, and a reserved issue whose hand-off failed is retried.
         let reserved = loop_api(worker.service, id, json!({"workClaim": {"repo": entry.repo, "number": issue.number}})).await?;
         if reserved["claimed"] != true {
             break; // the daily limit is used up
         }
-        if !claim(worker, entry, issue.number, login).await? {
-            // Someone else holds it: never handed off, never retried.
-            live.mark_seen(issue.number).await?;
-            continue;
+        if claim(worker, entry, issue.number, login, true).await? != Holder::Ours {
+            continue; // lost a race; retried after that claim expires
         }
         let outcome = handoff::hand_off(&live, &[issue]).await;
         if let Some(error) = outcome.error {
@@ -107,20 +110,56 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     Ok(handed)
 }
 
-/// Claim issue `number` on GitHub: post the claim unless one holds, then
-/// re-read so two hosts racing agree on the earliest. True when it is ours.
-async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str) -> Result<bool, String> {
-    let read = || async { fetch_comments(worker.client, GITHUB_API, &entry.repo, number, worker.token).await.map_err(|e| e.to_string()) };
+/// Who holds an issue, as this Agent sees it.
+#[derive(Debug, PartialEq, Eq)]
+enum Holder {
+    Ours,
+    Other,
+    Nobody,
+}
+
+/// The repository permissions whose claims count (besides this login's).
+const CLAIM_PERMISSIONS: [&str; 4] = ["admin", "maintain", "write", "triage"];
+
+/// Who holds issue `number`; with `post`, claim it first when nobody does,
+/// then re-read so two hosts racing agree on the earliest. A claim counts
+/// only from this login (then it must name this Agent's id to be ours) or
+/// from a login with write or triage rights on the repository.
+async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str, post: bool) -> Result<Holder, String> {
+    let id = worker.agent["id"].as_str().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
-    if let Some(holder) = claim_holder(&read().await?, now) {
-        return Ok(holder.eq_ignore_ascii_case(login));
+    let comments = read_comments(worker, entry, number).await?;
+    let holder = holder_of(worker, entry, &comments, login, id, now).await;
+    if !post || holder != Holder::Nobody {
+        return Ok(holder);
     }
-    if crate::hagency::kill_switch::paused_here(worker.agent["id"].as_str().unwrap_or_default()) {
+    if crate::hagency::kill_switch::paused_here(id) {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
     let label = worker.agent["displayName"].as_str().unwrap_or("Agent");
-    post_comment(worker.client, GITHUB_API, &entry.repo, number, worker.token, &format!("{CLAIM_MARKER} — {}", super::notice::quoted_title(label))).await.map_err(|e| e.to_string())?;
-    Ok(claim_holder(&read().await?, now).is_some_and(|holder| holder.eq_ignore_ascii_case(login)))
+    post_comment(worker.client, GITHUB_API, &entry.repo, number, worker.token, &claim_body(id, &super::notice::quoted_title(label))).await.map_err(|e| e.to_string())?;
+    let comments = read_comments(worker, entry, number).await?;
+    Ok(holder_of(worker, entry, &comments, login, id, now).await)
+}
+
+async fn read_comments(worker: &Worker<'_>, entry: &OwnerRules, number: i64) -> Result<Vec<Comment>, String> {
+    fetch_comments(worker.client, GITHUB_API, &entry.repo, number, worker.token).await.map_err(|e| e.to_string())
+}
+
+async fn holder_of(worker: &Worker<'_>, entry: &OwnerRules, comments: &[Comment], login: &str, id: &str, now: i64) -> Holder {
+    let mut team = vec![login.to_owned()];
+    for author in claim_authors(comments, login, now) {
+        // An unreadable permission is no right: such a claim is ignored.
+        let permission = fetch_permission(worker.client, GITHUB_API, &entry.repo, author, worker.token).await.unwrap_or_default();
+        if CLAIM_PERMISSIONS.contains(&permission.as_str()) {
+            team.push(author.to_owned());
+        }
+    }
+    match claim_holder(comments, now, |a| team.iter().any(|t| t.eq_ignore_ascii_case(a))) {
+        Some(claim) if claim.is(login, id) => Holder::Ours,
+        Some(_) => Holder::Other,
+        None => Holder::Nobody,
+    }
 }
 
 /// Reviewer or maintainer: one loop step per other person's ready pull request.

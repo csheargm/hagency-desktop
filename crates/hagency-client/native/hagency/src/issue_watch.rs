@@ -5,7 +5,7 @@
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API};
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select};
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, pulls_url, comments_url};
-pub use hagency_agent_local::issue_watch::wire::{CLAIM_MARKER, Comment, PullRequest, claim_holder, others_ready_pulls};
+pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, others_ready_pulls};
 
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;

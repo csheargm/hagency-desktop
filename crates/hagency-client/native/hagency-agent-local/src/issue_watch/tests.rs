@@ -211,17 +211,23 @@ fn the_review_loop_reads_only_other_peoples_ready_pull_requests() {
 }
 
 #[test]
-fn the_earliest_unexpired_claim_holds_an_issue() {
-    use super::wire::{claim_holder, comments_url, parse_comments, CLAIM_MARKER, CLAIM_EXPIRY_SECS};
+fn the_earliest_unexpired_eligible_claim_holds_an_issue() {
+    use super::wire::{claim_authors, claim_body, claim_holder, comments_url, parse_comments, Claim, CLAIM_MARKER, CLAIM_EXPIRY_SECS};
     let body = json!([
         {"user": {"login": "carl"}, "body": "me too", "created_at": "2026-11-16T09:00:00Z"},
-        {"user": {"login": "betty"}, "body": format!("{CLAIM_MARKER} — betty-claude"), "created_at": "2026-11-16T10:00:00Z"},
+        {"user": {"login": "mallory"}, "body": claim_body("agt_x", "fake"), "created_at": "2026-11-16T09:30:00Z"},
+        {"user": {"login": "betty"}, "body": claim_body("agt_b1", "\"betty-claude\""), "created_at": "2026-11-16T10:00:00Z"},
         {"user": {"login": "anna"}, "body": format!("{CLAIM_MARKER} — anna-claude"), "created_at": "2026-11-16T10:00:05Z"}
     ]).to_string();
     let comments = parse_comments(&body).unwrap();
-    let now = comments[2].created_at + 10;
-    assert_eq!(claim_holder(&comments, now), Some("betty"));
-    assert_eq!(claim_holder(&comments[..1], now), None, "an ordinary comment is no claim");
-    assert_eq!(claim_holder(&comments, comments[1].created_at + CLAIM_EXPIRY_SECS + 1), Some("anna"), "betty's claim expired");
+    let now = comments[3].created_at + 10;
+    let team = |login: &str| login != "mallory";
+    assert_eq!(claim_holder(&comments, now, team), Some(Claim { login: "betty", agent: Some("agt_b1") }), "mallory's forged claim is ignored");
+    assert!(claim_holder(&comments, now, team).unwrap().is("BETTY", "agt_b1"));
+    assert!(!claim_holder(&comments, now, team).unwrap().is("betty", "agt_b2"), "another Agent on the same login");
+    assert_eq!(claim_holder(&comments[..1], now, team), None, "an ordinary comment is no claim");
+    let later = comments[2].created_at + CLAIM_EXPIRY_SECS + 1;
+    assert_eq!(claim_holder(&comments, later, team), Some(Claim { login: "anna", agent: None }), "betty's claim expired");
+    assert_eq!(claim_authors(&comments, "anna", now), vec!["betty", "mallory"]);
     assert!(comments_url("https://api.github.com", "acme/app", 0, 1).is_err());
 }

@@ -170,13 +170,57 @@ pub fn parse_comments(body: &str) -> Result<Vec<Comment>, FetchError> {
     }).collect()
 }
 
-/// The login holding the issue: the earliest unexpired claim comment (ties:
-/// the lower login), so every host reading the same comments agrees.
-pub fn claim_holder(comments: &[Comment], now: i64) -> Option<&str> {
+/// Where a claim names the Agent that made it (Agents may share a login).
+const CLAIM_AGENT_PREFIX: &str = "[agent:";
+
+/// The claim comment Agent `agent_id` posts: the marker, its stable id,
+/// then `label` (its quoted name).
+pub fn claim_body(agent_id: &str, label: &str) -> String {
+    format!("{CLAIM_MARKER} {CLAIM_AGENT_PREFIX}{agent_id}] — {label}")
+}
+
+/// The Agent id a claim comment names, if it names one.
+fn claim_agent(body: &str) -> Option<&str> {
+    let rest = body.strip_prefix(CLAIM_MARKER)?.trim_start().strip_prefix(CLAIM_AGENT_PREFIX)?;
+    let (id, _) = rest.split_once(']')?;
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).then_some(id)
+}
+
+/// Who holds an issue: the claim's GitHub login and, when it names one, Agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Claim<'a> {
+    pub login: &'a str,
+    pub agent: Option<&'a str>,
+}
+
+impl Claim<'_> {
+    /// Whether this is Agent `agent_id` on `login`'s account.
+    pub fn is(&self, login: &str, agent_id: &str) -> bool {
+        self.login.eq_ignore_ascii_case(login) && self.agent == Some(agent_id)
+    }
+}
+
+/// The logins whose claim comments need an eligibility check, besides `own`.
+pub fn claim_authors<'a>(comments: &'a [Comment], own: &str, now: i64) -> Vec<&'a str> {
+    let mut authors: Vec<&str> = comments.iter().filter(|c| live_claim(c, now) && !c.author.eq_ignore_ascii_case(own)).map(|c| c.author.as_str()).collect();
+    authors.sort_unstable_by_key(|a| a.to_ascii_lowercase());
+    authors.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    authors
+}
+
+fn live_claim(c: &Comment, now: i64) -> bool {
+    c.body.starts_with(CLAIM_MARKER) && now - c.created_at <= CLAIM_EXPIRY_SECS
+}
+
+/// The claim holding the issue: the earliest unexpired claim comment by an
+/// `eligible` author (ties: the lower login), so every host reading the same
+/// comments agrees. A claim from anyone else (anyone can comment) is ignored,
+/// so it can neither take nor block an issue (GPT review, Nov 16).
+pub fn claim_holder<'a>(comments: &'a [Comment], now: i64, eligible: impl Fn(&str) -> bool) -> Option<Claim<'a>> {
     comments.iter()
-        .filter(|c| c.body.starts_with(CLAIM_MARKER) && now - c.created_at <= CLAIM_EXPIRY_SECS)
+        .filter(|c| live_claim(c, now) && eligible(&c.author))
         .min_by(|a, b| (a.created_at, a.author.to_ascii_lowercase()).cmp(&(b.created_at, b.author.to_ascii_lowercase())))
-        .map(|c| c.author.as_str())
+        .map(|c| Claim { login: c.author.as_str(), agent: claim_agent(&c.body) })
 }
 
 /// The URL of an issue's comments (`repo` checked as everywhere here).

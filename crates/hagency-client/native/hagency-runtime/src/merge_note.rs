@@ -44,7 +44,7 @@ pub const TRUSTED_FIX_STEPS: [&str; 2] = [trusted_fetch!(), trusted_branch!()];
 /// The literal behind [`REVIEW_STEPS`], usable inside `concat!`.
 macro_rules! review_steps {
     () => {
-        "read it only with these plain commands, each on its own line and never with $(...), pipes or base64: gh pr view <N> --repo <owner/repo> --json title,body,files,headRefOid,statusCheckRollup and gh pr diff <N> --repo <owner/repo>. If headRefOid is not the head commit you were asked to review, say so and stop. Then post your verdict with exactly one command: if it is correct and in scope, gh pr review <N> --repo <owner/repo> --approve -b \"Hagency verdict: APPROVE <full 40-character head commit SHA you read> - <one-line reason>\" (an approval that does not name the current head is not counted) (only if GitHub refuses because the pull request is from your own GitHub account, run it again with --comment in place of --approve); otherwise gh pr review <N> --repo <owner/repo> --request-changes -b \"Hagency verdict: CHANGES - <what is wrong>\". Never merge a pull request you reviewed."
+        "read it only with these plain commands, each on its own line and never with $(...), pipes or base64: gh pr view <N> --repo <owner/repo> --json title,body,files,headRefOid,statusCheckRollup and gh pr diff <N> --repo <owner/repo>. If headRefOid is not the head commit you were asked to review, say so and stop. Then post your verdict with exactly one command: if it is correct and in scope, gh pr review <N> --repo <owner/repo> --approve -b \"Hagency verdict: APPROVE <full 40-character head commit SHA you read> - <one-line reason>\" (an approval that does not name the current head is not counted) (only if GitHub refuses because the pull request is from your own GitHub account, run it again with --comment in place of --approve); otherwise gh pr review <N> --repo <owner/repo> --request-changes -b \"Hagency verdict: CHANGES - <what is wrong>\". Do not merge as part of a review: merge only when Hagency's \"✅ Approved\" notice tells you to (you are then the repository's maintainer Agent, or its author), with the exact command it names."
     };
 }
 
@@ -67,3 +67,15 @@ When asked to review a pull request (Hagency's \"🔎 Review requested\" notice 
 
 /// How an Agent asks for review, posts a verdict and merges a pull request.
 pub const AGENT_MERGE_NOTE: &str = agent_merge_note!();
+
+#[cfg(test)]
+mod tests {
+    /// A maintainer Agent reviews and then merges on the loop's ✅ notice:
+    /// the review steps must not forbid what the notice asks (GPT review, Nov 16).
+    #[test]
+    fn review_steps_leave_the_merge_to_the_approved_notice() {
+        assert!(!super::REVIEW_STEPS.contains("Never merge"));
+        assert!(super::REVIEW_STEPS.contains("✅ Approved"));
+        assert!(super::AGENT_MERGE_NOTE.contains(super::REVIEW_STEPS));
+    }
+}
