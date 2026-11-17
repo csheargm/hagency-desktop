@@ -234,3 +234,23 @@ fn a_push_is_refused_when_trust_was_turned_off_after_the_check() {
     assert_eq!(push_step(&w).run_to(&dest(&w), &off), Err("the owner no longer lets this Agent push here".into()));
     assert_eq!(git(&w.target, &["for-each-ref", "refs/heads/docs"]), "", "nothing was pushed");
 }
+
+/// Regression (Nov 17, issue #35): the step script ran under the agent's zsh,
+/// where `status` is read-only, so every host fetch failed. It must run the
+/// same under zsh, bash and sh: say `done` only on success, always clean up.
+#[test]
+fn clean_up_script_runs_under_zsh_bash_and_sh() {
+    let dir = std::env::temp_dir().join(format!("hagency-rc-{}", std::process::id()));
+    for shell in ["zsh", "bash", "sh"] {
+        if std::process::Command::new(shell).arg("-c").arg("true").status().is_err() { continue; }
+        for (step, ok) in [("true", true), ("false", false)] {
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = super::then_clean_up(step, &dir.to_string_lossy(), "echo done");
+            let out = std::process::Command::new(shell).arg("-c").arg(&script).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert_eq!(text.trim() == "done", ok, "{shell} {step}: {text} {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(out.status.success(), ok, "{shell} {step}");
+            assert!(!dir.exists(), "{shell} {step}: scratch copy left behind");
+        }
+    }
+}

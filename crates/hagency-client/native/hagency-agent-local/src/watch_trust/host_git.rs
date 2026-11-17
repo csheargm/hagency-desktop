@@ -191,7 +191,14 @@ pub(super) fn fetch_with(dir: &Path, remote: &str, want: Option<&str>, dest: &De
     let local = path.to_string_lossy().into_owned();
     let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
     let done = say(&format!("Fetched {count} branches of {} into {remote}.", dest.url));
-    Ok((format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)), sha.map(|s| s.trim().to_owned())))
+    Ok((then_clean_up(&import, &local, &done), sha.map(|s| s.trim().to_owned())))
+}
+
+/// Runs `step`, removes the scratch copy `local` whatever happened, and says
+/// `done` only when `step` worked. The exit code goes in `hagency_rc`: the
+/// agent's shell may be zsh, where `status` is read-only (Nov 17 #35 failure).
+pub(super) fn then_clean_up(step: &str, local: &str, done: &str) -> String {
+    format!("{step}; hagency_rc=$?; rm -rf -- {}; [ $hagency_rc -eq 0 ] && {done}", super::quote(local))
 }
 
 /// The owner may have paused the watch or turned push freely off since the

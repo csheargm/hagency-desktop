@@ -36,7 +36,7 @@ pub(super) fn clone(target: &Path, repo: &str, dest: &Dest, ctx: &HostCtx) -> Re
     let github = format!("https://github.com/{repo}.git");
     let point = pinned_git(target, &["remote", "set-url", "origin", &github]);
     let done = say(&format!("Cloned {repo} into {target_text} (branch {default})."));
-    Ok(format!("{copy} && {point}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)))
+    Ok(super::host_git::then_clean_up(&format!("{copy} && {point}"), &local, &done))
 }
 
 /// `git clone [-q] <github url of repo> [<dir>]` or `gh repo clone <repo>
