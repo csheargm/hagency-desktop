@@ -9,6 +9,7 @@ pub(crate) mod backup;
 pub(crate) mod activity_rows;
 mod design;
 mod identity;
+mod rename;
 pub(crate) mod mapping;
 mod rooms;
 mod settings;
@@ -28,11 +29,13 @@ pub enum AgentPanelAction {
     Advanced { agent_id: String },
     /// The Agent was retired; the list should refresh.
     Retired { agent_id: String },
+    /// The owner renamed the Agent; the list shows the new name.
+    Renamed { agent_id: String, display_name: String },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab { #[default] Identity, Context, Activity, Settings }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Load { Status, Model, Models, Retired, Activity, Backups, Left }
+enum Load { Status, Model, Models, Retired, Renamed, Activity, Backups, Left }
 #[derive(Debug)]
 struct Loaded { request: u64, load: Load, mutation: bool, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -71,6 +74,7 @@ impl Widget for AgentPanel {
         self.handle_tabs(cx, actions);
         if self.busy || self.agent_id().is_empty() { return; }
         self.handle_identity_actions(cx, actions);
+        self.handle_rename_actions(cx, actions);
         self.handle_backup_actions(cx, actions);
         self.handle_settings_actions(cx, actions);
         self.handle_room_follow_actions(cx, actions);
@@ -93,6 +97,7 @@ impl AgentPanel {
         (self.backups, self.backup_saved) = (Vec::new(), None);
         self.view.check_box(cx, ids!(panel_retire_confirm)).set_active(cx, false, Animate::No);
         self.fill_room_follow(cx);
+        self.fill_rename(cx);
         self.set_tab(cx, Tab::Identity);
         self.note(cx, "Loading…");
         self.call(Load::Status, false, Call::Status(self.agent_id()));
@@ -174,6 +179,7 @@ impl AgentPanel {
             }
             // The Agent left a room: reload its rooms (the status says "Saved.").
             (Load::Left, Ok(_)) => self.call(Load::Status, true, Call::Status(self.agent_id())),
+            (Load::Renamed, Ok(value)) => self.apply_rename(cx, value),
             (Load::Retired, Ok(_)) => cx.action(AgentPanelAction::Retired { agent_id: self.agent_id() }),
         }
         self.render(cx);

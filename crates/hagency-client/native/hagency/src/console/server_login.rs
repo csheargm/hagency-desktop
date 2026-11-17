@@ -1581,6 +1581,11 @@ pub(super) enum OwnerOperation {
     Retire {
         agent: String,
     },
+    /// Owner-only display name change; the server also renames the Matrix puppet.
+    Rename {
+        agent: String,
+        display_name: String,
+    },
     /// The owner's explicit consent that a private Agent may serve group
     /// Rooms it is bound to. Not a pool contribution; private is the default.
     AllowGroupRooms {
@@ -1826,6 +1831,10 @@ impl OwnerOperation {
             Self::Retire { agent } => {
                 operation_id(&agent)?;
                 (Method::DELETE, format!("agents/{agent}"), None)
+            }
+            Self::Rename { agent, display_name } => {
+                operation_id(&agent)?;
+                (Method::PATCH, format!("agents/{agent}"), Some(json!({"displayName":display_name})))
             }
             Self::AllowGroupRooms { agent } => {
                 operation_id(&agent)?;

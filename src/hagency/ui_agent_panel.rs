@@ -52,6 +52,11 @@ impl HagencyPanel {
                         self.agent_detail(cx, index);
                     }
                 }
+                Some(AgentPanelAction::Renamed { agent_id, display_name }) => {
+                    if let Some(agent) = self.agents.iter_mut().find(|a| string(a, "id") == agent_id) {
+                        agent["displayName"] = serde_json::Value::from(display_name.as_str());
+                    }
+                }
                 Some(AgentPanelAction::Retired { .. }) => {
                     self.list_page(cx);
                     self.run(cx, Target::Agents, Command::Agents);

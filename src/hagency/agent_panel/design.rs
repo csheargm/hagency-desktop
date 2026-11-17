@@ -46,6 +46,14 @@ script_mod! {
         status := Hint {}
         identity_page := Page {visible: true
             Card {
+                Title {text: #(crate::i18n::tr("Name")) i18n_text: "Name"}
+                View {width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+                    rename_input := Input {empty_text: #(crate::i18n::tr("Agent name"))}
+                    rename_save := Primary {text: #(crate::i18n::tr("Rename")) i18n_text: "Rename"}
+                }
+                Hint {text: #(crate::i18n::tr("People see the new name in every room.")) i18n_text: "People see the new name in every room."}
+            }
+            Card {
                 Field {Text {text: #(crate::i18n::tr("Model")) i18n_text: "Model"} panel_model := Select {labels: [#(crate::i18n::tr("Checking model choices…"))]}}
                 Field {Text {text: #(crate::i18n::tr("Thinking")) i18n_text: "Thinking"} thinking := Select {labels: [#(crate::i18n::tr("Default"))]}}
                 model_hint := Hint {}

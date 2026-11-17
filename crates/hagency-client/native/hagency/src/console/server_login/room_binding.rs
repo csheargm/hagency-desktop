@@ -129,6 +129,20 @@ mod tests {
         assert_eq!(retried.value["creation"]["binding"]["state"], "active");
         tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap();
     }
+    /// Rename is one owner PATCH carrying only the new name.
+    #[tokio::test]
+    async fn rename_patches_the_agent_with_only_its_display_name() {
+        let agent = json!({"id":"agt_1","ownerUserId":"@owner:example.test","puppetMxid":"@_hagency_agt_1:example.test","displayName":"New name","state":"active","generation":1,"executionDeviceId":null,"ownerDirectRoomId":null,"visibility":"private"});
+        let (login, task) = fixture_with_status_and_hook(vec![
+            ("PATCH /hagency/api/v1/agents/agt_1", 200, json!({"agent":agent}), Some(json!({"displayName":"New name"}))),
+        ], |_| {}).await;
+        let op = OwnerOperation::Rename { agent: "agt_1".into(), display_name: "New name".into() };
+        let renamed = login.owner_api("cookie", op).await.unwrap();
+        assert_eq!(renamed.value["agent"]["displayName"], "New name");
+        let bad = OwnerOperation::Rename { agent: "../x".into(), display_name: "N".into() };
+        assert!(login.owner_api("cookie", bad).await.is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap();
+    }
     #[test]
     fn service_preparation_respects_membership_and_never_grants_power() {
         let mut state = json!([
