@@ -3565,5 +3565,14 @@
   "{status} · owner {owner}": "{status} · 所有者 {owner}",
   "Loading watches…": "正在加载关注…",
   "Watches are unavailable: {error}": "关注暂不可用：{error}",
-  "No Agent watches a repository for this room.": "没有 Agent 为本房间关注仓库。"
+  "No Agent watches a repository for this room.": "没有 Agent 为本房间关注仓库。",
+  "What I did": "我做了什么",
+  "Open approval": "打开审批",
+  "1 update": "1 条进度",
+  "{n} updates": "{n} 条进度",
+  "1 step": "1 步",
+  "{n} steps": "{n} 步",
+  "Last step: {step}": "最后一步：{step}",
+  "Time: {t}": "用时：{t}",
+  "Runtime: {runtime}": "运行时：{runtime}"
 }

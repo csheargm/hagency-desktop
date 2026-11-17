@@ -3565,5 +3565,14 @@
   "{status} · owner {owner}": "{status} · owner {owner}",
   "Loading watches…": "Loading watches…",
   "Watches are unavailable: {error}": "Watches are unavailable: {error}",
-  "No Agent watches a repository for this room.": "No Agent watches a repository for this room."
+  "No Agent watches a repository for this room.": "No Agent watches a repository for this room.",
+  "What I did": "What I did",
+  "Open approval": "Open approval",
+  "1 update": "1 update",
+  "{n} updates": "{n} updates",
+  "1 step": "1 step",
+  "{n} steps": "{n} steps",
+  "Last step: {step}": "Last step: {step}",
+  "Time: {t}": "Time: {t}",
+  "Runtime: {runtime}": "Runtime: {runtime}"
 }
