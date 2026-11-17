@@ -12,6 +12,7 @@ pub(crate) mod live;
 pub mod loop_notice;
 mod review_loop;
 mod work;
+mod work_slots;
 pub mod work_lines;
 pub mod work_section;
 pub mod notice;

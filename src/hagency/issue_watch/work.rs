@@ -79,7 +79,7 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
     let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
-    let mut slots = open_slots(worker, entry, login, seen, &issues).await?;
+    let mut slots = super::work_slots::open_slots(worker, entry, login, seen, &issues).await?;
     if slots.is_full() {
         return Ok(0); // claims resume once one of them merges or closes
     }
@@ -122,50 +122,9 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     Ok(handed)
 }
 
-/// The slots left under `open_prs`: minus the login's open pull requests
-/// (GitHub's search, so one beyond the newest page counts) or, when more,
-/// the issues handed off earlier that this Agent still holds a live claim on
-/// (a hand-off whose pull request is not open yet keeps its slot across
-/// polls; a claim expires, so a stalled one frees it). Errors fail the pass.
-async fn open_slots(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>, issues: &[Issue]) -> Result<PrSlots, String> {
-    let Some(limit) = entry.open_prs else { return Ok(PrSlots::Unlimited) };
-    let open = ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?;
-    let mut pending = 0u64;
-    for issue in issues.iter().filter(|i| !i.is_pr && seen.contains(&i.number)) {
-        if pending >= u64::from(limit) {
-            break; // full either way
-        }
-        if claim(worker, entry, issue.number, login, false).await? == Holder::Ours {
-            pending += 1;
-        }
-    }
-    Ok(PrSlots::left(limit, open.max(pending)))
-}
-
-/// The open-pull-request slots one pass may still fill (`open_prs` minus
-/// the ones already open), reserved one per hand-off.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PrSlots {
-    Unlimited,
-    Left(u64),
-}
-impl PrSlots {
-    pub(crate) fn left(limit: u32, open: u64) -> Self {
-        Self::Left(u64::from(limit).saturating_sub(open))
-    }
-    pub(crate) fn is_full(&self) -> bool {
-        *self == Self::Left(0)
-    }
-    pub(crate) fn take(&mut self, handed: usize) {
-        if let Self::Left(left) = self {
-            *left = left.saturating_sub(handed as u64);
-        }
-    }
-}
-
 /// Who holds an issue, as this Agent sees it.
 #[derive(Debug, PartialEq, Eq)]
-enum Holder {
+pub(super) enum Holder {
     Ours,
     Other,
     Nobody,
@@ -178,7 +137,7 @@ const CLAIM_PERMISSIONS: [&str; 4] = ["admin", "maintain", "write", "triage"];
 /// then re-read so two hosts racing agree on the earliest. A claim counts
 /// only from this login (then it must name this Agent's id to be ours) or
 /// from a login with write or triage rights on the repository.
-async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str, post: bool) -> Result<Holder, String> {
+pub(super) async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str, post: bool) -> Result<Holder, String> {
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     let comments = read_comments(worker, entry, number).await?;
@@ -294,7 +253,3 @@ impl LoopIo for LiveLoop<'_> {
         crate::hagency::kill_switch::paused_here(&self.agent_id)
     }
 }
-
-#[cfg(test)]
-#[path = "work_tests.rs"]
-mod tests;

@@ -38,8 +38,18 @@ fn a_failed_hand_off_keeps_its_slot() {
 }
 
 #[test]
-fn a_hand_off_still_waiting_for_its_pull_request_keeps_its_slot_next_poll() {
-    // open_slots counts max(open PRs, live claims on handed-off issues).
-    assert!(PrSlots::left(1, 0u64.max(1)).is_full(), "poll 2: no PR yet, one pending hand-off");
-    assert_eq!(dispatch(PrSlots::left(2, 1u64.max(1)), 5), 1, "a PR that opened from the pending issue is not counted twice");
+fn a_pending_hand_off_and_an_unrelated_open_pr_both_take_a_slot() {
+    // open_slots: used = open PRs + live claims that no open PR closes yet.
+    assert!(PrSlots::left(2, 1 + 1).is_full(), "cap 2: one unrelated PR plus one hand-off awaiting its PR");
+    assert!(PrSlots::left(1, 1).is_full(), "poll 2: no PR yet, one pending hand-off");
+}
+
+#[test]
+fn only_a_closing_keyword_links_a_pull_request_to_its_issue() {
+    use super::closes_issue;
+    assert!(closes_issue("Adds a glossary.\n\nCloses #12", 12));
+    assert!(closes_issue("fixes #12.", 12));
+    assert!(!closes_issue("Closes #123", 12), "another issue");
+    assert!(!closes_issue("see #12", 12), "a mention is no link");
+    assert!(!closes_issue("encloses #12", 12));
 }

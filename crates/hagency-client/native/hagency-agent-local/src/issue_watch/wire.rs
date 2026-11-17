@@ -93,6 +93,8 @@ pub struct PullRequest {
     pub author: String,
     /// Unix seconds.
     pub created_at: i64,
+    /// Its description (empty when none): where "Closes #N" links an issue.
+    pub body: String,
 }
 
 #[derive(Deserialize)]
@@ -112,6 +114,8 @@ struct WirePull {
     head: WireHead,
     user: WireUser,
     created_at: String,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// Turn GitHub's JSON pull request list into `PullRequest`s.
@@ -121,7 +125,7 @@ pub fn parse_pulls(body: &str) -> Result<Vec<PullRequest>, FetchError> {
         .map(|pr| {
             let created = time::OffsetDateTime::parse(&pr.created_at, &time::format_description::well_known::Rfc3339)
                 .map_err(|e| FetchError::Parse(format!("created_at `{}`: {e}", pr.created_at)))?;
-            Ok(PullRequest { number: pr.number, url: pr.html_url, draft: pr.draft, head_sha: pr.head.sha, author: pr.user.login, created_at: created.unix_timestamp() })
+            Ok(PullRequest { number: pr.number, url: pr.html_url, draft: pr.draft, head_sha: pr.head.sha, author: pr.user.login, created_at: created.unix_timestamp(), body: pr.body.unwrap_or_default() })
         })
         .collect()
 }
