@@ -3528,5 +3528,16 @@
   "Repositories to watch, one per line or separated by ;  as owner/name. The agent fixes issues, reviews pull requests and files plans there; it merges only where your GitHub account can. Leave empty for a plain chat agent.": "要关注的仓库，每行一个或用 ; 分隔，格式为 owner/name。Agent 会在这些仓库修复 Issue、评审 PR 并提交计划；只在你的 GitHub 账号有合并权限的仓库中合并。留空则为普通聊天 Agent。",
   "Repositories": "仓库",
   "The agent claims new issues, opens pull requests and reviews other people's pull requests in these repositories. It merges only where your GitHub account can, under your rules below; GitHub's own permissions and branch rules still apply.": "Agent 会在这些仓库认领新 Issue、提交 PR，并评审他人的 PR。只在你的 GitHub 账号可以合并的仓库中、按下方规则合并；GitHub 自身的权限和分支规则仍然生效。",
-  "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.": "Agent 已创建，但其仓库未保存：{0}。请在 Agent 面板的“仓库”中添加。"
+  "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.": "Agent 已创建，但其仓库未保存：{0}。请在 Agent 面板的“仓库”中添加。",
+  "{agent} proposes a plan:": "{agent} 提出了一个计划：",
+  "Keep 1 to 12 issues, one title per line.": "请保留 1 到 12 个 Issue，每行一个标题。",
+  "Only this Agent's owner can file its plan, from the device that runs it.": "只有此 Agent 的主人可以在运行它的设备上提交计划。",
+  "These issues were already filed.": "这些 Issue 已经提交过了。",
+  "Filed on {repo}: {issues}": "已在 {repo} 提交：{issues}",
+  "Filed {count} of {total}; then GitHub refused: {error}": "已提交 {count}/{total} 个；随后 GitHub 拒绝：{error}",
+  "Issues, in order (edit the titles before filing):": "按顺序列出的 Issue（提交前可编辑标题）：",
+  "File these issues": "提交这些 Issue",
+  "Plan for {repo}: {title}": "{repo} 的计划：{title}",
+  "Filing on GitHub…": "正在 GitHub 上提交…",
+  "Filed: {issues}. You will be told here when they are merged.": "已提交：{issues}。合并后会在这里通知你。"
 }

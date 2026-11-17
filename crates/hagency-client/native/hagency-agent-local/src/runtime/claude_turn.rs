@@ -452,6 +452,7 @@ async fn drive<H: Host, C: Capture>(
                                 && hagency_runtime::room_tools::RoomTools::history_and_files()
                                     .with_memory()
                                     .with_skills()
+                                    .with_plans()
                                     .parse(name, &input)
                                     .is_ok(),
                         ));

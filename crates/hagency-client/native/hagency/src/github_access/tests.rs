@@ -109,6 +109,9 @@ async fn fake_github() -> String {
                 (true, "/user") => ("200 OK", r#"{"login":"csheargm"}"#),
                 (true, "/repos/csheargm/hagency-desktop") => ("200 OK", r#"{"permissions":{"admin":true,"push":true,"pull":true}}"#),
                 (true, "/repos/hagency-org/hagency-desktop") => ("200 OK", r#"{"permissions":{"push":false,"pull":true}}"#),
+                (true, "/repos/a/b/issues/4") => ("200 OK", r#"{"number":4,"state":"closed","state_reason":"completed"}"#),
+                (true, "/repos/a/b/issues/5") => ("200 OK", r#"{"number":5,"state":"closed","state_reason":"not_planned"}"#),
+                (true, "/repos/a/b/issues") => ("201 Created", r#"{"number":42}"#),
                 (true, p) if p.starts_with("/search/issues?q=repo:a/b+is:pr+is:open+author:csheargm") => ("200 OK", r#"{"total_count":140,"items":[]}"#),
                 _ => ("404 Not Found", r#"{"message":"Not Found"}"#),
             };
@@ -165,4 +168,14 @@ async fn open_pull_requests_are_counted_past_the_first_page() {
     let count = crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "csheargm", TOKEN).await.unwrap();
     assert_eq!(count, 140);
     assert!(crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "bad login", TOKEN).await.is_err());
+}
+
+#[tokio::test]
+async fn a_plan_issue_is_filed_and_only_a_completed_close_counts_as_done() {
+    let api = fake_github().await;
+    let client = reqwest::Client::new();
+    assert_eq!(crate::issue_watch::create_issue(&client, &api, "a/b", TOKEN, "Add a Glossary", "body").await.unwrap(), 42);
+    assert!(crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 4, TOKEN).await.unwrap());
+    assert!(!crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 5, TOKEN).await.unwrap(), "not planned is not done");
+    assert!(crate::issue_watch::create_issue(&client, &api, "a/b", "github_pat_WRONG", "x", "y").await.is_err());
 }

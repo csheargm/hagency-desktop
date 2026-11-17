@@ -43,3 +43,31 @@ limits and an activity room. Empty means a plain chat Agent.
   default 3 from the dialog), 1–100. The token budget is the Policy daily budget.
 - **Activity room**: the chosen room (the Agent is added) or the Agent's
   private chat with the owner.
+
+## 2. The planner (description → issues → "Done")
+
+- **Agent side.** A room tool `plan_propose {repo, title, issues:[{title,
+  body, acceptance}]}` (both runtimes, personal Agents) posts a card: an
+  ordinary `m.notice` carrying `io.hagency.plan` with a host-made id
+  (`plan_` + digest of dispatch and plan, so a replay is the same card). The
+  Agent files nothing.
+- **Card.** The desktop draws the card only for an authentic Agent of the
+  room's homeserver. Titles are editable (one per line; a kept line keeps its
+  body and criteria by position). "File these issues" works only where the
+  card's real sender is one of this account's own active Agents (matched by
+  Matrix ID, never by anything in the card): the owner's approval is the
+  click, and the issues are filed with that Agent's GitHub token. Each issue
+  body ends with `Part of Hagency plan <id>, step k of n`. The room is told
+  "Filed on repo: #12 …" (fixed transaction id).
+- **State.** The filed plan `{id, repo, roomId, issues}` is kept in the
+  owner's ledger (`agent_plans`) through the owner API (`{plan:{filed}}`); a
+  second filing of the same id is refused. The poller checks each open plan;
+  once every issue is closed as completed (a merged pull request with
+  "Closes #N", or closed as done), it posts "Done: #A, #B merged (repo)" with a
+  fixed transaction id, then marks the plan done (`{plan:{done}}`). Stop All
+  holds both posts.
+- **Follow-ups.** A requester who is not the Agent's owner can edit the card
+  locally but only the owner files; "merged" is read as "closed as
+  completed", not traced to the exact pull request. The timeline wiring adds
+  three lines to the over-budget `room_screen.rs` beside the skill card,
+  under its existing TODO(R4) to split message-card population.

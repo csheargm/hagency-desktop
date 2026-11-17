@@ -9,6 +9,7 @@ pub mod codex;
 pub mod issue_watch;
 pub mod merge_policy;
 pub mod outside;
+pub mod plans;
 pub mod watch_trust;
 // TODO(split): lib.rs is over budget; the ledger belongs in ledger.rs.
 pub mod provider_failure;
@@ -381,6 +382,7 @@ impl Ledger {
         db.execute_batch(merge_policy::gate::SCHEMA)?;
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
+        db.execute_batch(plans::SCHEMA)?;
         remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;

@@ -15,6 +15,7 @@ mod work;
 pub mod work_lines;
 pub mod work_section;
 pub mod notice;
+pub(crate) mod plans;
 pub mod section;
 mod section_state;
 #[cfg(test)]
@@ -152,12 +153,13 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let id = agent["id"].as_str().unwrap_or_default();
     let saved = live::saved(service, id, None).await?;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
-    let has_work = saved["work"].as_array().is_some_and(|w| !w.is_empty());
+    let has_work = saved["work"].as_array().is_some_and(|w| !w.is_empty()) || saved["plans"].as_array().is_some_and(|p| !p.is_empty());
     if watch.setting.mode == WatchMode::Off && !has_work {
         return Ok(None);
     }
     let token = github_token(id).await?;
-    let worked = work::run(&work::Worker { service, client, agent, token: &token, epoch }, &saved).await;
+    let mut worked = work::run(&work::Worker { service, client, agent, token: &token, epoch }, &saved).await;
+    worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
     if watch.setting.mode == WatchMode::Off {
         return Ok(Some(Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }));
     }

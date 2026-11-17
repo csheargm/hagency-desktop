@@ -3528,5 +3528,16 @@
   "Repositories to watch, one per line or separated by ;  as owner/name. The agent fixes issues, reviews pull requests and files plans there; it merges only where your GitHub account can. Leave empty for a plain chat agent.": "Repositories to watch, one per line or separated by ;  as owner/name. The agent fixes issues, reviews pull requests and files plans there; it merges only where your GitHub account can. Leave empty for a plain chat agent.",
   "Repositories": "Repositories",
   "The agent claims new issues, opens pull requests and reviews other people's pull requests in these repositories. It merges only where your GitHub account can, under your rules below; GitHub's own permissions and branch rules still apply.": "The agent claims new issues, opens pull requests and reviews other people's pull requests in these repositories. It merges only where your GitHub account can, under your rules below; GitHub's own permissions and branch rules still apply.",
-  "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.": "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel."
+  "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.": "The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.",
+  "{agent} proposes a plan:": "{agent} proposes a plan:",
+  "Keep 1 to 12 issues, one title per line.": "Keep 1 to 12 issues, one title per line.",
+  "Only this Agent's owner can file its plan, from the device that runs it.": "Only this Agent's owner can file its plan, from the device that runs it.",
+  "These issues were already filed.": "These issues were already filed.",
+  "Filed on {repo}: {issues}": "Filed on {repo}: {issues}",
+  "Filed {count} of {total}; then GitHub refused: {error}": "Filed {count} of {total}; then GitHub refused: {error}",
+  "Issues, in order (edit the titles before filing):": "Issues, in order (edit the titles before filing):",
+  "File these issues": "File these issues",
+  "Plan for {repo}: {title}": "Plan for {repo}: {title}",
+  "Filing on GitHub…": "Filing on GitHub…",
+  "Filed: {issues}. You will be told here when they are merged.": "Filed: {issues}. You will be told here when they are merged."
 }

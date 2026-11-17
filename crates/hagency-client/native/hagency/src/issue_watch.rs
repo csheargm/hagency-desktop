@@ -64,6 +64,32 @@ pub async fn fetch_open_pr_count(client: &Client, api: &str, repo: &str, login: 
     value["total_count"].as_u64().ok_or_else(|| FetchError::Parse("no total_count in the search reply".into()))
 }
 
+/// Files one issue on `repo` with the owner's own token (a planner card the
+/// owner approved); answers its number.
+pub async fn create_issue(client: &Client, api: &str, repo: &str, token: &str, title: &str, body: &str) -> Result<u64, FetchError> {
+    pulls_url(api, repo)?; // refuses anything but owner/name
+    let http = |e: reqwest::Error| FetchError::Http(e.to_string());
+    let response = client.post(format!("{api}/repos/{repo}/issues")).bearer_auth(token).header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)
+        .json(&serde_json::json!({"title": title, "body": body})).send().await.map_err(http)?;
+    let status = response.status();
+    let text = response.text().await.map_err(http)?;
+    if !status.is_success() {
+        return Err(FetchError::Status { status: status.as_u16(), body: text });
+    }
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
+    value["number"].as_u64().ok_or_else(|| FetchError::Parse("no number in the created issue".into()))
+}
+
+/// Whether issue `number` is closed as completed (its pull request merged
+/// with "Closes #N", or closed by hand as done).
+pub async fn fetch_issue_done(client: &Client, api: &str, repo: &str, number: u64, token: &str) -> Result<bool, FetchError> {
+    pulls_url(api, repo)?;
+    let body = get(client, &format!("{api}/repos/{repo}/issues/{number}"), token).await?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    Ok(value["state"] == "closed" && value["state_reason"] == "completed")
+}
+
 /// All of an issue's comments, oldest first, following full pages up to the
 /// engine's page cap: a claim may sit beyond the first page.
 pub async fn fetch_comments(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<Vec<Comment>, FetchError> {
