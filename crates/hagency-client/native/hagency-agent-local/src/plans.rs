@@ -14,7 +14,8 @@ pub struct PlanRecord {
     pub id: String,
     pub repo: String,
     pub room_id: String,
-    /// The filed issue numbers, in plan order.
+    /// The issue numbers in plan order; 0 for a step not filed yet. A plan
+    /// is reserved with all zeros before anything is written on GitHub.
     pub issues: Vec<u64>,
 }
 impl PlanRecord {
@@ -26,7 +27,8 @@ impl PlanRecord {
 }
 
 impl Ledger {
-    /// Records a filed plan; recording the same id again keeps the first.
+    /// Reserves a plan before filing; reserving the same id again keeps the
+    /// first record (done or not), so a card is never filed twice.
     pub fn record_plan(&mut self, owner: &str, agent: &str, plan: PlanRecord) -> Result<()> {
         self.owner(owner)?;
         key(agent)?;
@@ -36,6 +38,24 @@ impl Ledger {
         }
         let text = serde_json::to_string(&plan).map_err(|_| Error::Invalid("unreadable plan"))?;
         self.db.execute("INSERT OR IGNORE INTO agent_plans (agent,id,record) VALUES (?,?,?)", (agent, &plan.id, text))?;
+        Ok(())
+    }
+    /// The plan `id`, open or done.
+    pub fn plan(&self, agent: &str, id: &str) -> Result<Option<(PlanRecord, bool)>> {
+        use rusqlite::OptionalExtension;
+        let row: Option<(String, i64)> = self.db.query_row("SELECT record, done FROM agent_plans WHERE agent=? AND id=?", (agent, id), |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        row.map(|(text, done)| serde_json::from_str(&text).map(|p| (p, done != 0)).map_err(|_| Error::Invalid("stored plan is unreadable"))).transpose()
+    }
+    /// Records the number GitHub gave step `index`, once.
+    pub fn set_plan_issue(&mut self, owner: &str, agent: &str, id: &str, index: usize, number: u64) -> Result<()> {
+        self.owner(owner)?;
+        let Some((mut plan, false)) = self.plan(agent, id)? else { return Err(Error::Invalid("no open plan with that id")) };
+        match plan.issues.get_mut(index) {
+            Some(slot) if *slot == 0 && number > 0 => *slot = number,
+            _ => return Err(Error::Invalid("that step is filed already or does not exist")),
+        }
+        let text = serde_json::to_string(&plan).map_err(|_| Error::Invalid("unreadable plan"))?;
+        self.db.execute("UPDATE agent_plans SET record=? WHERE agent=? AND id=?", (text, agent, id))?;
         Ok(())
     }
     /// Plans whose "Done" has not been posted yet, oldest first.
@@ -61,12 +81,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let owner = "@owner:example.org";
         let mut ledger = Ledger::open(temp.path().join("local.db"), owner).unwrap();
-        let plan = PlanRecord { id: "plan_1".into(), repo: "acme/app".into(), room_id: "!r:x".into(), issues: vec![4, 5] };
+        let plan = PlanRecord { id: "plan_1".into(), repo: "acme/app".into(), room_id: "!r:x".into(), issues: vec![0, 0] };
         ledger.record_plan(owner, "anna", plan.clone()).unwrap();
-        ledger.record_plan(owner, "anna", PlanRecord { issues: vec![9], ..plan.clone() }).unwrap();
-        assert_eq!(ledger.open_plans("anna").unwrap(), vec![plan.clone()], "the first record holds");
+        ledger.record_plan(owner, "anna", PlanRecord { issues: vec![0], ..plan.clone() }).unwrap();
+        assert_eq!(ledger.open_plans("anna").unwrap(), vec![plan.clone()], "the first reservation holds");
+        ledger.set_plan_issue(owner, "anna", "plan_1", 0, 4).unwrap();
+        assert!(ledger.set_plan_issue(owner, "anna", "plan_1", 0, 7).is_err(), "a step is filed once");
+        assert!(ledger.set_plan_issue(owner, "anna", "plan_1", 2, 7).is_err());
+        ledger.set_plan_issue(owner, "anna", "plan_1", 1, 5).unwrap();
+        assert_eq!(ledger.plan("anna", "plan_1").unwrap().unwrap().0.issues, [4, 5]);
         ledger.finish_plan(owner, "anna", "plan_1").unwrap();
         assert!(ledger.open_plans("anna").unwrap().is_empty());
+        assert!(ledger.plan("anna", "plan_1").unwrap().unwrap().1, "a done plan is still known, so it is never filed again");
         for bad in [PlanRecord { id: "x".into(), ..plan.clone() }, PlanRecord { issues: vec![], ..plan.clone() }, PlanRecord { repo: "acme".into(), ..plan }] {
             assert!(ledger.record_plan(owner, "anna", bad).is_err());
         }

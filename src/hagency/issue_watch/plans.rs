@@ -26,6 +26,9 @@ pub(crate) async fn report_done(service: &Service, client: &Client, agent_id: &s
 }
 
 async fn finish(service: &Service, client: &Client, agent_id: &str, token: &str, epoch: u64, plan: &PlanRecord) -> Result<(), String> {
+    if plan.issues.contains(&0) {
+        return Ok(()); // not every step is filed yet; the card resumes it
+    }
     for number in &plan.issues {
         if !fetch_issue_done(client, GITHUB_API, &plan.repo, *number, token).await.map_err(|e| e.to_string())? {
             return Ok(()); // still open: checked again next pass

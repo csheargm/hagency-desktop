@@ -1,7 +1,7 @@
 //! The planner card: the plan's repository and title, its issues one per line
 //! (editable before filing) and "File these issues". Filing runs on the Agent
 //! owner's device (`file`); anywhere else it answers why it cannot.
-use super::{PlanCard, edited, titles};
+use super::{PlanCard, details, edited, titles};
 use crate::sliding_sync::spawn_async_task;
 use makepad_widgets::*;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
@@ -20,8 +20,11 @@ script_mod! {
         plan_title := Label {width: Fill height: Fit flow: Flow.Right{wrap: true}
             draw_text +: {color: (mod.widgets.RBX_FG_PRIMARY) text_style: theme.font_bold{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}}
         Label {width: Fill height: Fit draw_text.color: (mod.widgets.RBX_FG_SECONDARY)
-            text: #(crate::i18n::tr("Issues, in order (edit the titles before filing):")) i18n_text: "Issues, in order (edit the titles before filing):"}
+            text: #(crate::i18n::tr("Issue titles, in order (you can rename them):")) i18n_text: "Issue titles, in order (you can rename them):"}
         plan_issues := TextInput {width: Fill height: Fit is_multiline: true submit_on_enter: false}
+        Label {width: Fill height: Fit draw_text.color: (mod.widgets.RBX_FG_SECONDARY)
+            text: #(crate::i18n::tr("What will be filed:")) i18n_text: "What will be filed:"}
+        plan_details := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: (mod.widgets.RBX_FG_PRIMARY)}
         plan_status := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: (mod.widgets.RBX_FG_SECONDARY)}
         plan_file := RobrixPositiveIconButton {
             width: Fit height: 32 padding: Inset{left: 12 right: 12 top: 0 bottom: 0} icon_walk: Walk{width: 0 height: 0}
@@ -67,6 +70,7 @@ impl PlanProposalCard {
         self.view.set_visible(cx, true);
         let heading = crate::i18n::format("Plan for {repo}: {title}", &[("repo", card.plan.repo.clone()), ("title", card.plan.title.clone())]);
         self.view.label(cx, ids!(plan_title)).set_text(cx, &heading);
+        self.view.label(cx, ids!(plan_details)).set_text(cx, &details(&card.plan));
         let state = outcome(&card.id);
         let status = match &state {
             None => String::new(),

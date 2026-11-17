@@ -42,17 +42,30 @@ pub fn intro(sender: &str) -> String {
     crate::i18n::format("{agent} proposes a plan:", &[("agent", sender.to_owned())])
 }
 
-/// The plan with the titles as edited: one title per line, in order. A kept
-/// line keeps its issue's body and criteria; a new line is a new issue; a
-/// removed line drops that issue.
+/// The plan with the titles as edited: one line per issue, in order. Only
+/// titles change; each keeps its own body and criteria, so the count must stay.
 pub fn edited(plan: &Plan, text: &str) -> Result<Plan, String> {
     let titles: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let issues = titles.iter().enumerate().map(|(n, title)| {
-        let base = plan.issues.get(n).cloned().unwrap_or_default();
-        PlanIssue { title: (*title).to_owned(), ..base }
-    }).collect();
-    Plan { issues, ..plan.clone() }.validate()
-        .map_err(|_| crate::i18n::tr("Keep 1 to 12 issues, one title per line.").to_owned())
+    if titles.len() != plan.issues.len() {
+        return Err(crate::i18n::format("Keep one title per line for each of the {count} issues.", &[("count", plan.issues.len().to_string())]));
+    }
+    let issues = plan.issues.iter().zip(titles).map(|(issue, title)| PlanIssue { title: title.to_owned(), ..issue.clone() }).collect();
+    Plan { issues, ..plan.clone() }.validate().map_err(|_| crate::i18n::tr("Each title must be one line of at most 200 characters.").to_owned())
+}
+
+/// Everything filing publishes besides the titles: each issue's body and
+/// criteria, shown in full so the owner approves what is actually sent.
+pub fn details(plan: &Plan) -> String {
+    plan.issues.iter().enumerate().map(|(n, issue)| {
+        let mut text = format!("{}. {}", n + 1, issue.title);
+        if !issue.body.trim().is_empty() {
+            text.push_str(&format!("\n{}", issue.body.trim()));
+        }
+        for item in &issue.acceptance {
+            text.push_str(&format!("\n  ☐ {item}"));
+        }
+        text
+    }).collect::<Vec<_>>().join("\n\n")
 }
 
 /// The card's editable text: one title per line.
@@ -70,14 +83,18 @@ mod tests {
     }
 
     #[test]
-    fn edits_keep_criteria_by_position_and_add_or_drop_issues() {
+    fn edits_rename_in_place_and_never_move_a_body_to_another_issue() {
         let p = plan();
         assert_eq!(edited(&p, &titles(&p)).unwrap(), p, "unchanged text, unchanged plan");
-        let e = edited(&p, "Add a glossary page\n\nAdd a Quick start\nAdd an FAQ").unwrap();
-        assert_eq!(e.issues.len(), 3);
+        let e = edited(&p, "Add a glossary page\n\nAdd a Quick start").unwrap();
         assert_eq!((e.issues[0].title.as_str(), e.issues[0].acceptance.len()), ("Add a glossary page", 1));
-        assert!(e.issues[2].acceptance.is_empty());
-        assert_eq!(edited(&p, "Only one").unwrap().issues.len(), 1);
-        assert!(edited(&p, "  \n").is_err());
+        assert!(edited(&p, "Add a Quick start").is_err(), "dropping a line would shift bodies");
+        assert!(edited(&p, "a\nb\nc").is_err());
+    }
+
+    #[test]
+    fn the_card_shows_every_body_and_criterion_that_filing_publishes() {
+        let text = details(&plan());
+        assert!(text.contains("1. Add a Glossary") && text.contains("☐ has a Glossary") && text.contains("2. Add a Quick start"));
     }
 }

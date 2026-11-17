@@ -30,10 +30,22 @@ struct Change {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanChange {
+    /// Reserve the plan (all issue numbers 0) before anything is filed.
     #[serde(default)]
     filed: Option<hagency_agent_local::plans::PlanRecord>,
+    /// One step's issue number, right after GitHub created it.
+    #[serde(default)]
+    issue: Option<PlanIssue>,
     #[serde(default)]
     done: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlanIssue {
+    id: String,
+    index: usize,
+    number: u64,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +93,8 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
         .map_err(|_| error(403, "owner_scope_required"))?;
     let mut ledger = Ledger::open_scoped(&path, &reply.owner, &identity).map_err(local_error)?;
     let mut review = Value::Null;
+    // The reply names the plan a change touched, done or not (`plan`).
+    let plan_query = change.as_ref().and_then(|c| c.plan.as_ref()).and_then(|p| p.filed.as_ref().map(|f| f.id.clone()).or_else(|| p.issue.as_ref().map(|i| i.id.clone())));
     if let Some(mut change) = change {
         let loop_change = change.review.take();
         // All parts of one POST commit together or not at all.
@@ -107,7 +121,8 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
         work_seen.insert(entry.repo.clone(), numbers.into());
     }
     let plans = ledger.open_plans(agent).map_err(local_error)?;
-    Ok(json!({"agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans}))
+    let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans}))
 }
 
 fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -> hagency_agent_local::Result<()> {
@@ -123,6 +138,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
             ledger.record_plan(owner, agent, filed)?;
+        }
+        if let Some(step) = plan.issue {
+            ledger.set_plan_issue(owner, agent, &step.id, step.index, step.number)?;
         }
         if let Some(id) = plan.done {
             ledger.finish_plan(owner, agent, &id)?;
