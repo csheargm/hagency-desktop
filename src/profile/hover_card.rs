@@ -54,7 +54,7 @@ script_mod! {
                             width: Fill, height: Fit, flow: Right, spacing: 6, align: Align{y: 0.5}
                             presence_dot := RoundedView {
                                 visible: false, width: 8, height: 8
-                                draw_bg +: {color: #x2e9e5b border_radius: 4.0}
+                                draw_bg +: {color: (mod.widgets.RBX_SUCCESS_FG) border_radius: 4.0}
                             }
                             card_name := Label {
                                 width: Fill, height: Fit, max_lines: 1, text_overflow: Ellipsis
