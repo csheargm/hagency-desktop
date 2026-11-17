@@ -20,6 +20,7 @@ mod direct;
 mod earlier_archive;
 mod approval_settings;
 mod issue_watch;
+mod review_loop;
 #[cfg(test)]
 mod profile_directory_tests;
 

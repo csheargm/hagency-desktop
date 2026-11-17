@@ -9,13 +9,22 @@
 pub(crate) mod choices;
 mod handoff;
 pub(crate) mod live;
+pub mod loop_notice;
+mod review_loop;
+mod work;
+mod work_slots;
+pub mod work_lines;
+pub mod work_section;
 pub mod notice;
+pub(crate) mod plans;
 pub mod section;
 mod section_state;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod notice_tests;
+#[cfg(test)]
+mod review_loop_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};
@@ -32,9 +41,6 @@ use std::time::Duration;
 pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Status key for a failure that is not about one Agent (the Agents list).
 const ALL_AGENTS: &str = "*";
-/// The environment fallback for an Agent without its own token, first match
-/// wins (the `gh` CLI's order).
-pub const TOKEN_VARIABLES: [&str; 2] = ["GH_TOKEN", "GITHUB_TOKEN"];
 
 /// Posted after each check so an open settings view shows the new line.
 #[derive(Clone, Debug)]
@@ -145,20 +151,30 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let id = agent["id"].as_str().unwrap_or_default();
     let saved = live::saved(service, id, None).await?;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
-    if watch.setting.mode == WatchMode::Off {
+    let has_work = saved["work"].as_array().is_some_and(|w| !w.is_empty()) || saved["plans"].as_array().is_some_and(|p| !p.is_empty());
+    if watch.setting.mode == WatchMode::Off && !has_work {
         return Ok(None);
     }
     let token = github_token(id).await?;
+    let mut worked = work::run(&work::Worker { service, client, agent, token: &token, epoch }, &saved).await;
+    worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
+    if watch.setting.mode == WatchMode::Off {
+        return Ok(Some(Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }));
+    }
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
     let seen: HashSet<i64> = saved["issueSeen"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
     let picks = select(&watch, &issues, &seen);
     let auto_merge = !picks.is_empty() && live::auto_merge(id).await;
     let live = live::Live::new(service, agent, &watch, auto_merge, epoch)?;
-    Ok(Some(handoff::hand_off(&live, &picks).await))
+    let mut outcome = handoff::hand_off(&live, &picks).await;
+    outcome.handed += worked.handed;
+    let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).collect();
+    outcome.error = (!errors.is_empty()).then(|| errors.join(" · "));
+    Ok(Some(outcome))
 }
 
 /// The GitHub token the watcher reads `agent_id`'s repository with: the
-/// Agent's own (its GitHub access settings), else `TOKEN_VARIABLES`.
+/// Agent's own (its GitHub access settings), else `GH_TOKEN`/`GITHUB_TOKEN`.
 pub(crate) async fn github_token(agent_id: &str) -> Result<String, String> {
     let agent = agent_id.to_owned();
     let saved = tokio::task::spawn_blocking(move || TokenStore::current().load(&agent))
@@ -166,13 +182,12 @@ pub(crate) async fn github_token(agent_id: &str) -> Result<String, String> {
         .unwrap_or_else(|e| Err(e.to_string()));
     choose_token(saved, |name| std::env::var(name).ok())
 }
-/// First match wins: the Agent's saved token, `GH_TOKEN`, `GITHUB_TOKEN`. A
+/// First match wins: the Agent's saved token, `GH_TOKEN`, `GITHUB_TOKEN`
+/// (the runtime's own rule, so create, poller and run time agree). A
 /// store that cannot be read is reported unless the environment has a token.
 pub(crate) fn choose_token(saved: Result<Option<Token>, String>, env: impl Fn(&str) -> Option<String>) -> Result<String, String> {
-    if let Ok(Some(token)) = &saved {
-        return Ok(token.expose().to_owned());
-    }
-    if let Some(token) = TOKEN_VARIABLES.iter().find_map(|name| env(name).filter(|v| !v.trim().is_empty())) {
+    let own = saved.as_ref().ok().and_then(Option::as_ref).map(Token::expose);
+    if let Some(token) = ::hagency::issue_watch::resolve_github_token(own, env) {
         return Ok(token);
     }
     saved?;

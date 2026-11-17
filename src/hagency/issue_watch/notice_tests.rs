@@ -91,7 +91,7 @@ fn an_unmarked_or_malformed_message_is_not_a_hand_off() {
     assert_eq!(Notice::from_content(&bad), None);
 }
 
-/// Auto-merge on: the fixer is told to carry the PR on to an Agent review, so
+/// Auto-merge on (and every work-list hand-off): the fixer links the issue and marks the PR ready, so
 /// the flow continues past the draft with no person's prompt; off: unchanged.
 #[test]
 fn auto_merge_on_adds_the_merge_policy_step_and_survives_the_marker() {
@@ -99,7 +99,7 @@ fn auto_merge_on_adds_the_merge_policy_step_and_survives_the_marker() {
     assert!(!off.body().contains("merge policy"), "off: the draft-PR request only");
     let on = off.clone().with_merge_policy(true);
     assert!(on.body().contains(&format!("issues/6 {MERGE_POLICY_STEP}\nIssue title")), "the step stays part of the fixed request");
-    assert!(MERGE_POLICY_STEP.contains("gh pr ready <N>") && MERGE_POLICY_STEP.contains("another Agent in this room to review"));
+    assert!(MERGE_POLICY_STEP.contains("gh pr ready <N>") && MERGE_POLICY_STEP.contains("Closes #<issue>") && MERGE_POLICY_STEP.contains("reviewer or maintainer Agent"));
     let content = sent_content(&on);
     assert!(content["formatted_body"].as_str().unwrap().contains("agent merge policy"));
     assert_eq!(Notice::from_content(&content), Some(on));

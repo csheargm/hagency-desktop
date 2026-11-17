@@ -1519,12 +1519,14 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::room::script_mod(vm);
     crate::join_leave_room_modal::script_mod(vm);
     crate::block_user_modal::script_mod(vm);
+    crate::hagency::create_agent::work_step::script_mod(vm);
     crate::hagency::create_agent::script_mod(vm);
     crate::hagency::bring_agent::script_mod(vm);
     crate::moderation_modal::script_mod(vm);
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);
     crate::hagency::issue_watch::section::script_mod(vm);
+    crate::hagency::issue_watch::work_section::script_mod(vm);
     crate::hagency::github_access::script_mod(vm);
     crate::hagency::agent_panel::script_mod(vm);
     crate::hagency::ui::script_mod(vm);

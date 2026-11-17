@@ -8,13 +8,16 @@
 //! call runs without a card. Fail-closed by design (GPT review, Nov 15): no
 //! chaining (an earlier step could switch branch or edit config), no reliance
 //! on the shell's persistent directory, and no Codex (its approvals cannot
-//! rewrite the command, see [`pinned`]). Publish steps:
+//! rewrite the command, see [`pinned`]). Steps:
 //! - `git -C <checkout> push [-u] <remote> <branch>`: a local non-default
 //!   branch named explicitly, from a checkout inside the Room workspace whose
-//!   remote pushes to the watched repository (see [`git`]). It runs rewritten
-//!   (see [`git::Push::pinned`]) so config written after this check cannot
-//!   change where it goes;
-//! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]).
+//!   remote pushes to the watched repository (see [`git`]). The HOST pushes
+//!   it ([`host_git`]), so no checkout config is read for the network step;
+//! - `git [-C <checkout>] fetch [-q] [<remote>]` from the watched repository,
+//!   also run by the host, and `git [-C <checkout>] checkout -b <new>
+//!   <remote>/<default>`, pinned (the fix steps of an issue, see [`git`]);
+//! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]);
+//! - Write/Edit/MultiEdit of a file inside the workspace, never git metadata.
 //!
 //! Everything else keeps asking. Merges stay with `merge_policy`.
 use crate::{ToolProposal, outside::shell};
@@ -23,38 +26,78 @@ use std::path::Path;
 
 pub(crate) mod gh;
 pub(crate) mod git;
+pub mod host_git;
+pub mod host_run;
 
-/// The watched repository when `proposal`'s Agent trusts publishing there
-/// from this proposal's Room.
-fn trusted_repo(db: &Connection, proposal: &ToolProposal) -> crate::Result<Option<String>> {
+/// How push trust answers a tool call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrustedStep {
+    /// Run unchanged (a file edit inside the workspace).
+    Allow,
+    /// Run as this pinned Bash command.
+    Command(String),
+    /// The host runs this step; the call then only reports what it did.
+    Host(host_git::HostStep),
+}
+
+/// The repositories `proposal`'s Agent may publish to from this proposal's
+/// Room: the legacy issue watch's, and each work-list entry whose owner set
+/// "push freely" for this Room.
+fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
     let row: Option<(String, String, String, i64)> = db
-        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [&proposal.scope.agent], |r| {
+        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [agent], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .optional()?;
-    Ok(row.and_then(|(mode, repo, room, trusted)| (mode != "off" && trusted == 1 && room == proposal.scope.room).then_some(repo)))
+    let mut repos: Vec<String> = row.and_then(|(mode, repo, r, trusted)| (mode != "off" && trusted == 1 && &r == room).then_some(repo)).into_iter().collect();
+    let mut work = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
+    for rules in work.query_map([agent], |r| r.get::<_, String>(0))? {
+        // A row that no longer parses grants nothing.
+        let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) else { continue };
+        if rules.push_freely && &rules.room_id == room && !repos.iter().any(|r| r.eq_ignore_ascii_case(&rules.repo)) {
+            repos.push(rules.repo);
+        }
+    }
+    Ok(repos)
 }
 
-/// The command that must run in place of `proposal`'s when push trust answers
-/// it. The Claude permission reply carries it as `updatedInput`, so what runs
-/// is exactly what was checked; Codex cannot do that, so it is never trusted.
-pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<Option<String>> {
+/// A check, run off the async threads, that push trust still covers
+/// `proposal` for `repo` (the step's own destination): a fresh read-only connection to the ledger at `path` each
+/// time; no path or an unreadable ledger is a no.
+pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, repo: String) -> Box<dyn Fn() -> bool + Send + Sync> {
+    Box::new(move || {
+        let Some(path) = &path else { return false };
+        let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
+        trusted_repos(&db, &proposal).is_ok_and(|r| r.iter().any(|t| t.eq_ignore_ascii_case(&repo)))
+    })
+}
+
+/// How push trust answers `proposal`, if it does. A command reaches Claude's
+/// permission reply as `updatedInput`, so what runs is exactly what was
+/// checked; Codex cannot rewrite its command, so it is never trusted.
+pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<Option<TrustedStep>> {
+    let edit = matches!(proposal.tool.as_str(), "claude.Write" | "claude.Edit" | "claude.MultiEdit");
     if proposal.risk == "permission_expansion"
-        || proposal.tool != "claude.Bash"
+        || !(edit || proposal.tool == "claude.Bash")
         || proposal.scope.requester != owner
         // A background call's launch result says nothing about what it did.
         || proposal.arguments["run_in_background"] == true
     {
         return Ok(None);
     }
+    let root = Path::new(&proposal.canonical_directory);
+    if edit {
+        let inside = crate::outside::writable_in(proposal.arguments.get("file_path"), root);
+        return Ok((inside && !trusted_repos(db, proposal)?.is_empty()).then_some(TrustedStep::Allow));
+    }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
-    let Some(repo) = trusted_repo(db, proposal)? else { return Ok(None) };
-    Ok(pinned_line(line, Path::new(&proposal.canonical_directory), &repo))
+    Ok(trusted_repos(db, proposal)?.iter().find_map(|repo| pinned_line(line, root, repo)))
 }
 
-/// `line` as it must run when it is a single publish step for `repo` from
+/// How `line` is answered when it is a single trusted step for `repo` from
 /// inside `root`, else `None`.
-pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<String> {
+pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<TrustedStep> {
     let parsed = shell::parse(line)?;
     let [words] = parsed.segments.as_slice() else { return None };
     if parsed.heredoc_at.is_some() {
@@ -65,11 +108,21 @@ pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<String>
         ["git", "-C", dir, "push", rest @ ..] => {
             let dir = checkout(root, dir)?;
             let push = git::Push::parse(rest)?;
-            (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| push.pinned(&dir, repo))
+            (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| TrustedStep::Host(push.host_step(&dir, repo)))
         }
-        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| pin_env(line)),
+        ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, repo),
+        ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, repo),
+        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| TrustedStep::Command(pin_env(line))),
         _ => None,
     }
+}
+
+/// `root` itself when it is the top of a git checkout (a bare `git fetch`
+/// is then answered for `root`, never for the shell's later directory).
+fn toplevel(root: &Path) -> Option<std::path::PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let top = git::query(&root, &["rev-parse", "--show-toplevel"])?;
+    (Path::new(&top).canonicalize().ok()? == root).then_some(root)
 }
 
 /// `command` run with git's hooks and helpers off, whatever the checkout's

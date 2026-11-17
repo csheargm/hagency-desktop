@@ -50,7 +50,7 @@ pub fn quoted_title(title: &str) -> String {
     format!("\"{capped}\"")
 }
 
-pub const MERGE_POLICY_STEP: &str = "This repository has an agent merge policy: when the pull request is ready, mark it ready (gh pr ready <N>) and ask another Agent in this room to review it.";
+pub const MERGE_POLICY_STEP: &str = "This repository has an agent merge policy: write \"Closes #<issue>\" in the pull request description and, when it is ready, mark it ready (gh pr ready <N> --repo <owner/repo>) so a reviewer or maintainer Agent picks it up.";
 
 impl Notice {
     pub fn new(repo: &str, issue: &Issue, agent_label: &str) -> Self {

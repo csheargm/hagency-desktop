@@ -9,6 +9,7 @@ use crate::theme::Snapshot as ThemeSnapshot;
 use super::agent_runtime_notice::AgentRuntimeNoticeWidgetRefExt;
 use super::room_memory::card::MemoryProposalCardWidgetRefExt;
 use super::room_skills::card::SkillProposalCardWidgetRefExt;
+use super::room_plan::card::PlanProposalCardWidgetRefExt;
 use crate::miniapps::action_room::ActionRoomBoardWidgetExt;
 use std::{
     borrow::Cow,
@@ -446,6 +447,7 @@ script_mod! {
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                plan_proposal_card := mod.widgets.PlanProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -499,6 +501,7 @@ script_mod! {
                 octos_action_card := mod.widgets.OctosActionCard {}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {}
                 skill_proposal_card := mod.widgets.SkillProposalCard {}
+                plan_proposal_card := mod.widgets.PlanProposalCard {}
                 agent_reply := mod.widgets.AgentReply {}
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
             link_preview_view := mod.widgets.LinkPreview {font_size: mod.widgets.MOBILE_MESSAGE_FONT_SIZE}
@@ -690,6 +693,7 @@ script_mod! {
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 memory_proposal_card := mod.widgets.MemoryProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 skill_proposal_card := mod.widgets.SkillProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                plan_proposal_card := mod.widgets.PlanProposalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -6308,6 +6312,8 @@ fn populate_message_view(
             .show(cx, timeline_kind.room_id(), super::room_memory::proposal_of(event_tl_item, timeline_kind.room_id()), super::room_memory::outcome::origin_of(event_tl_item));
         item.skill_proposal_card(cx, ids!(content.skill_proposal_card))
             .show(cx, timeline_kind.room_id(), super::room_skills::proposal_of(event_tl_item, timeline_kind.room_id()), super::room_memory::outcome::origin_of(event_tl_item));
+        item.plan_proposal_card(cx, ids!(content.plan_proposal_card))
+            .show(cx, timeline_kind.room_id(), super::room_plan::plan_of(event_tl_item, timeline_kind.room_id()));
     }
 
     // If `used_cached_item` is false, we should always redraw the profile, even if profile_drawn is true.
@@ -7664,7 +7670,7 @@ mod proposal_body_tests {
 fn proposal_card_intro(event: &EventTimelineItem, room: &matrix_sdk::ruma::RoomId) -> Option<String> {
     super::room_memory::proposal_intro_of(event, room).or_else(|| {
         super::room_skills::proposal_of(event, room).map(|_| super::room_skills::proposal_intro(&super::room_memory::sender_name(event)))
-    })
+    }).or_else(|| super::room_plan::plan_of(event, room).map(|_| super::room_plan::intro(&super::room_memory::sender_name(event))))
 }
 
 fn get_profile_display_name(event_tl_item: &EventTimelineItem) -> Option<String> {

@@ -261,7 +261,7 @@ impl Profile {
         for (name, value) in self.environment.iter() {
             environment.insert(name.into(), value.into());
         }
-        // Demo fallback only: the launcher's token when this Agent has none of its own.
+        // The environment's token when this Agent has none of its own (demo_env::resolve).
         if !environment.contains_key(std::ffi::OsStr::new(crate::demo_env::GITHUB_TOKEN_ENV))
             && let Some(token) = crate::demo_env::github_token()
         {

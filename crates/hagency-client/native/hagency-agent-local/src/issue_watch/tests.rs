@@ -188,3 +188,72 @@ fn an_older_watch_table_gains_push_trust_switched_off() {
     let trusted: i64 = db.query_row("SELECT push_trusted FROM issue_watch WHERE agent='a'", [], |r| r.get(0)).unwrap();
     assert_eq!(trusted, 0);
 }
+
+#[test]
+fn the_review_loop_reads_only_other_peoples_ready_pull_requests() {
+    use super::wire::{others_ready_pulls, parse_login, parse_permission, parse_pulls, pulls_url};
+    let sha = "1".repeat(40);
+    let body = json!([
+        {"number": 30, "html_url": "https://github.com/acme/app/pull/30", "draft": false, "head": {"sha": sha}, "user": {"login": "Anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 31, "html_url": "https://github.com/acme/app/pull/31", "draft": true, "head": {"sha": sha}, "user": {"login": "anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 32, "html_url": "https://github.com/acme/app/pull/32", "head": {"sha": sha}, "user": {"login": "mallory"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 33, "html_url": "https://github.com/acme/app/pull/33", "head": {"sha": sha}, "user": {"login": "anna"}, "created_at": "2020-01-01T00:00:00Z"}
+    ]).to_string();
+    let pulls = parse_pulls(&body).unwrap();
+    let theirs: Vec<u64> = others_ready_pulls(&pulls, "mallory", 1_700_000_000).iter().map(|p| p.number).collect();
+    assert_eq!(theirs, [30], "not drafts, not our own, not from before the watch");
+    assert!(parse_pulls("{}").is_err());
+    assert!(pulls_url("https://api.github.com", "acme/app/../x").is_err());
+    assert_eq!(parse_permission(&json!({"permission": "write", "role_name": "maintain"}).to_string()).unwrap(), "maintain");
+    assert_eq!(parse_permission(&json!({"permission": "read"}).to_string()).unwrap(), "read");
+    assert!(parse_permission("{}").is_err());
+    assert_eq!(parse_login(&json!({"login": "anna"}).to_string()).unwrap(), "anna");
+}
+
+#[test]
+fn the_earliest_unexpired_eligible_claim_holds_an_issue() {
+    use super::wire::{claim_authors, claim_body, claim_holder, comments_url, parse_comments, Claim, CLAIM_MARKER, CLAIM_EXPIRY_SECS};
+    let body = json!([
+        {"user": {"login": "carl"}, "body": "me too", "created_at": "2026-11-16T09:00:00Z"},
+        {"user": {"login": "mallory"}, "body": claim_body("agt_x", "fake"), "created_at": "2026-11-16T09:30:00Z"},
+        {"user": {"login": "betty"}, "body": claim_body("agt_b1", "\"betty-claude\""), "created_at": "2026-11-16T10:00:00Z"},
+        {"user": {"login": "anna"}, "body": format!("{CLAIM_MARKER} — anna-claude"), "created_at": "2026-11-16T10:00:05Z"}
+    ]).to_string();
+    let comments = parse_comments(&body).unwrap();
+    let now = comments[3].created_at + 10;
+    let team = |login: &str| login != "mallory";
+    assert_eq!(claim_holder(&comments, now, team), Some(Claim { login: "betty", agent: Some("agt_b1") }), "mallory's forged claim is ignored");
+    assert!(claim_holder(&comments, now, team).unwrap().is("BETTY", "agt_b1"));
+    assert!(!claim_holder(&comments, now, team).unwrap().is("betty", "agt_b2"), "another Agent on the same login");
+    assert_eq!(claim_holder(&comments[..1], now, team), None, "an ordinary comment is no claim");
+    let later = comments[2].created_at + CLAIM_EXPIRY_SECS + 1;
+    assert_eq!(claim_holder(&comments, later, team), Some(Claim { login: "anna", agent: None }), "betty's claim expired");
+    assert_eq!(claim_authors(&comments, "anna", now), vec!["betty", "mallory"]);
+    assert!(comments_url("https://api.github.com", "acme/app", 0, 1).is_err());
+}
+
+#[test]
+fn the_owners_own_pull_request_merges_only_on_another_accounts_approval_of_the_head() {
+    use super::wire::{approved_by_other, own_ready_pulls, parse_pulls, parse_reviews, reviews_url};
+    let (head, old) = ("a".repeat(40), "b".repeat(40));
+    let pulls = parse_pulls(&json!([
+        {"number": 40, "html_url": "https://github.com/acme/app/pull/40", "head": {"sha": head}, "user": {"login": "Anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 41, "html_url": "https://github.com/acme/app/pull/41", "head": {"sha": head}, "user": {"login": "bob"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 42, "html_url": "https://github.com/acme/app/pull/42", "draft": true, "head": {"sha": head}, "user": {"login": "anna"}, "created_at": "2026-11-16T10:00:00Z"}
+    ]).to_string()).unwrap();
+    let own: Vec<u64> = own_ready_pulls(&pulls, "anna", 1_700_000_000).iter().map(|p| p.number).collect();
+    assert_eq!(own, [40], "the owner's own ready pull requests only");
+    let review = |login: &str, state: &str, commit: &str, body: &str| json!({"user": {"login": login}, "state": state, "commit_id": commit, "body": body});
+    let reviews = |list: Vec<serde_json::Value>| parse_reviews(&serde_json::Value::Array(list).to_string()).unwrap();
+    let bound = format!("LGTM at {head}");
+    assert!(approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound)]), "anna", &head));
+    assert!(!approved_by_other(&reviews(vec![review("ANNA", "APPROVED", &head, &bound)]), "anna", &head), "the author's own approval never counts");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &old, &format!("ok {old}"))]), "anna", &head), "an older head");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, "LGTM")]), "anna", &head), "an approval not naming its commit is unbound");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound), review("bob", "CHANGES_REQUESTED", &head, "")]), "anna", &head), "the latest decisive review wins");
+    assert!(parse_reviews("{}").is_err());
+    let ghost = reviews(vec![json!({"user": null, "state": "APPROVED", "commit_id": head, "body": bound})]);
+    assert_eq!(ghost.len(), 1, "a deleted account's review keeps the page full for pagination");
+    assert!(!approved_by_other(&ghost, "anna", &head), "and never counts as an approval");
+    assert!(reviews_url("https://api.github.com", "acme/../x", 1, 1).is_err());
+}

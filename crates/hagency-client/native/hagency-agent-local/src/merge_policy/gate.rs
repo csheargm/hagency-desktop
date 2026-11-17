@@ -14,7 +14,7 @@
 //! commit and reviewing Agent (a new push voids them), because every Agent here shares one GitHub identity and
 //! GitHub refuses (and would not count) a self-approval.
 use super::github::PrSource;
-use super::{evaluate, parse_policy, Decision};
+use super::Decision;
 use crate::outside::{resolves_inside, shell};
 use crate::{key, Ledger, Result, ToolPolicy, ToolProposal};
 use serde_json::Value;
@@ -41,6 +41,13 @@ impl Ledger {
     pub fn auto_merge(&self, agent: &str) -> Result<bool> {
         use rusqlite::OptionalExtension;
         Ok(self.db.query_row("SELECT enabled FROM auto_merge WHERE agent=?", [agent], |r| r.get::<_, i64>(0)).optional()? == Some(1))
+    }
+    /// `reviewer` asked for changes: none of its approvals of `pr` count any more.
+    pub(crate) fn withdraw_agent_review(&mut self, pr: &str, reviewer: &str) -> Result<()> {
+        self.db.execute("DELETE FROM auto_merge_head_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        // A held approval must not settle afterwards and restore it.
+        self.db.execute("DELETE FROM auto_merge_pending_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        Ok(())
     }
     pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str) -> Result<()> {
         self.db.execute("INSERT OR IGNORE INTO auto_merge_head_reviews VALUES (?,?,?)", (pr, head, reviewer))?;
@@ -86,6 +93,8 @@ pub struct GhPr {
     /// the head moved, so the commit judged is the commit merged.
     pub head: Option<String>,
     pub kind: Kind,
+    /// A review's `-b` body: an approval must name the head commit it reviewed.
+    pub body: String,
 }
 
 /// What the command does to the pull request.
@@ -95,6 +104,8 @@ pub enum Kind {
     Merge,
     /// An approving `gh pr review`: recorded as this Agent's approval.
     Review,
+    /// `gh pr review --request-changes`: a verdict that blocks, never an approval.
+    RequestChanges,
     /// `gh pr ready`: a draft is marked ready so it can be reviewed and merged.
     Ready,
 }
@@ -121,13 +132,16 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
     let flags = Flags::read(rest, kind)?;
     let ok = match kind {
         Kind::Merge => flags.squash && flags.repo.is_some(),
-        Kind::Review => flags.approve != flags.comment && (flags.approve || flags.body.starts_with(APPROVE_MARKER)),
+        Kind::Review => [flags.approve, flags.comment, flags.request_changes].iter().filter(|f| **f).count() == 1
+            && (flags.approve || flags.request_changes || flags.body.starts_with(APPROVE_MARKER)),
         Kind::Ready => flags.repo.is_some(),
+        Kind::RequestChanges => false,
     };
     if !ok {
         return None;
     }
-    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind })
+    let kind = if flags.request_changes { Kind::RequestChanges } else { kind };
+    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind, body: flags.body })
 }
 
 /// Characters that would chain, redirect or substitute; any one refuses the command.
@@ -185,6 +199,7 @@ struct Flags {
     squash: bool,
     approve: bool,
     comment: bool,
+    request_changes: bool,
     body: String,
     repo: Option<String>,
     head: Option<String>,
@@ -201,6 +216,7 @@ impl Flags {
                 "--match-head-commit" if merge => flags.head = Some(super::github::commit_sha(words.next()?)?.to_owned()),
                 "--approve" | "-a" if review => flags.approve = true,
                 "--comment" | "-c" if review => flags.comment = true,
+                "--request-changes" | "-r" if review => flags.request_changes = true,
                 "--body" | "-b" if review => flags.body = (*words.next()?).to_owned(),
                 "--repo" | "-R" => flags.repo = Some(repo_name(words.next()?)?.to_owned()),
                 _ => return None,
@@ -208,6 +224,12 @@ impl Flags {
         }
         Some(flags)
     }
+}
+
+/// Whether an approving review's body names exactly `head` (as a word), so
+/// the approval is of the commit the reviewer read, not one pushed since.
+pub fn review_names_head(body: &str, head: &str) -> bool {
+    body.split(|c: char| !c.is_ascii_hexdigit()).any(|word| word == head)
 }
 
 /// `owner/name` on github.com and nothing else (no host, no options).
@@ -228,6 +250,13 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     }
     let command = parse_command(proposal)?;
     let agent = proposal.scope.agent.clone();
+    if command.kind == Kind::RequestChanges {
+        // Whatever answers it (this gate or the owner's card), a blocking
+        // verdict withdraws this Agent's approvals of the pull request first.
+        // An unreadable pull request leaves the card to the owner.
+        let url = source.pull_request(&command).await?.url;
+        ledger.withdraw_agent_review(&url, &agent).ok()?;
+    }
     if !ledger.auto_merge(&agent).ok()? {
         return None;
     }
@@ -260,15 +289,22 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);
     }
-    let policy = parse_policy(&source.policy(command, repo, &view.base_sha).await?)?;
-    if super::file_reason(&policy, &view.facts).is_some() {
+    let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
+    let merge = command.kind == Kind::Merge;
+    let scoped: Vec<&super::MergePolicy> = if merge { judged.policies().collect() } else { judged.review_policies().collect() };
+    if scoped.iter().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
         return Some(false);
     }
     // An approval is public and counts toward a merge, so CI must pass for
     // it as for a merge; readying a draft (CI may not have run yet) need not.
     match command.kind {
-        Kind::Ready => return Some(true),
-        Kind::Review => return Some(super::ci_reason(&policy, &view.facts).is_none()),
+        Kind::Ready | Kind::RequestChanges => return Some(true),
+        // An approval names the head it reviewed, must be of a head that is
+        // still current, and (under the owner's rules) of a trusted author.
+        Kind::Review => {
+            let bound = review_names_head(&command.body, &view.head_sha);
+            return Some(bound && scoped.iter().all(|policy| super::ci_reason(policy, &view.facts).is_none()));
+        }
         Kind::Merge => {}
     }
     // Unbound merges always go to the owner: without the flag GitHub
@@ -276,6 +312,6 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
     if command.head.as_deref() != Some(view.head_sha.as_str()) {
         return Some(false);
     }
-    let approvers = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
-    Some(evaluate(&policy, &view.facts, &approvers, agent) == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
+    let decision = super::review_loop::judge(ledger, command, repo, view, agent, source).await?;
+    Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
 }

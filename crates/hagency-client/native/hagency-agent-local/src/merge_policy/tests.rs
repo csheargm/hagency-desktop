@@ -92,7 +92,7 @@ fn only_exact_merge_and_approving_review_commands_reach_the_gate() {
     assert_eq!((merge.number, merge.kind, merge.dir.ends_with("repo")), (7, gate::Kind::Merge, true));
     assert_eq!(parse("gh pr ready 7 -R csheargm/hagency-demo-sandbox").unwrap().kind, gate::Kind::Ready);
     assert_eq!(parse("gh pr merge 7 --squash -R csheargm/hagency-demo-sandbox").unwrap().repo.as_deref(), Some("csheargm/hagency-demo-sandbox"));
-    assert_eq!(parse("gh pr review 7 --approve").unwrap().kind, gate::Kind::Review);
+    assert_eq!(parse(&format!("gh pr review 7 --approve -b {HEAD}")).unwrap().kind, gate::Kind::Review);
     assert!(parse(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: docs only\"")).is_some());
     for line in [
         "gh pr merge 7", "gh pr merge 7 --merge", "gh pr merge 7 --squash --admin", "gh pr merge 7 --squash --auto",
@@ -133,7 +133,7 @@ impl Fake {
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = facts(self.files.clone(), self.checks.clone());
-        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), facts })
+        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), facts })
     }
     async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {
         assert_eq!((repo, base), ("csheargm/hagency-demo-sandbox", BASE), "the policy comes from the base commit");
@@ -169,12 +169,12 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     let docs = Fake::new(vec![file("README.md", 5)]);
     let merge = bash(&merge_line(), temp.path(), "fixer");
-    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "off by default: the card asks");
     ledger.set_auto_merge(owner, "fixer", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no other Agent approved yet");
-    let self_review = bash("gh pr review 7 --approve", temp.path(), "fixer");
+    let self_review = bash(&format!("gh pr review 7 --approve -b {HEAD}"), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &self_review, "call", 11, &docs).await, Some(true));
     ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "its own approval does not count");
@@ -197,7 +197,7 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     for agent in ["fixer", "reviewer"] {
         ledger.set_auto_merge(owner, agent, true).unwrap();
     }
-    let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""));
+    let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""));
     let mut approve = bash("", temp.path(), "reviewer");
     approve.arguments = json!({"command": review});
     assert_eq!(gate::auto_answer(&mut ledger, owner, &approve, "call", 11, &code).await, None, "a code review is not low risk: the card asks");
@@ -232,11 +232,11 @@ async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
     let merge = bash(&merge_line(), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no review recorded yet");
-    let own = bash("gh pr review 7 --approve", temp.path(), "fixer");
+    let own = bash(&format!("gh pr review 7 --approve -b {HEAD}"), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &own, "call", 11, &docs).await, Some(true), "recorded, but as the author's");
     ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "the author's own verdict does not count");
-    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}\""), temp.path(), "reviewer");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, Some(true));
     ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(true));

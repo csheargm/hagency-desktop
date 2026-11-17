@@ -60,6 +60,24 @@ async fn repo_access(client: &reqwest::Client, api: &str, token: &Token, repo: &
     }
 }
 
+/// The token's own permission on `repo` (the highest of `admin`,
+/// `maintain`, `write`, `triage`, `read`), or `None` on a 404: missing, or
+/// private and not shared with the token.
+pub async fn permission(client: &reqwest::Client, api: &str, token: &Token, repo: &str) -> Result<Option<String>, String> {
+    match get(client, &format!("{api}/repos/{repo}"), token).await? {
+        (200, body) => Ok(Some(highest_permission(&body).to_owned())),
+        (404, _) => Ok(None),
+        (status, _) => Err(format!("GitHub answered {status} for {repo}")),
+    }
+}
+
+/// The highest permission in a repository reply's `permissions` object, named
+/// like the collaborator endpoint; a reply without one (public read) is `read`.
+pub fn highest_permission(body: &Value) -> &'static str {
+    let order = [("admin", "admin"), ("maintain", "maintain"), ("push", "write"), ("triage", "triage"), ("pull", "read")];
+    order.iter().find(|(key, _)| body["permissions"][key] == true).map_or("read", |(_, name)| *name)
+}
+
 /// Status and JSON body (`Null` when not JSON); errors never hold the token.
 async fn get(client: &reqwest::Client, url: &str, token: &Token) -> Result<(u16, Value), String> {
     let failed = |e: reqwest::Error| redact(&e.to_string(), token.expose());

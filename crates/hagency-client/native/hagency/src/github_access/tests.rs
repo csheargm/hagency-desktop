@@ -109,6 +109,11 @@ async fn fake_github() -> String {
                 (true, "/user") => ("200 OK", r#"{"login":"csheargm"}"#),
                 (true, "/repos/csheargm/hagency-desktop") => ("200 OK", r#"{"permissions":{"admin":true,"push":true,"pull":true}}"#),
                 (true, "/repos/hagency-org/hagency-desktop") => ("200 OK", r#"{"permissions":{"push":false,"pull":true}}"#),
+                (true, "/repos/a/b/issues/4") => ("200 OK", r#"{"number":4,"state":"closed","state_reason":"completed"}"#),
+                (true, "/repos/a/b/issues/5") => ("200 OK", r#"{"number":5,"state":"closed","state_reason":"not_planned"}"#),
+                (true, "/repos/a/b/issues") => ("201 Created", r#"{"number":42}"#),
+                (true, p) if p.starts_with("/repos/a/b/issues?state=all&creator=csheargm") && p.ends_with("page=1") => ("200 OK", r#"[{"number":9,"pull_request":{},"user":{"login":"csheargm"},"body":"Part of Hagency plan `p1` (G), step 1 of 2."},{"number":8,"user":{"login":"csheargm"},"body":"x\n---\nPart of Hagency plan `p1` (G), step 1 of 2."}]"#),
+                (true, p) if p.starts_with("/search/issues?q=repo:a/b+is:pr+is:open+author:csheargm") => ("200 OK", r#"{"total_count":140,"items":[]}"#),
                 _ => ("404 Not Found", r#"{"message":"Not Found"}"#),
             };
             let reply = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -134,4 +139,54 @@ async fn check_reports_a_refused_token() {
     let api = fake_github().await;
     let result = check(&reqwest::Client::new(), &api, &Token::parse("github_pat_WRONG").unwrap(), &[]).await;
     assert_eq!(result, Err(CheckError::Unauthorized));
+}
+
+#[test]
+fn the_highest_held_permission_is_named_like_the_collaborator_endpoint() {
+    use super::check::highest_permission;
+    let body = |p: serde_json::Value| serde_json::json!({"full_name": "a/b", "permissions": p});
+    assert_eq!(highest_permission(&body(serde_json::json!({"admin": false, "maintain": false, "push": true, "triage": true, "pull": true}))), "write");
+    assert_eq!(highest_permission(&body(serde_json::json!({"admin": true, "push": true, "pull": true}))), "admin");
+    assert_eq!(highest_permission(&body(serde_json::json!({"pull": true}))), "read");
+    assert_eq!(highest_permission(&serde_json::json!({"full_name": "a/b"})), "read", "a public repository read without permissions");
+}
+
+#[tokio::test]
+async fn the_create_step_permission_read_names_merge_rights_and_a_404_is_none() {
+    let api = fake_github().await;
+    let token = Token::parse(TOKEN).unwrap();
+    let client = reqwest::Client::new();
+    assert_eq!(super::check::permission(&client, &api, &token, "csheargm/hagency-desktop").await.unwrap().as_deref(), Some("admin"));
+    assert_eq!(super::check::permission(&client, &api, &token, "hagency-org/hagency-desktop").await.unwrap().as_deref(), Some("read"));
+    assert_eq!(super::check::permission(&client, &api, &token, "csheargm/private").await.unwrap(), None);
+    let bad = Token::parse("github_pat_WRONG").unwrap();
+    assert!(super::check::permission(&client, &api, &bad, "csheargm/hagency-desktop").await.is_err(), "a refused token is an error, not a missing repository");
+}
+
+#[tokio::test]
+async fn open_pull_requests_are_counted_past_the_first_page() {
+    let api = fake_github().await;
+    let count = crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "csheargm", TOKEN).await.unwrap();
+    assert_eq!(count, 140);
+    assert!(crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "bad login", TOKEN).await.is_err());
+}
+
+#[tokio::test]
+async fn a_plan_issue_is_filed_and_only_a_completed_close_counts_as_done() {
+    let api = fake_github().await;
+    let client = reqwest::Client::new();
+    assert_eq!(crate::issue_watch::create_issue(&client, &api, "a/b", TOKEN, "Add a Glossary", "body").await.unwrap(), 42);
+    assert!(crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 4, TOKEN).await.unwrap());
+    assert!(!crate::issue_watch::fetch_issue_done(&client, &api, "a/b", 5, TOKEN).await.unwrap(), "not planned is not done");
+    assert!(crate::issue_watch::create_issue(&client, &api, "a/b", "github_pat_WRONG", "x", "y").await.is_err());
+}
+
+#[tokio::test]
+async fn a_plan_step_filed_before_its_number_was_saved_is_found_not_filed_again() {
+    let api = fake_github().await;
+    let client = reqwest::Client::new();
+    let find = |marker: &'static str| crate::issue_watch::find_issue_by_marker(&client, &api, "a/b", "csheargm", marker, TOKEN);
+    assert_eq!(find("Part of Hagency plan `p1` (G), step 1 of 2.").await.unwrap(), Some(8), "the issue, never the pull request");
+    assert_eq!(find("Part of Hagency plan `p1` (G), step 2 of 2.").await.unwrap(), None);
+    assert!(crate::issue_watch::find_issue_by_marker(&client, &api, "a/b", "bad login", "m", TOKEN).await.is_err());
 }

@@ -13,7 +13,7 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// GitHub's compare API lists at most this many files; a full page may be truncated.
 const COMPARE_FILE_LIMIT: usize = 300;
-const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup";
+const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author";
 const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
 
 /// One pull request as the gate judges it.
@@ -22,6 +22,8 @@ pub struct PrView {
     pub url: String,
     pub base_sha: String,
     pub head_sha: String,
+    /// The GitHub login that opened the pull request ("" when not reported).
+    pub author: String,
     pub facts: PrFacts,
 }
 
@@ -40,8 +42,10 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
         return None;
     }
     let files = files.iter().map(changed_file).collect::<Option<_>>()?;
-    let checks = view["statusCheckRollup"].as_array().map(|all| all.iter().map(check_state).collect()).unwrap_or_default();
-    Some(PrView { url, base_sha, head_sha, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+    // Missing or unreadable CI evidence is "still running", never "no checks" (GPT review P2).
+    let checks = view["statusCheckRollup"].as_array().map_or_else(|| vec![Check::Pending], |all| all.iter().map(check_state).collect());
+    let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
+    Some(PrView { url, base_sha, head_sha, author, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }
 
 fn changed_file(file: &Value) -> Option<ChangedFile> {
@@ -71,8 +75,18 @@ pub fn repo_of_url(url: &str, number: u64) -> Option<&str> {
     (tail == number.to_string()).then_some(repo).and_then(repo_name)
 }
 
-async fn gh(dir: &Path, args: &[&str]) -> Option<String> {
-    let run = tokio::process::Command::new("gh").args(args).current_dir(dir).kill_on_drop(true).output();
+/// `gh <args>` as the Agent: its token only, never the daemon's stored
+/// login; no token reads nothing (GPT review, Nov 16).
+fn gh_command(dir: &Path, args: &[&str], token: Option<&str>) -> Option<tokio::process::Command> {
+    let token = token.filter(|t| !t.is_empty())?;
+    let mut command = tokio::process::Command::new("gh");
+    command.args(args).current_dir(dir).kill_on_drop(true);
+    command.env_remove("GITHUB_TOKEN").env(crate::agent_env::GITHUB_TOKEN_VARIABLE, token).env("GH_CONFIG_DIR", dir.join(".hagency-no-gh-config"));
+    Some(command)
+}
+
+async fn gh(dir: &Path, args: &[&str], token: Option<&str>) -> Option<String> {
+    let run = gh_command(dir, args, token)?.output();
     let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
     output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
 }
@@ -82,31 +96,98 @@ pub trait PrSource {
     fn pull_request(&self, command: &GhPr) -> impl std::future::Future<Output = Option<PrView>>;
     /// The policy file at `base_sha`, the base commit the pull request was judged on.
     fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<String>>;
+    /// The policy file at `base_sha`: `Some(None)` when the repository has
+    /// none (GitHub answered 404), `None` when it cannot be read.
+    fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<Option<String>>> {
+        async move { self.policy(command, repo, base_sha).await.map(Some) }
+    }
+    /// The GitHub login this device's `gh` uses; `None` (the default) when unknown.
+    fn viewer_login(&self, _command: &GhPr) -> impl std::future::Future<Output = Option<String>> {
+        async { None }
+    }
+    /// GitHub's reviews of the pull request as `(login, state, commit)` in
+    /// order; `None` (the default) when they cannot be read, so a review
+    /// recorded on another device never counts unverified.
+    fn reviews(&self, _command: &GhPr, _repo: &str) -> impl std::future::Future<Output = Option<Vec<(String, String, String)>>> {
+        async { None }
+    }
 }
 
-/// This device's `gh` login.
-pub struct GhCli;
+/// Whether some GitHub user's latest decisive review (APPROVED, UNBOUND,
+/// CHANGES_REQUESTED or DISMISSED; comments do not change it) approves
+/// exactly `head`.
+pub fn approved_on(reviews: &[(String, String, String)], head: &str) -> bool {
+    let mut latest: std::collections::HashMap<&str, (&str, &str)> = std::collections::HashMap::new();
+    for (login, state, commit) in reviews {
+        if matches!(state.as_str(), "APPROVED" | "UNBOUND" | "CHANGES_REQUESTED" | "DISMISSED") {
+            latest.insert(login, (state, commit));
+        }
+    }
+    latest.values().any(|(state, commit)| *state == "APPROVED" && *commit == head)
+}
+
+/// `login<TAB>state<TAB>commit` lines from `gh api --jq` into tuples.
+pub fn parse_reviews(text: &str) -> Option<Vec<(String, String, String)>> {
+    text.lines().filter(|l| !l.is_empty()).map(|line| {
+        let mut parts = line.split('\t');
+        Some((parts.next()?.to_owned(), parts.next()?.to_owned(), parts.next()?.to_owned()))
+    }).collect()
+}
+
+/// `gh` as one Agent: its own GitHub token (see [`gh_command`]).
+pub struct GhCli {
+    pub token: Option<String>,
+}
+impl GhCli {
+    fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+}
 impl PrSource for GhCli {
     async fn pull_request(&self, command: &GhPr) -> Option<PrView> {
-        pull_request(command).await
+        pull_request(command, self.token()).await
     }
     async fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<String> {
         let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
-        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"]).await
+        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token()).await
+    }
+    async fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<Option<String>> {
+        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
+        let run = gh_command(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token())?.output();
+        let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
+        if output.status.success() {
+            return String::from_utf8(output.stdout).ok().map(Some);
+        }
+        // Only GitHub's own "no such file" means absent; anything else is unknown.
+        String::from_utf8_lossy(&output.stderr).contains("(HTTP 404)").then_some(None)
+    }
+    async fn viewer_login(&self, command: &GhPr) -> Option<String> {
+        let login = gh(&command.dir, &["api", "user", "--jq", ".login"], self.token()).await?;
+        Some(login.trim().to_owned()).filter(|l| !l.is_empty())
+    }
+    async fn reviews(&self, command: &GhPr, repo: &str) -> Option<Vec<(String, String, String)>> {
+        let path = format!("repos/{repo}/pulls/{}/reviews?per_page=100", command.number);
+        parse_reviews(&gh(&command.dir, &["api", &path, "--paginate", "--jq", REVIEW_FIELDS], self.token()).await?)
     }
 }
 
-async fn pull_request(command: &GhPr) -> Option<PrView> {
+/// One review per line for [`parse_reviews`].
+/// An APPROVED review whose body does not name the commit GitHub attached it
+/// to reads as `UNBOUND`: the reviewer may have read another head (a push
+/// can land between its read and its `gh pr review`), so it never counts.
+const REVIEW_FIELDS: &str = ".[] | . as $r | [$r.user.login, (if $r.state == \"APPROVED\" and (($r.body // \"\") | contains($r.commit_id)) then \"APPROVED\" elif $r.state == \"APPROVED\" then \"UNBOUND\" else $r.state end), $r.commit_id] | @tsv";
+
+async fn pull_request(command: &GhPr, token: Option<&str>) -> Option<PrView> {
     let number = command.number.to_string();
     let mut args = vec!["pr", "view", number.as_str(), "--json", VIEW_FIELDS];
     if let Some(repo) = &command.repo {
         args.extend(["--repo", repo.as_str()]);
     }
-    let view: Value = serde_json::from_str(&gh(&command.dir, &args).await?).ok()?;
+    let view: Value = serde_json::from_str(&gh(&command.dir, &args, token).await?).ok()?;
     let url = view["url"].as_str()?;
     let repo = repo_of_url(url, command.number)?;
     let (base, head) = (commit_sha(view["baseRefOid"].as_str()?)?, commit_sha(view["headRefOid"].as_str()?)?);
     let compare = format!("repos/{repo}/compare/{base}...{head}");
-    let files: Value = serde_json::from_str(&gh(&command.dir, &["api", &compare, "--jq", FILE_FIELDS]).await?).ok()?;
+    let files: Value = serde_json::from_str(&gh(&command.dir, &["api", &compare, "--jq", FILE_FIELDS], token).await?).ok()?;
     view_from_json(&view, &files)
 }

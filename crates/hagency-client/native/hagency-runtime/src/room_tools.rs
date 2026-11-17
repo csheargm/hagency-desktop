@@ -96,13 +96,14 @@ pub struct RoomTools {
     files: bool,
     memory: bool,
     skills: bool,
+    plans: bool,
 }
 impl RoomTools {
     pub fn history() -> Self {
-        Self { files: false, memory: false, skills: false }
+        Self { files: false, memory: false, skills: false, plans: false }
     }
     pub fn history_and_files() -> Self {
-        Self { files: true, memory: false, skills: false }
+        Self { files: true, memory: false, skills: false, plans: false }
     }
     /// Add room memory's read and propose tools; hosts opt in per runtime.
     pub fn with_memory(self) -> Self {
@@ -111,6 +112,10 @@ impl RoomTools {
     /// Add the read-only team skills tool; hosts opt in per runtime.
     pub fn with_skills(self) -> Self {
         Self { skills: true, ..self }
+    }
+    /// Add the planner's `plan_propose` (posts a card, files nothing).
+    pub fn with_plans(self) -> Self {
+        Self { plans: true, ..self }
     }
     pub fn definitions(self) -> Vec<Value> {
         let mut definitions = vec![history_definition()];
@@ -122,6 +127,9 @@ impl RoomTools {
         }
         if self.skills {
             definitions.extend(crate::room_skills::definitions());
+        }
+        if self.plans {
+            definitions.push(crate::room_plan::definition());
         }
         definitions
     }
@@ -140,6 +148,8 @@ impl RoomTools {
             crate::room_memory::parse(name, arguments).map(RoomOperation::Memory)
         } else if self.skills && crate::room_skills::is_skill_tool(name) {
             crate::room_skills::parse(name, arguments).map(RoomOperation::Skill)
+        } else if self.plans && name == crate::room_plan::PLAN_PROPOSE_TOOL {
+            crate::room_plan::parse(arguments).map(RoomOperation::Plan)
         } else {
             Err(Error::Unsupported)
         }
@@ -151,6 +161,7 @@ pub enum RoomOperation {
     File(RoomFileOperation),
     Memory(crate::room_memory::MemoryOperation),
     Skill(crate::room_skills::SkillOperation),
+    Plan(crate::room_plan::Plan),
 }
 impl RoomOperation {
     pub fn name(&self) -> &'static str {
@@ -159,6 +170,7 @@ impl RoomOperation {
             Self::File(operation) => operation.name(),
             Self::Memory(operation) => operation.name(),
             Self::Skill(operation) => operation.name(),
+            Self::Plan(_) => crate::room_plan::PLAN_PROPOSE_TOOL,
         }
     }
 }

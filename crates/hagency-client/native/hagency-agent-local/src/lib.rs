@@ -9,6 +9,7 @@ pub mod codex;
 pub mod issue_watch;
 pub mod merge_policy;
 pub mod outside;
+pub mod plans;
 pub mod watch_trust;
 // TODO(split): lib.rs is over budget; the ledger belongs in ledger.rs.
 pub mod provider_failure;
@@ -379,6 +380,9 @@ impl Ledger {
         issue_watch::ensure_schema(&db)?;
         outside::ensure_schema(&db)?;
         db.execute_batch(merge_policy::gate::SCHEMA)?;
+        db.execute_batch(merge_policy::review_loop::SCHEMA)?;
+        db.execute_batch(merge_policy::work::SCHEMA)?;
+        db.execute_batch(plans::SCHEMA)?;
         remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;
@@ -1184,7 +1188,7 @@ impl Ledger {
     /// the pinned command the runtime must run in its place (one check, so
     /// what runs is what was checked). `None`: ask as usual.
     // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
-    pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<String>> {
+    pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<watch_trust::TrustedStep>> {
         let Some(command) = watch_trust::pinned(&self.db, proposal, owner)? else { return Ok(None) };
         match self.tool_disposition(proposal, now) {
             Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
@@ -1194,6 +1198,12 @@ impl Ledger {
         }
         self.authorize_tool(proposal, now)?;
         Ok(Some(command))
+    }
+
+    /// Whether push trust still answers `proposal` for `repo`, read afresh from this
+    /// ledger's file each time (for the host's check right before a push).
+    pub fn push_trust_recheck(&self, proposal: &ToolProposal, repo: &str) -> Box<dyn Fn() -> bool + Send + Sync> {
+        watch_trust::recheck(self.db.path().map(std::path::PathBuf::from), proposal.clone(), repo.to_owned())
     }
 
     pub fn tool_disposition(&mut self, proposal: &ToolProposal, now: i64) -> Result<ToolPolicy> {
