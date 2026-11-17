@@ -48,7 +48,7 @@ script_mod! {
             Card {
                 Title {text: #(crate::i18n::tr("Name")) i18n_text: "Name"}
                 View {width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
-                    rename_input := Input {empty_text: #(crate::i18n::tr("Agent name"))}
+                    rename_input := Input {empty_text: #(crate::i18n::tr("Agent name")) i18n_empty_text: "Agent name"}
                     rename_save := Primary {text: #(crate::i18n::tr("Rename")) i18n_text: "Rename"}
                 }
                 Hint {text: #(crate::i18n::tr("People see the new name in every room.")) i18n_text: "People see the new name in every room."}
