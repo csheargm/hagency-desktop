@@ -3,7 +3,7 @@
 //! open issues, sent with this crate's TLS client so the desktop needs no
 //! second HTTP stack. Nothing here writes to GitHub.
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API};
-pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select};
+pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, pulls_url, comments_url};
 pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, others_ready_pulls};
 
@@ -11,7 +11,7 @@ pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, cl
 pub type Client = reqwest::Client;
 
 /// The owner's work list types (ADR 0016), for the desktop's Work block and poller.
-pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, OwnerRules, Role};
+pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 
 /// The open issues (and pull requests, flagged `is_pr`) of `repo`, newest
 /// first, following full pages up to the engine's page cap. `api` is

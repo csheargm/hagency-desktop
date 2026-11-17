@@ -76,6 +76,12 @@ fn puppet(agent: &Value) -> Result<OwnedUserId, String> {
 async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>) -> Result<usize, String> {
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
+    if let Some(limit) = entry.open_prs {
+        let pulls = fetch_open_pulls(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
+        if at_open_pr_limit(&pulls, login, limit) {
+            return Ok(0); // claims resume once one of them merges or closes
+        }
+    }
     let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
     // The daily limit is enforced by each reservation below, which also lets
     // an issue reserved by a pass whose hand-off failed be handed off now.
@@ -108,6 +114,11 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
         handed += outcome.handed;
     }
     Ok(handed)
+}
+
+/// Whether the owner's login already has `limit` open pull requests among `pulls`.
+pub(crate) fn at_open_pr_limit(pulls: &[::hagency::issue_watch::PullRequest], login: &str, limit: u32) -> bool {
+    pulls.iter().filter(|pr| pr.author.eq_ignore_ascii_case(login)).count() >= limit as usize
 }
 
 /// Who holds an issue, as this Agent sees it.
@@ -220,5 +231,19 @@ impl LoopIo for LiveLoop<'_> {
     }
     fn paused(&self) -> bool {
         crate::hagency::kill_switch::paused_here(&self.agent_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ::hagency::issue_watch::PullRequest;
+
+    #[test]
+    fn the_open_pull_request_limit_counts_only_the_owner_login() {
+        let pr = |author: &str| PullRequest { number: 1, url: String::new(), draft: false, head_sha: String::new(), author: author.into(), created_at: 0 };
+        let pulls = [pr("Anna"), pr("betty"), pr("anna")];
+        assert!(super::at_open_pr_limit(&pulls, "anna", 2));
+        assert!(!super::at_open_pr_limit(&pulls, "anna", 3));
+        assert!(!super::at_open_pr_limit(&pulls, "carl", 1));
     }
 }

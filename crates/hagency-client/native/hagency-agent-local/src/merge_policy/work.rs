@@ -47,6 +47,8 @@ pub const CAN_MERGE: [&str; 3] = ["admin", "maintain", "write"];
 
 /// Issues a developer claims per day across all its repositories.
 pub const DEFAULT_ISSUES_PER_DAY: u32 = 5;
+/// The largest per-day and open-pull-request limits an owner may set.
+pub const MAX_WORK_LIMIT: u32 = 100;
 const DAY_SECS: i64 = 86_400;
 
 /// "Anyone" in a trusted list.
@@ -90,6 +92,15 @@ pub struct OwnerRules {
     /// (see `watch_trust`).
     #[serde(default)]
     pub push_freely: bool,
+    /// Developer: issues the Agent claims per day across all its
+    /// repositories (the smallest value on the list holds; default
+    /// [`DEFAULT_ISSUES_PER_DAY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issues_per_day: Option<u32>,
+    /// Developer: no new claim here while this many pull requests by the
+    /// owner's GitHub login are open in the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_prs: Option<u32>,
 }
 
 impl Judged {
@@ -111,6 +122,9 @@ impl OwnerRules {
         }
         if !self.trusted_authors.iter().chain(&self.trusted_reviewers).all(|l| login_ok(l)) || self.trusted_reviewers.iter().any(|l| l == ANYONE) {
             return Err(Error::Invalid("trusted lists hold GitHub logins (authors may also be *)"));
+        }
+        if [self.issues_per_day, self.open_prs].iter().flatten().any(|n| !(1..=MAX_WORK_LIMIT).contains(n)) {
+            return Err(Error::Invalid("limits are between 1 and 100"));
         }
         if self.always_human.iter().any(|g| g.trim().is_empty()) {
             return Err(Error::Invalid("always-human paths cannot be empty"));
@@ -176,7 +190,7 @@ impl Ledger {
         }
         let inserted = self.db.execute(
             "INSERT OR IGNORE INTO agent_work_claims SELECT ?1,?2,?3,?4 WHERE (SELECT COUNT(*) FROM agent_work_claims WHERE agent=?1 AND at>?4-?5) < ?6",
-            rusqlite::params![agent, repo, number, now, DAY_SECS, DEFAULT_ISSUES_PER_DAY],
+            rusqlite::params![agent, repo, number, now, DAY_SECS, self.daily_claim_limit(agent)?],
         )?;
         Ok(inserted == 1 || self.work_claimed(agent, &repo, number)?)
     }
@@ -186,7 +200,12 @@ impl Ledger {
     /// How many more issues the Agent may claim today, across every repository.
     pub fn claims_left_today(&self, agent: &str, now: i64) -> Result<u32> {
         let used: i64 = self.db.query_row("SELECT COUNT(*) FROM agent_work_claims WHERE agent=? AND at>?", (agent, now - DAY_SECS), |r| r.get(0))?;
-        Ok(DEFAULT_ISSUES_PER_DAY.saturating_sub(u32::try_from(used).unwrap_or(u32::MAX)))
+        Ok(self.daily_claim_limit(agent)?.saturating_sub(u32::try_from(used).unwrap_or(u32::MAX)))
+    }
+    /// The Agent's daily claim limit: the smallest `issues_per_day` on its
+    /// work list, else [`DEFAULT_ISSUES_PER_DAY`].
+    pub fn daily_claim_limit(&self, agent: &str) -> Result<u32> {
+        Ok(self.all_owner_rules(agent)?.iter().filter_map(|r| r.issues_per_day).min().unwrap_or(DEFAULT_ISSUES_PER_DAY))
     }
     /// The whole work list, replaced in one transaction by the caller.
     pub fn set_work(&mut self, owner: &str, agent: &str, work: Vec<OwnerRules>) -> Result<()> {

@@ -135,3 +135,13 @@ async fn check_reports_a_refused_token() {
     let result = check(&reqwest::Client::new(), &api, &Token::parse("github_pat_WRONG").unwrap(), &[]).await;
     assert_eq!(result, Err(CheckError::Unauthorized));
 }
+
+#[test]
+fn the_highest_held_permission_is_named_like_the_collaborator_endpoint() {
+    use super::check::highest_permission;
+    let body = |p: serde_json::Value| serde_json::json!({"full_name": "a/b", "permissions": p});
+    assert_eq!(highest_permission(&body(serde_json::json!({"admin": false, "maintain": false, "push": true, "triage": true, "pull": true}))), "write");
+    assert_eq!(highest_permission(&body(serde_json::json!({"admin": true, "push": true, "pull": true}))), "admin");
+    assert_eq!(highest_permission(&body(serde_json::json!({"pull": true}))), "read");
+    assert_eq!(highest_permission(&serde_json::json!({"full_name": "a/b"})), "read", "a public repository read without permissions");
+}

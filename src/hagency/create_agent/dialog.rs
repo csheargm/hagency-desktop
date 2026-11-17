@@ -54,6 +54,7 @@ script_mod! {
         // Below the rooms: the checklist must stay above the fold (rooms.rs scar test).
         Field {Text {text: #(crate::i18n::tr("Backup model")) i18n_text: "Backup model"} backup := Select {labels: [#(crate::i18n::tr("None"))]}}
         backup_hint := Hint {}
+        work_step := CreateAgentWorkStep {}
         }
         status := Text {}
         ModalButtonsRow {
@@ -81,6 +82,10 @@ fn next_request() -> u64 { REQUEST.fetch_add(1, Ordering::Relaxed) }
 mod rooms;
 #[path = "backup.rs"]
 mod backup;
+#[path = "work_flow.rs"]
+mod work_flow;
+#[path = "submit.rs"]
+mod submit;
 
 #[derive(Script, ScriptHook, Widget)]
 pub struct CreateAgentDialog {
@@ -90,6 +95,10 @@ pub struct CreateAgentDialog {
     #[rust] request: u64,
     #[rust] busy: bool,
     #[rust] timer: Timer,
+    /// The "What should it work on?" step as Create read it.
+    #[rust] work: Option<work_flow::WorkPlan>,
+    /// How many rooms the activity-room list shows; refreshed when it changes.
+    #[rust] work_rooms_shown: usize,
 }
 impl Widget for CreateAgentDialog {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -122,6 +131,7 @@ impl CreateAgentDialog {
         }
         self.handle_room_actions(cx, actions);
         self.handle_backup_actions(cx, actions);
+        self.handle_work_actions(cx, actions);
         if self.view.button(cx, ids!(cancel)).clicked(actions) { cx.action(CreateAgentAction::Close); }
         if self.view.button(cx, ids!(sign_in)).clicked(actions) {
             cx.action(CreateAgentAction::Close);
@@ -141,6 +151,13 @@ impl CreateAgentDialog {
         self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
         self.view.drop_down(cx, ids!(thinking)).set_selected_item(cx, self.state.thinking);
         self.view.label(cx, ids!(status)).set_text(cx, "");
+        self.work = None;
+        self.work_rooms_shown = usize::MAX;
+        for id in [ids!(work_repos), ids!(work_token), ids!(work_issues), ids!(work_prs), ids!(work_budget)] {
+            self.view.text_input(cx, id).set_text(cx, "");
+        }
+        self.view.label(cx, ids!(work_result)).set_text(cx, "");
+        self.view.drop_down(cx, ids!(work_room)).set_selected_item(cx, 0);
         match Service::for_current() {
             Ok(service) => self.probe(service),
             Err(code) => self.state.probes = [Some(Err(code.clone())), Some(Err(code))],
@@ -208,56 +225,6 @@ impl CreateAgentDialog {
         self.view.button(cx, ids!(create)).set_enabled(cx, ready);
         self.view.redraw(cx);
     }
-
-    fn create(&mut self, cx: &mut Cx) {
-        if self.busy { return; }
-        let spec = match self.state.spec(quick_setup::default_spec) {
-            Ok(spec) => spec,
-            Err(reason) => { self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(reason)); return; }
-        };
-        let service = match Service::for_current() {
-            Ok(service) => service,
-            Err(code) => { self.view.label(cx, ids!(status)).set_text(cx, &code); return; }
-        };
-        self.busy = true;
-        self.render_create(cx);
-        self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr("Creating…"));
-        self.timer = cx.start_timeout(0.5);
-        let (request, identity) = (self.request, service.identity());
-        spawn_async_task(async move {
-            let result = quick_setup::create_spec(service, spec).await;
-            Cx::post_action(Created { request, identity, result });
-        });
-    }
-    /// Same follow-up as the Agents panel: refresh the tree, then open the private chat.
-    fn finish(&mut self, cx: &mut Cx, identity: &str, result: &Result<Value, String>) {
-        self.busy = false;
-        cx.stop_timer(self.timer);
-        match result {
-            Ok(value) => {
-                crate::hagency::agent_presence::set_has_agent(true);
-                self.bind_ticked(value);
-                // The checklist was the owner's explicit choice of earlier rooms:
-                // the catch-up must never add this Agent to rooms left unticked.
-                if let Some(id) = value["creation"]["agent"]["id"].as_str() {
-                    crate::hagency::bring_agent::skip_catch_up(id);
-                }
-                self.save_backup(value);
-                cx.action(crate::home::project_tree::ProjectTreeChanged { identity: identity.to_owned() });
-                if let Some(room_id) = value["quickSetup"]["ownerDirectRoomId"].as_str().and_then(|id| matrix_sdk::ruma::OwnedRoomId::try_from(id).ok()) {
-                    cx.action(crate::hagency::ui::OpenAgentChat { room_id });
-                }
-                cx.action(CreateAgentAction::Close);
-            }
-            Err(code) => {
-                let step = simple_agent::last_failed_step().unwrap_or("setup");
-                let message = super::failure_message(step, code);
-                self.view.label(cx, ids!(status)).set_text(cx, &message);
-                self.render_create(cx);
-            }
-        }
-    }
-
 }
 
 fn localpart() -> String {

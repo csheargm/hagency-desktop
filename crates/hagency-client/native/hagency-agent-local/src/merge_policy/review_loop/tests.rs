@@ -3,7 +3,7 @@
 //! without a card. Every rule is checked on the exact head.
 use super::*;
 use crate::merge_policy::tests::{bash, file, ledger_with, BASE, HEAD};
-use crate::merge_policy::work::{OwnerRules, Role};
+use crate::merge_policy::work::{OwnerRules, Role, MAX_WORK_LIMIT};
 use crate::merge_policy::{gate, ChangedFile, Check, PrFacts};
 use std::path::Path;
 
@@ -252,4 +252,23 @@ fn missing_ci_evidence_is_pending_and_the_daily_claim_limit_is_enforced_on_reser
     }
     assert!(!ledger.record_work_claim("anna", B, 99, 10).unwrap(), "the limit holds across repositories");
     assert!(ledger.record_work_claim("anna", A, 0, 10).unwrap(), "an earlier reservation is retried after a failed hand-off");
+}
+
+#[test]
+fn the_owner_set_daily_limit_is_the_smallest_on_the_list_and_bad_limits_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna"]);
+    let work = vec![
+        OwnerRules { issues_per_day: Some(2), open_prs: Some(1), ..rules(A, Role::Developer) },
+        OwnerRules { issues_per_day: Some(9), ..rules(B, Role::Developer) },
+    ];
+    ledger.set_work(OWNER, "anna", work).unwrap();
+    assert_eq!(ledger.daily_claim_limit("anna").unwrap(), 2);
+    assert!(ledger.record_work_claim("anna", A, 1, 10).unwrap());
+    assert!(ledger.record_work_claim("anna", B, 2, 10).unwrap());
+    assert!(!ledger.record_work_claim("anna", B, 3, 10).unwrap(), "two a day across both repositories");
+    assert_eq!(ledger.owner_rules("anna", A).unwrap().unwrap().open_prs, Some(1), "stored and read back");
+    for bad in [Some(0), Some(MAX_WORK_LIMIT + 1)] {
+        assert!(OwnerRules { open_prs: bad, ..rules(A, Role::Developer) }.validate().is_err());
+    }
 }

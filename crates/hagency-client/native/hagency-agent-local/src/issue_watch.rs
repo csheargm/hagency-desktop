@@ -116,7 +116,7 @@ pub struct Issue {
 pub const TRUSTED_ASSOCIATIONS: [&str; 3] = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 /// `owner/name` with GitHub's allowed characters.
-pub(crate) fn valid_repo(repo: &str) -> bool {
+pub fn valid_repo(repo: &str) -> bool {
     let ok = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     matches!(repo.split_once('/'), Some((owner, name)) if ok(owner) && ok(name) && !name.contains('/'))
 }
