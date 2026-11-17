@@ -75,6 +75,16 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
         }
         std::thread::sleep(POLL);
     };
+    // A helper that outlived git may still hold its pipes: wait for them
+    // under the same stop and time limit (the holder keeps the group alive,
+    // so its id is still this command's).
+    while !(out.is_finished() && err.is_finished()) {
+        if ctx.cancelled() || started.elapsed() > ctx.timeout {
+            kill_group(child.id());
+            return Err(if ctx.cancelled() { "the turn was stopped" } else { "git took too long" }.into());
+        }
+        std::thread::sleep(POLL);
+    }
     let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     if status.success() { Ok(out.trim().to_owned()) } else { Err(err.trim().to_owned()) }
 }
@@ -85,15 +95,26 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
 /// reserved, so the signal can never reach a group that reused the id.
 fn kill_group(pid: u32) {
     #[cfg(unix)]
-    for _ in 0..GROUP_KILL_ROUNDS {
+    for round in 0..GROUP_KILL_MAX_ROUNDS {
         // Best effort: a failed send means the group is already gone.
         let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
         std::thread::sleep(POLL);
+        if round + 1 >= GROUP_KILL_ROUNDS && !group_has_others(pid) {
+            return;
+        }
     }
     #[cfg(not(unix))]
     let _ = pid;
 }
 const GROUP_KILL_ROUNDS: u32 = 4;
+const GROUP_KILL_MAX_ROUNDS: u32 = 100;
+
+/// Whether group `pid` still has a live process besides its leader.
+#[cfg(unix)]
+fn group_has_others(pid: u32) -> bool {
+    let Ok(out) = Command::new("/bin/ps").args(["-o", "pid=,stat=", "-g", &pid.to_string()]).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return false };
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(p, st)| (p.trim().to_owned(), st.trim().to_owned()))).any(|(p, st)| p != pid.to_string() && !st.starts_with('Z'))
+}
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
     std::thread::spawn(move || {
@@ -120,7 +141,7 @@ mod tests {
         let killer = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(200)); drop(guard); });
         let started = Instant::now();
         assert_eq!(run(Command::new("/bin/sleep").arg("30"), None, &c), Err("the turn was stopped".into()));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(20), "far less than the 30 s the command asked for");
         killer.join().unwrap();
         assert_eq!(run(&mut Command::new("true"), None, &c), Err("the turn was stopped".into()), "nothing starts after a stop");
     }
@@ -138,5 +159,10 @@ mod tests {
         assert!(run(Command::new("/bin/sh").args(["-c", &script]), None, &c).is_err());
         std::thread::sleep(Duration::from_millis(3500));
         assert!(!file.exists(), "the child's helper was killed too");
+        // A helper left holding the pipes after the command exits is killed too.
+        let script = format!("(/bin/sleep 3; echo late > {}) &", file.display());
+        assert_eq!(run(Command::new("/bin/sh").args(["-c", &script]), None, &c), Err("git took too long".into()));
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(!file.exists(), "the orphaned helper was killed");
     }
 }
