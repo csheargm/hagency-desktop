@@ -151,13 +151,13 @@ assert(H.dpol.detail==nil && H.dpol.state=="loading" && !H.bar_past && H.dpol.sa
 ''',
 "personal_refresh_keeps_snapshot_but_not_across_agents": r'''
 H.personal_id="agent" H.personal_detail={agent:{id:"agent"}} H.local_status={state:"running"} H.local_models=["one"]
-A.open_personal_agent("agent")
+A.open_personal_agent_page("agent")
 assert(H.personal_detail.agent.id=="agent" && H.local_status.state=="running" && H.local_models.len()==1)
 A.personal_saved({agentId:"agent"})
 assert(H.personal_detail.agent.id=="agent" && A.settings_feedback().kind=="personal")
 A.personal_observation_received({agentId:"agent"})
 assert(H.personal_detail.agent.id=="agent" && A.settings_feedback().tone=="waiting")
-A.open_personal_agent("different")
+A.open_personal_agent_page("different")
 assert(H.personal_detail==nil && H.local_status==nil && H.local_models==nil && H.personal_result==nil)
 ''',
 }
