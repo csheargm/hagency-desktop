@@ -311,13 +311,7 @@ async fn consider_inner(
         match remote_run_allowed(client, room, sender, value, may_fetch).await {
             Some(allowed) => allowed,
             None => {
-                // Membership not cached: look it up off the sync handler.
-                let (client, room, value) = (client.clone(), room.clone(), value.clone());
-                crate::sliding_sync::spawn_async_task(async move {
-                    if consider(generation, &client, &room, &value, None, true).await {
-                        Cx::post_action(PendingQuestionsChanged);
-                    }
-                });
+                defer_membership_check(generation, client, room, value, info);
                 return false;
             }
         }
@@ -332,6 +326,39 @@ async fn consider_inner(
         plaintext,
         remote_trusted,
     )
+}
+
+/// Deferred membership checks: at most this many queued, a few at a time.
+const MAX_DEFERRED: usize = 256;
+const DEFERRED_CONCURRENCY: usize = 4;
+static DEFERRED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+static DEFERRED_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(DEFERRED_CONCURRENCY));
+
+/// Membership not cached: look it up off the sync handler, keeping the
+/// event's encryption evidence. Each event is queued once, within a bound.
+fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: &Value, info: Option<&EncryptionInfo>) {
+    let Some(event_id) = value["event_id"].as_str().map(str::to_owned) else { return };
+    {
+        let mut queued = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
+        if queued.len() >= MAX_DEFERRED || !queued.insert(event_id.clone()) {
+            // Full: the card stays an ordinary message until it is seen again.
+            makepad_widgets::warning!("run_card_membership_check_deferred_full");
+            return;
+        }
+    }
+    let (client, room, value, info) = (client.clone(), room.clone(), value.clone(), info.cloned());
+    crate::sliding_sync::spawn_async_task(async move {
+        let changed = match DEFERRED_SLOTS.acquire().await {
+            Ok(_slot) => tokio::time::timeout(RETRY_TIMEOUT,
+                consider(generation, &client, &room, &value, info.as_ref(), true)).await.unwrap_or(false),
+            Err(_) => false, // the semaphore is never closed
+        };
+        DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&event_id);
+        if changed {
+            Cx::post_action(PendingQuestionsChanged);
+        }
+    });
 }
 
 /// Comma-separated homeservers whose Agents may post run cards into rooms

@@ -706,6 +706,7 @@ mod tests {
     }
     #[test]
     fn stop_all_running_requests_an_interrupt_only_for_runs_the_owner_may_stop() {
+        let _guard = super::super::pending_questions::test_serial(); // shares STORE
         reset(7, "@owner:test");
         let mut a = entry(); a.key = "$a".into();
         let mut b = entry(); b.key = "$b".into(); b.may_stop = false;
