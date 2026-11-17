@@ -170,18 +170,20 @@ struct WireReview {
 /// (the merge gate's rule: the reviewer may have read another head).
 pub fn parse_reviews(body: &str) -> Result<Vec<(String, String, String)>, FetchError> {
     let wire: Vec<WireReview> = serde_json::from_str(body).map_err(|e| FetchError::Parse(e.to_string()))?;
-    Ok(wire.into_iter().filter_map(|r| {
-        let (login, commit) = (r.user?.login, r.commit_id.unwrap_or_default());
+    // One entry per review (a deleted account reads as an empty login), so a
+    // full page stays full for pagination.
+    Ok(wire.into_iter().map(|r| {
+        let (login, commit) = (r.user.map(|u| u.login).unwrap_or_default(), r.commit_id.unwrap_or_default());
         let bound = !commit.is_empty() && r.body.unwrap_or_default().contains(&commit);
         let state = if r.state == "APPROVED" && !bound { "UNBOUND".to_owned() } else { r.state };
-        Some((login, state, commit))
+        (login, state, commit)
     }).collect())
 }
 
 /// Whether an account other than `author` approves exactly `head` with its
 /// latest decisive review.
 pub fn approved_by_other(reviews: &[(String, String, String)], author: &str, head: &str) -> bool {
-    let others: Vec<_> = reviews.iter().filter(|(who, _, _)| !who.eq_ignore_ascii_case(author)).cloned().collect();
+    let others: Vec<_> = reviews.iter().filter(|(who, _, _)| !who.is_empty() && !who.eq_ignore_ascii_case(author)).cloned().collect();
     crate::merge_policy::github::approved_on(&others, head)
 }
 

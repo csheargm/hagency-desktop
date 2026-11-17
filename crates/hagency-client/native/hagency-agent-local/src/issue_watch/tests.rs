@@ -252,5 +252,8 @@ fn the_owners_own_pull_request_merges_only_on_another_accounts_approval_of_the_h
     assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, "LGTM")]), "anna", &head), "an approval not naming its commit is unbound");
     assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound), review("bob", "CHANGES_REQUESTED", &head, "")]), "anna", &head), "the latest decisive review wins");
     assert!(parse_reviews("{}").is_err());
+    let ghost = reviews(vec![json!({"user": null, "state": "APPROVED", "commit_id": head, "body": bound})]);
+    assert_eq!(ghost.len(), 1, "a deleted account's review keeps the page full for pagination");
+    assert!(!approved_by_other(&ghost, "anna", &head), "and never counts as an approval");
     assert!(reviews_url("https://api.github.com", "acme/../x", 1, 1).is_err());
 }
