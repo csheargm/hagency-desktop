@@ -28,6 +28,9 @@ use crate::{
 // the agent_picker_modal) belongs in add_agent_picker, split along that seam.
 pub(super) mod add_agent_picker;
 mod member_remove;
+mod member_rows;
+use member_rows::{MemberRow, MemberRows};
+pub(crate) use member_rows::is_departure;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -116,7 +119,8 @@ script_mod! {
                     }
                 }
                 Member := mod.widgets.MobileSection {
-                    flow: Right align: Align{y: 0.5}
+                    flow: Down
+                    View {width: Fill height: Fit flow: Right align: Align{y: 0.5}
                     // Clicking a member opens their profile (DM, block, ...).
                     row := NavigationBarButton {
                         width: Fill height: 56 flow: Right spacing: 8 padding: Inset{left: 16 right: 16}
@@ -130,7 +134,7 @@ script_mod! {
                                     width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
                                     draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
                                 }
-                                ask_badge := mod.widgets.AgentAskBadge {}
+                                agent_badge := mod.widgets.MemberBadge {}
                             }
                             user_id := Label {
                                 width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
@@ -138,8 +142,24 @@ script_mod! {
                             }
                         }
                     }
-                    remove_member := RobrixNegativeIconButton {visible: false height: 32 margin: Inset{right: 12} icon_walk: Walk{width: 0 height: 0}
-                        text: #(crate::i18n::tr("Remove from room")) i18n_text: "Remove from room"}
+                    // Member actions (member_remove.rs): only for members this account may remove.
+                    member_more := NavigationBarButton {visible: false width: 28 height: 28 padding: 6 margin: Inset{right: 8}
+                        tooltip_text: #(crate::i18n::tr("Member actions"))
+                        Icon {icon_walk: Walk{width: 14 height: 14} draw_icon +: {svg: ICON_MORE_VERT color: mod.widgets.RINX_MUTED}}}
+                    }
+                    member_menu := View {visible: false width: Fill height: Fit flow: Right align: Align{x: 1.0} padding: Inset{left: 56 right: 12 bottom: 8}
+                        remove_member := RobrixNegativeIconButton {height: 28 padding: Inset{left: 10 right: 10 top: 0 bottom: 0} icon_walk: Walk{width: 0 height: 0}
+                            text: #(crate::i18n::tr("Remove from room")) i18n_text: "Remove from room"}
+                    }
+                }
+                ServicesHeader := mod.widgets.MobileSection {
+                    row := NavigationBarButton {
+                        width: Fill height: 40 flow: Right spacing: 8 padding: Inset{left: 16 right: 16} align: Align{y: 0.5}
+                        draw_bg +: {color_hover: mod.widgets.RINX_HOVER color_active: mod.widgets.RINX_HOVER border_radius: 0}
+                        title := Label {width: Fill height: Fit max_lines: 1 text_overflow: Ellipsis
+                            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}}
+                        Icon {icon_walk: Walk{width: 8 height: 13} draw_icon +: {color: mod.widgets.RINX_DISABLED svg: ICON_CHEVRON_RIGHT}}
+                    }
                 }
                 Back := mod.widgets.MobileSection {
                     padding: Inset{left: 16 right: 16 top: 8 bottom: 8}
@@ -206,14 +226,18 @@ script_mod! {
 // TODO(R4): this file is over budget; split each tab (Overview, Members, Memory) into its own widget.
 enum InfoTab { #[default] Overview, Members, Memory, Skills, Watches }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InfoRow { Overview, Member(usize), Notifications, Mode(usize), Back, AgentServices, Filler }
-fn info_rows(tab: InfoTab, members: usize, choosing: bool) -> usize {
-    match tab {InfoTab::Members => members, InfoTab::Memory | InfoTab::Skills | InfoTab::Watches => 0, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
+enum InfoRow { Overview, Member(usize), ServicesHeader, Notifications, Mode(usize), Back, AgentServices, Filler }
+fn info_rows(tab: InfoTab, members: MemberRows, choosing: bool) -> usize {
+    match tab {InfoTab::Members => members.count(), InfoTab::Memory | InfoTab::Skills | InfoTab::Watches => 0, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
 }
-fn info_row(tab: InfoTab, members: usize, choosing: bool, index: usize) -> InfoRow {
+fn info_row(tab: InfoTab, members: MemberRows, choosing: bool, index: usize) -> InfoRow {
     if index >= info_rows(tab, members, choosing) {return InfoRow::Filler;}
     match tab {
-        InfoTab::Members => InfoRow::Member(index),
+        InfoTab::Members => match members.row(index) {
+            Some(MemberRow::Member(member)) => InfoRow::Member(member),
+            Some(MemberRow::ServicesHeader) => InfoRow::ServicesHeader,
+            None => InfoRow::Filler,
+        },
         InfoTab::Memory | InfoTab::Skills | InfoTab::Watches => InfoRow::Filler,
         InfoTab::Overview if index == 0 => InfoRow::Overview,
         InfoTab::Overview if choosing => if index <= 4 {InfoRow::Mode(index - 1)} else {InfoRow::Back},
@@ -224,6 +248,9 @@ fn info_row(tab: InfoTab, members: usize, choosing: bool, index: usize) -> InfoR
 pub(crate) struct ChatMembershipChanged {
     pub room_id: OwnedRoomId,
     pub epoch: u64,
+    /// Live membership changes in timeline order: `(member, left?)`
+    /// (left or kicked is `true`); empty for back-paginated history.
+    pub membership: Vec<(OwnedUserId, bool)>,
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +292,7 @@ fn group_members(members: &mut Vec<UserProfile>, owners: &HashMap<OwnedUserId, O
         ordered.extend(members.iter().filter(|p|grouped.contains(&p.user_id) && owners.get(&p.user_id) == Some(&member.user_id)).cloned());
     }
     *members = ordered;
+    member_rows::services_last(members);
     grouped
 }
 async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap<OwnedUserId, OwnedUserId>, bool), String> {
@@ -390,6 +418,13 @@ pub struct MobileChatInfo {
     data: Option<ChatInfoData>,
     #[rust] member_owners: HashMap<OwnedUserId, OwnedUserId>,
     #[rust] indented_members: HashSet<OwnedUserId>,
+    /// Whether the Members tab's "Service accounts" section is open.
+    #[rust] services_expanded: bool,
+    /// The member whose "⋯" menu is open, if any.
+    #[rust] menu_member: Option<OwnedUserId>,
+    /// Members seen leaving this room since it was opened: a member read
+    /// that raced their departure must not show them again.
+    #[rust] recently_left: HashSet<OwnedUserId>,
     #[rust] ownership_unavailable: bool,
     #[rust]
     status: String,
@@ -430,6 +465,20 @@ fn service_label(user: &matrix_sdk::ruma::UserId, owner: Option<&matrix_sdk::rum
     if !crate::shared::mention_candidates::is_hagency_service_account(user) {return None;}
     let label = crate::i18n::tr("Hagency service");
     Some(if owner.is_some_and(|owner| owner.server_name() == user.server_name()) {label.to_string()} else {format!("{label} ({})", user.server_name())})
+}
+
+// TODO(R4): this file is over budget; move the Members row (its DSL,
+// agent_badge_text, member_removal, drop_departed) into member_rows.rs.
+/// The badge of an Agent's row ("Anna's agent"); `None` for people.
+fn agent_badge_text(members: &[UserProfile], owners: &HashMap<OwnedUserId, OwnedUserId>, member: &matrix_sdk::ruma::UserId) -> Option<String> {
+    let owner = owners.get(member);
+    if owner.is_none() && !crate::hagency::backend::is_agent_invitation(member) {return None;}
+    let owner_name = owner.and_then(|owner| members.iter().find(|p| &p.user_id == owner)).map(|p| p.displayable_name().to_owned());
+    Some(member_rows::agent_badge(owner_name.as_deref()))
+}
+/// How the signed-in `owner` may remove `member`, if at all.
+fn member_removal(owner: Option<&OwnedUserId>, removable: &HashSet<OwnedUserId>, member: &matrix_sdk::ruma::UserId) -> Option<member_remove::Removal> {
+    member_remove::removal(super::agent_ask_badge::own_agent(owner, member), removable, member)
 }
 
 fn modes() -> [(Option<RoomNotificationMode>, &'static str); 4] {
@@ -509,6 +558,7 @@ impl MobileChatInfo {
     }
     // Refresh metadata without clearing an in-flight Agent invitation or its original key.
     fn fetch_info(&mut self, cx: &mut Cx, room: RoomNameId) {
+        if self.room.as_ref().is_none_or(|open| open.room_id() != room.room_id()) {self.recently_left.clear();}
         self.room = Some(room.clone());
         let epoch = crate::account_session::epoch();
         let Some(client) = get_client() else { return };
@@ -585,6 +635,13 @@ impl MobileChatInfo {
         });
     }
 
+    /// Takes members who left out of the list (and closes their menu).
+    fn drop_departed(&mut self, cx: &mut Cx, departed: &[OwnedUserId]) {
+        if let Some(data) = self.data.as_mut() && member_rows::remove_departed(&mut data.members, departed) {
+            if self.menu_member.as_ref().is_some_and(|m| departed.contains(m)) {self.menu_member = None;}
+            self.view.redraw(cx);
+        }
+    }
     fn pin_is_current(&self) -> bool {
         #[cfg(feature = "onboarding-test-support")]
         if self.review_mode {return get_client().is_none();}
@@ -756,6 +813,7 @@ impl MobileChatInfo {
         self.request = 0;
         self.data = None;
         self.member_owners.clear();self.indented_members.clear();self.ownership_unavailable=false;
+        self.services_expanded = false;self.menu_member = None;self.recently_left.clear();
         self.status.clear();
         self.failed = false;
         self.choosing_notifications = false;
@@ -832,10 +890,22 @@ impl Widget for MobileChatInfo {
                     self.view.redraw(cx);
                 }
                 if let Some(update) = action.downcast_ref::<ChatMembershipChanged>()
-                    && update.epoch == self.epoch && self.pin_is_current()
+                    && update.epoch == self.epoch
                     && self.room.as_ref().is_some_and(|room| room.room_id() == &update.room_id)
-                    && let Some(room) = self.room.clone()
-                { self.fetch_info(cx, room); }
+                {
+                    // The leave or kick is in the timeline: drop the row now,
+                    // whatever the next member read says.
+                    let departed = member_rows::note_membership(&mut self.recently_left, &update.membership);
+                    self.drop_departed(cx, &departed);
+                    if self.pin_is_current() && let Some(room) = self.room.clone() { self.fetch_info(cx, room); }
+                }
+                if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
+                    && left.epoch == self.epoch && self.owner.as_ref() == Some(&left.owner)
+                    && self.room.as_ref().is_some_and(|room| room.room_id() == &left.room_id)
+                {
+                    member_rows::note_membership(&mut self.recently_left, &[(left.user_id.clone(), true)]);
+                    self.drop_departed(cx, std::slice::from_ref(&left.user_id));
+                }
                 if matches!(
                     action.downcast_ref::<LogoutAction>(),
                     Some(LogoutAction::ClearAppState { .. })
@@ -868,6 +938,7 @@ impl Widget for MobileChatInfo {
                         match &loaded.result {
                             Ok(data) => {
                                 let mut data=data.clone();
+                                member_rows::remove_departed(&mut data.members, &self.recently_left.iter().cloned().collect::<Vec<_>>());
                                 self.indented_members=group_members(&mut data.members,&self.member_owners);
                                 self.data = Some(data);
                                 self.failed = false;
@@ -953,10 +1024,18 @@ impl Widget for MobileChatInfo {
             }
             let list = self.view.portal_list(cx, ids!(list));
             for (_index, widget) in list.items_with_actions(actions) {
-                if let (Some(data), Some(profile)) = (self.data.as_ref().filter(|_| self.pin_is_current()), self.rendered_members.get(&widget.widget_uid()))
-                    && let Some(open) = member_remove::clicked(cx, &widget, actions, &data.room, &data.removable, profile) {
-                    cx.action(open);
-                    return;
+                if let (Some(data), Some(profile)) = (self.data.as_ref().filter(|_| self.pin_is_current()), self.rendered_members.get(&widget.widget_uid())) {
+                    let removal = member_removal(self.owner.as_ref(), &data.removable, &profile.user_id);
+                    if removal.is_some() && member_remove::more_clicked(cx, &widget, actions) {
+                        self.menu_member = if self.menu_member.as_ref() == Some(&profile.user_id) {None} else {Some(profile.user_id.clone())};
+                        self.view.redraw(cx);
+                        return;
+                    }
+                    if member_remove::clicked(cx, &widget, actions, &data.room, removal, profile) {
+                        self.menu_member = None;
+                        self.view.redraw(cx);
+                        return;
+                    }
                 }
                 if widget.navigation_bar_button(cx, ids!(copy_room_id)).clicked(actions) {
                     if self.pin_is_current() && self.tab == self.drawn_tab
@@ -987,6 +1066,7 @@ impl Widget for MobileChatInfo {
                         if let Some((mode, _))=modes().get(mode) {submit_async_request(MatrixRequest::SetRoomNotificationMode {room_id:data.room.room_id().clone(),mode:*mode});}
                     }
                     InfoRow::Back => self.choosing_notifications = false,
+                    InfoRow::ServicesHeader => self.services_expanded = !self.services_expanded,
                     InfoRow::AgentServices => {self.services_open = !self.services_open;if self.services_open {self.load_services(cx);}},
                     InfoRow::Overview | InfoRow::Filler => continue,
                 }
@@ -1060,14 +1140,15 @@ impl Widget for MobileChatInfo {
         self.rendered_rows.clear(); self.rendered_members.clear();
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut list) = item.borrow_mut::<PortalList>() {
-                let count = self.data.as_ref().map_or(0, |d| info_rows(self.tab, d.members.len(), self.choosing_notifications));
+                let member_rows = self.data.as_ref().map_or_else(MemberRows::default, |d| MemberRows::of(&d.members, self.services_expanded));
+                let count = self.data.as_ref().map_or(0, |_| info_rows(self.tab, member_rows, self.choosing_notifications));
                 list.set_item_range(cx, 0, count);
                 while let Some(index) = list.next_visible_item(cx) {
                     let Some(data) = self.data.as_mut().filter(|_| index < count) else {
                         list.item(cx, index, id!(Filler)).draw_all(cx, scope);
                         continue;
                     };
-                    let row = info_row(self.tab, data.members.len(), self.choosing_notifications, index);
+                    let row = info_row(self.tab, member_rows, self.choosing_notifications, index);
                     let widget = match row {
                         InfoRow::Overview => {
                             let widget = list.item(cx, index, id!(Header));
@@ -1076,6 +1157,9 @@ impl Widget for MobileChatInfo {
                             widget
                         }
                         InfoRow::Member(member) => {
+                            let Some(user_id)=data.members.get(member).map(|p|p.user_id.clone()) else {continue;};
+                            let badge = agent_badge_text(&data.members, &self.member_owners, &user_id);
+                            let can_remove = member_removal(self.owner.as_ref(), &data.removable, &user_id).is_some();
                             let Some(profile)=data.members.get_mut(member) else {continue;};
                         let widget = list.item(cx, index, id!(Member));
                         self.rendered_members.insert(widget.widget_uid(), profile.clone());
@@ -1093,10 +1177,13 @@ impl Widget for MobileChatInfo {
                                 || profile.user_id.to_string(),
                                 |framework| format!("{framework} · {}", profile.user_id),
                             );
+                        // Who may ask one's own Agent (UX A4) leads its second line.
+                        let detail = super::agent_ask_badge::policy(self.owner.as_ref(), &profile.user_id).map_or(detail.clone(), |policy| format!("{policy} · {detail}"));
                         let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
-                        super::agent_ask_badge::show(cx, &widget, self.owner.as_ref(), &profile.user_id);
-                        member_remove::show(cx, &widget, &data.removable, profile);
+                        widget.view(cx, ids!(agent_badge)).set_visible(cx, badge.is_some());
+                        if let Some(badge) = badge {widget.label(cx, ids!(badge_text)).set_text(cx, &badge);}
+                        member_remove::show(cx, &widget, can_remove, self.menu_member.as_ref() == Some(&profile.user_id));
                         let avatar = widget.avatar(cx, ids!(avatar));
                         let loaded =
                             profile
@@ -1115,6 +1202,12 @@ impl Widget for MobileChatInfo {
                         widget
                         }
                         InfoRow::Back => list.item(cx, index, id!(Back)),
+                        InfoRow::ServicesHeader => {
+                            let widget = list.item(cx, index, id!(ServicesHeader));
+                            let title = crate::i18n::format("Service accounts ({count})", &[("count", member_rows.services.to_string())]);
+                            widget.label(cx, ids!(title)).set_text(cx, &title);
+                            widget
+                        }
                         InfoRow::Filler => list.item(cx, index, id!(Filler)),
                         _ => {
                             let widget = list.item(cx, index, id!(Action));
@@ -1226,7 +1319,7 @@ mod information_target_tests {
         ]),None);
         let indented=group_members(&mut members,&owners);
         let ids:Vec<_>=members.iter().map(|p|p.user_id.as_str()).collect();
-        assert_eq!(ids,vec!["@alice:s","@a:s","@bob:s","@b:s","@external:s","@_hagency_service:s","@orphan:s"]);
+        assert_eq!(ids,vec!["@alice:s","@a:s","@bob:s","@b:s","@external:s","@orphan:s","@_hagency_service:s"],"service accounts go last");
         assert_eq!(indented.len(),2);
         assert!(indented.contains(&OwnedUserId::try_from("@a:s").unwrap()));
         assert!(!indented.contains(&OwnedUserId::try_from("@orphan:s").unwrap()));
@@ -1259,6 +1352,42 @@ mod information_target_tests {
         }
         cx.with_vm(|vm|assert!(vm.take_errors().is_empty()));
 
+    }
+    /// Live finding (Chris, 12:26): Anna kicked her Agent yue-claude, the
+    /// timeline said so, and the Members tab still listed it.
+    #[test]
+    fn a_kick_in_the_timeline_takes_the_members_row_out() {
+        let mut cx=Cx::new(Box::new(|_,_|{}));
+        let mut info=cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);
+            let value=script_eval!(vm,{mod.widgets.MobileChatInfo {}});
+            MobileChatInfo::script_from_value(vm,value)
+        });
+        let room=OwnedRoomId::try_from("!dev:s").unwrap();
+        let agent=OwnedUserId::try_from("@_hagency_agt_yue:s").unwrap();
+        let mut members=vec![member("@anna:s","Anna"),member(agent.as_str(),"yue-claude"),member("@_hagency_service:s","Hagency service")];
+        let mut owners=HashMap::new();owners.insert(agent.clone(),OwnedUserId::try_from("@anna:s").unwrap());
+        info.indented_members=group_members(&mut members,&owners);info.member_owners=owners;
+        info.room=Some(RoomNameId::empty(room.clone()));info.epoch=crate::account_session::epoch();
+        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(room.clone()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
+        info.select_tab(&mut cx,InfoTab::Members);draw_information(&mut info,&mut cx);
+        let list=info.view.portal_list(&mut cx,ids!(list));
+        let agent_row=list.item(&mut cx,1,id!(Member));
+        assert_eq!(agent_row.label(&mut cx,ids!(name)).text(),"yue-claude");
+        assert_eq!(agent_row.label(&mut cx,ids!(badge_text)).text(),"Anna's agent","the badge names the owner");
+        assert!(agent_row.view(&mut cx,ids!(agent_badge)).visible());
+        assert!(!agent_row.widget(&mut cx,ids!(member_more)).visible(),"no Remove without the power to kick");
+        assert_eq!(info_rows(InfoTab::Members,MemberRows::of(&info.data.as_ref().unwrap().members,false),false),3,"two people and a closed Service accounts header");
+        let other_room=ChatMembershipChanged{room_id:OwnedRoomId::try_from("!other:s").unwrap(),epoch:info.epoch,membership:vec![(agent.clone(),true)]};
+        let kicked=ChatMembershipChanged{room_id:room,epoch:info.epoch,membership:vec![(agent.clone(),true)]};
+        for (update, remaining) in [(other_room, 3), (kicked, 2)] {
+            let actions=cx.capture_actions(|cx|cx.action(update));
+            info.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::empty());
+            assert_eq!(info.data.as_ref().unwrap().members.len(),remaining);
+        }
+        assert!(info.data.as_ref().unwrap().members.iter().all(|p|p.user_id!=agent),"the kicked Agent's row is gone");
+        draw_information(&mut info,&mut cx);
+        cx.with_vm(|vm|assert!(vm.take_errors().is_empty()));
     }
     #[test]
     fn conflicting_ownership_and_cycles_never_create_false_grouping() {
@@ -1330,10 +1459,11 @@ mod information_target_tests {
     }
     #[test]
     fn overview_actions_and_member_indices_never_share_notification_or_profile_targets() {
-        for members in [0, 1, 5, 200] {
+        for count in [0, 1, 5, 200] {
+            let members = MemberRows::people(count);
             for choosing in [false, true] {
-                assert_eq!(info_row(InfoTab::Members, members, choosing, members), InfoRow::Filler);
-                for index in 0..members {assert_eq!(info_row(InfoTab::Members, members, choosing, index), InfoRow::Member(index));}
+                assert_eq!(info_row(InfoTab::Members, members, choosing, count), InfoRow::Filler);
+                for index in 0..count {assert_eq!(info_row(InfoTab::Members, members, choosing, index), InfoRow::Member(index));}
                 assert_eq!(info_row(InfoTab::Overview, members, choosing, 0), InfoRow::Overview);
                 if choosing {
                     for mode in 0..4 {assert_eq!(info_row(InfoTab::Overview, members, true, mode+1), InfoRow::Mode(mode));}

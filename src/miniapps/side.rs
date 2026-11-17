@@ -370,6 +370,22 @@ pub struct MiniAppsSideHandle {
     released: bool,
 }
 
+// TODO(R4): this file is over budget; move MiniAppsSideHandle into
+// shared/side_handle.rs now that the room information panel uses it too.
+impl MiniAppsSideHandle {
+    /// How far the drag under way has moved, and whether it just ended. An
+    /// ended drag is cleared, so the next press starts from the new width.
+    /// The room information panel's edge reuses this handle too.
+    pub(crate) fn take_drag(&mut self) -> (Option<f64>, bool) {
+        let drag = self.drag;
+        let released = std::mem::take(&mut self.released);
+        if released {
+            self.drag = None;
+        }
+        (drag, released)
+    }
+}
+
 impl Widget for MiniAppsSideHandle {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
         if !self.visible && event.requires_visibility() {
@@ -465,7 +481,7 @@ impl Widget for MiniAppsSideRegion {
             .view
             .widget(cx, ids!(handle))
             .borrow_mut::<MiniAppsSideHandle>()
-            .map(|mut handle| (handle.drag, std::mem::take(&mut handle.released)))
+            .map(|mut handle| handle.take_drag())
             .unwrap_or_default();
         if let Some(dx) = drag {
             let from = *self.drag_from.get_or_insert(self.width);
@@ -477,9 +493,6 @@ impl Widget for MiniAppsSideRegion {
             }
         }
         if released {
-            if let Some(mut handle) = self.view.widget(cx, ids!(handle)).borrow_mut::<MiniAppsSideHandle>() {
-                handle.drag = None;
-            }
             self.drag_from = None;
             // Kept with the layout state, so the next session docks it this wide.
             if let Some(state) = scope.data.get_mut::<crate::app::AppState>() {

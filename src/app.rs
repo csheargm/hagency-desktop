@@ -2383,6 +2383,10 @@ pub struct AppState {
     /// dragged it. Kept with the dock layouts above; one width for every space.
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub mini_apps_width: Option<f64>,
+    /// The room information panel's width beside the chat, as the person
+    /// last dragged its left edge; one width for every room.
+    #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
+    pub room_info_width: Option<f64>,
     /// Whether a user is currently logged in to Rinx or not.
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub logged_in: bool,

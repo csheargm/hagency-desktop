@@ -3607,5 +3607,15 @@
   "Show": "Show",
   "Open room": "Open room",
   "{n} waiting for approval": "{n} waiting for approval",
-  "{n} more after these; answer or dismiss one to see the next.": "{n} more after these; answer or dismiss one to see the next."
+  "{n} more after these; answer or dismiss one to see the next.": "{n} more after these; answer or dismiss one to see the next.",
+  "Push and open PRs freely": "Push and open PRs freely",
+  "Member actions": "Member actions",
+  "{owner}'s agent": "{owner}'s agent",
+  "Service accounts ({count})": "Service accounts ({count})",
+  "Remove {agent} from this room?": "Remove {agent} from this room?",
+  "{agent} will leave \"{room}\". You can add it again with Add agent.": "{agent} will leave \"{room}\". You can add it again with Add agent.",
+  "Removed {agent} from this room.": "Removed {agent} from this room.",
+  "Could not remove {agent}: {error}": "Could not remove {agent}: {error}",
+  "{agent} is not added to this room, so there is nothing to remove here.": "{agent} is not added to this room, so there is nothing to remove here.",
+  "The account changed before the removal ran. Nothing was removed.": "The account changed before the removal ran. Nothing was removed."
 }

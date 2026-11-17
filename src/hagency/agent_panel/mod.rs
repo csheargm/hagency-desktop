@@ -13,7 +13,7 @@ mod design;
 mod identity;
 mod rename;
 pub(crate) mod mapping;
-mod rooms;
+pub(crate) mod rooms;
 mod settings;
 pub use design::script_mod;
 

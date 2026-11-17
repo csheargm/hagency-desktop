@@ -35,7 +35,7 @@ const ROOM_TICKS: [LiveId; 8] = [
 ];
 
 /// A room the Agent is in, as `(binding id, room id, name)`.
-pub(super) fn joined_rooms(status: &Value) -> Vec<(String, String, String)> {
+pub(crate) fn joined_rooms(status: &Value) -> Vec<(String, String, String)> {
     status["rooms"].as_array().into_iter().flatten()
         .filter(|room| room["state"] == "active")
         .filter_map(|room| {
@@ -48,7 +48,7 @@ pub(super) fn joined_rooms(status: &Value) -> Vec<(String, String, String)> {
 }
 
 /// The binding that holds the open room, when the Agent is in it.
-pub(super) fn open_room_binding(rooms: &[(String, String, String)], open: Option<&str>) -> Option<String> {
+pub(crate) fn open_room_binding(rooms: &[(String, String, String)], open: Option<&str>) -> Option<String> {
     rooms.iter().find(|(_, room, _)| Some(room.as_str()) == open).map(|(binding, _, _)| binding.clone())
 }
 

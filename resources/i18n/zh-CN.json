@@ -3607,5 +3607,15 @@
   "Show": "显示",
   "Open room": "打开房间",
   "{n} waiting for approval": "{n} 个待批准",
-  "{n} more after these; answer or dismiss one to see the next.": "另有 {n} 个；答复或关闭一个即可看到下一个。"
+  "{n} more after these; answer or dismiss one to see the next.": "另有 {n} 个；答复或关闭一个即可看到下一个。",
+  "Push and open PRs freely": "自由推送并创建 PR",
+  "Member actions": "成员操作",
+  "{owner}'s agent": "{owner} 的 Agent",
+  "Service accounts ({count})": "服务账号（{count}）",
+  "Remove {agent} from this room?": "将 {agent} 移出此聊天室？",
+  "{agent} will leave \"{room}\". You can add it again with Add agent.": "{agent} 将离开“{room}”。之后可通过“添加 Agent”重新加入。",
+  "Removed {agent} from this room.": "已将 {agent} 移出此聊天室。",
+  "Could not remove {agent}: {error}": "无法移出 {agent}：{error}",
+  "{agent} is not added to this room, so there is nothing to remove here.": "{agent} 未加入此聊天室，无需移出。",
+  "The account changed before the removal ran. Nothing was removed.": "移出前账号已切换，未移出任何成员。"
 }
