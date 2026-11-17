@@ -24,6 +24,8 @@ pub(crate) enum Followed {
     Merging,
     /// It cannot merge yet: one room notice said what is missing (ADR 0020).
     Held(Vec<Missing>),
+    /// The merge step failed to reach GitHub this many checks in a row; retried next check.
+    Unreachable(u32),
     /// No other Agent can review: a person must review and merge.
     NeedsPerson,
     /// Still a draft: the Agent has not marked it ready yet.
@@ -218,6 +220,10 @@ fn pr_line(number: i64, pr: u64, followed: Followed) -> String {
             let needs = missing.iter().map(|m| crate::i18n::tr(m.label())).collect::<Vec<_>>().join("; ");
             let [number, pr] = args;
             return crate::i18n::format("#{number} PR #{pr} needs: {needs}", &[number, pr, ("needs", needs)]);
+        }
+        Followed::Unreachable(failures) => {
+            let [number, pr] = args;
+            return crate::i18n::format("#{number} PR #{pr} can't reach GitHub ({failures} checks in a row), retrying", &[number, pr, ("failures", failures.to_string())]);
         }
         Followed::WaitingCi => "#{number} PR #{pr} waiting for CI",
         Followed::Merging => "#{number} PR #{pr} approved, merging",

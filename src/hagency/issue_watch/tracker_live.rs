@@ -105,6 +105,27 @@ impl LiveTrack<'_> {
     }
 }
 
+impl LiveTrack<'_> {
+    /// The gate's answer for `pr` and the step it leads to; every GitHub read
+    /// (the owner API's own, and the reviews) fails here, never silently.
+    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, ctx: &LoopCtx<'_>) -> Result<Gate, String> {
+        let readiness = io.review(json!({"readiness": {"repo": self.repo, "number": pr.number}})).await?["readiness"].clone();
+        // Only a missing approval waits on the reviewer; GitHub says whether it answered.
+        let settled = readiness["kind"] == "approvals" && readiness["head"].is_string() && {
+            let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
+            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, chrono::Utc::now().timestamp())
+        };
+        merge_hold::follow_gate(io, target, &readiness, ctx, settled).await
+    }
+}
+
+/// The merge step's failure streaks, shared by every check of this process.
+fn lock_streaks() -> std::sync::MutexGuard<'static, merge_hold::Streaks> {
+    static STREAKS: std::sync::LazyLock<std::sync::Mutex<merge_hold::Streaks>> = std::sync::LazyLock::new(Default::default);
+    // A panic while holding it left plain counters: still usable.
+    STREAKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl TrackIo for LiveTrack<'_> {
     async fn record(&self, change: Value) -> Result<(), String> {
         super::still_current(self.worker.epoch)?;
@@ -159,18 +180,29 @@ impl TrackIo for LiveTrack<'_> {
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         review_loop::advance(&io, &target, &LoopCtx { agent: peer, maintainer: false, permission: None }).await?;
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
-        let readiness = io.review(json!({"readiness": {"repo": self.repo, "number": pr.number}})).await?["readiness"].clone();
-        // Only a missing approval waits on the reviewer; GitHub says whether it answered.
-        let settled = readiness["kind"] == "approvals" && {
-            let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
-            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, chrono::Utc::now().timestamp())
-        };
         let ctx = LoopCtx { agent: &fixer, maintainer: true, permission: self.permission.as_deref() };
-        Ok(match merge_hold::follow_gate(&io, &target, &readiness, &ctx, settled).await? {
-            Gate::Merge => Followed::Merging,
-            Gate::WaitCi => Followed::WaitingCi,
-            Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
-            Gate::WaitReview | Gate::WaitFacts => Followed::Requested,
+        let gate = match self.merge_step(&io, &target, pr, &ctx).await {
+            Ok(Gate::Unreadable(error)) | Err(error) => Err(error),
+            Ok(gate) => Ok(gate),
+        };
+        Ok(match gate {
+            Ok(gate) => {
+                lock_streaks().reached(&pr.url);
+                match gate {
+                    Gate::Merge => Followed::Merging,
+                    Gate::WaitCi => Followed::WaitingCi,
+                    Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
+                    Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) => Followed::Requested,
+                }
+            }
+            Err(error) => {
+                // A transport or timeout failure is never swallowed: logged,
+                // shown, retried next check, and told once after a streak.
+                let failures = lock_streaks().failed(&pr.url);
+                makepad_widgets::log!("WARN issue_track_merge_step_failed pr={} failures={failures}: {error}", pr.url);
+                merge_hold::after_failure(&io, &target, failures).await?;
+                Followed::Unreachable(failures)
+            }
         })
     }
     fn paused(&self) -> bool {

@@ -3625,5 +3625,6 @@
   "green CI": "CI 通过",
   "a person (repo rules)": "由人处理（仓库规则）",
   "Pull request merges switched on": "开启“PR 合并”",
-  "a maintainer to merge": "由维护者合并"
+  "a maintainer to merge": "由维护者合并",
+  "#{number} PR #{pr} can't reach GitHub ({failures} checks in a row), retrying": "#{number} PR #{pr} 无法连接 GitHub（已连续 {failures} 次），正在重试"
 }

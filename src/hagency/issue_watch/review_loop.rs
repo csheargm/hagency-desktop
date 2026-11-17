@@ -35,6 +35,9 @@ pub(crate) fn can_merge(permission: Option<&str>) -> bool {
     permission.is_some_and(|p| CAN_MERGE.contains(&p))
 }
 
+/// The owner-needed reason when the merger's "Pull request merges" switch is off.
+const MERGES_OFF: &str = "Pull request merges is off for this Agent; turn it on in its settings or merge it yourself";
+
 /// Shown when Stop All paused the Agent during the loop.
 const PAUSED: &str = "Agent paused by the owner: the review loop waits until it is resumed";
 
@@ -82,6 +85,8 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
     }
     let target = target.clone();
     match readiness["decision"].as_str() {
+        // The gate never answers a merge with the switch off: say so instead (GPT review).
+        Some("merge") if readiness["autoMerge"] == false => Some(LoopNotice::NeedsOwner { target, reason: MERGES_OFF.to_owned() }),
         Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone() }),
         Some("merge") => Some(LoopNotice::NeedsMaintainer { target }),
         Some("wait") => None,

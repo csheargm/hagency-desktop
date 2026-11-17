@@ -38,10 +38,20 @@ const NO_CI: &str = "no CI checks reported";
 /// Every approvals reason [`evaluate`] gives contains this.
 const APPROVALS_REASON: &str = "approval(s) from another Agent";
 
+/// Exactly `needs <n> approval(s) from another Agent, has <m>`: a file or
+/// author name in another reason must never pass for it (GPT review).
+fn is_approvals_reason(reason: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let Some(rest) = reason.strip_prefix("needs ") else { return false };
+    let Some((required, rest)) = rest.split_once(' ') else { return false };
+    let Some(count) = rest.strip_prefix(APPROVALS_REASON).and_then(|r| r.strip_prefix(", has ")) else { return false };
+    digits(required) && digits(count)
+}
+
 /// What a [`Decision::NeedsHuman`] reason is about, as a fixed wire word, so
 /// the review loop can say what is missing without parsing the sentence.
 pub fn reason_kind(reason: &str) -> &'static str {
-    if reason.contains(APPROVALS_REASON) {
+    if is_approvals_reason(reason) {
         "approvals"
     } else if [CI_PENDING, CI_FAILED, NO_CI].contains(&reason) {
         "ci"

@@ -15,9 +15,10 @@ use serde_json::{json, Value};
 pub(super) const STEPS: [&str; 2] = ["review", "merge"];
 const MAX_STEP_LEN: usize = 96;
 
+/// `review`, `merge`, or a [`HOLD_STEP`] notice step: lowercase words joined by single `-`.
 fn known_step(step: &str) -> bool {
     STEPS.contains(&step)
-        || step.strip_prefix(HOLD_STEP).is_some_and(|rest| !rest.is_empty() && step.len() <= MAX_STEP_LEN && rest.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
+        || step.strip_prefix(HOLD_STEP).is_some_and(|rest| step.len() <= MAX_STEP_LEN && rest.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())))
 }
 
 #[derive(Deserialize, Default)]
@@ -135,7 +136,7 @@ mod tests {
         assert!(pr_head(&step("merge", "https://github.com/a/b/pull/1", "main")).is_err());
         assert!(pr_head(&step("deploy", "https://github.com/a/b/pull/1", &sha)).is_err());
         assert!(pr_head(&step("hold-approvals-merges-off", "https://github.com/a/b/pull/1", &sha)).is_ok());
-        for bad in ["hold-", "hold-Approvals", "hold-a b", "hold-a_b", &format!("hold-{}", "a".repeat(MAX_STEP_LEN))] {
+        for bad in ["hold-", "hold--", "hold-a--b", "hold-a-", "hold-Approvals", "hold-a b", "hold-a_b", &format!("hold-{}", "a".repeat(MAX_STEP_LEN))] {
             assert!(pr_head(&step(bad, "https://github.com/a/b/pull/1", &sha)).is_err(), "{bad}");
         }
     }

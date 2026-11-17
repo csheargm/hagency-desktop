@@ -73,6 +73,16 @@ async fn a_non_writer_never_asks_its_agent_to_merge() {
 }
 
 #[tokio::test]
+async fn merges_switched_off_asks_the_owner_instead_of_telling_the_agent_to_merge() {
+    let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": false}));
+    run(&fake, true, Some("admin")).await.unwrap();
+    run(&fake, true, Some("admin")).await.unwrap();
+    let posted = fake.posted.borrow();
+    assert!(matches!(&posted[1], LoopNotice::NeedsOwner { reason, .. } if reason.contains("Pull request merges is off")), "{posted:?}");
+    assert_eq!(posted.len(), 2);
+}
+
+#[tokio::test]
 async fn waiting_unsure_and_reviewer_roles_post_no_merge_step() {
     for readiness in [json!({"decision": "wait", "head": HEAD}), json!({"decision": "human", "head": HEAD, "approvers": 0}), json!({"decision": "human", "reason": "unreadable"}), json!({"decision": "merge", "head": "2".repeat(40)})] {
         let fake = Fake::new(readiness.clone());

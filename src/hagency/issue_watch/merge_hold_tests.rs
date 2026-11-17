@@ -3,7 +3,7 @@
 //! room notice per head and set, a fixed blocker lets the next one through,
 //! and a pull request that passes is carried on to the pinned merge.
 use super::loop_notice::{LoopNotice, Target};
-use super::merge_hold::{Gate, Missing, REVIEW_WAIT_SECS, follow_gate, review_settled};
+use super::merge_hold::{Gate, Missing, REVIEW_WAIT_SECS, Streaks, UNREACHABLE_AFTER, after_failure, follow_gate, review_settled};
 use super::review_loop::{LoopCtx, LoopIo};
 use matrix_sdk::ruma::{OwnedUserId, owned_user_id};
 use serde_json::{Value, json};
@@ -130,7 +130,7 @@ fn running_ci_and_unreadable_or_moved_facts_wait_without_a_notice() {
     let fake = Fake::new(json!({"decision": "wait", "head": HEAD, "reason": "CI checks are still running", "kind": "ci", "autoMerge": true}));
     assert_eq!(check(&fake, Some("admin"), true), Gate::WaitCi);
     let fake = Fake::new(json!({"decision": "human", "reason": "GitHub or the merge policy could not be read", "kind": "rules"}));
-    assert_eq!(check(&fake, Some("admin"), true), Gate::WaitFacts);
+    assert_eq!(check(&fake, Some("admin"), true), Gate::Unreadable("GitHub or the merge policy could not be read".into()), "a failed read is a failure, not a wait");
     let fake = Fake::new(json!({"decision": "merge", "head": "2".repeat(40), "autoMerge": true}));
     assert_eq!(check(&fake, Some("admin"), true), Gate::WaitFacts);
     assert!(fake.posted.borrow().is_empty());
@@ -167,4 +167,60 @@ fn held_notices_never_share_a_transaction_id_with_the_merge_or_each_other() {
     let approved = LoopNotice::Approved { target: target(HEAD), fixer: fixer() };
     let ids: HashSet<_> = [held("hold-approvals"), held("hold-merges-off"), approved].iter().map(|n| n.txn_id("agt")).collect();
     assert_eq!(ids.len(), 3);
+}
+
+#[test]
+fn an_older_owner_api_without_the_switch_never_lets_an_agent_merge() {
+    let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+    assert_eq!(check(&fake, Some("admin"), true), Gate::Hold(vec![(Missing::MergesOff, String::new())]));
+}
+
+#[test]
+fn the_merge_is_told_from_the_same_answer_that_judged_it() {
+    // The fake answers every later readiness read with "human": a second
+    // read would post NeedsOwner and burn the merge step (GPT review).
+    struct Flip(Fake);
+    impl LoopIo for Flip {
+        async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
+            self.0.post(notice).await
+        }
+        async fn review(&self, change: Value) -> Result<Value, String> {
+            if change.get("readiness").is_some() {
+                return Ok(json!({"readiness": human("rules", "changed", true)}));
+            }
+            self.0.review(change).await
+        }
+        fn paused(&self) -> bool {
+            false
+        }
+    }
+    let flip = Flip(Fake::new(merge(true)));
+    let agent = fixer();
+    let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
+    let gate = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow_gate(&flip, &target(HEAD), &merge(true), &ctx, true)).unwrap();
+    assert_eq!(gate, Gate::Merge);
+    assert!(matches!(&flip.0.posted.borrow()[..], [LoopNotice::Approved { .. }]));
+}
+
+#[test]
+fn github_failures_in_a_row_are_told_once_then_the_streak_ends_on_success() {
+    // Nov 17 morning: DNS failures. Each failed check is retried; after
+    // UNREACHABLE_AFTER in a row the room hears it once, not every check.
+    let fake = Fake::new(merge(true));
+    let mut streaks = Streaks::default();
+    let url = target(HEAD).url;
+    let run = |failures: u32| tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(after_failure(&fake, &target(HEAD), failures)).unwrap();
+    for expected in 1..=UNREACHABLE_AFTER + 3 {
+        let failures = streaks.failed(&url);
+        assert_eq!(failures, expected);
+        run(failures);
+        let told = fake.posted.borrow().len();
+        assert_eq!(told, usize::from(failures >= UNREACHABLE_AFTER), "after {failures} failures");
+    }
+    assert!(fake.bodies()[0].starts_with("⚠️ Can't reach GitHub to merge PR #36 in csheargm/hagency-demo-sandbox — retrying"), "{}", fake.bodies()[0]);
+    streaks.reached(&url);
+    assert_eq!(streaks.failed(&url), 1, "a check that reached GitHub starts the count again");
+    // The same head then merges normally: the unreachable step never took the merge step.
+    assert_eq!(check(&fake, Some("admin"), true), Gate::Merge);
+    assert!(matches!(fake.posted.borrow().last(), Some(LoopNotice::Approved { .. })));
 }

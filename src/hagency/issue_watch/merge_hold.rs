@@ -71,8 +71,11 @@ pub enum Gate {
     WaitReview,
     /// CI is still running under a policy that requires it.
     WaitCi,
-    /// The gate's facts are unreadable or for another head: ask again next check.
+    /// The gate judged another head (a push landed): ask again next check.
     WaitFacts,
+    /// The gate could not read GitHub or the policy: a failure, counted by
+    /// the caller ([`Streaks`]) and retried next check.
+    Unreadable(String),
     /// Every rule passes and the owner allows Agent merges: merge.
     Merge,
     /// What is missing, each with the gate's reason (empty when it has none).
@@ -90,7 +93,11 @@ pub fn review_settled(reviews: &[(String, String, String)], head: &str, opened_a
 /// The merge step for `target` from the gate's `readiness` answer, this
 /// owner's GitHub `permission`, and whether the review has `settled`.
 pub fn gate_of(target: &Target, readiness: &Value, permission: Option<&str>, settled: bool) -> Gate {
-    if readiness["head"].as_str() != Some(target.head.as_str()) {
+    let Some(head) = readiness["head"].as_str() else {
+        // The owner API judged nothing: its GitHub or policy read failed.
+        return Gate::Unreadable(readiness["reason"].as_str().unwrap_or("the merge gate gave no answer").to_owned());
+    };
+    if head != target.head {
         return Gate::WaitFacts;
     }
     let mut missing = Vec::new();
@@ -107,9 +114,9 @@ pub fn gate_of(target: &Target, readiness: &Value, permission: Option<&str>, set
             missing.push((kind, readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned()));
         }
     }
-    // Only an explicit "off" holds: an older owner API that sends no switch
-    // leaves it to the gate, which asks the owner's card when it is off.
-    if readiness["autoMerge"] == false {
+    // Only an explicit "on" lets an Agent merge (GPT review: a missing
+    // field from an older owner API must not count as permission).
+    if readiness["autoMerge"] != true {
         missing.push((Missing::MergesOff, String::new()));
     }
     if !can_merge(permission) {
@@ -126,23 +133,62 @@ fn hold_step(missing: &[(Missing, String)]) -> String {
     format!("{HOLD_STEP}{}", words.iter().map(|m| m.word()).collect::<Vec<_>>().join("-"))
 }
 
+/// Post `notice` unless step `step` was taken for this head, then take it.
+async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice) -> Result<(), String> {
+    let key = json!({"step": step, "pr": target.url, "head": target.head});
+    if io.review(json!({"stepTaken": key})).await?["taken"] == true {
+        return Ok(());
+    }
+    review_loop::post_then_claim(io, &notice, key).await
+}
+
 /// Act on the merge step for `target`: the pinned merge for `ctx.agent`
-/// (once per head, through the review loop's own merge step), or one notice
-/// per head and set of missing things. Returns what the step found.
+/// (once per head, on the review loop's own `merge` step), or one notice per
+/// head and set of missing things. Returns what the step found. The merge is
+/// told from this same `readiness`, never a second read (GPT review).
 pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, ctx: &LoopCtx<'_>, settled: bool) -> Result<Gate, String> {
     let gate = gate_of(target, readiness, ctx.permission, settled);
     match &gate {
-        Gate::Merge => review_loop::advance_merge(io, target, ctx).await?,
+        Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone() }).await?,
         Gate::Hold(missing) => {
             let step = hold_step(missing);
-            let key = json!({"step": step, "pr": target.url, "head": target.head});
-            if io.review(json!({"stepTaken": key})).await?["taken"] != true {
-                let lines = missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect();
-                let notice = LoopNotice::Held { target: target.clone(), step, missing: lines };
-                review_loop::post_then_claim(io, &notice, key).await?;
-            }
+            let lines = missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect();
+            once(io, target, &step.clone(), LoopNotice::Held { target: target.clone(), step, missing: lines }).await?;
         }
-        Gate::WaitReview | Gate::WaitCi | Gate::WaitFacts => {}
+        Gate::WaitReview | Gate::WaitCi | Gate::WaitFacts | Gate::Unreadable(_) => {}
     }
     Ok(gate)
+}
+
+/// Failed merge-step checks in a row before the room is told GitHub is unreachable.
+pub const UNREACHABLE_AFTER: u32 = 3;
+/// The step of the "cannot reach GitHub" notice: once per head.
+const UNREACHABLE_STEP: &str = "unreachable";
+
+/// Consecutive failed merge-step checks per pull request (by URL). Kept in
+/// memory: a restart starts the count again, which only delays the notice.
+#[derive(Debug, Default)]
+pub struct Streaks(std::collections::HashMap<String, u32>);
+impl Streaks {
+    /// One more failure for `pr`; the streak's length.
+    pub fn failed(&mut self, pr: &str) -> u32 {
+        let count = self.0.entry(pr.to_owned()).or_default();
+        *count = count.saturating_add(1);
+        *count
+    }
+    /// A check that reached GitHub ends the streak.
+    pub fn reached(&mut self, pr: &str) {
+        self.0.remove(pr);
+    }
+}
+
+/// After the `failures`-th failure in a row: from [`UNREACHABLE_AFTER`] on,
+/// one "cannot reach GitHub" notice for this head. The failure itself stays
+/// the caller's to log and show; the next check retries.
+pub async fn after_failure(io: &impl LoopIo, target: &Target, failures: u32) -> Result<(), String> {
+    if failures < UNREACHABLE_AFTER {
+        return Ok(());
+    }
+    let step = format!("{HOLD_STEP}{UNREACHABLE_STEP}");
+    once(io, target, &step, LoopNotice::Unreachable { target: target.clone(), step: step.clone() }).await
 }

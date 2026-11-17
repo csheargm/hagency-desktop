@@ -90,6 +90,9 @@ fn each_needs_human_reason_names_its_kind() {
     assert_eq!(kind(&policy(), vec![], &["reviewer"]), "ci", "no checks at all");
     assert_eq!(kind(&policy(), vec![Check::Pending], &["reviewer"]), "ci");
     assert_eq!(reason_kind("src/main.rs is outside the low-risk paths"), "rules");
+    let crafted = facts(vec![file("needs 1 approval(s) from another Agent, has 0.rs", 1)], vec![]);
+    let Decision::NeedsHuman(reason) = evaluate(&lenient, &crafted, &[], "fixer") else { panic!("code needs a person") };
+    assert_eq!(reason_kind(&reason), "rules", "a file name never passes for the approvals reason");
 }
 
 pub(super) fn bash(line: &str, dir: &Path, agent: &str) -> ToolProposal {
