@@ -63,23 +63,30 @@ fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<
     Ok(repos)
 }
 
-/// Every repository `proposal`'s Agent watches with reports to this Room
-/// (an active legacy watch or a work-list entry), push trust or not.
+/// Every repository `proposal`'s Agent watches with reports to this Room,
+/// push trust or not: the same effective watches the room view shows
+/// (`watch_info::entries`, so a work-list entry replaces a legacy watch of
+/// the same repository, GPT review), active ones only.
 fn watched_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    use crate::issue_watch::{IssueWatch, WatchMode, WatchSetting};
     let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
     let legacy: Option<(String, String, String)> = db
         .query_row("SELECT mode,repo,room_id FROM issue_watch WHERE agent=?", [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
-    let mut repos: Vec<String> = legacy.and_then(|(mode, repo, r)| (mode != "off" && &r == room).then_some(repo)).into_iter().collect();
-    let mut work = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
-    for rules in work.query_map([agent], |r| r.get::<_, String>(0))? {
+    let watch = legacy.map_or_else(IssueWatch::default, |(mode, repo, room_id)| IssueWatch {
+        setting: WatchSetting { mode: WatchMode::from_stored(&mode), label: String::new(), repo, room_id, push_trusted: false },
+        enabled_at: 0,
+    });
+    let mut work = Vec::new();
+    let mut rows = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
+    for rules in rows.query_map([agent], |r| r.get::<_, String>(0))? {
         // A row that no longer parses grants nothing.
-        let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) else { continue };
-        if &rules.room_id == room {
-            repos.push(rules.repo);
+        if let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) {
+            work.push(rules);
         }
     }
-    Ok(repos)
+    let entries = crate::watch_info::entries(&watch, &work);
+    Ok(entries.into_iter().filter(|e| e.active && &e.room_id == room).map(|e| e.repo).collect())
 }
 
 /// Whether `proposal` is a foreground Claude `Bash` read-only GitHub query

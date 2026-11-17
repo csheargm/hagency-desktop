@@ -60,7 +60,7 @@ impl WatchMode {
             Self::All => "all",
         }
     }
-    fn from_stored(text: &str) -> Self {
+    pub(crate) fn from_stored(text: &str) -> Self {
         match text {
             "labelled" => Self::Labelled,
             "trusted" => Self::Trusted,

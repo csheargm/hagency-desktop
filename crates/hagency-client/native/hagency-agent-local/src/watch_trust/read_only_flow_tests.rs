@@ -68,3 +68,18 @@ fn a_legacy_watch_counts_only_while_on() {
     ledger.set_issue_watch(OWNER, "bird", set(WatchMode::Off), 1).unwrap();
     assert_eq!(ledger.trusted_publish(OWNER, &list, 11).unwrap(), None, "a paused watch grants nothing");
 }
+
+/// GPT review: moving a repository's reports to another room through the
+/// work list leaves the legacy watch's room with nothing.
+#[test]
+fn a_moved_report_room_no_longer_grants_the_old_room() {
+    let db = tempfile::tempdir().unwrap();
+    let mut ledger = ask_owner_ledger(db.path());
+    let list = proposal(ROOM, "gh issue list -R csheargm/hagency-demo-sandbox");
+    let legacy = WatchSetting { mode: WatchMode::Trusted, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: false };
+    ledger.set_issue_watch(OWNER, "bird", legacy, 1).unwrap();
+    let moved = OwnerRules { repo: REPO.into(), room_id: "!new:example.org".into(), ..Default::default() };
+    ledger.set_work(OWNER, "bird", vec![moved]).unwrap();
+    assert_eq!(ledger.trusted_publish(OWNER, &list, 11).unwrap(), None);
+    assert!(super::read_only_query(&ledger.db, &proposal("!new:example.org", "gh issue list -R csheargm/hagency-demo-sandbox")).unwrap());
+}

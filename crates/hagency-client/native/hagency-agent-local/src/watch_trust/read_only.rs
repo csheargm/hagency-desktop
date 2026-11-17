@@ -5,18 +5,18 @@
 //! `gh repo view`, or the `repos/<owner>/<name>/` path of `gh api`). One
 //! command only: no chaining, pipes, substitution, redirects or env prefix.
 //! Options are matched against a closed list; `--web`, request bodies,
-//! headers, hosts and any method other than GET keep asking.
+//! headers, hosts, any method other than GET, free-form search and jq or
+//! templates (gh's jq can read the token from its environment, GPT review)
+//! keep asking. `gh api` reaches only the issue and pull request routes.
 use crate::outside::shell;
 
 /// Options of the listed `gh` view/list commands that take a value / none.
-const VALUED: [&str; 18] = [
-    "-R", "--repo", "-L", "--limit", "-s", "--state", "-l", "--label", "-A", "--author", "-a", "--assignee",
-    "-S", "--search", "--json", "-q", "--jq", "--template",
+const VALUED: [&str; 13] = [
+    "-R", "--repo", "-L", "--limit", "-s", "--state", "-l", "--label", "-A", "--author", "-a", "--assignee", "--json",
 ];
 const FLAGS: [&str; 5] = ["-c", "--comments", "--name-only", "--patch", "--required"];
 /// `gh api` options allowed besides `-X/--method GET`.
-const API_VALUED: [&str; 4] = ["-q", "--jq", "-t", "--template"];
-const API_FLAGS: [&str; 4] = ["--paginate", "--slurp", "-i", "--include"];
+const API_FLAGS: [&str; 2] = ["--paginate", "-i"];
 
 /// Whether `line` is one read-only GitHub query on `repo`.
 pub(crate) fn allowed(line: &str, repo: &str) -> bool {
@@ -94,21 +94,33 @@ fn api(rest: &[&str], repo: &str) -> bool {
             continue;
         }
         let Some(value) = inline.or_else(|| words.next().copied()) else { return false };
-        let ok = match name {
-            "-X" | "--method" => value == "GET",
-            _ => API_VALUED.contains(&name),
-        };
-        if !ok {
+        if !matches!(name, "-X" | "--method") || value != "GET" {
             return false;
         }
     }
-    let Some(path) = path else { return false };
+    path.is_some_and(|path| api_route(path, repo))
+}
+
+/// `repos/<repo>/(issues|pulls)[/<n>[/comments|/files|/reviews]]`, with an
+/// optional query of plain `key=value` pairs.
+fn api_route(path: &str, repo: &str) -> bool {
     let path = path.strip_prefix('/').unwrap_or(path);
-    let Some(tail) = path.get(..6).filter(|p| *p == "repos/").map(|_| &path[6..]) else { return false };
-    let mut parts = tail.splitn(3, '/');
-    let (Some(owner), Some(name)) = (parts.next(), parts.next()) else { return false };
-    let name = name.split('?').next().unwrap_or_default();
-    same(&format!("{owner}/{name}"), repo) && !path.contains("..") && !path.contains(['{', ':', '#', '\\'])
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let query_ok = query.split('&').filter(|q| !q.is_empty()).all(|pair| {
+        pair.split_once('=').is_some_and(|(k, v)| {
+            ["state", "per_page", "page", "labels", "sort", "direction"].contains(&k) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b',' || b == b'-' || b == b'_')
+        })
+    });
+    let parts: Vec<&str> = route.split('/').collect();
+    let number = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    let shape = match parts.as_slice() {
+        ["repos", _, _, "issues" | "pulls"] => true,
+        ["repos", _, _, "issues" | "pulls", n] => number(n),
+        ["repos", _, _, "issues", n, "comments"] => number(n),
+        ["repos", _, _, "pulls", n, "comments" | "files" | "reviews"] => number(n),
+        _ => false,
+    };
+    shape && query_ok && same(&format!("{}/{}", parts[1], parts[2]), repo)
 }
 
 #[cfg(test)]
@@ -124,10 +136,12 @@ mod tests {
             "gh issue view 12 -R CSheargm/Hagency-Demo-Sandbox --comments",
             "gh pr list -R csheargm/hagency-demo-sandbox -L 20",
             "gh pr diff 3 -R csheargm/hagency-demo-sandbox --name-only",
+            "gh pr view 3 -R csheargm/hagency-demo-sandbox --json title,state",
             "gh pr checks 3 --repo csheargm/hagency-demo-sandbox",
             "gh repo view csheargm/hagency-demo-sandbox --json name",
             "gh api 'repos/csheargm/hagency-demo-sandbox/issues?state=open' --paginate",
-            "gh api -X GET /repos/csheargm/hagency-demo-sandbox/pulls/3/files --jq '.[].filename'",
+            "gh api -X GET /repos/csheargm/hagency-demo-sandbox/pulls/3/files",
+            "gh api repos/csheargm/hagency-demo-sandbox/issues/4/comments",
         ] {
             assert!(allowed(line, REPO), "{line}");
         }
@@ -161,6 +175,17 @@ mod tests {
             "gh api repos/csheargm/hagency-demo-sandbox/../../other/repo",
             "gh api graphql -f query=x",
             "gh api --hostname evil.example repos/csheargm/hagency-demo-sandbox",
+            // GPT review: gh's jq reads the environment (the token).
+            "gh issue list -R csheargm/hagency-demo-sandbox --jq env",
+            "gh api repos/csheargm/hagency-demo-sandbox/issues -q env.GH_TOKEN",
+            "gh issue list -R csheargm/hagency-demo-sandbox --template x",
+            // GPT review: free-form search can reach other repositories.
+            "gh issue list -R csheargm/hagency-demo-sandbox --search 'repo:other/repo'",
+            // GPT review: only issue and pull request routes.
+            "gh api repos/csheargm/hagency-demo-sandbox/contents/secrets.txt",
+            "gh api repos/csheargm/hagency-demo-sandbox/actions/runs",
+            "gh api repos/csheargm/hagency-demo-sandbox/issues/%2e%2e",
+            "gh api 'repos/csheargm/hagency-demo-sandbox/issues?q=repo:other/repo'",
         ] {
             assert!(!allowed(line, REPO), "{line}");
         }

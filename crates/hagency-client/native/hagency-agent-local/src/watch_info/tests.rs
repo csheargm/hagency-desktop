@@ -68,3 +68,13 @@ fn one_line_strips_controls_and_bounds_length() {
     assert_eq!(one_line(" a\nb\u{7}c "), "a b c");
     assert_eq!(one_line(&"é".repeat(300)).len(), 254);
 }
+
+#[test]
+fn a_non_owner_sees_only_this_rooms_watches_in_the_own_block() {
+    let (_t, mut ledger) = ledger();
+    ledger.set_work(OWNER, "agt_yue", vec![rules("acme/app", DEV), rules("acme/private", OTHER)]).unwrap();
+    let all = ledger.watch_entries("agt_yue").unwrap();
+    assert_eq!(visible_to(all.clone(), DEV, OWNER, OWNER).len(), 2);
+    let shown = render_own(&visible_to(all, DEV, "@anna:example.org", OWNER), DEV, OWNER);
+    assert!(shown.contains("acme/app") && !shown.contains("acme/private") && !shown.contains(OTHER));
+}

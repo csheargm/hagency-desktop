@@ -25,10 +25,42 @@ pub struct WatchesChanged {
 }
 
 type Loaded = Result<Vec<RoomWatch>, String>;
-static STORE: LazyLock<Mutex<HashMap<OwnedRoomId, Loaded>>> = LazyLock::new(Default::default);
+/// Keyed by signed-in account and room, so another account on this device
+/// never sees these rows (GPT review); each key keeps its newest request.
+type Key = (String, OwnedRoomId);
+#[derive(Default)]
+struct Store {
+    loaded: HashMap<Key, Loaded>,
+    latest: HashMap<Key, u64>,
+    next: u64,
+}
+static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
 
+fn account() -> String {
+    crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default()
+}
+fn store() -> std::sync::MutexGuard<'static, Store> {
+    STORE.lock().unwrap_or_else(|p| p.into_inner())
+}
 pub fn current(room: &RoomId) -> Option<Loaded> {
-    STORE.lock().unwrap_or_else(|p| p.into_inner()).get(room).cloned()
+    store().loaded.get(&(account(), room.to_owned())).cloned()
+}
+/// Starts a request for `key`; its ticket.
+fn begin(key: &Key) -> u64 {
+    let mut store = store();
+    store.next += 1;
+    let ticket = store.next;
+    store.latest.insert(key.clone(), ticket);
+    ticket
+}
+/// Keeps `loaded` only when `ticket` is still the newest request for `key`.
+fn finish(key: Key, ticket: u64, loaded: Loaded) -> bool {
+    let mut store = store();
+    if store.latest.get(&key) != Some(&ticket) {
+        return false;
+    }
+    store.loaded.insert(key, loaded);
+    true
 }
 
 /// The rows for `room` from the Agents list and each Agent's saved watch
@@ -69,10 +101,17 @@ async fn load(room: &str) -> Loaded {
 
 /// Reloads `room`'s list; the result (or the reason it failed) is shown in the tab.
 pub fn refresh(room: &RoomId) {
-    let room = room.to_owned();
+    let key = (account(), room.to_owned());
+    let ticket = begin(&key);
     crate::sliding_sync::spawn_async_task(async move {
-        let loaded = load(room.as_str()).await;
-        STORE.lock().unwrap_or_else(|p| p.into_inner()).insert(room.clone(), loaded);
-        Cx::post_action(WatchesChanged { room_id: room });
+        let loaded = load(key.1.as_str()).await;
+        // A reply for an account that signed out meanwhile is dropped.
+        if account() != key.0 {
+            return;
+        }
+        let room_id = key.1.clone();
+        if finish(key, ticket, loaded) {
+            Cx::post_action(WatchesChanged { room_id });
+        }
     });
 }

@@ -43,3 +43,13 @@ fn unreadable_roster_is_an_error_and_empty_says_so() {
     assert!(panel::notice(Some(&Ok(empty))).unwrap().contains("No Agent watches"));
     assert!(panel::notice(Some(&Err("down".into()))).unwrap().contains("down"));
 }
+
+#[test]
+fn a_superseded_refresh_is_dropped_and_accounts_do_not_share_rows() {
+    let room: OwnedRoomId = "!cache:example.org".try_into().unwrap();
+    let key = ("@a:example.org".to_owned(), room.clone());
+    let (old, new) = (begin(&key), begin(&key));
+    assert!(finish(key.clone(), new, Ok(Vec::new())));
+    assert!(!finish(key.clone(), old, Err("stale".into())), "an older reply never overwrites a newer one");
+    assert!(store().loaded.get(&("@b:example.org".to_owned(), room)).is_none());
+}

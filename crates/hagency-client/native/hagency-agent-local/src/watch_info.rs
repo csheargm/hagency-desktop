@@ -128,6 +128,16 @@ pub fn render_own(entries: &[WatchEntry], room: &str, owner: &str) -> String {
     lines.join("\n")
 }
 
+/// What the Agent's own block may show in this turn: everything for its
+/// owner; for anyone else only the watches that report to this room, so a
+/// requester never learns another room's repository or settings (GPT review).
+pub fn visible_to(entries: Vec<WatchEntry>, room: &str, requester: &str, owner: &str) -> Vec<WatchEntry> {
+    if requester == owner {
+        return entries;
+    }
+    entries.into_iter().filter(|e| e.room_id == room).collect()
+}
+
 /// The `room_watches` result: who watches what, for this room only.
 pub fn render_room(watches: &[RoomWatch]) -> String {
     let rows: Vec<Value> = watches.iter().map(|w| json!({

@@ -28,6 +28,7 @@ pub(super) async fn own_block(source: &std::sync::Arc<Source>) -> Option<String>
     blocking(move || {
         let d = &s.gate.expected;
         let entries = ledger(&s)?.watch_entries(&d.agent_id).map_err(|_| "watches_unavailable")?;
+        let entries = watch_info::visible_to(entries, &d.room_id, &d.requester_mxid, &s.gate.console.pin.owner);
         Ok(watch_info::render_own(&entries, &d.room_id, &s.gate.console.pin.owner))
     })
     .await
