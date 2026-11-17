@@ -32,6 +32,9 @@ use std::{
 const MAX_EVENTS: usize = 64;
 const ADMISSION_BARRIER: Duration = Duration::from_secs(15);
 const MONITOR_PERIOD: Duration = Duration::from_secs(15);
+/// How often a hosted owner re-enters consented Agent startup recovery, so a
+/// service watcher that ended (and took its Room workers with it) restarts.
+const HOST_RECOVERY_PERIOD: Duration = Duration::from_secs(30);
 const READ_PERIOD: Duration = Duration::from_secs(60);
 const MAX_PAGES: usize = 8;
 const PROVIDER_PERIOD: Duration = Duration::from_secs(300);
@@ -868,6 +871,8 @@ async fn monitor(
 ) {
     let mut last_read: Option<tokio::time::Instant> = None;
     let mut last_provider: Option<tokio::time::Instant> = None;
+    let mut last_recovery = Some(tokio::time::Instant::now());
+    let recovering = Arc::new(AtomicBool::new(false));
     let mut management = None;
     loop {
         tokio::time::sleep(MONITOR_PERIOD).await;
@@ -916,6 +921,23 @@ async fn monitor(
                 }
             }
             AuthState::SignInRequired | AuthState::Retired => return,
+        }
+        // TODO(R4): runtime.rs is over budget; move this monitor into daemon/monitor.rs.
+        if last_recovery.is_none_or(|t| t.elapsed() >= HOST_RECOVERY_PERIOD) && !recovering.swap(true, Ordering::AcqRel) {
+            last_recovery = Some(tokio::time::Instant::now());
+            // Its own task: a slow start must not stall authorization fencing.
+            // A live watcher answers agent_runtime_already_active; takeover is never requested.
+            let (owner, recovering) = (owner.clone(), recovering.clone());
+            tokio::spawn(async move {
+                match owner.restore_runtime_intents().await {
+                    Ok(value) => {
+                        let restarted = value["recoveries"].as_array().map_or(0, |items| items.iter().filter(|item| item["restored"] == true).count());
+                        if restarted > 0 { tracing::warn!(restarted, "Agent host was not running; restarted it"); }
+                    }
+                    Err(error) => tracing::info!(code = %error.code, "Agent host check unavailable"),
+                }
+                recovering.store(false, Ordering::Release);
+            });
         }
         if last_provider.is_none_or(|t|t.elapsed()>=PROVIDER_PERIOD) {
             last_provider=Some(tokio::time::Instant::now());

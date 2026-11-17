@@ -64,7 +64,7 @@ async fn retirement_wakes_and_stops_the_watchdog_without_a_pass() {
         p.fetch_add(1, Ordering::SeqCst);
         async { Ok(json!({})) }
     }));
-    let worker = Worker { control, task: Default::default() };
+    let worker = Worker { control, tasks: Default::default() };
     worker.retire();
     tokio::time::timeout(Duration::from_secs(5), task).await.expect("retire wakes the sleeping watchdog").unwrap();
     assert_eq!(passes.load(Ordering::SeqCst), 0);

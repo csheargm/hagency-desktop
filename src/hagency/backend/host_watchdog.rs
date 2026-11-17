@@ -16,7 +16,7 @@ use std::{
 /// How often a healthy host is checked.
 const CHECK_EVERY: Duration = Duration::from_secs(30);
 /// The longest wait after repeated failed restarts.
-const MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_BACKOFF: Duration = Duration::from_secs(120);
 /// The reply of a start that found its watcher still running.
 const ALREADY_RUNNING: &str = "agent_runtime_already_active";
 
@@ -25,7 +25,8 @@ const ALREADY_RUNNING: &str = "agent_runtime_already_active";
 pub(super) struct Pass {
     /// Agents whose host had stopped and was started again.
     pub restarted: Vec<String>,
-    /// Agents whose host is stopped and could not start, with the code.
+    /// Agents whose check or restart failed, with the code. A transient
+    /// server error lands here too, so this is not proof the host is down.
     pub failed: Vec<(String, String)>,
 }
 
@@ -61,7 +62,9 @@ struct Control {
 #[derive(Default)]
 pub(super) struct Worker {
     control: Arc<Control>,
-    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// One task per owner instance: a replaced (stale) owner's task ends on
+    /// its own once that owner is retired, and draining waits for all.
+    tasks: tokio::sync::Mutex<Vec<(NativeOwner, tokio::task::JoinHandle<()>)>>,
 }
 
 impl Worker {
@@ -70,13 +73,13 @@ impl Worker {
         self.control.wake.notify_one();
     }
     pub(super) async fn drain(&self) {
-        let mut task = self.task.lock().await;
-        if let Some(handle) = task.as_mut() {
+        let mut tasks = self.tasks.lock().await;
+        for (_, handle) in tasks.iter_mut() {
             // A join error means the task panicked or was aborted; either way
             // it no longer runs, which is all draining needs.
             let _ = handle.await;
         }
-        task.take();
+        tasks.clear();
     }
 }
 
@@ -87,20 +90,23 @@ impl Service {
         if self.check().is_err() || control.retired.load(Ordering::Acquire) {
             return;
         }
-        let mut task = self.0.host_watchdog.task.lock().await;
-        if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
+        let mut tasks = self.0.host_watchdog.tasks.lock().await;
+        tasks.retain(|(_, handle)| !handle.is_finished());
+        if tasks.iter().any(|(watched, _)| watched.same_instance(owner)) {
             return;
         }
         let weak = Arc::downgrade(&self.0);
+        let watched = owner.clone();
+        let alive = move || !watched.is_retired() && weak.upgrade().is_some_and(|inner| Service(inner).check().is_ok());
         let owner = owner.clone();
-        let alive = move || weak.upgrade().is_some_and(|inner| Service(inner).check().is_ok());
-        *task = Some(crate::sliding_sync::backend_runtime().spawn(async move {
+        let key = owner.clone();
+        tasks.push((key, crate::sliding_sync::backend_runtime().spawn(async move {
             watch(control, alive, next_delay, move || {
                 let owner = owner.clone();
                 async move { owner.restore_runtime_intents().await.map_err(|e| e.code) }
             })
             .await;
-        }));
+        })));
     }
 }
 
@@ -126,7 +132,7 @@ where
                     makepad_widgets::warning!("Agent host for {agent} was not running on this Mac; restarted it");
                 }
                 for (agent, code) in &pass.failed {
-                    makepad_widgets::warning!("Agent host for {agent} is not running and could not restart: {code}");
+                    makepad_widgets::warning!("Agent host check for {agent} failed: {code}");
                 }
                 failures = if pass.failed.is_empty() { 0 } else { failures.saturating_add(1) };
                 if !pass.restarted.is_empty() { makepad_widgets::SignalToUI::set_ui_signal(); }
