@@ -50,15 +50,14 @@ pub(crate) async fn run(worker: &Worker<'_>, saved: &Value) -> WorkOutcome {
     };
     for entry in &work {
         let seen: HashSet<i64> = saved["workSeen"][&entry.repo].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
-        // No roles (ADR 0017): every repository is both fixed and reviewed;
-        // the stored role is ignored.
-        let done = match develop(worker, entry, &login, &seen).await {
-            Ok(handed) => review(worker, entry, &login).await.map(|_| handed),
-            Err(error) => Err(error),
-        };
-        match done {
+        // No roles (ADR 0017): every repository is both fixed and reviewed,
+        // each step on its own so one failing never stops the other (GPT review P1).
+        match develop(worker, entry, &login, &seen).await {
             Ok(handed) => outcome.handed += handed,
             Err(error) => outcome.errors.push(format!("{}: {error}", entry.repo)),
+        }
+        if let Err(error) = review(worker, entry, &login).await {
+            outcome.errors.push(format!("{}: {error}", entry.repo));
         }
     }
     outcome
