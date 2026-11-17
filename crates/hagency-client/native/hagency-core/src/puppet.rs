@@ -1,10 +1,10 @@
 //! The one rule for recognising a Hagency Agent puppet by its Matrix ID.
 //!
 //! Hagency servers reserve every `_hagency_` localpart for their Appservice
-//! (exclusive namespace `^@_hagency_[a-z0-9_-]+:<server>$`). Inside it, the
-//! service account is `_hagency_service`; every other account is an Agent:
-//! older ones are `_hagency_agt_<ulid>`, new ones `_hagency_<owner>_<name>[-N]`
-//! (server ADR 0002). Never derive an Agent ID from the puppet ID or the
+//! (exclusive namespace `^@_hagency_[a-z0-9_-]+:<server>$`). Agents are
+//! `_hagency_agt_<ulid>` (older) or `_hagency_<owner>_<name>[-N]` (server
+//! ADR 0002); both have a `_` after the prefix. Single-word names such as
+//! `_hagency_service` are service accounts. Never derive an Agent ID from the puppet ID or the
 //! reverse: read the pairing from the server's Agent listing.
 //!
 //! This is a naming test, not authority: another server can name any account
@@ -20,7 +20,9 @@ pub fn is_puppet_localpart(localpart: &str) -> bool {
     localpart
         .strip_prefix(RESERVED_LOCALPART_PREFIX)
         .is_some_and(|rest| {
-            !rest.is_empty()
+            // Both forms carry a `_` after the prefix (`agt_<ulid>`,
+            // `<owner>_<name>`); single-word names are service accounts.
+            rest.split_once('_').is_some_and(|(head, tail)| !head.is_empty() && !tail.is_empty())
                 && rest.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
         })
         && localpart != SERVICE_LOCALPART
@@ -45,6 +47,9 @@ mod tests {
         for other in [
             "_hagency_service",
             "_hagency_",
+            "_hagency_bridge",
+            "_hagency__x",
+            "_hagency_x_",
             "alice",
             "hagency_agt_x",
             "_Hagency_agt_x",

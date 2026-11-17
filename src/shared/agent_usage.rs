@@ -24,8 +24,10 @@ fn number_before<'a>(text: &'a str, delimiter: &str) -> Option<(u64, &'a str)> {
     }
     Some((number.parse().ok()?, rest))
 }
+// TODO(R4): agent_usage.rs is over budget; split the suffix parser from the
+// usage widget along that seam.
 pub fn parse_usage<'a>(sender: &str, body: &'a str, formatted: bool) -> Option<UsageInfo<'a>> {
-    if !sender.starts_with("_hagency_agt_") || formatted {
+    if !hagency_core::puppet::is_puppet_localpart(sender) || formatted {
         return None;
     }
     let (answer, suffix) = body.rsplit_once("\n\n✅ 本轮处理已结束 · 已运行 ")?;
@@ -239,6 +241,8 @@ mod tests {
         assert_eq!(usage.answer, "Answer");
         assert_eq!(usage.total, 50);
         assert!(parse_usage("alice", BODY, false).is_none());
+        assert_eq!(parse_usage("_hagency_ann_helper", BODY, false).unwrap().answer, "Answer", "readable puppet IDs");
+        assert!(parse_usage("_hagency_service", BODY, false).is_none());
         assert!(parse_usage("_hagency_agt_01abc", BODY, true).is_none());
         assert!(
             parse_usage(
