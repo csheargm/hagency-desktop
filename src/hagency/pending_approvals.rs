@@ -609,7 +609,7 @@ pub fn describe(row: &Value) -> (String, String) {
                 format("{agent} asks for a permission", &[agent()])
             } else {
                 let tool = params["tool"].as_str().unwrap_or("tool");
-                lines.push(tool_target(LOCAL_METHOD, tool, input));
+                lines.push(tool_target(LOCAL_METHOD, tool, input, params["cwd"].as_str()));
                 if let Some(cwd) = params["cwd"].as_str().filter(|cwd| !cwd.is_empty()) {
                     lines.push(format("In {path}", &[("path", cwd.to_owned())]));
                 }
