@@ -227,6 +227,10 @@ impl AgentPanelRef {
     pub fn open(&self, cx: &mut Cx, agent: &Value) {
         if let Some(mut inner) = self.borrow_mut() { inner.open(cx, agent); }
     }
+    /// Shows the Settings tab of the open Agent.
+    pub fn show_settings(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() { inner.set_tab(cx, Tab::Settings); }
+    }
 }
 
 #[cfg(test)]

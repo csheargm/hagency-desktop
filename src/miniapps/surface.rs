@@ -273,7 +273,7 @@ impl MiniAppsSurface {
             self.panel(cx).action(cx, ModalRef::default(), &MiniAppsAction::Open);
         }
         self.management_page = Some(matches!(action,
-            HagencyAction::OpenAgents | HagencyAction::OpenAgent {..} | HagencyAction::NewAgent {..} | HagencyAction::AgentRun {..}));
+            HagencyAction::OpenAgents | HagencyAction::OpenAgent {..} | HagencyAction::OpenAgentSettings {..} | HagencyAction::NewAgent {..} | HagencyAction::AgentRun {..}));
         self.view.hagency_panel(cx, ids!(management_panel)).action(cx, action);
         self.update_page(cx);
     }

@@ -411,6 +411,11 @@ impl JoinLeaveRoomModal {
                 description = crate::i18n::format("Are you sure you want to join \"{room}\"?", &[("room", details.room_name_id().to_string())]);
                 tip_button = crate::i18n::tr("Join");
             }
+            // TODO(R4): this file is over budget; split per-kind wording into its own module.
+            JoinLeaveModalKind::LeaveRoom(room) if crate::home::chat_menu_routes::own_agent_dm(room.room_id()).is_some() => {
+                (title, description) = crate::home::chat_menu_routes::agent_chat_leave_text(&room.room_name_id().to_string());
+                tip_button = "Leave";
+            }
             JoinLeaveModalKind::LeaveRoom(room) => {
                 title = "Leave this room?";
                 description = crate::i18n::format("Are you sure you want to leave \"{room}\"?\n\nIf this is a private room, you won't be able to join this room without being re-invited to it.", &[("room", room.room_name_id().to_string())]);

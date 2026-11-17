@@ -12,6 +12,7 @@ pub mod account_list;
 pub mod add_room;
 pub(crate) mod back_swipe;
 pub mod chat_actions;
+pub(crate) mod chat_menu_routes;
 pub mod room_history;
 pub mod joined_spaces;
 pub mod project_tree;

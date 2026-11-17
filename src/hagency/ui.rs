@@ -32,6 +32,8 @@ pub enum HagencyAction {
     OpenAgents,
     /// Opens one Agent's local settings (private chat, encryption, Rooms).
     OpenAgent {agent_id:String},
+    /// Opens one Agent's panel on its Settings tab (the Chats menu's Settings).
+    OpenAgentSettings {agent_id:String},
     AgentRun {agent_id:String,binding_id:String},
     NewAgent {
         project_id: Option<String>,
@@ -1018,6 +1020,9 @@ pub struct HagencyPanel {
     #[rust] direct_agent: String,
     #[rust] direct_state: Value,
     #[rust] wanted_agent: Option<String>,
+    /// `wanted_agent` opens on the panel's Settings tab (`OpenAgentSettings`).
+    // TODO(R4): ui.rs is over budget; Agent-panel wants belong with ui_agent_panel.rs.
+    #[rust] wanted_agent_settings: bool,
     /// The Agent was opened straight from My Agents (`OpenAgent`): the panel's
     /// Back returns there instead of to the older Local agents list.
     #[rust] back_to_my_agents: bool,
@@ -2484,9 +2489,10 @@ impl HagencyPanel {
                     .text_input(cx, ids!(requester))
                     .set_text(cx, string(value, "ownerMxid"));
                 if let Some(wanted)=self.wanted_agent.take() {
+                    let settings=std::mem::take(&mut self.wanted_agent_settings);
                     if let Some(index)=self.agents.iter().position(|a|string(a,"id") == wanted) {
                         // A Run request needs the full detail page; opening an Agent shows the panel.
-                        if self.wanted_run.is_some() {self.agent_detail(cx,index);} else {self.open_agent_panel(cx,index);}
+                        if self.wanted_run.is_some() {self.agent_detail(cx,index);} else {self.open_wanted_agent_panel(cx,index,settings);}
                         return;
                     }
                 }
@@ -4353,9 +4359,10 @@ impl HagencyPanelRef {
         };
         panel.cancel_direct_retry(cx);
         panel.cancel_read_wait(cx);
-        if matches!(action,HagencyAction::AgentRun {..}|HagencyAction::OpenAgent {..}|HagencyAction::NewAgent {..}|HagencyAction::NewProject) {panel.reset_detail_scroll(cx);}
+        if matches!(action,HagencyAction::AgentRun {..}|HagencyAction::OpenAgent {..}|HagencyAction::OpenAgentSettings {..}|HagencyAction::NewAgent {..}|HagencyAction::NewProject) {panel.reset_detail_scroll(cx);}
         panel.wanted_run=None;
-        panel.back_to_my_agents=matches!(action,HagencyAction::OpenAgent {..});
+        panel.back_to_my_agents=matches!(action,HagencyAction::OpenAgent {..}|HagencyAction::OpenAgentSettings {..});
+        panel.wanted_agent_settings=matches!(action,HagencyAction::OpenAgentSettings {..});
         if matches!(action, HagencyAction::Close) {
             panel.active = false;
             panel.request = nonce();
@@ -4490,10 +4497,10 @@ impl HagencyPanelRef {
                 }
                 panel.run(cx, Target::Journal, Command::Creations);
             }
-            HagencyAction::OpenAgents | HagencyAction::OpenAgent { .. } | HagencyAction::NewAgent { .. } | HagencyAction::AgentRun {..} => {
+            HagencyAction::OpenAgents | HagencyAction::OpenAgent { .. } | HagencyAction::OpenAgentSettings { .. } | HagencyAction::NewAgent { .. } | HagencyAction::AgentRun {..} => {
                 panel.set_page(cx, Page::Agents);
                 if let HagencyAction::AgentRun {agent_id,binding_id}=action {panel.wanted_agent=Some(agent_id.clone()); panel.wanted_run=Some((agent_id.clone(),binding_id.clone()));}
-                if let HagencyAction::OpenAgent {agent_id}=action {panel.wanted_agent=Some(agent_id.clone());}
+                if let HagencyAction::OpenAgent {agent_id} | HagencyAction::OpenAgentSettings {agent_id}=action {panel.wanted_agent=Some(agent_id.clone());}
                 if matches!(action, HagencyAction::NewAgent { .. }) && panel.no_local_host().is_none() {
                     panel
                         .view
