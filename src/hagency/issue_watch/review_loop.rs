@@ -57,6 +57,15 @@ pub(crate) async fn advance(io: &impl LoopIo, target: &Target, ctx: &LoopCtx<'_>
     if !ctx.maintainer {
         return Ok(());
     }
+    advance_merge(io, target, ctx).await
+}
+
+/// The merge step alone: for the owner's own pull request, which this
+/// owner's Agent never reviews (another account's approval stands in).
+pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopCtx<'_>) -> Result<(), String> {
+    let step = |name: &str| json!({"step": name, "pr": target.url, "head": target.head});
+    let taken = |reply: Value| reply["taken"] == true;
+    fence(io)?;
     if taken(io.review(json!({"stepTaken": step("merge")})).await?) {
         return Ok(());
     }

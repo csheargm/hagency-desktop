@@ -106,3 +106,19 @@ fn notices_carry_no_pull_request_text_and_fixed_transaction_ids() {
     let review = LoopNotice::ReviewRequested { target: target(), reviewer: anna() };
     assert_ne!(review.txn_id("a"), notice.txn_id("a"));
 }
+
+#[tokio::test]
+async fn the_owners_own_pull_request_skips_self_review_and_still_passes_the_gate() {
+    let agent = anna();
+    let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
+    let ready = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+    for _ in 0..2 {
+        super::review_loop::advance_merge(&ready, &target(), &ctx).await.unwrap();
+    }
+    assert!(matches!(&ready.posted.borrow()[..], [LoopNotice::Approved { .. }]), "merged once, never asked to review itself");
+    let red_ci = Fake::new(json!({"decision": "wait", "head": HEAD}));
+    super::review_loop::advance_merge(&red_ci, &target(), &ctx).await.unwrap();
+    assert!(red_ci.posted.borrow().is_empty(), "the gate still waits on CI");
+    let paused = Fake { paused: true, ..Fake::new(json!({"decision": "merge", "head": HEAD})) };
+    assert!(super::review_loop::advance_merge(&paused, &target(), &ctx).await.is_err());
+}

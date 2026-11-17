@@ -231,3 +231,26 @@ fn the_earliest_unexpired_eligible_claim_holds_an_issue() {
     assert_eq!(claim_authors(&comments, "anna", now), vec!["betty", "mallory"]);
     assert!(comments_url("https://api.github.com", "acme/app", 0, 1).is_err());
 }
+
+#[test]
+fn the_owners_own_pull_request_merges_only_on_another_accounts_approval_of_the_head() {
+    use super::wire::{approved_by_other, own_ready_pulls, parse_pulls, parse_reviews, reviews_url};
+    let (head, old) = ("a".repeat(40), "b".repeat(40));
+    let pulls = parse_pulls(&json!([
+        {"number": 40, "html_url": "https://github.com/acme/app/pull/40", "head": {"sha": head}, "user": {"login": "Anna"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 41, "html_url": "https://github.com/acme/app/pull/41", "head": {"sha": head}, "user": {"login": "bob"}, "created_at": "2026-11-16T10:00:00Z"},
+        {"number": 42, "html_url": "https://github.com/acme/app/pull/42", "draft": true, "head": {"sha": head}, "user": {"login": "anna"}, "created_at": "2026-11-16T10:00:00Z"}
+    ]).to_string()).unwrap();
+    let own: Vec<u64> = own_ready_pulls(&pulls, "anna", 1_700_000_000).iter().map(|p| p.number).collect();
+    assert_eq!(own, [40], "the owner's own ready pull requests only");
+    let review = |login: &str, state: &str, commit: &str, body: &str| json!({"user": {"login": login}, "state": state, "commit_id": commit, "body": body});
+    let reviews = |list: Vec<serde_json::Value>| parse_reviews(&serde_json::Value::Array(list).to_string()).unwrap();
+    let bound = format!("LGTM at {head}");
+    assert!(approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound)]), "anna", &head));
+    assert!(!approved_by_other(&reviews(vec![review("ANNA", "APPROVED", &head, &bound)]), "anna", &head), "the author's own approval never counts");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &old, &format!("ok {old}"))]), "anna", &head), "an older head");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, "LGTM")]), "anna", &head), "an approval not naming its commit is unbound");
+    assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound), review("bob", "CHANGES_REQUESTED", &head, "")]), "anna", &head), "the latest decisive review wins");
+    assert!(parse_reviews("{}").is_err());
+    assert!(reviews_url("https://api.github.com", "acme/../x", 1, 1).is_err());
+}

@@ -2,7 +2,8 @@
 //! owner listed; there are no roles. In each, the Agent claims new issues on GitHub (a
 //! claim comment; the earliest unexpired claim holds) and hands them to the
 //! Agent, and runs the review loop on other people's pull requests (merging
-//! where the owner's GitHub permission allows). One repository's failure is reported and never stops the
+//! where the owner's GitHub permission allows); the owner's own pull requests
+//! go to the merge step once another account approved their exact head. One repository's failure is reported and never stops the
 //! others. GitHub is the record; the owner's token is the only identity used.
 use super::handoff::{self, Handoff};
 use super::loop_notice::LoopNotice;
@@ -10,7 +11,7 @@ use super::review_loop::{self, LoopCtx, LoopIo};
 use crate::hagency::backend::Service;
 use ::hagency::issue_watch::{
     Client, Comment, GITHUB_API, Issue, IssueWatch, WatchMode, WatchSetting, claim_authors, claim_body, claim_holder, fetch_comments, fetch_login, fetch_open_issues,
-    fetch_open_pulls, fetch_permission, others_ready_pulls, post_comment, select,
+    fetch_open_pulls, fetch_permission, others_ready_pulls, own_ready_pulls, approved_by_other, fetch_reviews, PullRequest, post_comment, select,
 };
 use ::hagency::issue_watch::{IssueFilter, OwnerRules};
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
@@ -210,7 +211,8 @@ async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
     let trusted = |author: &str| entry.trusted_authors.iter().any(|t| t == "*" || t.eq_ignore_ascii_case(author));
     let picks = others_ready_pulls(&pulls, login, entry.since);
-    if picks.is_empty() {
+    let own = own_ready_pulls(&pulls, login, entry.since);
+    if picks.is_empty() && own.is_empty() {
         return Ok(());
     }
     // Merging follows the owner's own GitHub permission, read with the
@@ -223,6 +225,22 @@ async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<
         // Anyone's pull request is reviewed; only a trusted author's goes on to a merge.
         let ctx = LoopCtx { agent: &agent, maintainer: can_merge && trusted(&pr.author), permission: permission.as_deref() };
         review_loop::advance(&io, &review_loop::target_of(&entry.repo, pr), &ctx).await?;
+    }
+    if can_merge {
+        merge_own(worker, entry, &own, &io, &LoopCtx { agent: &agent, maintainer: true, permission: permission.as_deref() }).await?;
+    }
+    Ok(())
+}
+
+/// The owner's own pull requests (from claimed or planned issues) go to the
+/// merge step only once another account approves exactly their head; the
+/// merge gate (CI, policy, approvals) still judges them as any other.
+async fn merge_own(worker: &Worker<'_>, entry: &OwnerRules, own: &[&PullRequest], io: &LiveLoop<'_>, ctx: &LoopCtx<'_>) -> Result<(), String> {
+    for pr in own {
+        let reviews = fetch_reviews(worker.client, GITHUB_API, &entry.repo, pr.number, worker.token).await.map_err(|e| e.to_string())?;
+        if approved_by_other(&reviews, &pr.author, &pr.head_sha) {
+            review_loop::advance_merge(io, &review_loop::target_of(&entry.repo, pr), ctx).await?;
+        }
     }
     Ok(())
 }

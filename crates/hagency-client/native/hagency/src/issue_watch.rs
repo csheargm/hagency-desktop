@@ -4,8 +4,8 @@
 //! second HTTP stack. Nothing here writes to GitHub.
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API};
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
-use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, pulls_url, comments_url};
-pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, others_ready_pulls};
+use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, parse_reviews, pulls_url, comments_url, reviews_url};
+pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
 
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;
@@ -34,6 +34,19 @@ async fn fetch_page(client: &Client, url: &str, token: &str) -> Result<Vec<Issue
 /// The newest open pull requests of `repo` (review loop, ADR 0015).
 pub async fn fetch_open_pulls(client: &Client, api: &str, repo: &str, token: &str) -> Result<Vec<PullRequest>, FetchError> {
     parse_pulls(&get(client, &pulls_url(api, repo)?, token).await?)
+}
+
+/// Every review of pull request `number` as `(login, state, commit)`,
+/// oldest first, following full pages up to the engine's page cap.
+pub async fn fetch_reviews(client: &Client, api: &str, repo: &str, number: u64, token: &str) -> Result<Vec<(String, String, String)>, FetchError> {
+    let mut reviews = Vec::new();
+    let mut page = Some(1);
+    while let Some(current) = page {
+        let batch = parse_reviews(&get(client, &reviews_url(api, repo, number, current)?, token).await?)?;
+        page = next_page(current, batch.len());
+        reviews.extend(batch);
+    }
+    Ok(reviews)
 }
 
 /// The GitHub login `token` belongs to.

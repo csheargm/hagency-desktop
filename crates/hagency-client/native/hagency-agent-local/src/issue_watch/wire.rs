@@ -137,7 +137,53 @@ pub fn pulls_url(api: &str, repo: &str) -> Result<String, FetchError> {
 /// Other people's ready pull requests opened since `since`: never one
 /// `login` (this device's own GitHub login) wrote.
 pub fn others_ready_pulls<'a>(pulls: &'a [PullRequest], login: &str, since: i64) -> Vec<&'a PullRequest> {
-    pulls.iter().filter(|pr| !pr.draft && !pr.author.is_empty() && !pr.author.eq_ignore_ascii_case(login) && pr.created_at >= since).collect()
+    ready_since(pulls, since).filter(|pr| !pr.author.eq_ignore_ascii_case(login)).collect()
+}
+
+/// `login`'s own ready pull requests opened since `since` (the ones its
+/// Agent opened from claimed or planned issues): merge candidates only,
+/// never reviewed by the same account.
+pub fn own_ready_pulls<'a>(pulls: &'a [PullRequest], login: &str, since: i64) -> Vec<&'a PullRequest> {
+    ready_since(pulls, since).filter(|pr| pr.author.eq_ignore_ascii_case(login)).collect()
+}
+
+fn ready_since(pulls: &[PullRequest], since: i64) -> impl Iterator<Item = &PullRequest> {
+    pulls.iter().filter(move |pr| !pr.draft && !pr.author.is_empty() && pr.created_at >= since)
+}
+
+#[derive(Deserialize)]
+struct WireReview {
+    user: Option<WireUser>,
+    state: String,
+    #[serde(default)]
+    commit_id: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+/// GitHub's JSON review list as `(login, state, commit)`, oldest first.
+/// An APPROVED review whose body does not name its commit reads `UNBOUND`
+/// (the merge gate's rule: the reviewer may have read another head).
+pub fn parse_reviews(body: &str) -> Result<Vec<(String, String, String)>, FetchError> {
+    let wire: Vec<WireReview> = serde_json::from_str(body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    Ok(wire.into_iter().filter_map(|r| {
+        let (login, commit) = (r.user?.login, r.commit_id.unwrap_or_default());
+        let bound = !commit.is_empty() && r.body.unwrap_or_default().contains(&commit);
+        let state = if r.state == "APPROVED" && !bound { "UNBOUND".to_owned() } else { r.state };
+        Some((login, state, commit))
+    }).collect())
+}
+
+/// Whether an account other than `author` approves exactly `head` with its
+/// latest decisive review.
+pub fn approved_by_other(reviews: &[(String, String, String)], author: &str, head: &str) -> bool {
+    let others: Vec<_> = reviews.iter().filter(|(who, _, _)| !who.eq_ignore_ascii_case(author)).cloned().collect();
+    crate::merge_policy::github::approved_on(&others, head)
+}
+
+pub fn reviews_url(api: &str, repo: &str, number: u64, page: u32) -> Result<String, FetchError> {
+    pulls_url(api, repo)?;
+    Ok(format!("{api}/repos/{repo}/pulls/{number}/reviews?per_page={PAGE_SIZE}&page={page}"))
 }
 
 /// The first line of a claim comment (ADR 0016); GitHub is the claim record.
