@@ -1026,6 +1026,7 @@ async fn permission(
     arguments: Value,
     cwd: &Path,
     queue: &ApprovalQueue,
+    github: &crate::merge_policy::github::GhCli,
 ) -> claude_turn::ToolAnswer {
     use claude_turn::ToolAnswer;
     let Ok(versions) = ledger.policy_snapshot(scope) else {
@@ -1044,13 +1045,16 @@ async fn permission(
     // Opt-in agent auto-merge: a policy-qualified merge or an approving review
     // is answered without a card; every other case asks exactly as before.
     // TODO(R4): runtime.rs is over budget; split Claude permission handling into runtime/permission.rs.
-    if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), &crate::merge_policy::github::GhCli).await {
+    if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, call, now(), github).await {
         return ToolAnswer::allowed(allowed);
     }
     // Owner push trust: checked once, authorized, and run exactly as pinned;
     // network and branch steps are run by the host itself (ADR 0015).
     match ledger.trusted_publish(owner, &proposal, now()) {
-        Ok(Some(step)) => return trusted_answer(step).await,
+        Ok(Some(step)) => {
+            let recheck = ledger.push_trust_recheck(&proposal);
+            return trusted_answer(step, github.token.clone(), recheck).await;
+        }
         Ok(None) => {}
         Err(_) => return ToolAnswer::Deny,
     }
@@ -1097,6 +1101,7 @@ struct PersonalClaudeHost<'a> {
     context: &'a str,
     dispatch: &'a str,
     queue: &'a ApprovalQueue,
+    github: crate::merge_policy::github::GhCli,
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
@@ -1164,6 +1169,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             arguments,
             directory,
             self.queue,
+            &self.github,
         )
         .await
     }
@@ -1215,6 +1221,7 @@ async fn run_claude(
         context,
         dispatch,
         queue,
+        github: crate::merge_policy::github::GhCli { token: profile.environment.agent_github_token() },
     };
     claude_turn::run(
         wire,
@@ -1492,6 +1499,7 @@ async fn run_octos(
     let mut requests = std::collections::BTreeSet::new();
     let mut returns = std::collections::BTreeSet::new();
     let mut buffered = std::collections::VecDeque::new();
+    let octos_github = crate::merge_policy::github::GhCli { token: profile.environment.agent_github_token() };
     let mut stopping = false;
     let mut steers = OctosSteers::default();
     for _ in 0..16384 {
@@ -1532,6 +1540,7 @@ async fn run_octos(
                     params,
                     &directory,
                     queue,
+                    &octos_github,
                 );
                 tokio::pin!(decision);
                 let allow = loop {
@@ -2061,13 +2070,17 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
 
 /// The answer for a push-trust step; a host step runs here, off the async
 /// threads, and the call only reports its outcome.
-async fn trusted_answer(step: crate::watch_trust::TrustedStep) -> claude_turn::ToolAnswer {
+/// The host step runs as the Agent (`token`), is killed when this future is
+/// dropped (Stop All), and re-checks `recheck` right before pushing.
+async fn trusted_answer(step: crate::watch_trust::TrustedStep, token: Option<String>, recheck: Box<dyn Fn() -> bool + Send + Sync>) -> claude_turn::ToolAnswer {
     use crate::watch_trust::{TrustedStep, host_git};
     match step {
         TrustedStep::Allow => claude_turn::ToolAnswer::Allow,
         TrustedStep::Command(command) => claude_turn::ToolAnswer::AllowCommand(command),
         TrustedStep::Host(step) => {
-            let result = tokio::task::spawn_blocking(move || step.run()).await.unwrap_or_else(|e| Err(e.to_string()));
+            let ctx = host_git::HostCtx::new(token, std::sync::Arc::default(), recheck);
+            let _cancel = host_git::CancelOnDrop(ctx.cancel.clone());
+            let result = tokio::task::spawn_blocking(move || step.run(&ctx)).await.unwrap_or_else(|e| Err(e.to_string()));
             claude_turn::ToolAnswer::AllowCommand(host_git::report_command(&result))
         }
     }

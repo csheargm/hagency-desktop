@@ -9,9 +9,10 @@
 //! command the Agent's call runs instead, with the Agent's own rights.
 //! See docs/adr/0015-host-side-trusted-push.md.
 use super::git::query;
-use std::io::Write;
+pub use super::host_run::{CancelOnDrop, HostCtx};
+use super::host_run::run;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Config of every host network command; with no system or global config
 /// read, this is all the config there is (the scratch repository has none).
@@ -29,8 +30,6 @@ const HOST_CONFIG: [&str; 10] = [
     "transfer.unpackLimit=1",
     "push.followTags=false",
 ];
-/// The only variables a host network command inherits (gh reads its login
-/// from HOME or GH_CONFIG_DIR, or a token variable).
 /// Config of the Agent-run command that applies a host step to the checkout.
 const AGENT_CONFIG: [&str; 6] = [
     "core.hooksPath=/dev/null",
@@ -40,7 +39,13 @@ const AGENT_CONFIG: [&str; 6] = [
     "protocol.file.allow=always",
     "fetch.recurseSubmodules=false",
 ];
-const HOST_ENV: [&str; 9] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"];
+/// The only variables a host network command inherits. No token variable
+/// and no gh config directory: the Agent's own token is set by
+/// [`host_command`] and gh's config points at an empty directory, so the
+/// daemon's GitHub login is never used for the Agent's step (GPT review, Nov 16).
+const HOST_ENV: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"];
+/// The variable gh reads the Agent's token from.
+const TOKEN_ENV: &str = crate::agent_env::GITHUB_TOKEN_VARIABLE;
 
 /// A step the host runs itself when push trust answers the Agent's command.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,16 +68,20 @@ impl Dest {
 }
 
 impl HostStep {
-    /// Run the step; `Ok` is the command the Agent's call runs in its place.
-    pub fn run(&self) -> Result<String, String> {
+    /// Run the step as the Agent (its token in `ctx`); `Ok` is the command
+    /// the Agent's call runs in its place.
+    pub fn run(&self, ctx: &HostCtx) -> Result<String, String> {
         let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
-        self.run_to(&Dest::github(repo))
+        if ctx.token.as_deref().is_none_or(str::is_empty) {
+            return Err("this Agent has no GitHub token of its own".into());
+        }
+        self.run_to(&Dest::github(repo), ctx)
     }
 
-    pub(crate) fn run_to(&self, dest: &Dest) -> Result<String, String> {
+    pub(crate) fn run_to(&self, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
         match self {
-            Self::Push { dir, remote, branch, upstream, .. } => push(dir, remote, branch, *upstream, dest),
-            Self::Fetch { dir, remote, .. } => fetch(dir, remote, dest),
+            Self::Push { dir, remote, branch, upstream, .. } => push(dir, remote, branch, *upstream, dest, ctx),
+            Self::Fetch { dir, remote, .. } => fetch(dir, remote, dest, ctx),
         }
     }
 }
@@ -103,19 +112,23 @@ fn agent_git(dir: &Path, args: &[&str]) -> String {
     super::pin_env(&format!("GIT_NO_LAZY_FETCH=1 {line}"))
 }
 
-fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest) -> Result<String, String> {
+fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
     let head = format!("refs/heads/{branch}");
     let sha = query(dir, &["rev-parse", "--verify", "-q", &format!("{head}^{{commit}}")]).ok_or("the branch has no commit")?;
-    let scratch = Scratch::new(&objects_dir(dir)?)?;
+    let scratch = Scratch::new(&objects_dir(dir)?, ctx)?;
     // The remote's own default branch, not the checkout's forgeable
     // `refs/remotes/<remote>/HEAD` (GPT review, Nov 16).
-    let advertised = run(scratch.git(dest).args(["ls-remote", "--symref", &dest.url, "HEAD"]), None)?;
+    let advertised = run(scratch.git(dest).args(["ls-remote", "--symref", &dest.url, "HEAD"]), None, ctx)?;
     let default = advertised.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD")).ok_or("the remote's default branch is unknown")?;
     if default == branch {
         return Err(format!("{branch} is the repository's default branch"));
     }
-    run(scratch.git(dest).args(["update-ref", &head, &sha]), None)?;
-    run(scratch.git(dest).args(["push", "-q", &dest.url, &format!("{head}:{head}")]), None)?;
+    run(scratch.git(dest).args(["update-ref", &head, &sha]), None, ctx)?;
+    // The owner may have turned push trust off since the call was checked.
+    if !(ctx.still_allowed)() {
+        return Err("the owner no longer lets this Agent push here".into());
+    }
+    run(scratch.git(dest).args(["push", "-q", &dest.url, &format!("{head}:{head}")]), None, ctx)?;
     let short = &sha[..sha.len().min(12)];
     let done = say(&format!("Pushed {branch} ({short}) to {}.", dest.url));
     if !upstream {
@@ -133,15 +146,15 @@ fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest) -> 
 /// The host fetches into a scratch repository it keeps for the Agent's
 /// call, which then imports from that local path (no network, no host write
 /// into the checkout) and removes it.
-fn fetch(dir: &Path, remote: &str, dest: &Dest) -> Result<String, String> {
-    let scratch = Scratch::new(&objects_dir(dir)?)?;
+fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
+    let scratch = Scratch::new(&objects_dir(dir)?, ctx)?;
     let prefix = format!("refs/remotes/{remote}/");
     // What the checkout already has, so only new objects come down.
     let known = query(dir, &["for-each-ref", "--format=%(objectname) %(refname)", &prefix]).ok_or("cannot read the checkout's refs")?;
     let seed: String = known.lines().filter_map(|l| l.split_once(' ')).filter_map(|(sha, name)| Some(format!("update refs/heads/{} {sha}\n", name.strip_prefix(&prefix)?))).filter(|l| !l.contains(" refs/heads/HEAD ")).collect();
-    run(scratch.git(dest).args(["update-ref", "--stdin"]), Some(&seed))?;
-    run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--prune", &dest.url, "+refs/heads/*:refs/heads/*"]), None)?;
-    let count = run(scratch.git(dest).args(["for-each-ref", "--format=x", "refs/heads"]), None)?.lines().count();
+    run(scratch.git(dest).args(["update-ref", "--stdin"]), Some(&seed), ctx)?;
+    run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--prune", &dest.url, "+refs/heads/*:refs/heads/*"]), None, ctx)?;
+    let count = run(scratch.git(dest).args(["for-each-ref", "--format=x", "refs/heads"]), None, ctx)?.lines().count();
     let path = scratch.keep();
     let local = path.to_string_lossy().into_owned();
     let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
@@ -168,18 +181,18 @@ fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// A fresh host-owned bare repository, removed when dropped.
-struct Scratch(PathBuf);
+struct Scratch(PathBuf, Option<String>);
 
 impl Scratch {
-    fn new(objects: &Path) -> Result<Self, String> {
+    fn new(objects: &Path, ctx: &HostCtx) -> Result<Self, String> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let path = std::env::temp_dir().join(format!("hagency-trusted-git-{}-{nanos}-{n}", std::process::id()));
         // create_dir fails on anything already there (a planted link included).
         std::fs::create_dir(&path).map_err(|e| format!("scratch repository: {e}"))?;
-        let scratch = Self(path);
-        run(host_command(&scratch.0, None).args(["init", "-q", "--bare", "--template="]), None)?;
+        let scratch = Self(path, ctx.token.clone());
+        run(host_command(&scratch.0, None, None).args(["init", "-q", "--bare", "--template="]), None, ctx)?;
         let info = scratch.0.join("objects/info");
         std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
         std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(|e| e.to_string())?;
@@ -187,7 +200,7 @@ impl Scratch {
     }
 
     fn git(&self, dest: &Dest) -> Command {
-        host_command(&self.0, Some(dest.protocol))
+        host_command(&self.0, Some(dest.protocol), self.1.as_deref())
     }
 }
 
@@ -209,14 +222,20 @@ impl Drop for Scratch {
 }
 
 /// `git --git-dir <scratch>` with no system, global or repository config but
-/// [`HOST_CONFIG`], and only [`HOST_ENV`] inherited.
-pub(crate) fn host_command(git_dir: &Path, protocol: Option<&str>) -> Command {
+/// [`HOST_CONFIG`], only [`HOST_ENV`] inherited, and `token` (the Agent's)
+/// as the one GitHub credential; gh reads no stored login.
+pub(crate) fn host_command(git_dir: &Path, protocol: Option<&str>, token: Option<&str>) -> Command {
     let mut command = Command::new("git");
     command.env_clear();
     for key in HOST_ENV {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
+    }
+    // An empty, host-owned directory: no hosts.yml, so no daemon login.
+    command.env("GH_CONFIG_DIR", git_dir.join("gh-config-none"));
+    if let Some(token) = token {
+        command.env(TOKEN_ENV, token);
     }
     command.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_TERMINAL_PROMPT", "0");
     command.arg("--git-dir").arg(git_dir);
@@ -227,21 +246,6 @@ pub(crate) fn host_command(git_dir: &Path, protocol: Option<&str>) -> Command {
         command.arg("-c").arg(format!("protocol.{protocol}.allow=always"));
     }
     command
-}
-
-/// Stdout of a successful command; stderr as the error.
-fn run(command: &mut Command, stdin: Option<&str>) -> Result<String, String> {
-    command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("git: {e}"))?;
-    if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
-    }
 }
 
 #[cfg(test)]

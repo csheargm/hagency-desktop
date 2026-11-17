@@ -48,6 +48,12 @@ impl AgentEnvironment {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+    /// The GitHub token this Agent's runtime sees: its own, or (demo
+    /// builds only) the launcher's when it has none. Host-side GitHub steps
+    /// for the Agent use exactly this, so they act as the same login.
+    pub fn agent_github_token(&self) -> Option<String> {
+        self.get(GITHUB_TOKEN_VARIABLE).map(str::to_owned).or_else(|| crate::demo_env::github_token().and_then(|t| t.into_string().ok()))
+    }
     /// The `-c` overrides Codex needs so its commands see these variables.
     pub fn codex_overrides(&self) -> Vec<String> {
         if self.is_empty() { Vec::new() } else { vec![CODEX_KEEP_SECRET_VARIABLES.to_owned()] }

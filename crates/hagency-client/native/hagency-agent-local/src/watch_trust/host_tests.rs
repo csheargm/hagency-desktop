@@ -81,7 +81,7 @@ fn push_step(w: &World) -> HostStep {
 fn the_host_push_reads_no_checkout_config() {
     let w = world();
     poison(&w);
-    let command = push_step(&w).run_to(&dest(&w)).unwrap();
+    let command = push_step(&w).run_to(&dest(&w), &ctx()).unwrap();
     assert_eq!(git(&w.app, &["for-each-ref", "refs/remotes/origin/docs"]), "", "the host wrote nothing into the checkout");
     let done = agent_runs(&command);
     assert!(done.starts_with("Pushed docs/faq"), "{done}");
@@ -102,7 +102,7 @@ fn the_host_fetch_reads_no_checkout_config_and_hands_over_objects() {
     let upstream = git(&other, &["rev-parse", "HEAD"]);
     poison(&w);
     let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
-    let command = step.run_to(&dest(&w)).unwrap();
+    let command = step.run_to(&dest(&w), &ctx()).unwrap();
     assert_ne!(git(&w.app, &["rev-parse", "refs/remotes/origin/main"]), upstream, "the host wrote nothing into the checkout");
     let done = agent_runs(&command);
     assert!(done.starts_with("Fetched"), "{done}");
@@ -115,12 +115,12 @@ fn the_host_fetch_reads_no_checkout_config_and_hands_over_objects() {
 fn a_failed_host_step_is_reported_as_a_failed_call() {
     let w = world();
     let bad = Dest { url: format!("file://{}", w.root.join("missing.git").display()), protocol: "file" };
-    let result = push_step(&w).run_to(&bad);
+    let result = push_step(&w).run_to(&bad, &ctx());
     assert!(result.is_err());
     assert!(report_command(&result).ends_with("exit 1"));
     assert_eq!(agent_runs(&say("Pushed it's done")), "Pushed it's done\n");
     // Only https leaves the machine in production.
-    let https = host_command(&w.root, Some("https"));
+    let https = host_command(&w.root, Some("https"), Some("agent-token"));
     let args: Vec<_> = https.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
     assert!(args.contains(&"protocol.allow=never".to_owned()) && args.contains(&"protocol.https.allow=always".to_owned()));
 }
@@ -149,7 +149,7 @@ fn the_branch_step_is_pinned_and_refuses_filter_config() {
 fn the_host_push_refuses_the_remotes_default_branch() {
     let w = world();
     git(&w.target, &["symbolic-ref", "HEAD", "refs/heads/docs/faq"]);
-    let result = push_step(&w).run_to(&dest(&w));
+    let result = push_step(&w).run_to(&dest(&w), &ctx());
     assert!(result.as_ref().is_err_and(|e| e.contains("default branch")), "{result:?}");
     assert_eq!(git(&w.target, &["for-each-ref", "refs/heads/docs"]), "");
 }
@@ -161,10 +161,10 @@ fn the_host_refuses_a_checkout_whose_storage_is_elsewhere() {
     std::fs::rename(w.app.join(".git"), &elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, w.app.join(".git")).unwrap();
     let step = HostStep::Fetch { dir: w.app.clone(), remote: "origin".into(), repo: REPO.into() };
-    assert!(step.run_to(&dest(&w)).is_err(), "a linked .git");
+    assert!(step.run_to(&dest(&w), &ctx()).is_err(), "a linked .git");
     std::fs::remove_file(w.app.join(".git")).unwrap();
     std::fs::write(w.app.join(".git"), format!("gitdir: {}\n", elsewhere.display())).unwrap();
-    assert!(step.run_to(&dest(&w)).is_err(), "a .git file");
+    assert!(step.run_to(&dest(&w), &ctx()).is_err(), "a .git file");
 }
 
 #[test]
@@ -209,4 +209,28 @@ fn the_taught_fix_steps_are_the_trusted_ones() {
         assert!(hagency_runtime::AGENT_MERGE_NOTE.contains(taught));
     }
     assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("Edit or Write tool"));
+}
+
+fn ctx() -> HostCtx {
+    HostCtx::new(None, std::sync::Arc::default(), Box::new(|| true))
+}
+
+#[test]
+fn the_host_step_runs_as_the_agent_never_the_daemons_login() {
+    let w = world();
+    let https = host_command(&w.root, Some("https"), Some("agent-token"));
+    let envs: Vec<_> = https.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+    assert!(envs.contains(&("GH_TOKEN".into(), Some("agent-token".into()))));
+    assert!(envs.iter().all(|(k, _)| k != "GITHUB_TOKEN"), "the daemon's token variable is never inherited");
+    let config = envs.iter().find(|(k, _)| k == "GH_CONFIG_DIR").and_then(|(_, v)| v.clone()).unwrap();
+    assert!(config.starts_with(w.root.to_str().unwrap()), "gh reads no stored login: {config}");
+    assert_eq!(push_step(&w).run(&ctx()), Err("this Agent has no GitHub token of its own".into()));
+}
+
+#[test]
+fn a_push_is_refused_when_trust_was_turned_off_after_the_check() {
+    let w = world();
+    let off = HostCtx::new(None, std::sync::Arc::default(), Box::new(|| false));
+    assert_eq!(push_step(&w).run_to(&dest(&w), &off), Err("the owner no longer lets this Agent push here".into()));
+    assert_eq!(git(&w.target, &["for-each-ref", "refs/heads/docs"]), "", "nothing was pushed");
 }

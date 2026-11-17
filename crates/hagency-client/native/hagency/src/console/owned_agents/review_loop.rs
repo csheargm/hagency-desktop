@@ -87,7 +87,9 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
             return Err(Error::Invalid("the repository is not on this Agent's work list"));
         }
         let command = GhPr { dir: std::env::temp_dir(), number: ask.number, repo: Some(ask.repo.clone()), head: None, kind: Kind::Merge, body: String::new() };
-        let judged = runtime.block_on(merge_readiness(ledger, &command, agent, &GhCli));
+        // Read as the Agent, the same login its own gh uses (GPT review, Nov 16).
+        let token = crate::github_access::TokenStore::current().runtime_environment(agent).unwrap_or_default().agent_github_token();
+        let judged = runtime.block_on(merge_readiness(ledger, &command, agent, &GhCli { token }));
         reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision)| (view.head_sha.as_str(), decision)));
         if let Some((view, _)) = &judged {
             // Unverified: only tells "no review yet" (wait) from "a person must decide".

@@ -27,6 +27,7 @@ use std::path::Path;
 pub(crate) mod gh;
 pub(crate) mod git;
 pub mod host_git;
+pub mod host_run;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +49,17 @@ fn trusted_repo(db: &Connection, proposal: &ToolProposal) -> crate::Result<Optio
         })
         .optional()?;
     Ok(row.and_then(|(mode, repo, room, trusted)| (mode != "off" && trusted == 1 && room == proposal.scope.room).then_some(repo)))
+}
+
+/// A check, run off the async threads, that push trust still covers
+/// `proposal`: a fresh read-only connection to the ledger at `path` each
+/// time; no path or an unreadable ledger is a no.
+pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal) -> Box<dyn Fn() -> bool + Send + Sync> {
+    Box::new(move || {
+        let Some(path) = &path else { return false };
+        let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
+        trusted_repo(&db, &proposal).ok().flatten().is_some()
+    })
 }
 
 /// How push trust answers `proposal`, if it does. A command reaches Claude's

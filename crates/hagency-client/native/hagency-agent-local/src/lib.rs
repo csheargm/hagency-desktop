@@ -1198,6 +1198,12 @@ impl Ledger {
         Ok(Some(command))
     }
 
+    /// Whether push trust still answers `proposal`, read afresh from this
+    /// ledger's file each time (for the host's check right before a push).
+    pub fn push_trust_recheck(&self, proposal: &ToolProposal) -> Box<dyn Fn() -> bool + Send + Sync> {
+        watch_trust::recheck(self.db.path().map(std::path::PathBuf::from), proposal.clone())
+    }
+
     pub fn tool_disposition(&mut self, proposal: &ToolProposal, now: i64) -> Result<ToolPolicy> {
         let tx = self
             .db

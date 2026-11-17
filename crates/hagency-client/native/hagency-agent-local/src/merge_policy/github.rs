@@ -75,8 +75,18 @@ pub fn repo_of_url(url: &str, number: u64) -> Option<&str> {
     (tail == number.to_string()).then_some(repo).and_then(repo_name)
 }
 
-async fn gh(dir: &Path, args: &[&str]) -> Option<String> {
-    let run = tokio::process::Command::new("gh").args(args).current_dir(dir).kill_on_drop(true).output();
+/// `gh <args>` as the Agent: its token only, never the daemon's stored
+/// login; no token reads nothing (GPT review, Nov 16).
+fn gh_command(dir: &Path, args: &[&str], token: Option<&str>) -> Option<tokio::process::Command> {
+    let token = token.filter(|t| !t.is_empty())?;
+    let mut command = tokio::process::Command::new("gh");
+    command.args(args).current_dir(dir).kill_on_drop(true);
+    command.env_remove("GITHUB_TOKEN").env(crate::agent_env::GITHUB_TOKEN_VARIABLE, token).env("GH_CONFIG_DIR", dir.join(".hagency-no-gh-config"));
+    Some(command)
+}
+
+async fn gh(dir: &Path, args: &[&str], token: Option<&str>) -> Option<String> {
+    let run = gh_command(dir, args, token)?.output();
     let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
     output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
 }
@@ -124,19 +134,26 @@ pub fn parse_reviews(text: &str) -> Option<Vec<(String, String, String)>> {
     }).collect()
 }
 
-/// This device's `gh` login.
-pub struct GhCli;
+/// `gh` as one Agent: its own GitHub token (see [`gh_command`]).
+pub struct GhCli {
+    pub token: Option<String>,
+}
+impl GhCli {
+    fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+}
 impl PrSource for GhCli {
     async fn pull_request(&self, command: &GhPr) -> Option<PrView> {
-        pull_request(command).await
+        pull_request(command, self.token()).await
     }
     async fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<String> {
         let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
-        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"]).await
+        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token()).await
     }
     async fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<Option<String>> {
         let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
-        let run = tokio::process::Command::new("gh").args(["api", &path, "-H", "Accept: application/vnd.github.raw"]).current_dir(&command.dir).kill_on_drop(true).output();
+        let run = gh_command(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token())?.output();
         let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
         if output.status.success() {
             return String::from_utf8(output.stdout).ok().map(Some);
@@ -145,12 +162,12 @@ impl PrSource for GhCli {
         String::from_utf8_lossy(&output.stderr).contains("(HTTP 404)").then_some(None)
     }
     async fn viewer_login(&self, command: &GhPr) -> Option<String> {
-        let login = gh(&command.dir, &["api", "user", "--jq", ".login"]).await?;
+        let login = gh(&command.dir, &["api", "user", "--jq", ".login"], self.token()).await?;
         Some(login.trim().to_owned()).filter(|l| !l.is_empty())
     }
     async fn reviews(&self, command: &GhPr, repo: &str) -> Option<Vec<(String, String, String)>> {
         let path = format!("repos/{repo}/pulls/{}/reviews?per_page=100", command.number);
-        parse_reviews(&gh(&command.dir, &["api", &path, "--paginate", "--jq", REVIEW_FIELDS]).await?)
+        parse_reviews(&gh(&command.dir, &["api", &path, "--paginate", "--jq", REVIEW_FIELDS], self.token()).await?)
     }
 }
 
@@ -160,17 +177,17 @@ impl PrSource for GhCli {
 /// can land between its read and its `gh pr review`), so it never counts.
 const REVIEW_FIELDS: &str = ".[] | . as $r | [$r.user.login, (if $r.state == \"APPROVED\" and (($r.body // \"\") | contains($r.commit_id)) then \"APPROVED\" elif $r.state == \"APPROVED\" then \"UNBOUND\" else $r.state end), $r.commit_id] | @tsv";
 
-async fn pull_request(command: &GhPr) -> Option<PrView> {
+async fn pull_request(command: &GhPr, token: Option<&str>) -> Option<PrView> {
     let number = command.number.to_string();
     let mut args = vec!["pr", "view", number.as_str(), "--json", VIEW_FIELDS];
     if let Some(repo) = &command.repo {
         args.extend(["--repo", repo.as_str()]);
     }
-    let view: Value = serde_json::from_str(&gh(&command.dir, &args).await?).ok()?;
+    let view: Value = serde_json::from_str(&gh(&command.dir, &args, token).await?).ok()?;
     let url = view["url"].as_str()?;
     let repo = repo_of_url(url, command.number)?;
     let (base, head) = (commit_sha(view["baseRefOid"].as_str()?)?, commit_sha(view["headRefOid"].as_str()?)?);
     let compare = format!("repos/{repo}/compare/{base}...{head}");
-    let files: Value = serde_json::from_str(&gh(&command.dir, &["api", &compare, "--jq", FILE_FIELDS]).await?).ok()?;
+    let files: Value = serde_json::from_str(&gh(&command.dir, &["api", &compare, "--jq", FILE_FIELDS], token).await?).ok()?;
     view_from_json(&view, &files)
 }
