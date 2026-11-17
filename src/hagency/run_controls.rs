@@ -246,6 +246,11 @@ fn runs_for(all: &[Entry], room: &RoomId, event: &str, include_thread: bool) -> 
     entries.sort_by_key(|e| !e.card.state.active());
     entries
 }
+/// Whether `event` is an admitted run card's own event (drawn by its card).
+pub fn is_card_event(room: &RoomId, event: &str) -> bool {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .any(|e| e.card.room_id == room.as_str() && e.key == event)
+}
 /// The newest running run in a thread, for its collapsed summary.
 pub fn newest_running_in_thread(room: &RoomId, root: &str) -> Option<Entry> {
     let store = STORE.lock().unwrap_or_else(|e| e.into_inner());

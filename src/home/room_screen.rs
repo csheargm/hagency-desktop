@@ -2154,7 +2154,8 @@ impl Widget for RoomScreen {
                             TimelineItemContent::MsgLike(msg_like_content) => {
                                 if (tl_state.kind.thread_root_event_id().is_none()
                                     && msg_like_content.thread_root.is_some())
-                                    || is_agent_run_status(&msg_like_content.kind)
+                                    || (is_agent_run_status(&msg_like_content.kind)
+                                        && shown_by_run_card(event_tl_item, tl_state.kind.room_id()))
                                 {
                                     // An Agent run's status event is shown by its run card on the
                                     // request (`populate_agent_run_cards`), never as its own message.
@@ -6575,6 +6576,16 @@ fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineIte
         event_id, sender, plain: *plain, body,
     }).collect();
     super::agent_reply_dedupe::duplicates(&runs, &timeline).into_iter().map(str::to_owned).collect()
+}
+
+/// A run status event drawn by its run card: from an Agent of the room's own
+/// server, or an admitted card. Anything else (e.g. a federated Agent that is
+/// not trusted) stays an ordinary message, with no run-card treatment.
+// TODO(R4): move with the Agent run timeline helpers when room_screen splits.
+fn shown_by_run_card(event: &EventTimelineItem, room: &RoomId) -> bool {
+    let sender = event.sender().as_str();
+    room.server_name().is_some_and(|s| ::hagency::agent_questions::is_agent_on(sender, s.as_str()))
+        || event.event_id().is_some_and(|id| crate::hagency::run_controls::is_card_event(room, id.as_str()))
 }
 
 /// The Agent run status event (`im.hagency.agent_run`); the run card displays it.

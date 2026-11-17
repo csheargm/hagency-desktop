@@ -307,6 +307,21 @@ impl Card {
             self.last_action = None;
         }
     }
+    /// Whether an Agent account of another homeserver may post this run
+    /// card (or its edit) into a federated room. An Agent is provisioned on
+    /// its owner's server, so the card is admitted only when the run's owner
+    /// is on the Agent's own server; that server vouches for both accounts.
+    pub fn sent_by_owners_agent(sender: &str, content: &Value) -> bool {
+        let card = if content["m.relates_to"]["rel_type"] == "m.replace" {
+            &content["m.new_content"]
+        } else {
+            content
+        };
+        let server = crate::agent_questions::server_name;
+        crate::agent_questions::is_agent(sender)
+            && Self::from_content(card)
+                .is_some_and(|card| server(&card.owner).is_some() && server(&card.owner) == server(sender))
+    }
     pub fn from_content(content: &Value) -> Option<Self> {
         if content["msgtype"] != MSGTYPE {
             return None;
@@ -452,6 +467,19 @@ fn valid_text(text: &str) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    /// Regression: bird's Agents (beta) answer in a room hosted on alpha.
+    #[test]
+    fn an_agent_of_another_server_may_post_only_its_own_servers_runs() {
+        let mut card = card();
+        card.owner = "@bird:beta.test".into();
+        let posted = card.content();
+        let edit = card.edit_content("$run").unwrap();
+        assert!(Card::sent_by_owners_agent("@_hagency_agt_b:beta.test", &posted));
+        assert!(Card::sent_by_owners_agent("@_hagency_agt_b:beta.test", &edit));
+        assert!(!Card::sent_by_owners_agent("@_hagency_agt_b:evil.test", &posted), "foreign server claiming beta's owner");
+        assert!(!Card::sent_by_owners_agent("@bird:beta.test", &posted), "not an Agent account");
+        assert!(!Card::sent_by_owners_agent("@_hagency_agt_b:beta.test", &serde_json::json!({"msgtype":"m.text","body":"x"})));
+    }
     /// The room body a client without run-card support shows is English by
     /// default (no host language installed in this test binary), never Chinese.
     #[test]
