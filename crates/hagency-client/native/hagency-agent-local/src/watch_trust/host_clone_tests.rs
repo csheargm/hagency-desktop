@@ -44,6 +44,8 @@ fn clone_requests_name_the_watched_repo_and_a_new_folder_inside() {
     assert_eq!(clone("git clone -q git@github.com:acme/app.git work"), into("work"));
     std::fs::create_dir(root.join("taken")).unwrap();
     std::os::unix::fs::symlink("/tmp", root.join("out")).unwrap();
+    std::fs::create_dir(root.join("taken/.git")).unwrap();
+    std::os::unix::fs::symlink(root.join("taken/.git"), root.join("gitdir")).unwrap();
     for asks in [
         "gh repo clone acme/other app",
         "git clone https://gitlab.com/acme/app.git",
@@ -51,6 +53,9 @@ fn clone_requests_name_the_watched_repo_and_a_new_folder_inside() {
         "git clone https://github.com/acme/app.git ../app",
         "git clone https://github.com/acme/app.git out/app",
         "git clone https://github.com/acme/app.git taken",
+        // GPT review: never into git metadata.
+        "git clone https://github.com/acme/app.git taken/.git/x",
+        "gh repo clone acme/app gitdir/x",
         "git clone --upload-pack=x https://github.com/acme/app.git app",
         "git clone -c core.hooksPath=x https://github.com/acme/app.git app",
         "gh repo clone acme/app app -- --upload-pack=x",
@@ -98,4 +103,21 @@ fn the_host_pull_fast_forwards_the_checkout() {
     let step = HostStep::Pull { dir: app.clone(), remote: "origin".into(), branch: "main".into(), repo: REPO.into() };
     agent_runs(&step.run_to(&dest, &ctx()).unwrap());
     assert_eq!(git(&app, &["rev-parse", "HEAD"]), head);
+    // GPT review: a branch deleted upstream is not followed through its stale tracking ref.
+    git(&app, &["update-ref", "refs/remotes/origin/gone", "HEAD"]);
+    let gone = HostStep::Pull { dir: app.clone(), remote: "origin".into(), branch: "gone".into(), repo: REPO.into() };
+    assert!(gone.run_to(&dest, &ctx()).is_err_and(|e| e.contains("no longer exists")));
+}
+
+#[test]
+fn the_scratch_repository_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let dest = upstream(&root);
+    let command = HostStep::Clone { target: root.join("app"), repo: REPO.into() }.run_to(&dest, &ctx()).unwrap();
+    let scratch = command.split("rm -rf -- '").nth(1).and_then(|r| r.split('\'').next()).unwrap();
+    assert_eq!(std::fs::metadata(scratch).unwrap().permissions().mode() & 0o077, 0, "{scratch}");
+    agent_runs(&command);
+    assert!(!Path::new(scratch).exists(), "the call removes it");
 }

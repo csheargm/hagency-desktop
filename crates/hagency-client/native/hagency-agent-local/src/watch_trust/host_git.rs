@@ -12,6 +12,7 @@ use super::git::query;
 pub use super::host_run::{CancelOnDrop, HostCtx};
 use super::host_run::run;
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 
 /// Config of every host network command; with no system or global config
@@ -164,7 +165,14 @@ pub(super) fn remote_default(scratch: &Scratch, dest: &Dest, ctx: &HostCtx) -> R
 /// The host fetches into a scratch repository it keeps for the Agent's
 /// call, which then imports from that local path (no network, no host write
 /// into the checkout) and removes it.
-pub(super) fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
+fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
+    fetch_with(dir, remote, None, dest, ctx).map(|(command, _)| command)
+}
+
+/// [`fetch`], and the commit the remote's `want` branch has in this very
+/// fetch (an error when it no longer exists), so a pull never follows a
+/// stale tracking ref (GPT review, Nov 17).
+pub(super) fn fetch_with(dir: &Path, remote: &str, want: Option<&str>, dest: &Dest, ctx: &HostCtx) -> Result<(String, Option<String>), String> {
     let scratch = Scratch::new(Some(&objects_dir(dir)?), ctx)?;
     let prefix = format!("refs/remotes/{remote}/");
     // What the checkout already has, so only new objects come down.
@@ -173,11 +181,15 @@ pub(super) fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Res
     run(scratch.git(dest).args(["update-ref", "--stdin"]), Some(&seed), ctx)?;
     run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--prune", &dest.url, "+refs/heads/*:refs/heads/*"]), None, ctx)?;
     let count = run(scratch.git(dest).args(["for-each-ref", "--format=x", "refs/heads"]), None, ctx)?.lines().count();
+    let sha = match want {
+        Some(branch) => Some(run(scratch.git(dest).args(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, ctx).map_err(|_| format!("{branch} no longer exists on the remote"))?),
+        None => None,
+    };
     let path = scratch.keep();
     let local = path.to_string_lossy().into_owned();
     let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
     let done = say(&format!("Fetched {count} branches of {} into {remote}.", dest.url));
-    Ok(format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)))
+    Ok((format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)), sha.map(|s| s.trim().to_owned())))
 }
 
 /// The object directory of checkout `dir`, which must be a plain clone:
@@ -209,7 +221,9 @@ impl Scratch {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let path = std::env::temp_dir().join(format!("hagency-trusted-git-{}-{nanos}-{n}", std::process::id()));
         // create_dir fails on anything already there (a planted link included).
-        std::fs::create_dir(&path).map_err(|e| format!("scratch repository: {e}"))?;
+        // Owner-only: a clone stages a private repository's whole history
+        // here (GPT review, Nov 17).
+        std::fs::DirBuilder::new().mode(0o700).create(&path).map_err(|e| format!("scratch repository: {e}"))?;
         let scratch = Self(path, ctx.token.clone());
         run(host_command(&scratch.0, None, None).args(["init", "-q", "--bare", "--template="]), None, ctx)?;
         if let Some(objects) = objects {

@@ -84,6 +84,11 @@ fn a_commit_message_from_a_heredoc_runs_and_nothing_else_reads_one() {
         "git -C app commit -m x <<'EOF'\nx\nEOF",
         "git -C app commit -F -",
         "git -C app commit -F msg.txt",
+        // GPT review: git reads the LAST -F, from anywhere.
+        "git -C app commit -m x -F /etc/passwd",
+        "git -C app commit -F - -F /etc/passwd <<'EOF'\nx\nEOF",
+        "git -C app commit -F - --file=/etc/passwd <<'EOF'\nx\nEOF",
+        "git -C app commit -F - -F - <<'EOF'\nx\nEOF",
         "git -C app commit -F - <<'EOF'\nx\nEOF\nrm -rf app",
         "git -C app push origin fix/27 <<'EOF'\ncommit\nEOF",
     ] {

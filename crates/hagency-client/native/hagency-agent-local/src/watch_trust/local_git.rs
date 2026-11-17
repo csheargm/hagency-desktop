@@ -175,21 +175,23 @@ fn log_ok(dir: &Path, args: &[&str]) -> bool {
     words_ok(dir, &kept, &LOG_FLAGS)
 }
 
-/// `commit` with a message: `-m <text>` / `--message=<text>`, or `-F -`
-/// fed by the heredoc. No paths, no editor, no amend.
+/// `commit` with a message: `-m <text>` / `--message=<text>`, or ONE `-F -`
+/// fed by the heredoc, never both. `-F` may name no file: git takes the last
+/// one, which would put a file from anywhere into a pushed commit (GPT
+/// review, Nov 17). No paths, no editor, no amend.
 fn commit_ok(args: &[&str], heredoc: bool) -> bool {
-    let (mut message, mut stdin) = (false, false);
+    let (mut message, mut stdin) = (false, 0);
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match *word {
             "-m" | "--message" => message |= words.next().is_some(),
-            "-F" | "--file" => stdin |= words.next() == Some(&"-"),
+            "-F" | "--file" if words.next() == Some(&"-") => stdin += 1,
             w if w.starts_with("--message=") => message = true,
             w if COMMIT_FLAGS.contains(&w) => {}
             _ => return false,
         }
     }
-    if heredoc { stdin && !message } else { message && !stdin }
+    if heredoc { stdin == 1 && !message } else { message && stdin == 0 }
 }
 
 #[cfg(test)]

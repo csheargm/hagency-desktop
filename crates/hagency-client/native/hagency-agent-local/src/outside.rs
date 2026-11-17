@@ -66,7 +66,7 @@ pub(crate) fn writable_in(value: Option<&Value>, cwd: &Path) -> bool {
     resolves_inside(path, cwd) && !is_git_metadata(&joined) && !is_git_metadata(&real)
 }
 
-fn is_git_metadata(path: &Path) -> bool {
+pub(crate) fn is_git_metadata(path: &Path) -> bool {
     path.components().any(|part| {
         let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
         matches!(name.as_str(), ".git" | ".gitattributes" | ".gitmodules" | ".gitconfig")

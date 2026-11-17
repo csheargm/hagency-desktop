@@ -2,17 +2,18 @@
 //! 0021). Like fetch and push (ADR 0015), the host does the network part in
 //! a fresh scratch repository with no checkout config; the Agent's call then
 //! applies it locally, pinned, with only the `file` transport allowed.
-use super::host_git::{Dest, HostStep, Scratch, fetch, remote_default, say};
+use super::host_git::{Dest, HostStep, Scratch, fetch_with, remote_default, say};
 use super::host_run::{HostCtx, run};
 use super::local_git::{pinned_git, pinned_git_file};
 use std::path::{Path, PathBuf};
 
 /// The host fetches; the Agent's call then fast-forwards the checkout's
-/// current branch to `<remote>/<branch>` (never a merge commit).
+/// current branch to the commit `<branch>` has in that fetch (never a merge
+/// commit, never a stale tracking ref).
 pub(super) fn pull(dir: &Path, remote: &str, branch: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
-    let fetched = fetch(dir, remote, dest, ctx)?;
-    let tracking = format!("refs/remotes/{remote}/{branch}");
-    Ok(format!("{fetched} && {}", pinned_git(dir, &["merge", "--ff-only", "-q", &tracking])))
+    let (fetched, sha) = fetch_with(dir, remote, Some(branch), dest, ctx)?;
+    let sha = sha.filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).ok_or("the fetched branch has no commit")?;
+    Ok(format!("{fetched} && {}", pinned_git(dir, &["merge", "--ff-only", "-q", &sha])))
 }
 
 /// The host fetches every branch of the watched repository into a scratch
@@ -62,7 +63,10 @@ fn target(root: &Path, dir: &str) -> Option<PathBuf> {
     let (parent, name) = (path.parent()?.canonicalize().ok()?, path.file_name()?);
     let plain = name.to_str().is_some_and(|n| !n.starts_with('.') && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')));
     let target = parent.join(name);
-    (plain && parent.starts_with(&root) && target.symlink_metadata().is_err()).then_some(target)
+    // Never inside git metadata (`<checkout>/.git/...`), named or resolved
+    // (GPT review, Nov 17).
+    let metadata = crate::outside::is_git_metadata(&path) || crate::outside::is_git_metadata(&target);
+    (plain && !metadata && parent.starts_with(&root) && target.symlink_metadata().is_err()).then_some(target)
 }
 
 #[cfg(test)]

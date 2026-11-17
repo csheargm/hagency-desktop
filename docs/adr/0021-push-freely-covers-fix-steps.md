@@ -79,6 +79,19 @@ card-free shapes, so it issues them one per call.
 - An explicit high-risk policy of Deny is still a Deny: push freely narrows
   what Ask-owner asks, it does not override a refusal.
 
+## GPT review (2026-11-17)
+Adopted: `commit` takes exactly one message source and `-F` only as `-`
+(git reads the last `-F`, so `-m x -F /etc/passwd` would have put any file
+into a pushed commit); a clone never lands inside git metadata, named or
+resolved; scratch repositories are created owner-only (0700); a pull
+fast-forwards to the exact commit the host just fetched and fails when the
+branch no longer exists (no stale tracking ref).
+Rejected: "existing push-freely opt-ins silently expand". The widening of
+this exact switch is the owner's decision (Chris, 2026-11-17); the label and
+hint now say what it covers. Residual: a scratch kept for the Agent's call
+is removed by that call, so a call killed in between leaves it in the
+host's temp folder (owner-only).
+
 ## Open questions
 - Should build/test scripts (`cargo test`, `npm test`) be card-free? Default
   NO: they run repository code (build scripts, test fixtures, npm lifecycle
