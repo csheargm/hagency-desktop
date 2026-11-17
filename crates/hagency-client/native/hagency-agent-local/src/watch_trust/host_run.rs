@@ -80,6 +80,8 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
     // so its id is still this command's).
     while !(out.is_finished() && err.is_finished()) {
         if ctx.cancelled() || started.elapsed() > ctx.timeout {
+            // TODO(GPT P2, Nov 16): a tiny window remains in which the holder
+            // exits and the id is reused; closing it needs waitid(WNOWAIT).
             // The leader is reaped, so one signal only, while the pipe
             // holder (unfinished reader) still keeps the group id taken.
             signal_group(child.id());
