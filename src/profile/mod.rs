@@ -2,9 +2,11 @@ use makepad_widgets::ScriptVm;
 
 pub mod own_profile_watch;
 pub mod own_agents;
+pub mod agent_facts;
 pub mod agent_chat_button;
 pub mod hover_card;
 pub mod hover_card_route;
+pub mod hover_card_view;
 pub mod member_summary;
 pub mod profile_moderation;
 pub mod profile_route;
@@ -23,7 +25,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     // The side panel embeds the pane's `UserProfileView`: register it first.
     user_profile::script_mod(vm);
     profile_side_panel::script_mod(vm);
-    hover_card::script_mod(vm);
+    hover_card_view::script_mod(vm);
     agent_chat_button::script_mod(vm);
 }
 

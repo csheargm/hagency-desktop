@@ -29,6 +29,22 @@ pub fn is_agent(user: &UserId) -> bool {
     crate::hagency::backend::is_agent_invitation(user)
 }
 
+/// The agent-panel action for a click on `user` when it is one of this
+/// account's own Agents. An Agent not yet known as ours starts the listing
+/// and gets its profile this time (which offers "Agent details" once listed).
+pub fn own_agent_click(user: &UserId) -> Option<crate::hagency::ui::HagencyAction> {
+    if !is_agent(user) { return None; }
+    let action = own_agent_click_as(crate::sliding_sync::current_user_id().as_deref(), user);
+    if action.is_none() { super::own_agents::ensure_listed(); }
+    action
+}
+
+/// [`own_agent_click`] for the account `owner`, from its last listing.
+pub fn own_agent_click_as(owner: Option<&UserId>, user: &UserId) -> Option<crate::hagency::ui::HagencyAction> {
+    let row = super::own_agents::row_as(owner?, user)?;
+    Some(crate::hagency::ui::HagencyAction::OpenAgent { agent_id: row.agent_id })
+}
+
 /// Asks the app to show `info` in the right-hand region's profile tab.
 #[derive(Clone, Debug)]
 pub struct ShowProfileInSide(pub UserProfilePaneInfo);
@@ -86,6 +102,22 @@ mod tests {
         assert!(!shows_in_side(true, false), "no dock: the sliding pane must show it");
         assert!(!shows_in_side(false, true), "mobile keeps its own pane");
         assert!(shows_in_side(true, true));
+    }
+
+    /// Flow: a click on one of my Agents (avatar, name, @mention or member
+    /// row all reach `RoomScreen::show_user_profile`) opens its agent panel;
+    /// someone else's Agent and a person keep the profile.
+    #[test]
+    fn clicking_my_own_agent_opens_its_agent_panel() {
+        let (me, mine, theirs) = (user_id!("@anna:s"), user_id!("@_hagency_agt_1:s"), user_id!("@_hagency_agt_2:s"));
+        super::super::own_agents::set_test_listing(me, &serde_json::json!([
+            {"id": "agt_1", "puppetMxid": "@_hagency_agt_1:s", "ownerMxid": "@anna:s", "state": "active"},
+            {"id": "agt_2", "puppetMxid": "@_hagency_agt_2:s", "ownerMxid": "@betty:s", "state": "active"}
+        ]));
+        assert!(matches!(own_agent_click_as(Some(me), mine), Some(crate::hagency::ui::HagencyAction::OpenAgent { agent_id }) if agent_id == "agt_1"));
+        assert!(own_agent_click_as(Some(me), theirs).is_none(), "Betty's Agent opens its profile");
+        assert!(own_agent_click_as(Some(user_id!("@betty:s")), mine).is_none(), "another account's listing never matches");
+        assert!(own_agent_click_as(None, mine).is_none(), "signed out");
     }
 
     #[test]

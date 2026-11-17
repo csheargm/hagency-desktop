@@ -17,7 +17,7 @@ fn info() -> UserProfileAndRoomId {
 
 #[test]
 fn view_profile_routes_a_person_to_the_side_profile() {
-    let CardRequest::OpenProfile(pane) = request_for(CardButton::ViewProfile, &info(), "Lobby".into()) else {
+    let Some(CardRequest::OpenProfile(pane)) = request_for(CardButton::ViewProfile, &info(), "Lobby".into(), None) else {
         panic!("View profile must open the profile");
     };
     assert_eq!(pane.user_id, info().user_id);
@@ -28,7 +28,7 @@ fn view_profile_routes_a_person_to_the_side_profile() {
 
 #[test]
 fn message_requests_the_dm_for_the_hovered_user() {
-    let CardRequest::Message(profile) = request_for(CardButton::Message, &info(), String::new()) else {
+    let Some(CardRequest::Message(profile)) = request_for(CardButton::Message, &info(), String::new(), None) else {
         panic!("Message must open the DM");
     };
     assert_eq!(profile.user_id, info().user_id);
@@ -69,9 +69,49 @@ fn the_card_tags_agents_and_names_the_server() {
     card.target = Some(agent);
     card.populate(&mut cx);
     assert!(card.view.view(&mut cx, ids!(agent_tag)).visible());
-    assert_eq!(card.view.label(&mut cx, ids!(card_details)).text(), "Agent on hagency.test");
+    assert_eq!(card.view.label(&mut cx, ids!(card_details)).text(),
+        "Owner not shared in this room\nSettings are visible only to its owner", "another owner's Agent shows no config");
+    assert!(card.view.button(&mut cx, ids!(view_profile_button)).visible());
+    assert!(!card.view.button(&mut cx, ids!(agent_details_button)).visible(), "Agent details is for own Agents only");
     card.target = Some(info());
     card.populate(&mut cx);
     assert!(!card.view.view(&mut cx, ids!(agent_tag)).visible());
     assert_eq!(card.view.label(&mut cx, ids!(card_details)).text(), "Server: hagency.test");
+}
+
+#[test]
+fn agent_details_opens_only_an_owned_agent_and_copy_copies_the_id() {
+    assert!(request_for(CardButton::AgentDetails, &info(), String::new(), None).is_none(), "not ours: nothing to open");
+    let Some(CardRequest::OpenAgent(agent_id)) = request_for(CardButton::AgentDetails, &info(), String::new(), Some("agt_1")) else {
+        panic!("Agent details must open the agent panel");
+    };
+    assert_eq!(agent_id, "agt_1");
+    let Some(CardRequest::CopyId(id)) = request_for(CardButton::CopyId, &info(), String::new(), None) else { panic!("Copy must copy") };
+    assert_eq!(id, "@ben2:hagency.test");
+}
+
+/// Flow: hovering my own Agent shows its owner, runtime and status, and
+/// "Agent details" (not "View profile"), which opens its agent panel.
+#[test]
+fn my_agents_card_offers_agent_details_and_its_facts() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut card = card(&mut cx);
+    let mut agent = info();
+    agent.user_profile.user_id = owned_user_id!("@_hagency_agt_1:hagency.test");
+    card.target = Some(agent.clone());
+    card.facts = Some(AgentFacts {
+        own_agent_id: Some("agt_1".into()),
+        owner: Some(owned_user_id!("@anna:hagency.test")),
+        runtime: Some("Claude"),
+        status: Some("Running"),
+    });
+    card.show_facts(&mut cx);
+    assert!(card.view.button(&mut cx, ids!(agent_details_button)).visible());
+    assert!(!card.view.button(&mut cx, ids!(view_profile_button)).visible());
+    assert_eq!(card.view.label(&mut cx, ids!(card_details)).text(),
+        "Owner: @anna:hagency.test\nRuntime: Claude\nStatus: Running", "no settings note on my own Agent");
+    let Some(CardRequest::OpenAgent(agent_id)) = request_for(CardButton::AgentDetails, &agent, String::new(), card.own_agent()) else {
+        panic!("Agent details must open the agent panel");
+    };
+    assert_eq!(agent_id, "agt_1");
 }

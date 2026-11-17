@@ -141,8 +141,8 @@ script_mod! {
                 align: Align{x: 0.5}
                 flow: Flow.Right{wrap: true}
                 draw_text +: {
-                    color: (MESSAGE_TEXT_COLOR),
-                    text_style: MESSAGE_TEXT_STYLE { font_size: (11 * mod.widgets.RINX_TEXT_SCALE) },
+                    color: mod.widgets.RINX_MUTED,
+                    text_style: MESSAGE_TEXT_STYLE { font_size: (9.5 * mod.widgets.RINX_TEXT_SCALE) },
                 }
                 text: #(crate::i18n::tr("User ID"))
             }
@@ -230,7 +230,7 @@ script_mod! {
             }
             // Shown by the side panel for this account's own Agents only.
             open_agent_panel_button := ProfileAction {visible: false draw_icon.svg: ICON_SETTINGS
-                text: #(crate::i18n::tr("Agent settings")) i18n_text: "Agent settings"}
+                text: #(crate::i18n::tr("Agent details")) i18n_text: "Agent details"}
             View {width: Fill height: 36 flow: Right spacing: 8
                 copy_link_to_user_button := ProfileAction {
                     draw_icon.svg: ICON_COPY

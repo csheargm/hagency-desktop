@@ -1,6 +1,8 @@
-//! The small person/Agent card shown while hovering an avatar (like Buzz):
-//! avatar, name, Matrix ID, server, room role, an Agent tag, and
-//! "View profile" / "Message" buttons.
+//! The small person/Agent card shown while hovering an avatar or a sender
+//! name (like Buzz): avatar, name, a small Matrix ID with Copy, the server
+//! and room role, and "View profile" / "Message" buttons. An Agent shows its
+//! owner, runtime and status ([`super::agent_facts`]) instead; one of this
+//! account's own Agents swaps "View profile" for "Agent details".
 //!
 //! One app-level instance (registered as a Cx global, like the mention
 //! popup) is fed by the hooks in [`crate::shared::avatar_hover`]. It draws
@@ -16,7 +18,9 @@ use crate::{
 };
 use super::{
     hover_card_route::{dispatch, request_for, room_name, CardButton},
+    agent_facts::{self, AgentFacts, AgentFactsChanged},
     member_summary,
+    own_agents::OwnAgentsChanged,
     profile_route,
     user_profile::UserProfileAndRoomId,
 };
@@ -24,84 +28,9 @@ use super::{
 /// Fixed card width, in DIPs (must match `popup_frame.width` below).
 const CARD_WIDTH: f64 = 280.0;
 /// The card's usual height, used to keep it inside the window.
-const CARD_EST_HEIGHT: f64 = 190.0;
+const CARD_EST_HEIGHT: f64 = 230.0;
 /// Space between the avatar and the card, and the card and the window edge.
 const CARD_GAP: f64 = 8.0;
-
-script_mod! {
-    use mod.prelude.widgets.*
-    use mod.widgets.*
-
-    mod.widgets.AvatarHoverCard = #(AvatarHoverCard::register_widget(vm)) {
-        width: Fill, height: Fill, flow: Overlay, align: Align{x: 0.0, y: 0.0}
-        popup_frame := View {
-            width: 280, height: Fit
-            card := RoundedView {
-                width: Fill, height: Fit, flow: Down, spacing: 10, padding: 12
-                show_bg: true
-                draw_bg +: {
-                    color: (mod.widgets.RBX_BG_SURFACE)
-                    border_radius: (mod.widgets.RBX_RADIUS_SM)
-                    border_size: 1.0
-                    border_color: (mod.widgets.RBX_STROKE_STRONG)
-                }
-                View {
-                    width: Fill, height: Fit, flow: Right, spacing: 10, align: Align{y: 0.5}
-                    card_avatar := Avatar { width: 40, height: 40 }
-                    View {
-                        width: Fill, height: Fit, flow: Down, spacing: 3
-                        View {
-                            width: Fill, height: Fit, flow: Right, spacing: 6, align: Align{y: 0.5}
-                            presence_dot := RoundedView {
-                                visible: false, width: 8, height: 8
-                                draw_bg +: {color: #x2e9e5b border_radius: 4.0}
-                            }
-                            card_name := Label {
-                                width: Fill, height: Fit, max_lines: 1, text_overflow: Ellipsis
-                                draw_text +: {color: (mod.widgets.RBX_FG_PRIMARY) text_style: (mod.widgets.RBX_TEXT_BODY_STRONG)}
-                                text: ""
-                            }
-                        }
-                        card_user_id := Label {
-                            width: Fill, height: Fit, max_lines: 1, text_overflow: Ellipsis
-                            draw_text +: {color: (mod.widgets.RBX_FG_SECONDARY) text_style: (mod.widgets.RBX_TEXT_META)}
-                            text: ""
-                        }
-                        agent_tag := RoundedView {
-                            visible: false, width: Fit, height: Fit
-                            padding: Inset{left: 6 right: 6 top: 2 bottom: 2}
-                            draw_bg +: {color: mod.widgets.RINX_SELECTED border_radius: 4}
-                            Label {
-                                width: Fit, height: Fit
-                                draw_text +: {color: mod.widgets.RINX_ACCENT text_style: theme.font_regular{font_size: (9.5 * mod.widgets.RINX_TEXT_SCALE)}}
-                                text: #(crate::i18n::tr("Agent")) i18n_text: "Agent"
-                            }
-                        }
-                    }
-                }
-                card_details := Label {
-                    width: Fill, height: Fit, flow: Flow.Right{wrap: true}
-                    draw_text +: {color: (mod.widgets.RBX_FG_SECONDARY) text_style: (mod.widgets.RBX_TEXT_META)}
-                    text: ""
-                }
-                View {
-                    width: Fill, height: Fit, flow: Right, spacing: 8
-                    view_profile_button := RobrixNeutralIconButton {
-                        width: Fill, height: 32, margin: 0, align: Align{x: 0.5 y: 0.5}
-                        icon_walk: Walk{width: 0 height: 0}
-                        text: #(crate::i18n::tr("View profile")) i18n_text: "View profile"
-                    }
-                    message_button := RobrixIconButton {
-                        width: Fill, height: 32, margin: 0, spacing: 6, align: Align{x: 0.5 y: 0.5}
-                        draw_icon.svg: mod.widgets.ICON_DOUBLE_CHAT
-                        icon_walk: Walk{width: 14 height: 14}
-                        text: #(crate::i18n::tr("Message")) i18n_text: "Message"
-                    }
-                }
-            }
-        }
-    }
-}
 
 #[derive(Script, ScriptHook, Widget)]
 pub struct AvatarHoverCard {
@@ -115,6 +44,8 @@ pub struct AvatarHoverCard {
     #[rust] anchor: Rect,
     #[rust] shown: bool,
     #[rust] over_card: bool,
+    /// Set while the card shows an Agent.
+    #[rust] facts: Option<AgentFacts>,
 }
 
 impl Widget for AvatarHoverCard {
@@ -128,6 +59,11 @@ impl Widget for AvatarHoverCard {
         if let Event::Signal = event {
             // The room member may have just arrived from the server.
             self.populate_details(cx);
+        }
+        if let Event::Actions(actions) = event
+            && actions.iter().any(|a| a.downcast_ref::<AgentFactsChanged>().is_some() || a.downcast_ref::<OwnAgentsChanged>().is_some())
+        {
+            self.populate(cx);
         }
         if let Event::MouseMove(e) = event {
             let inside = self.view.view(cx, ids!(card)).area().rect(cx).contains(e.abs);
@@ -156,7 +92,8 @@ impl AvatarHoverCard {
         if !crate::home::home_screen::effective_is_desktop(cx) {
             return;
         }
-        let switched = self.target.as_ref().is_none_or(|t| t.user_id != info.user_id);
+        // An Agent's owner and status are per room: another room is a switch too.
+        let switched = self.target.as_ref().is_none_or(|t| t.user_id != info.user_id || t.room_id != info.room_id);
         self.anchor_uid = Some(uid);
         self.anchor = anchor;
         self.target = Some(info);
@@ -210,23 +147,45 @@ impl AvatarHoverCard {
         }
         self.view.label(cx, ids!(card_name)).set_text(cx, info.displayable_name());
         self.view.label(cx, ids!(card_user_id)).set_text(cx, info.user_id.as_str());
-        self.view.view(cx, ids!(agent_tag)).set_visible(cx, profile_route::is_agent(&info.user_id));
-        // No presence source exists for people or Agents yet, so the dot stays hidden.
+        let agent = profile_route::is_agent(&info.user_id);
+        self.view.view(cx, ids!(agent_tag)).set_visible(cx, agent);
+        // No presence source exists for people yet, so the dot stays hidden.
         self.view.view(cx, ids!(presence_dot)).set_visible(cx, false);
+        self.facts = agent.then(|| agent_facts::facts(&info.user_id, &info.room_id));
+        self.show_facts(cx);
+    }
+
+    /// The buttons and detail lines for what is known; an own Agent swaps
+    /// "View profile" for "Agent details".
+    fn show_facts(&mut self, cx: &mut Cx) {
+        let Some(info) = self.target.clone() else { return };
+        let own_agent = self.own_agent().is_some();
+        self.view.button(cx, ids!(view_profile_button)).set_visible(cx, !own_agent);
+        self.view.button(cx, ids!(agent_details_button)).set_visible(cx, own_agent);
         let own = current_user_id().as_ref() == Some(&info.user_id);
         self.view.button(cx, ids!(message_button)).set_visible(cx, !own);
-        for id in [ids!(view_profile_button), ids!(message_button)] {
+        for id in [ids!(view_profile_button), ids!(agent_details_button), ids!(message_button), ids!(copy_id_button)] {
             self.view.button(cx, id).reset_hover(cx);
         }
         self.populate_details(cx);
     }
 
-    /// The server, then the role in this room:
-    /// the same lines and role the right-hand profile shows.
+    fn own_agent(&self) -> Option<&str> {
+        self.facts.as_ref()?.own_agent_id.as_deref()
+    }
+
+    /// A person's server, an Agent's owner/runtime/status, then any room
+    /// role: the same lines the right-hand profile shows.
     fn populate_details(&mut self, cx: &mut Cx) {
         let Some(info) = self.target.clone() else { return };
         let route = profile_route::route_for(&info.user_id);
-        let mut lines = vec![profile_route::detail_line(&info.user_id, route)];
+        let mut lines = match self.facts.as_ref() {
+            Some(facts) => {
+                let owner = facts.owner.as_ref().map(|owner| agent_facts::owner_name(cx, owner, Some(&info.room_id)));
+                agent_facts::fact_lines(facts, owner.as_deref(), false)
+            }
+            None => vec![profile_route::detail_line(&info.user_id, route)],
+        };
         let state = member_summary::lookup(cx, &info.user_id, &info.room_id, true);
         let role = member_summary::standing_lines(&state).1;
         if !role.is_empty() { lines.push(role.into_owned()); }
@@ -239,13 +198,21 @@ impl AvatarHoverCard {
             CardButton::ViewProfile
         } else if self.view.button(cx, ids!(message_button)).clicked(actions) {
             CardButton::Message
+        } else if self.view.button(cx, ids!(agent_details_button)).clicked(actions) {
+            CardButton::AgentDetails
+        } else if self.view.button(cx, ids!(copy_id_button)).clicked(actions) {
+            CardButton::CopyId
         } else {
             return;
         };
         let Some(info) = self.target.clone() else { return };
         let room_name = room_name(cx, &info);
-        self.step(cx, HoverInput::Dismiss);
-        dispatch(cx, request_for(button, &info, room_name));
+        // Re-check ownership now: the account may have changed since the card opened.
+        let own_agent = super::own_agents::agent_for(&info.user_id).filter(|id| self.own_agent() == Some(id.as_str()));
+        let Some(request) = request_for(button, &info, room_name, own_agent.as_deref()) else { return };
+        // Copying keeps the card open; every other button leaves it.
+        if button != CardButton::CopyId { self.step(cx, HoverInput::Dismiss); }
+        dispatch(cx, request);
     }
 
     /// Puts the card beside the avatar (right, else left), inside the window.
