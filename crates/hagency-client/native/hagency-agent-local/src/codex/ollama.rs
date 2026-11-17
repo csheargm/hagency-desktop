@@ -62,11 +62,11 @@ impl LocalModel {
     /// A server operator's configured Ollama host (headless hosted Agents).
     /// Any host name is allowed, but only an explicit operator setting reaches
     /// here, and cloud models stay refused by [`validate_model`].
+    /// https is refused: the model check (`ollama_verify`) speaks plain HTTP only.
     pub fn server(endpoint: &str) -> Result<Self> {
-        let (scheme, rest) = endpoint
-            .split_once("://")
-            .filter(|(s, _)| matches!(*s, "http" | "https"))
-            .ok_or(Error::Profile("Ollama endpoint must be http or https"))?;
+        let rest = endpoint
+            .strip_prefix("http://")
+            .ok_or(Error::Profile("server Ollama endpoint must be http://host:port"))?;
         let (host, port) = rest.rsplit_once(':').ok_or(Error::Profile("Ollama endpoint needs a port"))?;
         let host_ok = !host.is_empty()
             && host.len() <= 253
@@ -74,7 +74,7 @@ impl LocalModel {
         if !host_ok || port.parse::<u16>().map_or(true, |p| p == 0) {
             return Err(Error::Profile("Ollama endpoint invalid"));
         }
-        Ok(Self { endpoint: format!("{scheme}://{host}:{port}"), origin: Origin::ServerHost })
+        Ok(Self { endpoint: format!("http://{host}:{port}"), origin: Origin::ServerHost })
     }
     pub fn origin(&self) -> Origin {
         self.origin
@@ -158,6 +158,7 @@ mod tests {
         assert_eq!(s.origin(), Origin::ServerHost);
         assert!(s.overrides().iter().any(|v| v.contains("this server's own model")));
         assert_eq!(LocalModel::new(DEFAULT_ENDPOINT).unwrap().origin(), Origin::ThisMachine);
+        assert!(LocalModel::server("https://ollama.internal:11434").is_err(), "https must be refused");
         for bad in ["ftp://h:1", "http://h", "http://h:0", "http://a b:1", "http://h:1/v1", "http://u@h:1"] {
             assert!(LocalModel::server(bad).is_err(), "{bad}");
         }
