@@ -172,3 +172,42 @@ fn the_same_steps_ask_outside_the_watch() {
     r.ledger.set_issue_watch(OWNER, "bird", setting, 1).unwrap();
     assert_eq!(r.ledger.trusted_publish(OWNER, &status, 11).unwrap(), None, "push freely off asks");
 }
+
+/// GPT review (Nov 17): the permission callback derives the proposal's
+/// directory from an absolute path argument. A second checkout of the same
+/// repository OUTSIDE the workspace, so named, must still ask once the
+/// proposal is rooted at the Room workspace; and reads of `.git` ask.
+#[test]
+fn a_checkout_outside_the_workspace_asks_whatever_the_derived_directory() {
+    let mut r = run();
+    let outside = r.root.parent().unwrap().join("elsewhere");
+    git(r.root.parent().unwrap(), &["clone", "-q", r.target.to_str().unwrap(), "elsewhere"]);
+    git(&outside, &["remote", "set-url", "origin", "https://github.com/csheargm/hagency-demo-sandbox.git"]);
+    let file = outside.join("README.md");
+    for tool in ["claude.Read", "claude.Edit"] {
+        // What the callback produced: the file's own folder as the directory.
+        let derived = proposal(&outside, ROOM, tool, json!({"file_path": file}));
+        assert!(r.ledger.trusted_publish(OWNER, &derived, 11).unwrap().is_some(), "the old root would have trusted it");
+        let rooted = super::for_workspace(&derived, &r.root);
+        assert_eq!(r.ledger.trusted_publish(OWNER, &rooted, 11).unwrap(), None, "{tool}");
+    }
+    let app = r.root.join("app");
+    git(&r.root, &["clone", "-q", r.target.to_str().unwrap(), "app"]);
+    git(&app, &["remote", "set-url", "origin", "https://github.com/csheargm/hagency-demo-sandbox.git"]);
+    for path in [app.join(".git/config"), app.join(".git/hooks/pre-commit.sample")] {
+        let read = proposal(&r.root, ROOM, "claude.Read", json!({"file_path": path}));
+        assert_eq!(r.ledger.trusted_publish(OWNER, &read, 11).unwrap(), None, "{}", path.display());
+    }
+}
+
+/// GPT review (Nov 17): a watch paused while a clone or pull is in flight
+/// stops it before anything is handed to the Agent.
+#[test]
+fn a_revoked_watch_stops_an_in_flight_clone_or_pull() {
+    let r = run();
+    let off = HostCtx::new(None, std::sync::Arc::default(), Box::new(|| false));
+    let dest = Dest { url: format!("file://{}", r.target.display()), protocol: "file" };
+    let clone = super::host_git::HostStep::Clone { target: r.root.join("app"), repo: REPO.into() };
+    assert!(clone.run_to(&dest, &off).is_err_and(|e| e.contains("no longer lets")));
+    assert!(!r.root.join("app").exists());
+}

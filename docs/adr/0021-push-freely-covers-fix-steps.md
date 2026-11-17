@@ -92,6 +92,15 @@ hint now say what it covers. Residual: a scratch kept for the Agent's call
 is removed by that call, so a call killed in between leaves it in the
 host's temp folder (owner-only).
 
+Second pass, adopted: push trust is checked against the Room workspace,
+never the proposal directory the permission callback derives from the call's
+own path argument (an absolute file's parent; before this, an absolute Edit
+anywhere was "inside the workspace" for ADR 0015's edit rule too); direct
+reads of `.git` ask; clone, pull and fetch recheck the watch before the
+network step and before handing anything to the Agent. Rejected: bounding
+Glob/Grep traversal into nested checkouts: Claude already reads inside its
+working directory without asking, so this adds no exposure.
+
 ## Open questions
 - Should build/test scripts (`cargo test`, `npm test`) be card-free? Default
   NO: they run repository code (build scripts, test fixtures, npm lifecycle

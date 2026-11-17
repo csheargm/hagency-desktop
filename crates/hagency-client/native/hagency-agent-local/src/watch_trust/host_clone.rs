@@ -2,7 +2,7 @@
 //! 0021). Like fetch and push (ADR 0015), the host does the network part in
 //! a fresh scratch repository with no checkout config; the Agent's call then
 //! applies it locally, pinned, with only the `file` transport allowed.
-use super::host_git::{Dest, HostStep, Scratch, fetch_with, remote_default, say};
+use super::host_git::{Dest, HostStep, Scratch, fetch_with, remote_default, say, still_allowed};
 use super::host_run::{HostCtx, run};
 use super::local_git::{pinned_git, pinned_git_file};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,7 @@ pub(super) fn pull(dir: &Path, remote: &str, branch: &str, dest: &Dest, ctx: &Ho
 /// clones from that local path into `target` and points `origin` at GitHub.
 pub(super) fn clone(target: &Path, repo: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
     let parent = target.parent().ok_or("the clone has no parent folder")?;
+    still_allowed(ctx)?;
     let scratch = Scratch::new(None, ctx)?;
     let default = remote_default(&scratch, dest, ctx)?;
     if !super::git::branch_name(&default) {
@@ -28,6 +29,7 @@ pub(super) fn clone(target: &Path, repo: &str, dest: &Dest, ctx: &HostCtx) -> Re
     }
     run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", &dest.url, "+refs/heads/*:refs/heads/*"]), None, ctx)?;
     run(scratch.git(dest).args(["symbolic-ref", "HEAD", &format!("refs/heads/{default}")]), None, ctx)?;
+    still_allowed(ctx)?;
     let local = scratch.keep().to_string_lossy().into_owned();
     let target_text = target.to_string_lossy();
     let copy = pinned_git_file(parent, &["clone", "-q", "--no-hardlinks", "--template=", "--origin", "origin", "--", &local, &target_text]);

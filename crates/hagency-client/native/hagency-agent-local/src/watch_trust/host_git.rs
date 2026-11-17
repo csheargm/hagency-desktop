@@ -173,6 +173,7 @@ fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String,
 /// fetch (an error when it no longer exists), so a pull never follows a
 /// stale tracking ref (GPT review, Nov 17).
 pub(super) fn fetch_with(dir: &Path, remote: &str, want: Option<&str>, dest: &Dest, ctx: &HostCtx) -> Result<(String, Option<String>), String> {
+    still_allowed(ctx)?;
     let scratch = Scratch::new(Some(&objects_dir(dir)?), ctx)?;
     let prefix = format!("refs/remotes/{remote}/");
     // What the checkout already has, so only new objects come down.
@@ -185,11 +186,18 @@ pub(super) fn fetch_with(dir: &Path, remote: &str, want: Option<&str>, dest: &De
         Some(branch) => Some(run(scratch.git(dest).args(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, ctx).map_err(|_| format!("{branch} no longer exists on the remote"))?),
         None => None,
     };
+    still_allowed(ctx)?;
     let path = scratch.keep();
     let local = path.to_string_lossy().into_owned();
     let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
     let done = say(&format!("Fetched {count} branches of {} into {remote}.", dest.url));
     Ok((format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)), sha.map(|s| s.trim().to_owned())))
+}
+
+/// The owner may have paused the watch or turned push freely off since the
+/// call was checked: then the step stops (GPT review, Nov 17).
+pub(super) fn still_allowed(ctx: &HostCtx) -> Result<(), String> {
+    if (ctx.still_allowed)() { Ok(()) } else { Err("the owner no longer lets this Agent work here without asking".into()) }
 }
 
 /// The object directory of checkout `dir`, which must be a plain clone:

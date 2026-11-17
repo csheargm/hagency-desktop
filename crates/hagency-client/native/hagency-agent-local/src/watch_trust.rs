@@ -98,6 +98,15 @@ pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate
     Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
 }
 
+/// `proposal` as push trust must see it: rooted at the Room `workspace`.
+/// The permission callback derives `canonical_directory` from the call's own
+/// path argument (an absolute file's parent), which must never become the
+/// containment root (GPT review, Nov 17).
+pub(crate) fn for_workspace(proposal: &ToolProposal, workspace: &Path) -> ToolProposal {
+    let root = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    ToolProposal { canonical_directory: root.to_string_lossy().into(), ..proposal.clone() }
+}
+
 /// A check, run off the async threads, that push trust still covers
 /// `proposal` for `repo` (the step's own destination): a fresh read-only connection to the ledger at `path` each
 /// time; no path or an unreadable ledger is a no.
@@ -128,7 +137,10 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
         let args = &proposal.arguments;
         let path = args.get("file_path").or(args.get("path")).map_or(Some("."), serde_json::Value::as_str);
         let inside = path.is_some_and(|p| if edit { crate::outside::writable_in(args.get("file_path"), root) } else { crate::outside::resolves_inside(p, root) });
-        let checkout = path.filter(|_| inside).and_then(|p| crate::outside::real_path(root, p)).and_then(|real| local_git::checkout_containing(&real, root));
+        let real = path.filter(|_| inside).and_then(|p| crate::outside::real_path(root, p));
+        // Reads stay out of git metadata too (GPT review, Nov 17).
+        let metadata = path.is_some_and(|p| crate::outside::is_git_metadata(Path::new(p))) || real.as_deref().is_some_and(crate::outside::is_git_metadata);
+        let checkout = real.filter(|_| !metadata).and_then(|real| local_git::checkout_containing(&real, root));
         let Some(checkout) = checkout else { return Ok(None) };
         return Ok(trusted_repos(db, proposal)?.iter().any(|repo| local_git::own_checkout(&checkout, repo)).then_some(TrustedStep::Allow));
     }

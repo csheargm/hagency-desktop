@@ -1025,6 +1025,7 @@ async fn permission(
     tool: String,
     arguments: Value,
     cwd: &Path,
+    workspace: &Path,
     queue: &ApprovalQueue,
     github: &crate::merge_policy::github::GhCli,
 ) -> claude_turn::ToolAnswer {
@@ -1050,10 +1051,13 @@ async fn permission(
     }
     // Owner push trust: checked once, authorized, and run exactly as pinned;
     // network and branch steps are run by the host itself (ADR 0015).
-    match ledger.trusted_publish(owner, &proposal, now()) {
+    // Checked against the Room workspace, never the directory derived from
+    // the call's own path argument (GPT review, Nov 17).
+    let trusted = crate::watch_trust::for_workspace(&proposal, workspace);
+    match ledger.trusted_publish(owner, &trusted, now()) {
         Ok(Some(step)) => {
             let repo = match &step { crate::watch_trust::TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
-            let recheck = ledger.push_trust_recheck(&proposal, &repo);
+            let recheck = ledger.push_trust_recheck(&trusted, &repo);
             return trusted_answer(step, github.token.clone(), recheck).await;
         }
         Ok(None) => {}
@@ -1106,6 +1110,8 @@ struct PersonalClaudeHost<'a> {
     dispatch: &'a str,
     queue: &'a ApprovalQueue,
     github: crate::merge_policy::github::GhCli,
+    /// The Room workspace push trust checks paths against.
+    workspace: &'a Path,
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
@@ -1172,6 +1178,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             tool,
             arguments,
             directory,
+            self.workspace,
             self.queue,
             &self.github,
         )
@@ -1226,6 +1233,7 @@ async fn run_claude(
         dispatch,
         queue,
         github: crate::merge_policy::github::GhCli { token: profile.environment.agent_github_token() },
+        workspace: &profile.cwd,
     };
     claude_turn::run(
         wire,
@@ -1543,6 +1551,7 @@ async fn run_octos(
                     "octos.approval".into(),
                     params,
                     &directory,
+                    &profile.cwd,
                     queue,
                     &octos_github,
                 );
