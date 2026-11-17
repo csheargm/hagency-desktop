@@ -13,7 +13,7 @@ use ::hagency::pasion::native::{self, NativeConfig};
 /// `None` (no native API, or it could not be read) keeps the older flow, which
 /// still signs the person in; the reason is logged.
 pub(crate) async fn adopt_native_client(client: &Client, origin: &str) -> Option<NativeConfig> {
-    match native::config(origin).await {
+    match config_within(origin, CONFIG_DEADLINE).await {
         Ok(Some(config)) => {
             if client.oauth().client_id().is_none() {
                 client.oauth().restore_registered_client(ClientId::new(config.client_id.clone()));
@@ -28,7 +28,20 @@ pub(crate) async fn adopt_native_client(client: &Client, origin: &str) -> Option
     }
 }
 
+/// Longest config discovery may take before the older flow is used instead.
+const CONFIG_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `native::config` bounded by `deadline`: a server that accepts the
+/// connection but never answers must not leave sign-in pending forever.
+async fn config_within(origin: &str, deadline: std::time::Duration) -> Result<Option<NativeConfig>> {
+    let answer = tokio::time::timeout(deadline, native::config(origin))
+        .await
+        .map_err(|_| anyhow::anyhow!("no answer within {deadline:?}"))?;
+    answer.map_err(|error| anyhow::anyhow!("{error}"))
+}
+
 /// Whether the SDK will authorize as the server's native client.
+#[cfg(test)] // only the adoption test reads it; prod checks via adopt_native_client
 pub(crate) fn uses_native_client(client: &Client, config: &NativeConfig) -> bool {
     client.oauth().client_id().is_some_and(|id| id.as_str() == config.client_id)
 }
@@ -130,6 +143,19 @@ mod tests {
         assert!(pairs.contains(&("state".into(), "s1".into())));
         assert!(pairs.contains(&("error_description".into(), "invalid_credentials".into())));
         assert_eq!(error_callback("http://h/authorize?state=s", "x"), None);
+    }
+
+    #[tokio::test]
+    async fn config_discovery_gives_up_on_a_stalled_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let _hold = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        assert!(config_within(&origin, std::time::Duration::from_millis(200)).await.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
