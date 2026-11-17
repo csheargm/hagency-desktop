@@ -1598,6 +1598,13 @@ fn validate_model_profile(profile: &ModelProfile) -> Result<()> {
     ] {
         key(value)?;
     }
+    if codex::ollama::from_reference(&profile.credential_ref).is_some() {
+        codex::ollama::validate_model(&profile.model).map_err(|_| Error::Invalid("local model"))?;
+        if profile.web_search || !Path::new(&profile.workspace_root).is_absolute() {
+            return Err(Error::Invalid("local model web search or workspace"));
+        }
+        return Ok(());
+    }
     if !(profile.credential_ref.starts_with("keychain:")
         || runtime::managed_reference(&profile.credential_ref).is_some()
         || profile

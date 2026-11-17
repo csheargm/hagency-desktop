@@ -18,6 +18,8 @@ mod room_mcp;
 mod approvals;
 mod controls;
 mod native_usage;
+pub mod ollama;
+pub mod ollama_verify;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -161,6 +163,8 @@ pub struct Profile {
     pub web_search: bool,
     /// This Agent's own extra variables (its GitHub token), never another's.
     pub environment: crate::agent_env::AgentEnvironment,
+    /// "Ollama (local)": run on a model served on this machine, no account.
+    pub local_model: Option<ollama::LocalModel>,
 }
 impl Profile {
     pub fn validate(&self) -> Result<()> {
@@ -185,6 +189,12 @@ impl Profile {
         // skills and extensions are loaded by Codex itself.
         key(&self.model)?;
         key(&self.effort)?;
+        if self.local_model.is_some() {
+            if self.shared_auth || self.web_search {
+                return Err(Error::Profile("local model runs without account or web search"));
+            }
+            ollama::validate_model(&self.model)?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -243,7 +253,8 @@ impl Profile {
         for value in hagency_runtime::codex::AGENT_ISOLATION_OVERRIDES {
             arguments.extend(["-c".into(), value.into()]);
         }
-        for value in overrides.iter().cloned().chain(self.environment.codex_overrides()) {
+        let local = self.local_model.iter().flat_map(ollama::LocalModel::overrides);
+        for value in local.chain(overrides.iter().cloned()).chain(self.environment.codex_overrides()) {
             arguments.extend(["-c".into(), value.into()]);
         }
         let mut environment = BTreeMap::from([
@@ -284,6 +295,7 @@ impl Profile {
         let mut session = Session::new(reader, writer);
         session.shared_home = self.shared_auth.then(|| self.home.clone());
         session.web_search = self.web_search;
+        session.local_model = self.local_model.clone();
         session
     }
 }
@@ -425,7 +437,7 @@ pub async fn sealed_shared_overrides(
         cwd: inspection.canonicalize()?,
         model: "probe".into(),
         effort: "medium".into(),
-        shared_auth: true,
+        shared_auth: true, local_model: None,
         web_search: false,
         environment: Default::default(),
     };
@@ -834,6 +846,7 @@ pub struct Session<R, W> {
     callbacks_enabled: bool,
     shared_home: Option<std::path::PathBuf>,
     web_search: bool,
+    local_model: Option<ollama::LocalModel>,
     room_mcp: Option<room_mcp::Bridge>,
     #[cfg(unix)]
     host_files: Option<host_files::HostFiles>,
@@ -863,6 +876,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             callbacks_enabled: true,
             shared_home: None,
             web_search: true,
+            local_model: None,
             room_mcp: None,
             #[cfg(unix)]
             host_files: None,
@@ -1021,6 +1035,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let response = self
             .rpc("account/read", value!({"refreshToken":false}))
             .await?;
+        if self.local_model.is_some() {
+            return ollama::verify_account(&response);
+        }
         if response["requiresOpenaiAuth"].as_bool() != Some(true)
             || !matches!(
                 response["account"]["type"].as_str(),
@@ -1038,6 +1055,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             .rpc("config/read", value!({"includeLayers":false}))
             .await?;
         let c = &response["config"];
+        if let Some(local) = &self.local_model {
+            local.verify(c)?;
+        }
         if self.room_mcp.is_some() && c["mcp_servers"].get(room_mcp::SERVER).is_some() {
             return Err(Error::Profile("owner MCP server uses reserved Matrix name"));
         }
@@ -2263,7 +2283,7 @@ mod tests {
             .unwrap();
         let profile = Profile {
             executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(),
-            home, codex_home, cwd, model: "gpt-6.1-sol".into(), effort: "low".into(), shared_auth: true, web_search: true,
+            home, codex_home, cwd, model: "gpt-6.1-sol".into(), effort: "low".into(), shared_auth: true, local_model: None, web_search: true,
             environment: Default::default(),
         };
         let mut process = profile.spawn().await.unwrap();
@@ -2303,7 +2323,7 @@ mod tests {
             cwd,
             model: "probe".into(),
             effort: "medium".into(),
-            shared_auth: true,
+            shared_auth: true, local_model: None,
             web_search: true,
             environment: Default::default(),
         };
@@ -2437,7 +2457,7 @@ mod tests {
             serde_json::to_string(&argument).unwrap()
         );
         std::fs::write(codex_home.join("config.toml"), config).unwrap();
-        let profile = Profile { executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(), home:home.canonicalize().unwrap(), codex_home:codex_home.canonicalize().unwrap(), cwd:workspace.canonicalize().unwrap(),model:"probe".into(),effort:"medium".into(),shared_auth:true,web_search:true, environment: Default::default() };
+        let profile = Profile { executable: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into(), home:home.canonicalize().unwrap(), codex_home:codex_home.canonicalize().unwrap(), cwd:workspace.canonicalize().unwrap(),model:"probe".into(),effort:"medium".into(),shared_auth:true, local_model: None,web_search:true, environment: Default::default() };
         let mut process = profile.spawn().await.unwrap();
         process.session.initialize().await.unwrap();
         process.session.verify_host_environment().await.unwrap();
@@ -2490,7 +2510,7 @@ mod tests {
             cwd: root,
             model: "codex-test-model".into(),
             effort: "low".into(),
-            shared_auth: false,
+            shared_auth: false, local_model: None,
             web_search: true,
             environment: Default::default(),
         };

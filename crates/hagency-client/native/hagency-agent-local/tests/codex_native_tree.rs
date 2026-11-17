@@ -234,7 +234,7 @@ requires_openai_auth = false
         cwd: root.join("work"),
         model: "gpt-5.4".into(),
         effort: "medium".into(),
-        shared_auth: false,
+        shared_auth: false, local_model: None,
         web_search: false,
         environment: Default::default(),
     };

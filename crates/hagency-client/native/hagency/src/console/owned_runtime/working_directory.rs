@@ -68,7 +68,7 @@ mod tests {
             cwd: base.clone(),
             model: "fixture".into(),
             effort: "low".into(),
-            shared_auth: false,
+            shared_auth: false, local_model: None,
             web_search: false,
             environment: Default::default(),
         };
@@ -117,7 +117,7 @@ mod tests {
         let profile = Profile {
             executable: owner.join("provider"), home: owner.join("provider-home"),
             codex_home: owner.join("codex-home"), cwd: project.clone(), model: "fixture".into(),
-            effort: "low".into(), shared_auth: false, web_search: false,
+            effort: "low".into(), shared_auth: false, local_model: None, web_search: false,
             environment: Default::default(),
         };
         let scope = Scope { agent:"agent".into(), binding:"room".into(), room:"!room:test".into(), requester:"@owner:test".into(), thread:"$thread".into() };

@@ -68,7 +68,7 @@ else:
             cwd: root.join("work"),
             model: "offline".into(),
             effort: "medium".into(),
-            shared_auth: true,
+            shared_auth: true, local_model: None,
             web_search: false,
             environment: Default::default(),
         };

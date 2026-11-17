@@ -4,6 +4,8 @@ mod drain;
 mod trust_config;
 pub(in crate::console) mod managed;
 pub(crate) mod external;
+mod ollama;
+pub(crate) use ollama::verify_local_model;
 pub(super) mod identity;
 pub(in crate::console) mod claude_identity;
 use super::{

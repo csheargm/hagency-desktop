@@ -192,7 +192,7 @@ impl Launch {
                     .reasoning
                     .clone()
                     .unwrap_or_else(|| "medium".into()),
-                shared_auth: true,
+                shared_auth: true, local_model: None,
                 web_search: false,
                 environment: Default::default(),
             },
@@ -490,7 +490,7 @@ impl ClaudeLaunch {
                 cwd: workspace,
                 model: resource.model.clone(),
                 effort: "medium".into(),
-                shared_auth: true,
+                shared_auth: true, local_model: None,
                 web_search: false,
                 environment: Default::default(),
             },

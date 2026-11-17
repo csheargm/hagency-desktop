@@ -220,7 +220,12 @@ fn owner_connection(
     {
         return Err(RuntimeError::Profile);
     }
-    if runtime::managed_reference(&config.credential_ref).is_some() {
+    if config.profile.local_model.is_some() {
+        // No login: the provider binding is re-checked after launch instead.
+        if hagency_agent_local::codex::ollama::from_reference(&config.credential_ref) != config.profile.local_model {
+            return Err(RuntimeError::Profile);
+        }
+    } else if runtime::managed_reference(&config.credential_ref).is_some() {
         external::verify_reference(&config.profile.codex_home, &config.credential_ref)
             .map_err(|_| RuntimeError::Profile)?;
     } else if selected_reference(&config.profile.codex_home, config.profile.shared_auth)
@@ -735,7 +740,7 @@ mod tests {
                 cwd: root.join("work"),
                 model: "haiku".into(),
                 effort: "low".into(),
-                shared_auth: true,
+                shared_auth: true, local_model: None,
                 web_search: false,
                 environment: Default::default(),
             },

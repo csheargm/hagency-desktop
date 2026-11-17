@@ -16,3 +16,4 @@ implemented. An ADR is not evidence that a feature has shipped.
 | [0011](0011-hagency-server-engagements.md) | Accepted; implementation pending | Rust workflow migration, multiple Hagency server engagements, coordinator approvals, bounded resource allocations and agent visibility |
 | [0012](0012-owner-daemon-shared-dashboard.md) | Implemented; runtime and numerical UX gates passed; manual VoiceOver open; standalone app removed by Client ADR-192 | Independent owner daemon, shared standalone/embedded dashboard, coding-plan telemetry and UX above 95/100 |
 | [0016](0016-distributed-github-loop.md) | Proposed; first milestone implemented | Distributed GitHub loop: owner work list (developer/reviewer/maintainer), GitHub claims, owner-side maintainer merge rules |
+| [0018](0018-ollama-runtime-caps.md) | Accepted | Ollama server endpoints are http only; usage caps live server-side for hosted Agents |

@@ -634,7 +634,12 @@ impl OwnedRuntime {
         {
             return Err(RuntimeError::Profile);
         }
-        if runtime::managed_reference(&config.credential_ref).is_some() {
+        // TODO(split): owned_runtime.rs is over budget; share this check with service.rs.
+        if config.profile.local_model.is_some() {
+            if hagency_agent_local::codex::ollama::from_reference(&config.credential_ref) != config.profile.local_model {
+                return Err(RuntimeError::Profile);
+            }
+        } else if runtime::managed_reference(&config.credential_ref).is_some() {
             super::owner_provider::external::verify_reference(
                 &config.profile.codex_home,
                 &config.credential_ref,
@@ -760,7 +765,8 @@ impl OwnedRuntime {
                     && p.credential_ref == config.credential_ref
                     && (p.credential_ref.starts_with("keychain:")
                         || p.credential_ref.starts_with("codex-managed:")
-                        || runtime::managed_reference(&p.credential_ref).is_some()) => {}
+                        || runtime::managed_reference(&p.credential_ref).is_some()
+                        || hagency_agent_local::codex::ollama::from_reference(&p.credential_ref).is_some()) => {}
             _ => return Err(RuntimeError::Profile),
         }
         let key = identity(&device, &config.agent_id);
@@ -3558,7 +3564,7 @@ mod tests {
                 cwd: path.into(),
                 model: "test-model".into(),
                 effort: "low".into(),
-                shared_auth: false,
+                shared_auth: false, local_model: None,
                 web_search: true,
                 environment: Default::default(),
             },
