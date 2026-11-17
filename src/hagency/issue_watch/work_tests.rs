@@ -47,9 +47,13 @@ fn a_pending_hand_off_and_an_unrelated_open_pr_both_take_a_slot() {
 #[test]
 fn only_a_closing_keyword_links_a_pull_request_to_its_issue() {
     use super::closes_issue;
-    assert!(closes_issue("Adds a glossary.\n\nCloses #12", 12));
-    assert!(closes_issue("fixes #12.", 12));
-    assert!(!closes_issue("Closes #123", 12), "another issue");
-    assert!(!closes_issue("see #12", 12), "a mention is no link");
-    assert!(!closes_issue("encloses #12", 12));
+    let r = "acme/app";
+    assert!(closes_issue("Adds a glossary.\n\nCloses #12", r, 12));
+    assert!(closes_issue("fixes #12.", r, 12));
+    assert!(closes_issue("Fixes Acme/App#12", r, 12));
+    assert!(closes_issue("Resolves https://github.com/acme/app/issues/12", r, 12));
+    assert!(!closes_issue("Fixes other/app#12", r, 12), "another repository");
+    assert!(!closes_issue("Closes #123", r, 12), "another issue");
+    assert!(!closes_issue("see #12", r, 12), "a mention is no link");
+    assert!(!closes_issue("encloses #12", r, 12));
 }

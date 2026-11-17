@@ -8,7 +8,8 @@ use std::collections::HashSet;
 /// (GitHub's search, so one beyond the newest page counts) and minus every
 /// issue handed off earlier that this Agent still holds a live claim on and
 /// no open pull request of the login closes yet (a hand-off still on its way
-/// keeps its slot across polls; a claim expires, so a stalled one frees it;
+/// keeps its slot across polls; an own PR beyond the newest page is
+/// not read, so its claim may count twice: over, never under, the cap; a claim expires, so a stalled one frees it;
 /// GPT review P1). Errors fail the pass.
 pub(super) async fn open_slots(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>, issues: &[Issue]) -> Result<PrSlots, String> {
     let Some(limit) = entry.open_prs else { return Ok(PrSlots::Unlimited) };
@@ -19,7 +20,7 @@ pub(super) async fn open_slots(worker: &Worker<'_>, entry: &OwnerRules, login: &
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
     let own: Vec<&str> = pulls.iter().filter(|p| p.author.eq_ignore_ascii_case(login)).map(|p| p.body.as_str()).collect();
     let mut used = open;
-    for issue in issues.iter().filter(|i| !i.is_pr && seen.contains(&i.number) && !own.iter().any(|b| closes_issue(b, i.number))) {
+    for issue in issues.iter().filter(|i| !i.is_pr && seen.contains(&i.number) && !own.iter().any(|b| closes_issue(b, &entry.repo, i.number))) {
         if used >= u64::from(limit) {
             break; // full either way
         }
@@ -51,19 +52,22 @@ impl PrSlots {
     }
 }
 
-/// Whether pull request description `body` closes issue `number` with a
-/// GitHub closing keyword ("Closes #12", "fixes #12", ...).
-pub(crate) fn closes_issue(body: &str, number: i64) -> bool {
+/// Whether pull request description `body` closes issue `number` of `repo`
+/// with a GitHub closing keyword: "Closes #12", "fixes owner/name#12" or
+/// "resolves https://github.com/owner/name/issues/12".
+pub(crate) fn closes_issue(body: &str, repo: &str, number: i64) -> bool {
     let lower = body.to_ascii_lowercase();
-    let tag = format!("#{number}");
-    ["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"].iter().any(|word| {
-        lower.match_indices(&format!("{word} {tag}")).any(|(at, m)| {
+    let repo = repo.to_ascii_lowercase();
+    let refs = [format!("#{number}"), format!("{repo}#{number}"), format!("https://github.com/{repo}/issues/{number}")];
+    CLOSING_WORDS.iter().flat_map(|word| refs.iter().map(move |r| format!("{word} {r}"))).any(|link| {
+        lower.match_indices(&link).any(|(at, m)| {
             let before = lower[..at].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
             let after = lower[at + m.len()..].chars().next().is_none_or(|c| !c.is_ascii_digit());
             before && after
         })
     })
 }
+const CLOSING_WORDS: [&str; 9] = ["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"];
 
 #[cfg(test)]
 #[path = "work_tests.rs"]
