@@ -167,6 +167,55 @@ mod permission_tests {
         assert!(!modal.may_invite_user(person));
         assert!(!crate::sliding_sync::UserPowerLevels::assumed_until_fetched().can_invite());
     }
+
+    /// Live finding: "@yue" found nothing although "yue-claude" was listed.
+    #[test]
+    fn a_leading_at_and_case_do_not_hide_an_agent_by_display_name() {
+        let known: Vec<Person> = vec![
+            (ruma::user_id!("@_hagency_agt_01abc:test").to_owned(), Some("Yue-Claude".into())),
+            (ruma::user_id!("@alex:test").to_owned(), Some("Alex".into())),
+        ];
+        for query in ["@yue", "yue", " @YUE-c ", "claude"] {
+            let found = match_people(&known, query);
+            assert_eq!(found.len(), 1, "{query:?}");
+            assert_eq!(found[0].1.as_deref(), Some("Yue-Claude"));
+        }
+        assert_eq!(match_people(&known, "@alex:test").len(), 1, "a full ID still matches");
+        assert_eq!(match_people(&known, "").len(), 2, "an empty query lists everyone");
+        assert!(match_people(&known, "@nobody").is_empty());
+    }
+
+    /// Live finding: a newly created Agent was missing because the picker
+    /// read only the local registry; the owner's Agents listing is used too.
+    #[test]
+    fn the_owners_agents_listing_supplies_new_agents_by_name() {
+        let me = ruma::user_id!("@chris:test");
+        let listing = serde_json::json!({"ownerMxid": "@chris:test", "agents": [
+            {"id": "agt_2", "state": "active", "displayName": "yue-claude", "puppetMxid": "@_hagency_agt_2:test"},
+            {"id": "agt_3", "state": "retired", "displayName": "old", "puppetMxid": "@_hagency_agt_3:test"},
+        ]});
+        let people = agent_people(&listing, me);
+        assert_eq!(people, vec![(ruma::user_id!("@_hagency_agt_2:test").to_owned(), Some("yue-claude".into()))]);
+        let other = serde_json::json!({"ownerMxid": "@someone:test", "agents": listing["agents"].clone()});
+        assert!(agent_people(&other, me).is_empty(), "another owner's Agents are never offered");
+    }
+
+    /// Live finding: a found Agent filled the field and status with its raw
+    /// `@_hagency_agt_…` ID. It is shown by name and still invited by ID.
+    #[test]
+    fn a_found_agent_is_shown_by_name_and_invited_by_id() {
+        let agent = ruma::user_id!("@_hagency_agt_01m7:test").to_owned();
+        let label = person_label(&agent, Some("yue-claude"));
+        assert_eq!(label, "yue-claude");
+        let text = found_text(&agent, &label);
+        assert!(text.contains("yue-claude (your agent)") && !text.contains("_hagency_agt_"), "{text}");
+        assert!(!person_detail(&agent).contains("_hagency_agt_"));
+        let picked = (label.clone(), agent.clone());
+        assert_eq!(typed_user(" yue-claude ", Some(&picked)), Some(agent.clone()));
+        assert_eq!(typed_user("yue-claud", Some(&picked)), None, "an edited name is a new search");
+        assert_eq!(typed_user("@alex:test", Some(&picked)).as_deref(), Some(ruma::user_id!("@alex:test")));
+        assert_eq!(person_label(ruma::user_id!("@alex:test"), Some("  ")), "alex");
+    }
 }
 
 /// Results of the dialog's background lookups, matched to the request that
@@ -192,6 +241,8 @@ pub struct InviteModal {
     #[rust] request: u64,
     #[rust] epoch: u64,
     #[rust] can_invite: bool,
+    /// The person picked from the list or a search, shown by name in the field.
+    #[rust] picked: Option<(String, OwnedUserId)>,
     #[cfg(feature = "onboarding-test-support")]
     #[rust] review_mode: bool,
 }
@@ -207,20 +258,22 @@ impl Widget for InviteModal {
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.rendered_people.clear();
-        let selected = self.view.text_input(cx, ids!(user_id_input)).text();
+        let text = self.view.text_input(cx, ids!(user_id_input)).text();
+        let selected = typed_user(&text, self.picked.as_ref());
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut list) = item.borrow_mut::<PortalList>() {
                 list.set_item_range(cx, 0, self.offered.len().max(1));
                 while let Some(index) = list.next_visible_item(cx) {
                     if self.offered.is_empty() {
-                        list.item(cx, index, id!(Empty)).draw_all(cx, scope);
+                        // One placeholder, even when the list fills its height.
+                        if index == 0 { list.item(cx, index, id!(Empty)).draw_all(cx, scope); }
                         continue;
                     }
                     let Some((id, name)) = self.offered.get(index) else {continue;};
                     let row = list.item(cx, index, id!(Person));
-                    row.label(cx, ids!(person_name)).set_text(cx, name.as_deref().filter(|n| !n.is_empty()).unwrap_or(id.localpart()));
-                    row.label(cx, ids!(person_id)).set_text(cx, id.as_str());
-                    row.as_navigation_bar_button().set_selected(cx, selected == id.as_str());
+                    row.label(cx, ids!(person_name)).set_text(cx, &person_label(id, name.as_deref()));
+                    row.label(cx, ids!(person_id)).set_text(cx, &person_detail(id));
+                    row.as_navigation_bar_button().set_selected(cx, selected.as_ref() == Some(id));
                     self.rendered_people.insert(row.widget_uid(), id.clone());
                     row.draw_all(cx, scope);
                 }
@@ -276,8 +329,9 @@ impl WidgetMatchEvent for InviteModal {
             let list = self.view.portal_list(cx, ids!(people_list));
             for (_, row) in list.items_with_actions(actions) {
                 if !list.was_scrolling() && row.as_navigation_bar_button().clicked(actions)
-                    && let Some(user) = self.rendered_people.get(&row.widget_uid()) {
-                    input.set_text(cx, user.as_str());
+                    && let Some(user) = self.rendered_people.get(&row.widget_uid()).cloned() {
+                    let name = self.offered.iter().find(|(id, _)| id == &user).and_then(|(_, n)| n.clone());
+                    self.pick(cx, &user, name.as_deref());
                     input.set_key_focus(cx);
                     self.view.redraw(cx);
                     break;
@@ -322,43 +376,31 @@ impl WidgetMatchEvent for InviteModal {
                 return;
             }
 
-            // A full Matrix ID is invited as typed; anything else is a name.
-            let parsed = if user_id_str.trim_start().starts_with('@') {
-                ruma::UserId::parse(user_id_str.trim())
-            } else {
-                Err(ruma::IdParseError::MissingLeadingSigil)
-            };
-            if parsed.is_err() && !user_id_str.trim_start().starts_with('@') {
+            // A full Matrix ID is invited as typed; anything else, "@yue"
+            // included, is a name: Agent IDs are hidden and never typed.
+            let Some(user_id) = typed_user(&user_id_str, self.picked.as_ref()) else {
                 self.search(cx, user_id_str.trim().to_owned());
                 return;
+            };
+            if !self.may_invite_user(&user_id) {
+                self.status(cx, crate::i18n::tr("You do not have permission to invite people to this room."), true);
+                return;
             }
-            match parsed {
-                Ok(user_id) => {
-                    if !self.may_invite_user(&user_id) {
-                        self.status(cx, crate::i18n::tr("You do not have permission to invite people to this room."), true);
-                        return;
-                    }
-                    if let Some(room_name_id) = &self.room_name_id {
-                        let request = MatrixRequest::InviteUser {
-                            room_id: room_name_id.room_id().clone(),
-                            user_id: user_id.clone(),
-                        };
-                        #[cfg(feature = "onboarding-test-support")]
-                        let offline_review = self.review_mode;
-                        #[cfg(not(feature = "onboarding-test-support"))]
-                        let offline_review = false;
-                        if !offline_review { submit_async_request(request); }
-                        let agent = crate::hagency::backend::is_agent_invitation(&user_id);
-                        self.state = InviteModalState::WaitingForInvite(user_id);
-                        self.status(cx, crate::i18n::tr(if agent {"Adding Agent to this room…"} else {"Sending invite..."}), false);
-                        confirm_button.set_enabled(cx, false);
-                        user_id_input.set_is_read_only(cx, true);
-                    }
-                }
-                Err(_) => {
-                    self.status(cx, crate::i18n::tr("Invalid User ID. Expected format: @user:server.xyz"), true);
-                    user_id_input.set_key_focus(cx);
-                }
+            if let Some(room_name_id) = &self.room_name_id {
+                let request = MatrixRequest::InviteUser {
+                    room_id: room_name_id.room_id().clone(),
+                    user_id: user_id.clone(),
+                };
+                #[cfg(feature = "onboarding-test-support")]
+                let offline_review = self.review_mode;
+                #[cfg(not(feature = "onboarding-test-support"))]
+                let offline_review = false;
+                if !offline_review { submit_async_request(request); }
+                let agent = crate::hagency::backend::is_agent_invitation(&user_id);
+                self.state = InviteModalState::WaitingForInvite(user_id);
+                self.status(cx, crate::i18n::tr(if agent {"Adding Agent to this room…"} else {"Sending invite..."}), false);
+                confirm_button.set_enabled(cx, false);
+                user_id_input.set_is_read_only(cx, true);
             }
             self.view.redraw(cx);
         }
@@ -419,15 +461,7 @@ impl InviteModal {
 
     /// Known people whose name or ID contains `query`, ignoring case.
     fn local_matches(&self, query: &str) -> Vec<Person> {
-        let needle = query.to_lowercase();
-        self.known
-            .iter()
-            .filter(|(id, name)| {
-                id.as_str().to_lowercase().contains(&needle)
-                    || name.as_deref().is_some_and(|n| n.to_lowercase().contains(&needle))
-            })
-            .cloned()
-            .collect()
+        match_people(&self.known, query)
     }
 
     /// A typed name: ask the homeserver directory too, then resolve.
@@ -440,8 +474,9 @@ impl InviteModal {
             self.resolved(cx, &query, matches);
             return;
         };
+        let term = query.trim_start_matches('@').to_owned();
         spawn_async_task(async move {
-            let people = match client.search_users(&query, 20).await {
+            let people = match client.search_users(&term, 20).await {
                 Ok(found) => found
                     .results
                     .into_iter()
@@ -459,9 +494,12 @@ impl InviteModal {
     /// list; none asks for the full ID.
     fn resolved(&mut self, cx: &mut Cx, query: &str, matches: Vec<Person>) {
         match matches.as_slice() {
-            [(id, _)] => {
-                self.view.text_input(cx, ids!(user_id_input)).set_text(cx, id.as_str());
-                self.status(cx, &crate::i18n::format("Found {0}. Press Invite to send.", &[("0", id.to_string())]), false);
+            [(id, name)] => {
+                // Show the match in the list and the field by name; an Agent's
+                // Matrix ID is hidden-style and means nothing to the owner.
+                self.offer(cx, &matches);
+                let label = self.pick(cx, id, name.as_deref());
+                self.status(cx, &found_text(id, &label), false);
             }
             [] => self.status(
                 cx,
@@ -502,7 +540,10 @@ impl InviteModal {
                     .unwrap_or_default(),
                 None => Vec::new(),
             };
-            let mut people: Vec<Person> = Vec::new();
+            // The Agents listing is authoritative: the local registry misses
+            // Agents created since it was last saved (live finding).
+            let mut people: Vec<Person> = owner_agents(me.as_deref()).await.into_iter()
+                .filter(|(id, _)| !present.contains(id)).collect();
             for joined in client.joined_rooms() {
                 if crate::moments::is_moments(&joined) {
                     continue;
@@ -545,6 +586,7 @@ impl InviteModal {
         self.offer(cx, &known);
         self.load_known(room_name_id.room_id().clone());
         self.state = InviteModalState::WaitingForUserInput;
+        self.picked = None;
         self.room_name_id = Some(room_name_id);
 
         // Reset the UI state
@@ -577,11 +619,93 @@ impl InviteModal {
 
     fn update_invite_button(&mut self, cx: &mut Cx) {
         let text = self.view.text_input(cx, ids!(user_id_input)).text();
-        let allowed = ruma::UserId::parse(text.trim()).ok()
+        let allowed = typed_user(&text, self.picked.as_ref())
             .map_or(self.can_invite, |id| self.may_invite_user(&id));
         self.view.button(cx, ids!(confirm_button)).set_enabled(cx,
             allowed && self.epoch == crate::account_session::epoch()
                 && !matches!(self.state, InviteModalState::WaitingForInvite(_) | InviteModalState::InviteSuccess));
+    }
+}
+
+/// People in `known` whose display name or Matrix ID contains `query`,
+/// ignoring case. A leading `@` is a mention habit, not part of a name: Agent
+/// IDs are hidden (`@_hagency_agt_…`), so "@yue" must find "yue-claude".
+fn match_people(known: &[Person], query: &str) -> Vec<Person> {
+    let query = query.trim();
+    let needle = query.strip_prefix('@').unwrap_or(query).to_lowercase();
+    known
+        .iter()
+        .filter(|(id, name)| {
+            id.as_str().to_lowercase().contains(&needle)
+                || name.as_deref().is_some_and(|n| n.to_lowercase().contains(&needle))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The signed-in owner's active Agents, from the server's Agents listing.
+/// A failed read offers none: the registry and room members still show.
+async fn owner_agents(me: Option<&ruma::UserId>) -> Vec<Person> {
+    let Some(me) = me else { return Vec::new() };
+    let listing = match crate::hagency::backend::Service::for_current() {
+        Ok(service) => service.execute(crate::hagency::model::Command::Agents).await,
+        Err(code) => Err(code),
+    };
+    match listing {
+        Ok(listing) => agent_people(&listing, me),
+        Err(code) => {
+            // Optional source: the picker still lists registry Agents and members.
+            warning!("Invite: could not read the Agents listing: {code}");
+            Vec::new()
+        }
+    }
+}
+
+/// The owner's Agents of a `Command::Agents` listing, as invite rows.
+fn agent_people(listing: &serde_json::Value, me: &ruma::UserId) -> Vec<Person> {
+    crate::shared::live_mentions::own_agents(listing, me).into_iter()
+        .map(|agent| (agent.puppet, Some(agent.name)))
+        .collect()
+}
+
+impl InviteModal {
+    /// Fills the field with `id`'s name; Invite then sends to `id`.
+    fn pick(&mut self, cx: &mut Cx, id: &OwnedUserId, name: Option<&str>) -> String {
+        let label = person_label(id, name);
+        self.picked = Some((label.clone(), id.clone()));
+        let input = self.view.text_input(cx, ids!(user_id_input));
+        input.set_text(cx, &label);
+        input.set_key_focus(cx);
+        self.view.redraw(cx);
+        label
+    }
+}
+
+/// The name a person is shown by: display name, else the ID's localpart.
+fn person_label(id: &ruma::UserId, name: Option<&str>) -> String {
+    name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(id.localpart()).to_owned()
+}
+
+/// The second line of a row: "Your agent" for an Agent, else the Matrix ID.
+fn person_detail(id: &ruma::UserId) -> String {
+    if crate::hagency::backend::is_agent_invitation(id) { crate::i18n::tr("Your agent").to_owned() } else { id.to_string() }
+}
+
+/// "Found yue-claude (your agent)…", never the hidden Agent ID.
+fn found_text(id: &ruma::UserId, label: &str) -> String {
+    let who = if crate::hagency::backend::is_agent_invitation(id) {
+        crate::i18n::format("{0} (your agent)", &[("0", label.to_owned())])
+    } else { label.to_owned() };
+    crate::i18n::format("Found {0}. Press Invite to send.", &[("0", who)])
+}
+
+/// Who the field names: the picked person while it still shows their name,
+/// else a full Matrix ID typed as is.
+fn typed_user(text: &str, picked: Option<&(String, OwnedUserId)>) -> Option<OwnedUserId> {
+    let text = text.trim();
+    match picked {
+        Some((label, id)) if label == text => Some(id.clone()),
+        _ => ruma::UserId::parse(text).ok(),
     }
 }
 

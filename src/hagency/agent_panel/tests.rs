@@ -32,6 +32,8 @@ fn loaded_agent_renders_identity_who_can_ask_and_credit() {
     panel.fill_budget(&mut cx);
     panel.render(&mut cx);
     assert_eq!(panel.view.label(&mut cx, ids!(runs_on)).text(), "Runs on this Mac (Claude)");
+    assert_eq!(panel.view.label(&mut cx, ids!(matrix_id)).text(), "@_hagency_agt_1:s", "the Agent's Matrix ID is shown (live finding)");
+    assert!(panel.view.button(&mut cx, ids!(copy_matrix_id)).borrow().unwrap().enabled());
     assert_eq!(panel.view.drop_down(&mut cx, ids!(who)).selected_item(), 0, "Deny shows Only me");
     assert_eq!(panel.view.drop_down(&mut cx, ids!(thinking)).selected_item(), 1, "saved Thinking is selected");
     assert_eq!(panel.view.label(&mut cx, ids!(credit_text)).text(), "1.2M of 2M tokens left today");
