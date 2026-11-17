@@ -295,6 +295,13 @@ impl Widget for AgentReply {
                 self.set_hovered(cx, inside);
             }
             Event::MouseLeave(_) => self.set_hovered(cx, false),
+            // Touch has no hover: a tap on the reply shows its actions.
+            Event::TouchUpdate(e) if self.view.visible() => {
+                let rect = self.view.area().rect(cx);
+                if e.touches.iter().any(|t| t.state == makepad_widgets::event::TouchState::Stop && rect.contains(t.abs)) {
+                    self.set_hovered(cx, true);
+                }
+            }
             _ => {}
         }
         if self.timer.is_event(event).is_some() {

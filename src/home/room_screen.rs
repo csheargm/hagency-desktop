@@ -7303,13 +7303,6 @@ fn populate_thread_root_summary(
         thread_summary_view.set_visible(cx, false);
         return false;
     }
-    // The room shows only an Agent's answer: its progress thread folds into an
-    // "N updates" link on the answer. Not cached, so a new reply updates the count.
-    if !runs.is_empty() {
-        thread_summary_view.set_visible(cx, false);
-        super::agent_run_row::set_updates(cx, item, replies_count as usize);
-        return true;
-    }
 
     let latest_preview: Cow<str> = match &thread_summary.latest_event {
         TimelineDetails::Ready(embedded_event) => {
@@ -7355,6 +7348,13 @@ fn populate_thread_root_summary(
         }
     };
 
+    // The room shows only an Agent's answer: its progress thread folds into an
+    // "N updates" link on the answer (after the summary fetch above, so the count is complete).
+    if !runs.is_empty() {
+        thread_summary_view.set_visible(cx, false);
+        super::agent_run_row::set_updates(cx, item, replies_count as usize);
+        return fully_drawn;
+    }
     let replies_count_text = match replies_count {
         1 => Cow::Borrowed(crate::i18n::tr("1 reply")),
         n => Cow::Owned(crate::i18n::format("{n} replies", &[("n", (n).to_string())]))

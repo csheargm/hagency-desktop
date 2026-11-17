@@ -45,8 +45,11 @@ pub(crate) fn footer(card: &Card, elapsed_secs: u64, waiting_approval: bool) -> 
 /// Whether the owner's approval holds this run up (a pending request on its message).
 pub(crate) fn waits_for_approval(card: &Card) -> bool {
     let Ok(room) = <&matrix_sdk::ruma::RoomId>::try_from(card.room_id.as_str()) else { return false };
-    [card.event_id.as_str(), card.thread_root.as_str()].into_iter()
-        .any(|id| crate::hagency::pending_approvals::for_event(room, id, true).is_some())
+    // Only this run's own request (not any approval in its thread), and only
+    // one this viewer can still decide.
+    use crate::hagency::pending_approvals::{LocalDecision, for_event};
+    for_event(room, &card.event_id, false)
+        .is_some_and(|p| p.can_decide() && matches!(p.local, LocalDecision::None | LocalDecision::Failed(..)))
 }
 
 /// The run's duration, for the answer's hover line; `None` until it finished.
