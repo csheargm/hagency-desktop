@@ -43,6 +43,8 @@ const MAX_CARDS: usize = 256;
 pub const MAX_CARDS_PER_MESSAGE: usize = 3;
 /// Events tried again for keys or a sender device, and for how long.
 const MAX_PARKED: usize = 64;
+/// Encrypted events kept per sender, oldest of that sender dropped first.
+const MAX_PARKED_PER_SENDER: usize = 8;
 const PARKED_FOR: Duration =
     Duration::from_millis(protocol::ANSWER_WAIT_MS + protocol::EXPIRY_SKEW_MS);
 const RETRY_EVERY: Duration = Duration::from_secs(5);
@@ -151,6 +153,7 @@ pub struct PendingQuestionsChanged;
 struct Parked {
     room_id: String,
     event_id: String,
+    sender: String,
     /// The decrypted event, when only its sender device was unknown.
     decrypted: Option<(Value, String)>,
     since: Instant,
@@ -289,6 +292,8 @@ async fn consider(
             .unwrap_or_else(|| user.localpart().to_owned()),
         Err(_) => return false,
     };
+    let remote_trusted = !protocol::is_agent_on(sender, &server)
+        && remote_run_allowed(client, room, sender, value).await;
     accept_event(
         generation,
         room.room_id().as_str(),
@@ -297,15 +302,55 @@ async fn consider(
         value,
         info,
         plaintext,
+        remote_trusted,
     )
 }
 
+/// Comma-separated homeservers whose Agents may post run cards into rooms
+/// of other servers (demo setting; default none). The signed-in user's own
+/// homeserver is always trusted for its own Agents.
+const TRUSTED_PEERS_ENV: &str = "HAGENCY_TRUSTED_PEERS";
+
+/// Whether `server` is a trusted peer: this user's own homeserver or one
+/// listed in `configured`.
+fn trusted_peer(server: &str, own_server: Option<&str>, configured: &str) -> bool {
+    own_server == Some(server) || configured.split(',').map(str::trim).any(|s| !s.is_empty() && s == server)
+}
+
+async fn joined(room: &Room, user: &str) -> bool {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let Ok(user) = OwnedUserId::try_from(user) else { return false };
+    matches!(room.get_member_no_sync(&user).await, Ok(Some(m)) if *m.membership() == MembershipState::Join)
+}
+
+/// A run card from another server's Agent: that server is a trusted peer,
+/// the Agent is joined, and (once readable) the run's owner is a joined
+/// member on the Agent's server. Ciphertext is rechecked after decryption.
+async fn remote_run_allowed(client: &Client, room: &Room, sender: &str, value: &Value) -> bool {
+    let Some(agent_server) = protocol::server_name(sender) else { return false };
+    let own = client.user_id().map(|u| u.server_name().to_string());
+    let configured = std::env::var(TRUSTED_PEERS_ENV).unwrap_or_default();
+    if !trusted_peer(agent_server, own.as_deref(), &configured) || !joined(room, sender).await {
+        return false;
+    }
+    if value["type"] == "m.room.encrypted" {
+        return true;
+    }
+    let content = &value["content"];
+    let card = if content["m.relates_to"]["rel_type"] == "m.replace" { &content["m.new_content"] } else { content };
+    match ::hagency::agent_run_controls::Card::from_content(card) {
+        Some(card) => protocol::server_name(&card.owner) == Some(agent_server) && joined(room, &card.owner).await,
+        None => false,
+    }
+}
+
 /// An Agent of the room's own server, or (federated rooms) a run card from
-/// an Agent whose owner is on that Agent's own server. Ciphertext from any
-/// Agent is only parked; its plaintext is admitted by this same rule.
-fn admits_sender(sender: &str, room_server: &str, value: &Value) -> bool {
+/// a trusted peer's joined Agent whose joined owner is on that Agent's server
+/// (`remote_trusted`, see `remote_run_allowed`). Remote ciphertext is only
+/// parked; its plaintext is admitted by this same rule.
+fn admits_sender(sender: &str, room_server: &str, value: &Value, remote_trusted: bool) -> bool {
     protocol::is_agent_on(sender, room_server)
-        || (protocol::is_agent(sender)
+        || (remote_trusted && protocol::is_agent(sender)
             && (value["type"] == "m.room.encrypted"
                 || ::hagency::agent_run_controls::Card::sent_by_owners_agent(sender, &value["content"])))
 }
@@ -320,12 +365,13 @@ fn accept_event(
     value: &Value,
     info: Option<&EncryptionInfo>,
     plaintext: bool,
+    remote_trusted: bool,
 ) -> bool {
     let (Some(sender), Some(event_id)) = (value["sender"].as_str(), value["event_id"].as_str())
     else {
         return false;
     };
-    if !admits_sender(sender, server, value)
+    if !admits_sender(sender, server, value, remote_trusted)
         || OwnedEventId::try_from(event_id).is_err()
         || value
             .get("room_id")
@@ -337,7 +383,7 @@ fn accept_event(
     if value["type"] == "m.room.encrypted" {
         // Relation metadata is optional in ciphertext. Until it decrypts we
         // cannot tell whether it is a card; retain only this bounded queue.
-        park(generation, room_id, event_id, None);
+        park(generation, room_id, event_id, sender, None);
         return false;
     }
     if value["type"] != "m.room.message" || (value["content"]["msgtype"] != protocol::MSGTYPE
@@ -358,6 +404,7 @@ fn accept_event(
                     generation,
                     room_id,
                     event_id,
+                    sender,
                     Some((value.clone(), session.to_owned())),
                 );
             } else {
@@ -414,7 +461,7 @@ fn device_unknown(info: &EncryptionInfo) -> bool {
     )
 }
 
-fn park(generation: u64, room_id: &str, event_id: &str, decrypted: Option<(Value, String)>) {
+fn park(generation: u64, room_id: &str, event_id: &str, sender: &str, decrypted: Option<(Value, String)>) {
     with_state(generation, |state| {
         if let Some(parked) = state
             .parked
@@ -428,9 +475,16 @@ fn park(generation: u64, room_id: &str, event_id: &str, decrypted: Option<(Value
             }
             return;
         }
+        // One sender cannot evict another sender's pending events.
+        if state.parked.iter().filter(|p| p.sender == sender).count() >= MAX_PARKED_PER_SENDER
+            && let Some(oldest) = state.parked.iter().position(|p| p.sender == sender)
+        {
+            state.parked.remove(oldest);
+        }
         state.parked.push(Parked {
             room_id: room_id.into(),
             event_id: event_id.into(),
+            sender: sender.into(),
             decrypted,
             since: Instant::now(),
         });
@@ -1511,6 +1565,7 @@ mod tests {
             value,
             info,
             plaintext,
+            false,
         )
     }
 
@@ -1579,7 +1634,7 @@ mod tests {
         let known = encryption(VerificationState::Verified);
         let edit = event("$edit", answered.edit_content("$late"));
         assert!(!accept(generation, &edit, Some(&known), false));
-        park(generation, "!room:example.test", "$late", None);
+        park(generation, "!room:example.test", "$late", AGENT, None);
         let original = event("$late", c.message_content());
         assert!(
             retry_with(
@@ -1603,7 +1658,7 @@ mod tests {
     async fn logout_and_same_account_relogin_fence_in_flight_retries_and_answers() {
         let _guard = SERIAL.lock().await;
         let old = reset("@me:example.test".into());
-        park(old, "!room:example.test", "$late", None);
+        park(old, "!room:example.test", "$late", AGENT, None);
         let started = tokio::sync::Notify::new();
         let resume = tokio::sync::Notify::new();
         let value = event("$late", card(1).message_content());
@@ -1621,7 +1676,7 @@ mod tests {
         let relogin = async {
             started.notified().await;
             let new = reset("@me:example.test".into());
-            park(new, "!room:example.test", "$late", None);
+            park(new, "!room:example.test", "$late", AGENT, None);
             resume.notify_one();
             new
         };
@@ -1650,7 +1705,7 @@ mod tests {
             result: Ok(()),
         }));
         assert_eq!(get("$late").unwrap().local, LocalAnswer::None);
-        park(old, "!room:example.test", "$stale", None);
+        park(old, "!room:example.test", "$stale", AGENT, None);
         assert!(!edited_in(
             old,
             "!room:example.test",
@@ -1751,9 +1806,14 @@ mod tests {
             v["sender"] = remote.into();
             v
         };
-        assert!(accept(generation, &from("$fedrun", card.content()), None, true));
+        let remote = |value: &Value, trusted: bool| accept_event(generation, "!room:example.test",
+            "example.test", "Agent", value, None, true, trusted);
+        // Not a trusted peer / not joined (`remote_run_allowed` false): an ordinary message.
+        assert!(!remote(&from("$fedrun", card.content()), false));
+        assert!(super::super::run_controls::for_event(matrix_sdk::ruma::room_id!("!room:example.test"), "$fedtrigger", true).is_empty());
+        assert!(remote(&from("$fedrun", card.content()), true));
         card.revision = 1; card.state = ::hagency::agent_run_controls::State::Completed;
-        assert!(accept(generation, &from("$fededit", card.edit_content("$fedrun").unwrap()), None, true));
+        assert!(remote(&from("$fededit", card.edit_content("$fedrun").unwrap()), true));
         let room = matrix_sdk::ruma::room_id!("!room:example.test");
         let shown = super::super::run_controls::for_event(room, "$fedtrigger", true);
         assert_eq!(shown.len(), 1);
@@ -1762,7 +1822,30 @@ mod tests {
         forged.id = "run_forged".into(); forged.revision = 0; forged.state = ::hagency::agent_run_controls::State::Running;
         let mut v = event("$forged", forged.content());
         v["sender"] = "@_hagency_agt_x:evil.test".into();
-        assert!(!accept(generation, &v, None, true), "another server cannot post beta's runs");
+        assert!(!remote(&v, true), "another server cannot post beta's runs, even if trusted");
+    }
+
+    #[test]
+    fn only_the_own_server_and_configured_peers_are_trusted() {
+        assert!(trusted_peer("beta.test", Some("beta.test"), ""));
+        assert!(trusted_peer("beta.test", Some("alpha.test"), "x.test, beta.test"));
+        assert!(!trusted_peer("evil.test", Some("alpha.test"), "beta.test"));
+        assert!(!trusted_peer("evil.test", Some("alpha.test"), ""), "default: no peers");
+        assert!(!trusted_peer("", None, ","));
+    }
+
+    #[test]
+    fn a_flood_from_one_sender_does_not_evict_another_senders_pending_card() {
+        let _guard = serial();
+        let generation = reset("@me:example.test".into());
+        park(generation, "!room:example.test", "$legit", AGENT, None);
+        for i in 0..MAX_PARKED * 2 {
+            park(generation, "!room:example.test", &format!("$flood{i}"), "@_hagency_agt_x:evil.test", None);
+        }
+        with_state(generation, |s| {
+            assert!(s.parked.iter().any(|p| p.event_id == "$legit"));
+            assert_eq!(s.parked.iter().filter(|p| p.sender == "@_hagency_agt_x:evil.test").count(), MAX_PARKED_PER_SENDER);
+        }).unwrap();
     }
 
     #[test]
@@ -1812,6 +1895,7 @@ mod tests {
                 generation,
                 "!room:example.test",
                 &format!("$event{i}"),
+                &format!("@_hagency_agt_{i}:example.test"),
                 None,
             );
         }
@@ -1834,8 +1918,8 @@ mod tests {
         );
         let value = event("$fast", card(1).message_content());
         let known = encryption(VerificationState::Verified);
-        park(generation, "!room:example.test", "$stalled", None);
-        park(generation, "!room:example.test", "$fast", None);
+        park(generation, "!room:example.test", "$stalled", AGENT, None);
+        park(generation, "!room:example.test", "$fast", AGENT, None);
         assert!(
             retry_with(
                 generation,
@@ -1869,8 +1953,8 @@ mod tests {
     async fn recovered_card_requests_redraw_before_another_retry_finishes() {
         let _guard = SERIAL.lock().await;
         let generation = reset("@me:example.test".into());
-        park(generation, "!room:example.test", "$stalled", None);
-        park(generation, "!room:example.test", "$fast", None);
+        park(generation, "!room:example.test", "$stalled", AGENT, None);
+        park(generation, "!room:example.test", "$fast", AGENT, None);
         let value = event("$fast", card(1).message_content());
         let known = encryption(VerificationState::Verified);
         let release_stalled = tokio::sync::Notify::new();
@@ -1922,7 +2006,7 @@ mod tests {
     async fn a_success_completed_after_login_reset_cannot_request_redraw() {
         let _guard = SERIAL.lock().await;
         let old = reset("@me:example.test".into());
-        park(old, "!room:example.test", "$old", None);
+        park(old, "!room:example.test", "$old", AGENT, None);
         let notifications = std::sync::atomic::AtomicUsize::new(0);
         assert!(
             !retry_with(
