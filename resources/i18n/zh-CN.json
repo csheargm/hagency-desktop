@@ -3509,5 +3509,6 @@
   "Signed in as {user}. Not you? Sign out in Settings and sign in again.": "已登录为 {user}。不是你？请在设置中退出后重新登录。",
   "@{name} is available": "@{name} 可以使用",
   "@{name} is taken": "@{name} 已被占用",
-  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "请使用小写字母、数字和 . _ = - / +（不能以 _ 开头）。"
+  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "请使用小写字母、数字和 . _ = - / +（不能以 _ 开头）。",
+  "Your server did not answer in time. Try again.": "你的服务器没有及时响应。请重试。"
 }
