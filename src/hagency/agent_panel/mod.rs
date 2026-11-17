@@ -3,8 +3,10 @@
 //! the mini app's local Agent calls (`host::hagency::local::Call`: status,
 //! service, remembered approvals) and the Agent-layer model profile and
 //! policy (`LocalAction::AgentModel` / `SaveAgentModel` / `SaveAgentPolicy`).
+mod about;
 mod activity;
 mod activity_load;
+mod add_room;
 pub(crate) mod backup;
 pub(crate) mod activity_rows;
 mod design;
@@ -35,7 +37,7 @@ pub enum AgentPanelAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab { #[default] Identity, Context, Activity, Settings }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Load { Status, Model, Models, Retired, Renamed, Activity, Backups, Left }
+enum Load { Status, Model, Models, Retired, Renamed, Activity, Backups, Left, Added, OwnerRooms }
 #[derive(Debug)]
 struct Loaded { request: u64, load: Load, mutation: bool, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -61,6 +63,8 @@ pub struct AgentPanel {
     /// Backup model: Ollama choices (`ollama:<model>`) and the saved one.
     #[rust] backups: Vec<String>,
     #[rust] backup_saved: Option<String>,
+    /// Context tab: the owner's joined group rooms, as `(room id, name)`.
+    #[rust] owner_rooms: Vec<(String, String)>,
 }
 impl Widget for AgentPanel {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -79,6 +83,7 @@ impl Widget for AgentPanel {
         self.handle_settings_actions(cx, actions);
         self.handle_room_follow_actions(cx, actions);
         self.handle_room_leave_actions(cx, actions);
+        self.handle_add_room_actions(cx, actions);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.view.draw_walk(cx, scope, walk)
@@ -94,7 +99,7 @@ impl AgentPanel {
         self.agent = agent.clone();
         (self.busy, self.status, self.model, self.models_reply, self.activity) = (false, Value::Null, Value::Null, Value::Null, Value::Null);
         self.models.clear();
-        (self.backups, self.backup_saved) = (Vec::new(), None);
+        (self.backups, self.backup_saved, self.owner_rooms) = (Vec::new(), None, Vec::new());
         self.view.check_box(cx, ids!(panel_retire_confirm)).set_active(cx, false, Animate::No);
         self.fill_room_follow(cx);
         self.fill_rename(cx);
@@ -103,6 +108,7 @@ impl AgentPanel {
         self.call(Load::Status, false, Call::Status(self.agent_id()));
         self.fill_settings_sections(cx);
         self.load_backups();
+        self.load_owner_rooms();
         self.render(cx);
     }
     fn render(&mut self, cx: &mut Cx) {
@@ -178,7 +184,8 @@ impl AgentPanel {
                 if mutation { self.note(cx, "Saved."); }
             }
             // The Agent left a room: reload its rooms (the status says "Saved.").
-            (Load::Left, Ok(_)) => self.call(Load::Status, true, Call::Status(self.agent_id())),
+            (Load::Left | Load::Added, Ok(_)) => self.call(Load::Status, true, Call::Status(self.agent_id())),
+            (Load::OwnerRooms, Ok(value)) => self.apply_owner_rooms(value),
             (Load::Renamed, Ok(value)) => self.apply_rename(cx, value),
             (Load::Retired, Ok(_)) => cx.action(AgentPanelAction::Retired { agent_id: self.agent_id() }),
         }
@@ -195,7 +202,8 @@ impl AgentPanel {
     }
     fn set_tab(&mut self, cx: &mut Cx, tab: Tab) {
         // Rooms the Agent joined after the panel opened (an auto-join) show up in Settings.
-        if tab == Tab::Settings && self.tab != tab && !self.busy && self.status.is_object() {
+        // The Context tab too: a private Agent's later consent may have added a room.
+        if matches!(tab, Tab::Settings | Tab::Context) && self.tab != tab && !self.busy && self.status.is_object() {
             self.call(Load::Status, false, Call::Status(self.agent_id()));
         }
         self.tab = tab;

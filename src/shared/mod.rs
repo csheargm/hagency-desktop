@@ -23,7 +23,7 @@ pub mod mentionable_text_input;
 mod mention_text;
 mod mention_insertion;
 mod plain_mentions;
-mod live_mentions;
+pub(crate) mod live_mentions;
 pub mod composer_agent_hint;
 pub(crate) mod mention_candidates;
 pub mod navigation_bar_button;

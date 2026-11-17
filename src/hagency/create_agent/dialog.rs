@@ -80,6 +80,7 @@ fn next_request() -> u64 { REQUEST.fetch_add(1, Ordering::Relaxed) }
 
 #[path = "rooms.rs"]
 mod rooms;
+pub(crate) use rooms::joined_group_rooms;
 #[path = "backup.rs"]
 mod backup;
 #[path = "work_flow.rs"]

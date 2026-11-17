@@ -54,6 +54,16 @@ script_mod! {
                 Hint {text: #(crate::i18n::tr("People see the new name in every room.")) i18n_text: "People see the new name in every room."}
             }
             Card {
+                Title {text: #(crate::i18n::tr("About")) i18n_text: "About"}
+                Text {text: #(crate::i18n::tr("Matrix ID")) i18n_text: "Matrix ID"}
+                View {width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+                    matrix_id := Text {}
+                    copy_matrix_id := Action {text: #(crate::i18n::tr("Copy")) i18n_text: "Copy"}
+                }
+                about := Text {}
+                about_rooms := Action {}
+            }
+            Card {
                 Field {Text {text: #(crate::i18n::tr("Model")) i18n_text: "Model"} panel_model := Select {labels: [#(crate::i18n::tr("Checking model choices…"))]}}
                 Field {Text {text: #(crate::i18n::tr("Thinking")) i18n_text: "Thinking"} thinking := Select {labels: [#(crate::i18n::tr("Default"))]}}
                 model_hint := Hint {}
@@ -84,6 +94,7 @@ script_mod! {
                     room_tick_4 := CheckBox {visible: false} room_tick_5 := CheckBox {visible: false}
                     room_tick_6 := CheckBox {visible: false} room_tick_7 := CheckBox {visible: false}
                 }
+                add_room := Select {labels: [#(crate::i18n::tr("Add to a room…"))]}
                 leave_open_room := Danger {visible: false text: #(crate::i18n::tr("Remove my agent from this room")) i18n_text: "Remove my agent from this room"}
                 Hint {text: #(crate::i18n::tr("Saved conversation contexts per room, each with Forget, come next.")) i18n_text: "Saved conversation contexts per room, each with Forget, come next."}
             }
