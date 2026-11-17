@@ -85,6 +85,11 @@ pub struct OwnerRules {
     /// Globs that always need a person, besides the built-in protected paths.
     #[serde(default)]
     pub always_human: Vec<String>,
+    /// Owner push trust for this repository from `room_id`: the Agent may
+    /// fetch, branch, push and open pull requests there without a card
+    /// (see `watch_trust`).
+    #[serde(default)]
+    pub push_freely: bool,
 }
 
 impl Judged {

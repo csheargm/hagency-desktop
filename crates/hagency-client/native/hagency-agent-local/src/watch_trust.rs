@@ -40,15 +40,26 @@ pub enum TrustedStep {
     Host(host_git::HostStep),
 }
 
-/// The watched repository when `proposal`'s Agent trusts publishing there
-/// from this proposal's Room.
-fn trusted_repo(db: &Connection, proposal: &ToolProposal) -> crate::Result<Option<String>> {
+/// The repositories `proposal`'s Agent may publish to from this proposal's
+/// Room: the legacy issue watch's, and each work-list entry whose owner set
+/// "push freely" for this Room.
+fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
     let row: Option<(String, String, String, i64)> = db
-        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [&proposal.scope.agent], |r| {
+        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [agent], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .optional()?;
-    Ok(row.and_then(|(mode, repo, room, trusted)| (mode != "off" && trusted == 1 && room == proposal.scope.room).then_some(repo)))
+    let mut repos: Vec<String> = row.and_then(|(mode, repo, r, trusted)| (mode != "off" && trusted == 1 && &r == room).then_some(repo)).into_iter().collect();
+    let mut work = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
+    for rules in work.query_map([agent], |r| r.get::<_, String>(0))? {
+        // A row that no longer parses grants nothing.
+        let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) else { continue };
+        if rules.push_freely && &rules.room_id == room && !repos.iter().any(|r| r.eq_ignore_ascii_case(&rules.repo)) {
+            repos.push(rules.repo);
+        }
+    }
+    Ok(repos)
 }
 
 /// A check, run off the async threads, that push trust still covers
@@ -58,7 +69,7 @@ pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal) 
     Box::new(move || {
         let Some(path) = &path else { return false };
         let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
-        trusted_repo(&db, &proposal).ok().flatten().is_some()
+        trusted_repos(&db, &proposal).is_ok_and(|r| !r.is_empty())
     })
 }
 
@@ -78,11 +89,10 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
     let root = Path::new(&proposal.canonical_directory);
     if edit {
         let inside = crate::outside::writable_in(proposal.arguments.get("file_path"), root);
-        return Ok((inside && trusted_repo(db, proposal)?.is_some()).then_some(TrustedStep::Allow));
+        return Ok((inside && !trusted_repos(db, proposal)?.is_empty()).then_some(TrustedStep::Allow));
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
-    let Some(repo) = trusted_repo(db, proposal)? else { return Ok(None) };
-    Ok(pinned_line(line, root, &repo))
+    Ok(trusted_repos(db, proposal)?.iter().find_map(|repo| pinned_line(line, root, repo)))
 }
 
 /// How `line` is answered when it is a single trusted step for `repo` from

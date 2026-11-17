@@ -294,3 +294,24 @@ fn workspace_edits_are_trusted_only_in_the_watched_room() {
     }
     assert_eq!(pinned(&ledger.db, &edit("!other:example.org", &readme), OWNER).unwrap(), None);
 }
+
+/// The multi-repository work list: "push freely" on one entry trusts that
+/// repository from that entry's Room only; the recheck sees it turned off.
+#[test]
+fn a_work_list_entry_with_push_freely_trusts_its_repo_and_room() {
+    use crate::merge_policy::work::{OwnerRules, Role};
+    let (_t, root) = workspace();
+    let db = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(db.path().join("local.db"), OWNER).unwrap();
+    let here = proposal(&root, ROOM, "claude.Bash", "high");
+    let entry = |push_freely| OwnerRules { repo: REPO.into(), role: Role::Developer, room_id: ROOM.into(), push_freely, ..Default::default() };
+    ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(false))).unwrap();
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_none(), "on the work list but not trusted");
+    ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(true))).unwrap();
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some());
+    assert!(pinned(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap().is_none(), "another Room");
+    let still = ledger.push_trust_recheck(&here);
+    assert!(still());
+    ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(false))).unwrap();
+    assert!(!still(), "the recheck reads the owner's change");
+}

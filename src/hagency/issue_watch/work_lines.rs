@@ -1,13 +1,13 @@
 //! The "Repositories and roles" text of the Work block (ADR 0016), one
 //! repository per entry (`;` or a new line between entries):
 //! `owner/name developer|reviewer|maintainer [all] [any-path] [max=N]
-//! [authors=a,b] [reviewers=c] [human=glob,glob]`. Parsing is strict: an
+//! [authors=a,b] [reviewers=c] [human=glob,glob] [push-freely]`. Parsing is strict: an
 //! unknown word refuses the whole list, so a typo never loosens a rule.
 use ::hagency::issue_watch::{IssueFilter, OwnerRules, Role};
 use serde_json::Value;
 
 /// The shape shown under the input.
-pub const WORK_HINT: &str = "One per line or separated by ;  owner/name developer|reviewer|maintainer, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob";
+pub const WORK_HINT: &str = "One per line or separated by ;  owner/name developer|reviewer|maintainer, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking)";
 
 /// The entries of `text` for `room_id`; `previous` keeps each listed
 /// repository's start time, new ones start at `now`.
@@ -31,6 +31,7 @@ fn entry(line: &str, room_id: &str, previous: &[OwnerRules], now: i64) -> Result
         match word.split_once('=') {
             None if word == "all" => rules.issues = IssueFilter::All,
             None if word == "any-path" => rules.any_path = true,
+            None if word == "push-freely" => rules.push_freely = true,
             Some(("max", n)) => rules.max_lines = Some(n.parse().map_err(|_| format!("{}: max must be a number", rules.repo))?),
             Some(("authors", v)) => rules.trusted_authors = list(v),
             Some(("reviewers", v)) => rules.trusted_reviewers = list(v),
@@ -48,6 +49,7 @@ pub fn render(work: &[OwnerRules]) -> String {
         let mut words = vec![w.repo.clone(), role.to_owned()];
         if w.issues == IssueFilter::All { words.push("all".into()); }
         if w.any_path { words.push("any-path".into()); }
+        if w.push_freely { words.push("push-freely".into()); }
         if let Some(max) = w.max_lines { words.push(format!("max={max}")); }
         for (key, list) in [("authors", &w.trusted_authors), ("reviewers", &w.trusted_reviewers), ("human", &w.always_human)] {
             if !list.is_empty() { words.push(format!("{key}={}", list.join(","))); }
@@ -67,11 +69,12 @@ mod tests {
 
     #[test]
     fn two_repositories_with_different_roles_round_trip() {
-        let text = "acme/app maintainer any-path authors=betty,carl reviewers=dora human=secrets/**; acme/docs developer all";
+        let text = "acme/app maintainer any-path authors=betty,carl reviewers=dora human=secrets/**; acme/docs developer all push-freely";
         let work = parse(text, "!r:x", &[], 100).unwrap();
         assert_eq!(work.len(), 2);
         assert_eq!((work[0].role, work[0].any_path, work[0].trusted_authors.len(), work[0].since), (Role::Maintainer, true, 2, 100));
-        assert_eq!((work[1].role, work[1].issues), (Role::Developer, IssueFilter::All));
+        assert_eq!((work[1].role, work[1].issues, work[1].push_freely), (Role::Developer, IssueFilter::All, true));
+        assert!(!work[0].push_freely, "push trust is off unless named");
         assert_eq!(parse(&render(&work), "!r:x", &work, 999).unwrap(), work, "keeps each repository's start time");
     }
 
