@@ -3465,7 +3465,7 @@ impl RoomScreen {
                 MessageAction::CopyText(details) => {
                     let Some(tl) = self.tl_state.as_ref() else { return };
                     if let Some(event_tl_item) = Self::find_event_in_timeline(&tl.items, details) {
-                        cx.copy_to_clipboard(&plaintext_body_of_timeline_item(event_tl_item));
+                        cx.copy_to_clipboard(&super::copy_text::copied_message_text(&plaintext_body_of_timeline_item(event_tl_item), details.abilities.contains(MessageAbilities::HasHtml), event_tl_item.sender()));
                     }
                     else {
                         enqueue_popup_notification(

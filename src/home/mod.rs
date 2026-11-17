@@ -40,6 +40,7 @@ pub mod agent_run_footer;
 pub mod agent_run_preview;
 pub mod agent_run_pager;
 pub mod agent_run_answer;
+pub mod copy_text;
 pub mod shared_permission_notice;
 pub mod room_read_receipt;
 pub mod send_status_indicator;

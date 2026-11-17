@@ -21,6 +21,7 @@ pub mod jump_to_bottom_button;
 pub mod mention_popup;
 pub mod mentionable_text_input;
 mod mention_text;
+pub(crate) use mention_text::mentions_as_names;
 mod mention_insertion;
 mod plain_mentions;
 pub(crate) mod live_mentions;

@@ -37,7 +37,7 @@ pub fn act(cx: &mut makepad_widgets::Cx, action: crate::agent_chat::reply::Answe
     use crate::agent_chat::reply::AnswerAction;
     let answer = entry.card.answer.as_str();
     match action {
-        AnswerAction::Copy => cx.copy_to_clipboard(answer),
+        AnswerAction::Copy => cx.copy_to_clipboard(&crate::shared::mentions_as_names(answer)),
         AnswerAction::Markdown => crate::agent_chat::answer_export::save(answer.to_owned(), false),
         AnswerAction::Pdf => crate::agent_chat::answer_export::save(answer.to_owned(), true),
         AnswerAction::Forward => cx.action(ForwardRunAnswer { room: entry.card.room_id.clone(), run_event: entry.key.clone(),
