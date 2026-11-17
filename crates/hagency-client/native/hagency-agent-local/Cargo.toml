@@ -30,7 +30,7 @@ tokio = { workspace = true, features = ["test-util"] }
 hagency-platform = { path = "../hagency-platform", features = ["test-support"] }
 tempfile.workspace = true
 
-# DEMO-ONLY (forwarded from the desktop's `demo` feature): the launcher's GitHub token reaches Agent runtimes.
+# Forwarded from the desktop's `demo` feature (the GitHub token fallback no longer depends on it).
 [features]
 demo = []
 

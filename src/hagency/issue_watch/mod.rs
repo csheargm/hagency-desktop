@@ -40,9 +40,6 @@ use std::time::Duration;
 pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Status key for a failure that is not about one Agent (the Agents list).
 const ALL_AGENTS: &str = "*";
-/// The environment fallback for an Agent without its own token, first match
-/// wins (the `gh` CLI's order).
-pub const TOKEN_VARIABLES: [&str; 2] = ["GH_TOKEN", "GITHUB_TOKEN"];
 
 /// Posted after each check so an open settings view shows the new line.
 #[derive(Clone, Debug)]
@@ -176,7 +173,7 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
 }
 
 /// The GitHub token the watcher reads `agent_id`'s repository with: the
-/// Agent's own (its GitHub access settings), else `TOKEN_VARIABLES`.
+/// Agent's own (its GitHub access settings), else `GH_TOKEN`/`GITHUB_TOKEN`.
 pub(crate) async fn github_token(agent_id: &str) -> Result<String, String> {
     let agent = agent_id.to_owned();
     let saved = tokio::task::spawn_blocking(move || TokenStore::current().load(&agent))
@@ -184,13 +181,12 @@ pub(crate) async fn github_token(agent_id: &str) -> Result<String, String> {
         .unwrap_or_else(|e| Err(e.to_string()));
     choose_token(saved, |name| std::env::var(name).ok())
 }
-/// First match wins: the Agent's saved token, `GH_TOKEN`, `GITHUB_TOKEN`. A
+/// First match wins: the Agent's saved token, `GH_TOKEN`, `GITHUB_TOKEN`
+/// (the runtime's own rule, so create, poller and run time agree). A
 /// store that cannot be read is reported unless the environment has a token.
 pub(crate) fn choose_token(saved: Result<Option<Token>, String>, env: impl Fn(&str) -> Option<String>) -> Result<String, String> {
-    if let Ok(Some(token)) = &saved {
-        return Ok(token.expose().to_owned());
-    }
-    if let Some(token) = TOKEN_VARIABLES.iter().find_map(|name| env(name).filter(|v| !v.trim().is_empty())) {
+    let own = saved.as_ref().ok().and_then(Option::as_ref).map(Token::expose);
+    if let Some(token) = ::hagency::issue_watch::resolve_github_token(own, env) {
         return Ok(token);
     }
     saved?;

@@ -10,6 +10,9 @@ pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, cl
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;
 
+/// The one GitHub token rule, shared with the Agent runtime (create, poller, run time).
+pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_github_token};
+
 /// The owner's work list types (ADR 0016), for the desktop's Work block and poller.
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 

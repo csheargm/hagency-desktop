@@ -48,11 +48,14 @@ impl AgentEnvironment {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
-    /// The GitHub token this Agent's runtime sees: its own, or (demo
-    /// builds only) the launcher's when it has none. Host-side GitHub steps
-    /// for the Agent use exactly this, so they act as the same login.
+    /// The GitHub token this Agent's runtime sees: its own, else the
+    /// environment's ([`crate::demo_env::resolve`], every build). Host-side
+    /// GitHub steps for the Agent use exactly this, so they act as the same login.
     pub fn agent_github_token(&self) -> Option<String> {
-        self.get(GITHUB_TOKEN_VARIABLE).map(str::to_owned).or_else(|| crate::demo_env::github_token().and_then(|t| t.into_string().ok()))
+        self.github_token_with(|name| std::env::var(name).ok())
+    }
+    pub(crate) fn github_token_with(&self, env: impl Fn(&str) -> Option<String>) -> Option<String> {
+        crate::demo_env::resolve(self.get(GITHUB_TOKEN_VARIABLE), env)
     }
     /// The `-c` overrides Codex needs so its commands see these variables.
     pub fn codex_overrides(&self) -> Vec<String> {

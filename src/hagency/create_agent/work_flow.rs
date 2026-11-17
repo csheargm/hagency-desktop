@@ -114,6 +114,8 @@ async fn save(service: &Service, agent: &str, room: &str, plan: &WorkPlan) -> Re
     if agent.is_empty() || room.is_empty() {
         return Err("no agent id or room in the reply".into());
     }
+    // Only a typed token is saved; an environment token is resolved again at
+    // run time by the same rule (`choose_token` / `demo_env::resolve`).
     if let Some(token) = plan.token.as_deref().map(Token::parse).transpose().map_err(str::to_owned)? {
         let id = agent.to_owned();
         tokio::task::spawn_blocking(move || TokenStore::current().save(&id, &token)).await.map_err(|e| e.to_string())??;
