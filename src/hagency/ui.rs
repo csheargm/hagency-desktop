@@ -2489,9 +2489,10 @@ impl HagencyPanel {
                     .text_input(cx, ids!(requester))
                     .set_text(cx, string(value, "ownerMxid"));
                 if let Some(wanted)=self.wanted_agent.take() {
+                    let settings=std::mem::take(&mut self.wanted_agent_settings);
                     if let Some(index)=self.agents.iter().position(|a|string(a,"id") == wanted) {
                         // A Run request needs the full detail page; opening an Agent shows the panel.
-                        if self.wanted_run.is_some() {self.agent_detail(cx,index);} else {self.open_wanted_agent_panel(cx,index);}
+                        if self.wanted_run.is_some() {self.agent_detail(cx,index);} else {self.open_wanted_agent_panel(cx,index,settings);}
                         return;
                     }
                 }

@@ -33,9 +33,9 @@ impl HagencyPanel {
     }
 
     /// Opens the Agent an `OpenAgent` / `OpenAgentSettings` asked for, on the tab it asked for.
-    pub(super) fn open_wanted_agent_panel(&mut self, cx: &mut Cx, index: usize) {
+    pub(super) fn open_wanted_agent_panel(&mut self, cx: &mut Cx, index: usize, settings: bool) {
         self.open_agent_panel(cx, index);
-        if std::mem::take(&mut self.wanted_agent_settings) {
+        if settings {
             self.view.widget(cx, ids!(agent_panel)).as_agent_panel().show_settings(cx);
         }
     }
@@ -160,8 +160,13 @@ mod tests {
         assert!(inner.view(&mut cx, ids!(settings_page)).visible(), "on its Settings tab");
         assert!(!inner.view(&mut cx, ids!(identity_page)).visible());
         assert!(!panel.wanted_agent_settings, "the tab request is used once");
-        panel.open_wanted_agent_panel(&mut cx, 0);
+        panel.open_wanted_agent_panel(&mut cx, 0, false);
         assert!(panel.view.widget(&mut cx, ids!(agent_panel)).view(&mut cx, ids!(identity_page)).visible());
+        // An Agent missing from the listing drops its tab request with it, so a
+        // later `wanted_agent` (a new Agent's creation) opens on Identity.
+        (panel.wanted_agent, panel.wanted_agent_settings) = (Some("gone".into()), true);
+        panel.apply(&mut cx, Target::Agents, &json!({"agents": [{"id": "a", "displayName": "yue-claude"}], "projects": []}));
+        assert!(!panel.wanted_agent_settings);
     }
 
     /// Regression: the detail page's own issue-watch/GitHub blocks were looked

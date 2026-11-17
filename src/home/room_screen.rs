@@ -4279,12 +4279,13 @@ impl RoomScreen {
     }
     fn layout_desktop_chat_info(&mut self, cx: &mut Cx, available: f64) {
         let desktop = self.view.view(cx, ids!(desktop_chat_header)).visible();
-        if desktop { self.open_requested_room_info(cx); }
         let inline = available >= 600.0;
         // Resizing down preserves the timeline and input; a narrow information
         // pane is opened only by an explicit click, never by room selection.
         if self.chat_info_inline && !inline { self.chat_info_requested = false; }
         self.chat_info_inline = inline;
+        // After the resize rule: the Chats menu's Settings is an explicit click.
+        if desktop { self.open_requested_room_info(cx); }
         let show = desktop && self.chat_info_requested;
         let toggle = self.view.navigation_bar_button(cx, ids!(desktop_chat_info_button));
         toggle.set_selected(cx, show);
