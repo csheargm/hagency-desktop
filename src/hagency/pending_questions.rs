@@ -320,7 +320,9 @@ fn trusted_peer(server: &str, own_server: Option<&str>, configured: &str) -> boo
 async fn joined(room: &Room, user: &str) -> bool {
     use matrix_sdk::ruma::events::room::member::MembershipState;
     let Ok(user) = OwnedUserId::try_from(user) else { return false };
-    matches!(room.get_member_no_sync(&user).await, Ok(Some(m)) if *m.membership() == MembershipState::Join)
+    // `get_member` loads a member missing from lazy-loaded state, so a joined
+    // owner is not rejected only because the client never cached them.
+    matches!(room.get_member(&user).await, Ok(Some(m)) if *m.membership() == MembershipState::Join)
 }
 
 /// A run card from another server's Agent: that server is a trusted peer,
