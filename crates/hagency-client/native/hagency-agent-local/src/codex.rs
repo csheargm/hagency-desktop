@@ -1560,8 +1560,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 questions.clear();
                 answer = None;
                 room_turn.take();
-                // Running repo steps stop with the turn's callbacks.
+                // Running repo steps stop with the turn's callbacks, and no
+                // queued one starts after (GPT review).
                 repo_running = repo_steps::Running::default();
+                repo_open = false;
                 callbacks_stopped = true;
             }
             // The host asked for a stop and Codex has not answered it in
@@ -1702,7 +1704,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         answer = Some(next);
                         continue;
                     }
-                    call = repo_calls.recv(), if repo_open => {
+                    call = repo_calls.recv(), if repo_open && !controls.holds_answers() => {
                         match call {
                             Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running),
                             None => repo_open = false,

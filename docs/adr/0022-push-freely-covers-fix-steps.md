@@ -186,3 +186,13 @@ at most 1 MiB of each output stream; a trusted Codex file change is checked
 again right before its accept is sent. Rejected: "readable puppet IDs
 removed": an artifact of diffing against a base that had moved on, not part
 of this change.
+
+Second pass, adopted: a `gh pr` body file must be an existing regular file
+of the watched repository's own checkout, never git metadata (it is
+published under the Agent's token, now even under Deny; this narrows the
+Claude path too); a queued repo step never starts while a stop is pending
+or after it was accepted. Rejected: re-validating the whole dispatch inside
+the worker before a pinned command starts. The step starts right after its
+check on the same turn; a push still rechecks the watch right before it
+publishes, as for Claude. A policy saved in that window applies from the
+next call (residual).

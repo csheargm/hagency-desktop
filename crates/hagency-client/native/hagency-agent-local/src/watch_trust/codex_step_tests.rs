@@ -171,3 +171,19 @@ fn a_codex_hand_off_fixes_an_issue_with_zero_cards() {
     assert_eq!(cards, 0, "the whole fix ran without a card");
     assert_eq!(git(&target, &["log", "-1", "--format=%s", "refs/heads/fix/typo"]), "docs: fix typo (#1)");
 }
+
+/// GPT review: a PR body file is published under the Agent's token, so it
+/// must be a regular file of the watched repository's own checkout.
+#[test]
+fn a_pr_body_file_comes_only_from_the_own_checkout() {
+    let mut r = cloned();
+    let app = r.root.join("app");
+    std::fs::write(app.join("body.md"), "Fixes #1").unwrap();
+    std::fs::write(r.root.join("secret.txt"), "token").unwrap();
+    std::os::unix::fs::symlink(r.root.join("secret.txt"), app.join("link.md")).unwrap();
+    let pr = |file: &Path| format!("gh pr create --repo {REPO} --head fix --title t --body-file {}", file.display());
+    assert!(r.ledger.trusted_publish(OWNER, &step(&r.root, &pr(&app.join("body.md"))), 11).unwrap().is_some());
+    for refused in [r.root.join("secret.txt"), app.join(".git/config"), app.join("link.md"), app.join("missing.md"), app.clone()] {
+        assert_eq!(r.ledger.trusted_publish(OWNER, &step(&r.root, &pr(&refused)), 11).unwrap(), None, "{}", refused.display());
+    }
+}
