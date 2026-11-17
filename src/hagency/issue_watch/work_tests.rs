@@ -36,3 +36,10 @@ fn a_failed_hand_off_keeps_its_slot() {
     slots.take(0);
     assert!(!slots.is_full());
 }
+
+#[test]
+fn a_hand_off_still_waiting_for_its_pull_request_keeps_its_slot_next_poll() {
+    // open_slots counts max(open PRs, live claims on handed-off issues).
+    assert!(PrSlots::left(1, 0u64.max(1)).is_full(), "poll 2: no PR yet, one pending hand-off");
+    assert_eq!(dispatch(PrSlots::left(2, 1u64.max(1)), 5), 1, "a PR that opened from the pending issue is not counted twice");
+}

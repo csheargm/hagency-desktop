@@ -78,16 +78,11 @@ fn puppet(agent: &Value) -> Result<OwnedUserId, String> {
 async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>) -> Result<usize, String> {
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
-    let mut slots = match entry.open_prs {
-        // Counted by GitHub's search, so an older pull request beyond the
-        // newest page still counts (GPT review). An error fails the pass.
-        Some(limit) => PrSlots::left(limit, ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?),
-        None => PrSlots::Unlimited,
-    };
+    let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
+    let mut slots = open_slots(worker, entry, login, seen, &issues).await?;
     if slots.is_full() {
         return Ok(0); // claims resume once one of them merges or closes
     }
-    let issues = fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
     // The daily limit is enforced by each reservation below, which also lets
     // an issue reserved by a pass whose hand-off failed be handed off now.
     let picks: Vec<&Issue> = select(&watch, &issues, seen);
@@ -125,6 +120,26 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
         slots.take(outcome.handed);
     }
     Ok(handed)
+}
+
+/// The slots left under `open_prs`: minus the login's open pull requests
+/// (GitHub's search, so one beyond the newest page counts) or, when more,
+/// the issues handed off earlier that this Agent still holds a live claim on
+/// (a hand-off whose pull request is not open yet keeps its slot across
+/// polls; a claim expires, so a stalled one frees it). Errors fail the pass.
+async fn open_slots(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>, issues: &[Issue]) -> Result<PrSlots, String> {
+    let Some(limit) = entry.open_prs else { return Ok(PrSlots::Unlimited) };
+    let open = ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?;
+    let mut pending = 0u64;
+    for issue in issues.iter().filter(|i| !i.is_pr && seen.contains(&i.number)) {
+        if pending >= u64::from(limit) {
+            break; // full either way
+        }
+        if claim(worker, entry, issue.number, login, false).await? == Holder::Ours {
+            pending += 1;
+        }
+    }
+    Ok(PrSlots::left(limit, open.max(pending)))
 }
 
 /// The open-pull-request slots one pass may still fill (`open_prs` minus
