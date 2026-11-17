@@ -33,6 +33,9 @@ impl Ledger {
         self.owner(owner)?;
         key(agent)?;
         let plan = plan.validate()?;
+        if self.plan(agent, &plan.id)?.is_some() {
+            return Ok(()); // an earlier reservation holds; its filing resumes
+        }
         if self.open_plans(agent)?.len() >= MAX_OPEN_PLANS {
             return Err(Error::Invalid("too many open plans"));
         }
@@ -93,6 +96,11 @@ mod tests {
         ledger.finish_plan(owner, "anna", "plan_1").unwrap();
         assert!(ledger.open_plans("anna").unwrap().is_empty());
         assert!(ledger.plan("anna", "plan_1").unwrap().unwrap().1, "a done plan is still known, so it is never filed again");
+        for n in 0..MAX_OPEN_PLANS {
+            ledger.record_plan(owner, "anna", PlanRecord { id: format!("plan_f{n}"), issues: vec![0], ..plan.clone() }).unwrap();
+        }
+        assert!(ledger.record_plan(owner, "anna", PlanRecord { id: "plan_new".into(), ..plan.clone() }).is_err(), "the cap holds for new plans");
+        ledger.record_plan(owner, "anna", PlanRecord { id: "plan_f0".into(), issues: vec![0], ..plan.clone() }).unwrap();
         for bad in [PlanRecord { id: "x".into(), ..plan.clone() }, PlanRecord { issues: vec![], ..plan.clone() }, PlanRecord { repo: "acme".into(), ..plan }] {
             assert!(ledger.record_plan(owner, "anna", bad).is_err());
         }

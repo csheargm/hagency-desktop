@@ -35,6 +35,10 @@ pub async fn file(room: OwnedRoomId, sender: String, id: String, plan: Plan) -> 
         if numbers[index] != 0 {
             continue;
         }
+        // Stop All between steps holds the rest (GPT review).
+        if crate::hagency::kill_switch::paused_here(&agent) {
+            return Err(failed(index, plan.issues.len(), crate::i18n::tr("Agent paused by the owner")));
+        }
         let number = create_issue(&client, GITHUB_API, &plan.repo, &token, &issue.title, &plan.issue_body(index, &id)).await
             .map_err(|error| failed(index, plan.issues.len(), &::hagency::github_access::redact(&error.to_string(), &token)))?;
         // Saved at once: a crash after this step never files it again.
@@ -43,6 +47,9 @@ pub async fn file(room: OwnedRoomId, sender: String, id: String, plan: Plan) -> 
         numbers[index] = number;
     }
     let list: Vec<String> = numbers.iter().zip(&plan.issues).map(|(n, i)| format!("#{n} {}", i.title)).collect();
+    if crate::hagency::kill_switch::paused_here(&agent) {
+        return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
+    }
     let text = crate::i18n::format("Filed on {repo}: {issues}", &[("repo", plan.repo.clone()), ("issues", list.join(", "))]);
     crate::hagency::room_send::send_routed_with(room, RoomMessageEventContent::notice_plain(text), Default::default(), filed_txn_id(&id)).await?;
     Ok(numbers)
