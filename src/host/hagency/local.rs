@@ -107,6 +107,11 @@ fn host_fields(value: &mut Value, host: LocalAgentHost) {
         object.insert("localAgentsNeed".into(), json!(need));
     }
 }
+/// Started by the owner, but its host on this computer is not running: the
+/// service watcher, and with it every Room worker, has stopped.
+pub(crate) fn host_stopped(value: &Value) -> bool {
+    value["service"]["enabled"] == true && value["service"]["watcherRunning"] == false
+}
 /// One state per Agent, worded by the mini app: processing, running,
 /// starting, waiting, attention or stopped.
 fn service_state(value: &Value, agent: &str) -> &'static str {
@@ -122,7 +127,6 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     };
     let any = |set: &[&str]| phases.iter().any(|p| set.contains(p));
     let attention = !text(service, "lastError").is_empty()
-        || (service["enabled"] == true && service["watcherRunning"] == false)
         || service["problems"].as_array().is_some_and(|p| !p.is_empty())
         // The watcher can be healthy with no connected Rooms. Its completed
         // discovery is not an Agent startup still making progress.
@@ -134,6 +138,9 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
         "processing"
     } else if any(&["awaiting_approval", "waiting_owner"]) {
         "waiting"
+    } else if host_stopped(value) {
+        // The host watchdog (backend/host_watchdog.rs) starts it again.
+        "host_restarting"
     } else if attention {
         "attention"
     } else if any(&["online", "online_chat_only"]) {
@@ -357,6 +364,11 @@ mod tests {
         assert_eq!(service_state(&json!({"service": {"enabled": true, "lastError": "provider"}, "runtime": null}), agent), "attention");
         let no_rooms = json!({"service":{"enabled":true,"watcherRunning":true,"phase":"serving","rooms":[]},"runtime":null});
         assert_eq!(service_state(&no_rooms, agent), "attention");
+        // Regression (2026-11-17): a stopped host must not read as running or
+        // as a vague "attention"; the watchdog is restarting it.
+        let down = json!({"service":{"enabled":true,"watcherRunning":false,"lastError":"authorization_or_lease_lost"},"runtime":null});
+        assert_eq!(service_state(&down, agent), "host_restarting");
+        assert!(!host_stopped(&json!({"service":{"enabled":false,"watcherRunning":false}})));
         let mut discovering = no_rooms.clone();
         discovering["service"]["phase"] = "starting".into();
         assert_eq!(service_state(&discovering, agent), "starting");

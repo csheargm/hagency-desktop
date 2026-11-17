@@ -98,6 +98,7 @@ impl Fixture {
             activation: Default::default(),
             #[cfg(feature = "resource-adoption")]
             allocations: Default::default(),
+            host_watchdog: Default::default(),
             #[cfg(feature = "shared-execution")]
             shared: Default::default(),
             retired: std::sync::atomic::AtomicBool::new(false),
