@@ -1052,7 +1052,8 @@ async fn permission(
     // network and branch steps are run by the host itself (ADR 0015).
     match ledger.trusted_publish(owner, &proposal, now()) {
         Ok(Some(step)) => {
-            let recheck = ledger.push_trust_recheck(&proposal);
+            let repo = match &step { crate::watch_trust::TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
+            let recheck = ledger.push_trust_recheck(&proposal, &repo);
             return trusted_answer(step, github.token.clone(), recheck).await;
         }
         Ok(None) => {}

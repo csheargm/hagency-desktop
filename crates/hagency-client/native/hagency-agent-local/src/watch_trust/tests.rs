@@ -310,8 +310,9 @@ fn a_work_list_entry_with_push_freely_trusts_its_repo_and_room() {
     ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(true))).unwrap();
     assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some());
     assert!(pinned(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap().is_none(), "another Room");
-    let still = ledger.push_trust_recheck(&here);
+    let still = ledger.push_trust_recheck(&here, REPO);
     assert!(still());
+    assert!(!ledger.push_trust_recheck(&here, "acme/other")(), "trust in one repository is not trust in another");
     ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(false))).unwrap();
     assert!(!still(), "the recheck reads the owner's change");
 }

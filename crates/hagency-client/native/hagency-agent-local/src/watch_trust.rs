@@ -63,13 +63,13 @@ fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<
 }
 
 /// A check, run off the async threads, that push trust still covers
-/// `proposal`: a fresh read-only connection to the ledger at `path` each
+/// `proposal` for `repo` (the step's own destination): a fresh read-only connection to the ledger at `path` each
 /// time; no path or an unreadable ledger is a no.
-pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal) -> Box<dyn Fn() -> bool + Send + Sync> {
+pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, repo: String) -> Box<dyn Fn() -> bool + Send + Sync> {
     Box::new(move || {
         let Some(path) = &path else { return false };
         let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
-        trusted_repos(&db, &proposal).is_ok_and(|r| !r.is_empty())
+        trusted_repos(&db, &proposal).is_ok_and(|r| r.iter().any(|t| t.eq_ignore_ascii_case(&repo)))
     })
 }
 

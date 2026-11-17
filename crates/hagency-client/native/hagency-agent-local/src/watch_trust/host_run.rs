@@ -49,6 +49,10 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
         return Err("the turn was stopped".into());
     }
     command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Its own process group, so a stop kills git's helpers too
+    // (git-remote-https, the credential helper), not just git.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
     let mut child = command.spawn().map_err(|e| format!("git: {e}"))?;
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
@@ -63,6 +67,7 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
         }
         let why = if ctx.cancelled() { Some("the turn was stopped") } else if started.elapsed() > ctx.timeout { Some("git took too long") } else { None };
         if let Some(why) = why {
+            kill_group(child.id());
             // Already exited is fine: either way the command is over.
             let _ = child.kill();
             let _ = child.wait();
@@ -73,6 +78,22 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
     let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     if status.success() { Ok(out.trim().to_owned()) } else { Err(err.trim().to_owned()) }
 }
+
+/// SIGKILL to every process of the group `pid` leads, sent a few times (a
+/// process forked while the first signal was delivered can escape it).
+/// Called BEFORE the leader is reaped: its zombie keeps the group id
+/// reserved, so the signal can never reach a group that reused the id.
+fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    for _ in 0..GROUP_KILL_ROUNDS {
+        // Best effort: a failed send means the group is already gone.
+        let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        std::thread::sleep(POLL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+const GROUP_KILL_ROUNDS: u32 = 4;
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
     std::thread::spawn(move || {
@@ -98,7 +119,7 @@ mod tests {
         let guard = CancelOnDrop(flag);
         let killer = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(200)); drop(guard); });
         let started = Instant::now();
-        assert_eq!(run(Command::new("sleep").arg("30"), None, &c), Err("the turn was stopped".into()));
+        assert_eq!(run(Command::new("/bin/sleep").arg("30"), None, &c), Err("the turn was stopped".into()));
         assert!(started.elapsed() < Duration::from_secs(5));
         killer.join().unwrap();
         assert_eq!(run(&mut Command::new("true"), None, &c), Err("the turn was stopped".into()), "nothing starts after a stop");
@@ -107,7 +128,15 @@ mod tests {
     fn a_command_past_its_time_limit_is_killed() {
         let mut c = ctx();
         c.timeout = Duration::from_millis(200);
-        assert_eq!(run(Command::new("sleep").arg("30"), None, &c), Err("git took too long".into()));
+        assert_eq!(run(Command::new("/bin/sleep").arg("30"), None, &c), Err("git took too long".into()));
         assert_eq!(run(Command::new("echo").arg("hi"), None, &ctx()), Ok("hi".into()));
+        // A helper the command started dies with it (absolute paths: other
+        // tests may narrow PATH).
+        let marker = tempfile::tempdir().unwrap();
+        let file = marker.path().join("late");
+        let script = format!("(/bin/sleep 3; echo late > {}) & wait", file.display());
+        assert!(run(Command::new("/bin/sh").args(["-c", &script]), None, &c).is_err());
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(!file.exists(), "the child's helper was killed too");
     }
 }

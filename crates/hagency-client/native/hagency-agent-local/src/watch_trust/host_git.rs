@@ -68,6 +68,12 @@ impl Dest {
 }
 
 impl HostStep {
+    /// The repository the step talks to.
+    pub fn repo(&self) -> &str {
+        let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
+        repo
+    }
+
     /// Run the step as the Agent (its token in `ctx`); `Ok` is the command
     /// the Agent's call runs in its place.
     pub fn run(&self, ctx: &HostCtx) -> Result<String, String> {

@@ -129,7 +129,7 @@ async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     let comments = read_comments(worker, entry, number).await?;
-    let holder = holder_of(worker, entry, &comments, login, id, now).await;
+    let holder = holder_of(worker, entry, &comments, login, id, now).await?;
     if !post || holder != Holder::Nobody {
         return Ok(holder);
     }
@@ -139,27 +139,33 @@ async fn claim(worker: &Worker<'_>, entry: &OwnerRules, number: i64, login: &str
     let label = worker.agent["displayName"].as_str().unwrap_or("Agent");
     post_comment(worker.client, GITHUB_API, &entry.repo, number, worker.token, &claim_body(id, &super::notice::quoted_title(label))).await.map_err(|e| e.to_string())?;
     let comments = read_comments(worker, entry, number).await?;
-    Ok(holder_of(worker, entry, &comments, login, id, now).await)
+    holder_of(worker, entry, &comments, login, id, now).await
 }
 
 async fn read_comments(worker: &Worker<'_>, entry: &OwnerRules, number: i64) -> Result<Vec<Comment>, String> {
     fetch_comments(worker.client, GITHUB_API, &entry.repo, number, worker.token).await.map_err(|e| e.to_string())
 }
 
-async fn holder_of(worker: &Worker<'_>, entry: &OwnerRules, comments: &[Comment], login: &str, id: &str, now: i64) -> Holder {
+/// An unreadable permission fails the pass (retried later) rather than
+/// dropping a claim that may be real (GPT review, Nov 16).
+async fn holder_of(worker: &Worker<'_>, entry: &OwnerRules, comments: &[Comment], login: &str, id: &str, now: i64) -> Result<Holder, String> {
     let mut team = vec![login.to_owned()];
     for author in claim_authors(comments, login, now) {
-        // An unreadable permission is no right: such a claim is ignored.
-        let permission = fetch_permission(worker.client, GITHUB_API, &entry.repo, author, worker.token).await.unwrap_or_default();
+        let permission = match fetch_permission(worker.client, GITHUB_API, &entry.repo, author, worker.token).await {
+            Ok(permission) => permission,
+            // Not a collaborator at all: GitHub answers 404, no rights.
+            Err(::hagency::issue_watch::FetchError::Status { status: 404, .. }) => String::new(),
+            Err(error) => return Err(error.to_string()),
+        };
         if CLAIM_PERMISSIONS.contains(&permission.as_str()) {
             team.push(author.to_owned());
         }
     }
-    match claim_holder(comments, now, |a| team.iter().any(|t| t.eq_ignore_ascii_case(a))) {
+    Ok(match claim_holder(comments, now, |a| team.iter().any(|t| t.eq_ignore_ascii_case(a))) {
         Some(claim) if claim.is(login, id) => Holder::Ours,
         Some(_) => Holder::Other,
         None => Holder::Nobody,
-    }
+    })
 }
 
 /// Reviewer or maintainer: one loop step per other person's ready pull request.
