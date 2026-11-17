@@ -132,7 +132,8 @@ pub(crate) fn runtime_list_label(runtime:Option<&Result<Value,String>>,agent:&st
     let Some(runtime)=runtime else {return "Checking local processing…";};
     let Ok(value)=runtime else {return "Local processing could not be verified. Refresh to retry.";};
     if value["service"]["enabled"] == false && value["runtime"].is_null() {return "Not running on this device. Open Service to configure and start.";}
-    if value["service"]["enabled"] == true && (value["service"]["watcherRunning"] == false || !string(&value["service"],"lastError").is_empty()) {return "Service needs attention. Refresh status or stop and start again.";}
+    if crate::host::hagency::local::host_stopped(value) {return crate::hagency::agent_panel::mapping::HOST_RESTARTING;}
+    if value["service"]["enabled"] == true && !string(&value["service"],"lastError").is_empty() {return "Service needs attention. Refresh status or stop and start again.";}
     if !array(&value["service"],"problems").is_empty() {return "Some Rooms could not start. The service will retry automatically.";}
     if value["service"]["enabled"] == true && value["runtime"].is_null() {return if value["service"]["phase"] == "starting" {"Starting service. Discovering connected Rooms…"} else {"Service enabled. Waiting for an available Room."};}
     let r=&value["runtime"];
@@ -4821,8 +4822,9 @@ mod tests {
         let stopped=json!({"service":{"enabled":true,"watcherRunning":true},"runtime":{"agentId":"a","phase":"stopped","lastError":"authorization_or_lease_lost","bindings":[]}});
         assert!(runtime_service_description(Some(&Ok(stopped)),"a").contains("stopped with an error"));
         let failed=json!({"service":{"enabled":true,"watcherRunning":false,"lastError":"authorization_or_lease_lost"},"runtime":null});
+        assert_eq!(runtime_list_label(Some(&Ok(failed.clone())),"a"),crate::hagency::agent_panel::mapping::HOST_RESTARTING);
         let description=runtime_service_description(Some(&Ok(failed)),"a");
-        assert!(description.contains("needs attention"));
+        assert!(description.starts_with(crate::hagency::agent_panel::mapping::HOST_RESTARTING));
         assert!(description.contains("authorization_or_lease_lost"));
         let retry=json!({"service":{"enabled":true,"watcherRunning":true,"problems":[{"error":"agent_lease_busy","retryInSeconds":8}]},"runtime":{"agentId":"a","phase":"stopped","lastError":"provider_authorization_lost"}});
         let description=runtime_service_description(Some(&Ok(retry)),"a");

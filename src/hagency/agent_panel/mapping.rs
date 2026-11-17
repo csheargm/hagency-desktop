@@ -210,6 +210,8 @@ pub(crate) fn runs_on(here: bool, device_name: &str, harness: Option<&str>) -> S
         _ => crate::i18n::tr("Not assigned to a device yet").into(),
     }
 }
+/// Shown wherever an Agent's host on this computer has stopped.
+pub(crate) const HOST_RESTARTING: &str = "Agent host not running on this Mac — restarting…";
 /// The service line for the mini app's one-word state (`local_state::service_state`).
 pub(crate) fn service_line(state: &str) -> &'static str {
     match state {
@@ -218,6 +220,7 @@ pub(crate) fn service_line(state: &str) -> &'static str {
         "starting" => "Starting…",
         "waiting" => "Waiting for your approval",
         "attention" => "Needs attention",
+        "host_restarting" => HOST_RESTARTING,
         "stopped" => "Paused",
         "elsewhere" => "Runs on another device",
         _ => "Status unavailable",
@@ -225,7 +228,7 @@ pub(crate) fn service_line(state: &str) -> &'static str {
 }
 /// Whether the service toggle offers Pause (true) or Resume (false).
 pub(crate) fn service_running(state: &str) -> bool {
-    matches!(state, "processing" | "running" | "starting" | "waiting" | "attention")
+    matches!(state, "processing" | "running" | "starting" | "waiting" | "attention" | "host_restarting")
 }
 
 #[cfg(test)]
