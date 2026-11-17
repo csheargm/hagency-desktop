@@ -11,17 +11,19 @@ use std::cell::RefCell;
 
 thread_local! {
     /// The Agent bind the picker sent last; its refusal is answered here, not by a popup.
-    static PICKER_BIND: RefCell<Option<(OwnedRoomId, OwnedUserId)>> = const { RefCell::new(None) };
+    /// Keyed by account epoch too: a bind from an earlier session is never the picker's.
+    static PICKER_BIND: RefCell<Option<(OwnedRoomId, OwnedUserId, u64)>> = const { RefCell::new(None) };
 }
 
 /// Marks the bind the picker just sent (or clears it with `None`).
 pub(super) fn mark_picker_bind(bind: Option<(OwnedRoomId, OwnedUserId)>) {
-    PICKER_BIND.with(|cell| *cell.borrow_mut() = bind);
+    let epoch = crate::account_session::epoch();
+    PICKER_BIND.with(|cell| *cell.borrow_mut() = bind.map(|(room, user)| (room, user, epoch)));
 }
 
 /// Whether the picker answers this bind's outcome itself.
 pub(crate) fn picker_owns(room_id: &RoomId, user_id: &UserId) -> bool {
-    PICKER_BIND.with(|cell| cell.borrow().as_ref().is_some_and(|(r, u)| r == room_id && u == user_id))
+    PICKER_BIND.with(|cell| cell.borrow().as_ref().is_some_and(|(r, u, e)| r == room_id && u == user_id && *e == crate::account_session::epoch()))
 }
 
 /// An Agent's name for the question: its registry name, else the ID's localpart.
@@ -155,7 +157,19 @@ mod tests {
         assert!(picker_owns(&room, &agent()));
         assert!(!picker_owns(&room, ruma::user_id!("@_hagency_agt_other:test")));
         mark_picker_bind(None);
-        assert!(!picker_owns(&room, &agent()));
+        assert!(!picker_owns(&room, &agent()), "a closed or finished picker answers nothing");
+    }
+
+    /// GPT review: Enter in the field must never grant consent; only the Allow button does.
+    #[test]
+    fn enter_in_the_field_does_not_grant_consent() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut modal = modal(&mut cx);
+        refused(&mut modal, &mut cx);
+        let uid = modal.view.text_input(&cx, ids!(user_id_input)).widget_uid();
+        let returned: ActionsBuf = vec![Box::new(WidgetAction { data: None, action: Box::new(TextInputAction::Returned("yue-claude".into(), KeyModifiers::default())), widget_uid: uid, group: None })];
+        modal.handle_actions(&mut cx, &returned, &mut Scope::empty());
+        assert_eq!(modal.state, InviteModalState::ConsentNeeded(agent()), "still asking; nothing was bound");
     }
 
 }
