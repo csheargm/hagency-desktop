@@ -7,6 +7,9 @@ pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, Wat
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, parse_reviews, pulls_url, comments_url, reviews_url};
 pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
 
+/// The issue loop's follow-through records and state machine (ADR 0018).
+pub use hagency_agent_local::issue_track;
+
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;
 
@@ -129,6 +132,18 @@ pub async fn fetch_issue_done(client: &Client, api: &str, repo: &str, number: u6
     let body = get(client, &format!("{api}/repos/{repo}/issues/{number}"), token).await?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     Ok(value["state"] == "closed" && value["state_reason"] == "completed")
+}
+
+/// Issue `number`'s `(state, state_reason)` as GitHub reports them
+/// ("open"/"closed", "completed"/"not_planned"/""), for the issue loop's
+/// tracker (ADR 0018), which must tell a closed issue from one that only
+/// fell off the open listing.
+pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<(String, String), FetchError> {
+    pulls_url(api, repo)?;
+    let body = get(client, &format!("{api}/repos/{repo}/issues/{number}"), token).await?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let text = |k: &str| value[k].as_str().unwrap_or_default().to_owned();
+    Ok((text("state"), text("state_reason")))
 }
 
 /// All of an issue's comments, oldest first, following full pages up to the

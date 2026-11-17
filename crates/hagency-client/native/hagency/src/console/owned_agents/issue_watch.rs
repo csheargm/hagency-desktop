@@ -1,6 +1,6 @@
 //! The GitHub issue watch of one owned Agent, kept in the same profile ledger
 //! as the Agent policy, so the owner check and ledger opening match it.
-//! GET returns `{issueWatch, issueSeen, work, plans, ...}` (`issueSeen`: issue numbers already
+//! GET returns `{issueWatch, issueSeen, work, plans, track, ...}` (`issueSeen`: issue numbers already
 //! handed off for the watched repository). POST applies `{issueWatch}` and/or
 //! `{issueSeen: {repo, number}}` in one transaction, then answers like GET.
 //! Writes need this device to be the Agent's execution device.
@@ -25,6 +25,9 @@ struct Change {
     /// A planner card the owner filed, or one whose "Done" was posted.
     #[serde(default)]
     plan: Option<PlanChange>,
+    /// The issue loop's follow-through record of one issue (ADR 0018).
+    #[serde(default)]
+    track: Option<hagency_agent_local::issue_track::TrackChange>,
 }
 
 #[derive(Deserialize)]
@@ -121,8 +124,9 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
         work_seen.insert(entry.repo.clone(), numbers.into());
     }
     let plans = ledger.open_plans(agent).map_err(local_error)?;
+    let track = ledger.issue_tracks(agent).map_err(local_error)?;
     let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
-    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans}))
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track}))
 }
 
 fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -> hagency_agent_local::Result<()> {
@@ -134,6 +138,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     }
     if let Some(seen) = change.issue_seen {
         ledger.mark_issue_seen(agent, &seen.repo, seen.number)?;
+    }
+    if let Some(track) = change.track {
+        ledger.track_issue(agent, &track, now())?;
     }
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
@@ -175,6 +182,13 @@ mod tests {
         assert_eq!((seen.repo.as_str(), seen.number), ("acme/app", 7));
         assert!(serde_json::from_value::<Change>(json!({"issueSeen": {"repo": "acme/app"}})).is_err());
         assert!(serde_json::from_value::<Change>(json!({"issueSeen": {"repo": "acme/app", "number": 7, "close": true}})).is_err());
+    }
+
+    #[test]
+    fn track_changes_ride_with_the_seen_record() {
+        let change: Change = serde_json::from_value(json!({"issueSeen": {"repo": "a/b", "number": 3}, "track": {"repo": "a/b", "number": 3, "handed": 1}})).unwrap();
+        assert_eq!(change.track.unwrap().handed, Some(1));
+        assert!(serde_json::from_value::<Change>(json!({"track": {"repo": "a/b", "number": 3, "merge": true}})).is_err());
     }
 
     #[test]

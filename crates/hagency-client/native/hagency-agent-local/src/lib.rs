@@ -6,6 +6,7 @@ pub mod activity;
 pub mod attribution;
 pub mod agent_env;
 pub mod codex;
+pub mod issue_track;
 pub mod issue_watch;
 pub mod merge_policy;
 pub mod outside;
@@ -383,6 +384,7 @@ impl Ledger {
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;
+        db.execute_batch(issue_track::SCHEMA)?;
         remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;

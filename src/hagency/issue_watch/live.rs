@@ -19,6 +19,8 @@ pub(super) struct Live {
     auto_merge: bool,
     /// The account session this check started in; nothing is sent after it ends.
     epoch: u64,
+    /// Which hand-off of the issue this is (1: the first; the tracker retries).
+    attempt: u32,
 }
 
 impl Live {
@@ -35,7 +37,13 @@ impl Live {
             label: agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent").to_owned(),
             auto_merge,
             epoch,
+            attempt: 1,
         })
+    }
+    /// The same sender for hand-off `attempt` (its own transaction id).
+    pub(super) fn with_attempt(mut self, attempt: u32) -> Self {
+        self.attempt = attempt;
+        self
     }
 }
 
@@ -43,12 +51,13 @@ impl Handoff for Live {
     async fn post(&self, issue: &Issue) -> Result<(), String> {
         let notice = super::notice::Notice::new(&self.repo, issue, &self.label).with_merge_policy(self.auto_merge);
         super::still_current(self.epoch)?;
-        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number);
+        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number, self.attempt);
         crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(&self.puppet), notice.marker(), txn_id).await
     }
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
         super::still_current(self.epoch)?;
-        let input = json!({"issueSeen": {"repo": self.repo, "number": number}});
+        // One transaction: the issue is seen and its tracked attempt counted (ADR 0018).
+        let input = json!({"issueSeen": {"repo": self.repo, "number": number}, "track": {"repo": self.repo, "number": number, "handed": self.attempt}});
         saved(&self.service, &self.agent_id, Some(input)).await.map(|_| ())
     }
     fn paused(&self) -> bool {
@@ -77,7 +86,9 @@ pub(super) async fn auto_merge(agent_id: &str) -> bool {
 /// The same id for the same Agent, repository and issue on every retry, so a
 /// post whose `issueSeen` save failed is deduplicated by the homeserver
 /// (Matrix transaction ids are scoped to this device's access token).
-pub(super) fn handoff_txn_id(agent_id: &str, repo: &str, number: i64) -> OwnedTransactionId {
-    let key = blake3::hash(format!("{agent_id}\n{repo}\n{number}").as_bytes());
+/// A retry (`attempt` > 1) gets its own id, or the homeserver would drop it.
+pub(super) fn handoff_txn_id(agent_id: &str, repo: &str, number: i64, attempt: u32) -> OwnedTransactionId {
+    let base = format!("{agent_id}\n{repo}\n{number}");
+    let key = blake3::hash(if attempt <= 1 { base } else { format!("{base}\n{attempt}") }.as_bytes());
     OwnedTransactionId::from(format!("hagency-issue-{}", key.to_hex()))
 }

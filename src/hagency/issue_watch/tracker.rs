@@ -1,0 +1,206 @@
+//! The issue loop's follow-through (ADR 0018), run each check for one
+//! repository: every tracked issue moves by at most one step of the state
+//! machine in `::hagency::issue_watch::issue_track` (retry a lost hand-off,
+//! follow the Agent's pull request to review and the merge gate, announce
+//! the merge, give up, or stop for a person). Every room line is posted
+//! before its state is recorded, with a transaction id fixed by issue, step
+//! and attempt, so a check that dies in between repeats a duplicate the
+//! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
+use super::work_slots::closes_issue;
+use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
+use ::hagency::issue_watch::{Issue, PullRequest};
+use serde_json::{Value, json};
+use std::collections::HashSet;
+
+/// What following a pull request led to.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Followed {
+    /// Another Agent was asked to review, or the merge gate was consulted.
+    Requested,
+    /// No other Agent can review: a person must review and merge.
+    NeedsPerson,
+    /// Still a draft: the Agent has not marked it ready yet.
+    Draft,
+}
+
+pub(crate) trait TrackIo {
+    /// One `track` change in the owner API (`issue_track::TrackChange`).
+    async fn record(&self, change: Value) -> Result<(), String>;
+    /// One room line about issue `number`, keyed so the same `key` is never posted twice.
+    async fn say(&self, number: i64, key: &str, text: String) -> Result<(), String>;
+    /// Hand `issue` off again as `attempt` (claim, post, record `handed`).
+    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<(), String>;
+    /// A tracked issue missing from the open list: GitHub's own answer.
+    async fn closed_state(&self, number: i64) -> Result<IssueFact, String>;
+    /// The Agent's cannot-fix comment during the current attempt.
+    async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
+    async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
+    fn paused(&self) -> bool;
+}
+
+/// One repository's inputs, read once per check.
+pub(crate) struct Inputs<'a> {
+    pub repo: &'a str,
+    pub now: i64,
+    pub tracks: &'a [Track],
+    /// Issue numbers already handed off (`issueSeen`), to adopt older hand-offs.
+    pub seen: &'a HashSet<i64>,
+    pub open_issues: &'a [Issue],
+    /// The Agent's own open pull requests (its GitHub login's).
+    pub own_pulls: &'a [PullRequest],
+}
+
+/// The status parts and failures of one pass.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Followups {
+    pub lines: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups {
+    let mut out = Followups::default();
+    // A hand-off from before tracking (or whose record was lost) is adopted
+    // as attempt 1 from now, so it is followed and retried like a new one.
+    for number in inputs.seen.iter().filter(|n| inputs.open_issues.iter().any(|i| i.number == **n && !i.is_pr)) {
+        if !inputs.tracks.iter().any(|t| t.repo.eq_ignore_ascii_case(inputs.repo) && t.number == *number) {
+            if let Err(error) = io.record(json!({"repo": inputs.repo, "number": number, "handed": 1})).await {
+                out.errors.push(error);
+            }
+        }
+    }
+    for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo)) {
+        match step(io, inputs, track).await {
+            Ok(Some(line)) => out.lines.push(line),
+            Ok(None) => {}
+            Err(error) => out.errors.push(format!("#{}: {error}", track.number)),
+        }
+    }
+    out
+}
+
+/// Advance one record by one step; the status part it shows afterwards.
+async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track) -> Result<Option<String>, String> {
+    if track.state.is_terminal() {
+        return Ok(terminal_line(track));
+    }
+    let issue = inputs.open_issues.iter().find(|i| i.number == track.number && !i.is_pr);
+    let fact = match issue {
+        Some(_) => IssueFact::Open,
+        None => io.closed_state(track.number).await?,
+    };
+    let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
+    let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix };
+    if io.paused() {
+        return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
+    }
+    let n = track.number;
+    let change = |extra: Value| change_of(inputs.repo, n, extra);
+    match decide(track, &facts) {
+        Action::Wait => Ok(Some(waiting_line(track))),
+        Action::Retry { attempt } => {
+            let issue = issue.ok_or("the issue is not open")?;
+            let args = [("number", n.to_string()), ("attempt", attempt.to_string()), ("max", MAX_ATTEMPTS.to_string())];
+            io.say(n, &format!("retry-{attempt}"), crate::i18n::format(RETRYING, &args)).await?;
+            io.hand_off(issue, attempt).await?;
+            Ok(Some(crate::i18n::format("#{number} retrying ({attempt}/{max})", &args)))
+        }
+        Action::GiveUp => {
+            io.say(n, "failed", crate::i18n::format(GAVE_UP, &[("number", n.to_string()), ("max", MAX_ATTEMPTS.to_string())])).await?;
+            io.record(change(json!({"state": "failed", "notified": true}))).await?;
+            Ok(terminal_line(&Track { state: State::Failed, ..track.clone() }))
+        }
+        Action::NeedsHuman => {
+            let url = issue.map(|i| i.url.as_str()).unwrap_or_default();
+            io.say(n, "needs-human", crate::i18n::format(CANNOT_FIX, &[("number", n.to_string()), ("url", url.to_owned())])).await?;
+            io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
+            Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
+        }
+        Action::FollowPr { pr } => follow_one(io, inputs.repo, track, open_pr.ok_or("the pull request is gone")?, pr).await.map(Some),
+        Action::AnnounceFixed => announce(io, inputs.repo, track).await.map(|_| None),
+        Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
+    }
+}
+
+fn change_of(repo: &str, number: i64, extra: Value) -> Value {
+    let mut change = json!({"repo": repo, "number": number});
+    if let (Some(c), Some(extra)) = (change.as_object_mut(), extra.as_object()) {
+        c.extend(extra.clone());
+    }
+    change
+}
+
+/// The Agent's pull request is open: record it, ask for its review (or the
+/// merge gate), and tell a person once when no other Agent can review.
+async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullRequest, pr: u64) -> Result<String, String> {
+    let n = track.number;
+    if track.state == State::HandedOff || track.pr != Some(pr) {
+        io.record(change_of(repo, n, json!({"state": "pr_opened", "pr": pr}))).await?;
+    }
+    let followed = io.follow_pr(pull).await?;
+    let told = track.state == State::Reviewed && track.notified && track.pr == Some(pr);
+    if followed == Followed::NeedsPerson && !told {
+        io.say(n, &format!("needs-review-{pr}"), crate::i18n::format(NEEDS_YOU, &[("pr", pr.to_string()), ("number", n.to_string()), ("url", pull.url.clone())])).await?;
+        io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
+    } else if followed == Followed::Requested && (track.state != State::Reviewed || track.pr != Some(pr)) {
+        io.record(change_of(repo, n, json!({"state": "reviewed"}))).await?;
+    }
+    Ok(pr_line(n, pr, followed))
+}
+
+async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), String> {
+    let n = track.number;
+    let text = match track.pr {
+        Some(pr) => crate::i18n::format(FIXED, &[("number", n.to_string()), ("pr", pr.to_string())]),
+        None => crate::i18n::format("✅ #{number} closed as completed", &[("number", n.to_string())]),
+    };
+    io.say(n, "fixed", text).await?;
+    io.record(change_of(repo, n, json!({"state": "merged", "notified": true}))).await
+}
+/// Whether pull request `pr` is linked to issue `number`: a closing keyword
+/// in its description, or a head branch naming the issue ("issue-33",
+/// "issue33", "33-fix-typo"); a bare number elsewhere in a branch is not enough.
+pub(crate) fn links_issue(pr: &PullRequest, repo: &str, number: i64) -> bool {
+    if closes_issue(&pr.body, repo, number) {
+        return true;
+    }
+    let n = number.to_string();
+    let branch = pr.head_ref.to_ascii_lowercase();
+    let tokens: Vec<&str> = branch.split(|c: char| !c.is_ascii_alphanumeric()).filter(|t| !t.is_empty()).collect();
+    let last = branch.rsplit('/').next().unwrap_or_default();
+    tokens.windows(2).any(|w| matches!(w[0], "issue" | "issues" | "gh") && w[1] == n)
+        || tokens.iter().any(|t| *t == format!("issue{n}"))
+        || last.strip_prefix(&n).is_some_and(|rest| rest.starts_with('-'))
+}
+
+pub const RETRYING: &str = "🔁 Retrying #{number} (attempt {attempt} of {max}): no pull request from the last hand-off";
+pub const GAVE_UP: &str = "⚠️ #{number}: no pull request after {max} hand-offs — it needs a person";
+pub const CANNOT_FIX: &str = "🙋 #{number}: the Agent says it cannot fix this — see its comment on the issue: {url}";
+pub const NEEDS_YOU: &str = "👀 PR #{pr} for #{number} needs your review and merge approval: {url}";
+pub const FIXED: &str = "✅ #{number} fixed → PR #{pr} merged";
+
+fn waiting_line(track: &Track) -> String {
+    let n = track.number.to_string();
+    match (track.state, track.pr) {
+        (State::HandedOff, _) if track.attempts > 1 => crate::i18n::format("#{number} retrying ({attempt}/{max})", &[("number", n), ("attempt", track.attempts.to_string()), ("max", MAX_ATTEMPTS.to_string())]),
+        (State::HandedOff, _) => crate::i18n::format("#{number} waiting for a pull request", &[("number", n)]),
+        (_, Some(pr)) => crate::i18n::format("#{number} PR #{pr} closed unmerged — needs a person", &[("number", n), ("pr", pr.to_string())]),
+        _ => crate::i18n::format("#{number} waiting", &[("number", n)]),
+    }
+}
+fn pr_line(number: i64, pr: u64, followed: Followed) -> String {
+    let template = match followed {
+        Followed::Requested => "#{number} PR #{pr} in review",
+        Followed::NeedsPerson => "#{number} PR #{pr} waiting for your review",
+        Followed::Draft => "#{number} PR #{pr} is a draft",
+    };
+    crate::i18n::format(template, &[("number", number.to_string()), ("pr", pr.to_string())])
+}
+pub(crate) fn terminal_line(track: &Track) -> Option<String> {
+    let n = track.number.to_string();
+    match track.state {
+        State::Failed => Some(crate::i18n::format("#{number} gave up after {max} attempts", &[("number", n), ("max", MAX_ATTEMPTS.to_string())])),
+        State::NeedsHuman => Some(crate::i18n::format("#{number} needs a person", &[("number", n)])),
+        _ => None,
+    }
+}

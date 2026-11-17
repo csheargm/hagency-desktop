@@ -24,6 +24,8 @@ pub(crate) struct WorkOutcome {
     pub handed: usize,
     /// One line per repository that failed: "owner/name: why".
     pub errors: Vec<String>,
+    /// The tracker's status parts ("#33 retrying (2/3)", ADR 0018).
+    pub tracked: Vec<String>,
 }
 
 /// Everything one pass needs about the Agent.
@@ -33,6 +35,8 @@ pub(crate) struct Worker<'a> {
     pub agent: &'a Value,
     pub token: &'a str,
     pub epoch: u64,
+    /// Every active Agent of this owner: the tracker asks another one to review.
+    pub peers: &'a [Value],
 }
 
 /// Run every repository of `saved["work"]`.
@@ -40,14 +44,14 @@ pub(crate) async fn run(worker: &Worker<'_>, saved: &Value) -> WorkOutcome {
     let mut outcome = WorkOutcome::default();
     let work: Vec<OwnerRules> = match serde_json::from_value(saved["work"].clone()) {
         Ok(work) => work,
-        Err(error) => return WorkOutcome { handed: 0, errors: vec![format!("Unreadable work list: {error}")] },
+        Err(error) => return WorkOutcome { errors: vec![format!("Unreadable work list: {error}")], ..Default::default() },
     };
     if work.is_empty() {
         return outcome;
     }
     let login = match fetch_login(worker.client, GITHUB_API, worker.token).await {
         Ok(login) => login,
-        Err(error) => return WorkOutcome { handed: 0, errors: vec![error.to_string()] },
+        Err(error) => return WorkOutcome { errors: vec![error.to_string()], ..Default::default() },
     };
     for entry in &work {
         let seen: HashSet<i64> = saved["workSeen"][&entry.repo].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
@@ -60,6 +64,9 @@ pub(crate) async fn run(worker: &Worker<'_>, saved: &Value) -> WorkOutcome {
         if let Err(error) = review(worker, entry, &login).await {
             outcome.errors.push(format!("{}: {error}", entry.repo));
         }
+        let followed = super::tracker_live::follow_work(worker, entry, &watch_for(entry), saved, &seen).await;
+        outcome.tracked.extend(followed.lines);
+        outcome.errors.extend(followed.errors);
     }
     outcome
 }
@@ -225,13 +232,13 @@ async fn loop_api(service: &Service, agent_id: &str, change: Value) -> Result<Va
 }
 
 /// The live loop: notices into the repository's room, the owner API, Stop All.
-struct LiveLoop<'a> {
+pub(super) struct LiveLoop<'a> {
     worker: &'a Worker<'a>,
     agent_id: String,
     room_id: OwnedRoomId,
 }
 impl<'a> LiveLoop<'a> {
-    fn new(worker: &'a Worker<'a>, room: &str) -> Result<Self, String> {
+    pub(super) fn new(worker: &'a Worker<'a>, room: &str) -> Result<Self, String> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| format!("Invalid room {room}"))?;
         Ok(Self { worker, agent_id: worker.agent["id"].as_str().unwrap_or_default().to_owned(), room_id })
     }
