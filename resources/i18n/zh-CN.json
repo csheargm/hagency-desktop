@@ -778,6 +778,7 @@
   "Resolve outcome": "处理执行结果",
   "Unavailable": "不可用",
   "Needs attention": "待处理",
+  "Agent host not running on this Mac — restarting…": "本机的 Agent 主机未运行 — 正在重启…",
   "Tasks": "任务",
   "Queue": "队列",
   "Workspaces": "工作区",

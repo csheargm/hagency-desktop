@@ -262,6 +262,8 @@ pub use daemon_bridge::LocalAgentHost;
 mod signin;
 mod adoption;
 mod allocation_worker;
+// TODO(R4): backend.rs is over budget; split owner open/close lifecycle into backend/owner_open.rs.
+mod host_watchdog;
 #[cfg(feature = "shared-execution")]
 mod shared_worker;
 #[cfg(feature = "shared-successors")]
@@ -294,6 +296,7 @@ struct Inner {
     setup_pending: std::sync::atomic::AtomicBool,
     activation: tokio::sync::Mutex<adoption::ActivationTask>,
     allocations: allocation_worker::Worker,
+    host_watchdog: host_watchdog::Worker,
     #[cfg(feature = "shared-execution")]
     shared: shared_worker::Worker,
     retired: std::sync::atomic::AtomicBool,
@@ -385,6 +388,7 @@ impl Service {
             setup_pending: std::sync::atomic::AtomicBool::new(false),
             activation: Default::default(),
             allocations: Default::default(),
+            host_watchdog: Default::default(),
             #[cfg(feature = "shared-execution")]
             shared: Default::default(),
             retired: std::sync::atomic::AtomicBool::new(false),
@@ -678,6 +682,7 @@ impl Service {
                 if restore_personal && !management_only {
                     log_runtime_recovery(owner.restore_runtime_intents().await);
                 }
+                self.start_host_watchdog(restore_personal && !management_only).await;
                 if let Err(error) = self.check() {
                     self.close_native_owner(&owner).await?;
                     return Err(error);
@@ -832,6 +837,7 @@ impl Service {
             .retired
             .store(true, std::sync::atomic::Ordering::Release);
         self.0.allocations.retire();
+        self.0.host_watchdog.retire();
         #[cfg(feature = "shared-execution")]
         self.0.shared.retire();
         let handle = self.0.native_retirement.lock()

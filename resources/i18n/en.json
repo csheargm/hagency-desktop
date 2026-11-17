@@ -776,6 +776,7 @@
   "Resolve outcome": "Resolve outcome",
   "Unavailable": "Unavailable",
   "Needs attention": "Needs attention",
+  "Agent host not running on this Mac — restarting…": "Agent host not running on this Mac — restarting…",
   "Tasks": "Tasks",
   "Queue": "Queue",
   "Workspaces": "Workspaces",

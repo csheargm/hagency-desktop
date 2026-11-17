@@ -137,6 +137,8 @@ impl Service {
                 {
             self.0.allocations.retire();
             self.0.allocations.drain().await;
+            self.0.host_watchdog.retire();
+            self.0.host_watchdog.drain().await;
         }
         #[cfg(feature = "shared-execution")]
         {
