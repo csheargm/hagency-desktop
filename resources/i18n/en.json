@@ -3557,5 +3557,6 @@
   "Rename": "Rename",
   "Use 1 to 64 characters for the name.": "Use 1 to 64 characters for the name.",
   "That is already its name.": "That is already its name.",
-  "People see the new name in every room.": "People see the new name in every room."
+  "People see the new name in every room.": "People see the new name in every room.",
+  "Too many open issues to enforce the open pull request limit": "Too many open issues to enforce the open pull request limit"
 }
