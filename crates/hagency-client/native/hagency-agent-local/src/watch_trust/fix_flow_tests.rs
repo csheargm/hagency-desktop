@@ -11,26 +11,32 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const OWNER: &str = "@betty:example.org";
-const ROOM: &str = "!sandbox:example.org";
-const REPO: &str = "csheargm/hagency-demo-sandbox";
+pub(crate) const OWNER: &str = "@betty:example.org";
+pub(crate) const ROOM: &str = "!sandbox:example.org";
+pub(crate) const REPO: &str = "csheargm/hagency-demo-sandbox";
 
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git").arg("-C").arg(dir).args(args).envs(crate::agent_env::GIT_HELPERS_OFF_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-struct Run {
+pub(crate) struct Run {
     _temp: tempfile::TempDir,
-    root: PathBuf,
-    target: PathBuf,
-    ledger: Ledger,
+    pub(crate) root: PathBuf,
+    pub(crate) target: PathBuf,
+    pub(crate) ledger: Ledger,
 }
 
 /// A workspace, a bare repository standing in for GitHub, and an Ask-owner
 /// ledger with the watch on and push freely on.
 fn run() -> Run {
+    run_under(ToolPolicy::AskOwner)
+}
+
+/// [`run`] with every layer's high-risk rule `high_risk` (Deny: a hosted
+/// Agent's default).
+pub(crate) fn run_under(high_risk: ToolPolicy) -> Run {
     let temp = tempfile::tempdir().unwrap();
     let base = temp.path().canonicalize().unwrap();
     let (root, seed, target) = (base.join("workspace"), base.join("seed"), base.join("github.git"));
@@ -47,7 +53,7 @@ fn run() -> Run {
     let ask = crate::Policy {
         budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime },
         requests: crate::RequestPolicy::Allow,
-        high_risk: ToolPolicy::AskOwner,
+        high_risk,
     };
     for layer in [Layer::Agent, Layer::Room, Layer::Requester] {
         ledger.set_policy(OWNER, &scope, layer, 0, &ask).unwrap();
@@ -57,12 +63,12 @@ fn run() -> Run {
     Run { _temp: temp, root, target, ledger }
 }
 
-fn watch(ledger: &mut Ledger, mode: WatchMode) {
+pub(crate) fn watch(ledger: &mut Ledger, mode: WatchMode) {
     let setting = WatchSetting { mode, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: true };
     ledger.set_issue_watch(OWNER, "bird", setting, 1).unwrap();
 }
 
-fn proposal(root: &Path, room: &str, tool: &str, arguments: Value) -> ToolProposal {
+pub(crate) fn proposal(root: &Path, room: &str, tool: &str, arguments: Value) -> ToolProposal {
     ToolProposal {
         scope: Scope { agent: "bird".into(), binding: "b".into(), room: room.into(), requester: OWNER.into(), thread: "t".into() },
         dispatch: "d".into(), tool: tool.into(), arguments,
@@ -75,7 +81,7 @@ fn bash(root: &Path, line: &str) -> ToolProposal {
 
 /// What the Agent's call runs for a card-free step, as its shell would; a
 /// host step goes to the local stand-in for GitHub.
-fn perform(step: TrustedStep, target: &Path) -> String {
+pub(crate) fn perform(step: TrustedStep, target: &Path) -> String {
     let command = match step {
         TrustedStep::Allow => return String::new(),
         TrustedStep::Command(command) => command,

@@ -88,13 +88,25 @@ impl<'a> PrCommand<'a> {
 
     /// Names `repo` (never left to the checkout's remotes or the shell's
     /// directory), and every body file is `-` (stdin) or an absolute path
-    /// inside the workspace.
+    /// to a regular file inside `repo`'s own checkout in the workspace,
+    /// never git metadata (named or resolved): a PR body publishes the
+    /// file, and push freely now does so even under Deny (GPT review, Nov 17).
     pub(crate) fn allowed(&self, root: &Path, repo: &str) -> bool {
         let named = self.url_repo.or(self.repo);
         let aimed = named.is_some_and(|named| named.eq_ignore_ascii_case(repo)) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo));
-        let roots = [root.to_path_buf()];
-        aimed && self.files.iter().all(|file| *file == "-" || (Path::new(file).is_absolute() && outside::inside_all(file, &roots, root)))
+        aimed && self.files.iter().all(|file| *file == "-" || body_file_ok(file, root, repo))
     }
+}
+
+/// A body file push trust may publish: see [`PrCommand::allowed`].
+fn body_file_ok(file: &str, root: &Path, repo: &str) -> bool {
+    let roots = [root.to_path_buf()];
+    if !Path::new(file).is_absolute() || !outside::inside_all(file, &roots, root) || outside::is_git_metadata(Path::new(file)) {
+        return false;
+    }
+    // An existing regular file, through every link.
+    let Some(real) = Path::new(file).canonicalize().ok().filter(|r| !outside::is_git_metadata(r) && r.is_file()) else { return false };
+    super::local_git::checkout_containing(&real, root).is_some_and(|checkout| super::local_git::own_checkout(&checkout, repo))
 }
 
 /// A target that is a number or branch (`None`: the checkout decides), or a

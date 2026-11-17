@@ -15,6 +15,7 @@ use tokio::{
 };
 mod questions;
 mod room_mcp;
+mod repo_steps;
 mod approvals;
 mod controls;
 mod native_usage;
@@ -1515,6 +1516,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             (None, None) => None,
             _ => return Err(Error::Protocol("room tool dispatch differs")),
         };
+        // Push freely's host tool (ADR 0022, "Codex"); see `repo_steps`.
+        // TODO(R4): part of the run_inner split into codex/turn.rs (see `unavailable`).
+        let (repo_sender, mut repo_calls) = repo_steps::channel();
+        let mut repo_open = room_turn.as_ref().is_some_and(|room| room.take_repo_steps(repo_sender));
+        let mut repo_running = repo_steps::Running::default();
+        let repo_turn = repo_steps::Turn { owner, scope, dispatch, workspace: cwd, enabled: self.native_sandbox() == NativeSandbox::RoomFolder,
+            token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
         if let Some(stream) = &mut stream {
             stream.activate();
         }
@@ -1552,6 +1560,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 questions.clear();
                 answer = None;
                 room_turn.take();
+                // Running repo steps stop with the turn's callbacks, and no
+                // queued one starts after (GPT review).
+                repo_running = repo_steps::Running::default();
+                repo_open = false;
                 callbacks_stopped = true;
             }
             // The host asked for a stop and Codex has not answered it in
@@ -1690,6 +1702,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     next = questions.next(), if answer.is_none() => {
                         answer = Some(next);
+                        continue;
+                    }
+                    call = repo_calls.recv(), if repo_open && !controls.holds_answers() => {
+                        match call {
+                            Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running),
+                            None => repo_open = false,
+                        }
                         continue;
                     }
                 };
@@ -2052,19 +2071,27 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             policy_revision: versions.map(|v| v.revision),
             expires: now() + 300,
         };
-        let disposition = ledger.tool_disposition(&proposal, now()).ok();
-        approvals.offer(
-            approvals::Request {
-                id,
-                method: method.into(),
-                thread: thread.into(),
-                turn: turn.into(),
-                native: native_request,
-                proposal,
-            },
-            disposition,
-            queue,
-        );
+        let request = approvals::Request {
+            id,
+            method: method.into(),
+            thread: thread.into(),
+            turn: turn.into(),
+            native: native_request,
+            proposal,
+        };
+        // Push freely (ADR 0022, "Codex"): a file change inside the watched
+        // repository's own checkout, checked against the Room workspace.
+        // TODO(R4): codex.rs is over budget; move approval routing into codex/approvals.rs.
+        if self.native_sandbox() == NativeSandbox::RoomFolder && request.proposal.tool == "codex.file_change" {
+            let rooted = crate::watch_trust::for_workspace(&request.proposal, std::path::Path::new(cwd));
+            let owner = ledger.owner.clone();
+            if matches!(ledger.trusted_publish(&owner, &rooted, now()), Ok(Some(crate::watch_trust::TrustedStep::Allow))) {
+                approvals.offer_trusted(request, rooted);
+                return Ok(());
+            }
+        }
+        let disposition = ledger.tool_disposition(&request.proposal, now()).ok();
+        approvals.offer(request, disposition, queue);
         Ok(())
     }
     /// A request the owner is never shown is declined, and says so in the log.
@@ -2708,9 +2735,11 @@ mod tests {
                         }
                         if with_approval {
                             let (method, params) = match kind {
-                                "file" | "file_grant_root" | "file_early" => {
+                                "file" | "file_grant_root" | "file_early" | "file_watched" => {
+                                    // `file_watched`: a change in the watched repository's checkout.
+                                    let path = if kind == "file_watched" { format!("{cwd}/app/README.md") } else { "/tmp/task/file".into() };
                                     if kind != "file_early" {
-                                        emit(&mut w,value!({"method":"item/started","params":{"threadId":"thread-a","turnId":"turn-a","item":{"id":"file-a","type":"fileChange","status":"inProgress","changes":[{"path":"/tmp/task/file","kind":"update","diff":"+unsafe"}]}}})).await;
+                                        emit(&mut w,value!({"method":"item/started","params":{"threadId":"thread-a","turnId":"turn-a","item":{"id":"file-a","type":"fileChange","status":"inProgress","changes":[{"path":path,"kind":"update","diff":"+unsafe"}]}}})).await;
                                     }
                                     (
                                         "item/fileChange/requestApproval",

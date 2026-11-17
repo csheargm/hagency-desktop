@@ -22,6 +22,9 @@ pub(super) struct Request {
 }
 enum Decision {
     Rules,
+    /// Push freely authorized it (ADR 0022, "Codex"); checked again, as
+    /// this workspace-rooted proposal, right before the answer is sent.
+    Trusted(Box<ToolProposal>),
     Owner(bool),
     Deny,
 }
@@ -74,6 +77,11 @@ impl Approvals {
         self.0
             .insert(request.id.to_string(), Pending { request, wait });
     }
+    /// A request push trust answered: accepted as soon as it is polled.
+    pub fn offer_trusted(&mut self, request: Request, rooted: ToolProposal) {
+        let wait: Wait = Box::pin(std::future::ready(Decision::Trusted(Box::new(rooted))));
+        self.0.insert(request.id.to_string(), Pending { request, wait });
+    }
     pub async fn next(&mut self) -> Answer {
         let (id, decision) = poll_fn(|cx| {
             for (id, pending) in &mut self.0 {
@@ -124,6 +132,11 @@ impl Answer {
                 .approve_tool(owner, &request.proposal, super::now())
                 .and_then(|_| ledger.authorize_tool(&request.proposal, super::now()))
                 .is_ok(),
+            // The owner may have paused the watch since (GPT review).
+            Decision::Trusted(rooted) => matches!(
+                ledger.trusted_publish(owner, &rooted, super::now()),
+                Ok(Some(crate::watch_trust::TrustedStep::Allow))
+            ),
             Decision::Owner(false) | Decision::Deny => false,
         };
         let result = if let Some(native) = request.native {

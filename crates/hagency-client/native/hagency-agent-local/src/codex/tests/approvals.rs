@@ -116,3 +116,33 @@ async fn owner_wait_does_not_hide_a_second_native_approval() {
     drop(session);
     peer.await.unwrap();
 }
+
+/// User flow (ADR 0022, "Codex"): bird-codex under a Deny tool rule edits a
+/// file of the watched repository's own clone while push freely is on. Its
+/// native file change is accepted without a card; the same change from
+/// another requester is refused by the Deny, never shown to the owner.
+#[tokio::test]
+async fn push_freely_accepts_a_codex_file_change_in_the_watched_clone() {
+    for (requester, accepted) in [("@alice:test", 1), ("@bob:test", 0)] {
+        let (_temp, mut ledger, profile) = setup(true);
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&profile.cwd).args(args)
+            .envs(crate::agent_env::GIT_HELPERS_OFF_ENV).status().unwrap().success());
+        git(&["init", "-q", "app"]);
+        git(&["-C", "app", "remote", "add", "origin", "https://github.com/acme/app.git"]);
+        let setting = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::All, label: String::new(),
+            repo: "acme/app".into(), room_id: scope().room, push_trusted: true };
+        ledger.set_issue_watch("@alice:test", "agent", setting, 1).unwrap();
+        let bound = Scope { requester: requester.into(), ..scope() };
+        let (mut session, effects, peer) = fake(profile.cwd.to_str().unwrap().into(), true, true, 10, "file_watched");
+        session.initialize().await.unwrap();
+        session.open_context(&mut ledger, &bound, &profile).await.unwrap();
+        let (queue, mut ui) = approval_queue(2).unwrap();
+        let run = session.run(&mut ledger, "@alice:test", &bound, "call", "dispatch", "hello", BudgetMode::Postpaid, &queue);
+        let done = tokio::time::timeout(Duration::from_secs(5), run).await.expect("no owner wait").unwrap();
+        assert_eq!(done.usage.input, 10);
+        assert!(ui.try_recv().is_err(), "no card for {requester}");
+        assert_eq!(effects.load(Ordering::SeqCst), accepted, "{requester}");
+        drop(session);
+        peer.await.unwrap();
+    }
+}
