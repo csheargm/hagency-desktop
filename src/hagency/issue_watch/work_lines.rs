@@ -1,13 +1,16 @@
-//! The "Repositories and roles" text of the Work block (ADR 0016), one
+//! The "Repositories" text of the Work block (ADR 0016, 0017), one
 //! repository per entry (`;` or a new line between entries):
-//! `owner/name developer|reviewer|maintainer [all] [any-path] [max=N]
-//! [authors=a,b] [reviewers=c] [human=glob,glob] [push-freely] [issues=N] [prs=N]`. Parsing is strict: an
+//! `owner/name [all] [any-path] [max=N]
+//! [authors=a,b] [reviewers=c] [human=glob,glob] [push-freely] [issues=N] [prs=N]`.
+//! There are no roles: a role word saved by an earlier build is accepted and
+//! ignored, and every entry is stored as `Maintainer` (merging is then
+//! decided by the owner's own GitHub permission and the rules). Parsing is strict: an
 //! unknown word refuses the whole list, so a typo never loosens a rule.
 use ::hagency::issue_watch::{IssueFilter, OwnerRules, Role};
 use serde_json::Value;
 
 /// The shape shown under the input.
-pub const WORK_HINT: &str = "One per line or separated by ;  owner/name developer|reviewer|maintainer, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking), issues=N (issues per day), prs=N (open pull requests at once)";
+pub const WORK_HINT: &str = "One per line or separated by ;  owner/name, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking), issues=N (issues per day), prs=N (open pull requests at once)";
 
 /// The entries of `text` for `room_id`; `previous` keeps each listed
 /// repository's start time, new ones start at `now`.
@@ -18,17 +21,16 @@ pub fn parse(text: &str, room_id: &str, previous: &[OwnerRules], now: i64) -> Re
 fn entry(line: &str, room_id: &str, previous: &[OwnerRules], now: i64) -> Result<OwnerRules, String> {
     let mut words = line.split_whitespace();
     let repo = words.next().unwrap_or_default().to_owned();
-    let role = match words.next() {
-        Some("developer") => Role::Developer,
-        Some("reviewer") => Role::Reviewer,
-        Some("maintainer") => Role::Maintainer,
-        other => return Err(format!("{repo}: the role must be developer, reviewer or maintainer, not {}", other.unwrap_or("nothing"))),
-    };
+    if repo.is_empty() {
+        return Err("write each repository as owner/name".into());
+    }
+    let role = Role::Maintainer;
     let since = previous.iter().find(|p| p.repo.eq_ignore_ascii_case(&repo)).map_or(now, |p| p.since);
     let mut rules = OwnerRules { repo, role, room_id: room_id.to_owned(), since, ..Default::default() };
     let list = |v: &str| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>();
     for word in words {
         match word.split_once('=') {
+            None if ["developer", "reviewer", "maintainer"].contains(&word) => {} // an earlier build's role
             None if word == "all" => rules.issues = IssueFilter::All,
             None if word == "any-path" => rules.any_path = true,
             None if word == "push-freely" => rules.push_freely = true,
@@ -47,8 +49,7 @@ fn entry(line: &str, room_id: &str, previous: &[OwnerRules], now: i64) -> Result
 /// The saved list as text again (the input's contents after a read).
 pub fn render(work: &[OwnerRules]) -> String {
     work.iter().map(|w| {
-        let role = match w.role { Role::Developer => "developer", Role::Reviewer => "reviewer", Role::Maintainer => "maintainer" };
-        let mut words = vec![w.repo.clone(), role.to_owned()];
+        let mut words = vec![w.repo.clone()];
         if w.issues == IssueFilter::All { words.push("all".into()); }
         if w.any_path { words.push("any-path".into()); }
         if w.push_freely { words.push("push-freely".into()); }
@@ -73,11 +74,11 @@ mod tests {
 
     #[test]
     fn two_repositories_with_different_roles_round_trip() {
-        let text = "acme/app maintainer any-path authors=betty,carl reviewers=dora human=secrets/**; acme/docs developer all push-freely issues=3 prs=2";
+        let text = "acme/app any-path authors=betty,carl reviewers=dora human=secrets/**; acme/docs developer all push-freely issues=3 prs=2";
         let work = parse(text, "!r:x", &[], 100).unwrap();
         assert_eq!(work.len(), 2);
         assert_eq!((work[0].role, work[0].any_path, work[0].trusted_authors.len(), work[0].since), (Role::Maintainer, true, 2, 100));
-        assert_eq!((work[1].role, work[1].issues, work[1].push_freely), (Role::Developer, IssueFilter::All, true));
+        assert_eq!((work[1].role, work[1].issues, work[1].push_freely), (Role::Maintainer, IssueFilter::All, true), "an old role word is ignored");
         assert_eq!((work[1].issues_per_day, work[1].open_prs), (Some(3), Some(2)));
         assert!(!work[0].push_freely, "push trust is off unless named");
         assert_eq!(parse(&render(&work), "!r:x", &work, 999).unwrap(), work, "keeps each repository's start time");
@@ -85,7 +86,7 @@ mod tests {
 
     #[test]
     fn a_typo_or_bad_value_refuses_the_whole_list() {
-        for bad in ["acme/app maintainr", "acme/app maintainer anypath", "acme/app developer max=lots", "nope developer", "acme/app reviewer reviewers=*", "acme/app developer issues=0", "acme/app developer prs=many"] {
+        for bad in ["acme/app maintainr", "acme/app anypath", "acme/app max=lots", "nope", "acme/app reviewers=*", "acme/app issues=0", "acme/app prs=many"] {
             assert!(parse(&format!("acme/ok developer; {bad}"), "!r:x", &[], 1).is_err(), "{bad}");
         }
         assert!(parse("", "!r:x", &[], 1).unwrap().is_empty(), "an empty list clears the work");

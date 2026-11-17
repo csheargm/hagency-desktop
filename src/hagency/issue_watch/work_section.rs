@@ -1,4 +1,4 @@
-//! The "Repositories and roles" block of one Agent (ADR 0016): the owner's
+//! The "Repositories" block of one Agent (ADR 0016): the owner's
 //! work list, saved through the owner API (`{work}`) on the Agent's execution
 //! device and never writable by the Agent. The poller (`super::work`) acts on
 //! it; its last result shows under the issue-watching block.
@@ -17,10 +17,10 @@ script_mod! {
         draw_text.text_style: theme.font_regular{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}}
     mod.widgets.WorkSection = #(WorkSection::register_widget(vm)) {
         width: Fill height: Fit flow: Down spacing: 8
-        Text {text: #(crate::i18n::tr("Repositories and roles")) i18n_text: "Repositories and roles" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
-        Muted {text: #(crate::i18n::tr("Developer: claims new issues and opens pull requests. Reviewer: reviews other people's pull requests. Maintainer: reviews and merges them under your rules below; GitHub's own permissions and branch rules still apply.")) i18n_text: "Developer: claims new issues and opens pull requests. Reviewer: reviews other people's pull requests. Maintainer: reviews and merges them under your rules below; GitHub's own permissions and branch rules still apply."}
-        work_repos := RobrixTextInput {width: Fill height: Fit margin: 0 padding: Inset{left: 12 right: 12 top: 8 bottom: 8} empty_text: "acme/app maintainer any-path authors=betty; acme/docs developer"}
-        Muted {text: #(crate::i18n::tr(super::work_lines::WORK_HINT)) i18n_text: "One per line or separated by ;  owner/name developer|reviewer|maintainer, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking), issues=N (issues per day), prs=N (open pull requests at once)"}
+        Text {text: #(crate::i18n::tr("Repositories")) i18n_text: "Repositories" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
+        Muted {text: #(crate::i18n::tr("The agent claims new issues, opens pull requests and reviews other people's pull requests in these repositories. It merges only where your GitHub account can, under your rules below; GitHub's own permissions and branch rules still apply.")) i18n_text: "The agent claims new issues, opens pull requests and reviews other people's pull requests in these repositories. It merges only where your GitHub account can, under your rules below; GitHub's own permissions and branch rules still apply."}
+        work_repos := RobrixTextInput {width: Fill height: Fit margin: 0 padding: Inset{left: 12 right: 12 top: 8 bottom: 8} empty_text: "acme/app any-path authors=betty; acme/docs"}
+        Muted {text: #(crate::i18n::tr(super::work_lines::WORK_HINT)) i18n_text: "One per line or separated by ;  owner/name, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking), issues=N (issues per day), prs=N (open pull requests at once)"}
         Text {text: #(crate::i18n::tr("Room for its notices")) i18n_text: "Room for its notices"}
         work_room := Select {labels: ["-"]}
         save_work := RobrixIconButton {height: 40 icon_walk: Walk{width: 0 height: 0} spacing: 0 padding: Inset{left: 14 right: 14 top: 0 bottom: 0} text: #(crate::i18n::tr("Save repositories")) i18n_text: "Save repositories"}

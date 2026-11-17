@@ -104,9 +104,13 @@ pub struct OwnerRules {
 }
 
 impl Judged {
-    /// Every policy that applies; each must pass.
+    /// Every policy that applies to a merge; each must pass.
     pub fn policies(&self) -> impl Iterator<Item = &MergePolicy> {
         self.file.iter().chain(self.rules.iter())
+    }
+    /// Every policy that applies to readying or reviewing.
+    pub fn review_policies(&self) -> impl Iterator<Item = &MergePolicy> {
+        self.file.iter().chain(self.review_rules.iter())
     }
 }
 
@@ -249,9 +253,10 @@ pub(crate) struct Judged {
     /// not when this owner's own login wrote the change, because any of its
     /// Agents may be the author (they share that login). GPT review P1.
     pub count_local: bool,
-    /// The Agent is a developer or reviewer here: its ready and review steps
-    /// skip the card, its merges never do.
-    pub review_only: bool,
+    /// The owner's rules for readying and reviewing: any path (protected
+    /// ones still ask). Merges are judged by `rules`. ADR 0017: there are no
+    /// roles, so every Agent on the list may ready and review.
+    pub review_rules: Option<MergePolicy>,
 }
 
 /// The policies for `view` and the approval rules. `None` (the owner's card)
@@ -262,13 +267,12 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
         None => None,
     };
     let rules = ledger.owner_rules(agent, repo).ok()?;
-    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_only: false, count_local: true };
-    if let Some(rules) = rules.as_ref().filter(|r| r.role != Role::Maintainer) {
-        judged.review_only = true;
-        // Readying or reviewing any path (protected ones still ask); never a merge.
-        judged.rules = Some(OwnerRules { any_path: true, max_lines: None, ..rules.clone() }.policy());
-    }
-    if let Some(rules) = rules.filter(|r| r.role == Role::Maintainer) {
+    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_rules: None, count_local: true };
+    // The stored role is ignored (ADR 0017): GitHub's own permission decides
+    // whether the owner's login may merge, and the poller asks for a merge
+    // only where it can.
+    if let Some(rules) = rules {
+        judged.review_rules = Some(OwnerRules { any_path: true, max_lines: None, ..rules.clone() }.policy());
         let own = source.viewer_login(command).await;
         if !rules.trusts_author(&view.author, own.as_deref()) {
             judged.author_reason = Some(format!("{} is not a trusted author", if view.author.is_empty() { "an unknown account" } else { view.author.as_str() }));

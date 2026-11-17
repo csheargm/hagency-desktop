@@ -1,8 +1,8 @@
-//! The Agent's work list on the poller (ADR 0016): every repository the owner
-//! assigned, each with its role. A developer claims new issues on GitHub (a
+//! The Agent's work list on the poller (ADR 0016, 0017): every repository the
+//! owner listed; there are no roles. In each, the Agent claims new issues on GitHub (a
 //! claim comment; the earliest unexpired claim holds) and hands them to the
-//! Agent; a reviewer or maintainer runs the review loop on other people's
-//! pull requests. One repository's failure is reported and never stops the
+//! Agent, and runs the review loop on other people's pull requests (merging
+//! where the owner's GitHub permission allows). One repository's failure is reported and never stops the
 //! others. GitHub is the record; the owner's token is the only identity used.
 use super::handoff::{self, Handoff};
 use super::loop_notice::LoopNotice;
@@ -12,7 +12,7 @@ use ::hagency::issue_watch::{
     Client, Comment, GITHUB_API, Issue, IssueWatch, WatchMode, WatchSetting, claim_authors, claim_body, claim_holder, fetch_comments, fetch_login, fetch_open_issues,
     fetch_open_pulls, fetch_permission, others_ready_pulls, post_comment, select,
 };
-use ::hagency::issue_watch::{IssueFilter, OwnerRules, Role};
+use ::hagency::issue_watch::{IssueFilter, OwnerRules};
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -50,9 +50,11 @@ pub(crate) async fn run(worker: &Worker<'_>, saved: &Value) -> WorkOutcome {
     };
     for entry in &work {
         let seen: HashSet<i64> = saved["workSeen"][&entry.repo].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
-        let done = match entry.role {
-            Role::Developer => develop(worker, entry, &login, &seen).await,
-            Role::Reviewer | Role::Maintainer => review(worker, entry, &login).await.map(|_| 0),
+        // No roles (ADR 0017): every repository is both fixed and reviewed;
+        // the stored role is ignored.
+        let done = match develop(worker, entry, &login, &seen).await {
+            Ok(handed) => review(worker, entry, &login).await.map(|_| handed),
+            Err(error) => Err(error),
         };
         match done {
             Ok(handed) => outcome.handed += handed,
@@ -77,8 +79,10 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
     let id = worker.agent["id"].as_str().unwrap_or_default();
     let watch = watch_for(entry);
     if let Some(limit) = entry.open_prs {
-        let pulls = fetch_open_pulls(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
-        if at_open_pr_limit(&pulls, login, limit) {
+        // Counted by GitHub's search, so an older pull request beyond the
+        // newest page still counts (GPT review). An error fails the pass.
+        let open = ::hagency::issue_watch::fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?;
+        if open >= u64::from(limit) {
             return Ok(0); // claims resume once one of them merges or closes
         }
     }
@@ -114,11 +118,6 @@ async fn develop(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &Ha
         handed += outcome.handed;
     }
     Ok(handed)
-}
-
-/// Whether the owner's login already has `limit` open pull requests among `pulls`.
-pub(crate) fn at_open_pr_limit(pulls: &[::hagency::issue_watch::PullRequest], login: &str, limit: u32) -> bool {
-    pulls.iter().filter(|pr| pr.author.eq_ignore_ascii_case(login)).count() >= limit as usize
 }
 
 /// Who holds an issue, as this Agent sees it.
@@ -182,18 +181,20 @@ async fn holder_of(worker: &Worker<'_>, entry: &OwnerRules, comments: &[Comment]
 /// Reviewer or maintainer: one loop step per other person's ready pull request.
 async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<(), String> {
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, &entry.repo, worker.token).await.map_err(|e| e.to_string())?;
-    let maintainer = entry.role == Role::Maintainer;
-    let trusted = |author: &str| !maintainer || entry.trusted_authors.iter().any(|t| t == "*" || t.eq_ignore_ascii_case(author));
-    let picks: Vec<_> = others_ready_pulls(&pulls, login, entry.since).into_iter().filter(|pr| trusted(&pr.author)).collect();
+    let trusted = |author: &str| entry.trusted_authors.iter().any(|t| t == "*" || t.eq_ignore_ascii_case(author));
+    let picks = others_ready_pulls(&pulls, login, entry.since);
     if picks.is_empty() {
         return Ok(());
     }
-    // Read with this owner's own token, never cached across owners.
-    let permission = if maintainer { fetch_permission(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.ok() } else { None };
+    // Merging follows the owner's own GitHub permission, read with the
+    // owner's own token and never cached across owners.
+    let permission = fetch_permission(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.ok();
+    let can_merge = review_loop::can_merge(permission.as_deref());
     let agent = puppet(worker.agent)?;
     let io = LiveLoop::new(worker, &entry.room_id)?;
-    let ctx = LoopCtx { agent: &agent, maintainer, permission: permission.as_deref() };
     for pr in picks {
+        // Anyone's pull request is reviewed; only a trusted author's goes on to a merge.
+        let ctx = LoopCtx { agent: &agent, maintainer: can_merge && trusted(&pr.author), permission: permission.as_deref() };
         review_loop::advance(&io, &review_loop::target_of(&entry.repo, pr), &ctx).await?;
     }
     Ok(())
@@ -231,19 +232,5 @@ impl LoopIo for LiveLoop<'_> {
     }
     fn paused(&self) -> bool {
         crate::hagency::kill_switch::paused_here(&self.agent_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ::hagency::issue_watch::PullRequest;
-
-    #[test]
-    fn the_open_pull_request_limit_counts_only_the_owner_login() {
-        let pr = |author: &str| PullRequest { number: 1, url: String::new(), draft: false, head_sha: String::new(), author: author.into(), created_at: 0 };
-        let pulls = [pr("Anna"), pr("betty"), pr("anna")];
-        assert!(super::at_open_pr_limit(&pulls, "anna", 2));
-        assert!(!super::at_open_pr_limit(&pulls, "anna", 3));
-        assert!(!super::at_open_pr_limit(&pulls, "carl", 1));
     }
 }

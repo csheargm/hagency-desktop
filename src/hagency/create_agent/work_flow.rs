@@ -106,7 +106,7 @@ impl CreateAgentDialog {
 }
 
 fn report(error: String) {
-    let message = crate::i18n::format("The agent was created, but its repositories were not saved: {0}. Add them under Repositories and roles in the Agent panel.", &[("0", error)]);
+    let message = crate::i18n::format("The agent was created, but its repositories were not saved: {0}. Add them under Repositories in the Agent panel.", &[("0", error)]);
     enqueue_popup_notification(message, PopupKind::Error, Some(SAVE_FAILED_SECS));
 }
 

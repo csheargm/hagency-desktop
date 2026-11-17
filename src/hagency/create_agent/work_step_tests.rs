@@ -21,38 +21,30 @@ fn draft(repos: &str) -> WorkDraft {
 }
 
 #[test]
-fn an_empty_step_is_skipped_and_the_role_defaults_to_developer() {
+fn an_empty_step_is_skipped_and_lines_are_repositories_only() {
     assert!(draft("  \n ").wanted().unwrap().is_empty());
-    let wanted = draft("acme/app; acme/docs reviewer\nacme/x maintainer").wanted().unwrap();
-    assert_eq!(wanted.iter().map(|w| w.role).collect::<Vec<_>>(), [Role::Developer, Role::Reviewer, Role::Maintainer]);
-}
-
-#[test]
-fn bad_lines_are_refused_before_github_is_asked() {
-    for bad in ["acme", "acme/app boss", "acme/app developer all", "acme/app; ACME/app reviewer"] {
+    assert_eq!(draft("acme/app; acme/docs\nacme/x").wanted().unwrap().len(), 3);
+    for bad in ["acme", "acme/app maintainer", "acme/app; ACME/app"] {
         assert!(draft(bad).wanted().is_err(), "{bad}");
     }
 }
 
 #[tokio::test]
-async fn every_repository_must_be_readable_and_maintainer_needs_merge_rights() {
-    let ok = check(&anna(), &draft("acme/app maintainer; acme/docs reviewer").wanted().unwrap()).await.unwrap();
-    assert_eq!(ok.len(), 2);
+async fn every_repository_must_be_readable_and_merge_rights_are_reported_not_required() {
+    let ok = check(&anna(), &draft("acme/app; acme/docs").wanted().unwrap()).await.unwrap();
+    assert!(ok[0].contains("can merge") && !ok[1].contains("can merge"), "{ok:?}");
     let missing = check(&anna(), &draft("acme/app; acme/secret").wanted().unwrap()).await.unwrap_err();
     assert!(missing.contains("acme/secret") && !missing.contains("acme/app"), "{missing}");
-    let no_merge = check(&anna(), &draft("acme/docs maintainer").wanted().unwrap()).await.unwrap_err();
-    assert!(no_merge.contains("merge rights") && no_merge.contains("read"), "{no_merge}");
 }
 
 #[test]
-fn limits_land_on_developer_entries_of_the_same_work_list_the_panel_edits() {
-    let mut step = draft("acme/app; acme/docs reviewer");
+fn limits_land_on_the_same_work_list_the_panel_edits() {
+    let mut step = draft("acme/app; acme/docs");
     step.issues_per_day = "2".into();
     let work = step.entries(&step.wanted().unwrap(), "!dm:s", 50).unwrap();
     assert_eq!((work[0].issues_per_day, work[0].open_prs, work[0].room_id.as_str(), work[0].since), (Some(2), Some(DEFAULT_OPEN_PRS), "!dm:s", 50));
-    assert_eq!((work[1].issues_per_day, work[1].open_prs), (None, None), "a reviewer claims nothing");
-    // The panel's text round-trips what the step saved.
     let text = crate::hagency::issue_watch::work_lines::render(&work);
+    assert!(!text.contains("maintainer"), "no role in the panel text: {text}");
     assert_eq!(crate::hagency::issue_watch::work_lines::parse(&text, "!dm:s", &work, 99).unwrap(), work);
     for bad in ["0", "101", "lots"] {
         step.open_prs = bad.into();

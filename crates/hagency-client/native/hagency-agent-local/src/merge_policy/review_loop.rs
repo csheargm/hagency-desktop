@@ -65,9 +65,6 @@ pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, merger: &str, 
 /// owner's rules and the repository's file; each can only tighten).
 pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, merger: &str, source: &impl PrSource) -> Option<Decision> {
     let judged = super::work::judged(ledger, merger, command, repo, view, source).await?;
-    if judged.review_only {
-        return Some(Decision::NeedsHuman("this Agent does not maintain this repository".into()));
-    }
     if let Some(reason) = judged.author_reason {
         return Some(Decision::NeedsHuman(reason));
     }

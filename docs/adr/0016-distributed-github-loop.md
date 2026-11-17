@@ -1,6 +1,9 @@
 # ADR 0016: Distributed GitHub loop (work list, claims, maintainer merges)
 
 Status: proposed; first milestone implemented on `feat/auto-loop-review`.
+Amended by ADR 0017: there are no roles any more (every Agent fixes and
+reviews; merging follows the owner's GitHub permission), and capability
+cards are dropped. The role text below is kept as history.
 Design: `evaluation/design-distributed-github-loop.md` (Chris Xie, 2026-11-16).
 
 ## Context

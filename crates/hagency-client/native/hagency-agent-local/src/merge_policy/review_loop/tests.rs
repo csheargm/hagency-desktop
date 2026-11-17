@@ -139,11 +139,14 @@ async fn a_trusted_reviewers_github_approval_counts_only_on_the_exact_head() {
 }
 
 #[tokio::test]
-async fn two_repositories_with_different_roles_are_judged_separately() {
+async fn an_old_stored_role_is_ignored_and_each_repository_keeps_its_own_rules() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer), rules(B, Role::Reviewer)]);
     let in_b = Src { repo: B, ..Src::new(vec![file("src/a.rs", 1)]) };
-    assert_eq!(review_then_merge(&mut ledger, temp.path(), &in_b).await, (Some(true), None), "a reviewer's review skips the card, its merge never does");
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &in_b).await, (Some(true), Some(true)), "ADR 0017: no roles; GitHub's permission decides the merge");
+    let fresh = tempfile::tempdir().unwrap();
+    let mut docs_only = anna(fresh.path(), vec![rules(A, Role::Maintainer), OwnerRules { any_path: false, ..rules(B, Role::Reviewer) }]);
+    assert_eq!(review_then_merge(&mut docs_only, fresh.path(), &in_b).await, (Some(true), None), "B's docs-only rules still ask for a code merge");
     let in_a = Src::new(vec![file("src/a.rs", 1)]);
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &in_a).await, (Some(true), Some(true)));
     assert!(ledger.set_work(OWNER, "anna", vec![rules(A, Role::Maintainer), rules("CSheargm/Hagency-Demo-Sandbox", Role::Reviewer)]).is_err(), "a repository once");
@@ -207,9 +210,6 @@ async fn gpt_review_fixes_hold() {
         let line = format!("gh pr review 7 --repo {A} --approve -b \"{body}\"");
         assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line, temp.path(), "anna"), "rv", 11, &src).await, None, "{body}");
     }
-    // An untrusted author's pull request gets no card-free approval.
-    let mallory = Src { author: "mallory", ..Src::new(vec![file("src/a.rs", 1)]) };
-    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &mallory).await, None);
     // Request changes withdraws an earlier approval.
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await, Some(true));
     ledger.settle_agent_review("rv", true).unwrap();
@@ -271,4 +271,14 @@ fn the_owner_set_daily_limit_is_the_smallest_on_the_list_and_bad_limits_are_refu
     for bad in [Some(0), Some(MAX_WORK_LIMIT + 1)] {
         assert!(OwnerRules { open_prs: bad, ..rules(A, Role::Developer) }.validate().is_err());
     }
+}
+
+#[tokio::test]
+async fn anyone_may_be_reviewed_but_an_untrusted_author_is_never_merged() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Developer)]);
+    let mallory = Src { author: "mallory", ..Src::new(vec![file("src/a.rs", 1)]) };
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rm", 11, &mallory).await, Some(true));
+    ledger.settle_agent_review("rm", true).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mm", 11, &mallory).await, None);
 }

@@ -109,6 +109,7 @@ async fn fake_github() -> String {
                 (true, "/user") => ("200 OK", r#"{"login":"csheargm"}"#),
                 (true, "/repos/csheargm/hagency-desktop") => ("200 OK", r#"{"permissions":{"admin":true,"push":true,"pull":true}}"#),
                 (true, "/repos/hagency-org/hagency-desktop") => ("200 OK", r#"{"permissions":{"push":false,"pull":true}}"#),
+                (true, p) if p.starts_with("/search/issues?q=repo:a/b+is:pr+is:open+author:csheargm") => ("200 OK", r#"{"total_count":140,"items":[]}"#),
                 _ => ("404 Not Found", r#"{"message":"Not Found"}"#),
             };
             let reply = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -144,4 +145,24 @@ fn the_highest_held_permission_is_named_like_the_collaborator_endpoint() {
     assert_eq!(highest_permission(&body(serde_json::json!({"admin": true, "push": true, "pull": true}))), "admin");
     assert_eq!(highest_permission(&body(serde_json::json!({"pull": true}))), "read");
     assert_eq!(highest_permission(&serde_json::json!({"full_name": "a/b"})), "read", "a public repository read without permissions");
+}
+
+#[tokio::test]
+async fn the_create_step_permission_read_names_merge_rights_and_a_404_is_none() {
+    let api = fake_github().await;
+    let token = Token::parse(TOKEN).unwrap();
+    let client = reqwest::Client::new();
+    assert_eq!(super::check::permission(&client, &api, &token, "csheargm/hagency-desktop").await.unwrap().as_deref(), Some("admin"));
+    assert_eq!(super::check::permission(&client, &api, &token, "hagency-org/hagency-desktop").await.unwrap().as_deref(), Some("read"));
+    assert_eq!(super::check::permission(&client, &api, &token, "csheargm/private").await.unwrap(), None);
+    let bad = Token::parse("github_pat_WRONG").unwrap();
+    assert!(super::check::permission(&client, &api, &bad, "csheargm/hagency-desktop").await.is_err(), "a refused token is an error, not a missing repository");
+}
+
+#[tokio::test]
+async fn open_pull_requests_are_counted_past_the_first_page() {
+    let api = fake_github().await;
+    let count = crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "csheargm", TOKEN).await.unwrap();
+    assert_eq!(count, 140);
+    assert!(crate::issue_watch::fetch_open_pr_count(&reqwest::Client::new(), &api, "a/b", "bad login", TOKEN).await.is_err());
 }

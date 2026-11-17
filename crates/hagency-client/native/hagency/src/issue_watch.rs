@@ -52,6 +52,18 @@ pub async fn fetch_permission(client: &Client, api: &str, repo: &str, login: &st
     parse_permission(&get(client, &format!("{api}/repos/{repo}/collaborators/{login}/permission"), token).await?)
 }
 
+/// How many pull requests `login` has open in `repo`, from GitHub's search
+/// (one count, however many pull requests the repository has open).
+pub async fn fetch_open_pr_count(client: &Client, api: &str, repo: &str, login: &str, token: &str) -> Result<u64, FetchError> {
+    pulls_url(api, repo)?; // refuses anything but owner/name
+    if login.is_empty() || !login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(FetchError::Parse(format!("unexpected GitHub login `{login}`")));
+    }
+    let body = get(client, &format!("{api}/search/issues?q=repo:{repo}+is:pr+is:open+author:{login}&per_page=1"), token).await?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    value["total_count"].as_u64().ok_or_else(|| FetchError::Parse("no total_count in the search reply".into()))
+}
+
 /// All of an issue's comments, oldest first, following full pages up to the
 /// engine's page cap: a claim may sit beyond the first page.
 pub async fn fetch_comments(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<Vec<Comment>, FetchError> {

@@ -290,7 +290,9 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
         return Some(false);
     }
     let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
-    if judged.policies().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
+    let merge = command.kind == Kind::Merge;
+    let scoped: Vec<&super::MergePolicy> = if merge { judged.policies().collect() } else { judged.review_policies().collect() };
+    if scoped.iter().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
         return Some(false);
     }
     // An approval is public and counts toward a merge, so CI must pass for
@@ -301,7 +303,7 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
         // still current, and (under the owner's rules) of a trusted author.
         Kind::Review => {
             let bound = review_names_head(&command.body, &view.head_sha);
-            return Some(bound && judged.author_reason.is_none() && judged.policies().all(|policy| super::ci_reason(policy, &view.facts).is_none()));
+            return Some(bound && scoped.iter().all(|policy| super::ci_reason(policy, &view.facts).is_none()));
         }
         Kind::Merge => {}
     }
