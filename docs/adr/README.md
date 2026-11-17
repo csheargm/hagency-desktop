@@ -17,3 +17,5 @@ implemented. An ADR is not evidence that a feature has shipped.
 | [0012](0012-owner-daemon-shared-dashboard.md) | Implemented; runtime and numerical UX gates passed; manual VoiceOver open; standalone app removed by Client ADR-192 | Independent owner daemon, shared standalone/embedded dashboard, coding-plan telemetry and UX above 95/100 |
 | [0016](0016-distributed-github-loop.md) | Proposed; first milestone implemented | Distributed GitHub loop: owner work list (developer/reviewer/maintainer), GitHub claims, owner-side maintainer merge rules |
 | [0018](0018-ollama-runtime-caps.md) | Accepted | Ollama server endpoints are http only; usage caps live server-side for hosted Agents |
+| [0019](0019-agents-know-and-share-watches.md) | Accepted | Agents know their own watches; room_watches shares only this room's watches |
+| [0020](0020-issue-loop-tracker.md) | Accepted; implemented | Issue loop tracker: per-issue state, retries with backoff, PR follow-through to review and merge, restart-safe |

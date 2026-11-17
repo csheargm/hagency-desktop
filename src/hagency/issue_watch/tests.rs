@@ -100,9 +100,10 @@ fn status_lines_say_what_happened() {
 #[test]
 fn a_retried_issue_reuses_its_transaction_id() {
     use super::live::handoff_txn_id;
-    assert_eq!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("a", "acme/app", 7), "send ok + save lost: the retry is deduplicated");
-    assert_ne!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("a", "acme/app", 8));
-    assert_ne!(handoff_txn_id("a", "acme/app", 7), handoff_txn_id("b", "acme/app", 7));
+    assert_eq!(handoff_txn_id("a", "acme/app", 7, 1), handoff_txn_id("a", "acme/app", 7, 1), "send ok + save lost: the retry is deduplicated");
+    assert_ne!(handoff_txn_id("a", "acme/app", 7, 1), handoff_txn_id("a", "acme/app", 8, 1));
+    assert_ne!(handoff_txn_id("a", "acme/app", 7, 1), handoff_txn_id("b", "acme/app", 7, 1));
+    assert_ne!(handoff_txn_id("a", "acme/app", 7, 1), handoff_txn_id("a", "acme/app", 7, 2), "a retry is a new message");
 }
 
 #[test]

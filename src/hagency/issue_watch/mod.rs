@@ -11,6 +11,10 @@ mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;
 mod review_loop;
+mod tracker;
+mod tracker_live;
+#[cfg(test)]
+mod tracker_tests;
 mod work;
 mod work_slots;
 pub mod work_lines;
@@ -123,13 +127,13 @@ async fn check_all(epoch: u64, client: &Client) {
     for agent in &agents {
         let Some(id) = agent["id"].as_str() else { continue };
         // Bounded: one Agent whose host does not answer must not stop every later check.
-        let checked = tokio::time::timeout(CHECK_TIMEOUT, check_agent(epoch, &service, client, agent)).await
+        let checked = tokio::time::timeout(CHECK_TIMEOUT, check_agent(epoch, &service, client, agent, &agents)).await
             .unwrap_or_else(|_| Err(crate::i18n::tr("No answer from this device's Agent host").to_owned()));
         if let Err(error) = &checked {
             makepad_widgets::log!("WARN issue_watch_check_failed agent={id}: {error}");
         }
         let line = match checked {
-            Ok(outcome) => outcome.map(|outcome| outcome_line(&now(), &outcome)),
+            Ok(outcome) => outcome.map(|(outcome, tracked)| with_tracked(outcome_line(&now(), &outcome), &tracked)),
             Err(error) => Some(failed_line(&now(), &error)),
         };
         report(epoch, id, line);
@@ -146,8 +150,8 @@ fn report(epoch: u64, agent_id: &str, line: Option<String>) {
     Cx::post_action(IssueWatchChecked);
 }
 
-/// One Agent's check; `Ok(None)` while its watch is Off.
-async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Value) -> Result<Option<Outcome>, String> {
+/// One Agent's check and the tracker's status parts; `Ok(None)` while its watch is Off.
+async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Value, peers: &[Value]) -> Result<Option<(Outcome, Vec<String>)>, String> {
     let id = agent["id"].as_str().unwrap_or_default();
     let saved = live::saved(service, id, None).await?;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
@@ -156,10 +160,11 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
         return Ok(None);
     }
     let token = github_token(id).await?;
-    let mut worked = work::run(&work::Worker { service, client, agent, token: &token, epoch }, &saved).await;
+    let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
+    let mut worked = work::run(&worker, &saved).await;
     worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
     if watch.setting.mode == WatchMode::Off {
-        return Ok(Some(Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }));
+        return Ok(Some((Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }, worked.tracked)));
     }
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
     let seen: HashSet<i64> = saved["issueSeen"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
@@ -168,9 +173,15 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let live = live::Live::new(service, agent, &watch, auto_merge, epoch)?;
     let mut outcome = handoff::hand_off(&live, &picks).await;
     outcome.handed += worked.handed;
-    let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).collect();
+    // Follow-through on earlier hand-offs (ADR 0020), from this check's snapshot.
+    let followed = if tracker_live::on_work_list(&saved, &watch.setting.repo) {
+        tracker::Followups::default() // the work list follows it, with its claims
+    } else {
+        tracker_live::follow_repo(&worker, &tracker_live::Watched { watch: &watch, entry: None, open_issues: &issues, seen: &seen }, &saved).await
+    };
+    let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).chain(followed.errors).collect();
     outcome.error = (!errors.is_empty()).then(|| errors.join(" · "));
-    Ok(Some(outcome))
+    Ok(Some((outcome, worked.tracked.into_iter().chain(followed.lines).collect())))
 }
 
 /// The GitHub token the watcher reads `agent_id`'s repository with: the
@@ -211,6 +222,10 @@ pub(crate) fn outcome_line(time: &str, outcome: &Outcome) -> String {
         Some(error) => format!("{line} · {error}"),
         None => line,
     }
+}
+/// The check's line, then each tracked issue's part: "… · #33 retrying (2/3)".
+pub(crate) fn with_tracked(line: String, tracked: &[String]) -> String {
+    std::iter::once(line).chain(tracked.iter().cloned()).collect::<Vec<_>>().join(" · ")
 }
 pub(crate) fn failed_line(time: &str, error: &str) -> String {
     crate::i18n::format("Last check {time} failed: {error}", &[("time", time.to_owned()), ("error", error.to_owned())])
