@@ -32,6 +32,14 @@ impl HagencyPanel {
         self.sync_navigation(cx);
     }
 
+    /// Opens the Agent an `OpenAgent` / `OpenAgentSettings` asked for, on the tab it asked for.
+    pub(super) fn open_wanted_agent_panel(&mut self, cx: &mut Cx, index: usize) {
+        self.open_agent_panel(cx, index);
+        if std::mem::take(&mut self.wanted_agent_settings) {
+            self.view.widget(cx, ids!(agent_panel)).as_agent_panel().show_settings(cx);
+        }
+    }
+
     /// Back from an Agent opened from My Agents: close management so the
     /// Hagency app (still on My Agents) shows again. False means the usual
     /// Back to the Local agents list.
@@ -133,6 +141,27 @@ mod tests {
         panel.open_agent_panel(&mut cx, 0);
         let emitted = cx.capture_actions(|cx| assert!(!panel.leave_for_my_agents(cx)));
         assert!(emitted.is_empty());
+    }
+
+    /// The user flow: Chats menu -> Settings in an Agent's private chat ->
+    /// `OpenAgentSettings` -> once the Agents list arrives, the panel shows
+    /// that Agent on its Settings tab; a later plain open is on Identity again.
+    #[test]
+    fn open_agent_settings_opens_the_panel_on_settings() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut panel = panel(&mut cx);
+        panel.identity = "owner".into();
+        panel.set_page(&mut cx, Page::Agents);
+        // What `action(OpenAgentSettings {agent_id: "a"})` records before the listing.
+        (panel.wanted_agent, panel.wanted_agent_settings, panel.back_to_my_agents) = (Some("a".into()), true, true);
+        panel.apply(&mut cx, Target::Agents, &json!({"agents": [{"id": "a", "displayName": "yue-claude"}], "projects": []}));
+        let inner = panel.view.widget(&mut cx, ids!(agent_panel));
+        assert!(inner.visible(), "the Agent's panel opens");
+        assert!(inner.view(&mut cx, ids!(settings_page)).visible(), "on its Settings tab");
+        assert!(!inner.view(&mut cx, ids!(identity_page)).visible());
+        assert!(!panel.wanted_agent_settings, "the tab request is used once");
+        panel.open_wanted_agent_panel(&mut cx, 0);
+        assert!(panel.view.widget(&mut cx, ids!(agent_panel)).view(&mut cx, ids!(identity_page)).visible());
     }
 
     /// Regression: the detail page's own issue-watch/GitHub blocks were looked

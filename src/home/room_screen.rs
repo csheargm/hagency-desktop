@@ -4250,6 +4250,18 @@ impl RoomScreen {
         };
         if dismiss { self.set_desktop_chat_info_visible(cx, false); }
     }
+    // TODO(R4): room_screen.rs is over budget; the information pane's
+    // open/close/layout belongs in its own module beside info_panel_width.rs.
+    /// Opens the information pane on Overview when the Chats menu's Settings asked for this room.
+    fn open_requested_room_info(&mut self, cx: &mut Cx) {
+        let Some(room) = self.room_name_id.as_ref() else { return };
+        if !matches!(self.timeline_kind, Some(TimelineKind::MainRoom {..}))
+            || !super::chat_menu_routes::take_room_info_request(room.room_id()) { return; }
+        self.chat_info_requested = true;
+        for info in [ids!(desktop_chat_info), ids!(compact_chat_info)] {
+            self.view.mobile_chat_info(cx, info).show_overview(cx);
+        }
+    }
     fn info_panel_id(&self) -> &'static [LiveId] {
         if self.chat_info_inline {ids!(desktop_chat_info_panel)} else {ids!(compact_chat_info_panel)}
     }
@@ -4267,6 +4279,7 @@ impl RoomScreen {
     }
     fn layout_desktop_chat_info(&mut self, cx: &mut Cx, available: f64) {
         let desktop = self.view.view(cx, ids!(desktop_chat_header)).visible();
+        if desktop { self.open_requested_room_info(cx); }
         let inline = available >= 600.0;
         // Resizing down preserves the timeline and input; a narrow information
         // pane is opened only by an explicit click, never by room selection.
@@ -8593,6 +8606,10 @@ mod agent_chat_status_tests;
 #[path = "room_screen/upstream_fix_tests.rs"]
 mod upstream_fix_tests;
 
+#[cfg(test)]
+#[path = "room_screen/chat_menu_settings_tests.rs"]
+mod chat_menu_settings_tests;
+
 #[cfg(all(test, feature = "agent_chat"))]
 #[path = "room_screen/agent_selection_tests.rs"]
 mod agent_chat_selection_tests;
@@ -8794,7 +8811,7 @@ mod desktop_information_columns_tests {
         }
         assert!((right_edges[0]-right_edges[1]).abs()<1.0,"normal and condensed receipts share one right edge");
     }
-    fn screen() -> (Cx, RoomScreen) {
+    pub(super) fn screen() -> (Cx, RoomScreen) {
         let mut cx = Cx::new(Box::new(|_, _| {}));
         let screen = cx.with_vm(|vm| {
             makepad_widgets::script_mod(vm);
@@ -8807,7 +8824,7 @@ mod desktop_information_columns_tests {
         });
         (cx, screen)
     }
-    fn draw(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
+    pub(super) fn draw(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
         cx.redraw_all();
         screen.layout_desktop_chat_info(cx, width);
         let pass = DrawPass::new(cx); pass.set_size(cx, dvec2(1280.0, 900.0));

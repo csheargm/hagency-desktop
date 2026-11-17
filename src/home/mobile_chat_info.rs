@@ -1293,6 +1293,19 @@ impl MobileChatInfoRef {
             inner.load(cx, room);
         }
     }
+    // TODO(R4): over budget; this belongs with the tab split noted on `InfoTab`.
+    /// Shows the Overview tab (the Chats menu's Settings).
+    pub fn show_overview(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() { inner.select_tab(cx, InfoTab::Overview); }
+    }
+    #[cfg(test)]
+    pub(crate) fn select_members_for_test(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() { inner.select_tab(cx, InfoTab::Members); }
+    }
+    #[cfg(test)]
+    pub(crate) fn shows_overview_for_test(&self) -> bool {
+        self.borrow().is_some_and(|inner| inner.tab == InfoTab::Overview)
+    }
 
     pub fn clear(&self) {
         if let Some(mut inner) = self.borrow_mut() {

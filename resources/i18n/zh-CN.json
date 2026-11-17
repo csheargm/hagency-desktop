@@ -3617,5 +3617,8 @@
   "Removed {agent} from this room.": "已将 {agent} 移出此聊天室。",
   "Could not remove {agent}: {error}": "无法移出 {agent}：{error}",
   "{agent} is not added to this room, so there is nothing to remove here.": "{agent} 未加入此聊天室，无需移出。",
-  "The account changed before the removal ran. Nothing was removed.": "移出前账号已切换，未移出任何成员。"
+  "The account changed before the removal ran. Nothing was removed.": "移出前账号已切换，未移出任何成员。",
+  "Remove your private chat with this Agent from this device and clear its history here? You stay in the chat, so the Message button in the Agent's details opens it again. Messages remain on the server and other devices.": "从此设备移除你与此 Agent 的私聊并清除这里的记录？你仍留在私聊中，Agent 详情里的“消息”按钮可以再次打开它。服务器和其他设备上的消息将保留。",
+  "Leave your private chat with this Agent?": "离开你与此 Agent 的私聊？",
+  "Leaving \"{room}\" ends your private chat with this Agent. You cannot rejoin it afterwards, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.": "离开“{room}”会结束你与此 Agent 的私聊。之后无法重新加入，Agent 的“消息”按钮也无法再打开它。\n\n如果只想从聊天列表中移除，请改用“删除聊天”：之后可用“消息”按钮找回。"
 }
