@@ -1,6 +1,7 @@
 //! What the hover card's buttons do: "View profile" uses the same routing
 //! as an avatar click ([`profile_route::open_in_side`]), and "Message" sends
-//! the same DM request as the profile panel's Message button.
+//! the same DM request as the profile panel's Message button. "Agent
+//! details" opens one of this account's own Agents in the agent panel.
 
 use makepad_widgets::Cx;
 
@@ -19,6 +20,9 @@ const NOTICE_SECS: f64 = 4.0;
 pub enum CardButton {
     ViewProfile,
     Message,
+    /// Only on this account's own Agents.
+    AgentDetails,
+    CopyId,
 }
 
 /// What a card button asks the app to do.
@@ -28,18 +32,24 @@ pub enum CardRequest {
     OpenProfile(UserProfilePaneInfo),
     /// Open (or offer to create) the DM, as the profile panel's Message does.
     Message(UserProfile),
+    /// Open the agent panel (Identity tab) for this owned Agent ID.
+    OpenAgent(String),
+    CopyId(String),
 }
 
-/// The request for `button` on the card showing `info` in `room_name`.
-pub fn request_for(button: CardButton, info: &UserProfileAndRoomId, room_name: String) -> CardRequest {
-    match button {
+/// The request for `button` on the card showing `info` in `room_name`;
+/// `own_agent` is the Agent ID when `info` is one of this account's Agents.
+pub fn request_for(button: CardButton, info: &UserProfileAndRoomId, room_name: String, own_agent: Option<&str>) -> Option<CardRequest> {
+    Some(match button {
         CardButton::ViewProfile => CardRequest::OpenProfile(UserProfilePaneInfo {
             profile_and_room_id: info.clone(),
             room_name,
             room_member: None,
         }),
         CardButton::Message => CardRequest::Message(info.user_profile.clone()),
-    }
+        CardButton::AgentDetails => CardRequest::OpenAgent(own_agent?.to_owned()),
+        CardButton::CopyId => CardRequest::CopyId(info.user_id.to_string()),
+    })
 }
 
 pub(super) fn dispatch(cx: &mut Cx, request: CardRequest) {
@@ -55,6 +65,11 @@ pub(super) fn dispatch(cx: &mut Cx, request: CardRequest) {
             // Ask for confirmation before creating a new DM room.
             allow_create: false,
         }),
+        CardRequest::OpenAgent(agent_id) => cx.action(crate::hagency::ui::HagencyAction::OpenAgent { agent_id }),
+        CardRequest::CopyId(user_id) => {
+            cx.copy_to_clipboard(&user_id);
+            enqueue_popup_notification(crate::i18n::tr("Matrix ID copied."), PopupKind::Success, Some(NOTICE_SECS));
+        }
     }
 }
 

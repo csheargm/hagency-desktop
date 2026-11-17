@@ -3785,6 +3785,8 @@ impl RoomScreen {
         info: UserProfilePaneInfo,
     ) {
         // TODO(R4): over budget; desktop profiles open in the right-hand region (see `profile_route`).
+        // One of our own Agents (avatar, name, @mention or member row) opens its agent panel.
+        if let Some(open) = crate::profile::profile_route::own_agent_click(&info.user_id) { cx.action(open); return; }
         if crate::profile::profile_route::open_in_side(cx, info.clone()) { return; }
         pane.set_info(cx, info);
         pane.show(cx);
@@ -7980,6 +7982,12 @@ impl Widget for Message {
                 }
             }
             _ => { }
+        }
+
+        // TODO(R4): over budget; the sender name hovers and clicks like its avatar (see `avatar_hover::name_hit`).
+        let (name, avatar) = (self.view.label(cx, ids!(content.username)), crate::shared::avatar::AvatarWidgetRefExt::as_avatar(&self.view.widget(cx, ids!(profile.avatar))));
+        if let Some(info) = crate::shared::avatar_hover::name_hit(cx, event, name.area(), name.widget_uid(), || avatar.profile_info()) {
+            cx.widget_action(avatar.widget_uid(), crate::profile::user_profile::ShowUserProfileAction::ShowUserProfile(info));
         }
 
         // Handle clicks on the thread summary shown beneath a thread-root message.

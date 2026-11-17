@@ -1,7 +1,9 @@
 //! A person's or an Agent's profile, hosted as a tab in the right-hand
 //! workspace region. It reuses the desktop `UserProfileView` the room's
 //! sliding pane shows, with the same fill and actions, plus the user's
-//! server. An Agent's profile is read-only apart from Message and Copy Link.
+//! server. An Agent's profile is read-only apart from Message and Copy Link;
+//! it says whose Agent it is, its runtime and status ([`super::agent_facts`]),
+//! and offers "Agent details" on this account's own Agents.
 
 use makepad_widgets::*;
 use crate::{
@@ -45,10 +47,12 @@ impl Widget for ProfileSidePanel {
             && self.info.as_mut().is_some_and(|info| profile_view_fill::refresh_info(cx, info))
         { self.view.redraw(cx); }
         let Event::Actions(actions) = event else { return };
-        if actions.iter().any(|a| a.downcast_ref::<super::own_agents::OwnAgentsChanged>().is_some())
+        if actions.iter().any(|a| a.downcast_ref::<super::own_agents::OwnAgentsChanged>().is_some()
+            || a.downcast_ref::<super::agent_facts::AgentFactsChanged>().is_some())
             && let Some(user_id) = self.info.as_ref().map(|i| i.user_id.clone())
         {
             self.show_agent_settings(cx, &user_id);
+            self.fill_details(cx);
             self.view.redraw(cx);
         }
         if actions.iter().any(|a| a.downcast_ref::<UserVerificationStatesUpdated>().is_some()) {
@@ -85,9 +89,6 @@ impl ProfileSidePanel {
         }
         info.avatar_state.update_from_cache(cx);
         let route = profile_route::route_for(&info.user_id);
-        let details = self.view.label(cx, ids!(user_profile_view.profile_details));
-        details.set_text(cx, &profile_route::detail_line(&info.user_id, route));
-        details.set_visible(cx, true);
         // Jumping to a read receipt needs the room's timeline, which is not here.
         self.view.button(cx, ids!(jump_to_read_receipt_button)).set_visible(cx, false);
         let agent = route == ProfileRoute::Agent;
@@ -98,10 +99,27 @@ impl ProfileSidePanel {
         self.view.user_rooms_in_common(cx, ids!(user_profile_view.rooms_in_common)).load(cx, info.user_id.clone());
         self.route = Some(route);
         self.info = Some(info);
+        self.fill_details(cx);
         self.view.redraw(cx);
     }
 
-    /// "Agent settings" for this account's own Agents; an unknown Agent asks
+    /// The server line; for an Agent, first whose it is, its runtime and status.
+    fn fill_details(&mut self, cx: &mut Cx) {
+        let Some(info) = self.info.as_ref() else { return };
+        let route = profile_route::route_for(&info.user_id);
+        let mut lines = Vec::new();
+        if route == ProfileRoute::Agent {
+            let facts = super::agent_facts::facts(&info.user_id, &info.room_id);
+            let owner = facts.owner.as_ref().map(|owner| super::agent_facts::owner_name(cx, owner, Some(&info.room_id)));
+            lines = super::agent_facts::fact_lines(&facts, owner.as_deref(), true);
+        }
+        lines.push(profile_route::detail_line(&info.user_id, route));
+        let details = self.view.label(cx, ids!(user_profile_view.profile_details));
+        details.set_text(cx, &lines.join("\n"));
+        details.set_visible(cx, true);
+    }
+
+    /// "Agent details" for this account's own Agents; an unknown Agent asks
     /// for the listing once and shows the button when it arrives.
     fn show_agent_settings(&mut self, cx: &mut Cx, user_id: &matrix_sdk::ruma::UserId) {
         let own = super::own_agents::agent_for(user_id).is_some();
@@ -203,9 +221,10 @@ mod tests {
         let mut panel = panel(&mut cx);
         panel.show(&mut cx, info("@_hagency_agt_1:example.org"));
         assert_eq!(panel.route, Some(ProfileRoute::Agent));
-        assert_eq!(panel.view.label(&mut cx, ids!(user_profile_view.profile_details)).text(), "Agent on example.org");
+        assert_eq!(panel.view.label(&mut cx, ids!(user_profile_view.profile_details)).text(),
+            "Owner not shared in this room\nSettings are visible only to its owner\nAgent on example.org");
         assert!(!panel.view.button(&mut cx, ids!(profile_moments)).visible());
         assert!(!panel.view.view(&mut cx, ids!(desktop_moderation)).visible());
-        assert!(!panel.view.button(&mut cx, ids!(open_agent_panel_button)).visible(), "an Agent not listed as ours has no Agent settings");
+        assert!(!panel.view.button(&mut cx, ids!(open_agent_panel_button)).visible(), "an Agent not listed as ours has no Agent details");
     }
 }

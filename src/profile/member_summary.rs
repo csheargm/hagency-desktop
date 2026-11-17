@@ -51,14 +51,15 @@ pub fn membership_label(state: &MembershipState) -> &'static str {
     })
 }
 
-/// The role line for a power-level `role`; an Agent without moderation
-/// rights is shown as an Agent rather than a standard user.
+/// The role line for a power-level `role`. An Agent without moderation
+/// rights has no role line: "Agent" is not a Matrix role (ADR 0017), and its
+/// Agent tag already says what it is.
 pub fn role_label(role: RoomMemberRole, agent: bool) -> &'static str {
     tr(match role {
         RoomMemberRole::Creator => "Role: Creator",
         RoomMemberRole::Administrator => "Role: Admin",
         RoomMemberRole::Moderator => "Role: Moderator",
-        RoomMemberRole::User if agent => "Role: Agent",
+        RoomMemberRole::User if agent => return "",
         RoomMemberRole::User => "Role: Standard User",
     })
 }
@@ -83,12 +84,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roles_follow_power_levels_and_plain_agents_read_as_agents() {
+    fn roles_follow_power_levels_and_plain_agents_have_no_role_line() {
         assert_eq!(role_label(RoomMemberRole::Creator, false), "Role: Creator");
         assert_eq!(role_label(RoomMemberRole::Administrator, false), "Role: Admin");
         assert_eq!(role_label(RoomMemberRole::Moderator, true), "Role: Moderator");
         assert_eq!(role_label(RoomMemberRole::User, false), "Role: Standard User");
-        assert_eq!(role_label(RoomMemberRole::User, true), "Role: Agent");
+        assert_eq!(role_label(RoomMemberRole::User, true), "", "no made-up Agent role");
     }
 
     #[test]

@@ -591,6 +591,11 @@ impl Avatar {
 }
 
 impl AvatarRef {
+    /// The user this avatar shows, if it is a clickable user avatar.
+    pub fn profile_info(&self) -> Option<UserProfileAndRoomId> {
+        self.borrow().and_then(|inner| inner.info.clone())
+    }
+
     /// Displays a room photo, a member mosaic, or the room's initial.
     pub fn show_room_avatar(&self, cx: &mut Cx, avatar: &FetchedRoomAvatar) {
         match avatar {

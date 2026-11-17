@@ -111,6 +111,23 @@ pub fn dismiss(cx: &mut Cx) {
     crate::profile::hover_card::with_card(cx, |cx, card| card.dismiss(cx));
 }
 
+/// The sender name beside an avatar acts like the avatar: hovering it shows
+/// the same card, and a tap returns `info` so the caller opens the profile.
+/// `info` is read only on a hit, so other events cost nothing.
+pub fn name_hit(cx: &mut Cx, event: &makepad_widgets::Event, name: makepad_widgets::Area, uid: WidgetUid, info: impl FnOnce() -> Option<UserProfileAndRoomId>) -> Option<UserProfileAndRoomId> {
+    use makepad_widgets::Hit;
+    match event.hits(cx, name) {
+        Hit::FingerHoverIn(_) => if let Some(info) = info() { anchor_entered(cx, uid, &info, name.rect(cx)) },
+        Hit::FingerHoverOut(_) => anchor_left(cx, uid),
+        Hit::FingerUp(fue) if fue.is_over && fue.is_primary_hit() && fue.was_tap() => {
+            dismiss(cx);
+            return info();
+        }
+        _ => {}
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HoverEffect as E, HoverInput as I, HoverPhase as P, *};
