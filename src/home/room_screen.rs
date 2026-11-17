@@ -1340,6 +1340,8 @@ pub struct RoomScreen {
     #[rust] info_width: Option<f64>,
     /// The width a drag of the panel's edge started from, while one is under way.
     #[rust] info_drag_from: Option<f64>,
+    /// Whether the edge moved during the current press (a click saves nothing).
+    #[rust] info_dragged: bool,
     /// The open or closed look last given to the room information toggle's icon; `None` until
     /// the first layout and after the widget tree is applied again. Patching the icon on every
     /// draw asks for another draw every time, so the window would never go idle.
@@ -2544,11 +2546,15 @@ impl RoomScreen {
                             && !tl.items.iter().any(|old| old.as_event().is_some_and(|prior| prior.event_id() == event.event_id()))
                     }).collect();
                     let membership_changed = !new_member_events.is_empty();
-                    // A leave or kick takes the member's row out of the information panel at once.
-                    let departed = new_member_events.iter().filter_map(|event| match event.content() {
-                        TimelineItemContent::MembershipChange(change) if crate::home::mobile_chat_info::is_departure(change.change()) => Some(change.user_id().to_owned()),
-                        _ => None,
-                    }).collect();
+                    // A live leave or kick takes the member's row out of the information
+                    // panel at once; the last change per member wins. Back-paginated
+                    // (non-append) history only triggers the re-read below.
+                    let membership = if is_append {
+                        new_member_events.iter().filter_map(|event| match event.content() {
+                            TimelineItemContent::MembershipChange(change) => Some((change.user_id().to_owned(), crate::home::mobile_chat_info::is_departure(change.change()))),
+                            _ => None,
+                        }).collect()
+                    } else {Vec::new()};
                     if membership_changed {
                         // The composer keeps its own member snapshot. Refresh it
                         // along with the information sidebar when people join,
@@ -2561,7 +2567,7 @@ impl RoomScreen {
                         cx.action(crate::home::mobile_chat_info::ChatMembershipChanged {
                             room_id: tl.kind.room_id().to_owned(),
                             epoch: crate::account_session::epoch(),
-                            departed,
+                            membership,
                         });
                     }
                     if new_items.is_empty() {

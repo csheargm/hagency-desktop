@@ -52,17 +52,23 @@ impl RoomScreen {
             .unwrap_or_default();
         let available = self.view.area().rect(cx).size.x;
         if let Some(dx) = drag {
-            let from = *self.info_drag_from.get_or_insert(self.info_width());
-            let width = dragged_width(from, dx, available);
-            if Some(width) != self.info_width {
-                self.info_width = Some(width);
-                self.view.redraw(cx);
+            // Start from the width on screen, which a narrow window clamps.
+            let from = *self.info_drag_from.get_or_insert(clamp_width(self.info_width(), available));
+            if dx != 0.0 {
+                self.info_dragged = true;
+                let width = dragged_width(from, dx, available);
+                if Some(width) != self.info_width {
+                    self.info_width = Some(width);
+                    self.view.redraw(cx);
+                }
             }
         }
         if released {
             self.info_drag_from = None;
-            if let Some(state) = scope.data.get_mut::<crate::app::AppState>() {
-                state.room_info_width = Some(clamp_width(self.info_width(), available));
+            // A press without a move keeps the saved preference.
+            if std::mem::take(&mut self.info_dragged)
+                && let Some(state) = scope.data.get_mut::<crate::app::AppState>() {
+                state.room_info_width = Some(self.info_width());
             }
         }
     }
@@ -79,6 +85,15 @@ mod tests {
         assert_eq!(clamp_width(2000.0, 1000.0), 600.0, "never wider than 60% of the room screen");
         assert_eq!(clamp_width(2000.0, 600.0), 360.0);
         assert_eq!(clamp_width(INFO_DEFAULT, 280.0), 280.0, "a tiny screen gives the overlay all it has");
+    }
+
+    /// GPT review: a saved 700 in a 600-point room shows 360; dragging
+    /// starts from there.
+    #[test]
+    fn a_drag_starts_from_the_clamped_width_on_screen() {
+        let from = clamp_width(700.0, 600.0);
+        assert_eq!(from, 360.0);
+        assert_eq!(dragged_width(from, 20.0, 600.0), 340.0);
     }
 
     #[test]

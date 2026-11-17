@@ -248,8 +248,9 @@ fn info_row(tab: InfoTab, members: MemberRows, choosing: bool, index: usize) -> 
 pub(crate) struct ChatMembershipChanged {
     pub room_id: OwnedRoomId,
     pub epoch: u64,
-    /// Members whose new timeline event took them out (left, kicked).
-    pub departed: Vec<OwnedUserId>,
+    /// Live membership changes in timeline order: `(member, left?)`
+    /// (left or kicked is `true`); empty for back-paginated history.
+    pub membership: Vec<(OwnedUserId, bool)>,
 }
 
 #[derive(Clone, Debug)]
@@ -421,6 +422,9 @@ pub struct MobileChatInfo {
     #[rust] services_expanded: bool,
     /// The member whose "⋯" menu is open, if any.
     #[rust] menu_member: Option<OwnedUserId>,
+    /// Members seen leaving this room since it was opened: a member read
+    /// that raced their departure must not show them again.
+    #[rust] recently_left: HashSet<OwnedUserId>,
     #[rust] ownership_unavailable: bool,
     #[rust]
     status: String,
@@ -554,6 +558,7 @@ impl MobileChatInfo {
     }
     // Refresh metadata without clearing an in-flight Agent invitation or its original key.
     fn fetch_info(&mut self, cx: &mut Cx, room: RoomNameId) {
+        if self.room.as_ref().is_none_or(|open| open.room_id() != room.room_id()) {self.recently_left.clear();}
         self.room = Some(room.clone());
         let epoch = crate::account_session::epoch();
         let Some(client) = get_client() else { return };
@@ -808,7 +813,7 @@ impl MobileChatInfo {
         self.request = 0;
         self.data = None;
         self.member_owners.clear();self.indented_members.clear();self.ownership_unavailable=false;
-        self.services_expanded = false;self.menu_member = None;
+        self.services_expanded = false;self.menu_member = None;self.recently_left.clear();
         self.status.clear();
         self.failed = false;
         self.choosing_notifications = false;
@@ -890,12 +895,15 @@ impl Widget for MobileChatInfo {
                 {
                     // The leave or kick is in the timeline: drop the row now,
                     // whatever the next member read says.
-                    self.drop_departed(cx, &update.departed);
+                    let departed = member_rows::note_membership(&mut self.recently_left, &update.membership);
+                    self.drop_departed(cx, &departed);
                     if self.pin_is_current() && let Some(room) = self.room.clone() { self.fetch_info(cx, room); }
                 }
                 if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
+                    && left.epoch == self.epoch && self.owner.as_ref() == Some(&left.owner)
                     && self.room.as_ref().is_some_and(|room| room.room_id() == &left.room_id)
                 {
+                    member_rows::note_membership(&mut self.recently_left, &[(left.user_id.clone(), true)]);
                     self.drop_departed(cx, std::slice::from_ref(&left.user_id));
                 }
                 if matches!(
@@ -930,6 +938,7 @@ impl Widget for MobileChatInfo {
                         match &loaded.result {
                             Ok(data) => {
                                 let mut data=data.clone();
+                                member_rows::remove_departed(&mut data.members, &self.recently_left.iter().cloned().collect::<Vec<_>>());
                                 self.indented_members=group_members(&mut data.members,&self.member_owners);
                                 self.data = Some(data);
                                 self.failed = false;
@@ -1369,8 +1378,8 @@ mod information_target_tests {
         assert!(agent_row.view(&mut cx,ids!(agent_badge)).visible());
         assert!(!agent_row.widget(&mut cx,ids!(member_more)).visible(),"no Remove without the power to kick");
         assert_eq!(info_rows(InfoTab::Members,MemberRows::of(&info.data.as_ref().unwrap().members,false),false),3,"two people and a closed Service accounts header");
-        let other_room=ChatMembershipChanged{room_id:OwnedRoomId::try_from("!other:s").unwrap(),epoch:info.epoch,departed:vec![agent.clone()]};
-        let kicked=ChatMembershipChanged{room_id:room,epoch:info.epoch,departed:vec![agent.clone()]};
+        let other_room=ChatMembershipChanged{room_id:OwnedRoomId::try_from("!other:s").unwrap(),epoch:info.epoch,membership:vec![(agent.clone(),true)]};
+        let kicked=ChatMembershipChanged{room_id:room,epoch:info.epoch,membership:vec![(agent.clone(),true)]};
         for (update, remaining) in [(other_room, 3), (kicked, 2)] {
             let actions=cx.capture_actions(|cx|cx.action(update));
             info.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::empty());

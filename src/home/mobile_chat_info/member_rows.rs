@@ -5,6 +5,7 @@
 //! The list is `data.members` in that order: [`services_last`] keeps the
 //! service accounts at the tail, so a list row maps to a member index with
 //! one offset for the section header.
+use std::collections::HashSet;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk_ui::timeline::MembershipChange;
 use crate::profile::user_profile::UserProfile;
@@ -84,6 +85,18 @@ pub(crate) fn is_departure(change: Option<MembershipChange>) -> bool {
         | MembershipChange::KnockRetracted | MembershipChange::KnockDenied))
 }
 
+/// Records live membership changes (`(member, left?)`, oldest first) in
+/// `left`, the members known to have left since the list was read: a later
+/// join forgets an earlier leave. Returns the members who left.
+pub(super) fn note_membership(left: &mut HashSet<OwnedUserId>, changes: &[(OwnedUserId, bool)]) -> Vec<OwnedUserId> {
+    for (member, departed) in changes {
+        if *departed { left.insert(member.clone()); } else { left.remove(member); }
+    }
+    let mut departed: Vec<_> = changes.iter().filter(|(member, _)| left.contains(member)).map(|(m, _)| m.clone()).collect();
+    departed.dedup();
+    departed
+}
+
 /// Takes the rows of members who left out of the list; returns whether any did.
 pub(super) fn remove_departed(members: &mut Vec<UserProfile>, departed: &[OwnedUserId]) -> bool {
     let before = members.len();
@@ -141,5 +154,17 @@ mod tests {
         assert!(remove_departed(&mut members, &[OwnedUserId::try_from("@_hagency_agt_01x:s").unwrap()]));
         assert_eq!(ids(&members), ["@alice:s"]);
         assert!(!remove_departed(&mut members, &[OwnedUserId::try_from("@bob:s").unwrap()]));
+    }
+
+    /// GPT review: a member read that raced the kick must not bring the row
+    /// back, and a later rejoin in the same batch must keep it.
+    #[test]
+    fn the_last_live_change_decides_and_a_rejoin_forgets_the_leave() {
+        let (yue, bob) = (OwnedUserId::try_from("@yue:s").unwrap(), OwnedUserId::try_from("@bob:s").unwrap());
+        let mut left = HashSet::new();
+        assert_eq!(note_membership(&mut left, &[(yue.clone(), true), (bob.clone(), true), (bob.clone(), false)]), [yue.clone()]);
+        assert!(left.contains(&yue) && !left.contains(&bob), "kept to filter a stale member read");
+        assert!(note_membership(&mut left, &[(yue.clone(), false)]).is_empty());
+        assert!(left.is_empty(), "re-added: shown again");
     }
 }

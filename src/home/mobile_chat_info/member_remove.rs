@@ -27,6 +27,21 @@ const RESULT_POPUP_SECONDS: f64 = 5.0;
 pub(crate) struct MemberLeft {
     pub room_id: OwnedRoomId,
     pub user_id: OwnedUserId,
+    /// The account and session that removed it; another one ignores this.
+    pub owner: OwnedUserId,
+    pub epoch: u64,
+}
+
+/// The account and session a confirmation was asked in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Pin { owner: OwnedUserId, epoch: u64 }
+impl Pin {
+    fn current() -> Option<Self> {
+        Some(Self { owner: crate::sliding_sync::current_user_id()?, epoch: crate::account_session::epoch() })
+    }
+    fn still_current(&self) -> bool {
+        Pin::current().as_ref() == Some(self) && !crate::sliding_sync::account_changing()
+    }
 }
 
 /// The members the signed-in account may remove (kick) from `room`.
@@ -74,8 +89,11 @@ pub(super) fn clicked(cx: &mut Cx, row: &WidgetRef, actions: &Actions, room: &Ro
     let Some(removal) = removal.filter(|_| row.button(cx, ids!(remove_member)).clicked(actions)) else { return false };
     match removal {
         Removal::Kick => cx.action(ModerationModalAction::Open(kick_request(room, profile))),
-        Removal::OwnAgent { agent_id } => cx.action(crate::app::ConfirmDeleteAction::Show(RefCell::new(Some(
-            confirm_unbind(room, profile, agent_id))))),
+        Removal::OwnAgent { agent_id } => match Pin::current() {
+            Some(pin) => cx.action(crate::app::ConfirmDeleteAction::Show(RefCell::new(Some(
+                confirm_unbind(room, profile, agent_id, pin))))),
+            None => report_unbind(profile.displayable_name(), Err(ACCOUNT_CHANGED.into()), None),
+        },
     }
     true
 }
@@ -87,7 +105,12 @@ fn kick_request(room: &RoomNameId, profile: &UserProfile) -> ModerationRequest {
     })
 }
 
-fn confirm_unbind(room: &RoomNameId, profile: &UserProfile, agent_id: String) -> ConfirmationModalContent {
+/// The error of a removal confirmed after the account or session changed.
+const ACCOUNT_CHANGED: &str = "matrix_account_changed";
+/// The error when the Agent has no room binding here to leave.
+const NOT_IN_ROOM: &str = "agent_not_in_room";
+
+fn confirm_unbind(room: &RoomNameId, profile: &UserProfile, agent_id: String, pin: Pin) -> ConfirmationModalContent {
     let name = profile.displayable_name().to_owned();
     let room_id = room.room_id().clone();
     let user_id = profile.user_id.clone();
@@ -98,9 +121,15 @@ fn confirm_unbind(room: &RoomNameId, profile: &UserProfile, agent_id: String) ->
         accept_button_text: Some(crate::i18n::tr("Remove").into()),
         cancel_button_text: None,
         on_accept_clicked: Some(Box::new(move |_cx| {
+            if !pin.still_current() {
+                report_unbind(&name, Err(ACCOUNT_CHANGED.into()), None);
+                return;
+            }
             crate::sliding_sync::spawn_async_task(async move {
-                let result = leave_binding(agent_id, room_id.clone()).await;
-                report_unbind(&name, result, MemberLeft { room_id, user_id });
+                let result = leave_binding(agent_id, room_id.clone(), &pin).await;
+                // A reply that lands in another session drops no row there.
+                let left = pin.still_current().then(|| MemberLeft { room_id, user_id, owner: pin.owner, epoch: pin.epoch });
+                report_unbind(&name, result, left);
             });
         })),
         on_cancel_clicked: None,
@@ -108,28 +137,38 @@ fn confirm_unbind(room: &RoomNameId, profile: &UserProfile, agent_id: String) ->
 }
 
 /// Leaves the Agent's binding for `room_id`, found in the Agent's status.
-async fn leave_binding(agent_id: String, room_id: OwnedRoomId) -> Result<(), String> {
+async fn leave_binding(agent_id: String, room_id: OwnedRoomId, pin: &Pin) -> Result<(), String> {
     use crate::hagency::model::{BindingAction, Command};
-    let account = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
-    let status = crate::host::hagency::local::Call::Status(agent_id.clone()).execute(&account).await?;
+    let status = crate::host::hagency::local::Call::Status(agent_id.clone()).execute(pin.owner.as_str()).await?;
     let rooms = crate::hagency::agent_panel::rooms::joined_rooms(&status);
     let binding_id = crate::hagency::agent_panel::rooms::open_room_binding(&rooms, Some(room_id.as_str()))
-        .ok_or_else(|| "agent_not_in_room".to_owned())?;
+        .ok_or_else(|| NOT_IN_ROOM.to_owned())?;
+    // The status read awaited: leave only under the account that confirmed.
+    if !pin.still_current() { return Err(ACCOUNT_CHANGED.into()); }
     let service = crate::hagency::backend::Service::for_current()?;
     service.execute(Command::Binding { agent_id, binding_id, action: BindingAction::Leave }).await.map(drop)
 }
 
 /// The visible result of an own-Agent removal; a success also drops the row.
-fn report_unbind(name: &str, result: Result<(), String>, left: MemberLeft) {
+fn report_unbind(name: &str, result: Result<(), String>, left: Option<MemberLeft>) {
     match result {
         Ok(()) => {
             enqueue_popup_notification(crate::i18n::format("Removed {agent} from this room.", &[("agent", name.to_owned())]),
                 PopupKind::Success, Some(RESULT_POPUP_SECONDS));
-            Cx::post_action(left);
+            if let Some(left) = left { Cx::post_action(left); }
         }
-        Err(error) => enqueue_popup_notification(
-            crate::i18n::format("Could not remove {agent}: {error}", &[("agent", name.to_owned()), ("error", error)]),
-            PopupKind::Error, None),
+        Err(error) => enqueue_popup_notification(unbind_error(name, &error), PopupKind::Error, None),
+    }
+}
+
+/// A readable message for a failed own-Agent removal.
+fn unbind_error(name: &str, error: &str) -> String {
+    let agent = [("agent", name.to_owned())];
+    match error {
+        // The Agent's private chat, or a membership its binding no longer holds.
+        NOT_IN_ROOM => crate::i18n::format("{agent} is not added to this room, so there is nothing to remove here.", &agent),
+        ACCOUNT_CHANGED => crate::i18n::tr("The account changed before the removal ran. Nothing was removed.").to_owned(),
+        other => crate::i18n::format("Could not remove {agent}: {error}", &[("agent", name.to_owned()), ("error", other.to_owned())]),
     }
 }
 
@@ -161,13 +200,17 @@ mod tests {
     /// R5: a failed removal is visible, and only a success drops the row.
     #[test]
     fn an_unbind_shows_its_result_and_only_success_drops_the_row() {
-        let left = || MemberLeft { room_id: "!r:s".try_into().unwrap(), user_id: user("@_hagency_agt_1:s") };
+        let pin = Pin { owner: user("@anna:s"), epoch: 1 };
+        let left = || Some(MemberLeft { room_id: "!r:s".try_into().unwrap(), user_id: user("@_hagency_agt_1:s"), owner: pin.owner.clone(), epoch: 1 });
         let confirm = confirm_unbind(&RoomNameId::empty("!r:s".try_into().unwrap()), &UserProfile {
             user_id: user("@_hagency_agt_1:s"), username: Some("yue-claude".into()), avatar_state: crate::shared::avatar::AvatarState::Known(None),
-        }, "agt_1".into());
+        }, "agt_1".into(), pin.clone());
         assert!(confirm.title_text.contains("yue-claude") && confirm.on_accept_clicked.is_some());
-        report_unbind("yue-claude", Err("agent_not_in_room".into()), left());
+        assert!(!pin.still_current(), "signed out: a stale confirmation must not run");
+        report_unbind("yue-claude", Err(NOT_IN_ROOM.into()), left());
         report_unbind("yue-claude", Ok(()), left());
+        assert!(unbind_error("yue-claude", NOT_IN_ROOM).contains("not added to this room"), "no raw backend code");
+        assert!(unbind_error("yue-claude", "service_down").ends_with("service_down"));
     }
 
     #[test]
