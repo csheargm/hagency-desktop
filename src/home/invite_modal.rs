@@ -1,3 +1,4 @@
+// TODO(R4): over 300 lines; split the search/known-people logic (offer, load_known, lookup) into invite_modal/people.rs.
 //! A modal dialog for inviting a user to a room.
 
 use makepad_widgets::*;
