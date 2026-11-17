@@ -51,6 +51,13 @@ pub fn row_name(entries: &[Entry]) -> String {
     names.join(" · ")
 }
 
+/// Puts the progress thread's reply count on the answer, as "N updates".
+pub fn set_updates(cx: &mut Cx, item: &WidgetRef, count: usize) {
+    for path in card_paths() {
+        item.agent_run_card(cx, path).set_updates(cx, count);
+    }
+}
+
 /// Shows this request's runs as the Agent's message, or hides the row.
 pub fn populate(cx: &mut Cx, item: &WidgetRef, entries: &[Entry]) {
     let row = item.view(cx, ids!(agent_runs));
@@ -108,5 +115,53 @@ mod tests {
         assert!(widget.widget(&mut cx, ids!(agent_runs.agent_run_card.answer)).visible());
         populate(&mut cx, &widget, &[]);
         assert!(!widget.view(&mut cx, ids!(agent_runs)).visible());
+    }
+
+    /// Quiet replies on the request's real row: the answer shows with no
+    /// per-reply "Agent · runtime" header and no "Done" footer; "What I did"
+    /// lists the steps; the progress thread is an "N updates" link that asks
+    /// the room to open it; a working run keeps one compact status line.
+    #[cfg(feature = "agent_chat")]
+    #[test]
+    fn an_answered_run_is_quiet_with_what_i_did_and_an_updates_link() {
+        use ::hagency::agent_run_controls::Progress;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widget = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.OwnMessage {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let card = ids!(agent_runs.agent_run_card);
+        let at = |path: &[LiveId]| [card.as_slice(), path].concat();
+        let mut entry = fixture("$a", State::Completed, "42");
+        entry.name = "bird-claude".into();
+        entry.card.progress = Some(Progress { step: "running gh pr create".into(), steps: 3, elapsed_secs: Some(4) });
+        populate(&mut cx, &widget, std::slice::from_ref(&entry));
+        assert!(widget.widget(&mut cx, &at(ids!(title))).is_empty(), "no per-reply header");
+        assert!(!widget.view(&mut cx, &at(ids!(footer))).visible(), "a successful answer has no status line");
+        assert!(widget.button(&mut cx, &at(ids!(links.details))).visible());
+        assert!(widget.label(&mut cx, &at(ids!(what_i_did))).text().contains("running gh pr create"));
+        assert!(!widget.button(&mut cx, &at(ids!(links.updates))).visible());
+        set_updates(&mut cx, &widget, 5);
+        let updates = widget.button(&mut cx, &at(ids!(links.updates)));
+        assert!(updates.visible() && updates.text().contains('5'), "{}", updates.text());
+        let uid = updates.widget_uid();
+        let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(Default::default())));
+        let card_ref = widget.widget(&mut cx, card);
+        let sent = cx.capture_actions(|cx| card_ref.handle_event(cx, &Event::Actions(actions), &mut Scope::empty()));
+        let show = sent.iter().find_map(|a| a.downcast_ref::<crate::home::agent_run_footer::ShowRunUpdates>()).expect("the link opens the thread");
+        assert_eq!(show.thread_root, entry.card.thread_root);
+        entry.card.progress = None;
+        populate(&mut cx, &widget, std::slice::from_ref(&entry));
+        assert!(!widget.button(&mut cx, &at(ids!(links.details))).visible(), "no steps: no What I did");
+        let mut running = fixture("$b", State::Running, "");
+        running.card.progress = Some(Progress { step: "running ls".into(), steps: 1, elapsed_secs: None });
+        populate(&mut cx, &widget, std::slice::from_ref(&running));
+        assert!(widget.view(&mut cx, &at(ids!(footer))).visible());
+        assert!(widget.label(&mut cx, &at(ids!(footer.status))).text().contains("running ls"));
+        assert!(!widget.button(&mut cx, &at(ids!(footer.open_approval))).visible());
     }
 }

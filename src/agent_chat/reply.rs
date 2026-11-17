@@ -144,16 +144,23 @@ script_mod! {
         }
         agent_reply_expand := FoldButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_DOWN}
         agent_reply_collapse := FoldButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_UP}
+        // A fixed-height row: the actions appear on hover without moving the text below.
         answer_actions := View {
-            width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 6
-            answer_copy := AnswerButton {icon.draw_icon.svg: ICON_COPY}
-            answer_forward := AnswerButton {icon.draw_icon.svg: ICON_ANSWER_FORWARD}
-            answer_markdown := AnswerButton {icon.draw_icon.svg: ICON_MARKDOWN_FILE}
-            answer_pdf := AnswerButton {icon.draw_icon.svg: ICON_PDF_FILE}
+            width: Fill height: 36 flow: Right spacing: 6 align: Align{y: 0.5}
+            answer_copy := AnswerButton {visible: false icon.draw_icon.svg: ICON_COPY}
+            answer_forward := AnswerButton {visible: false icon.draw_icon.svg: ICON_ANSWER_FORWARD}
+            answer_more := AnswerButton {visible: false icon.draw_icon.svg: ICON_MORE_VERT}
+            answer_markdown := AnswerButton {visible: false icon.draw_icon.svg: ICON_MARKDOWN_FILE}
+            answer_pdf := AnswerButton {visible: false icon.draw_icon.svg: ICON_PDF_FILE}
+            answer_meta := Label {
+                visible: false width: Fit height: Fit
+                draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
+            }
         }
     }
 }
 
+// TODO(R4): reply.rs is over budget; split the hover action bar from folding/reveal.
 #[derive(Script, ScriptHook, Widget)]
 pub struct AgentReply {
     #[deref]
@@ -170,22 +177,40 @@ pub struct AgentReply {
     phase: usize,
     #[rust]
     rendered: Option<(String, bool)>,
+    /// The pointer is over this reply: its actions show.
+    #[rust]
+    hovered: bool,
+    /// "More" is open: Markdown and PDF show next to it.
+    #[rust]
+    more_open: bool,
+    /// A small grey line shown with the actions, e.g. the run's duration.
+    #[rust]
+    meta: String,
 }
 impl AgentReply {
     fn render(&mut self, cx: &mut Cx) {
         let active = self.reveal.active();
         // Do not offer an unfinished streaming fragment as a completed answer.
-        self.view.view(cx, ids!(answer_actions)).set_visible(cx, !self.reveal.live && !self.reveal.target.is_empty());
-        for (path, label) in [
-            (ids!(answer_actions.answer_copy), "Copy"),
-            (ids!(answer_actions.answer_forward), "Forward answer"),
-            (ids!(answer_actions.answer_markdown), "Save Markdown"),
-            (ids!(answer_actions.answer_pdf), "Export PDF"),
+        let finished = !self.reveal.live && !self.reveal.target.is_empty();
+        self.view.view(cx, ids!(answer_actions)).set_visible(cx, finished);
+        let shown = finished && self.hovered;
+        let more = shown && self.more_open;
+        for (path, label, visible) in [
+            (ids!(answer_actions.answer_copy), "Copy", shown),
+            (ids!(answer_actions.answer_forward), "Forward answer", shown),
+            (ids!(answer_actions.answer_more), "More", shown),
+            (ids!(answer_actions.answer_markdown), "Save Markdown", more),
+            (ids!(answer_actions.answer_pdf), "Export PDF", more),
         ] {
-            if let Some(mut button) = self.view.navigation_bar_button(cx, path).borrow_mut() {
+            let button = self.view.navigation_bar_button(cx, path);
+            button.set_visible(cx, visible);
+            if let Some(mut button) = button.borrow_mut() {
                 button.set_tooltip_text(crate::i18n::tr(label));
             }
         }
+        let meta = self.view.label(cx, ids!(answer_actions.answer_meta));
+        meta.set_visible(cx, shown && !self.meta.is_empty());
+        meta.set_text(cx, &self.meta);
         let preview = (!active)
             .then(|| fold_preview(&self.reveal.target))
             .flatten();
@@ -251,9 +276,27 @@ impl AgentReply {
         );
     }
 }
+impl AgentReply {
+    /// Shows the actions while the pointer is over the reply; leaving closes "More".
+    fn set_hovered(&mut self, cx: &mut Cx, hovered: bool) {
+        if self.hovered == hovered { return; }
+        self.hovered = hovered;
+        self.more_open &= hovered;
+        self.render(cx);
+        self.redraw(cx);
+    }
+}
 impl Widget for AgentReply {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
+        match event {
+            Event::MouseMove(e) if self.view.visible() => {
+                let inside = self.view.area().rect(cx).contains(e.abs);
+                self.set_hovered(cx, inside);
+            }
+            Event::MouseLeave(_) => self.set_hovered(cx, false),
+            _ => {}
+        }
         if self.timer.is_event(event).is_some() {
             self.reveal.tick(Instant::now());
             self.phase += 1;
@@ -266,6 +309,11 @@ impl Widget for AgentReply {
             self.redraw(cx);
         }
         if let Event::Actions(actions) = event {
+            if self.view.visible() && self.view.navigation_bar_button(cx, ids!(answer_actions.answer_more)).clicked(actions) {
+                self.more_open = !self.more_open;
+                self.render(cx);
+                self.redraw(cx);
+            }
             if self.view.visible() && [ids!(agent_reply_expand), ids!(agent_reply_collapse)]
                 .into_iter().any(|path| {
                     let button = self.view.navigation_bar_button(cx, path);
@@ -321,6 +369,7 @@ impl AgentReplyRef {
             cx.stop_timer(inner.timer);
             inner.timer = Timer::empty();
             inner.identity = identity;
+            inner.more_open = false;
             inner.reveal = Reveal::default();
             inner.rendered = None;
         }
@@ -340,6 +389,13 @@ impl AgentReplyRef {
         }
         inner.render(cx);
     }
+    /// A small grey line shown with the actions on hover (empty for none).
+    pub fn set_meta(&self, cx: &mut Cx, meta: &str) {
+        if let Some(mut inner) = self.borrow_mut() && inner.meta != meta {
+            inner.meta = meta.to_owned();
+            inner.render(cx);
+        }
+    }
     pub fn hide(&self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.view.html_or_plaintext(cx, ids!(agent_reply_body)).clear_selection(cx);
@@ -347,6 +403,8 @@ impl AgentReplyRef {
             inner.timer = Timer::empty();
             inner.view.set_visible(cx, false);
             inner.identity.clear();
+            inner.meta.clear();
+            inner.more_open = false;
             inner.reveal = Reveal::default();
             inner.rendered = None;
         }
@@ -394,6 +452,40 @@ mod tests {
         reply.populate(&mut cx, "other-account|room|final".into(), "new answer", None, false, false);
         assert_eq!(reply.borrow().unwrap().reveal.target, "new answer");
         assert!(reply.borrow().unwrap().view.view(&mut cx, ids!(answer_actions)).visible());
+    }
+    /// Quiet replies: no actions until the pointer is over the reply; Copy and
+    /// Forward then, Markdown and PDF behind "More", and the duration in grey.
+    #[test]
+    fn actions_show_on_hover_and_exports_sit_behind_more() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let reply = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.AgentReply {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget.as_agent_reply()
+        });
+        reply.populate(&mut cx, "a|r|e".into(), "answer", None, false, false);
+        reply.set_meta(&mut cx, "4 s");
+        let visible = |cx: &mut Cx, path: &[LiveId]| reply.borrow().unwrap().view.widget(cx, path).visible();
+        for path in [ids!(answer_actions.answer_copy), ids!(answer_actions.answer_forward), ids!(answer_actions.answer_more),
+            ids!(answer_actions.answer_markdown), ids!(answer_actions.answer_meta)] {
+            assert!(!visible(&mut cx, path), "{path:?} shows without hover");
+        }
+        reply.borrow_mut().unwrap().set_hovered(&mut cx, true);
+        for path in [ids!(answer_actions.answer_copy), ids!(answer_actions.answer_forward), ids!(answer_actions.answer_more), ids!(answer_actions.answer_meta)] {
+            assert!(visible(&mut cx, path), "{path:?} hidden on hover");
+        }
+        assert!(!visible(&mut cx, ids!(answer_actions.answer_markdown)) && !visible(&mut cx, ids!(answer_actions.answer_pdf)));
+        let uid = reply.borrow().unwrap().view.navigation_bar_button(&mut cx, ids!(answer_actions.answer_more)).widget_uid();
+        let actions = cx.capture_actions(|cx| cx.widget_action(uid, crate::shared::navigation_bar_button::NavigationBarButtonAction::Clicked));
+        reply.borrow_mut().unwrap().handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(visible(&mut cx, ids!(answer_actions.answer_markdown)) && visible(&mut cx, ids!(answer_actions.answer_pdf)), "More opens the exports");
+        reply.borrow_mut().unwrap().set_hovered(&mut cx, false);
+        assert!(!visible(&mut cx, ids!(answer_actions.answer_copy)));
+        reply.borrow_mut().unwrap().set_hovered(&mut cx, true);
+        assert!(!visible(&mut cx, ids!(answer_actions.answer_markdown)), "leaving closes More");
     }
     #[test]
     fn folded_and_expanded_agent_reply_both_use_rich_text() {

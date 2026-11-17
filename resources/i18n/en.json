@@ -3510,5 +3510,14 @@
   "@{name} is available": "@{name} is available",
   "@{name} is taken": "@{name} is taken",
   "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "Use lowercase letters, numbers and . _ = - / + (not starting with _).",
-  "Your server did not answer in time. Try again.": "Your server did not answer in time. Try again."
+  "Your server did not answer in time. Try again.": "Your server did not answer in time. Try again.",
+  "What I did": "What I did",
+  "Open approval": "Open approval",
+  "1 update": "1 update",
+  "{n} updates": "{n} updates",
+  "1 step": "1 step",
+  "{n} steps": "{n} steps",
+  "Last step: {step}": "Last step: {step}",
+  "Time: {t}": "Time: {t}",
+  "Runtime: {runtime}": "Runtime: {runtime}"
 }

@@ -3510,5 +3510,14 @@
   "@{name} is available": "@{name} 可以使用",
   "@{name} is taken": "@{name} 已被占用",
   "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "请使用小写字母、数字和 . _ = - / +（不能以 _ 开头）。",
-  "Your server did not answer in time. Try again.": "你的服务器没有及时响应。请重试。"
+  "Your server did not answer in time. Try again.": "你的服务器没有及时响应。请重试。",
+  "What I did": "我做了什么",
+  "Open approval": "打开审批",
+  "1 update": "1 条进度",
+  "{n} updates": "{n} 条进度",
+  "1 step": "1 步",
+  "{n} steps": "{n} 步",
+  "Last step: {step}": "最后一步：{step}",
+  "Time: {t}": "用时：{t}",
+  "Runtime: {runtime}": "运行时：{runtime}"
 }

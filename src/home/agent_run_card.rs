@@ -18,23 +18,32 @@ script_mod! {
         padding: 12
         show_bg: true
         draw_bg +: {color: mod.widgets.RINX_FIELD}
-        title := Label {
-            width: Fill height: Fit
-            draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: 12}}
-        }
         preview := HtmlOrPlaintext { width: Fill height: Fit selectable: true }
         // A finished answer, with the same actions as an Agent's reply message.
         answer := mod.widgets.AgentReply {width: Fill}
+        // Only working, waiting-for-approval and failed runs have a status line.
         footer := View {
             width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
             status := Label {
                 width: Fit height: Fit
                 draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
             }
-            details := Button {
+            open_approval := Button {
                 visible: false
-                text: #(crate::i18n::tr("Details")) i18n_text: "Details"
+                text: #(crate::i18n::tr("Open approval")) i18n_text: "Open approval"
             }
+        }
+        links := View {
+            width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+            details := ButtonFlat {
+                visible: false
+                text: #(crate::i18n::tr("What I did")) i18n_text: "What I did"
+            }
+            updates := ButtonFlat {visible: false}
+        }
+        what_i_did := Label {
+            visible: false width: Fill height: Fit
+            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
         }
         // More runs than slots: the last card pages through them.
         pager := View {
@@ -87,7 +96,7 @@ pub struct AgentRunCard {
     /// Ticks once a second while the shown run is running.
     #[rust]
     clock: Timer,
-    /// Whether the reader opened an answered run's details (Agent, runtime).
+    /// Whether the reader opened the run's "What I did".
     #[rust]
     details_open: bool,
     /// The runs this card pages through (the last slot's overflow).
@@ -154,10 +163,22 @@ impl Widget for AgentRunCard {
         let Some(key) = self.key.as_deref() else {
             return;
         };
-        if self.view.button(cx, ids!(footer.details)).clicked(actions) {
+        if self.view.button(cx, ids!(links.details)).clicked(actions) {
             self.details_open = !self.details_open;
-            self.view.label(cx, ids!(title)).set_visible(cx, self.details_open);
+            self.view.label(cx, ids!(what_i_did)).set_visible(cx, self.details_open);
             self.view.redraw(cx);
+        }
+        if let Some((card, _)) = self.run.as_ref() {
+            // The owner's approval UI for this room, where the pending card waits.
+            #[cfg(feature = "agent_chat")]
+            if self.view.button(cx, ids!(footer.open_approval)).clicked(actions)
+                && let Ok(project) = matrix_sdk::ruma::OwnedRoomId::try_from(card.room_id.as_str())
+            {
+                cx.action(crate::agent_chat::approval_inbox::ApprovalInboxAction::Open { project: Some(project) });
+            }
+            if self.view.button(cx, ids!(links.updates)).clicked(actions) {
+                cx.action(super::agent_run_footer::ShowRunUpdates { room: card.room_id.clone(), thread_root: card.thread_root.clone() });
+            }
         }
         if let Some(text) = self.view.text_input(cx, ids!(input)).changed(actions) {
             run_controls::draft(key, text);
@@ -183,11 +204,13 @@ impl Widget for AgentRunCard {
 impl AgentRunCard {
     /// Shows the run's live status; keeps the clock ticking only while it runs.
     fn show_status(&mut self, cx: &mut Cx) {
-        let ticking = self.run.as_ref().is_some_and(|(card, started)| {
-            let status = super::agent_run_status::live_status(card, started.elapsed().as_secs());
-            self.view.label(cx, ids!(footer.status)).set_text(cx, &footer_text(card, &status));
-            super::agent_run_status::needs_tick(card)
-        });
+        use super::agent_run_footer::{Footer, footer};
+        let shown = self.run.as_ref().map(|(card, started)| footer(card, started.elapsed().as_secs(), super::agent_run_footer::waits_for_approval(card)));
+        let shown = shown.unwrap_or(Footer::Quiet);
+        self.view.view(cx, ids!(footer)).set_visible(cx, shown != Footer::Quiet);
+        self.view.label(cx, ids!(footer.status)).set_text(cx, shown.text());
+        self.view.button(cx, ids!(footer.open_approval)).set_visible(cx, matches!(shown, Footer::Approval(_)));
+        let ticking = self.run.as_ref().is_some_and(|(card, _)| super::agent_run_status::needs_tick(card));
         if !ticking {
             cx.stop_timer(self.clock);
             self.clock = Timer::default();
@@ -197,6 +220,14 @@ impl AgentRunCard {
     }
 }
 impl AgentRunCardRef {
+    /// The "N updates" link to the progress thread; hidden for none.
+    pub fn set_updates(&self, cx: &mut Cx, count: usize) {
+        let Some(inner) = self.borrow() else { return };
+        let link = inner.view.button(cx, ids!(links.updates));
+        let text = super::agent_run_footer::updates_text(count);
+        link.set_visible(cx, text.is_some());
+        link.set_text(cx, text.as_deref().unwrap_or_default());
+    }
     pub fn set_entry(&self, cx: &mut Cx, entry: Option<&Entry>) {
         self.set_entries(cx, entry.map(std::slice::from_ref).unwrap_or_default());
     }
@@ -245,16 +276,11 @@ impl AgentRunCard {
         }
         inner.key = Some(entry.key.clone());
         inner.view.set_visible(cx, true);
-        inner
-            .view
-            .label(cx, ids!(title))
-            .set_text(cx, &format!("{} · {}", entry.name, entry.card.runtime));
-        // An answered run is the answer itself: its Agent and runtime move
-        // behind "Details", and the status line becomes a short footer.
-        let answered = !entry.card.answer.is_empty();
-        let show_title = !answered || inner.details_open;
-        inner.view.label(cx, ids!(title)).set_visible(cx, show_title);
-        inner.view.button(cx, ids!(footer.details)).set_visible(cx, answered);
+        // The row above already names the Agent; the runtime sits in "What I did".
+        let did = super::agent_run_footer::what_i_did(&entry.card);
+        inner.view.button(cx, ids!(links.details)).set_visible(cx, did.is_some());
+        inner.view.label(cx, ids!(what_i_did)).set_text(cx, did.as_deref().unwrap_or_default());
+        inner.view.label(cx, ids!(what_i_did)).set_visible(cx, inner.details_open && did.is_some());
         inner.run = Some((entry.card.clone(), entry.started));
         inner.show_status(cx);
         let preview = inner.view.html_or_plaintext(cx, ids!(preview));
@@ -315,6 +341,7 @@ fn show_answer(cx: &mut Cx, view: &View, entry: Option<&Entry>) -> bool {
                 let me = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
                 let rich = crate::agent_chat::presentation::markdown_body(&entry.card.answer);
                 reply.populate(cx, format!("{me}|{}|{}", entry.card.room_id, entry.key), &entry.card.answer, rich.as_ref(), false, false);
+                reply.set_meta(cx, &super::agent_run_footer::duration(&entry.card).unwrap_or_default());
                 true
             }
             None => { reply.hide(cx); false }
@@ -327,10 +354,6 @@ fn show_answer(cx: &mut Cx, view: &View, entry: Option<&Entry>) -> bool {
 /// The card's main text: the answer once the run carries it, else the live text.
 fn shown_text(card: &::hagency::agent_run_controls::Card) -> &str {
     if card.answer.is_empty() { &card.preview } else { &card.answer }
-}
-/// The status line: "✅ Done in 2 s · 0 steps" under an answer, else the live status.
-fn footer_text(card: &::hagency::agent_run_controls::Card, status: &str) -> String {
-    if card.answer.is_empty() { status.to_owned() } else { format!("✅ {status}") }
 }
 
 #[cfg(test)]
@@ -355,17 +378,17 @@ mod tests {
         assert!(!SOURCE_TEXT.split("#[cfg(test)]").next().unwrap().chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "Chinese literal in the card's layout");
     }
     #[test]
-    fn an_answered_run_shows_the_answer_with_a_short_footer() {
+    fn an_answered_run_shows_the_answer_and_a_quiet_footer() {
         let mut card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({"version":1,
             "id":"c","dispatchId":"d","executionId":"e","roomId":"!r","eventId":"$e","threadRoot":"!r",
             "requester":"@a","owner":"@b","runtime":"codex","state":"running","revision":0,"preview":"live"})).unwrap();
         assert_eq!(shown_text(&card), "live");
-        assert_eq!(footer_text(&card, "Thinking… 2 s"), "Thinking… 2 s");
+        assert!(matches!(super::super::agent_run_footer::footer(&card, 2, false), super::super::agent_run_footer::Footer::Working(_)));
         card.state = ::hagency::agent_run_controls::State::Completed;
         card.preview.clear();
         card.answer = "42".into();
         assert_eq!(shown_text(&card), "42");
-        assert_eq!(footer_text(&card, "Done in 2 s · 0 steps"), "✅ Done in 2 s · 0 steps");
+        assert_eq!(super::super::agent_run_footer::footer(&card, 2, false), super::super::agent_run_footer::Footer::Quiet);
     }
     /// Review fix: with more runs than slots, the last card pages through
     /// them, and an answer shows in the reply component with its actions.

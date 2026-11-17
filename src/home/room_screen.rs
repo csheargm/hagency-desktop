@@ -1719,6 +1719,14 @@ impl Widget for RoomScreen {
                         self.view.redraw(cx);
                     }
                 }
+                // A run card's "N updates" opens its progress thread.
+                if let Some(show) = action.downcast_ref::<super::agent_run_footer::ShowRunUpdates>()
+                    && self.room_id().is_some_and(|r| r.as_str() == show.room)
+                    && let Some(room_name_id) = self.room_name_id.clone()
+                    && let Ok(thread_root_event_id) = OwnedEventId::try_from(show.thread_root.as_str())
+                {
+                    cx.widget_action(room_screen_widget_uid, RoomsListAction::Selected(SelectedRoom::Thread { room_name_id, thread_root_event_id }));
+                }
                 // Forward a run card's answer (the run's status event carries it).
                 // TODO(R4): room_screen.rs should split its action handling per card kind.
                 if let Some(fwd) = action.downcast_ref::<super::agent_run_answer::ForwardRunAnswer>()
@@ -7254,6 +7262,7 @@ fn populate_thread_root_summary(
 ) -> bool {
     let thread_summary_view = item.view(cx, ids!(thread_root_summary));
     thread_summary_view.set_visible(cx, false); // hide by default
+    super::agent_run_row::set_updates(cx, item, 0);
     let fully_drawn: bool;
 
     if matches!(timeline_kind, TimelineKind::Thread { .. }) {
@@ -7280,9 +7289,9 @@ fn populate_thread_root_summary(
         .map(|f| f.num_replies)
         .unwrap_or(local_num_replies);
     // Run cards draw on the request, and a server's repeat of a card's answer is hidden.
-    let replies_count = thread_root_event_id.as_ref().map_or(replies_count, |root| {
-        let runs: Vec<_> = crate::hagency::run_controls::for_event(timeline_kind.room_id(), root.as_str(), true)
-            .into_iter().filter(|e| e.card.thread_root == root.as_str()).collect();
+    let runs: Vec<_> = thread_root_event_id.as_ref().map(|root| crate::hagency::run_controls::for_event(timeline_kind.room_id(), root.as_str(), true)
+        .into_iter().filter(|e| e.card.thread_root == root.as_str()).collect()).unwrap_or_default();
+    let replies_count = thread_root_event_id.as_ref().map_or(replies_count, |_| {
         let latest = match &thread_summary.latest_event { TimelineDetails::Ready(e) => Some(e), _ => None };
         let latest = latest.map(|e| super::agent_reply_dedupe::Sent { event_id: "", sender: e.sender.as_str(),
             plain: e.content.as_message().is_some_and(|m| is_plain_text(m.msgtype())),
@@ -7293,6 +7302,13 @@ fn populate_thread_root_summary(
         // Not cached: a reply or a run update can bring the bar back.
         thread_summary_view.set_visible(cx, false);
         return false;
+    }
+    // The room shows only an Agent's answer: its progress thread folds into an
+    // "N updates" link on the answer. Not cached, so a new reply updates the count.
+    if !runs.is_empty() {
+        thread_summary_view.set_visible(cx, false);
+        super::agent_run_row::set_updates(cx, item, replies_count as usize);
+        return true;
     }
 
     let latest_preview: Cow<str> = match &thread_summary.latest_event {
