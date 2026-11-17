@@ -314,7 +314,9 @@ impl Widget for RoomsSideBar {
         // The desktop layout has no spaces tree (the rail lists spaces instead).
         let spaces = cx.global::<ChatsViewState>().spaces
             && !crate::home::home_screen::effective_is_desktop(cx);
-        self.view.widget(cx, ids!(room_filter_bubbles)).set_visible(cx, !spaces);
+        // Desktop keeps the column simple: search only, no Unreads/Mentions/People/Rooms chips (Chris, Nov 16).
+        let desktop = crate::home::home_screen::effective_is_desktop(cx);
+        self.view.widget(cx, ids!(room_filter_bubbles)).set_visible(cx, !spaces && !desktop);
         self.view.view(cx, ids!(conversations)).set_visible(cx, !spaces);
         self.view.view(cx, ids!(spaces_tree)).set_visible(cx, spaces);
         self.view.navigation_bar_button(cx, ids!(all_chats)).set_selected(cx, !spaces);
@@ -506,6 +508,12 @@ mod tests {
             let conversations = rect(&mut cx, &sidebar, ids!(conversations));
             let search = rect(&mut cx, &sidebar, ids!(room_filter_input_bar));
             assert!(conversations.size.y > 400.0, "{layout:?}: the list keeps the column: {conversations:?}");
+            if !sidebar.view.widget(&mut cx, ids!(room_filter_bubbles)).visible() {
+                // Desktop hides the filter chips: the list follows search directly.
+                assert!(conversations.pos.y >= search.pos.y + search.size.y - 0.5 && conversations.pos.y - (search.pos.y + search.size.y) < 60.0,
+                    "{layout:?}: the list sits right below search: {search:?} {conversations:?}");
+                continue;
+            }
             assert!((filters.size.y - 32.0).abs() < 0.5 && filters.pos.y >= search.pos.y + search.size.y - 0.5,
                 "{layout:?}: the filter row stays bounded below search: {filters:?}");
             assert!(conversations.pos.y >= filters.pos.y + filters.size.y - 0.5 && conversations.pos.y - (filters.pos.y + filters.size.y) < 60.0,
