@@ -10,8 +10,12 @@
 //! - group rooms the owner joins (accepted invite or join): every active
 //!   Agent with the setting on joins; one with it off gets a one-click prompt.
 //!
+//! A private Agent's bind is refused by the server; any of these paths then
+//! asks "Allow in group rooms?" once for that room (`consent`), never silently.
+//!
 //! This file holds the pure rules; `prefs` keeps the per-account choices on
 //! disk, `flow` runs the async steps and `prompt` is the one-click prompt.
+mod consent;
 mod flow;
 mod prefs;
 mod prompt;

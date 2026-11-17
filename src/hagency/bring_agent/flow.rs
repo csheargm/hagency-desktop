@@ -18,6 +18,8 @@ pub(super) struct BindDone {
     pub agent: String,
     pub room: String,
     pub result: Result<bool, String>,
+    /// The room id and puppet, for the private Agent's "Allow in group rooms".
+    pub target: (String, String),
 }
 
 /// Binds the Agent `puppet` into each `(room id, name)` in order, reporting each outcome.
@@ -37,7 +39,7 @@ pub fn bind_into_rooms_then(agent: String, puppet: String, rooms: Vec<(String, S
                 Err(code) => Err(code.clone()),
             };
             done(&result);
-            Cx::post_action(BindDone { epoch, agent: agent.clone(), room, result });
+            Cx::post_action(BindDone { epoch, agent: agent.clone(), room, result, target: (room_id, puppet.clone()) });
         }
     });
 }
@@ -50,6 +52,7 @@ pub fn observe(actions: &Actions) {
             follow_after_join(room_id.clone());
         }
         if let Some(done) = action.downcast_ref::<BindDone>() && done.epoch == crate::account_session::epoch() {
+            if super::consent::offer_if_private(done) { continue; }
             let kind = match done.result { Ok(true) => PopupKind::Success, Ok(false) => PopupKind::Info, Err(_) => PopupKind::Error };
             enqueue_popup_notification(super::bind_result_text(&done.agent, &done.room, &done.result), kind, Some(RESULT_POPUP_SECONDS));
         }
@@ -144,7 +147,7 @@ fn catch_up_bind(room_id: OwnedRoomId, agent: AgentPick, room: String) {
         };
         if let Err(code) = saved { warning!("Bring agent: catch-up of {a} in {r} not recorded: {code}"); }
         // Failures stay quiet here; the Agent panel notes rooms given up on.
-        if result.is_ok() { Cx::post_action(BindDone { epoch, agent: agent.name, room, result }); }
+        if result.is_ok() || super::consent::needs_consent(&result) { Cx::post_action(BindDone { epoch, agent: agent.name, room, result, target: (room_id.to_string(), agent.puppet) }); }
     });
 }
 
@@ -187,7 +190,7 @@ fn follow_bind(room_id: OwnedRoomId, agent: AgentPick, room: String) {
         let result = bind_with_retries(epoch, &room_id, &agent.puppet).await;
         drop(in_flight);
         if retry::bind_settles(&result) { claim(&room_id, &agent); }
-        Cx::post_action(BindDone { epoch, agent: agent.name, room, result });
+        Cx::post_action(BindDone { epoch, agent: agent.name, room, result, target: (room_id.to_string(), agent.puppet) });
     });
 }
 

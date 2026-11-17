@@ -712,7 +712,7 @@ async fn resume(req: &mut Request, depot: &mut Depot, res: &mut Response) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(super) fn same_reply_identity(a: &OwnerReply, b: &OwnerReply) -> bool {
     a.origin == b.origin && a.owner == b.owner && a.issuer == b.issuer && a.subject == b.subject

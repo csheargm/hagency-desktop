@@ -208,7 +208,7 @@ pub(super) async fn fixture_with_hook(
 ) -> (ServerLogin, tokio::task::JoinHandle<()>) {
     fixture_with_status_and_hook(steps.into_iter().map(|(path, value, body)| (path, 200, value, body)).collect(), hook).await
 }
-async fn fixture_with_status_and_hook(
+pub(in crate::console::server_login) async fn fixture_with_status_and_hook(
     steps: Vec<(&'static str, u16, Value, Option<Value>)>,
     hook: impl Fn(&str) + Send + 'static,
 ) -> (ServerLogin, tokio::task::JoinHandle<()>) {

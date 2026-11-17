@@ -105,6 +105,30 @@ fn needs_invitation(state: &Value, owner: &str, service: &str) -> Result<bool, O
 mod tests {
     use super::*;
     use serde_json::json;
+    use super::super::matrix_creations::tests::fixture_with_status_and_hook;
+
+    /// Private refusal -> explicit owner choice -> same-key retry. The fake
+    /// server replays exactly these requests in order, so any other call (a
+    /// second Agent, a pool allocation, a Matrix invite, a new key) fails it.
+    #[tokio::test]
+    async fn private_refusal_then_owner_choice_retries_the_original_bind_only() {
+        let bind = "POST /hagency/api/v1/agents/agt_1/bindings";
+        let body = json!({"projectId":"prj_1","roomId":"!room:example.test","idempotencyKey":"original"});
+        let agent = json!({"id":"agt_1","ownerUserId":"@owner:example.test","puppetMxid":"@_hagency_agt_1:example.test","displayName":"A","state":"active","generation":1,"executionDeviceId":null,"ownerDirectRoomId":"!dm:example.test","visibility":"public"});
+        let binding = json!({"id":"bnd_1","agentId":"agt_1","projectId":"prj_1","scopeKind":"project","roomId":"!room:example.test","state":"active","generation":1});
+        let (login, task) = fixture_with_status_and_hook(vec![
+            (bind, 401, json!({"code":"private_agent_owner_direct_only"}), Some(body.clone())),
+            ("PUT /hagency/api/v1/agents/agt_1/visibility", 200, json!({"agent":agent}), Some(json!({"visibility":"public"}))),
+            (bind, 200, json!({"creation":{"agent":agent,"binding":binding}}), Some(body)),
+        ], |_| {}).await;
+        let call = || login.bind_agent_room("cookie", "agt_1".into(), "prj_1".into(), "!room:example.test".into(), "original".into());
+        assert_eq!(call().await.err().expect("private refusal").code, "private_agent_owner_direct_only");
+        let allowed = login.owner_api("cookie", OwnerOperation::AllowGroupRooms { agent: "agt_1".into() }).await.unwrap();
+        assert_eq!(allowed.value["agent"]["id"], "agt_1");
+        let retried = call().await.unwrap();
+        assert_eq!(retried.value["creation"]["binding"]["state"], "active");
+        tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap();
+    }
     #[test]
     fn service_preparation_respects_membership_and_never_grants_power() {
         let mut state = json!([

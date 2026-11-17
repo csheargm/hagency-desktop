@@ -1,7 +1,8 @@
 //! The one-click prompt for an Agent whose "Join rooms I join" is off:
 //! "Bring <agent> into <room>?" [Not now] [Bring]. The pair was recorded
 //! before the prompt opened, so either answer is final for that room.
-use super::{AgentPick, bind_into_rooms, offer_text};
+//! A private Agent's refusal reuses it: "Allow in group rooms" [Not now].
+use super::{AgentPick, bind_into_rooms, consent, offer_text};
 use makepad_widgets::*;
 use matrix_sdk::ruma::OwnedRoomId;
 use std::collections::VecDeque;
@@ -27,10 +28,13 @@ script_mod! {
 #[derive(Clone, Debug)]
 pub enum BringAgentAction {
     Offer { room_id: OwnedRoomId, room_name: String, agent: AgentPick },
+    /// The server refused the private Agent: ask to allow it in group rooms.
+    Consent { room_id: OwnedRoomId, room_name: String, agent: AgentPick },
     Close,
 }
 
-type Offer = (OwnedRoomId, String, AgentPick);
+/// Room, room name, Agent, and whether it asks for group-room consent.
+type Offer = (OwnedRoomId, String, AgentPick, bool);
 
 #[derive(Script, ScriptHook, Widget)]
 pub struct BringAgentPrompt {
@@ -54,17 +58,21 @@ impl Widget for BringAgentPrompt {
 impl BringAgentPrompt {
     /// Bring binds the Agent; either answer moves on to the next offer.
     fn answer(&mut self, cx: &mut Cx, bring: bool) {
-        let Some((room_id, room_name, agent)) = self.offers.pop_front() else { return };
-        if bring {
+        let Some((room_id, room_name, agent, consent)) = self.offers.pop_front() else { return };
+        if bring && consent {
+            consent::allow_then_bind(agent, room_id.to_string(), room_name);
+        } else if bring {
             bind_into_rooms(agent.name, agent.puppet, vec![(room_id.to_string(), room_name)]);
         }
         if self.show_front(cx) { self.view.redraw(cx); } else { cx.action(BringAgentAction::Close); }
     }
     /// Puts the first waiting offer on screen; false when none is left.
     fn show_front(&mut self, cx: &mut Cx) -> bool {
-        let Some((_, room_name, agent)) = self.offers.front() else { return false };
-        let text = offer_text(&agent.name, room_name);
+        let Some((_, room_name, agent, consent)) = self.offers.front() else { return false };
+        let text = if *consent { consent::consent_text(&agent.name, room_name) } else { offer_text(&agent.name, room_name) };
         self.view.label(cx, ids!(question)).set_text(cx, &text);
+        let label = if *consent { "Allow in group rooms" } else { "Bring" };
+        self.view.button(cx, ids!(bring)).set_text(cx, crate::i18n::tr(label));
         true
     }
 }
@@ -73,8 +81,11 @@ impl BringAgentPromptRef {
     pub fn action(&self, cx: &mut Cx, modal: ModalRef, action: &BringAgentAction) {
         let Some(mut inner) = self.borrow_mut() else { return };
         match action {
-            BringAgentAction::Offer { room_id, room_name, agent } => {
-                inner.offers.push_back((room_id.clone(), room_name.clone(), agent.clone()));
+            BringAgentAction::Offer { room_id, room_name, agent } | BringAgentAction::Consent { room_id, room_name, agent } => {
+                let consent = matches!(action, BringAgentAction::Consent { .. });
+                // One question per room and Agent, however many paths refused it.
+                if inner.offers.iter().any(|(r, _, a, c)| r == room_id && a.puppet == agent.puppet && *c == consent) { return; }
+                inner.offers.push_back((room_id.clone(), room_name.clone(), agent.clone(), consent));
                 if inner.offers.len() == 1 && inner.show_front(cx) { modal.open(cx); }
             }
             BringAgentAction::Close => {
