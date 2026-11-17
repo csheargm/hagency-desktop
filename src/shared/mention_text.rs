@@ -172,6 +172,16 @@ impl MentionText {
     }
 }
 
+/// What a sent message shows: each mention pill as its `@name`, with the
+/// pill's Markdown escaping and matrix.to link removed. Copy Text uses this so
+/// the clipboard holds what the user saw, never `[\@name](https://matrix.to/…)`.
+/// Other Markdown (code, ordinary links) is left as written.
+pub(crate) fn mentions_as_names(markdown: &str) -> String {
+    let mut draft = MentionText::default();
+    draft.reset(markdown);
+    draft.text
+}
+
 /// The Markdown pill for one mention: `[label](matrix.to link)`, with the
 /// label's ASCII punctuation escaped so it cannot open other Markdown.
 pub(super) fn mention_link(label: &str, user: &UserId) -> String {
@@ -243,6 +253,13 @@ mod tests {
         assert_eq!(draft.users().collect::<Vec<_>>(),vec![&user("agent")]);
         let code="`[Alex](https://matrix.to/#/@alex:example.org)` [web](https://example.org)";
         draft.reset(code);assert_eq!(draft.text(),code);assert_eq!(draft.users().count(),0);
+    }
+    #[test]
+    fn copied_mention_reads_as_the_name_not_escaped_markdown() {
+        let body="[\\@bird\\-claude](https://matrix.to/#/@_hagency_agt_01m7:localhost:8452) what are the issues in the repo?";
+        assert_eq!(mentions_as_names(body),"@bird-claude what are the issues in the repo?");
+        let plain="no pills, `[x](https://matrix.to/#/@x:y)` and [web](https://example.org) \\*";
+        assert_eq!(mentions_as_names(plain),plain);
     }
     #[test]
     fn old_messages_and_trimmed_composer_keep_ids_out_of_visible_names() {
