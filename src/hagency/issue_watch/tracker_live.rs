@@ -7,7 +7,7 @@ use super::review_loop::{self, LoopCtx};
 use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
-use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, WatchMode, fetch_comments, fetch_open_issues, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
+use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedTransactionId, OwnedUserId};
 use serde_json::{Map, Value, json};
@@ -28,6 +28,11 @@ pub(crate) struct Watched<'a> {
     pub seen: &'a HashSet<i64>,
 }
 
+/// Whether `repo` is on the Agent's work list (`saved["work"]`).
+pub(crate) fn on_work_list(saved: &Value, repo: &str) -> bool {
+    saved["work"].as_array().into_iter().flatten().any(|e| e["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo)))
+}
+
 /// Follow every tracked issue of one repository; failures become errors in the result.
 pub(crate) async fn follow_repo(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value) -> Followups {
     match follow_inner(worker, watched, saved).await {
@@ -36,13 +41,9 @@ pub(crate) async fn follow_repo(worker: &Worker<'_>, watched: &Watched<'_>, save
     }
 }
 
-/// A work-list repository: its open issues are read again here, and a
-/// repository the single-repository watch also follows is left to that one.
+/// A work-list repository, which the work list follows (its claims apply)
+/// even when the single-repository watch names it too (GPT review).
 pub(crate) async fn follow_work(worker: &Worker<'_>, entry: &OwnerRules, watch: &IssueWatch, saved: &Value, seen: &HashSet<i64>) -> Followups {
-    let legacy: Option<IssueWatch> = serde_json::from_value(saved["issueWatch"].clone()).ok();
-    if legacy.is_some_and(|w| w.setting.mode != WatchMode::Off && w.setting.repo.eq_ignore_ascii_case(&entry.repo)) {
-        return Followups::default();
-    }
     let issues = match fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await {
         Ok(issues) => issues,
         Err(error) => return Followups { lines: Vec::new(), errors: vec![format!("{}: {error}", entry.repo)] },
@@ -118,18 +119,20 @@ impl TrackIo for LiveTrack<'_> {
         let txn = line_txn_id(self.agent_id(), self.repo, number, key);
         crate::hagency::room_send::send_routed_with(self.room.clone(), RoomMessageEventContent::notice_plain(text), extra, txn).await
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<(), String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String> {
         if let Some(entry) = self.watched.entry {
-            // The claim of the first attempt normally still holds (24 h); one
-            // held by another Agent stops the retry.
+            // The claim of the first attempt normally still holds (24 h).
             if super::work::claim(self.worker, entry, issue.number, &self.login, true).await? != Holder::Ours {
-                return Err(crate::i18n::tr("claimed by another Agent").to_owned());
+                return Ok(false);
             }
         }
         let auto_merge = self.watched.entry.is_some() || super::live::auto_merge(self.agent_id()).await;
         let live = super::live::Live::new(self.worker.service, self.worker.agent, self.watched.watch, auto_merge, self.worker.epoch)?.with_attempt(attempt);
         let outcome = super::handoff::hand_off(&live, &[issue]).await;
-        outcome.error.map_or(Ok(()), Err)
+        outcome.error.map_or(Ok(true), Err)
+    }
+    async fn pr_merged(&self, pr: u64) -> Result<bool, String> {
+        fetch_pull_merged(self.worker.client, GITHUB_API, self.repo, pr, self.worker.token).await.map_err(|e| e.to_string())
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         let (state, reason) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;
@@ -150,8 +153,14 @@ impl TrackIo for LiveTrack<'_> {
         }
         let Some(peer) = &self.peer else { return Ok(Followed::NeedsPerson) };
         let io = LiveLoop::new(self.worker, &self.watched.watch.setting.room_id)?;
-        let ctx = LoopCtx { agent: peer, maintainer: review_loop::can_merge(self.permission.as_deref()), permission: self.permission.as_deref() };
-        review_loop::advance(&io, &review_loop::target_of(self.repo, pr), &ctx).await?;
+        let target = review_loop::target_of(self.repo, pr);
+        // The peer only reviews. The merge step is judged and addressed for
+        // this Agent, whose ledger, token and permission the gate reads (GPT review).
+        review_loop::advance(&io, &target, &LoopCtx { agent: peer, maintainer: false, permission: None }).await?;
+        let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
+        if review_loop::can_merge(self.permission.as_deref()) {
+            review_loop::advance_merge(&io, &target, &LoopCtx { agent: &fixer, maintainer: true, permission: self.permission.as_deref() }).await?;
+        }
         Ok(Followed::Requested)
     }
     fn paused(&self) -> bool {

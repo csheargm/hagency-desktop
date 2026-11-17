@@ -221,7 +221,9 @@ pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> R
         return Ok(track);
     }
     if let Some(attempt) = change.handed {
-        if attempt == track.attempts + 1 && attempt <= MAX_ATTEMPTS {
+        // Only a record still waiting for a pull request is retried: a late
+        // retry write never clears a pull request found since (GPT review).
+        if track.state == State::HandedOff && attempt == track.attempts + 1 && attempt <= MAX_ATTEMPTS {
             track = Track { state: State::HandedOff, attempts: attempt, handed_at: now, pr: None, notified: false, ..track };
         }
     }

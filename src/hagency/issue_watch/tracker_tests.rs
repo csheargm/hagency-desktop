@@ -24,6 +24,8 @@ struct Fake {
     closed: RefCell<HashMap<i64, IssueFact>>,
     cannot_fix: RefCell<HashSet<i64>>,
     peer: bool,
+    merged: RefCell<HashSet<u64>>,
+    claimed_by_other: Cell<bool>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
@@ -53,9 +55,15 @@ impl TrackIo for Fake {
         }
         Ok(())
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<(), String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String> {
+        if self.claimed_by_other.get() {
+            return Ok(false);
+        }
         self.handed.borrow_mut().push((issue.number, attempt));
-        self.record(serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt})).await
+        self.record(serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt})).await.map(|_| true)
+    }
+    async fn pr_merged(&self, pr: u64) -> Result<bool, String> {
+        Ok(self.merged.borrow().contains(&pr))
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())
@@ -135,6 +143,7 @@ fn the_agents_pull_request_is_followed_to_review_and_its_merge_announced_once() 
     assert_eq!((fake.tracks()[0].state, fake.tracks()[0].pr), (State::Reviewed, Some(32)));
     // Merged: the issue closed as completed and left the open listing.
     fake.closed.borrow_mut().insert(31, IssueFact::Done);
+    fake.merged.borrow_mut().insert(32);
     assert!(check(&fake, T0 + 12 * HANDOFF_TIMEOUT_SECS, &[], &[]).is_empty());
     check(&fake, T0 + 13 * HANDOFF_TIMEOUT_SECS, &[], &[]);
     assert_eq!(fake.said.borrow().iter().map(|s| s.2.as_str()).collect::<Vec<_>>(), ["✅ #31 fixed → PR #32 merged"]);
@@ -189,4 +198,27 @@ fn pull_requests_link_by_closing_keyword_or_issue_branch_only() {
     assert!(!links_issue(&with("", "fix-3-typos"), REPO, 3));
     assert!(!links_issue(&with("", "issue-333"), REPO, 33));
     assert!(!links_issue(&with("Closes #330", "x"), REPO, 33));
+}
+
+#[test]
+fn an_issue_closed_without_the_pr_merging_is_not_announced_as_its_fix() {
+    let fake = Fake::default();
+    first_hand_off(&fake, 31);
+    check(&fake, T0 + 60, &[issue(31)], &[pull(32, "Closes #31")]);
+    fake.closed.borrow_mut().insert(31, IssueFact::Done);
+    check(&fake, T0 + 120, &[], &[]);
+    assert_eq!(fake.said.borrow().last().unwrap().2, "✅ #31 closed as completed");
+}
+
+#[test]
+fn a_claim_lost_to_another_agent_ends_the_retries() {
+    let fake = Fake::default();
+    first_hand_off(&fake, 33);
+    fake.claimed_by_other.set(true);
+    assert_eq!(check(&fake, T0 + HANDOFF_TIMEOUT_SECS, &[issue(33)], &[]), ["#33 taken by another Agent"]);
+    for later in 2..6 {
+        check(&fake, T0 + later * 10 * HANDOFF_TIMEOUT_SECS, &[issue(33)], &[]);
+    }
+    assert!(fake.said.borrow().is_empty(), "no retry notice for an issue someone else holds");
+    assert_eq!(fake.tracks()[0].state, State::Closed);
 }

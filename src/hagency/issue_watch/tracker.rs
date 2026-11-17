@@ -28,8 +28,11 @@ pub(crate) trait TrackIo {
     async fn record(&self, change: Value) -> Result<(), String>;
     /// One room line about issue `number`, keyed so the same `key` is never posted twice.
     async fn say(&self, number: i64, key: &str, text: String) -> Result<(), String>;
-    /// Hand `issue` off again as `attempt` (claim, post, record `handed`).
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<(), String>;
+    /// Hand `issue` off again as `attempt` (claim, post, record `handed`);
+    /// `Ok(false)` when another Agent now holds the issue's claim.
+    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String>;
+    /// Whether pull request `pr` was merged (GitHub's own answer).
+    async fn pr_merged(&self, pr: u64) -> Result<bool, String>;
     /// A tracked issue missing from the open list: GitHub's own answer.
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String>;
     /// The Agent's cannot-fix comment during the current attempt.
@@ -100,9 +103,14 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track) -> Result<O
         Action::Wait => Ok(Some(waiting_line(track))),
         Action::Retry { attempt } => {
             let issue = issue.ok_or("the issue is not open")?;
+            // Handed off first: a claim lost to another Agent ends the record
+            // instead of repeating this attempt every check (GPT review).
+            if !io.hand_off(issue, attempt).await? {
+                io.record(change(json!({"state": "closed"}))).await?;
+                return Ok(Some(crate::i18n::format("#{number} taken by another Agent", &[("number", n.to_string())])));
+            }
             let args = [("number", n.to_string()), ("attempt", attempt.to_string()), ("max", MAX_ATTEMPTS.to_string())];
             io.say(n, &format!("retry-{attempt}"), crate::i18n::format(RETRYING, &args)).await?;
-            io.hand_off(issue, attempt).await?;
             Ok(Some(crate::i18n::format("#{number} retrying ({attempt}/{max})", &args)))
         }
         Action::GiveUp => {
@@ -150,7 +158,12 @@ async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullReq
 
 async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), String> {
     let n = track.number;
-    let text = match track.pr {
+    // Only a pull request GitHub reports merged is announced as the fix (GPT review).
+    let merged = match track.pr {
+        Some(pr) if io.pr_merged(pr).await? => Some(pr),
+        _ => None,
+    };
+    let text = match merged {
         Some(pr) => crate::i18n::format(FIXED, &[("number", n.to_string()), ("pr", pr.to_string())]),
         None => crate::i18n::format("✅ #{number} closed as completed", &[("number", n.to_string())]),
     };

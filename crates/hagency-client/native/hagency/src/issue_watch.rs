@@ -146,6 +146,14 @@ pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i
     Ok((text("state"), text("state_reason")))
 }
 
+/// Whether pull request `number` of `repo` was merged.
+pub async fn fetch_pull_merged(client: &Client, api: &str, repo: &str, number: u64, token: &str) -> Result<bool, FetchError> {
+    pulls_url(api, repo)?;
+    let body = get(client, &format!("{api}/repos/{repo}/pulls/{number}"), token).await?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    Ok(value["merged"] == true)
+}
+
 /// All of an issue's comments, oldest first, following full pages up to the
 /// engine's page cap: a claim may sit beyond the first page.
 pub async fn fetch_comments(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<Vec<Comment>, FetchError> {

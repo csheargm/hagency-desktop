@@ -174,7 +174,11 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let mut outcome = handoff::hand_off(&live, &picks).await;
     outcome.handed += worked.handed;
     // Follow-through on earlier hand-offs (ADR 0018), from this check's snapshot.
-    let followed = tracker_live::follow_repo(&worker, &tracker_live::Watched { watch: &watch, entry: None, open_issues: &issues, seen: &seen }, &saved).await;
+    let followed = if tracker_live::on_work_list(&saved, &watch.setting.repo) {
+        tracker::Followups::default() // the work list follows it, with its claims
+    } else {
+        tracker_live::follow_repo(&worker, &tracker_live::Watched { watch: &watch, entry: None, open_issues: &issues, seen: &seen }, &saved).await
+    };
     let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).chain(followed.errors).collect();
     outcome.error = (!errors.is_empty()).then(|| errors.join(" · "));
     Ok(Some((outcome, worked.tracked.into_iter().chain(followed.lines).collect())))

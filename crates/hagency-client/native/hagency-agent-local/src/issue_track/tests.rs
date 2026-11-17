@@ -99,3 +99,13 @@ fn only_the_agents_own_cannot_fix_comment_of_this_attempt_counts() {
     assert!(!says_cannot_fix(&[c("anna", &reason, T0 - 1)], "anna", T0), "an earlier attempt's comment does not count");
     assert!(!says_cannot_fix(&[c("anna", "I think it cannot fix", T0)], "anna", T0));
 }
+
+#[test]
+fn a_late_retry_never_clears_a_found_pull_request() {
+    let (_tmp, mut l) = ledger();
+    l.track_issue("a1", &change(Some(1), None, None), T0).unwrap();
+    l.track_issue("a1", &change(None, Some(State::Reviewed), Some(32)), T0 + 10).unwrap();
+    l.track_issue("a1", &change(Some(2), None, None), T0 + 20).unwrap();
+    let track = &l.issue_tracks("a1").unwrap()[0];
+    assert_eq!((track.state, track.pr, track.attempts), (State::Reviewed, Some(32), 1));
+}
