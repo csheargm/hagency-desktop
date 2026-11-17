@@ -5,6 +5,8 @@
 
 /// Pasion `login_hint` that skips its chooser and opens GitHub directly.
 pub const GITHUB_LOGIN_HINT: &str = "upstream:github";
+/// Pasion `login_hint` that opens Google directly.
+pub const GOOGLE_LOGIN_HINT: &str = "upstream:google";
 /// Prefix that marks a provider id as a Pasion upstream hint.
 const UPSTREAM_HINT_PREFIX: &str = "upstream:";
 
@@ -36,6 +38,10 @@ pub struct PendingRegistration {
 pub enum AccountOptionsAction {
     /// Whether the checked server advertises a GitHub provider.
     GithubAvailability { generation: u64, available: bool },
+    /// Whether the checked server advertises a Google provider.
+    GoogleAvailability { generation: u64, available: bool },
+    /// Live sign-up check: the text it was for and the status line to show.
+    UsernameAvailability { request: u64, typed: String, status: String },
     /// Registration with an email either finished or needs the emailed code.
     EmailRegistration { request: u64, result: Result<EmailStep, String> },
     /// Recovery request accepted (`Ok`) or refused with a reason.
@@ -119,17 +125,59 @@ fn post(action: AccountOptionsAction) { makepad_widgets::Cx::post_action(action)
 pub fn spawn_github_check(server: String, generation: u64) {
     crate::sliding_sync::spawn_async_task(async move {
         #[cfg(unix)]
-        let available = match ::hagency::pasion::account::upstream_providers(&server).await {
-            Ok(providers) => ::hagency::pasion::account::offers_github(&providers),
+        let (available, google) = match ::hagency::pasion::account::upstream_providers(&server).await {
+            Ok(providers) => (::hagency::pasion::account::offers_github(&providers), offers_brand(&providers, "google")),
             Err(error) => {
-                // Hiding the optional button is the user-visible outcome.
-                makepad_widgets::log!("GitHub provider check failed for {server}: {error}");
-                false
+                // Hiding the optional buttons is the user-visible outcome.
+                makepad_widgets::log!("Sign-in provider check failed for {server}: {error}");
+                (false, false)
             }
         };
         #[cfg(not(unix))]
-        let available = { let _ = server; false };
+        let (available, google) = { let _ = server; (false, false) };
         post(AccountOptionsAction::GithubAvailability { generation, available });
+        post(AccountOptionsAction::GoogleAvailability { generation, available: google });
+    });
+}
+
+#[cfg(unix)]
+fn offers_brand(providers: &[::hagency::pasion::account::UpstreamProvider], brand: &str) -> bool {
+    providers.iter().any(|p| p.brand_name.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(brand)))
+}
+
+/// Sign-up field as the person types: lowercase, and only the characters a
+/// Matrix localpart allows (`a-z 0-9 . _ = - / +`).
+pub fn live_username(raw: &str) -> String {
+    raw.trim().to_lowercase().chars().filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._=-/+".contains(*c)).collect()
+}
+
+/// The status line for a checked name (already translated).
+pub fn availability_text(status: Result<(&str, Option<&str>), String>) -> String {
+    match status {
+        Ok(("available", Some(name))) => crate::i18n::format("@{name} is available", &[("name", name.to_owned())]),
+        Ok(("taken", Some(name))) => crate::i18n::format("@{name} is taken", &[("name", name.to_owned())]),
+        Ok(_) => crate::i18n::tr("Use lowercase letters, numbers and . _ = - / + (not starting with _).").to_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Check `username` on `server` for the sign-up field.
+pub fn spawn_username_check(request: u64, server: String, username: String) {
+    crate::sliding_sync::spawn_async_task(async move {
+        #[cfg(unix)]
+        let status = {
+            use ::hagency::pasion::native::{username_available, Availability};
+            match username_available(&server, &username).await {
+                Ok(Availability::Available(n)) => availability_text(Ok(("available", Some(&n)))),
+                Ok(Availability::Taken(n)) => availability_text(Ok(("taken", Some(&n)))),
+                Ok(Availability::Invalid) => availability_text(Ok(("invalid", None))),
+                // Older servers have no check; registration still validates.
+                Err(error) => availability_text(Err(error.to_string())),
+            }
+        };
+        #[cfg(not(unix))]
+        let status = { let _ = server; String::new() };
+        post(AccountOptionsAction::UsernameAvailability { request, typed: username, status });
     });
 }
 

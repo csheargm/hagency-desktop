@@ -3500,5 +3500,10 @@
   "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room.",
   "Remove from room": "Remove from room",
   "Remove my agent from this room": "Remove my agent from this room",
-  "Removing the agent from the room…": "Removing the agent from the room…"
+  "Removing the agent from the room…": "Removing the agent from the room…",
+  "Continue with Google": "Continue with Google",
+  "Signed in as {user}. Not you? Sign out in Settings and sign in again.": "Signed in as {user}. Not you? Sign out in Settings and sign in again.",
+  "@{name} is available": "@{name} is available",
+  "@{name} is taken": "@{name} is taken",
+  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "Use lowercase letters, numbers and . _ = - / + (not starting with _)."
 }

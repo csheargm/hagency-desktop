@@ -101,6 +101,8 @@ impl Fixture {
                     + 30_000;
                 let response = if route.contains("/versions ") {
                     json!({"versions":["v1.15"],"unstable_features":{}})
+                } else if route.contains("/auth/api/v1/native/") {
+                    native_reply(&route, &payload, &current_device)
                 } else if route.contains("/hagency/api/v1/discovery ") {
                     json!({"product":"hagency-server","version":"0.1.0","protocolVersion":3,"serverName":"localhost",
                         "homeserver":format!("{root}/"),"issuer":format!("{root}/auth/"),
@@ -213,6 +215,22 @@ impl Fixture {
         }
     }
 }
+/// Pasion's native API: config names the native client; login/register
+/// answer the SDK's own request with its loopback callback.
+fn native_reply(route: &str, payload: &Value, device: &Mutex<Option<String>>) -> Value {
+    if route.contains("/native/config ") {
+        return json!({"client_id":"desktop-native","password_registration_enabled":true,"providers":[]});
+    }
+    assert_eq!(payload["client_id"], "desktop-native", "the SDK must use the native client");
+    *device.lock().unwrap() = payload["scope"].as_str().and_then(|s| s.split_whitespace().find_map(|t| t.split_once("device:").map(|(_, d)| d.to_owned())));
+    let mut callback = Url::parse(payload["redirect_uri"].as_str().unwrap()).unwrap();
+    callback.query_pairs_mut().append_pair("code", "fixture-code").append_pair("state", payload["state"].as_str().unwrap());
+    json!({"status":"success","redirect_url":callback.to_string(),"username":"fixture"})
+}
+
+#[path = "native_auth_tests.rs"]
+mod native_auth_tests;
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);

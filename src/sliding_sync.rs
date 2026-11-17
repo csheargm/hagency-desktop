@@ -2461,6 +2461,9 @@ async fn matrix_worker_task(
                             Cx::post_action(LoginAction::Status {
                                 title: "Finishing sign-in".into(), status: "Loading your account…".into(),
                             });
+                            if let Some(user) = client.user_id() {
+                                crate::shared::popup_list::enqueue_popup_notification(crate::login::native_auth::signed_in_notice(user.as_str()), crate::shared::popup_list::PopupKind::Info, Some(8.0));
+                            }
                             let request = if client.oauth().full_session().is_some() { LoginRequest::LoginByOAuthSuccess(client, session, epoch) } else { LoginRequest::LoginBySSOSuccess(client, session) };
                             if let Err(failure)=sender.send(request).await {
                                 if let LoginRequest::LoginByOAuthSuccess(client,..)=failure.0 {
@@ -2500,6 +2503,9 @@ async fn matrix_worker_task(
                             Cx::post_action(LoginAction::Status {
                                 title: if register { "Finishing registration" } else { "Finishing sign-in" }.into(), status: "Loading your account…".into(),
                             });
+                            if let Some(user) = client.user_id() {
+                                crate::shared::popup_list::enqueue_popup_notification(crate::login::native_auth::signed_in_notice(user.as_str()), crate::shared::popup_list::PopupKind::Info, Some(8.0));
+                            }
                             let request = if client.oauth().full_session().is_some() { LoginRequest::LoginByOAuthSuccess(client, session, epoch) } else { LoginRequest::LoginBySSOSuccess(client, session) };
                             if sender.send(request).await.is_err() {
                                 Cx::post_action(LoginAction::LoginFailure("Could not finish sign-in. Restart Rinx and try signing in.".into()));
@@ -6418,6 +6424,12 @@ async fn run_registration(
     }, app_data_dir()).await?;
     crate::login::homeserver::require_hagency(&client).await?;
     let origin = homeserver_url.trim_end_matches('/').to_owned();
+    // TODO(R4): sliding_sync.rs is over budget; the sign-in tasks belong in login/.
+    if crate::login::native_auth::adopt_native_client(&client, &origin).await.is_some() {
+        Cx::post_action(LoginAction::Status { title: if register { "Creating account" } else { "Signing in" }.into(), status: "Contacting your server…".into() });
+        crate::login::native_auth::password_sign_in(&client, origin, username, password, register).await?;
+        return Ok((client, session));
+    }
     if register {
         Cx::post_action(LoginAction::Status { title: "Creating account".into(), status: "Registering with your server…".into() });
         pasion_login::register(&origin, &username, &password).await.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -6481,6 +6493,8 @@ async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, regi
     }, app_data_dir()).await?;
     let methods = crate::login::homeserver::login_methods(&client).await?;
     if methods.oauth {
+        // Native client: the browser returns once to our loopback, no Pasion page.
+        crate::login::native_auth::adopt_native_client(&client, homeserver_url.trim_end_matches('/')).await;
         let hint = crate::login::account_options::upstream_login_hint(provider_id.as_deref());
         crate::login::homeserver::oauth_browser_login_with_hint(&client, register, None, hint, |url| async move {
             Cx::post_action(LoginAction::Status {
