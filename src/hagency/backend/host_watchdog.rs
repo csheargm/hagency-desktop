@@ -109,7 +109,11 @@ impl Service {
             let weak = weak.clone();
             async move {
                 let Some(inner) = weak.upgrade() else { return Ok(serde_json::json!({})) };
-                let owner = inner.native.lock().await.clone();
+                // Never wait for the owner slot: close and daemon handoff hold it
+                // while draining this task. A busy slot just skips this pass.
+                let Ok(slot) = inner.native.try_lock() else { return Ok(serde_json::json!({})) };
+                let owner = slot.clone();
+                drop(slot);
                 let personal = inner.host_watchdog.personal.load(Ordering::Acquire);
                 drop(inner);
                 match owner {
