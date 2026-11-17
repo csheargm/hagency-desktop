@@ -77,7 +77,7 @@ pub(super) fn default_branch(dir: &Path, remote: &str) -> Option<String> {
 }
 
 /// Every push URL (`pushurl`s, else `url`, after `insteadOf` rewriting) is `repo`.
-fn push_urls_are(dir: &Path, remote: &str, repo: &str) -> bool {
+pub(super) fn push_urls_are(dir: &Path, remote: &str, repo: &str) -> bool {
     urls_are(dir, &["remote", "get-url", "--push", "--all", remote], repo)
 }
 
@@ -100,22 +100,50 @@ pub(super) fn query(dir: &Path, args: &[&str]) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Git's built-in empty tree: attributes read from it select no filter.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/// The fix steps of an issue in checkout `dir`: `fetch [-q] [<remote>]` from
-/// the watched repository (run by the host), and `checkout -b <new>
+/// The fix steps of an issue in checkout `dir`: `fetch [-q] [<remote>]` and
+/// `pull` from the watched repository (run by the host), `checkout -b <new>
 /// <remote>/<default>` (or `switch -c`), which needs no network and runs as
-/// the Agent, pinned so no filter driver, hook or lazy fetch can run.
-pub(crate) fn fix_step(dir: &Path, rest: &[&str], repo: &str) -> Option<super::TrustedStep> {
+/// the Agent, pinned so no filter driver, hook or lazy fetch can run, and
+/// the local steps of [`super::local_git`] in the repository's own checkout.
+pub(crate) fn fix_step(dir: &Path, rest: &[&str], heredoc: Option<&str>, repo: &str) -> Option<super::TrustedStep> {
     use super::{TrustedStep, host_git::HostStep};
+    if heredoc.is_some() {
+        return super::local_git::step(dir, rest, heredoc, repo).map(TrustedStep::Command);
+    }
     let remote = match rest {
         ["fetch"] | ["fetch", "-q" | "--quiet"] => "origin",
         ["fetch", remote] | ["fetch", "-q" | "--quiet", remote] | ["fetch", remote, "-q" | "--quiet"] => remote,
+        ["pull", args @ ..] => return pull(dir, args, repo),
         ["checkout", "-b", name, start] | ["switch", "-c", name, start] => return new_branch(dir, name, start, repo).map(TrustedStep::Command),
-        _ => return None,
+        _ => return super::local_git::step(dir, rest, None, repo).map(TrustedStep::Command),
     };
     (remote_name(remote) && fetch_urls_are(dir, remote, repo)).then(|| TrustedStep::Host(HostStep::Fetch { dir: dir.to_path_buf(), remote: remote.into(), repo: repo.into() }))
+}
+
+/// `pull [-q] [--ff-only] [<remote> [<branch>]]` in the repository's own
+/// checkout: the host fetches, then the Agent's call fast-forwards to
+/// `<remote>/<branch>` (the current branch's upstream when not named).
+fn pull(dir: &Path, args: &[&str], repo: &str) -> Option<super::TrustedStep> {
+    let named: Vec<&str> = args.iter().copied().filter(|w| !matches!(*w, "-q" | "--quiet" | "--ff-only")).collect();
+    if named.iter().any(|w| w.starts_with('-')) || !super::local_git::own_checkout(dir, repo) {
+        return None;
+    }
+    let upstream = || query(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+    let (remote, branch) = match named.as_slice() {
+        [] => {
+            let up = upstream()?;
+            let (r, b) = up.split_once('/')?;
+            (r.to_owned(), b.to_owned())
+        }
+        [remote] => {
+            let up = upstream()?;
+            let (r, b) = up.split_once('/')?;
+            (r == *remote).then(|| (r.to_owned(), b.to_owned()))?
+        }
+        [remote, branch] => ((*remote).to_owned(), (*branch).to_owned()),
+        _ => return None,
+    };
+    (remote_name(&remote) && branch_name(&branch) && fetch_urls_are(dir, &remote, repo)).then(|| super::TrustedStep::Host(super::host_git::HostStep::Pull { dir: dir.to_path_buf(), remote, branch, repo: repo.into() }))
 }
 
 /// The pinned `checkout -b`: attributes come from the empty tree (so a
@@ -137,5 +165,5 @@ fn new_branch(dir: &Path, name: &str, start: &str, repo: &str) -> Option<String>
     }
     words.extend(["checkout", "-q", "--no-track", "-b", name, &format!("refs/remotes/{start}")].map(str::to_owned));
     let line = words.iter().map(|w| super::quote(w)).collect::<Vec<_>>().join(" ");
-    Some(super::pin_env(&format!("GIT_ATTR_SOURCE={EMPTY_TREE} GIT_NO_LAZY_FETCH=1 {line}")))
+    Some(super::pin_env(&format!("GIT_ATTR_SOURCE={} GIT_NO_LAZY_FETCH=1 {line}", super::local_git::EMPTY_TREE)))
 }

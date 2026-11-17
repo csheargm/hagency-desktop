@@ -17,7 +17,12 @@
 //!   also run by the host, and `git [-C <checkout>] checkout -b <new>
 //!   <remote>/<default>`, pinned (the fix steps of an issue, see [`git`]);
 //! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]);
-//! - Write/Edit/MultiEdit of a file inside the workspace, never git metadata.
+//! - the local fix steps in the watched repository's own checkout (`status`,
+//!   `diff`, `log`, `show`, `branch`, `add`, `commit`, `restore`, pinned, see
+//!   [`local_git`]), `pull` and a `clone` of it into the workspace (host-run,
+//!   see [`host_clone`]), ADR 0021;
+//! - Read/Glob/Grep, and Write/Edit/MultiEdit (never git metadata), of a path
+//!   inside that checkout.
 //!
 //! Everything else keeps asking. Merges stay with `merge_policy`.
 use crate::{ToolProposal, outside::shell};
@@ -26,8 +31,10 @@ use std::path::Path;
 
 pub(crate) mod gh;
 pub(crate) mod git;
+pub(crate) mod host_clone;
 pub mod host_git;
 pub mod host_run;
+pub(crate) mod local_git;
 pub mod read_only;
 
 /// How push trust answers a tool call.
@@ -42,39 +49,30 @@ pub enum TrustedStep {
 }
 
 /// The repositories `proposal`'s Agent may publish to from this proposal's
-/// Room: the legacy issue watch's, and each work-list entry whose owner set
-/// "push freely" for this Room.
+/// Room: each active watch reporting here (the legacy issue watch or a
+/// work-list entry, as the room view resolves them) whose owner set "push
+/// freely".
 fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
-    let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
-    let row: Option<(String, String, String, i64)> = db
-        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [agent], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
-        .optional()?;
-    let mut repos: Vec<String> = row.and_then(|(mode, repo, r, trusted)| (mode != "off" && trusted == 1 && &r == room).then_some(repo)).into_iter().collect();
-    let mut work = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
-    for rules in work.query_map([agent], |r| r.get::<_, String>(0))? {
-        // A row that no longer parses grants nothing.
-        let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) else { continue };
-        if rules.push_freely && &rules.room_id == room && !repos.iter().any(|r| r.eq_ignore_ascii_case(&rules.repo)) {
-            repos.push(rules.repo);
-        }
-    }
-    Ok(repos)
+    Ok(room_entries(db, proposal)?.into_iter().filter(|e| e.push_freely).map(|e| e.repo).collect())
 }
 
 /// Every repository `proposal`'s Agent watches with reports to this Room,
-/// push trust or not: the same effective watches the room view shows
-/// (`watch_info::entries`, so a work-list entry replaces a legacy watch of
-/// the same repository, GPT review), active ones only.
+/// push trust or not, active ones only.
 fn watched_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    Ok(room_entries(db, proposal)?.into_iter().map(|e| e.repo).collect())
+}
+
+/// The Agent's effective watches (`watch_info::entries`, so a work-list
+/// entry replaces a legacy watch of the same repository, GPT review) that
+/// are active and report to `proposal`'s Room.
+fn room_entries(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<crate::watch_info::WatchEntry>> {
     use crate::issue_watch::{IssueWatch, WatchMode, WatchSetting};
     let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
-    let legacy: Option<(String, String, String)> = db
-        .query_row("SELECT mode,repo,room_id FROM issue_watch WHERE agent=?", [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let legacy: Option<(String, String, String, i64)> = db
+        .query_row("SELECT mode,repo,room_id,push_trusted FROM issue_watch WHERE agent=?", [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .optional()?;
-    let watch = legacy.map_or_else(IssueWatch::default, |(mode, repo, room_id)| IssueWatch {
-        setting: WatchSetting { mode: WatchMode::from_stored(&mode), label: String::new(), repo, room_id, push_trusted: false },
+    let watch = legacy.map_or_else(IssueWatch::default, |(mode, repo, room_id, trusted)| IssueWatch {
+        setting: WatchSetting { mode: WatchMode::from_stored(&mode), label: String::new(), repo, room_id, push_trusted: trusted == 1 },
         enabled_at: 0,
     });
     let mut work = Vec::new();
@@ -86,7 +84,7 @@ fn watched_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<
         }
     }
     let entries = crate::watch_info::entries(&watch, &work);
-    Ok(entries.into_iter().filter(|e| e.active && &e.room_id == room).map(|e| e.repo).collect())
+    Ok(entries.into_iter().filter(|e| e.active && &e.room_id == room).collect())
 }
 
 /// Whether `proposal` is a foreground Claude `Bash` read-only GitHub query
@@ -98,6 +96,15 @@ pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
     Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
+}
+
+/// `proposal` as push trust must see it: rooted at the Room `workspace`.
+/// The permission callback derives `canonical_directory` from the call's own
+/// path argument (an absolute file's parent), which must never become the
+/// containment root (GPT review, Nov 17).
+pub(crate) fn for_workspace(proposal: &ToolProposal, workspace: &Path) -> ToolProposal {
+    let root = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    ToolProposal { canonical_directory: root.to_string_lossy().into(), ..proposal.clone() }
 }
 
 /// A check, run off the async threads, that push trust still covers
@@ -116,8 +123,9 @@ pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, 
 /// checked; Codex cannot rewrite its command, so it is never trusted.
 pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<Option<TrustedStep>> {
     let edit = matches!(proposal.tool.as_str(), "claude.Write" | "claude.Edit" | "claude.MultiEdit");
+    let read = matches!(proposal.tool.as_str(), "claude.Read" | "claude.Glob" | "claude.Grep");
     if proposal.risk == "permission_expansion"
-        || !(edit || proposal.tool == "claude.Bash")
+        || !(edit || read || proposal.tool == "claude.Bash")
         || proposal.scope.requester != owner
         // A background call's launch result says nothing about what it did.
         || proposal.arguments["run_in_background"] == true
@@ -125,9 +133,16 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
         return Ok(None);
     }
     let root = Path::new(&proposal.canonical_directory);
-    if edit {
-        let inside = crate::outside::writable_in(proposal.arguments.get("file_path"), root);
-        return Ok((inside && !trusted_repos(db, proposal)?.is_empty()).then_some(TrustedStep::Allow));
+    if edit || read {
+        let args = &proposal.arguments;
+        let path = args.get("file_path").or(args.get("path")).map_or(Some("."), serde_json::Value::as_str);
+        let inside = path.is_some_and(|p| if edit { crate::outside::writable_in(args.get("file_path"), root) } else { crate::outside::resolves_inside(p, root) });
+        let real = path.filter(|_| inside).and_then(|p| crate::outside::real_path(root, p));
+        // Reads stay out of git metadata too (GPT review, Nov 17).
+        let metadata = path.is_some_and(|p| crate::outside::is_git_metadata(Path::new(p))) || real.as_deref().is_some_and(crate::outside::is_git_metadata);
+        let checkout = real.filter(|_| !metadata).and_then(|real| local_git::checkout_containing(&real, root));
+        let Some(checkout) = checkout else { return Ok(None) };
+        return Ok(trusted_repos(db, proposal)?.iter().any(|repo| local_git::own_checkout(&checkout, repo)).then_some(TrustedStep::Allow));
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
     Ok(trusted_repos(db, proposal)?.iter().find_map(|repo| pinned_line(line, root, repo)))
@@ -138,18 +153,25 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
 pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<TrustedStep> {
     let parsed = shell::parse(line)?;
     let [words] = parsed.segments.as_slice() else { return None };
-    if parsed.heredoc_at.is_some() {
+    // Only `git commit -F -` may read a heredoc: its message (see `local_git`).
+    let heredoc = match parsed.heredoc_at {
+        Some(_) => Some(&line[line.find("<<")?..]),
+        None => None,
+    };
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    if heredoc.is_some() && !matches!(words.as_slice(), ["git", "-C", _, "commit", ..] | ["git", "commit", ..]) {
         return None;
     }
-    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     match words.as_slice() {
+        ["git", "clone", rest @ ..] => host_clone::request(root, true, rest, repo).map(TrustedStep::Host),
+        ["gh", "repo", "clone", rest @ ..] => host_clone::request(root, false, rest, repo).map(TrustedStep::Host),
         ["git", "-C", dir, "push", rest @ ..] => {
             let dir = checkout(root, dir)?;
             let push = git::Push::parse(rest)?;
             (crate::outside::git_config::local_config_safe(&dir) && push.allowed_in(&dir, repo)).then(|| TrustedStep::Host(push.host_step(&dir, repo)))
         }
-        ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, repo),
-        ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, repo),
+        ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, heredoc, repo),
+        ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, heredoc, repo),
         ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| TrustedStep::Command(pin_env(line))),
         _ => None,
     }
@@ -194,3 +216,5 @@ pub(crate) fn github_repo_of(url: &str) -> Option<&str> {
 mod tests;
 #[cfg(test)]
 mod read_only_flow_tests;
+#[cfg(test)]
+mod fix_flow_tests;

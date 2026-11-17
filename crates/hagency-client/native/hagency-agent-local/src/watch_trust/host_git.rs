@@ -12,6 +12,7 @@ use super::git::query;
 pub use super::host_run::{CancelOnDrop, HostCtx};
 use super::host_run::run;
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 
 /// Config of every host network command; with no system or global config
@@ -52,6 +53,10 @@ const TOKEN_ENV: &str = crate::agent_env::GITHUB_TOKEN_VARIABLE;
 pub enum HostStep {
     Push { dir: PathBuf, remote: String, branch: String, repo: String, upstream: bool },
     Fetch { dir: PathBuf, remote: String, repo: String },
+    /// Fetch, then fast-forward the checkout to `<remote>/<branch>`.
+    Pull { dir: PathBuf, remote: String, branch: String, repo: String },
+    /// A new clone of the watched repository at `target` (inside the workspace).
+    Clone { target: PathBuf, repo: String },
 }
 
 /// Where a network step goes: the watched repository on github.com over
@@ -70,14 +75,14 @@ impl Dest {
 impl HostStep {
     /// The repository the step talks to.
     pub fn repo(&self) -> &str {
-        let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
+        let (Self::Push { repo, .. } | Self::Fetch { repo, .. } | Self::Pull { repo, .. } | Self::Clone { repo, .. }) = self;
         repo
     }
 
     /// Run the step as the Agent (its token in `ctx`); `Ok` is the command
     /// the Agent's call runs in its place.
     pub fn run(&self, ctx: &HostCtx) -> Result<String, String> {
-        let (Self::Push { repo, .. } | Self::Fetch { repo, .. }) = self;
+        let repo = self.repo();
         if ctx.token.as_deref().is_none_or(str::is_empty) {
             return Err("this Agent has no GitHub token of its own".into());
         }
@@ -88,6 +93,8 @@ impl HostStep {
         match self {
             Self::Push { dir, remote, branch, upstream, .. } => push(dir, remote, branch, *upstream, dest, ctx),
             Self::Fetch { dir, remote, .. } => fetch(dir, remote, dest, ctx),
+            Self::Pull { dir, remote, branch, .. } => super::host_clone::pull(dir, remote, branch, dest, ctx),
+            Self::Clone { target, repo } => super::host_clone::clone(target, repo, dest, ctx),
         }
     }
 }
@@ -102,7 +109,7 @@ pub fn report_command(result: &Result<String, String>) -> String {
 }
 
 /// `printf` of `message`.
-fn say(message: &str) -> String {
+pub(super) fn say(message: &str) -> String {
     format!("printf '%s\\n' {}", super::quote(message))
 }
 
@@ -121,11 +128,10 @@ fn agent_git(dir: &Path, args: &[&str]) -> String {
 fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
     let head = format!("refs/heads/{branch}");
     let sha = query(dir, &["rev-parse", "--verify", "-q", &format!("{head}^{{commit}}")]).ok_or("the branch has no commit")?;
-    let scratch = Scratch::new(&objects_dir(dir)?, ctx)?;
+    let scratch = Scratch::new(Some(&objects_dir(dir)?), ctx)?;
     // The remote's own default branch, not the checkout's forgeable
     // `refs/remotes/<remote>/HEAD` (GPT review, Nov 16).
-    let advertised = run(scratch.git(dest).args(["ls-remote", "--symref", &dest.url, "HEAD"]), None, ctx)?;
-    let default = advertised.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD")).ok_or("the remote's default branch is unknown")?;
+    let default = remote_default(&scratch, dest, ctx)?;
     if default == branch {
         return Err(format!("{branch} is the repository's default branch"));
     }
@@ -149,11 +155,26 @@ fn push(dir: &Path, remote: &str, branch: &str, upstream: bool, dest: &Dest, ctx
     Ok(format!("{done} && {}", record.join(" && ")))
 }
 
+/// The remote's own default branch, as it advertises it.
+pub(super) fn remote_default(scratch: &Scratch, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
+    let advertised = run(scratch.git(dest).args(["ls-remote", "--symref", &dest.url, "HEAD"]), None, ctx)?;
+    let default = advertised.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD"));
+    Ok(default.ok_or("the remote's default branch is unknown")?.to_owned())
+}
+
 /// The host fetches into a scratch repository it keeps for the Agent's
 /// call, which then imports from that local path (no network, no host write
 /// into the checkout) and removes it.
 fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String, String> {
-    let scratch = Scratch::new(&objects_dir(dir)?, ctx)?;
+    fetch_with(dir, remote, None, dest, ctx).map(|(command, _)| command)
+}
+
+/// [`fetch`], and the commit the remote's `want` branch has in this very
+/// fetch (an error when it no longer exists), so a pull never follows a
+/// stale tracking ref (GPT review, Nov 17).
+pub(super) fn fetch_with(dir: &Path, remote: &str, want: Option<&str>, dest: &Dest, ctx: &HostCtx) -> Result<(String, Option<String>), String> {
+    still_allowed(ctx)?;
+    let scratch = Scratch::new(Some(&objects_dir(dir)?), ctx)?;
     let prefix = format!("refs/remotes/{remote}/");
     // What the checkout already has, so only new objects come down.
     let known = query(dir, &["for-each-ref", "--format=%(objectname) %(refname)", &prefix]).ok_or("cannot read the checkout's refs")?;
@@ -161,18 +182,29 @@ fn fetch(dir: &Path, remote: &str, dest: &Dest, ctx: &HostCtx) -> Result<String,
     run(scratch.git(dest).args(["update-ref", "--stdin"]), Some(&seed), ctx)?;
     run(scratch.git(dest).args(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--prune", &dest.url, "+refs/heads/*:refs/heads/*"]), None, ctx)?;
     let count = run(scratch.git(dest).args(["for-each-ref", "--format=x", "refs/heads"]), None, ctx)?.lines().count();
+    let sha = match want {
+        Some(branch) => Some(run(scratch.git(dest).args(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, ctx).map_err(|_| format!("{branch} no longer exists on the remote"))?),
+        None => None,
+    };
+    still_allowed(ctx)?;
     let path = scratch.keep();
     let local = path.to_string_lossy().into_owned();
     let import = agent_git(dir, &["fetch", "-q", "--no-tags", "--no-write-fetch-head", &local, &format!("+refs/heads/*:{prefix}*")]);
     let done = say(&format!("Fetched {count} branches of {} into {remote}.", dest.url));
-    Ok(format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)))
+    Ok((format!("{import}; status=$?; rm -rf -- {}; [ $status -eq 0 ] && {done}", super::quote(&local)), sha.map(|s| s.trim().to_owned())))
+}
+
+/// The owner may have paused the watch or turned push freely off since the
+/// call was checked: then the step stops (GPT review, Nov 17).
+pub(super) fn still_allowed(ctx: &HostCtx) -> Result<(), String> {
+    if (ctx.still_allowed)() { Ok(()) } else { Err("the owner no longer lets this Agent work here without asking".into()) }
 }
 
 /// The object directory of checkout `dir`, which must be a plain clone:
 /// `.git`, `objects` and `objects/pack` real directories (no links, no
 /// `.git` file, no `commondir`), so the alternates link reads only `dir`'s
 /// objects (GPT review, Nov 16).
-fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
+pub(super) fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
     let git_dir = dir.join(".git");
     let objects = git_dir.join("objects");
     let real_dirs = [&git_dir, &objects, &objects.join("pack")].iter().all(|d| d.symlink_metadata().is_ok_and(|m| m.is_dir()));
@@ -187,32 +219,37 @@ fn objects_dir(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// A fresh host-owned bare repository, removed when dropped.
-struct Scratch(PathBuf, Option<String>);
+pub(super) struct Scratch(PathBuf, Option<String>);
 
 impl Scratch {
-    fn new(objects: &Path, ctx: &HostCtx) -> Result<Self, String> {
+    /// With `objects`, the checkout's object files are linked (alternates).
+    pub(super) fn new(objects: Option<&Path>, ctx: &HostCtx) -> Result<Self, String> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let path = std::env::temp_dir().join(format!("hagency-trusted-git-{}-{nanos}-{n}", std::process::id()));
         // create_dir fails on anything already there (a planted link included).
-        std::fs::create_dir(&path).map_err(|e| format!("scratch repository: {e}"))?;
+        // Owner-only: a clone stages a private repository's whole history
+        // here (GPT review, Nov 17).
+        std::fs::DirBuilder::new().mode(0o700).create(&path).map_err(|e| format!("scratch repository: {e}"))?;
         let scratch = Self(path, ctx.token.clone());
         run(host_command(&scratch.0, None, None).args(["init", "-q", "--bare", "--template="]), None, ctx)?;
-        let info = scratch.0.join("objects/info");
-        std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
-        std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(|e| e.to_string())?;
+        if let Some(objects) = objects {
+            let info = scratch.0.join("objects/info");
+            std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
+            std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(|e| e.to_string())?;
+        }
         Ok(scratch)
     }
 
-    fn git(&self, dest: &Dest) -> Command {
+    pub(super) fn git(&self, dest: &Dest) -> Command {
         host_command(&self.0, Some(dest.protocol), self.1.as_deref())
     }
 }
 
 impl Scratch {
     /// Hand the repository over (the Agent's command removes it).
-    fn keep(self) -> PathBuf {
+    pub(super) fn keep(self) -> PathBuf {
         let path = self.0.clone();
         std::mem::forget(self);
         path

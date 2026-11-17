@@ -26,6 +26,7 @@ script_mod! {
         Text {text: #(crate::i18n::tr("Room")) i18n_text: "Room"}
         watch_room := Select {labels: ["-"]}
         watch_push := Select {labels: ["-"]}
+        Muted {text: #(crate::i18n::tr("With this on, the Agent fetches, branches, edits, commits, pushes branches and opens pull requests in its own clone of this repository without asking. Build, test and install commands, other websites and anything outside that clone still ask, and merges follow the merge rule.")) i18n_text: "With this on, the Agent fetches, branches, edits, commits, pushes branches and opens pull requests in its own clone of this repository without asking. Build, test and install commands, other websites and anything outside that clone still ask, and merges follow the merge rule."}
         save_watch := RobrixIconButton {height: 40 icon_walk: Walk{width: 0 height: 0} spacing: 0 padding: Inset{left: 14 right: 14 top: 0 bottom: 0} text: #(crate::i18n::tr("Save issue watching")) i18n_text: "Save issue watching"}
         watch_note := Text {}
         watch_status := Muted {}

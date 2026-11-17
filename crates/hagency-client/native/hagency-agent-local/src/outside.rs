@@ -66,11 +66,17 @@ pub(crate) fn writable_in(value: Option<&Value>, cwd: &Path) -> bool {
     resolves_inside(path, cwd) && !is_git_metadata(&joined) && !is_git_metadata(&real)
 }
 
-fn is_git_metadata(path: &Path) -> bool {
+pub(crate) fn is_git_metadata(path: &Path) -> bool {
     path.components().any(|part| {
         let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
         matches!(name.as_str(), ".git" | ".gitattributes" | ".gitmodules" | ".gitconfig")
     })
+}
+
+/// `path` from `cwd` as the OS opens it, through every existing link; a
+/// dangling link on the way is `None`.
+pub(crate) fn real_path(cwd: &Path, path: &str) -> Option<PathBuf> {
+    physical_join(cwd, path).and_then(|p| real_target(&p))
 }
 
 /// Resolve `path` from `cwd` and require it to stay in `cwd`.

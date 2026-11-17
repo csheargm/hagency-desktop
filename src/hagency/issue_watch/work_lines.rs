@@ -10,7 +10,7 @@ use ::hagency::issue_watch::{IssueFilter, OwnerRules, Role};
 use serde_json::Value;
 
 /// The shape shown under the input.
-pub const WORK_HINT: &str = "One per line or separated by ;  owner/name, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (push branches and open pull requests without asking), issues=N (issues per day), prs=N (open pull requests at once)";
+pub const WORK_HINT: &str = "One per line or separated by ;  owner/name, then optional: all (any issue author), any-path, max=N, authors=login,login (or *), reviewers=login, human=glob, push-freely (fetch, edit, commit, push branches and open pull requests in its clone without asking), issues=N (issues per day), prs=N (open pull requests at once)";
 
 /// The entries of `text` for `room_id`; `previous` keeps each listed
 /// repository's start time, new ones start at `now`.
