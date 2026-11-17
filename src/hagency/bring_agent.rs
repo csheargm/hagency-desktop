@@ -22,6 +22,7 @@ mod prompt;
 mod retry;
 pub use flow::{bind_into_rooms, bind_into_rooms_then, catch_up_agents, observe, owner_created_room};
 pub use prompt::{BringAgentAction, route as route_prompt, script_mod};
+pub(crate) use consent::{allow_then as allow_into_room, consent_text, needs_consent};
 
 use serde_json::Value;
 

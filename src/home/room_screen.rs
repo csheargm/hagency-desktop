@@ -1767,14 +1767,25 @@ impl Widget for RoomScreen {
                 }
 
                 // Handle InviteResultAction to show popup notifications.
-                if let Some(InviteResultAction::Agent { room_id, epoch, result, .. }) = action.downcast_ref() {
+                if let Some(InviteResultAction::Agent { room_id, user_id, epoch, result }) = action.downcast_ref() {
                     if *epoch == crate::account_session::epoch() && self.room_name_id.as_ref().is_some_and(|rn| rn.room_id() == room_id) {
-                        let (text, kind) = match result {
-                            Ok(true) => ("Agent joined this room. In group chats, @ the Agent to ask it to reply.", PopupKind::Success),
-                            Ok(false) => ("The request is saved. The Agent is still joining. You can close this panel or check its status.", PopupKind::Info),
-                            Err(code) => (super::mobile_chat_info::agent_binding_error(code), PopupKind::Error),
-                        };
-                        enqueue_popup_notification(crate::i18n::tr(text), kind, Some(8.0));
+                        // A private Agent is asked about, never sent elsewhere: the
+                        // Add agent picker asks in place; `/invite` and member actions
+                        // use the shared "Allow in group rooms?" prompt.
+                        if crate::hagency::bring_agent::needs_consent(result) {
+                            if !super::invite_modal::picker_owns(room_id, user_id) {
+                                let agent = crate::hagency::bring_agent::AgentPick { id: String::new(), name: super::invite_modal::agent_label(user_id), puppet: user_id.to_string(), direct_room: None };
+                                let room_name = self.room_name_id.as_ref().map(|rn| rn.to_string()).unwrap_or_default();
+                                Cx::post_action(crate::hagency::bring_agent::BringAgentAction::Consent { room_id: room_id.clone(), room_name, agent });
+                            }
+                        } else {
+                            let (text, kind) = match result {
+                                Ok(true) => ("Agent joined this room. In group chats, @ the Agent to ask it to reply.", PopupKind::Success),
+                                Ok(false) => ("The request is saved. The Agent is still joining. You can close this panel or check its status.", PopupKind::Info),
+                                Err(code) => (super::mobile_chat_info::agent_binding_error(code), PopupKind::Error),
+                            };
+                            enqueue_popup_notification(crate::i18n::tr(text), kind, Some(8.0));
+                        }
                     }
                 }
                 if let Some(InviteResultAction::Sent { room_id, .. }) = action.downcast_ref() {
