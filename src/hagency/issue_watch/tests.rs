@@ -267,3 +267,18 @@ fn stop_all_between_post_and_record_leaves_the_issue_for_after_resume() {
     assert_eq!(*fake.seen.borrow(), vec![1], "#2 was posted but stays unseen, so it is handed off again after Resume");
     assert_eq!(fake.posted.borrow().len(), 2, "#3 is never posted");
 }
+
+#[test]
+fn the_poller_rebuilds_its_client_after_repeated_transport_failures() {
+    assert!(!super::should_recreate_client(0));
+    assert!(!super::should_recreate_client(2));
+    assert!(super::should_recreate_client(3));
+}
+
+#[test]
+fn an_unreachable_github_reads_plainly_in_the_status_line() {
+    let error = ::hagency::issue_watch::FetchError::Unreachable("error sending request: dns error: failed to lookup".into());
+    let line = failed_line("9:00", &error.to_string());
+    assert!(line.starts_with("Last check 9:00 failed: Can't reach GitHub (network/DNS) \u{2014} retrying"), "{line}");
+    assert!(line.contains("dns error"), "{line}");
+}

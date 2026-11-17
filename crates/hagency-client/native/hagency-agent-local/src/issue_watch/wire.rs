@@ -22,6 +22,9 @@ pub enum FetchError {
     Repo(String),
     #[error("GitHub request failed: {0}")]
     Http(String),
+    /// No connection or no answer in time: network or DNS, not GitHub's reply.
+    #[error("Can't reach GitHub (network/DNS) — retrying: {0}")]
+    Unreachable(String),
     #[error("GitHub answered {status}: {body}")]
     Status { status: u16, body: String },
     #[error("unreadable GitHub issue list: {0}")]

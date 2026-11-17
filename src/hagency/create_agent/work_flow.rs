@@ -57,7 +57,7 @@ impl CreateAgentDialog {
         spawn_async_task(async move {
             let result = match crate::hagency::issue_watch::choose_token(Ok(typed.and_then(|t| Token::parse(&t).ok())), |n| std::env::var(n).ok()) {
                 Ok(token) => match Token::parse(&token) {
-                    Ok(token) => check(&LiveGithub { client: ::hagency::issue_watch::Client::new(), token }, &wanted).await,
+                    Ok(token) => check(&LiveGithub { client: ::hagency::issue_watch::new_client(), token }, &wanted).await,
                     Err(reason) => Err(crate::i18n::tr(reason).to_owned()),
                 },
                 Err(_) => Err(crate::i18n::tr("Add a GitHub token so the repositories can be checked, or leave the repositories empty.").to_owned()),

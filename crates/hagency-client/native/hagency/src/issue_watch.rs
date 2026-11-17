@@ -2,6 +2,8 @@
 //! (`hagency_agent_local::issue_watch`) plus the HTTP read of a repository's
 //! open issues, sent with this crate's TLS client so the desktop needs no
 //! second HTTP stack. Nothing here writes to GitHub.
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API, MAX_PAGES, PAGE_SIZE};
 /// What an Agent watches, for the room info "Watches" tab (ADR 0019).
 pub use hagency_agent_local::watch_info::{RoomWatch, WatchEntry, entries as watch_entries};
@@ -14,6 +16,50 @@ pub use hagency_agent_local::issue_track;
 
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;
+
+/// Longest wait for a TCP/TLS connection to GitHub (DNS included).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest wait for one whole GitHub request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Transport failures in a row since the last request that reached GitHub.
+static TRANSPORT_FAILURES: AtomicU32 = AtomicU32::new(0);
+
+/// A client with bounded connect and request times, so a stuck resolver or
+/// network fails one check instead of hanging the poller.
+pub fn new_client() -> Client {
+    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).timeout(REQUEST_TIMEOUT).build()
+        // The builder fails only when the TLS backend cannot start; the default client then still works.
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+/// Transport failures in a row (any caller); a caller rebuilds its client past a limit.
+pub fn transport_failures() -> u32 {
+    TRANSPORT_FAILURES.load(Ordering::Relaxed)
+}
+/// Starts the count again, after the caller rebuilt its client.
+pub fn reset_transport_failures() {
+    TRANSPORT_FAILURES.store(0, Ordering::Relaxed);
+}
+/// `error` with its whole cause chain ("error sending request: ... : dns error: ...").
+pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+/// A failed send as a `FetchError`: no connection or no answer is `Unreachable`.
+fn transport(error: reqwest::Error) -> FetchError {
+    let chain = error_chain(&error);
+    if error.is_connect() || error.is_timeout() {
+        TRANSPORT_FAILURES.fetch_add(1, Ordering::Relaxed);
+        FetchError::Unreachable(chain)
+    } else {
+        FetchError::Http(chain)
+    }
+}
 
 /// The one GitHub token rule, shared with the Agent runtime (create, poller, run time).
 pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_github_token};
@@ -89,12 +135,11 @@ pub async fn fetch_open_pr_count(client: &Client, api: &str, repo: &str, login: 
 /// owner approved); answers its number.
 pub async fn create_issue(client: &Client, api: &str, repo: &str, token: &str, title: &str, body: &str) -> Result<u64, FetchError> {
     pulls_url(api, repo)?; // refuses anything but owner/name
-    let http = |e: reqwest::Error| FetchError::Http(e.to_string());
     let response = client.post(format!("{api}/repos/{repo}/issues")).bearer_auth(token).header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({"title": title, "body": body})).send().await.map_err(http)?;
+        .json(&serde_json::json!({"title": title, "body": body})).send().await.map_err(transport)?;
     let status = response.status();
-    let text = response.text().await.map_err(http)?;
+    let text = response.text().await.map_err(transport)?;
     if !status.is_success() {
         return Err(FetchError::Status { status: status.as_u16(), body: text });
     }
@@ -171,12 +216,11 @@ pub async fn fetch_comments(client: &Client, api: &str, repo: &str, number: i64,
 
 /// Post a comment on an issue with the owner's own token (the claim).
 pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, token: &str, body: &str) -> Result<(), FetchError> {
-    let http = |e: reqwest::Error| FetchError::Http(e.to_string());
     let url = comments_url(api, repo, number, 1)?;
     let url = url.split('?').next().unwrap_or_default();
     let response = client.post(url).bearer_auth(token).header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({"body": body})).send().await.map_err(http)?;
+        .json(&serde_json::json!({"body": body})).send().await.map_err(transport)?;
     let status = response.status();
     if !status.is_success() {
         return Err(FetchError::Status { status: status.as_u16(), body: response.text().await.unwrap_or_default() });
@@ -185,7 +229,6 @@ pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, t
 }
 
 async fn get(client: &Client, url: &str, token: &str) -> Result<String, FetchError> {
-    let http = |e: reqwest::Error| FetchError::Http(e.to_string());
     let response = client
         .get(url)
         .bearer_auth(token)
@@ -194,11 +237,16 @@ async fn get(client: &Client, url: &str, token: &str) -> Result<String, FetchErr
         .header("User-Agent", USER_AGENT)
         .send()
         .await
-        .map_err(http)?;
+        .map_err(transport)?;
+    reset_transport_failures();
     let status = response.status();
-    let body = response.text().await.map_err(http)?;
+    let body = response.text().await.map_err(transport)?;
     if !status.is_success() {
         return Err(FetchError::Status { status: status.as_u16(), body });
     }
     Ok(body)
 }
+
+#[cfg(test)]
+#[path = "issue_watch_transport_tests.rs"]
+mod transport_tests;

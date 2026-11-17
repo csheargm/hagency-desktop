@@ -32,7 +32,7 @@ mod review_loop_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};
-use ::hagency::issue_watch::{Client, GITHUB_API, IssueWatch, WatchMode, fetch_open_issues, select};
+use ::hagency::issue_watch::{Client, GITHUB_API, new_client, IssueWatch, WatchMode, fetch_open_issues, select};
 use handoff::Outcome;
 use makepad_widgets::Cx;
 use serde_json::Value;
@@ -106,12 +106,26 @@ pub fn ensure_running() {
     }
     crate::account_session::spawn(run(epoch));
 }
+/// Transport failures in a row after which the poller drops its client and
+/// its pooled connections, and starts a fresh one.
+const RECREATE_CLIENT_AFTER: u32 = 3;
+
 async fn run(epoch: u64) {
-    let client = Client::new();
+    let mut client = new_client();
     while still_current(epoch).is_ok() {
         check_all(epoch, &client).await;
+        if should_recreate_client(::hagency::issue_watch::transport_failures()) {
+            makepad_widgets::log!("WARN issue_watch_client_recreated after repeated transport failures");
+            ::hagency::issue_watch::reset_transport_failures();
+            client = new_client();
+        }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Whether `failures` transport failures in a row warrant a fresh client.
+pub(crate) fn should_recreate_client(failures: u32) -> bool {
+    failures >= RECREATE_CLIENT_AFTER
 }
 
 async fn check_all(epoch: u64, client: &Client) {
