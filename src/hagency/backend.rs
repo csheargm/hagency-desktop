@@ -23,7 +23,7 @@ fn matching_binding_recovery(command: &Command, saved: &Value) -> Option<Command
 /// A reserved puppet name selects the binding protocol, never authority. The
 /// owner's server roster must still identify the exact Agent before any write.
 pub(crate) fn is_agent_invitation(user: &matrix_sdk::ruma::UserId) -> bool {
-    user.localpart().starts_with("_hagency_agt_")
+    hagency_core::puppet::is_puppet_localpart(user.localpart())
 }
 
 fn invited_agent_command(context: &Value, room: &str, user: &str) -> Result<Command, String> {
@@ -909,6 +909,11 @@ mod binding_recovery_tests {
         let puppet: matrix_sdk::ruma::OwnedUserId="@_hagency_agt_a:s".try_into().unwrap();
         assert!(is_agent_invitation(&puppet));
         assert!(!is_agent_invitation(matrix_sdk::ruma::user_id!("@friend:s")));
+        assert!(!is_agent_invitation(matrix_sdk::ruma::user_id!("@_hagency_service:s")));
+        let readable: matrix_sdk::ruma::OwnedUserId="@_hagency_ann_helper-2:s".try_into().unwrap();
+        assert!(is_agent_invitation(&readable), "readable puppet IDs route to the binding protocol too");
+        let ctx=json!({"roomId":"!r:s","projectId":"p","agents":[{"id":"agt_01m7","puppetMxid":readable,"state":"active"}]});
+        assert!(matches!(invited_agent_command(&ctx,"!r:s",readable.as_str()).unwrap(),Command::BindAgent {agent_id,..} if agent_id=="agt_01m7"), "the roster, not the ID, names the Agent");
         let context=json!({"roomId":"!r:s","projectId":"p","agents":[{"id":"a","puppetMxid":puppet,"state":"active"}]});
         let command=invited_agent_command(&context,"!r:s",puppet.as_str()).unwrap();
         assert!(matches!(command,Command::BindAgent {agent_id,input} if agent_id=="a" && input["projectId"]=="p" && input["roomId"]=="!r:s" && input["idempotencyKey"].as_str().is_some()));

@@ -9,12 +9,12 @@ use std::{collections::BTreeSet, time::Duration};
 fn recipients(members: Vec<OwnedUserId>, mentions: &BTreeSet<OwnedUserId>) -> Vec<OwnedUserId> {
     let people: Vec<_> = members
         .into_iter()
-        .filter(|u| u.localpart() != "_hagency_service")
+        .filter(|u| u.localpart() != hagency_core::puppet::SERVICE_LOCALPART)
         .collect();
     let direct = people.len() == 2;
     people
         .into_iter()
-        .filter(|u| u.localpart().starts_with("_hagency_agt_") && (direct || mentions.contains(u)))
+        .filter(|u| hagency_core::puppet::is_puppet_localpart(u.localpart()) && (direct || mentions.contains(u)))
         .collect()
 }
 
@@ -126,7 +126,9 @@ mod tests {
             ),
             vec![agent]
         );
-        assert!(recipients(vec![owner, other], &BTreeSet::new()).is_empty());
+        assert!(recipients(vec![owner.clone(), other], &BTreeSet::new()).is_empty());
+        let readable = user("@_hagency_owner_anna-claude:test");
+        assert_eq!(recipients(vec![owner, readable.clone()], &BTreeSet::new()), vec![readable], "readable puppet IDs");
     }
 }
 
