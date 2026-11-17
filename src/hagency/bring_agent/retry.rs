@@ -10,7 +10,9 @@ pub(crate) const RETRY_DELAYS_MS: [u64; 4] = [1_000, 2_000, 4_000, 8_000];
 
 /// Bind errors that retrying cannot fix: the Agent or its binding is gone,
 /// suspended or not allowed. Anything else (network, server busy) is transient.
-const DEFINITIVE_BIND_ERRORS: [&str; 4] = ["agent_retired", "agent_binding_suspended", "agent_owner_binding_required", "agent_creation_denied"];
+/// A private Agent's refusal is final too: only the owner's explicit "Allow in
+/// group rooms" changes it, offered once per pair (`consent`).
+const DEFINITIVE_BIND_ERRORS: [&str; 5] = ["agent_retired", "agent_binding_suspended", "agent_owner_binding_required", "agent_creation_denied", crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL];
 
 /// Lookup errors that mean "the joined room is not loaded yet": sliding sync
 /// has not delivered it, or its power levels are not readable yet.
