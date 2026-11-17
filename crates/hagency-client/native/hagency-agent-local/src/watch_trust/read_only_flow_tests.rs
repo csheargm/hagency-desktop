@@ -81,5 +81,5 @@ fn a_moved_report_room_no_longer_grants_the_old_room() {
     let moved = OwnerRules { repo: REPO.into(), room_id: "!new:example.org".into(), ..Default::default() };
     ledger.set_work(OWNER, "bird", vec![moved]).unwrap();
     assert_eq!(ledger.trusted_publish(OWNER, &list, 11).unwrap(), None);
-    assert!(super::read_only_query(&ledger.db, &proposal("!new:example.org", "gh issue list -R csheargm/hagency-demo-sandbox")).unwrap());
+    assert!(super::read_only_query(&ledger.db, &proposal("!new:example.org", "gh issue list -R csheargm/hagency-demo-sandbox"), false).unwrap());
 }

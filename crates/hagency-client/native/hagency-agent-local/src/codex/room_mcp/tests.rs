@@ -99,7 +99,9 @@ async fn native_descendant_and_each_call_are_bound_to_original_observation() {
     );
     assert!(receives.try_recv().is_err());
     assert!(bridge.config.get("default_tools_approval_mode").is_none());
-    assert_eq!(bridge.config["tools"].as_object().unwrap().len(), 5);
+    assert_eq!(bridge.config["tools"].as_object().unwrap().len(), 6);
+    // The host's push-freely tool never asks Codex for its own approval.
+    assert_eq!(bridge.config["tools"]["watched_repo_step"]["approval_mode"], "approve");
 }
 
 async fn http(
@@ -203,4 +205,32 @@ async fn refusals_name_their_reason_and_contradictions_stay_refused() {
         "x-codex-turn-metadata":{"thread_id":"native","turn_id":"stale","root_turn_id":"one"}}});
     let reply = call(&bridge.state, bridge.tools, &borrowed).await;
     assert!(reply["content"][0]["text"].as_str().unwrap().contains("turn_not_active"), "a root hint grants nothing");
+}
+
+/// ADR 0022, "Codex": `watched_repo_step` is admitted like a room tool call
+/// and answered by the turn that took the calls, never by the room queue.
+#[tokio::test]
+async fn a_repo_step_reaches_its_own_turn_only() {
+    let bridge = Bridge::new(RoomTools::history()).await.unwrap();
+    assert!(definitions(bridge.tools).iter().any(|d| d["name"] == "watched_repo_step"));
+    let (room, mut room_calls) = queue("first");
+    let active = bridge.begin(&room, "native", "one").unwrap();
+    let step = |id: &str| json!({"name":"watched_repo_step","arguments":{"command":"git status"},"_meta":{
+        "callId":id,"itemId":id,"threadId":"native","x-codex-turn-metadata":{"thread_id":"native","turn_id":"one"}}});
+    let refused = call(&bridge.state, bridge.tools, &step("before")).await;
+    assert!(refused["content"][0]["text"].as_str().unwrap().contains("repo_steps_unavailable"), "{refused}");
+    let (sender, mut steps) = super::super::repo_steps::channel();
+    assert!(active.take_repo_steps(sender));
+    let first = step("one");
+    let request = call(&bridge.state, bridge.tools, &first);
+    tokio::pin!(request);
+    let pending = tokio::select! { _ = &mut request => panic!("must await the turn"), s = steps.recv() => s.unwrap() };
+    assert_eq!(pending.command, "git status");
+    pending.reply.send(("## main".into(), false)).unwrap();
+    let answer = request.await;
+    assert_eq!((answer["content"][0]["text"].as_str(), answer["isError"].as_bool()), (Some("## main"), Some(false)));
+    assert_eq!(call(&bridge.state, bridge.tools, &step("one")).await["isError"], true, "a call id is answered once");
+    assert!(room_calls.try_recv().is_err(), "the room queue never sees it");
+    drop(active);
+    assert_eq!(call(&bridge.state, bridge.tools, &step("late")).await["isError"], true);
 }

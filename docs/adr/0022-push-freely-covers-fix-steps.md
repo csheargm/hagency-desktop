@@ -16,8 +16,9 @@ every `git status`.
 ## Decision
 When ALL hold, these calls run without a card:
 1. The call comes from a run in the watch's report Room requested by the
-   owner (the issue-watch hand-off is the owner's notice), foreground Claude
-   only (Codex cannot have its command rewritten, so it keeps asking).
+   owner (the issue-watch hand-off is the owner's notice): a foreground
+   Claude call, or a Codex call of the host tool `watched_repo_step` or a
+   Codex file change (see "Codex" below).
 2. The watch is active (a paused legacy watch grants nothing; a work-list
    entry replaces a legacy watch of the same repository) and push freely is
    on. Both are re-read for every call.
@@ -76,8 +77,8 @@ card-free shapes, so it issues them one per call.
   Agent-run local steps; it is the owner's, not repository data (residual,
   as in ADR 0015). The checks and the run are not atomic against a
   concurrent writer, which itself needs an approved command.
-- An explicit high-risk policy of Deny is still a Deny: push freely narrows
-  what Ask-owner asks, it does not override a refusal.
+- Inside this exact scope push freely overrides a Deny high-risk policy
+  (see "Deny" below); outside it a Deny is still a Deny.
 
 ## GPT review (2026-11-17)
 Adopted: `commit` takes exactly one message source and `-F` only as `-`
@@ -107,6 +108,69 @@ working directory without asking, so this adds no exposure.
   scripts) with the Agent's rights and token in reach; prompt injection
   plus a malicious PR branch would be code execution on the owner's
   machine. A sandboxed test runner would be the way to allow them.
-- Hosted Agents default to a Deny high-risk policy (nobody sees cards). If
-  the autonomous loop must run there, the owner needs a policy that asks or
-  allows for that room; push freely does not lift a Deny.
+- Hosted Agents default to a Deny high-risk policy (nobody sees cards).
+  Answered by "Deny" below: push freely lifts it for its own scope only.
+
+## Deny (Chris, 2026-11-17)
+Live: the issue #33 hand-off run of a hosted Agent failed with "policy
+declines (high-risk tools)": its default high-risk rule is Deny, and push
+freely only narrowed what Ask-owner asks. Decision: inside the exact scope
+above (the owner's run in the watch's report Room, the watch active, push
+freely on, the steps `pinned` answers, and the owner's read-only `gh`
+queries on a push-freely repository) push freely overrides the high-risk
+tool rule, Deny and tool/folder rules included. `Ledger::trusted_publish`
+then checks only the dispatch (binding, expiry, admitted scope, unchanged
+policy revisions, requests not refused) and authorizes the step. Outside
+the scope nothing changes and Deny still refuses: another repository or
+checkout, a chained or unlisted command, a paused watch or push freely off,
+another Room or requester (including another member's read-only query),
+a saved policy change since the run was admitted, or requests refused
+outright. Threat: anyone who can make the owner's own hand-off run read
+injected text gets the push-freely capabilities above even where the
+owner's tool rule said Deny; the switch is the owner's explicit opt-in for
+that repository, and it is the only thing that grants this.
+
+## Codex (Chris, 2026-11-17)
+Why it was Claude-only: Claude's permission callback answers with
+`updatedInput`, so a trusted call runs the PINNED command (relocation
+variables unset, hooks, fsmonitor, pager, editor, signing, transports and
+attributes off), and network steps are run by the host while the call only
+prints the result. Codex's app-server approval (`item/commandExecution/
+requestApproval`) answers only accept or decline for the command the model
+wrote (`/bin/zsh -lc '<script>'`), which then runs in Codex's
+workspace-write sandbox with no network: unpinned (the checkout's hooks and
+`.gitattributes` with the owner's global drivers apply, the
+`GIT_CONFIG_KEY_*` pins cannot be passed because Codex strips `*KEY*`
+variables, and zsh would expand the script itself), and unable to fetch,
+push, clone or call `gh` at all. A network approval would let Codex's
+own git reach GitHub with the checkout's config, not the host. So the
+guarantees "pinned, no git config or hooks" and "host-side network" cannot
+be held for Codex's native shell, and it is still never trusted.
+
+Mapping that holds the same guarantees:
+- Commands go through the host tool `watched_repo_step` on the Room MCP
+  server (`{"command": "<one line>"}`, auto-approved as Hagency's own
+  tool). The turn that owns the call builds a proposal `codex.repo_step`
+  rooted at the Room workspace and checks it with exactly the Claude `Bash`
+  rules (`pinned`, the read-only queries, the Deny override). The HOST then
+  runs the pinned command, or the host step and then its pinned follow-up,
+  under `/bin/sh` in the workspace with only the host's small environment,
+  the Agent's token and an empty gh config, at most 60 s, killed when the
+  turn stops. The model's text is never run: only the pinned line. Refused
+  calls return `not_card_free` and run nothing; the Agent then uses its own
+  shell, which asks (or is refused under Deny). Always refused in a shared
+  project Room (no native commands there).
+- Codex file changes (`apply_patch`, `item/fileChange/requestApproval`) are
+  accepted natively when every path, and every rename target, is absolute,
+  inside the own checkout, never git metadata (named or resolved through
+  links), with no grant root: Claude's `Edit`/`Write` rule. A deletion, a
+  relative path or any unknown kind asks. Checked against the Room
+  workspace, never the request's `cwd`.
+- The Agent's own watch block tells a Codex Agent to send the listed steps
+  through `watched_repo_step`; the settings hint names Claude and Codex and
+  the Deny override (en, zh-CN).
+
+Residual (as for Claude): the checks and the run are not atomic against a
+concurrent writer; the host-run local steps read the owner's global git
+config (`~/.gitconfig`). New: the host-run steps run outside Codex's
+sandbox, as Claude's do; only the pinned commands run there.

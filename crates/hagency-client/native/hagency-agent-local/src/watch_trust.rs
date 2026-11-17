@@ -4,11 +4,14 @@
 //!
 //! While the watch is on, the switch is on, the turn runs in the watch's Room
 //! for the owner (the issue-watch notice is the owner's), the call is a
-//! foreground Claude `Bash` call, and the WHOLE line is one publish step, the
-//! call runs without a card. Fail-closed by design (GPT review, Nov 15): no
-//! chaining (an earlier step could switch branch or edit config), no reliance
-//! on the shell's persistent directory, and no Codex (its approvals cannot
-//! rewrite the command, see [`pinned`]). Steps:
+//! foreground Claude `Bash` call or a Codex call of the host's
+//! `watched_repo_step` tool ([`codex_step`]), and the WHOLE line is one
+//! publish step, the call runs without a card, whatever the high-risk tool
+//! rule says (Deny included, ADR 0022 "Deny"). Fail-closed by design (GPT
+//! review, Nov 15): no chaining (an earlier step could switch branch or edit
+//! config), no reliance on the shell's persistent directory, and never
+//! Codex's own shell (its approvals cannot rewrite the command, see
+//! [`pinned`]). Steps:
 //! - `git -C <checkout> push [-u] <remote> <branch>`: a local non-default
 //!   branch named explicitly, from a checkout inside the Room workspace whose
 //!   remote pushes to the watched repository (see [`git`]). The HOST pushes
@@ -22,13 +25,15 @@
 //!   [`local_git`]), `pull` and a `clone` of it into the workspace (host-run,
 //!   see [`host_clone`]), ADR 0022;
 //! - Read/Glob/Grep, and Write/Edit/MultiEdit (never git metadata), of a path
-//!   inside that checkout.
+//!   inside that checkout; for Codex, a native file change whose every path
+//!   is inside it.
 //!
 //! Everything else keeps asking. Merges stay with `merge_policy`.
 use crate::{ToolProposal, outside::shell};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
+pub mod codex_step;
 pub(crate) mod gh;
 pub(crate) mod git;
 pub(crate) mod host_clone;
@@ -87,15 +92,30 @@ fn room_entries(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<c
     Ok(entries.into_iter().filter(|e| e.active && &e.room_id == room).collect())
 }
 
-/// Whether `proposal` is a foreground Claude `Bash` read-only GitHub query
-/// on a repository its Agent watches from this Room (any requester: what it
-/// reads is the watched repository the watch already reports here).
-pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate::Result<bool> {
-    if proposal.risk == "permission_expansion" || proposal.tool != "claude.Bash" || proposal.arguments["run_in_background"] == true {
+/// Whether `proposal` is a one-line shell step (a foreground Claude `Bash`
+/// call or a Codex [`codex_step`] call) read-only GitHub query on a
+/// repository its Agent watches from this Room (any requester: what it reads
+/// is the watched repository the watch already reports here); with
+/// `push_freely`, only on a repository whose watch has the switch on.
+pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal, push_freely: bool) -> crate::Result<bool> {
+    if proposal.risk == "permission_expansion" || !is_shell_step(proposal) {
         return Ok(false);
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
-    Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
+    let repos = if push_freely { trusted_repos(db, proposal)? } else { watched_repos(db, proposal)? };
+    Ok(repos.iter().any(|repo| read_only::allowed(line, repo)))
+}
+
+/// A foreground Claude `Bash` call, or a Codex call of the host's
+/// [`codex_step::TOOL`] (Codex's own shell is never answered here: its
+/// command cannot be pinned, see [`codex_step`]).
+fn is_shell_step(proposal: &ToolProposal) -> bool {
+    match proposal.tool.as_str() {
+        // A background call's launch result says nothing about what it did.
+        "claude.Bash" => proposal.arguments["run_in_background"] != true,
+        codex_step::TOOL => true,
+        _ => false,
+    }
 }
 
 /// `proposal` as push trust must see it: rooted at the Room `workspace`.
@@ -119,33 +139,45 @@ pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, 
 }
 
 /// How push trust answers `proposal`, if it does. A command reaches Claude's
-/// permission reply as `updatedInput`, so what runs is exactly what was
-/// checked; Codex cannot rewrite its command, so it is never trusted.
+/// permission reply as `updatedInput`, and a Codex step is run by the host
+/// ([`codex_step`]), so what runs is exactly what was checked. Codex's own
+/// shell cannot rewrite its command, so it is never trusted; its file
+/// changes are, inside the checkout ([`codex_step::file_change_paths`]).
 pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<Option<TrustedStep>> {
     let edit = matches!(proposal.tool.as_str(), "claude.Write" | "claude.Edit" | "claude.MultiEdit");
     let read = matches!(proposal.tool.as_str(), "claude.Read" | "claude.Glob" | "claude.Grep");
-    if proposal.risk == "permission_expansion"
-        || !(edit || read || proposal.tool == "claude.Bash")
-        || proposal.scope.requester != owner
-        // A background call's launch result says nothing about what it did.
-        || proposal.arguments["run_in_background"] == true
-    {
+    let patch = proposal.tool == "codex.file_change";
+    if proposal.risk == "permission_expansion" || !(edit || read || patch || is_shell_step(proposal)) || proposal.scope.requester != owner {
         return Ok(None);
     }
     let root = Path::new(&proposal.canonical_directory);
+    if patch {
+        let Some(paths) = codex_step::file_change_paths(&proposal.arguments) else { return Ok(None) };
+        let repos = trusted_repos(db, proposal)?;
+        let trusted = paths.iter().all(|p| edit_in_own_checkout(Some(&serde_json::Value::from(p.as_str())), p, true, root, &repos));
+        return Ok(trusted.then_some(TrustedStep::Allow));
+    }
     if edit || read {
         let args = &proposal.arguments;
         let path = args.get("file_path").or(args.get("path")).map_or(Some("."), serde_json::Value::as_str);
-        let inside = path.is_some_and(|p| if edit { crate::outside::writable_in(args.get("file_path"), root) } else { crate::outside::resolves_inside(p, root) });
-        let real = path.filter(|_| inside).and_then(|p| crate::outside::real_path(root, p));
-        // Reads stay out of git metadata too (GPT review, Nov 17).
-        let metadata = path.is_some_and(|p| crate::outside::is_git_metadata(Path::new(p))) || real.as_deref().is_some_and(crate::outside::is_git_metadata);
-        let checkout = real.filter(|_| !metadata).and_then(|real| local_git::checkout_containing(&real, root));
-        let Some(checkout) = checkout else { return Ok(None) };
-        return Ok(trusted_repos(db, proposal)?.iter().any(|repo| local_git::own_checkout(&checkout, repo)).then_some(TrustedStep::Allow));
+        let Some(path) = path else { return Ok(None) };
+        let repos = trusted_repos(db, proposal)?;
+        return Ok(edit_in_own_checkout(args.get("file_path"), path, edit, root, &repos).then_some(TrustedStep::Allow));
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
     Ok(trusted_repos(db, proposal)?.iter().find_map(|repo| pinned_line(line, root, repo)))
+}
+
+/// Whether `path` (an edit's `file_path` value when `edit`, else a read's
+/// path) stays inside `root`, out of git metadata (named or resolved), in
+/// the own checkout of one of `repos`.
+fn edit_in_own_checkout(file_path: Option<&serde_json::Value>, path: &str, edit: bool, root: &Path, repos: &[String]) -> bool {
+    let inside = if edit { crate::outside::writable_in(file_path, root) } else { crate::outside::resolves_inside(path, root) };
+    let real = if inside { crate::outside::real_path(root, path) } else { None };
+    // Reads stay out of git metadata too (GPT review, Nov 17).
+    let metadata = crate::outside::is_git_metadata(Path::new(path)) || real.as_deref().is_some_and(crate::outside::is_git_metadata);
+    let checkout = real.filter(|_| !metadata).and_then(|real| local_git::checkout_containing(&real, root));
+    checkout.is_some_and(|checkout| repos.iter().any(|repo| local_git::own_checkout(&checkout, repo)))
 }
 
 /// How `line` is answered when it is a single trusted step for `repo` from
@@ -217,4 +249,6 @@ mod tests;
 #[cfg(test)]
 mod read_only_flow_tests;
 #[cfg(test)]
-mod fix_flow_tests;
+pub(crate) mod fix_flow_tests;
+#[cfg(test)]
+mod deny_override_tests;

@@ -15,8 +15,8 @@ pub(crate) const MODE_LABELS: [&str; 4] = [
 /// The push-trust choice, off first (English keys; translate on use). On lets
 /// the Agent do the fix steps of an issue (fetch, branch, edit, commit) in
 /// its own clone of the watched repository, push the branch and open the
-/// pull request, from the watched Room, without a card (ADR 0022); merges
-/// stay with the merge policy.
+/// pull request, from the watched Room, without a card (ADR 0022), Claude
+/// or Codex, even under a Deny tool rule; merges stay with the merge policy.
 pub(crate) const PUSH_LABELS: [&str; 2] = [
     "Ask before pushes and PRs",
     "Fix, push and open PRs freely",

@@ -1193,13 +1193,30 @@ impl Ledger {
     // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
     pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<watch_trust::TrustedStep>> {
         // Read-only GitHub queries on a watched repository need no card either (ADR 0019).
-        let command = match watch_trust::pinned(&self.db, proposal, owner)? {
-            Some(step) => step,
-            None if watch_trust::read_only_query(&self.db, proposal)? => {
-                watch_trust::TrustedStep::Command(watch_trust::read_only::command(proposal.arguments["command"].as_str().unwrap_or_default()))
+        let (command, overrides) = match watch_trust::pinned(&self.db, proposal, owner)? {
+            Some(step) => (step, true),
+            None if watch_trust::read_only_query(&self.db, proposal, false)? => {
+                let line = proposal.arguments["command"].as_str().unwrap_or_default();
+                let overrides = proposal.scope.requester == owner && watch_trust::read_only_query(&self.db, proposal, true)?;
+                (watch_trust::TrustedStep::Command(watch_trust::read_only::command(line)), overrides)
             }
             None => return Ok(None),
         };
+        // Inside the exact push-freely scope (the owner's run in the watch's
+        // Room, every step `pinned` answers, and the owner's read-only queries
+        // on a push-freely repository) the switch is the owner's decision, so
+        // it overrides the high-risk tool rule, Deny included (Chris, Nov 17;
+        // ADR 0022 "Deny"). The dispatch itself must still check out. Any
+        // other read-only query keeps the tool rule: a Deny still refuses it.
+        if overrides {
+            self.owner(owner)?;
+            let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            return match admitted_policies(&tx, proposal, now) {
+                Ok(_) => Ok(Some(command)),
+                Err(Error::Denied) => Ok(None),
+                Err(other) => Err(other),
+            };
+        }
         match self.tool_disposition(proposal, now) {
             Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
             Ok(ToolPolicy::Deny) | Err(Error::Denied) => return Ok(None),
@@ -1394,12 +1411,12 @@ fn settle_transaction(
     Ok(())
 }
 
-fn validate_tool(
-    db: &Connection,
-    owner: &str,
-    proposal: &ToolProposal,
-    now: i64,
-) -> Result<Policy> {
+/// Each layer's saved revision and policy.
+type Layers = Vec<(i64, Policy)>;
+/// The dispatch `proposal` belongs to, checked: its binding, expiry, keys,
+/// admitted scope, unchanged policy revisions and no refused requests.
+/// Returns each layer's policy at admission and now. No tool rule is read.
+fn admitted_policies(db: &Connection, proposal: &ToolProposal, now: i64) -> Result<(Layers, Layers)> {
     verify(db, &proposal.scope)?;
     if now < 0 || proposal.expires <= now || proposal.expires - now > 3600 {
         return Err(Error::Denied);
@@ -1424,17 +1441,6 @@ fn validate_tool(
         return Err(Error::Denied);
     }
     let original: Vec<(i64, Policy)> = serde_json::from_str(&original)?;
-    let mut effective = Policy {
-        budget: Budget {
-            limit: Limit::Unlimited,
-            period: Period::Lifetime,
-        },
-        requests: RequestPolicy::Allow,
-        high_risk: ToolPolicy::AllowWithRules {
-            tools: vec![proposal.tool.clone()],
-            directories: vec![proposal.canonical_directory.clone()],
-        },
-    };
     let mut current = Vec::with_capacity(3);
     for (index, k) in proposal.scope.layers()?.iter().enumerate() {
         let (revision, p) = saved_policy(db, k, index)?;
@@ -1447,6 +1453,26 @@ fn validate_tool(
     if original.len() < current.len() {
         return Err(Error::Conflict);
     }
+    Ok((original, current))
+}
+fn validate_tool(
+    db: &Connection,
+    owner: &str,
+    proposal: &ToolProposal,
+    now: i64,
+) -> Result<Policy> {
+    let (original, current) = admitted_policies(db, proposal, now)?;
+    let mut effective = Policy {
+        budget: Budget {
+            limit: Limit::Unlimited,
+            period: Period::Lifetime,
+        },
+        requests: RequestPolicy::Allow,
+        high_risk: ToolPolicy::AllowWithRules {
+            tools: vec![proposal.tool.clone()],
+            directories: vec![proposal.canonical_directory.clone()],
+        },
+    };
     let from_owner = proposal.scope.requester == owner;
     for tool_policy in applicable(&tool_layers(&original, &current), from_owner) {
         match tool_policy {

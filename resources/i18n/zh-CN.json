@@ -3190,7 +3190,7 @@
   "Fully automatic: every new issue": "全自动：每个新议题",
   "Ask before pushes and PRs": "推送和 PR 前先询问",
   "Fix, push and open PRs freely": "自由修复、推送并创建 PR",
-  "With this on, the Agent fetches, branches, edits, commits, pushes branches and opens pull requests in its own clone of this repository without asking. Build, test and install commands, other websites and anything outside that clone still ask, and merges follow the merge rule.": "开启后，智能体会在它自己的此仓库克隆中直接获取、建分支、编辑、提交、推送分支并创建 PR，无需询问。构建、测试和安装命令、其他网站以及该克隆之外的任何操作仍会询问，合并仍遵循合并规则。",
+  "With this on, the Agent (Claude or Codex) fetches, branches, edits, commits, pushes branches and opens pull requests in its own clone of this repository without asking, even where its tool rule says Deny. Build, test and install commands, other websites and anything outside that clone keep the usual rule, and merges follow the merge rule.": "开启后，智能体（Claude 或 Codex）会在它自己的此仓库克隆中直接获取、建分支、编辑、提交、推送分支并创建 PR，无需询问，即使其工具规则为拒绝。构建、测试和安装命令、其他网站以及该克隆之外的任何操作仍按原有规则处理，合并仍遵循合并规则。",
   "Hands off open issues that carry the agent-fix label.": "把带有 agent-fix 标签的未关闭议题交给 Agent。",
   "Hands off new issues opened by the repository's owner, members and collaborators.": "把仓库所有者、成员和协作者新开的议题交给 Agent。",
   "Hands off every new issue, from anyone. Use only on repositories you trust.": "把任何人新开的议题都交给 Agent。仅用于你信任的仓库。",

@@ -34,6 +34,8 @@ type Key = (String, String);
 type Shared = Arc<Mutex<Option<Active>>>;
 struct Active {
     queue: RoomQueue,
+    /// Where `watched_repo_step` calls go: the turn that checks and runs them.
+    repo_steps: Option<super::repo_steps::Sender>,
     turns: BTreeMap<Key, watch::Sender<bool>>,
     calls: BTreeSet<(Key, String)>,
     context: BTreeMap<Key, hagency_runtime::codex::session::ContextUsage>,
@@ -52,6 +54,12 @@ impl Drop for Turn {
     }
 }
 impl Turn {
+    /// Hand this turn's `watched_repo_step` calls to `sender`.
+    /// Whether the turn is still active to take them.
+    pub(super) fn take_repo_steps(&self, sender: super::repo_steps::Sender) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.as_mut().map(|active| active.repo_steps = Some(sender)).is_some()
+    }
     pub(super) fn context(&self, evidence: hagency_runtime::codex::session::ContextUsage) {
         if let Some(active) = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             active.context.insert(
@@ -91,7 +99,7 @@ impl Bridge {
         let mut config = json!({"url":format!("http://{authority}/matrix"),
             "http_headers":{"Authorization":format!("Bearer {token}")},
             "enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":75});
-        for definition in tools.definitions() {
+        for definition in definitions(tools) {
             config["tools"][definition["name"].as_str().expect("host tool name")] =
                 json!({"approval_mode":"approve"});
         }
@@ -142,6 +150,7 @@ impl Bridge {
         }
         *state = Some(Active {
             queue: queue.clone(),
+            repo_steps: None,
             turns: BTreeMap::from([((thread.into(), turn.into()), watch::channel(false).0)]),
             calls: BTreeSet::new(),
             context: BTreeMap::new(),
@@ -222,7 +231,7 @@ async fn serve(
             json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":SERVER,"version":"1"}}),
         ),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools":tools.definitions()})),
+        "tools/list" => Ok(json!({"tools":definitions(tools)})),
         "resources/list" => Ok(json!({"resources":[]})),
         "resources/templates/list" => Ok(json!({"resourceTemplates":[]})),
         "tools/call" => Ok(call(&state, tools, &value["params"]).await),
@@ -235,6 +244,12 @@ async fn serve(
             Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error}),
         }),
     ))
+}
+/// The room tools, plus the host's `watched_repo_step` (ADR 0022, "Codex").
+fn definitions(tools: RoomTools) -> Vec<Value> {
+    let mut all = tools.definitions();
+    all.push(crate::watch_trust::codex_step::definition());
+    all
 }
 fn text_result(reply: RoomReply) -> Value {
     json!({"isError":reply.is_error(),"content":[{"type":"text","text":reply.text()}]})
@@ -291,8 +306,14 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
     let Some(name) = params["name"].as_str() else {
         return refused("tool_name_missing");
     };
-    let Ok(operation) = tools.parse(name, &params["arguments"]) else {
-        return refused("arguments_invalid");
+    // `watched_repo_step` is the host's own (ADR 0022, "Codex"): admitted
+    // like a room tool call, answered by the turn that owns it.
+    // TODO(R4): room_mcp.rs is over budget; split admission into room_mcp/admit.rs.
+    let repo_step = name == crate::watch_trust::codex_step::MCP_TOOL;
+    let operation = match tools.parse(name, &params["arguments"]) {
+        Ok(operation) => Some(operation),
+        Err(_) if repo_step => None,
+        Err(_) => return refused("arguments_invalid"),
     };
     let admission = {
         let mut locked = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -309,13 +330,19 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
                     {
                         return Err("call_repeated");
                     }
-                    Ok((active.queue.clone(), cancel, context))
+                    Ok((active.queue.clone(), cancel, context, active.repo_steps.clone()))
                 }),
         }
     };
-    let (queue, mut cancel, context) = match admission {
+    let (queue, mut cancel, context, repo_steps) = match admission {
         Ok(admitted) => admitted,
         Err(reason) => return refused(reason),
+    };
+    let Some(operation) = operation else {
+        return match super::repo_steps::forward(repo_steps, &params["arguments"], cancel, CALL_WAIT).await {
+            Ok((text, is_error)) => text_result(RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable())),
+            Err(reason) => refused(reason),
+        };
     };
     // The cancellation sender belongs to an observed native turn, not to the
     // HTTP connection or to a subsequent dispatch's room queue.
@@ -324,6 +351,5 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
         reply = queue.call_with_context(operation, who.call, Instant::now() + CALL_WAIT, context) => text_result(reply),
     }
 }
-
 #[cfg(test)]
 mod tests;

@@ -44,7 +44,7 @@ const AGENT_CONFIG: [&str; 6] = [
 /// and no gh config directory: the Agent's own token is set by
 /// [`host_command`] and gh's config points at an empty directory, so the
 /// daemon's GitHub login is never used for the Agent's step (GPT review, Nov 16).
-const HOST_ENV: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"];
+pub(crate) const HOST_ENV: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"];
 /// The variable gh reads the Agent's token from.
 const TOKEN_ENV: &str = crate::agent_env::GITHUB_TOKEN_VARIABLE;
 
