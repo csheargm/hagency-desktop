@@ -3547,5 +3547,11 @@
   "What will be filed:": "将提交的内容：",
   "Issue titles, in order (you can rename them):": "按顺序列出的 Issue 标题（可以改名）：",
   "Unreadable plan record": "无法读取计划记录",
-  "This plan was filed earlier with a different number of issues.": "此计划之前以不同的 Issue 数量提交过。"
+  "This plan was filed earlier with a different number of issues.": "此计划之前以不同的 Issue 数量提交过。",
+  "Continue with Google": "使用 Google 继续",
+  "Signed in as {user}. Not you? Sign out in Settings and sign in again.": "已登录为 {user}。不是你？请在设置中退出后重新登录。",
+  "@{name} is available": "@{name} 可以使用",
+  "@{name} is taken": "@{name} 已被占用",
+  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "请使用小写字母、数字和 . _ = - / +（不能以 _ 开头）。",
+  "Your server did not answer in time. Try again.": "你的服务器没有及时响应。请重试。"
 }

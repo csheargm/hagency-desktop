@@ -239,6 +239,12 @@ script_mod! {
                             align: Align{x: 0.5, y: 0.5}
                             text: #(crate::i18n::tr("Continue with GitHub")) i18n_text: "Continue with GitHub"
                         }
+                        google_login_button := RobrixIconButton {
+                            visible: false
+                            width: Fill, height: 42, padding: 10
+                            align: Align{x: 0.5, y: 0.5}
+                            text: #(crate::i18n::tr("Continue with Google")) i18n_text: "Continue with Google"
+                        }
                         password_option_button := ButtonFlat {
                             visible: false
                             width: Fit, height: Fit
@@ -332,6 +338,11 @@ script_mod! {
                                 width: Fill, height: Fit, padding: 10
                                 empty_text: #(crate::i18n::tr("Choose a username")) i18n_empty_text: "Choose a username"
                                 autocapitalize: None, autocorrect: Disabled, content_type: Username
+                            }
+                            registration_username_status := Label {
+                                width: Fill, height: Fit
+                                draw_text +: {color: COLOR_TEXT, text_style: REGULAR_TEXT {font_size: (9 * mod.widgets.RINX_TEXT_SCALE)}}
+                                text: ""
                             }
                             registration_password := RobrixTextInput {
                                 width: Fill, height: Fit, padding: 10
@@ -830,6 +841,7 @@ impl LoginScreen {
         self.view.button(cx, ids!(register_option_button)).set_enabled(cx, !self.login_pending);
         self.view.button(cx, ids!(submit_registration_button)).set_enabled(cx, !self.login_pending);
         self.view.button(cx, ids!(github_login_button)).set_enabled(cx, !self.login_pending);
+        self.view.button(cx, ids!(google_login_button)).set_enabled(cx, !self.login_pending);
         self.redraw(cx);
     }
 

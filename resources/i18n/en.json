@@ -3547,5 +3547,11 @@
   "What will be filed:": "What will be filed:",
   "Issue titles, in order (you can rename them):": "Issue titles, in order (you can rename them):",
   "Unreadable plan record": "Unreadable plan record",
-  "This plan was filed earlier with a different number of issues.": "This plan was filed earlier with a different number of issues."
+  "This plan was filed earlier with a different number of issues.": "This plan was filed earlier with a different number of issues.",
+  "Continue with Google": "Continue with Google",
+  "Signed in as {user}. Not you? Sign out in Settings and sign in again.": "Signed in as {user}. Not you? Sign out in Settings and sign in again.",
+  "@{name} is available": "@{name} is available",
+  "@{name} is taken": "@{name} is taken",
+  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "Use lowercase letters, numbers and . _ = - / + (not starting with _).",
+  "Your server did not answer in time. Try again.": "Your server did not answer in time. Try again."
 }
