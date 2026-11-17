@@ -1154,13 +1154,14 @@ script_mod! {
             }
             */
                 }
-                desktop_chat_info_panel := SolidView {visible: false width: 280 height: Fill flow: Right draw_bg.color: mod.widgets.RINX_BORDER
-                    View {width: 1 height: Fill}
+                desktop_chat_info_panel := SolidView {visible: false width: 320 height: Fill flow: Right draw_bg.color: mod.widgets.RINX_BORDER
+                    // Dragging the left edge resizes the panel (info_panel_width.rs).
+                    desktop_chat_info_handle := mod.widgets.MiniAppsSideHandle {}
                     desktop_chat_info_card := View {width: Fill height: Fill desktop_chat_info := MobileChatInfo {summary.summary_details.visible: false}}
                 }
             }
             compact_chat_info_panel := View {visible: false width: Fill height: Fill flow: Right align: Align{x: 1.0}
-                compact_chat_info_card := SolidView {width: 280 height: Fill draw_bg.color: mod.widgets.RINX_SURFACE
+                compact_chat_info_card := SolidView {width: 320 height: Fill draw_bg.color: mod.widgets.RINX_SURFACE
                     compact_chat_info := MobileChatInfo {summary.summary_details.visible: false}
                 }
             }
@@ -1335,6 +1336,10 @@ pub struct RoomScreen {
     #[rust] room_name_id: Option<RoomNameId>,
     #[rust] chat_info_requested: bool,
     #[rust] chat_info_inline: bool,
+    /// The room information panel's width, once known (see info_panel_width.rs).
+    #[rust] info_width: Option<f64>,
+    /// The width a drag of the panel's edge started from, while one is under way.
+    #[rust] info_drag_from: Option<f64>,
     /// The open or closed look last given to the room information toggle's icon; `None` until
     /// the first layout and after the widget tree is applied again. Patching the icon on every
     /// draw asks for another draw every time, so the window would never go idle.
@@ -1947,6 +1952,7 @@ impl Widget for RoomScreen {
                 self.view.view(cx, ids!(room_screen_wrapper)).handle_event(cx, event, &mut Scope::empty());
             }
         });
+        self.handle_info_panel_drag(cx, _scope);
         // Handle disclosures in the room-local capture. Native pointer actions
         // are consumed here before the app routes higher-level room actions.
         let disclosure_rows = portal_list.items_with_actions(&actions_generated_within_this_room_screen);
@@ -2060,6 +2066,7 @@ impl Widget for RoomScreen {
         self.agent_status.shared_permission_notice(cx,ids!(shared_permission_notice)).set_room(cx,self.room_name_id.as_ref().map(|r|r.room_id().as_str()).unwrap_or(""),self.timeline_kind.as_ref().and_then(|k|k.thread_root_event_id()).map(|id|id.as_str()).unwrap_or(""));
         self.update_desktop_chat_header(cx);
         let available = cx.peek_walk_turtle(walk).size.x;
+        self.restore_info_width(scope);
         self.layout_desktop_chat_info(cx, available);
         // If the room isn't loaded yet, we show the restore status label only.
         if !self.is_loaded {
@@ -2532,12 +2539,16 @@ impl RoomScreen {
                 TimelineUpdate::NewItems { new_items, changed_indices, is_append, clear_cache } => {
                     // Membership events arrive after the initial information panel fetch.
                     // Refresh only for newly observed changes, retaining invitation state.
-                    let membership_changed = new_items.iter().any(|item| {
-                        item.as_event().is_some_and(|event| {
-                            matches!(event.content(), TimelineItemContent::MembershipChange(_) | TimelineItemContent::ProfileChange(_))
-                                && !tl.items.iter().any(|old| old.as_event().is_some_and(|prior| prior.event_id() == event.event_id()))
-                        })
-                    });
+                    let new_member_events: Vec<_> = new_items.iter().filter_map(|item| item.as_event()).filter(|event| {
+                        matches!(event.content(), TimelineItemContent::MembershipChange(_) | TimelineItemContent::ProfileChange(_))
+                            && !tl.items.iter().any(|old| old.as_event().is_some_and(|prior| prior.event_id() == event.event_id()))
+                    }).collect();
+                    let membership_changed = !new_member_events.is_empty();
+                    // A leave or kick takes the member's row out of the information panel at once.
+                    let departed = new_member_events.iter().filter_map(|event| match event.content() {
+                        TimelineItemContent::MembershipChange(change) if crate::home::mobile_chat_info::is_departure(change.change()) => Some(change.user_id().to_owned()),
+                        _ => None,
+                    }).collect();
                     if membership_changed {
                         // The composer keeps its own member snapshot. Refresh it
                         // along with the information sidebar when people join,
@@ -2550,6 +2561,7 @@ impl RoomScreen {
                         cx.action(crate::home::mobile_chat_info::ChatMembershipChanged {
                             room_id: tl.kind.room_id().to_owned(),
                             epoch: crate::account_session::epoch(),
+                            departed,
                         });
                     }
                     if new_items.is_empty() {
@@ -4275,8 +4287,9 @@ impl RoomScreen {
         }
         self.view.view(cx, ids!(desktop_chat_info_panel)).set_visible(cx, show && inline);
         self.view.view(cx, ids!(compact_chat_info_panel)).set_visible(cx, show && !inline);
-        let card = self.view.view(cx, ids!(compact_chat_info_card));
-        if let Some(mut card) = card.borrow_mut() { card.walk.width = Size::Fixed(available.clamp(0.0, 280.0)); }
+        let width = info_panel_width::clamp_width(self.info_width(), available);
+        if let Some(mut panel) = self.view.view(cx, ids!(desktop_chat_info_panel)).borrow_mut() { panel.walk.width = Size::Fixed(width); }
+        if let Some(mut card) = self.view.view(cx, ids!(compact_chat_info_card)).borrow_mut() { card.walk.width = Size::Fixed(width); }
         if show && let Some(room) = self.room_name_id.clone() {
             let info = if inline {ids!(desktop_chat_info)} else {ids!(compact_chat_info)};
             self.view.mobile_chat_info(cx, info).ensure_room(cx, room);
@@ -8808,6 +8821,34 @@ mod desktop_information_columns_tests {
         screen.room_name_id=None;screen.update_desktop_chat_header(&mut cx);
         assert!(!screen.view.navigation_bar_button(&mut cx,ids!(desktop_thread_back)).visible());
     }
+    /// Chris's screenshot: the panel was a fixed 280 points and names were clipped.
+    #[test]
+    fn dragging_the_panels_left_edge_widens_it_and_saves_the_width() {
+        use std::cell::Cell;
+        let (mut cx, mut screen) = screen();
+        screen.chat_info_requested = true;
+        screen.room_name_id = Some(RoomNameId::empty(matrix_sdk::ruma::room_id!("!a:server").to_owned()));
+        draw(&mut cx, &mut screen, 1280.0);
+        let handle = screen.view.widget(&mut cx, ids!(desktop_chat_info_handle)).area().rect(&cx);
+        assert!(handle.size.y > 0.0, "the edge is drawn: {handle:?}");
+        let start = handle.pos + handle.size * 0.5;
+        let (window_id, modifiers) = (WindowId(0, 0), KeyModifiers::default());
+        let mut state = crate::app::AppState::default();
+        // The platform marks the button held before it hands the press on.
+        cx.fingers.first_mouse_button = Some((MouseButton::PRIMARY, window_id));
+        for event in [
+            Event::MouseDown(MouseDownEvent {abs: start, button: MouseButton::PRIMARY, window_id, modifiers, handled: Cell::new(Area::Empty), time: 1.0}),
+            Event::MouseMove(MouseMoveEvent {abs: start - dvec2(120.0, 0.0), lock_delta: DVec2::default(), window_id, modifiers, handled: Cell::new(Area::Empty), time: 1.1}),
+            Event::MouseUp(MouseUpEvent {abs: start - dvec2(120.0, 0.0), button: MouseButton::PRIMARY, window_id, modifiers, time: 1.2}),
+        ] {
+            screen.handle_event(&mut cx, &event, &mut Scope::with_data(&mut state));
+        }
+        cx.fingers.first_mouse_button = None;
+        let wider = info_panel_width::INFO_DEFAULT + 120.0;
+        assert_eq!(state.room_info_width, Some(wider), "the dragged width is kept for the next session");
+        draw(&mut cx, &mut screen, 1280.0);
+        assert_eq!(screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).area().rect(&cx).size.x, wider);
+    }
     #[test]
     fn real_desktop_room_draw_keeps_timeline_and_input_beside_information() {
         let (mut cx, mut screen) = screen();
@@ -8822,12 +8863,12 @@ mod desktop_information_columns_tests {
         let info = screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).area().rect(&cx);
         let input = screen.view.room_input_bar(&mut cx, ids!(room_input_bar)).area().rect(&cx);
         assert!(center.size.x >= 320.0, "{center:?}");
-        assert_eq!(info.size.x, 280.0);
+        assert_eq!(info.size.x, info_panel_width::INFO_DEFAULT);
         assert!(center.pos.x + center.size.x <= info.pos.x + 0.1, "{center:?} {info:?}");
         assert!(input.size.x > 0.0 && input.size.y > 0.0, "{input:?}");
         assert!(input.pos.x >= center.pos.x && input.pos.x + input.size.x <= info.pos.x + 0.1);
         draw(&mut cx, &mut screen, 600.0);
-        assert_eq!(screen.view.view(&mut cx, ids!(chat_center)).area().rect(&cx).size.x, 320.0);
+        assert_eq!(screen.view.view(&mut cx, ids!(chat_center)).area().rect(&cx).size.x, 600.0 - info_panel_width::INFO_DEFAULT);
         draw(&mut cx, &mut screen, 500.0);
         assert!(!screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).visible());
         assert!(!screen.view.view(&mut cx, ids!(compact_chat_info_panel)).visible());
@@ -9008,6 +9049,10 @@ mod system_updates;
 // room_screen/chat_header.rs, next to call_link.rs.
 #[path = "room_screen/call_link.rs"]
 mod call_link;
+// TODO(R4): move the rest of the information panel's layout
+// (layout_desktop_chat_info, is_over_desktop_chat_info) next to its width.
+#[path = "room_screen/info_panel_width.rs"]
+mod info_panel_width;
 use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
 
 /// Offline layout fixture using the production disclosure presentation.

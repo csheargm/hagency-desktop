@@ -1,5 +1,6 @@
-//! UX A4: a small "who can ask" badge next to each of the owner's own Agents
-//! in a room's member list ("asks: only owner", "asks: room members").
+//! UX A4: "who can ask" each of the owner's own Agents in a room's member
+//! list ("asks: only owner", "asks: room members"), shown on the Agent's
+//! second line beside its Matrix ID; the row's badge names the owner.
 //!
 //! Data flow: the member list already lists this account's Agents
 //! (`Command::Agents`) when room info opens; it hands that listing to
@@ -22,11 +23,12 @@ script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
 
-    mod.widgets.AgentAskBadge = RoundedView {
+    // A member row's small tag ("Anna's agent").
+    mod.widgets.MemberBadge = RoundedView {
         visible: false width: Fit height: Fit
         padding: Inset{left: 6 right: 6 top: 2 bottom: 2}
         draw_bg +: {color: mod.widgets.RINX_SELECTED border_radius: 4}
-        ask_text := Label {width: Fit height: Fit padding: 0 max_lines: 1
+        badge_text := Label {width: Fit height: Fit padding: 0 max_lines: 1
             draw_text +: {color: mod.widgets.RINX_ACCENT text_style: theme.font_regular{font_size: (9 * mod.widgets.RINX_TEXT_SCALE)}}}
     }
 }
@@ -107,6 +109,11 @@ pub(crate) fn open_own_agent(owner: Option<&OwnedUserId>, member: &UserId) -> Op
     open_action_in(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner?, member)
 }
 
+/// The Agent ID of `member` when it is one of `owner`'s own Agents.
+pub(crate) fn own_agent(owner: Option<&OwnedUserId>, member: &UserId) -> Option<String> {
+    own_agent_id(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner?, member).map(str::to_owned)
+}
+
 /// The agent-panel action for a DM whose only other member is one of the
 /// owner's own Agents (the Chats list's "Agent details"); a group, a DM with
 /// a person, or someone else's Agent gives `None`.
@@ -184,13 +191,10 @@ async fn read_policies(agents: Vec<String>) -> HashMap<String, String> {
     read
 }
 
-/// Shows or hides the `ask_badge` inside a member row for `member`.
-pub(crate) fn show(cx: &mut Cx, row: &WidgetRef, owner: Option<&OwnedUserId>, member: &UserId) {
-    let text = owner.and_then(|owner| lookup(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner, member));
-    row.view(cx, ids!(ask_badge)).set_visible(cx, text.is_some());
-    if let Some(text) = text {
-        row.label(cx, ids!(ask_text)).set_text(cx, crate::i18n::tr(text));
-    }
+/// Who may ask `member`, translated, when it is one of `owner`'s own Agents
+/// and its policy has been read; `None` for everyone else.
+pub(crate) fn policy(owner: Option<&OwnedUserId>, member: &UserId) -> Option<&'static str> {
+    owner.and_then(|owner| lookup(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner, member)).map(crate::i18n::tr)
 }
 
 #[cfg(test)]

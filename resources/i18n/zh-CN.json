@@ -3574,5 +3574,12 @@
   "{n} steps": "{n} 步",
   "Last step: {step}": "最后一步：{step}",
   "Time: {t}": "用时：{t}",
-  "Runtime: {runtime}": "运行时：{runtime}"
+  "Runtime: {runtime}": "运行时：{runtime}",
+  "Member actions": "成员操作",
+  "{owner}'s agent": "{owner} 的 Agent",
+  "Service accounts ({count})": "服务账号（{count}）",
+  "Remove {agent} from this room?": "将 {agent} 移出此聊天室？",
+  "{agent} will leave \"{room}\". You can add it again with Add agent.": "{agent} 将离开“{room}”。之后可通过“添加 Agent”重新加入。",
+  "Removed {agent} from this room.": "已将 {agent} 移出此聊天室。",
+  "Could not remove {agent}: {error}": "无法移出 {agent}：{error}"
 }

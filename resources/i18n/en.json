@@ -3574,5 +3574,12 @@
   "{n} steps": "{n} steps",
   "Last step: {step}": "Last step: {step}",
   "Time: {t}": "Time: {t}",
-  "Runtime: {runtime}": "Runtime: {runtime}"
+  "Runtime: {runtime}": "Runtime: {runtime}",
+  "Member actions": "Member actions",
+  "{owner}'s agent": "{owner}'s agent",
+  "Service accounts ({count})": "Service accounts ({count})",
+  "Remove {agent} from this room?": "Remove {agent} from this room?",
+  "{agent} will leave \"{room}\". You can add it again with Add agent.": "{agent} will leave \"{room}\". You can add it again with Add agent.",
+  "Removed {agent} from this room.": "Removed {agent} from this room.",
+  "Could not remove {agent}: {error}": "Could not remove {agent}: {error}"
 }
