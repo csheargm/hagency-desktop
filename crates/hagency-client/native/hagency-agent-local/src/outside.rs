@@ -73,6 +73,12 @@ fn is_git_metadata(path: &Path) -> bool {
     })
 }
 
+/// `path` from `cwd` as the OS opens it, through every existing link; a
+/// dangling link on the way is `None`.
+pub(crate) fn real_path(cwd: &Path, path: &str) -> Option<PathBuf> {
+    physical_join(cwd, path).and_then(|p| real_target(&p))
+}
+
 /// Resolve `path` from `cwd` and require it to stay in `cwd`.
 pub(crate) fn resolves_inside(path: &str, cwd: &Path) -> bool {
     resolves_within(path, cwd, cwd)

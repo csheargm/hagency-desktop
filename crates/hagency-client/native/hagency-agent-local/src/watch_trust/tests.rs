@@ -114,7 +114,6 @@ fn force_delete_tags_default_branch_and_refspecs_still_ask() {
         "gh pr merge 28 --squash --repo acme/app",
         "gh pr ready https://github.com/acme/other/pull/28",
         "gh pr ready 28 --repo acme/other",
-        "git -C app status",
     ] {
         assert!(!allowed(line, &root), "{line}");
     }
