@@ -134,3 +134,31 @@ fn status_rooms_are_offered_to_issue_watching() {
     let status = json!({"rooms": [crate::host::hagency::local::room_entry(&binding, "fix-it room".into())]});
     assert_eq!(super::mapping::watch_rooms(&status), vec![("!fix:alpha".to_owned(), "fix-it room".to_owned())]);
 }
+
+#[test]
+fn rename_sends_a_trimmed_new_name_and_explains_refusals() {
+    assert_eq!(rename::rename_input("  Release helper ", "Old"), Ok("Release helper".into()));
+    assert_eq!(rename::rename_input(&"é".repeat(64), "Old").map(|n| n.chars().count()), Ok(64));
+    for bad in ["", "   ", "bell\u{7}"] {
+        assert_eq!(rename::rename_input(bad, "Old"), Err("Use 1 to 64 characters for the name."), "{bad:?}");
+    }
+    assert!(rename::rename_input(&"x".repeat(65), "Old").is_err());
+    assert_eq!(rename::rename_input("Old ", "Old"), Err("That is already its name."));
+}
+
+#[test]
+fn rename_field_shows_the_name_and_a_saved_rename_updates_the_header() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = panel(&mut cx);
+    panel.open(&mut cx, &json!({"id": "agt_1", "displayName": "Before"}));
+    assert_eq!(panel.view.text_input(&mut cx, ids!(rename_input)).text(), "Before");
+    panel.busy = true;
+    let reply = Ok(json!({"agent": {"id": "agt_1", "displayName": "After"}}));
+    panel.apply(&mut cx, Load::Renamed, true, &reply);
+    assert!(!panel.busy);
+    assert_eq!(panel.view.label(&mut cx, ids!(name)).text(), "After");
+    assert_eq!(panel.view.text_input(&mut cx, ids!(rename_input)).text(), "After");
+    assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "Saved.");
+    panel.apply(&mut cx, Load::Renamed, true, &Err("agent_retired".into()));
+    assert_eq!(panel.agent["displayName"], "After", "a refused rename keeps the saved name");
+}

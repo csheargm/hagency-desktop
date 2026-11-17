@@ -91,6 +91,15 @@ struct Create {
     display_name: String,
     idempotency_key: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Rename {
+    display_name: String,
+}
+/// The server's Agent name policy: 1-64 characters, not blank, no control characters.
+fn display_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.chars().count() <= 64 && !name.chars().any(char::is_control)
+}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Bind {
@@ -732,10 +741,7 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
         }
         if method == Method::POST {
             let input: Create = parse(req).await?;
-            if input.display_name.trim().is_empty()
-                || input.display_name.chars().count() > 64
-                || input.display_name.chars().any(char::is_control)
-            {
+            if !display_name(&input.display_name) {
                 return Err(error(400, "invalid_arguments"));
             }
             key(&input.idempotency_key)?;
@@ -1262,6 +1268,15 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             }
             return Err(error(404, "not_found"));
         }
+        // TODO(R4): owned_agents.rs is over budget; split per-Agent routes into owned_agents/agent.rs.
+        if parts.len() == 1 && method == Method::PATCH && req.uri().query().is_none() {
+            let input: Rename = parse(req).await?;
+            if !display_name(&input.display_name) {
+                return Err(error(400, "invalid_arguments"));
+            }
+            let op = OwnerOperation::Rename { agent, display_name: input.display_name };
+            return public(&api(req, depot, op).await?.value, "agent");
+        }
         if parts.len() == 1 && method == Method::DELETE && req.uri().query().is_none() {
             if !body(req, 1)
                 .await
@@ -1751,6 +1766,15 @@ mod profile_tests {
 #[cfg(test)]
 mod execution_projection_tests {
     use super::*;
+    #[test]
+    fn display_name_matches_the_server_policy() {
+        assert!(display_name("Release helper") && display_name(&"x".repeat(64)) && display_name("Résumé"));
+        for bad in ["", "   ", "tab\there", "bell\u{7}"] {
+            assert!(!display_name(bad), "{bad:?}");
+        }
+        assert!(!display_name(&"x".repeat(65)));
+        assert!(serde_json::from_value::<Rename>(json!({"displayName":"A","state":"retired"})).is_err());
+    }
     #[test]
     fn global_creation_has_no_room_and_device_projections_never_expose_tokens() {
         let agent = json!({"id":"a","ownerUserId":"o","puppetMxid":"@a:test","displayName":"Agent","state":"creating","generation":1,"executionDeviceId":"d","token":"secret"});

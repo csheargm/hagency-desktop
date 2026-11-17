@@ -3553,5 +3553,9 @@
   "@{name} is available": "@{name} is available",
   "@{name} is taken": "@{name} is taken",
   "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "Use lowercase letters, numbers and . _ = - / + (not starting with _).",
-  "Your server did not answer in time. Try again.": "Your server did not answer in time. Try again."
+  "Your server did not answer in time. Try again.": "Your server did not answer in time. Try again.",
+  "Rename": "Rename",
+  "Use 1 to 64 characters for the name.": "Use 1 to 64 characters for the name.",
+  "That is already its name.": "That is already its name.",
+  "People see the new name in every room.": "People see the new name in every room."
 }

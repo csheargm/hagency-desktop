@@ -242,6 +242,8 @@ pub enum AgentAction {
     Retire,
     /// Owner consent for group Rooms (server visibility `public`).
     AllowGroupRooms,
+    /// Owner sets the Agent's display name (also its Matrix profile name).
+    Rename(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BindingAction {
@@ -686,7 +688,12 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
         }
         Command::Agent { agent_id, action } => {
             key(&agent_id)?;
+            // TODO(R4): native.rs is over budget; split command routing into native/routes.rs.
             let (m, s) = match action {
+                AgentAction::Rename(name) => {
+                    body = Some(serde_json::json!({"displayName":name}));
+                    ("PATCH", "")
+                }
                 AgentAction::Pause => ("POST", "/pause"),
                 AgentAction::Resume => ("POST", "/resume"),
                 AgentAction::Retire => ("DELETE", ""),
@@ -1579,6 +1586,7 @@ impl NativeOwner {
             "POST" => TestClient::post(format!("http://{}{path}", self.0.address)),
             "PUT" => TestClient::put(format!("http://{}{path}", self.0.address)),
             "DELETE" => TestClient::delete(format!("http://{}{path}", self.0.address)),
+            "PATCH" => TestClient::patch(format!("http://{}{path}", self.0.address)),
             _ => TestClient::get(format!("http://{}{path}", self.0.address)),
         };
         let client = client

@@ -52,6 +52,15 @@ impl HagencyPanel {
                         self.agent_detail(cx, index);
                     }
                 }
+                Some(AgentPanelAction::Renamed { agent_id, display_name }) => {
+                    if let Some(agent) = self.agents.iter_mut().find(|a| string(a, "id") == agent_id) {
+                        agent["displayName"] = serde_json::Value::from(display_name.as_str());
+                    }
+                    // Only the panel's own Agent emits this, so its heading follows.
+                    if self.view.widget(cx, ids!(agent_panel)).visible() {
+                        self.view.label(cx, ids!(heading)).set_text(cx, display_name);
+                    }
+                }
                 Some(AgentPanelAction::Retired { .. }) => {
                     self.list_page(cx);
                     self.run(cx, Target::Agents, Command::Agents);
@@ -91,6 +100,10 @@ mod tests {
         assert!(panel.view.widget(&mut cx, ids!(agent_panel)).visible());
         assert!(!panel.view.view(&mut cx, ids!(agent_detail)).visible());
         assert_eq!(panel.view.label(&mut cx, ids!(heading)).text(), "First");
+        let renamed: ActionsBuf = vec![Box::new(AgentPanelAction::Renamed { agent_id: "a".into(), display_name: "Second".into() })];
+        panel.handle_agent_panel(&mut cx, &renamed);
+        assert_eq!(panel.view.label(&mut cx, ids!(heading)).text(), "Second", "a rename updates the heading");
+        assert_eq!(panel.agents[0]["displayName"], "Second", "and the list");
 
         let advanced: ActionsBuf = vec![Box::new(AgentPanelAction::Advanced { agent_id: "a".into() })];
         panel.handle_agent_panel(&mut cx, &advanced);
