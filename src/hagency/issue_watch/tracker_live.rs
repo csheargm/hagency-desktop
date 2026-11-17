@@ -67,7 +67,8 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let login = fetch_login(worker.client, GITHUB_API, worker.token).await.map_err(|e| e.to_string())?;
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, repo, worker.token).await.map_err(|e| e.to_string())?;
     let own: Vec<PullRequest> = pulls.into_iter().filter(|p| p.author.eq_ignore_ascii_case(&login)).collect();
-    let permission = fetch_permission(worker.client, GITHUB_API, repo, &login, worker.token).await.ok();
+    // A failed read is kept as the failure: the merge step counts it, never "cannot merge" (GPT review).
+    let permission = fetch_permission(worker.client, GITHUB_API, repo, &login, worker.token).await.map_err(|e| e.to_string());
     let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
     let peer = pick_peer(worker, &room).await;
     let io = LiveTrack { worker, watched, repo, room, login, peer, permission };
@@ -96,7 +97,7 @@ struct LiveTrack<'a> {
     room: OwnedRoomId,
     login: String,
     peer: Option<OwnedUserId>,
-    permission: Option<String>,
+    permission: Result<String, String>,
 }
 
 impl LiveTrack<'_> {
@@ -108,7 +109,9 @@ impl LiveTrack<'_> {
 impl LiveTrack<'_> {
     /// The gate's answer for `pr` and the step it leads to; every GitHub read
     /// (the owner API's own, and the reviews) fails here, never silently.
-    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, ctx: &LoopCtx<'_>) -> Result<Gate, String> {
+    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, fixer: &OwnedUserId) -> Result<Gate, String> {
+        let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
+        let ctx = &LoopCtx { agent: fixer, maintainer: true, permission: Some(permission) };
         let readiness = io.review(json!({"readiness": {"repo": self.repo, "number": pr.number}})).await?["readiness"].clone();
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         let settled = readiness["kind"] == "approvals" && readiness["head"].is_string() && {
@@ -180,8 +183,7 @@ impl TrackIo for LiveTrack<'_> {
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         review_loop::advance(&io, &target, &LoopCtx { agent: peer, maintainer: false, permission: None }).await?;
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
-        let ctx = LoopCtx { agent: &fixer, maintainer: true, permission: self.permission.as_deref() };
-        let gate = match self.merge_step(&io, &target, pr, &ctx).await {
+        let gate = match self.merge_step(&io, &target, pr, &fixer).await {
             Ok(Gate::Unreadable(error)) | Err(error) => Err(error),
             Ok(gate) => Ok(gate),
         };
@@ -200,7 +202,10 @@ impl TrackIo for LiveTrack<'_> {
                 // shown, retried next check, and told once after a streak.
                 let failures = lock_streaks().failed(&pr.url);
                 makepad_widgets::log!("WARN issue_track_merge_step_failed pr={} failures={failures}: {error}", pr.url);
-                merge_hold::after_failure(&io, &target, failures).await?;
+                if let Err(notice) = merge_hold::after_failure(&io, &target, failures).await {
+                    // The status line below still shows the streak; the notice retries next check.
+                    makepad_widgets::log!("WARN issue_track_unreachable_notice_failed pr={}: {notice}", pr.url);
+                }
                 Followed::Unreachable(failures)
             }
         })

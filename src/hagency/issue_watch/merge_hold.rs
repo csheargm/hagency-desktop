@@ -133,6 +133,13 @@ fn hold_step(missing: &[(Missing, String)]) -> String {
     format!("{HOLD_STEP}{}", words.iter().map(|m| m.word()).collect::<Vec<_>>().join("-"))
 }
 
+/// The "Pull request merges is off" hold alone, under the same step the
+/// tracker's own merges-off hold uses (the review pass's merge step).
+pub fn merges_off(target: &Target) -> LoopNotice {
+    let missing = [(Missing::MergesOff, String::new())];
+    LoopNotice::Held { target: target.clone(), step: hold_step(&missing), missing: vec![Missing::MergesOff.line("", &target.repo)] }
+}
+
 /// Post `notice` unless step `step` was taken for this head, then take it.
 async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice) -> Result<(), String> {
     let key = json!({"step": step, "pr": target.url, "head": target.head});

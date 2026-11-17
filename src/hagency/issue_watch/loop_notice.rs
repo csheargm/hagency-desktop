@@ -46,7 +46,8 @@ impl LoopNotice {
             Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } => target,
         }
     }
-    fn step(&self) -> &str {
+    /// The once-per-head loop step this notice is recorded under.
+    pub(crate) fn step(&self) -> &str {
         match self {
             Self::ReviewRequested { .. } => "review",
             Self::Held { step, .. } | Self::Unreachable { step, .. } => step,
