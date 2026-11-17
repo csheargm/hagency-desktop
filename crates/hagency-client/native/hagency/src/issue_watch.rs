@@ -62,6 +62,7 @@ fn write_transport(error: reqwest::Error) -> FetchError {
 pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_github_token};
 
 /// The owner's work list types (ADR 0016), for the desktop's Work block and poller.
+pub use hagency_agent_local::merge_policy::review_loop::HOLD_STEP;
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 
 /// The open issues (and pull requests, flagged `is_pr`) of `repo`, newest

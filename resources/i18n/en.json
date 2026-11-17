@@ -3621,5 +3621,15 @@
   "The account changed before the removal ran. Nothing was removed.": "The account changed before the removal ran. Nothing was removed.",
   "Remove your private chat with this Agent from this device and hide its existing history here? You stay in the chat, so the Message button in the Agent's details opens it again; earlier messages stay hidden on this device. Messages remain on the server and other devices.": "Remove your private chat with this Agent from this device and hide its existing history here? You stay in the chat, so the Message button in the Agent's details opens it again; earlier messages stay hidden on this device. Messages remain on the server and other devices.",
   "Leave your private chat with this Agent?": "Leave your private chat with this Agent?",
-  "Leaving \"{room}\" ends your private chat with this Agent. It is invite-only, so you lose access until someone invites you back, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.": "Leaving \"{room}\" ends your private chat with this Agent. It is invite-only, so you lose access until someone invites you back, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back."
+  "Leaving \"{room}\" ends your private chat with this Agent. It is invite-only, so you lose access until someone invites you back, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.": "Leaving \"{room}\" ends your private chat with this Agent. It is invite-only, so you lose access until someone invites you back, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.",
+  "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.": "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.",
+  "#{number} PR #{pr} needs: {needs}": "#{number} PR #{pr} needs: {needs}",
+  "#{number} PR #{pr} waiting for CI": "#{number} PR #{pr} waiting for CI",
+  "#{number} PR #{pr} approved, merging": "#{number} PR #{pr} approved, merging",
+  "an Agent approval": "an Agent approval",
+  "green CI": "green CI",
+  "a person (repo rules)": "a person (repo rules)",
+  "Pull request merges switched on": "Pull request merges switched on",
+  "a maintainer to merge": "a maintainer to merge",
+  "#{number} PR #{pr} can't reach GitHub ({failures} checks in a row), retrying": "#{number} PR #{pr} can't reach GitHub ({failures} checks in a row), retrying"
 }

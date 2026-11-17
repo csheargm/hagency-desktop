@@ -75,6 +75,26 @@ fn everything_outside_policy_needs_a_person() {
     assert!(human(evaluate(&zero, &facts(vec![file("a.md", 1)], vec![Check::Passed]), &[], "fixer")), "one other Agent is always required");
 }
 
+// TODO(R4): tests.rs is over budget; split the gate-command tests into tests/gate.rs.
+#[test]
+fn each_needs_human_reason_names_its_kind() {
+    // PR #36 (Nov 17): a docs change, CI not required, no Agent approval recorded.
+    let lenient = parse_policy("low_risk_paths: [\"**/*.md\"]\nrequire_ci: false\n").unwrap();
+    let kind = |policy: &MergePolicy, checks: Vec<Check>, approvers: &[&str]| match evaluate(policy, &facts(vec![file("README.md", 6)], checks), &reviewers(approvers), "fixer") {
+        Decision::NeedsHuman(reason) => reason_kind(&reason),
+        Decision::Merge => "merge",
+    };
+    assert_eq!(kind(&lenient, vec![Check::Failed], &[]), "approvals", "require_ci: false ignores a red check");
+    assert_eq!(kind(&lenient, vec![Check::Failed], &["reviewer"]), "merge");
+    assert_eq!(kind(&policy(), vec![Check::Failed], &[]), "ci");
+    assert_eq!(kind(&policy(), vec![], &["reviewer"]), "ci", "no checks at all");
+    assert_eq!(kind(&policy(), vec![Check::Pending], &["reviewer"]), "ci");
+    assert_eq!(reason_kind("src/main.rs is outside the low-risk paths"), "rules");
+    let crafted = facts(vec![file("needs 1 approval(s) from another Agent, has 0.rs", 1)], vec![]);
+    let Decision::NeedsHuman(reason) = evaluate(&lenient, &crafted, &[], "fixer") else { panic!("code needs a person") };
+    assert_eq!(reason_kind(&reason), "rules", "a file name never passes for the approvals reason");
+}
+
 pub(super) fn bash(line: &str, dir: &Path, agent: &str) -> ToolProposal {
     ToolProposal {
         scope: Scope { agent: agent.into(), binding: format!("b-{agent}"), room: "!r:x".into(), requester: "@owner:example.org".into(), thread: "t".into() },

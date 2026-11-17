@@ -3,6 +3,7 @@
 //! followed to review and its merge announced once; a give-up stops retries.
 //! The fake store applies changes with the ledger's own rule (`apply_change`),
 //! and a "restart" is a fresh fake built from the stored records alone.
+use super::merge_hold::Missing;
 use super::tracker::{Followed, Inputs, TrackIo, follow, links_issue};
 use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, IssueFact, MAX_ATTEMPTS, State, Track, TrackChange, apply_change};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -26,6 +27,8 @@ struct Fake {
     peer: bool,
     merged: RefCell<HashSet<u64>>,
     claimed_by_other: Cell<bool>,
+    /// What the merge step finds, when set (else the review is just requested).
+    outcome: RefCell<Option<Followed>>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
@@ -73,6 +76,9 @@ impl TrackIo for Fake {
     }
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String> {
         self.followed.borrow_mut().push(pr.number);
+        if let Some(outcome) = self.outcome.borrow().clone() {
+            return Ok(outcome);
+        }
         Ok(if self.peer { Followed::Requested } else { Followed::NeedsPerson })
     }
     fn paused(&self) -> bool {
@@ -221,4 +227,32 @@ fn a_claim_lost_to_another_agent_ends_the_retries() {
     }
     assert!(fake.said.borrow().is_empty(), "no retry notice for an issue someone else holds");
     assert_eq!(fake.tracks()[0].state, State::Closed);
+}
+
+#[test]
+fn a_reviewed_pr_that_cannot_merge_shows_what_is_missing_and_is_marked_told() {
+    // PR #36 for #35 (Nov 17): reviewed, no Agent approval counted, then
+    // the approval lands but the owner keeps Pull request merges off.
+    let fake = Fake { peer: true, ..Fake::default() };
+    first_hand_off(&fake, 35);
+    let pr = pull(36, "Closes #35");
+    *fake.outcome.borrow_mut() = Some(Followed::Requested);
+    assert_eq!(check(&fake, T0 + 60, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 in review"]);
+    *fake.outcome.borrow_mut() = Some(Followed::Held(vec![Missing::Approval]));
+    for minute in 2..5 {
+        assert_eq!(check(&fake, T0 + minute * 60, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 needs: an Agent approval"]);
+    }
+    let track = &fake.tracks()[0];
+    assert_eq!((track.state, track.pr, track.notified), (State::Reviewed, Some(36), true), "the review loop's notice was the one told");
+    assert!(fake.said.borrow().is_empty(), "the tracker adds no second notice");
+    *fake.outcome.borrow_mut() = Some(Followed::Held(vec![Missing::MergesOff, Missing::Permission]));
+    assert_eq!(check(&fake, T0 + 600, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 needs: Pull request merges switched on; a maintainer to merge"]);
+    *fake.outcome.borrow_mut() = Some(Followed::WaitingCi);
+    assert_eq!(check(&fake, T0 + 660, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 waiting for CI"]);
+    *fake.outcome.borrow_mut() = Some(Followed::Unreachable(3));
+    assert_eq!(check(&fake, T0 + 690, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 can't reach GitHub (3 checks in a row), retrying"]);
+    assert_eq!(fake.tracks()[0].state, State::Reviewed, "a failed check changes nothing: the next one retries");
+    *fake.outcome.borrow_mut() = Some(Followed::Merging);
+    assert_eq!(check(&fake, T0 + 720, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 approved, merging"]);
+    assert_eq!(fake.tracks()[0].state, State::Reviewed);
 }

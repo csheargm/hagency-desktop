@@ -50,7 +50,7 @@ async fn run(fake: &Fake, maintainer: bool, permission: Option<&str>) -> Result<
 
 #[tokio::test]
 async fn a_maintainer_reviews_once_then_merges_once() {
-    let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+    let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true}));
     for _ in 0..3 {
         run(&fake, true, Some("maintain")).await.unwrap();
     }
@@ -64,12 +64,30 @@ async fn a_maintainer_reviews_once_then_merges_once() {
 #[tokio::test]
 async fn a_non_writer_never_asks_its_agent_to_merge() {
     for permission in [Some("read"), Some("triage"), None] {
-        let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+        let fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true}));
         run(&fake, true, permission).await.unwrap();
         run(&fake, true, permission).await.unwrap();
         assert!(matches!(fake.posted.borrow()[1], LoopNotice::NeedsMaintainer { .. }), "{permission:?}");
     }
     assert!(can_merge(Some("write")) && can_merge(Some("admin")) && !can_merge(Some("read")));
+}
+
+#[tokio::test]
+async fn merges_switched_off_asks_the_owner_instead_of_telling_the_agent_to_merge() {
+    for switch in [json!(false), Value::Null] {
+        let mut fake = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": switch}));
+        for _ in 0..3 {
+            run(&fake, true, Some("admin")).await.unwrap();
+        }
+        assert_eq!(fake.posted.borrow().len(), 2, "review, then one hold: {:?}", fake.posted.borrow());
+        assert!(fake.posted.borrow()[1].body().contains("Pull request merges switched on") && !fake.posted.borrow()[1].body().contains("gh pr merge"));
+        // The hold never took the merge step: switched on, the merge is told once.
+        fake.readiness = json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true});
+        run(&fake, true, Some("admin")).await.unwrap();
+        run(&fake, true, Some("admin")).await.unwrap();
+        let posted = fake.posted.borrow();
+        assert!(matches!(&posted[..], [_, _, LoopNotice::Approved { .. }]), "{posted:?}");
+    }
 }
 
 #[tokio::test]
@@ -80,7 +98,7 @@ async fn waiting_unsure_and_reviewer_roles_post_no_merge_step() {
         run(&fake, true, Some("admin")).await.unwrap();
         assert_eq!(fake.posted.borrow().len(), 1, "{readiness}");
     }
-    let reviewer = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+    let reviewer = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true}));
     run(&reviewer, false, Some("admin")).await.unwrap();
     run(&reviewer, false, Some("admin")).await.unwrap();
     assert_eq!(reviewer.posted.borrow().len(), 1, "a reviewer only reviews");
@@ -111,7 +129,7 @@ fn notices_carry_no_pull_request_text_and_fixed_transaction_ids() {
 async fn the_owners_own_pull_request_skips_self_review_and_still_passes_the_gate() {
     let agent = anna();
     let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
-    let ready = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1}));
+    let ready = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true}));
     for _ in 0..2 {
         super::review_loop::advance_merge(&ready, &target(), &ctx).await.unwrap();
     }

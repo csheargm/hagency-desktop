@@ -71,7 +71,12 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     }
     let readiness = io.review(json!({"readiness": {"repo": target.repo, "number": target.number}})).await?["readiness"].clone();
     let Some(notice) = merge_notice(target, &readiness, ctx) else { return Ok(()) };
-    post_then_claim(io, &notice, step("merge")).await
+    // A hold has its own once-per-head step, so it never takes `merge`
+    // and the merge is still told once the owner fixes it (GPT review).
+    if notice.step() != "merge" && taken(io.review(json!({"stepTaken": step(notice.step())})).await?) {
+        return Ok(());
+    }
+    post_then_claim(io, &notice, step(notice.step())).await
 }
 
 /// The merge step's notice, or `None` to wait (CI running, no review yet, or the head moved).
@@ -82,6 +87,8 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
     }
     let target = target.clone();
     match readiness["decision"].as_str() {
+        // The gate never answers a merge with the switch off (or unknown): say so instead (GPT review).
+        Some("merge") if readiness["autoMerge"] != true => Some(super::merge_hold::merges_off(&target)),
         Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone() }),
         Some("merge") => Some(LoopNotice::NeedsMaintainer { target }),
         Some("wait") => None,
@@ -92,7 +99,7 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
 
 /// Post first (a fixed transaction id makes a retry a duplicate the server
 /// drops), then record the step so it is not posted again for this head.
-async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value) -> Result<(), String> {
+pub(crate) async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value) -> Result<(), String> {
     io.post(notice).await?;
     fence(io)?;
     io.review(json!({"claimStep": step})).await.map(|_| ())

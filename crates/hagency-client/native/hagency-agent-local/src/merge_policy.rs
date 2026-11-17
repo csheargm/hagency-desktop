@@ -33,6 +33,32 @@ const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];
 const CODEOWNERS: &str = "CODEOWNERS";
 /// The reason a merge waits rather than asks: CI has not finished.
 pub const CI_PENDING: &str = "CI checks are still running";
+const CI_FAILED: &str = "a CI check failed";
+const NO_CI: &str = "no CI checks reported";
+/// Every approvals reason [`evaluate`] gives contains this.
+const APPROVALS_REASON: &str = "approval(s) from another Agent";
+
+/// Exactly `needs <n> approval(s) from another Agent, has <m>`: a file or
+/// author name in another reason must never pass for it (GPT review).
+fn is_approvals_reason(reason: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let Some(rest) = reason.strip_prefix("needs ") else { return false };
+    let Some((required, rest)) = rest.split_once(' ') else { return false };
+    let Some(count) = rest.strip_prefix(APPROVALS_REASON).and_then(|r| r.strip_prefix(", has ")) else { return false };
+    digits(required) && digits(count)
+}
+
+/// What a [`Decision::NeedsHuman`] reason is about, as a fixed wire word, so
+/// the review loop can say what is missing without parsing the sentence.
+pub fn reason_kind(reason: &str) -> &'static str {
+    if is_approvals_reason(reason) {
+        "approvals"
+    } else if [CI_PENDING, CI_FAILED, NO_CI].contains(&reason) {
+        "ci"
+    } else {
+        "rules"
+    }
+}
 const DEFAULT_MAX_CHANGED_LINES: u64 = 50;
 const MIN_AGENT_APPROVALS: u32 = 1;
 
@@ -106,7 +132,7 @@ pub fn evaluate(policy: &MergePolicy, facts: &PrFacts, approvers: &[String], mer
     others.dedup();
     let required = policy.required_agent_approvals.max(MIN_AGENT_APPROVALS) as usize;
     if others.len() < required {
-        return Decision::NeedsHuman(format!("needs {required} approval(s) from another Agent, has {}", others.len()));
+        return Decision::NeedsHuman(format!("needs {required} {APPROVALS_REASON}, has {}", others.len()));
     }
     Decision::Merge
 }
@@ -160,10 +186,10 @@ pub(crate) fn ci_reason(policy: &MergePolicy, facts: &PrFacts) -> Option<String>
         return None;
     }
     if facts.checks.is_empty() && !policy.ci_if_present {
-        return Some("no CI checks reported".into());
+        return Some(NO_CI.into());
     }
     if facts.checks.contains(&Check::Failed) {
-        return Some("a CI check failed".into());
+        return Some(CI_FAILED.into());
     }
     facts.checks.contains(&Check::Pending).then(|| CI_PENDING.into())
 }

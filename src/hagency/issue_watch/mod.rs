@@ -10,6 +10,9 @@ pub(crate) mod choices;
 mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;
+mod merge_hold;
+#[cfg(test)]
+mod merge_hold_tests;
 mod review_loop;
 mod tracker;
 mod tracker_live;
