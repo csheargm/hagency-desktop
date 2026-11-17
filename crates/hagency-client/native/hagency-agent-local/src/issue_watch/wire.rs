@@ -16,12 +16,18 @@ pub const MAX_PAGES: u32 = 10;
 /// The `User-Agent` GitHub requires on every request.
 pub const USER_AGENT: &str = "hagency-issue-watch";
 
+/// How a connect or timeout failure starts, so a caller can tell it apart.
+pub const UNREACHABLE: &str = "Can't reach GitHub (network/DNS)";
+
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     #[error("invalid repository `{0}`: expected owner/name")]
     Repo(String),
     #[error("GitHub request failed: {0}")]
     Http(String),
+    /// No connection or no answer in time: network or DNS, not GitHub's reply.
+    #[error("{prefix}: {0}", prefix = UNREACHABLE)]
+    Unreachable(String),
     #[error("GitHub answered {status}: {body}")]
     Status { status: u16, body: String },
     #[error("unreadable GitHub issue list: {0}")]

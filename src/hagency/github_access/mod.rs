@@ -196,7 +196,7 @@ async fn checked(service: Option<crate::hagency::backend::Service>, agent: Strin
     let repos = watched_repos(service, &agent).await;
     let loaded = tokio::task::spawn_blocking(move || TokenStore::current().load(&agent)).await;
     match loaded.unwrap_or_else(|e| Err(e.to_string())) {
-        Ok(Some(token)) => Done::Checked(check(&::hagency::issue_watch::Client::new(), GITHUB_API, &token, &repos).await),
+        Ok(Some(token)) => Done::Checked(check(&::hagency::issue_watch::new_client(), GITHUB_API, &token, &repos).await),
         Ok(None) => Done::Stored(Ok(false), "No token saved for this Agent yet."),
         Err(error) => Done::Stored(Err(error), ""),
     }

@@ -32,7 +32,7 @@ mod review_loop_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};
-use ::hagency::issue_watch::{Client, GITHUB_API, IssueWatch, WatchMode, fetch_open_issues, select};
+use ::hagency::issue_watch::{Client, GITHUB_API, UNREACHABLE, new_client, IssueWatch, WatchMode, fetch_open_issues, select};
 use handoff::Outcome;
 use makepad_widgets::Cx;
 use serde_json::Value;
@@ -106,15 +106,31 @@ pub fn ensure_running() {
     }
     crate::account_session::spawn(run(epoch));
 }
+/// Transport failures in a row after which the poller drops its client and
+/// its pooled connections, and starts a fresh one.
+const RECREATE_CLIENT_AFTER: u32 = 3;
+
 async fn run(epoch: u64) {
-    let client = Client::new();
+    let mut client = new_client();
+    let mut streak = 0;
     while still_current(epoch).is_ok() {
-        check_all(epoch, &client).await;
+        check_all(epoch, &mut client, &mut streak).await;
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 
-async fn check_all(epoch: u64, client: &Client) {
+/// The poller's transport failures in a row after one check's result: a
+/// check that could not reach GitHub adds one, a check that worked starts
+/// again, any other failure (a 401, a room error) leaves it.
+pub(crate) fn next_streak(streak: u32, checked: &Result<(), &str>) -> u32 {
+    match checked {
+        Ok(()) => 0,
+        Err(error) if error.contains(UNREACHABLE) => streak + 1,
+        Err(_) => streak,
+    }
+}
+
+async fn check_all(epoch: u64, client: &mut Client, streak: &mut u32) {
     // Signed out or switching accounts: there is no Agent to watch yet, and
     // the next tick tries again.
     let Ok(service) = Service::for_current() else { return };
@@ -131,6 +147,13 @@ async fn check_all(epoch: u64, client: &Client) {
             .unwrap_or_else(|_| Err(crate::i18n::tr("No answer from this device's Agent host").to_owned()));
         if let Err(error) = &checked {
             makepad_widgets::log!("WARN issue_watch_check_failed agent={id}: {error}");
+        }
+        *streak = next_streak(*streak, &checked.as_ref().map(|_| ()).map_err(String::as_str));
+        if *streak >= RECREATE_CLIENT_AFTER {
+            // Drops the old client's pooled connections and resolver state.
+            makepad_widgets::log!("WARN issue_watch_client_recreated after {streak} transport failures in a row");
+            *client = new_client();
+            *streak = 0;
         }
         let line = match checked {
             Ok(outcome) => outcome.map(|(outcome, tracked)| with_tracked(outcome_line(&now(), &outcome), &tracked)),
@@ -228,5 +251,6 @@ pub(crate) fn with_tracked(line: String, tracked: &[String]) -> String {
     std::iter::once(line).chain(tracked.iter().cloned()).collect::<Vec<_>>().join(" · ")
 }
 pub(crate) fn failed_line(time: &str, error: &str) -> String {
-    crate::i18n::format("Last check {time} failed: {error}", &[("time", time.to_owned()), ("error", error.to_owned())])
+    let template = if error.contains(UNREACHABLE) { "Last check {time} failed: {error} — retrying" } else { "Last check {time} failed: {error}" };
+    crate::i18n::format(template, &[("time", time.to_owned()), ("error", error.to_owned())])
 }
