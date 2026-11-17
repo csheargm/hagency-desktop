@@ -1066,7 +1066,8 @@ async fn permission(
         Ok(ToolPolicy::AskOwner) => {
             let (pending, decision) = codex::pending_approval(proposal.clone());
             if !queue.offer(pending) {
-                return ToolAnswer::Deny;
+                // No card could be shown: the owner is not there, nobody refused.
+                return ToolAnswer::Unanswered;
             }
             match tokio::time::timeout(Duration::from_secs(280), decision).await {
                 // The owner never answered: nobody refused.
@@ -1077,7 +1078,9 @@ async fn permission(
                         .and_then(|_| ledger.authorize_tool(&proposal, now()))
                         .is_ok(),
                 ),
-                Ok(_) => ToolAnswer::Deny,
+                // The card went away unanswered (expired or withdrawn): not a refusal.
+                Ok(Err(_)) => ToolAnswer::Unanswered,
+                Ok(Ok(false)) => ToolAnswer::Deny,
             }
         }
         _ => ToolAnswer::Deny,

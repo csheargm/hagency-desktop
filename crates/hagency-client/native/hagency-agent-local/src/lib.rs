@@ -1190,7 +1190,14 @@ impl Ledger {
     /// what runs is what was checked). `None`: ask as usual.
     // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
     pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<watch_trust::TrustedStep>> {
-        let Some(command) = watch_trust::pinned(&self.db, proposal, owner)? else { return Ok(None) };
+        // Read-only GitHub queries on a watched repository need no card either (ADR 0019).
+        let command = match watch_trust::pinned(&self.db, proposal, owner)? {
+            Some(step) => step,
+            None if watch_trust::read_only_query(&self.db, proposal)? => {
+                watch_trust::TrustedStep::Command(watch_trust::pin_env(proposal.arguments["command"].as_str().unwrap_or_default()))
+            }
+            None => return Ok(None),
+        };
         match self.tool_disposition(proposal, now) {
             Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
             Ok(ToolPolicy::Deny) | Err(Error::Denied) => return Ok(None),

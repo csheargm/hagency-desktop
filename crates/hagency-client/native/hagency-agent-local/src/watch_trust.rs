@@ -28,6 +28,7 @@ pub(crate) mod gh;
 pub(crate) mod git;
 pub mod host_git;
 pub mod host_run;
+pub(crate) mod read_only;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +61,36 @@ fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<
         }
     }
     Ok(repos)
+}
+
+/// Every repository `proposal`'s Agent watches with reports to this Room
+/// (an active legacy watch or a work-list entry), push trust or not.
+fn watched_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    let (agent, room) = (&proposal.scope.agent, &proposal.scope.room);
+    let legacy: Option<(String, String, String)> = db
+        .query_row("SELECT mode,repo,room_id FROM issue_watch WHERE agent=?", [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    let mut repos: Vec<String> = legacy.and_then(|(mode, repo, r)| (mode != "off" && &r == room).then_some(repo)).into_iter().collect();
+    let mut work = db.prepare("SELECT rules FROM agent_work WHERE agent=? ORDER BY repo")?;
+    for rules in work.query_map([agent], |r| r.get::<_, String>(0))? {
+        // A row that no longer parses grants nothing.
+        let Ok(rules) = serde_json::from_str::<crate::merge_policy::work::OwnerRules>(&rules?) else { continue };
+        if &rules.room_id == room {
+            repos.push(rules.repo);
+        }
+    }
+    Ok(repos)
+}
+
+/// Whether `proposal` is a foreground Claude `Bash` read-only GitHub query
+/// on a repository its Agent watches from this Room (any requester: what it
+/// reads is the watched repository the watch already reports here).
+pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate::Result<bool> {
+    if proposal.risk == "permission_expansion" || proposal.tool != "claude.Bash" || proposal.arguments["run_in_background"] == true {
+        return Ok(false);
+    }
+    let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
+    Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
 }
 
 /// A check, run off the async threads, that push trust still covers
@@ -154,3 +185,5 @@ pub(crate) fn github_repo_of(url: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod read_only_flow_tests;

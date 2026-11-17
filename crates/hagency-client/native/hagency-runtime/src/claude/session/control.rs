@@ -24,7 +24,7 @@ pub const DENIED: &str = "This tool call was not allowed by the Agent's owner or
 /// ready. It still must not ask again within this turn.
 /// Local Agents put the request to their owner, pooled Agents to the person
 /// who sent the message; the text names neither.
-pub const UNANSWERED: &str = "Nobody answered this permission request in time, so the tool call did not run. Nobody refused it. Do not retry it or work around it in this turn. Tell the requester that the permission request was not answered and that they can ask again; a later request asks for permission again.";
+pub const UNANSWERED: &str = "This tool call is waiting for approval and did not run: the approval card was not answered in time, because the person who approves it (for a local Agent, its owner, in their own Hagency window) was not there. Nobody refused it and no rule blocked it. Do not retry it or work around it in this turn. Tell the requester you are waiting for that person's approval in their window, naming them when you know who they are (for example \"waiting for Betty's approval in her window\"); never say the owner's rules blocked it. They can ask again; a later request asks for approval again.";
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApprovalControlPolicy {
