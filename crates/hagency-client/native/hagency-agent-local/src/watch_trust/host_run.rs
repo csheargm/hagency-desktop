@@ -80,7 +80,9 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
     // so its id is still this command's).
     while !(out.is_finished() && err.is_finished()) {
         if ctx.cancelled() || started.elapsed() > ctx.timeout {
-            kill_group(child.id());
+            // The leader is reaped, so one signal only, while the pipe
+            // holder (unfinished reader) still keeps the group id taken.
+            signal_group(child.id());
             return Err(if ctx.cancelled() { "the turn was stopped" } else { "git took too long" }.into());
         }
         std::thread::sleep(POLL);
@@ -89,31 +91,44 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
     if status.success() { Ok(out.trim().to_owned()) } else { Err(err.trim().to_owned()) }
 }
 
-/// SIGKILL to every process of the group `pid` leads, sent a few times (a
-/// process forked while the first signal was delivered can escape it).
-/// Called BEFORE the leader is reaped: its zombie keeps the group id
-/// reserved, so the signal can never reach a group that reused the id.
+/// SIGKILL to every process of the group `pid` leads, repeated until no
+/// live process but the leader is left (a process forked while a signal was
+/// delivered can escape it). Only while the leader is NOT reaped: its zombie
+/// keeps the group id taken, so no signal can reach a group that reused it.
 fn kill_group(pid: u32) {
-    #[cfg(unix)]
     for round in 0..GROUP_KILL_MAX_ROUNDS {
-        // Best effort: a failed send means the group is already gone.
-        let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        signal_group(pid);
         std::thread::sleep(POLL);
         if round + 1 >= GROUP_KILL_ROUNDS && !group_has_others(pid) {
             return;
         }
     }
-    #[cfg(not(unix))]
-    let _ = pid;
 }
 const GROUP_KILL_ROUNDS: u32 = 4;
 const GROUP_KILL_MAX_ROUNDS: u32 = 100;
 
+/// One SIGKILL to process group `pid`.
+fn signal_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        // Best effort: a failed send means the group is already gone.
+        let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 /// Whether group `pid` still has a live process besides its leader.
+#[cfg(not(unix))]
+fn group_has_others(_pid: u32) -> bool {
+    false
+}
 #[cfg(unix)]
 fn group_has_others(pid: u32) -> bool {
-    let Ok(out) = Command::new("/bin/ps").args(["-o", "pid=,stat=", "-g", &pid.to_string()]).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return false };
-    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(p, st)| (p.trim().to_owned(), st.trim().to_owned()))).any(|(p, st)| p != pid.to_string() && !st.starts_with('Z'))
+    // `-g` means a session on Linux and a group on macOS: list all, filter by PGID.
+    let Ok(out) = Command::new("/bin/ps").args(["-A", "-o", "pid=,pgid=,stat="]).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return false };
+    let (me, group) = (pid.to_string(), pid.to_string());
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| matches!(l.split_whitespace().collect::<Vec<_>>().as_slice(), [p, g, st, ..] if *g == group && *p != me && !st.starts_with('Z')))
 }
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
