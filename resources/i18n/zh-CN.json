@@ -3617,5 +3617,13 @@
   "Removed {agent} from this room.": "已将 {agent} 移出此聊天室。",
   "Could not remove {agent}: {error}": "无法移出 {agent}：{error}",
   "{agent} is not added to this room, so there is nothing to remove here.": "{agent} 未加入此聊天室，无需移出。",
-  "The account changed before the removal ran. Nothing was removed.": "移出前账号已切换，未移出任何成员。"
+  "The account changed before the removal ran. Nothing was removed.": "移出前账号已切换，未移出任何成员。",
+  "#{number} PR #{pr} needs: {needs}": "#{number} PR #{pr} 还缺：{needs}",
+  "#{number} PR #{pr} waiting for CI": "#{number} PR #{pr} 正在等待 CI",
+  "#{number} PR #{pr} approved, merging": "#{number} PR #{pr} 已批准，正在合并",
+  "an Agent approval": "一个 Agent 的批准",
+  "green CI": "CI 通过",
+  "a person (repo rules)": "由人处理（仓库规则）",
+  "Pull request merges switched on": "开启“PR 合并”",
+  "a maintainer to merge": "由维护者合并"
 }

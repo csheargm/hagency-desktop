@@ -3,11 +3,12 @@
 //! `m.notice` (never dispatched as a request), hand-offs through `live::Live`,
 //! pull request follow-through through the review loop (`review_loop`), and
 //! the owner API's `track` record.
-use super::review_loop::{self, LoopCtx};
+use super::merge_hold::{self, Gate};
+use super::review_loop::{self, LoopCtx, LoopIo};
 use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
-use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
+use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_reviews, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedTransactionId, OwnedUserId};
 use serde_json::{Map, Value, json};
@@ -158,10 +159,19 @@ impl TrackIo for LiveTrack<'_> {
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         review_loop::advance(&io, &target, &LoopCtx { agent: peer, maintainer: false, permission: None }).await?;
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
-        if review_loop::can_merge(self.permission.as_deref()) {
-            review_loop::advance_merge(&io, &target, &LoopCtx { agent: &fixer, maintainer: true, permission: self.permission.as_deref() }).await?;
-        }
-        Ok(Followed::Requested)
+        let readiness = io.review(json!({"readiness": {"repo": self.repo, "number": pr.number}})).await?["readiness"].clone();
+        // Only a missing approval waits on the reviewer; GitHub says whether it answered.
+        let settled = readiness["kind"] == "approvals" && {
+            let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
+            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, chrono::Utc::now().timestamp())
+        };
+        let ctx = LoopCtx { agent: &fixer, maintainer: true, permission: self.permission.as_deref() };
+        Ok(match merge_hold::follow_gate(&io, &target, &readiness, &ctx, settled).await? {
+            Gate::Merge => Followed::Merging,
+            Gate::WaitCi => Followed::WaitingCi,
+            Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
+            Gate::WaitReview | Gate::WaitFacts => Followed::Requested,
+        })
     }
     fn paused(&self) -> bool {
         crate::hagency::kill_switch::paused_here(self.agent_id())

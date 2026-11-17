@@ -6,6 +6,7 @@
 //! before its state is recorded, with a transaction id fixed by issue, step
 //! and attempt, so a check that dies in between repeats a duplicate the
 //! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
+use super::merge_hold::Missing;
 use super::work_slots::closes_issue;
 use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -13,10 +14,16 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 /// What following a pull request led to.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Followed {
-    /// Another Agent was asked to review, or the merge gate was consulted.
+    /// Another Agent was asked to review; its verdict is not in yet.
     Requested,
+    /// Reviewed; CI is still running under a policy that requires it.
+    WaitingCi,
+    /// Every rule passes: the Agent was told to run the pinned merge.
+    Merging,
+    /// It cannot merge yet: one room notice said what is missing (ADR 0020).
+    Held(Vec<Missing>),
     /// No other Agent can review: a person must review and merge.
     NeedsPerson,
     /// Still a draft: the Agent has not marked it ready yet.
@@ -150,7 +157,10 @@ async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullReq
     if followed == Followed::NeedsPerson && !told {
         io.say(n, &format!("needs-review-{pr}"), crate::i18n::format(NEEDS_YOU, &[("pr", pr.to_string()), ("number", n.to_string()), ("url", pull.url.clone())])).await?;
         io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
-    } else if followed == Followed::Requested && (track.state != State::Reviewed || track.pr != Some(pr)) {
+    } else if matches!(followed, Followed::Held(_)) && !told {
+        // The review loop posted the notice (once per head and set of missing things).
+        io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
+    } else if matches!(followed, Followed::Requested | Followed::WaitingCi | Followed::Merging) && (track.state != State::Reviewed || track.pr != Some(pr)) {
         io.record(change_of(repo, n, json!({"state": "reviewed"}))).await?;
     }
     Ok(pr_line(n, pr, followed))
@@ -202,12 +212,20 @@ fn waiting_line(track: &Track) -> String {
     }
 }
 fn pr_line(number: i64, pr: u64, followed: Followed) -> String {
+    let args = [("number", number.to_string()), ("pr", pr.to_string())];
     let template = match followed {
+        Followed::Held(missing) => {
+            let needs = missing.iter().map(|m| crate::i18n::tr(m.label())).collect::<Vec<_>>().join("; ");
+            let [number, pr] = args;
+            return crate::i18n::format("#{number} PR #{pr} needs: {needs}", &[number, pr, ("needs", needs)]);
+        }
+        Followed::WaitingCi => "#{number} PR #{pr} waiting for CI",
+        Followed::Merging => "#{number} PR #{pr} approved, merging",
         Followed::Requested => "#{number} PR #{pr} in review",
         Followed::NeedsPerson => "#{number} PR #{pr} waiting for your review",
         Followed::Draft => "#{number} PR #{pr} is a draft",
     };
-    crate::i18n::format(template, &[("number", number.to_string()), ("pr", pr.to_string())])
+    crate::i18n::format(template, &args)
 }
 pub(crate) fn terminal_line(track: &Track) -> Option<String> {
     let n = track.number.to_string();

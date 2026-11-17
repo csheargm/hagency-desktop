@@ -92,7 +92,7 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
 
 /// Post first (a fixed transaction id makes a retry a duplicate the server
 /// drops), then record the step so it is not posted again for this head.
-async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value) -> Result<(), String> {
+pub(crate) async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value) -> Result<(), String> {
     io.post(notice).await?;
     fence(io)?;
     io.review(json!({"claimStep": step})).await.map(|_| ())

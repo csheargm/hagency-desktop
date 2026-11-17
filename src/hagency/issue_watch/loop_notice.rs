@@ -33,17 +33,21 @@ pub enum LoopNotice {
     NeedsMaintainer { target: Target },
     /// The merge gate says a person must decide; `reason` is the gate's.
     NeedsOwner { target: Target, reason: String },
+    /// The issue loop's pull request cannot merge yet: each line names one
+    /// missing thing and how to fix it; `step` keys the set (one notice each).
+    Held { target: Target, step: String, missing: Vec<String> },
 }
 
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target } | Self::NeedsOwner { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } => target,
         }
     }
-    fn step(&self) -> &'static str {
+    fn step(&self) -> &str {
         match self {
             Self::ReviewRequested { .. } => "review",
+            Self::Held { step, .. } => step,
             _ => "merge",
         }
     }
@@ -70,6 +74,10 @@ impl LoopNotice {
             ),
             Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs a maintainer: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
             Self::NeedsOwner { reason, .. } => format!("⚠️ PR #{} in {} at {short} needs the owner: {}. {}", t.number, t.repo, quoted_title(reason), t.url),
+            Self::Held { missing, .. } => {
+                let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();
+                format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
+            }
         }
     }
 

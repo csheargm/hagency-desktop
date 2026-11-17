@@ -5,14 +5,20 @@
 //! merge gate stay the authority.
 use hagency_agent_local::merge_policy::github::{commit_sha, GhCli};
 use hagency_agent_local::merge_policy::gate::{GhPr, Kind};
-use hagency_agent_local::merge_policy::review_loop::merge_readiness;
-use hagency_agent_local::merge_policy::{Decision, CI_PENDING};
+use hagency_agent_local::merge_policy::review_loop::{merge_readiness, HOLD_STEP};
+use hagency_agent_local::merge_policy::{reason_kind, Decision, CI_PENDING};
 use hagency_agent_local::{Error, Ledger, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// The loop steps taken once per pull request head.
 pub(super) const STEPS: [&str; 2] = ["review", "merge"];
+const MAX_STEP_LEN: usize = 96;
+
+fn known_step(step: &str) -> bool {
+    STEPS.contains(&step)
+        || step.strip_prefix(HOLD_STEP).is_some_and(|rest| !rest.is_empty() && step.len() <= MAX_STEP_LEN && rest.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
+}
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -51,7 +57,7 @@ fn pr_head(step: &Step) -> Result<()> {
     if !step.pr.starts_with("https://github.com/") || step.pr.contains(char::is_whitespace) || commit_sha(&step.head).is_none() {
         return Err(Error::Invalid("pull request must be a github.com URL and head a full commit SHA"));
     }
-    if !STEPS.contains(&step.step.as_str()) {
+    if !known_step(&step.step) {
         return Err(Error::Invalid("unknown review-loop step"));
     }
     Ok(())
@@ -94,18 +100,22 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         if let Some((view, _)) = &judged {
             // Unverified: only tells "no review yet" (wait) from "a person must decide".
             reply["readiness"]["approvers"] = ledger.agent_reviewers_count(&view.url, &view.head_sha)?.into();
+            // The merger's own "Pull request merges" switch: without it the
+            // gate never answers the merge, so the loop says so instead.
+            reply["readiness"]["autoMerge"] = ledger.auto_merge(agent)?.into();
         }
     }
     Ok(reply)
 }
 
-/// `{decision: merge|wait|human, head, reason}`; unreadable facts ask a person.
+/// `{decision: merge|wait|human, head, reason, kind}`; unreadable facts ask a
+/// person. `kind` (`approvals`, `ci`, `rules`) says what a person's decision is about.
 pub(super) fn readiness_json(judged: Option<(&str, &Decision)>) -> Value {
     match judged {
         Some((head, Decision::Merge)) => json!({"decision": "merge", "head": head}),
         Some((head, Decision::NeedsHuman(reason))) if reason == CI_PENDING => json!({"decision": "wait", "head": head, "reason": reason}),
-        Some((head, Decision::NeedsHuman(reason))) => json!({"decision": "human", "head": head, "reason": reason}),
-        None => json!({"decision": "human", "reason": "GitHub or the merge policy could not be read"}),
+        Some((head, Decision::NeedsHuman(reason))) => json!({"decision": "human", "head": head, "reason": reason, "kind": reason_kind(reason)}),
+        None => json!({"decision": "human", "reason": "GitHub or the merge policy could not be read", "kind": "rules"}),
     }
 }
 
@@ -124,6 +134,10 @@ mod tests {
         assert!(pr_head(&step("merge", "http://evil/a", &sha)).is_err());
         assert!(pr_head(&step("merge", "https://github.com/a/b/pull/1", "main")).is_err());
         assert!(pr_head(&step("deploy", "https://github.com/a/b/pull/1", &sha)).is_err());
+        assert!(pr_head(&step("hold-approvals-merges-off", "https://github.com/a/b/pull/1", &sha)).is_ok());
+        for bad in ["hold-", "hold-Approvals", "hold-a b", "hold-a_b", &format!("hold-{}", "a".repeat(MAX_STEP_LEN))] {
+            assert!(pr_head(&step(bad, "https://github.com/a/b/pull/1", &sha)).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -131,6 +145,9 @@ mod tests {
         assert_eq!(readiness_json(Some(("h", &Decision::Merge)))["decision"], "merge");
         assert_eq!(readiness_json(Some(("h", &Decision::NeedsHuman(CI_PENDING.into()))))["decision"], "wait");
         assert_eq!(readiness_json(Some(("h", &Decision::NeedsHuman("code".into()))))["decision"], "human");
+        let approvals = readiness_json(Some(("h", &Decision::NeedsHuman("needs 1 approval(s) from another Agent, has 0".into()))));
+        assert_eq!((approvals["decision"].as_str(), approvals["kind"].as_str()), (Some("human"), Some("approvals")));
+        assert_eq!(readiness_json(None)["kind"], "rules");
         assert_eq!(readiness_json(None)["decision"], "human");
     }
 }

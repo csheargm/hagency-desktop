@@ -3617,5 +3617,13 @@
   "Removed {agent} from this room.": "Removed {agent} from this room.",
   "Could not remove {agent}: {error}": "Could not remove {agent}: {error}",
   "{agent} is not added to this room, so there is nothing to remove here.": "{agent} is not added to this room, so there is nothing to remove here.",
-  "The account changed before the removal ran. Nothing was removed.": "The account changed before the removal ran. Nothing was removed."
+  "The account changed before the removal ran. Nothing was removed.": "The account changed before the removal ran. Nothing was removed.",
+  "#{number} PR #{pr} needs: {needs}": "#{number} PR #{pr} needs: {needs}",
+  "#{number} PR #{pr} waiting for CI": "#{number} PR #{pr} waiting for CI",
+  "#{number} PR #{pr} approved, merging": "#{number} PR #{pr} approved, merging",
+  "an Agent approval": "an Agent approval",
+  "green CI": "green CI",
+  "a person (repo rules)": "a person (repo rules)",
+  "Pull request merges switched on": "Pull request merges switched on",
+  "a maintainer to merge": "a maintainer to merge"
 }

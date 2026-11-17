@@ -13,6 +13,10 @@ use crate::{Ledger, Result};
 
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_loop_sent (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT;";
 
+/// A review-loop step that posts one "can't merge yet" notice per head and
+/// set of missing things: this prefix, then lowercase words joined by `-`.
+pub const HOLD_STEP: &str = "hold-";
+
 /// The prefix that marks a GitHub reviewer among Agent approvers.
 pub const GITHUB_REVIEWER: &str = "github:";
 
