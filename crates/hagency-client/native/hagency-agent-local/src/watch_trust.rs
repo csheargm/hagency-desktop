@@ -20,7 +20,7 @@
 //! - the local fix steps in the watched repository's own checkout (`status`,
 //!   `diff`, `log`, `show`, `branch`, `add`, `commit`, `restore`, pinned, see
 //!   [`local_git`]), `pull` and a `clone` of it into the workspace (host-run,
-//!   see [`host_clone`]), ADR 0021;
+//!   see [`host_clone`]), ADR 0022;
 //! - Read/Glob/Grep, and Write/Edit/MultiEdit (never git metadata), of a path
 //!   inside that checkout.
 //!

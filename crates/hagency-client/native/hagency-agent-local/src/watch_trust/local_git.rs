@@ -1,5 +1,5 @@
 //! The local fix steps "push freely" answers in the watched repository's own
-//! checkout (ADR 0021): `status`, `diff`, `log`, `show`, `branch` (listing),
+//! checkout (ADR 0022): `status`, `diff`, `log`, `show`, `branch` (listing),
 //! `add`, `commit` and `restore`, one command each, options from a closed
 //! list, every path word inside the checkout. They need no network and run
 //! as the Agent, pinned: hooks, fsmonitor, pager, editor, external diff,

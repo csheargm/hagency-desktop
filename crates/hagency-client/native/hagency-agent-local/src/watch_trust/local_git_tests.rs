@@ -1,4 +1,4 @@
-//! The local fix steps "push freely" answers (ADR 0021): the allowlist, path
+//! The local fix steps "push freely" answers (ADR 0022): the allowlist, path
 //! escapes, links, config and hook tricks, and other-repository remotes.
 use crate::watch_trust::{TrustedStep, pinned_line};
 use std::path::{Path, PathBuf};

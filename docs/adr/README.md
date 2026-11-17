@@ -19,4 +19,5 @@ implemented. An ADR is not evidence that a feature has shipped.
 | [0018](0018-ollama-runtime-caps.md) | Accepted | Ollama server endpoints are http only; usage caps live server-side for hosted Agents |
 | [0019](0019-agents-know-and-share-watches.md) | Accepted | Agents know their own watches; room_watches shares only this room's watches |
 | [0020](0020-issue-loop-tracker.md) | Accepted; implemented | Issue loop tracker: per-issue state, retries with backoff, PR follow-through to review and merge, restart-safe |
-| [0021](0021-push-freely-covers-fix-steps.md) | Accepted | "Push freely" also covers the local fix steps (status/diff/log/add/commit/restore, pull, clone, reads and edits) in the watched repo's own checkout |
+| [0021](0021-owner-approvals-inbox.md) | Accepted | Owner approvals inbox: every pending approval of your agents is shown, notified, and recorded when it expires |
+| [0022](0022-push-freely-covers-fix-steps.md) | Accepted | "Push freely" also covers the local fix steps (status/diff/log/add/commit/restore, pull, clone, reads and edits) in the watched repo's own checkout |
