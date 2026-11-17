@@ -115,6 +115,10 @@ pub async fn find_issue_by_marker(client: &Client, api: &str, repo: &str, creato
             return issue["number"].as_u64().map(Some).ok_or_else(|| FetchError::Parse("no number in the issue".into()));
         }
         page = next_page(current, batch.len());
+        if page.is_none() && batch.len() >= PAGE_SIZE as usize {
+            // Stopped at the page cap: absence is not established (GPT review).
+            return Err(FetchError::Parse("too many issues to search for the plan step".into()));
+        }
     }
     Ok(None)
 }
