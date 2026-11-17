@@ -1347,6 +1347,21 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
             };
             return public(&api(req, depot, op).await?.value, "agent");
         }
+        if parts.len() == 2
+            && parts[1] == "group-rooms"
+            && method == Method::PUT
+            && req.uri().query().is_none()
+        {
+            if !body(req, 1)
+                .await
+                .map_err(|_| error(400, "invalid_arguments"))?
+                .is_empty()
+            {
+                return Err(error(400, "invalid_arguments"));
+            }
+            let op = OwnerOperation::AllowGroupRooms { agent };
+            return public(&api(req, depot, op).await?.value, "agent");
+        }
         if parts.len() == 2 && parts[1] == "local-policy" {
             if method != Method::GET {
                 require_execution_device(req, depot, &agent).await?;

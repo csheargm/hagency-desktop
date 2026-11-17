@@ -176,6 +176,7 @@ script_mod! {
                     }
                 }
                 agent_status := ModalBody {}
+                allow_group_rooms := RobrixPositiveIconButton {visible: false text: #(crate::i18n::tr("Allow in group rooms")) i18n_text: "Allow in group rooms" height: 40 margin: Inset{top: 12} icon_walk: Walk{width: 0 height: 0}}
                 resume_agent_requests := RobrixNeutralIconButton {visible: false text: #(crate::i18n::tr("Resume original request in Agents")) i18n_text: "Resume original request in Agents" height: 40 margin: Inset{top: 12} icon_walk: Walk{width: 0 height: 0}}
             }
         }
@@ -293,6 +294,10 @@ impl RoomAgentsSlow {
     }
 }
 
+/// The picker's own text for a private Agent: its button is the choice.
+// TODO(R4): this file is over budget; split the Add agent picker state at the
+// `request_agents`/`finish_agent_request` seam into mobile_chat_info/add_agent_picker.rs.
+const PRIVATE_AGENT_CHOICE: &str = "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.";
 pub(crate) fn agent_binding_error(code: &str) -> &'static str {
     match code {
         "room_project_registration_required" => "This room could not be registered for your Agents: create an Agent first (Agent → Create agent), then add it here again.",
@@ -303,6 +308,7 @@ pub(crate) fn agent_binding_error(code: &str) -> &'static str {
         "matrix_permission_denied" => "You do not have permission to invite members to this room. Ask a room administrator to enable invitations.",
         "agent_creation_denied" => "This space or room does not allow you to add Agents. Ask its owner to update the Agent permissions.",
         "agent_owner_binding_required" => "This Agent is not available to add. Check that it belongs to you and its resource authorization is still valid in Agent → My Agents.",
+        crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL => "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.",
         "agent_retired" => "This Agent has been retired and cannot join another room.",
         "agent_command_recovery_required" => "An original binding request needs confirmation. Resume it in Agents.",
         "sign_in_required" | "matrix_account_changed" => "Your account session changed. Reopen this room after signing in.",
@@ -383,6 +389,8 @@ pub struct MobileChatInfo {
     #[rust] agent_project: String,
     #[rust] agents: Vec<serde_json::Value>,
     #[rust] agent_command: Option<(String, String)>,
+    /// The owner chose Allow in group rooms: the next bind records that first.
+    #[rust] allow_group_rooms: bool,
     #[rust] agent_picker_open: bool,
     #[rust] services_open: bool,
     #[rust] services_busy: bool,
@@ -633,6 +641,7 @@ impl MobileChatInfo {
                 if self.agents.is_empty() {"No active Agents owned by you are available."}
                 else {"Choose an Agent you own to bind to this Room."}
             },
+            Err(code) if code == crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL => {error=Some(code.as_str());PRIVATE_AGENT_CHOICE},
             Err(code) => {error=Some(code.as_str());agent_binding_error(code)},
         };
         let text=self.bind_error_text(cx,error).unwrap_or_else(||crate::i18n::tr(message).to_owned());
@@ -642,6 +651,7 @@ impl MobileChatInfo {
         else if self.agent_added {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_SUCCESS_FG}});}
         else {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_MUTED}});}
         self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,error==Some("agent_command_recovery_required"));
+        self.view.button(cx,ids!(allow_group_rooms)).set_visible(cx,error==Some(crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL));
         cx.redraw_all();
     }
     fn request_agents(&mut self, cx: &mut Cx, binding: bool) {
@@ -680,10 +690,15 @@ impl MobileChatInfo {
         let mut status = self.view.label(cx,ids!(agent_status));
         script_apply_eval!(cx,status,{draw_text +: {color: mod.widgets.RINX_MUTED}});
         self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,false);
+        self.view.button(cx,ids!(allow_group_rooms)).set_visible(cx,false);
+        // Consent applies to this one bind only; a new choice asks again.
+        let allow = std::mem::take(&mut self.allow_group_rooms) && binding;
         if !binding {self.view.button(cx, ids!(resume_agent_requests)).set_visible(cx, false);self.agents.clear(); self.agent_project.clear(); self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,vec![crate::i18n::tr("Choose my Agent").into()]);}
         if let Some(service) = service {spawn_async_task(async move {
             let future = async {
-                if let Some(command)=command {service.bind_agent_to_room(command).await}
+                if let Some(command)=command {
+                    if allow {service.allow_group_rooms_then_bind(command).await} else {service.bind_agent_to_room(command).await}
+                }
                 else {crate::home::room_registration::agents_for_room(&service, room_id.as_str()).await}
             };
             tokio::pin!(future);
@@ -719,6 +734,7 @@ impl MobileChatInfo {
         self.agent_project.clear();
         self.agents.clear();
         self.agent_command = None;
+        self.allow_group_rooms = false;
         self.agent_picker_open = false;
         self.services_open = false;
         self.services_busy = false;
@@ -876,6 +892,7 @@ impl Widget for MobileChatInfo {
             }
             if self.view.drop_down(cx,ids!(my_agents)).changed(actions).is_some() && !self.agent_busy {
                 self.agent_added=false;self.agent_pending=false;
+                self.view.button(cx,ids!(allow_group_rooms)).set_visible(cx,false);
                 let status=self.selected_agent_status(cx);
                 self.view.label(cx,ids!(agent_status)).set_text(cx,&status);
                 cx.redraw_all();
@@ -885,6 +902,10 @@ impl Widget for MobileChatInfo {
                 else {self.request_agents(cx,false);}return;
             }
             if self.tab == InfoTab::Members && self.view.button(cx,ids!(invite_selected_agent)).clicked(actions) {self.request_agents(cx,true);return;}
+            if self.tab == InfoTab::Members && self.view.button(cx,ids!(allow_group_rooms)).clicked(actions) {
+                if !self.agent_busy {self.allow_group_rooms=true;self.request_agents(cx,true);self.allow_group_rooms=false;}
+                return;
+            }
             if self.view.button(cx,ids!(resume_agent_requests)).clicked(actions) {self.close_agent_picker(cx);cx.action(crate::hagency::ui::HagencyAction::OpenAgents);return;}
             if self.view.button(cx, ids!(retry)).clicked(actions) {
                 if let Some(room) = self.room.clone() {

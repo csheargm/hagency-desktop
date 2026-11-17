@@ -3223,5 +3223,8 @@
   "Add it to other rooms later with Add agent in each room.": "Add it to other rooms later with Add agent in each room.",
   "{agent} joined {room}.": "{agent} joined {room}.",
   "{agent} is still joining {room}.": "{agent} is still joining {room}.",
-  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}"
+  "Could not add {agent} to {room}: {reason}": "Could not add {agent} to {room}: {reason}",
+  "Allow in group rooms": "Allow in group rooms",
+  "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.": "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.",
+  "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.": "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool."
 }

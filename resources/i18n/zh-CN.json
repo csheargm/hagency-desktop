@@ -3223,5 +3223,8 @@
   "Add it to other rooms later with Add agent in each room.": "之后可在各聊天室中使用“添加 Agent”将它加入其他聊天室。",
   "{agent} joined {room}.": "{agent} 已加入 {room}。",
   "{agent} is still joining {room}.": "{agent} 仍在加入 {room}。",
-  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 添加到 {room}：{reason}"
+  "Could not add {agent} to {room}: {reason}": "无法将 {agent} 添加到 {room}：{reason}",
+  "Allow in group rooms": "允许加入群聊",
+  "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.": "这个 Agent 是私有的：只在你与它的私聊中回复。选择“允许加入群聊”后，你把它加入的聊天室成员都可以 @ 它。这不会把它的资源贡献到资源池。",
+  "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.": "这个 Agent 是私有的：只在你与它的私聊中回复。要让它加入群聊，请打开聊天室信息 → 成员 → 添加 Agent，并选择“允许加入群聊”。这不会把它的资源贡献到资源池。"
 }
