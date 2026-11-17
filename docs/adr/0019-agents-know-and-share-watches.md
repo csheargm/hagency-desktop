@@ -19,7 +19,9 @@ owner's rules blocked" the command.
    (marked "this room" when it is), active or paused, "push and open pull
    requests freely" on or off, and the merge rule in words. It comes from
    this device's ledger for the dispatch's own Agent only. A ledger that
-   cannot be read gives no block (the turn still runs).
+   cannot be read gives no block (the turn still runs). Only watches that
+   report to the turn's room are shown, whoever asks: the answer is posted to
+   the room (GPT review).
 2. **`room_watches`, a read-only room tool** (`hagency_runtime::room_watches`,
    opted in with `RoomTools::with_watches`). No arguments: the host uses the
    admitted dispatch's room, re-authorized like every room tool. It lists only
@@ -30,10 +32,13 @@ owner's rules blocked" the command.
    (a watch of an Agent that is off reads "Paused").
 4. **Read-only GitHub queries on a watched repository need no card**
    (`watch_trust::read_only`): `gh issue list|view`, `gh pr
-   list|view|diff|checks`, `gh repo view`, `gh api` GET, foreground Claude
+   list|view|diff|checks`, `gh api` GET on the issue and pull request routes
+   only, run with `GH_HOST=github.com`; no jq, templates or free-form search
+   (gh's jq can read the token from its environment), foreground Claude
    `Bash` only, one command (no chaining, pipes, substitution, redirects or env
    prefix), options from a closed list, the watched repository named exactly
-   (`-R/--repo`, `gh repo view <repo>`, or a `repos/<owner>/<name>/` api path).
+   (`-R/--repo`, or a `repos/<owner>/<name>/` api path). Authorization uses
+   the same effective watches as the room view.
    The repository must be watched with reports to the turn's Room (an active
    legacy watch or a work-list entry). Any requester in that Room: the watch
    already reports that repository's activity there.
@@ -56,3 +61,8 @@ same room are listed by their own owner's device. Publishing watches as room
 state for every member is a later step. In the runtime, a watch's
 active/paused reflects the watch setting; the tab also reflects whether the
 Agent is on.
+
+Open (GPT review, not adopted now): a host-side GitHub read returning only
+room-shareable fields would bind the API origin and returned data more
+tightly than an allowlisted `gh` command; PR patches and review bodies of the
+watched repository are readable card-free in its report room.

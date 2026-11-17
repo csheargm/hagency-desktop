@@ -33,7 +33,7 @@ fn own_block_lists_repos_mode_room_status_and_merge_rule() {
 fn own_block_says_off_when_nothing_is_watched() {
     let (_t, ledger) = ledger();
     let block = render_own(&ledger.watch_entries("agt_none").unwrap(), DEV, OWNER);
-    assert!(block.contains("You watch no GitHub repositories"));
+    assert!(block.contains("You watch no GitHub repositories that report to this room"));
     assert!(block.contains("Your owner (who approves your cards, in their own Hagency window): @alice:example.org"));
 }
 
@@ -70,11 +70,16 @@ fn one_line_strips_controls_and_bounds_length() {
 }
 
 #[test]
-fn a_non_owner_sees_only_this_rooms_watches_in_the_own_block() {
+fn the_own_block_shows_only_this_rooms_watches_even_to_the_owner() {
     let (_t, mut ledger) = ledger();
     ledger.set_work(OWNER, "agt_yue", vec![rules("acme/app", DEV), rules("acme/private", OTHER)]).unwrap();
-    let all = ledger.watch_entries("agt_yue").unwrap();
-    assert_eq!(visible_to(all.clone(), DEV, OWNER, OWNER).len(), 2);
-    let shown = render_own(&visible_to(all, DEV, "@anna:example.org", OWNER), DEV, OWNER);
+    let shown = render_own(&visible_to(ledger.watch_entries("agt_yue").unwrap(), DEV), DEV, OWNER);
     assert!(shown.contains("acme/app") && !shown.contains("acme/private") && !shown.contains(OTHER));
+}
+
+#[test]
+fn a_long_room_list_stays_under_the_result_cap() {
+    let many: Vec<RoomWatch> = (0..MAX_LISTED).map(|i| RoomWatch { agent: "a".repeat(200), owner: "@o:example.org".into(), repo: format!("owner/repo-{i:0>90}"), active: true }).collect();
+    let out = render_room(&many);
+    assert!(out.len() <= ROOM_RESULT_BYTES && out.contains("\"more\":true"));
 }

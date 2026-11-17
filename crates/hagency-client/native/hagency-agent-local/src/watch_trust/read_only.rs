@@ -1,8 +1,8 @@
 //! Read-only GitHub queries on a repository the Agent WATCHES from this Room
 //! run without a card (ADR 0019): `gh issue list|view`, `gh pr
-//! list|view|diff|checks`, `gh repo view` and `gh api` GET, each naming the
-//! watched repository exactly (`-R/--repo`, the repository positional of
-//! `gh repo view`, or the `repos/<owner>/<name>/` path of `gh api`). One
+//! list|view|diff|checks`, and `gh api` GET, each naming the watched
+//! repository exactly (`-R/--repo`, or the `repos/<owner>/<name>/` path of
+//! `gh api`). They run with `GH_HOST=github.com` (`command`). One
 //! command only: no chaining, pipes, substitution, redirects or env prefix.
 //! Options are matched against a closed list; `--web`, request bodies,
 //! headers, hosts, any method other than GET, free-form search and jq or
@@ -18,6 +18,12 @@ const FLAGS: [&str; 5] = ["-c", "--comments", "--name-only", "--patch", "--requi
 /// `gh api` options allowed besides `-X/--method GET`.
 const API_FLAGS: [&str; 2] = ["--paginate", "-i"];
 
+/// The command that runs: pinned to github.com whatever gh's config says
+/// (GPT review), with git's helpers off.
+pub(crate) fn command(line: &str) -> String {
+    super::pin_env(&format!("GH_HOST='github.com' {line}"))
+}
+
 /// Whether `line` is one read-only GitHub query on `repo`.
 pub(crate) fn allowed(line: &str, repo: &str) -> bool {
     let Some(parsed) = shell::parse(line) else { return false };
@@ -28,9 +34,8 @@ pub(crate) fn allowed(line: &str, repo: &str) -> bool {
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["gh", "issue", "list" | "view", rest @ ..] | ["gh", "pr", "list" | "view" | "diff" | "checks", rest @ ..] => {
-            query(rest, repo, false)
+            query(rest, repo)
         }
-        ["gh", "repo", "view", rest @ ..] => query(rest, repo, true),
         ["gh", "api", rest @ ..] => api(rest, repo),
         _ => false,
     }
@@ -48,9 +53,9 @@ fn split(word: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// A view/list command: every `-R` names `repo`, at least one names it (or,
-/// for `gh repo view`, the one positional does), positionals are numbers.
-fn query(rest: &[&str], repo: &str, repo_positional: bool) -> bool {
+/// A view/list command: every `-R` names `repo`, at least one does, and the
+/// one positional (if any) is a number.
+fn query(rest: &[&str], repo: &str) -> bool {
     let (mut named, mut words) = (false, rest.iter());
     let mut positionals = Vec::new();
     while let Some(word) = words.next() {
@@ -72,9 +77,6 @@ fn query(rest: &[&str], repo: &str, repo_positional: bool) -> bool {
             }
             named = true;
         }
-    }
-    if repo_positional {
-        return matches!(positionals.as_slice(), [only] if same(only, repo)) && !named;
     }
     named && positionals.len() <= 1 && positionals.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
@@ -138,7 +140,6 @@ mod tests {
             "gh pr diff 3 -R csheargm/hagency-demo-sandbox --name-only",
             "gh pr view 3 -R csheargm/hagency-demo-sandbox --json title,state",
             "gh pr checks 3 --repo csheargm/hagency-demo-sandbox",
-            "gh repo view csheargm/hagency-demo-sandbox --json name",
             "gh api 'repos/csheargm/hagency-demo-sandbox/issues?state=open' --paginate",
             "gh api -X GET /repos/csheargm/hagency-demo-sandbox/pulls/3/files",
             "gh api repos/csheargm/hagency-demo-sandbox/issues/4/comments",
@@ -164,8 +165,8 @@ mod tests {
             "gh issue comment 1 -R csheargm/hagency-demo-sandbox -b hi",
             "gh pr merge 3 -R csheargm/hagency-demo-sandbox",
             "gh pr view https://github.com/other/repo/pull/1 -R csheargm/hagency-demo-sandbox",
-            "gh repo view other/repo",
-            "gh repo view",
+            "gh repo view csheargm/hagency-demo-sandbox --json parent",
+            "gh issue list -R github.example.com/csheargm/hagency-demo-sandbox",
             "gh api -X POST repos/csheargm/hagency-demo-sandbox/issues",
             "gh api --method=DELETE repos/csheargm/hagency-demo-sandbox/issues/1",
             "gh api repos/csheargm/hagency-demo-sandbox/issues -f title=x",

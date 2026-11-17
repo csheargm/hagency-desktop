@@ -1194,7 +1194,7 @@ impl Ledger {
         let command = match watch_trust::pinned(&self.db, proposal, owner)? {
             Some(step) => step,
             None if watch_trust::read_only_query(&self.db, proposal)? => {
-                watch_trust::TrustedStep::Command(watch_trust::pin_env(proposal.arguments["command"].as_str().unwrap_or_default()))
+                watch_trust::TrustedStep::Command(watch_trust::read_only::command(proposal.arguments["command"].as_str().unwrap_or_default()))
             }
             None => return Ok(None),
         };

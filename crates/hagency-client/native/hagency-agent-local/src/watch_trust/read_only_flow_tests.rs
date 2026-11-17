@@ -45,7 +45,7 @@ fn read_only_queries_on_a_watched_repo_skip_the_card() {
     let rules = OwnerRules { repo: REPO.into(), room_id: ROOM.into(), ..Default::default() };
     ledger.set_work(OWNER, "bird", vec![rules]).unwrap();
     let Some(TrustedStep::Command(pinned)) = ledger.trusted_publish(OWNER, &list, 11).unwrap() else { panic!("read-only list runs") };
-    assert!(pinned.ends_with("gh issue list -R csheargm/hagency-demo-sandbox --state open") && pinned.starts_with("GIT_CONFIG_COUNT="));
+    assert!(pinned.ends_with("GH_HOST='github.com' gh issue list -R csheargm/hagency-demo-sandbox --state open") && pinned.starts_with("GIT_CONFIG_COUNT="));
     for asks in [
         proposal(ROOM, "gh issue list -R other/repo"),
         proposal(ROOM, "gh issue list -R csheargm/hagency-demo-sandbox; rm -rf x"),

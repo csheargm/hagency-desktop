@@ -28,7 +28,7 @@ pub(crate) mod gh;
 pub(crate) mod git;
 pub mod host_git;
 pub mod host_run;
-pub(crate) mod read_only;
+pub mod read_only;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]

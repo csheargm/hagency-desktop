@@ -37,7 +37,9 @@ struct Store {
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
 
 fn account() -> String {
-    crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default()
+    // The account session epoch too: a reconnect as the same user is a new session (GPT review).
+    let user = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
+    format!("{user}#{}", crate::account_session::epoch())
 }
 fn store() -> std::sync::MutexGuard<'static, Store> {
     STORE.lock().unwrap_or_else(|p| p.into_inner())
