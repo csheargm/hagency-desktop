@@ -62,3 +62,31 @@ the push-freely work.
   the owner sees the same in the inbox.
 - `jit_compat::show_notification` now shows on macOS for its other callers too
   (Agent questions, admission requests), which was always its stated intent.
+
+## Amendment (Chris's test, 2026-11-17): bounds per half, and the requester's view
+
+Observed: Betty's window logged "Pending approvals unreadable:
+approvals_read_timeout" while both servers' agent services stalled for about
+30 s (lease renewals answered 502/503; Postgres logged a client connection
+reset with an open transaction; the server logged
+`database_connection_discarded`). The single 20 s bound covered the whole
+reading, and both halves waited on the server: this device's own queue began
+with the owner API's Agent list (`GET owned-agents`). Nothing was hidden that
+time (the request was refused by policy, ADR 0019), but a waiting card could
+have been.
+
+Decision (`approvals_read`): the management list (20 s) and this app's own
+queues (10 s) are read at once, each with its own bound, for the app-wide poll
+and the open room's notice alike. The own queue uses the Agent list when it
+answers within 5 s, else the last list that answered for this identity. A
+slow server now costs only the management rows, and the inbox names it
+(`managementError`).
+
+The requester's view: a run that waits for its owner's approval shows the
+step `APPROVAL_WAIT_STEP` on its run card (a room message every member reads;
+it names no tool or argument) until the owner answers, the request expires or
+is withdrawn. The owner reads "Waiting for your approval" with "Open approval"
+even when the reading failed. Any other viewer reads "Waiting for <owner>'s
+approval (N s)". Before a card exists, the requester's own message naming an
+Agent shows "Waiting for <Agent> to start… (N s)" for up to 10 minutes or until
+the thread has a reply. That line comes only from the requester's own message.

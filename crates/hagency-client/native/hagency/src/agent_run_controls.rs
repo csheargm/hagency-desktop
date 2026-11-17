@@ -109,6 +109,8 @@ pub struct Progress {
 }
 /// Longest step text a card carries.
 pub const MAX_STEP_BYTES: usize = 256;
+/// The step of a run that waits for its owner's approval (any viewer sees it).
+pub use hagency_runtime::live_text::APPROVAL_WAIT_STEP;
 /// Longest answer the run's message carries. An edit repeats it four times
 /// (body and card, outer and `m.new_content`); longer answers are posted as
 /// their own reply instead.

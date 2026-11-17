@@ -26,9 +26,28 @@ impl Footer {
     }
 }
 
-pub(crate) fn footer(card: &Card, elapsed_secs: u64, waiting_approval: bool) -> Footer {
-    if waiting_approval && card.state.active() {
-        return Footer::Approval(format!("⚠️ {}", crate::i18n::tr("Waiting for your approval")));
+/// Whom a running card waits for, as this viewer sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Waiting {
+    No,
+    /// This viewer decides: "Waiting for your approval" and "Open approval".
+    ForYou,
+    /// Someone else's Agent waits for its owner (the requester's view).
+    ForOwner,
+}
+
+/// `owner` names the run's owner for `Waiting::ForOwner`.
+pub(crate) fn footer(card: &Card, elapsed_secs: u64, waiting: Waiting, owner: &str) -> Footer {
+    if card.state.active() {
+        match waiting {
+            Waiting::ForYou => return Footer::Approval(format!("⚠️ {}", crate::i18n::tr("Waiting for your approval"))),
+            Waiting::ForOwner => {
+                let t = format_elapsed(elapsed_secs);
+                let text = crate::i18n::format("Waiting for {owner}'s approval ({t})", &[("owner", owner.to_owned()), ("t", t)]);
+                return Footer::Working(format!("⏳ {text}"));
+            }
+            Waiting::No => {}
+        }
     }
     match card.state {
         State::Running => Footer::Working(format!("⏳ {}", live_status(card, elapsed_secs))),
@@ -42,8 +61,28 @@ pub(crate) fn footer(card: &Card, elapsed_secs: u64, waiting_approval: bool) -> 
     }
 }
 
-/// Whether the owner's approval holds this run up (a pending request on its message).
-pub(crate) fn waits_for_approval(card: &Card) -> bool {
+/// Whom this run waits for, as `viewer` sees it: a pending request on its
+/// message that this viewer can still decide, or the run's own step saying
+/// it waits for its owner (every viewer sees that step, so the requester
+/// learns why it paused, and the owner is told even when the approvals
+/// reading failed).
+pub(crate) fn waiting(card: &Card, viewer: &str) -> Waiting {
+    waiting_with(card, viewer, card.state.active() && viewer_decides(card))
+}
+
+fn waiting_with(card: &Card, viewer: &str, decides: bool) -> Waiting {
+    let blocked = card.progress.as_ref().is_some_and(|p| p.step == ::hagency::agent_run_controls::APPROVAL_WAIT_STEP);
+    match (card.state.active(), decides, blocked) {
+        (false, _, _) => Waiting::No,
+        (true, true, _) => Waiting::ForYou,
+        (true, false, true) if viewer == card.owner => Waiting::ForYou,
+        (true, false, true) => Waiting::ForOwner,
+        (true, false, false) => Waiting::No,
+    }
+}
+
+/// Whether this viewer can decide a pending request on this run's message.
+fn viewer_decides(card: &Card) -> bool {
     let Ok(room) = <&matrix_sdk::ruma::RoomId>::try_from(card.room_id.as_str()) else { return false };
     // Only this run's own request (not any approval in its thread), and only
     // one this viewer can still decide.
@@ -114,15 +153,34 @@ mod tests {
     #[test]
     fn a_successful_answer_is_quiet_and_only_work_approval_and_failure_speak() {
         let done = card(State::Completed, "42", steps("running gh pr create", 3, Some(4)));
-        assert_eq!(footer(&done, 9, false), Footer::Quiet);
-        assert_eq!(footer(&done, 9, true), Footer::Quiet, "a finished run no longer waits");
+        assert_eq!(footer(&done, 9, Waiting::No, ""), Footer::Quiet);
+        assert_eq!(footer(&done, 9, Waiting::ForYou, ""), Footer::Quiet, "a finished run no longer waits");
         assert_eq!(duration(&done).as_deref(), Some(format_elapsed(4).as_str()));
         let running = card(State::Running, "", steps("running ls", 1, None));
-        assert!(matches!(footer(&running, 5, false), Footer::Working(t) if t.starts_with("⏳") && t.contains("running ls")));
-        assert!(matches!(footer(&running, 5, true), Footer::Approval(t) if t.starts_with("⚠️")));
+        assert!(matches!(footer(&running, 5, Waiting::No, ""), Footer::Working(t) if t.starts_with("⏳") && t.contains("running ls")));
+        assert!(matches!(footer(&running, 5, Waiting::ForYou, ""), Footer::Approval(t) if t.starts_with("⚠️")));
         let failed = card(State::Failed, "", steps("running cargo test", 2, Some(3)));
-        assert!(matches!(footer(&failed, 0, false), Footer::Failed(t) if t.starts_with("❌") && t.ends_with("running cargo test")));
-        assert!(matches!(footer(&card(State::Completed, "", None), 0, false), Footer::Other(_)), "no answer: say so");
+        assert!(matches!(footer(&failed, 0, Waiting::No, ""), Footer::Failed(t) if t.starts_with("❌") && t.ends_with("running cargo test")));
+        assert!(matches!(footer(&card(State::Completed, "", None), 0, Waiting::No, ""), Footer::Other(_)), "no answer: say so");
+    }
+    /// Chris's test: Anna asked Betty's Agent, whose run waits for Betty's
+    /// card. Anna reads "⏳ Waiting for Betty's approval (12 s)"; Betty reads
+    /// "Waiting for your approval" with "Open approval", even when her
+    /// approvals reading failed; once answered, the run's own step returns.
+    #[test]
+    fn the_requester_sees_whom_a_run_waits_for() {
+        let step = ::hagency::agent_run_controls::APPROVAL_WAIT_STEP;
+        let blocked = card(State::Running, "", steps(step, 1, None));
+        assert_eq!(waiting_with(&blocked, "@a", false), Waiting::ForOwner, "the requester (@a)");
+        assert_eq!(waiting_with(&blocked, "@b", false), Waiting::ForYou, "the owner (@b)");
+        assert_eq!(waiting_with(&blocked, "@a", true), Waiting::ForYou, "a viewer who can decide");
+        let shown = footer(&blocked, 12, Waiting::ForOwner, "Betty");
+        assert!(matches!(&shown, Footer::Working(t) if t.starts_with("⏳") && t.contains("Betty") && t.contains(&format_elapsed(12))), "{shown:?}");
+        let working = card(State::Running, "", steps("running gh issue list", 1, None));
+        assert_eq!(waiting_with(&working, "@a", false), Waiting::No);
+        let mut done = blocked.clone();
+        done.state = State::Completed;
+        assert_eq!(waiting_with(&done, "@b", true), Waiting::No, "a finished run waits for nobody");
     }
     #[test]
     fn what_i_did_lists_the_record_and_is_hidden_without_steps() {
@@ -139,11 +197,11 @@ mod tests {
     #[test]
     fn quiet_reply_words_are_english_keys_with_a_chinese_translation() {
         for key in ["What I did", "More", "Open approval", "Waiting for your approval", "1 update", "{n} updates",
-            "1 step", "{n} steps", "Last step: {step}", "Time: {t}", "Runtime: {runtime}"] {
+            "1 step", "{n} steps", "Last step: {step}", "Time: {t}", "Runtime: {runtime}", "Waiting for {owner}'s approval ({t})"] {
             assert_eq!(text_for(Language::English, key), key);
             let zh = text_for(Language::Chinese, key);
             assert_ne!(zh, key, "{key} has no Chinese text");
-            for slot in ["{n}", "{step}", "{t}", "{runtime}"] {
+            for slot in ["{n}", "{step}", "{t}", "{runtime}", "{owner}"] {
                 assert_eq!(key.contains(slot), zh.contains(slot), "{key}: {slot}");
             }
         }

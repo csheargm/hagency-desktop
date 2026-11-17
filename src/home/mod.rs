@@ -37,6 +37,7 @@ pub mod agent_run_row;
 pub mod agent_reply_dedupe;
 pub mod agent_run_status;
 pub mod agent_run_footer;
+pub mod agent_run_requester;
 pub mod agent_run_preview;
 pub mod agent_run_pager;
 pub mod agent_run_answer;

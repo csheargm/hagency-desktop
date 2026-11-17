@@ -13,6 +13,7 @@ pub mod agent_panel;
 pub mod room_send;
 pub mod owner_dashboard;
 pub mod pending_admissions;
+pub mod approvals_read;
 pub mod local_approvals;
 pub mod mcp_card;
 pub mod approval_text;

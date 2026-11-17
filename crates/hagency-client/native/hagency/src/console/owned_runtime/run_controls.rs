@@ -158,7 +158,8 @@ fn live_progress(
     shown: Option<&crate::agent_run_controls::Progress>,
 ) -> Option<crate::agent_run_controls::Progress> {
     let (step, steps) = text.current_step();
-    if steps == 0 {
+    // An approval wait shows even before the run's first counted step.
+    if steps == 0 && step != hagency_runtime::live_text::APPROVAL_WAIT_STEP {
         return shown.cloned();
     }
     let mut end = step.len().min(crate::agent_run_controls::MAX_STEP_BYTES);

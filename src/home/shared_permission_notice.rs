@@ -2,7 +2,6 @@
 use makepad_widgets::*;
 use serde_json::Value;
 use crate::hagency::backend::Service;
-use ::hagency::native_owner::ManagementCommand;
 
 /// Shown when the management read failed; it may mean this account's Hagency
 /// sign-in lapsed, so the notice offers the re-sign-in flow beside it.
@@ -234,8 +233,9 @@ impl SharedPermissionNotice {
         self.loading=true;self.nonce=self.nonce.wrapping_add(1);
         let identity=self.identity.clone();let room=self.room.clone();let thread=self.thread.clone();let nonce=self.nonce;
         crate::sliding_sync::spawn_async_task(async move {
-            let value=service.shared_permissions(ManagementCommand::SharedApprovals{room_id:Some(room.clone())}).await;
-            let value=crate::hagency::local_approvals::with_local(&service,Some(&room),value).await;
+            // Bounded per half, like the app-wide poll: a stalled server must
+            // not hold this room's own-Agent cards (or the next poll) back.
+            let value=crate::hagency::approvals_read::read_all(&service,Some(&room)).await;
             Cx::post_action(PermissionResult{identity,room,thread,nonce,value});
         });
     }

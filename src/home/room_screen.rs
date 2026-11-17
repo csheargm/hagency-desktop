@@ -6644,7 +6644,9 @@ fn populate_agent_run_cards(
             )
         })
         .unwrap_or_default();
-    super::agent_run_row::populate(cx, item, &entries);
+    // No card yet: the viewer's own request shows that it waits (Nov 17).
+    let pending = if entries.is_empty() { super::agent_run_requester::pending_request(cx, event, kind.room_id()) } else { None };
+    super::agent_run_row::populate(cx, item, &entries, pending);
 }
 
 /// Shows the question an Agent asked during the run this message started (the

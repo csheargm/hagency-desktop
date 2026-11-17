@@ -180,17 +180,10 @@ pub fn poll() {
     let identity = service.identity();
     crate::sliding_sync::spawn_async_task(async move {
         let _polling = polling;
-        let read = async {
-            let result = service
-                .shared_permissions(ManagementCommand::SharedApprovals { room_id: None })
-                .await;
-            crate::hagency::local_approvals::with_local(&service, None, result).await
-        };
-        // A stalled reading is reported, never waited on silently: the
-        // owner has about four minutes to answer.
-        let result = tokio::time::timeout(std::time::Duration::from_secs(READ_TIMEOUT_SECONDS), read)
-            .await
-            .unwrap_or_else(|_| Err(READ_TIMEOUT.into()));
+        // Each half has its own bound (`approvals_read`): a stalled server
+        // is reported, never waited on silently, and never hides this
+        // device's own Agents' requests.
+        let result = crate::hagency::approvals_read::read_all(&service, None).await;
         Cx::post_action(PendingApprovalsUpdate { identity, result });
     });
 }
@@ -202,9 +195,8 @@ impl Drop for Polling {
         POLLING.store(false, std::sync::atomic::Ordering::Release);
     }
 }
-/// The longest one app-wide reading may take before it counts as failed.
-const READ_TIMEOUT_SECONDS: u64 = 20;
-/// The code of a reading that took longer than `READ_TIMEOUT_SECONDS`.
+/// The code of a reading (or one half of it) that took longer than its bound
+/// (`approvals_read`).
 pub const READ_TIMEOUT: &str = "approvals_read_timeout";
 
 /// The requests in a management answer that still wait for a decision.

@@ -58,18 +58,26 @@ pub fn set_updates(cx: &mut Cx, item: &WidgetRef, count: usize) {
     }
 }
 
-/// Shows this request's runs as the Agent's message, or hides the row.
-pub fn populate(cx: &mut Cx, item: &WidgetRef, entries: &[Entry]) {
+/// Shows this request's runs as the Agent's message, or hides the row. With
+/// no run yet, a request the viewer sent (`pending`) shows the Agent's row
+/// with its waiting line (`agent_run_requester`).
+pub fn populate(cx: &mut Cx, item: &WidgetRef, entries: &[Entry], pending: Option<super::agent_run_requester::PendingRequest>) {
+    let pending = pending.filter(|_| entries.is_empty());
     let row = item.view(cx, ids!(agent_runs));
-    row.set_visible(cx, !entries.is_empty());
-    for (path, shown) in card_paths().into_iter().zip(super::agent_run_pager::slot_entries(entries)) {
-        item.agent_run_card(cx, path).set_entries(cx, shown);
+    row.set_visible(cx, !entries.is_empty() || pending.is_some());
+    for (index, (path, shown)) in card_paths().into_iter().zip(super::agent_run_pager::slot_entries(entries)).enumerate() {
+        let card = item.agent_run_card(cx, path);
+        card.set_pending(cx, if index == 0 { pending.clone() } else { None });
+        card.set_entries(cx, shown);
     }
-    let Some(first) = entries.first() else { return };
-    let name = row_name(entries);
+    let (name, color_key) = match (entries.first(), &pending) {
+        (Some(first), _) => (row_name(entries), first.agent.clone()),
+        (None, Some(p)) => (p.name.clone(), p.name.clone()),
+        (None, None) => return,
+    };
     item.label(cx, ids!(agent_runs.agent_name)).set_text(cx, &name);
     item.avatar(cx, ids!(agent_runs.agent_avatar))
-        .show_text(cx, Some(crate::shared::avatar::avatar_color(&first.agent)), None, &name);
+        .show_text(cx, Some(crate::shared::avatar::avatar_color(&color_key)), None, &name);
 }
 
 #[cfg(test)]
@@ -109,11 +117,11 @@ mod tests {
         assert!(widget.widget(&mut cx, ids!(bubble.agent_run_card)).is_empty(), "no run card inside the bubble");
         let mut entry = fixture("$a", State::Completed, "42");
         entry.name = "Claude".into();
-        populate(&mut cx, &widget, std::slice::from_ref(&entry));
+        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
         assert!(widget.view(&mut cx, ids!(agent_runs)).visible());
         assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "Claude");
         assert!(widget.widget(&mut cx, ids!(agent_runs.agent_run_card.answer)).visible());
-        populate(&mut cx, &widget, &[]);
+        populate(&mut cx, &widget, &[], None);
         assert!(!widget.view(&mut cx, ids!(agent_runs)).visible());
     }
 
@@ -139,7 +147,7 @@ mod tests {
         let mut entry = fixture("$a", State::Completed, "42");
         entry.name = "bird-claude".into();
         entry.card.progress = Some(Progress { step: "running gh pr create".into(), steps: 3, elapsed_secs: Some(4) });
-        populate(&mut cx, &widget, std::slice::from_ref(&entry));
+        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
         assert!(widget.widget(&mut cx, &at(ids!(title))).is_empty(), "no per-reply header");
         assert!(!widget.view(&mut cx, &at(ids!(footer))).visible(), "a successful answer has no status line");
         assert!(widget.button(&mut cx, &at(ids!(links.details))).visible());
@@ -155,13 +163,55 @@ mod tests {
         let show = sent.iter().find_map(|a| a.downcast_ref::<crate::home::agent_run_footer::ShowRunUpdates>()).expect("the link opens the thread");
         assert_eq!(show.thread_root, entry.card.thread_root);
         entry.card.progress = None;
-        populate(&mut cx, &widget, std::slice::from_ref(&entry));
+        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
         assert!(!widget.button(&mut cx, &at(ids!(links.details))).visible(), "no steps: no What I did");
         let mut running = fixture("$b", State::Running, "");
         running.card.progress = Some(Progress { step: "running ls".into(), steps: 1, elapsed_secs: None });
-        populate(&mut cx, &widget, std::slice::from_ref(&running));
+        populate(&mut cx, &widget, std::slice::from_ref(&running), None);
         assert!(widget.view(&mut cx, &at(ids!(footer))).visible());
         assert!(widget.label(&mut cx, &at(ids!(footer.status))).text().contains("running ls"));
         assert!(!widget.button(&mut cx, &at(ids!(footer.open_approval))).visible());
+    }
+
+    /// Chris's test (Nov 17), Anna's window: she asks Betty's Agent. At once
+    /// her message shows the Agent's row with "⏳ Waiting for bird-claude to
+    /// start… (N s)" and nothing else; when the run card arrives waiting for
+    /// Betty's approval it reads "⏳ Waiting for <owner>'s approval (N s)",
+    /// with no "Open approval" (Anna cannot decide); then the answer.
+    #[cfg(feature = "agent_chat")]
+    #[test]
+    fn the_requester_sees_waiting_then_the_owners_approval_then_the_answer() {
+        use ::hagency::agent_run_controls::{APPROVAL_WAIT_STEP, Progress};
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widget = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.OwnMessage {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let card = ids!(agent_runs.agent_run_card);
+        let at = |path: &[LiveId]| [card.as_slice(), path].concat();
+        let sent = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3)).unwrap();
+        let pending = super::super::agent_run_requester::PendingRequest { name: "bird-claude".into(), sent };
+        populate(&mut cx, &widget, &[], Some(pending.clone()));
+        assert!(widget.view(&mut cx, ids!(agent_runs)).visible(), "shown at once, before any card");
+        assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "bird-claude");
+        let status = widget.label(&mut cx, &at(ids!(footer.status))).text();
+        assert!(status.starts_with("⏳") && status.contains("bird-claude"), "{status}");
+        for hidden in [ids!(input), ids!(buttons), ids!(links), ids!(preview)] {
+            assert!(!widget.widget(&mut cx, &at(hidden)).visible(), "only the waiting line");
+        }
+        let mut blocked = fixture("$run", State::Running, "");
+        blocked.card.progress = Some(Progress { step: APPROVAL_WAIT_STEP.into(), steps: 1, elapsed_secs: None });
+        populate(&mut cx, &widget, std::slice::from_ref(&blocked), Some(pending));
+        let status = widget.label(&mut cx, &at(ids!(footer.status))).text();
+        assert!(status.starts_with("⏳") && status.contains("owner"), "the owner's name (here its ID's local part): {status}");
+        assert!(!widget.button(&mut cx, &at(ids!(footer.open_approval))).visible(), "the requester cannot decide");
+        let done = fixture("$run", State::Completed, "4 open issues");
+        populate(&mut cx, &widget, std::slice::from_ref(&done), None);
+        assert!(widget.widget(&mut cx, &at(ids!(answer))).visible());
+        assert!(!widget.view(&mut cx, &at(ids!(footer))).visible());
     }
 }
