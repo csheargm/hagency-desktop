@@ -3,6 +3,7 @@
 //! (`quick_setup`). This file is the dialog's state and its mapping to a
 //! `SimpleAgentSpec`; the widget lives in `create_agent/dialog.rs`.
 mod dialog;
+pub(crate) use dialog::joined_group_rooms;
 pub use dialog::{CreateAgentAction, CreateAgentDialog, CreateAgentDialogWidgetRefExt, script_mod};
 
 use ::hagency::simple_agent::{DEFAULT_REASONING_EFFORT, Runtime, SimpleAgentSpec};

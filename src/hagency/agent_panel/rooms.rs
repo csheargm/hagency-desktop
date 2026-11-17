@@ -72,6 +72,7 @@ impl AgentPanel {
         let leave = self.view.button(cx, ids!(leave_open_room));
         leave.set_visible(cx, open.is_some());
         leave.set_enabled(cx, !self.busy);
+        self.render_add_room(cx);
     }
 
     /// Unticking a room, or Remove for the open room, makes the Agent leave it.

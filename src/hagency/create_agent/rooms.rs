@@ -24,7 +24,7 @@ pub(super) struct RoomsLoaded {
 
 /// Joined rooms that are neither spaces nor DMs. A room whose DM flag cannot
 /// be read is left out rather than risk offering a private chat.
-async fn joined_group_rooms() -> Vec<(String, String)> {
+pub(crate) async fn joined_group_rooms() -> Vec<(String, String)> {
     let Some(client) = get_client() else { return Vec::new() };
     let mut rooms = Vec::new();
     for room in client.joined_rooms() {

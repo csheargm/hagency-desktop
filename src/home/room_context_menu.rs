@@ -6,8 +6,9 @@ use matrix_sdk::{ruma::OwnedRoomId, notification_settings::RoomNotificationMode}
 use super::rooms_list::RoomNotificationModeUpdated;
 use crate::{home::invite_modal::InviteModalAction, settings::app_preferences::preferred_receipt_type, shared::{context_menu::{ContextMenuClosed, expected_menu_size}, popup_list::{PopupKind, enqueue_popup_notification}}, sliding_sync::{MatrixRequest, submit_async_request}, utils::RoomNameId};
 
-/// Nothing here is conditionally shown, so keep these matching the DSL below.
-const NUM_BUTTONS: usize = 13;
+/// Keep these matching the DSL below; the size assumes the optional
+/// "Agent details" row too, so the menu never overflows when it shows.
+const NUM_BUTTONS: usize = 14;
 const NUM_DIVIDERS: usize = 3;
 
 script_mod! {
@@ -54,6 +55,11 @@ script_mod! {
 
             divider1 := mod.widgets.ContextMenuDivider { }
 
+            agent_details_button := mod.widgets.ContextMenuButton {
+                visible: false
+                draw_icon +: { svg: (ICON_INFO) }
+                text: #(crate::i18n::tr("Agent details")) i18n_text: "Agent details"
+            }
             room_settings_button := mod.widgets.ContextMenuButton {
                 draw_icon +: { svg: (ICON_SETTINGS) }
                 text: #(crate::i18n::tr("Settings")) i18n_text: "Settings"
@@ -125,6 +131,8 @@ pub struct RoomContextMenu {
     #[rust] details: Option<RoomContextMenuDetails>,
     #[rust] focus_after_draw: bool,
     #[rust] showing_notification_choices: bool,
+    /// Opens the Agent's panel when this room is a DM with one's own Agent.
+    #[rust] agent: Option<crate::hagency::ui::HagencyAction>,
 }
 
 impl Widget for RoomContextMenu {
@@ -270,6 +278,10 @@ impl WidgetMatchEvent for RoomContextMenu {
             });
             close_menu = true;
         }
+        else if let Some(open) = self.agent.clone().filter(|_| self.button(cx, ids!(agent_details_button)).clicked(actions)) {
+            cx.action(open);
+            close_menu = true;
+        }
          else if self.button(cx, ids!(room_settings_button)).clicked(actions) {
             // TODO: handle/implement this
             enqueue_popup_notification(
@@ -318,6 +330,7 @@ impl RoomContextMenu {
     pub fn show(&mut self, cx: &mut Cx, details: RoomContextMenuDetails) -> DVec2 {
         self.update_buttons(cx, &details);
         submit_async_request(MatrixRequest::GetRoomPowerLevels {room_id: details.room_name_id.room_id().clone()});
+        self.agent = dm_agent(details.room_name_id.room_id());
         self.details = Some(details);
         self.show_notification_choices(cx, false);
         self.visible = true;
@@ -345,6 +358,7 @@ impl RoomContextMenu {
     fn update_invite_visibility(&mut self, cx: &mut Cx) {
         let allowed = self.details.as_ref().is_some_and(|details| details.can_invite);
         self.button(cx, ids!(invite_button)).set_visible(cx, allowed && !self.showing_notification_choices);
+        self.button(cx, ids!(agent_details_button)).set_visible(cx, self.agent.is_some() && !self.showing_notification_choices);
         self.redraw(cx);
     }
 
@@ -403,6 +417,14 @@ impl RoomContextMenu {
         cx.clear_all_hovers();
         self.redraw(cx);
     }
+}
+
+/// The open-panel action when `room` is a DM with one of the owner's Agents.
+fn dm_agent(room: &matrix_sdk::ruma::RoomId) -> Option<crate::hagency::ui::HagencyAction> {
+    let room = crate::sliding_sync::get_client()?.get_room(room)?;
+    let targets: Vec<matrix_sdk::ruma::OwnedUserId> = room.direct_targets().iter()
+        .filter_map(|t| matrix_sdk::ruma::UserId::parse(t.as_str()).ok()).collect();
+    super::agent_ask_badge::dm_own_agent(crate::sliding_sync::current_user_id().as_ref(), &targets)
 }
 
 #[cfg(test)]

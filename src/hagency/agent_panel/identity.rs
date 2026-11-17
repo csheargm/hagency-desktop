@@ -28,6 +28,7 @@ impl AgentPanel {
             mapping::runs_on(self.here(), self.status["deviceName"].as_str().unwrap_or(""), harness)
         };
         self.view.label(cx, ids!(runs_on)).set_text(cx, &line);
+        self.render_about(cx);
         self.view.button(cx, ids!(message)).set_enabled(cx, self.chat_room().is_some());
     }
     fn chat_room(&self) -> Option<matrix_sdk::ruma::OwnedRoomId> {
@@ -88,6 +89,7 @@ impl AgentPanel {
     }
 
     pub(super) fn handle_identity_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        self.handle_about_actions(cx, actions);
         if self.view.button(cx, ids!(message)).clicked(actions) && let Some(room_id) = self.chat_room() {
             crate::hagency::ui::open_agent_chat(cx, room_id);
         }

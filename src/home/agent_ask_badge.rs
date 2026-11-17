@@ -107,6 +107,18 @@ pub(crate) fn open_own_agent(owner: Option<&OwnedUserId>, member: &UserId) -> Op
     open_action_in(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner?, member)
 }
 
+/// The agent-panel action for a DM whose only other member is one of the
+/// owner's own Agents (the Chats list's "Agent details"); a group, a DM with
+/// a person, or someone else's Agent gives `None`.
+pub(crate) fn dm_own_agent(owner: Option<&OwnedUserId>, targets: &[OwnedUserId]) -> Option<HagencyAction> {
+    dm_action_in(&CACHE.lock().unwrap_or_else(|e| e.into_inner()), owner?, targets)
+}
+
+fn dm_action_in(cache: &Cache, owner: &UserId, targets: &[OwnedUserId]) -> Option<HagencyAction> {
+    let others: Vec<&OwnedUserId> = targets.iter().filter(|t| t.as_str() != owner.as_str()).collect();
+    match others.as_slice() { [agent] => open_action_in(cache, owner, agent), _ => None }
+}
+
 /// Whether `member` is one of `owner`'s own Agents; `None` while this
 /// account's Agent listing has not been read yet.
 pub(crate) fn is_own_agent(owner: &UserId, member: &UserId) -> Option<bool> {
@@ -250,5 +262,20 @@ mod tests {
         assert!(open_action_in(&cache, &owner, &user("@_hagency_agt_02x:s")).is_none(), "others' Agents keep the profile");
         assert!(open_action_in(&cache, &user("@bob:s"), &puppet).is_none(), "another account never opens it");
         assert!(open_own_agent(None, &puppet).is_none(), "signed out");
+    }
+
+    /// Live finding: an Agent's DM showed only the generic room menu.
+    #[test]
+    fn only_a_dm_with_ones_own_agent_offers_agent_details() {
+        let owner = user("@alice:s");
+        let puppet = user("@_hagency_agt_01abc:s");
+        let mut cache = Cache { owner: Some(owner.clone()), ..Default::default() };
+        cache.puppets = puppet_index(&json!([{"id": "agt_01ABC", "puppetMxid": puppet.as_str()}]), &owner);
+        assert!(matches!(dm_action_in(&cache, &owner, &[puppet.clone()]), Some(HagencyAction::OpenAgent { agent_id }) if agent_id == "agt_01ABC"));
+        assert!(dm_action_in(&cache, &owner, &[owner.clone(), puppet.clone()]).is_some(), "the owner listed as a target is ignored");
+        assert!(dm_action_in(&cache, &owner, &[user("@bob:s")]).is_none(), "a DM with a person");
+        assert!(dm_action_in(&cache, &owner, &[puppet.clone(), user("@bob:s")]).is_none(), "a group DM");
+        assert!(dm_action_in(&cache, &owner, &[]).is_none(), "not a DM");
+        assert!(dm_action_in(&cache, &user("@eve:s"), &[puppet]).is_none(), "another account");
     }
 }
