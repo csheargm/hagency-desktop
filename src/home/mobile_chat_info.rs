@@ -255,7 +255,7 @@ fn add_member_owners(owners: &mut HashMap<OwnedUserId, OwnedUserId>, conflicts: 
 fn group_members(members: &mut Vec<UserProfile>, owners: &HashMap<OwnedUserId, OwnedUserId>) -> HashSet<OwnedUserId> {
     members.sort_by_key(|p| (p.displayable_name().to_lowercase(), p.user_id.clone()));
     let present: HashSet<_> = members.iter().map(|p|p.user_id.clone()).collect();
-    let grouped: HashSet<_> = members.iter().filter(|p|!crate::shared::mention_candidates::is_hagency_service_account(&p.user_id) && owners.get(&p.user_id).is_some_and(|owner| present.contains(owner) && !owners.contains_key(owner) && owner.localpart() != "_hagency_service" && *owner != p.user_id)).map(|p|p.user_id.clone()).collect();
+    let grouped: HashSet<_> = members.iter().filter(|p|!crate::shared::mention_candidates::is_hagency_service_account(&p.user_id) && owners.get(&p.user_id).is_some_and(|owner| present.contains(owner) && !owners.contains_key(owner) && !crate::shared::mention_candidates::is_hagency_service_account(owner) && *owner != p.user_id)).map(|p|p.user_id.clone()).collect();
     let mut ordered = Vec::with_capacity(members.len());
     for member in members.iter().filter(|p|!grouped.contains(&p.user_id)) {
         ordered.push(member.clone());
