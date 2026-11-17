@@ -3558,5 +3558,11 @@
   "Use 1 to 64 characters for the name.": "名称需为 1 到 64 个字符。",
   "That is already its name.": "这已经是它的名称了。",
   "People see the new name in every room.": "所有房间里的人都会看到新名称。",
-  "Too many open issues to enforce the open pull request limit": "打开的 Issue 太多，无法执行同时打开的 PR 上限"
+  "Too many open issues to enforce the open pull request limit": "打开的 Issue 太多，无法执行同时打开的 PR 上限",
+  "Watches": "关注",
+  "GitHub repositories your Agents watch, with reports going to this room.": "你的 Agent 关注的 GitHub 仓库，报告发到本房间。",
+  "{status} · owner {owner}": "{status} · 所有者 {owner}",
+  "Loading watches…": "正在加载关注…",
+  "Watches are unavailable: {error}": "关注暂不可用：{error}",
+  "No Agent watches a repository for this room.": "没有 Agent 为本房间关注仓库。"
 }

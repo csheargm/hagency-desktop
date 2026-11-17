@@ -11,6 +11,7 @@ pub mod merge_policy;
 pub mod outside;
 pub mod plans;
 pub mod watch_trust;
+pub mod watch_info;
 // TODO(split): lib.rs is over budget; the ledger belongs in ledger.rs.
 pub mod provider_failure;
 pub mod remembered;

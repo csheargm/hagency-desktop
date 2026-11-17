@@ -3558,5 +3558,11 @@
   "Use 1 to 64 characters for the name.": "Use 1 to 64 characters for the name.",
   "That is already its name.": "That is already its name.",
   "People see the new name in every room.": "People see the new name in every room.",
-  "Too many open issues to enforce the open pull request limit": "Too many open issues to enforce the open pull request limit"
+  "Too many open issues to enforce the open pull request limit": "Too many open issues to enforce the open pull request limit",
+  "Watches": "Watches",
+  "GitHub repositories your Agents watch, with reports going to this room.": "GitHub repositories your Agents watch, with reports going to this room.",
+  "{status} · owner {owner}": "{status} · owner {owner}",
+  "Loading watches…": "Loading watches…",
+  "Watches are unavailable: {error}": "Watches are unavailable: {error}",
+  "No Agent watches a repository for this room.": "No Agent watches a repository for this room."
 }

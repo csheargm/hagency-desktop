@@ -3,6 +3,8 @@
 //! open issues, sent with this crate's TLS client so the desktop needs no
 //! second HTTP stack. Nothing here writes to GitHub.
 pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API, MAX_PAGES, PAGE_SIZE};
+/// What an Agent watches, for the room info "Watches" tab (ADR 0019).
+pub use hagency_agent_local::watch_info::{RoomWatch, WatchEntry, entries as watch_entries};
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, parse_reviews, pulls_url, comments_url, reviews_url};
 pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};

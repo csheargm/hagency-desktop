@@ -97,13 +97,14 @@ pub struct RoomTools {
     memory: bool,
     skills: bool,
     plans: bool,
+    watches: bool,
 }
 impl RoomTools {
     pub fn history() -> Self {
-        Self { files: false, memory: false, skills: false, plans: false }
+        Self { files: false, memory: false, skills: false, plans: false, watches: false }
     }
     pub fn history_and_files() -> Self {
-        Self { files: true, memory: false, skills: false, plans: false }
+        Self { files: true, memory: false, skills: false, plans: false, watches: false }
     }
     /// Add room memory's read and propose tools; hosts opt in per runtime.
     pub fn with_memory(self) -> Self {
@@ -116,6 +117,10 @@ impl RoomTools {
     /// Add the planner's `plan_propose` (posts a card, files nothing).
     pub fn with_plans(self) -> Self {
         Self { plans: true, ..self }
+    }
+    /// Add the read-only `room_watches` tool (ADR 0019).
+    pub fn with_watches(self) -> Self {
+        Self { watches: true, ..self }
     }
     pub fn definitions(self) -> Vec<Value> {
         let mut definitions = vec![history_definition()];
@@ -130,6 +135,9 @@ impl RoomTools {
         }
         if self.plans {
             definitions.push(crate::room_plan::definition());
+        }
+        if self.watches {
+            definitions.push(crate::room_watches::definition());
         }
         definitions
     }
@@ -150,6 +158,8 @@ impl RoomTools {
             crate::room_skills::parse(name, arguments).map(RoomOperation::Skill)
         } else if self.plans && name == crate::room_plan::PLAN_PROPOSE_TOOL {
             crate::room_plan::parse(arguments).map(RoomOperation::Plan)
+        } else if self.watches && name == crate::room_watches::ROOM_WATCHES_TOOL {
+            crate::room_watches::parse(arguments).map(|()| RoomOperation::Watches)
         } else {
             Err(Error::Unsupported)
         }
@@ -162,6 +172,7 @@ pub enum RoomOperation {
     Memory(crate::room_memory::MemoryOperation),
     Skill(crate::room_skills::SkillOperation),
     Plan(crate::room_plan::Plan),
+    Watches,
 }
 impl RoomOperation {
     pub fn name(&self) -> &'static str {
@@ -171,6 +182,7 @@ impl RoomOperation {
             Self::Memory(operation) => operation.name(),
             Self::Skill(operation) => operation.name(),
             Self::Plan(_) => crate::room_plan::PLAN_PROPOSE_TOOL,
+            Self::Watches => crate::room_watches::ROOM_WATCHES_TOOL,
         }
     }
 }

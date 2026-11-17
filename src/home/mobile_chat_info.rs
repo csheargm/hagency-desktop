@@ -3,6 +3,7 @@
 use makepad_widgets::*;
 use crate::home::room_memory::panel::RoomMemoryPanelWidgetExt;
 use crate::home::room_skills::panel::RoomSkillsPanelWidgetExt;
+use crate::home::room_watches::panel::RoomWatchesPanelWidgetExt;
 use std::collections::{HashMap, HashSet};
 use matrix_sdk::{
     notification_settings::RoomNotificationMode,
@@ -56,6 +57,7 @@ script_mod! {
             View {width: Fill height: 36 flow: Right spacing: 6
                 memory_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Memory")) i18n_text: "Memory" icon_walk: Walk{width: 0 height: 0}}
                 skills_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Skills")) i18n_text: "Skills" icon_walk: Walk{width: 0 height: 0}}
+                watches_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Watches")) i18n_text: "Watches" icon_walk: Walk{width: 0 height: 0}}
             }
         }
         status := Label {
@@ -97,6 +99,7 @@ script_mod! {
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}}
         memory_panel := mod.widgets.RoomMemoryPanel {}
         skills_panel := mod.widgets.RoomSkillsPanel {}
+        watches_panel := mod.widgets.RoomWatchesPanel {}
         information_list := View {width: Fill height: Fill
             list := PortalList {
                 width: Fill height: Fill flow: Down
@@ -201,17 +204,17 @@ script_mod! {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 // TODO(R4): this file is over budget; split each tab (Overview, Members, Memory) into its own widget.
-enum InfoTab { #[default] Overview, Members, Memory, Skills }
+enum InfoTab { #[default] Overview, Members, Memory, Skills, Watches }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InfoRow { Overview, Member(usize), Notifications, Mode(usize), Back, AgentServices, Filler }
 fn info_rows(tab: InfoTab, members: usize, choosing: bool) -> usize {
-    match tab {InfoTab::Members => members, InfoTab::Memory | InfoTab::Skills => 0, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
+    match tab {InfoTab::Members => members, InfoTab::Memory | InfoTab::Skills | InfoTab::Watches => 0, InfoTab::Overview if choosing => 6, InfoTab::Overview => 3}
 }
 fn info_row(tab: InfoTab, members: usize, choosing: bool, index: usize) -> InfoRow {
     if index >= info_rows(tab, members, choosing) {return InfoRow::Filler;}
     match tab {
         InfoTab::Members => InfoRow::Member(index),
-        InfoTab::Memory | InfoTab::Skills => InfoRow::Filler,
+        InfoTab::Memory | InfoTab::Skills | InfoTab::Watches => InfoRow::Filler,
         InfoTab::Overview if index == 0 => InfoRow::Overview,
         InfoTab::Overview if choosing => if index <= 4 {InfoRow::Mode(index - 1)} else {InfoRow::Back},
         InfoTab::Overview => match index {1 => InfoRow::Notifications, 2 => InfoRow::AgentServices, _ => InfoRow::Filler},
@@ -492,6 +495,9 @@ impl MobileChatInfo {
         }
         if let (InfoTab::Skills, Some(room)) = (tab, self.room.as_ref()) {
             self.view.room_skills_panel(cx, ids!(skills_panel)).show(cx, room.room_id());
+        }
+        if let (InfoTab::Watches, Some(room)) = (tab, self.room.as_ref()) {
+            self.view.room_watches_panel(cx, ids!(watches_panel)).show(cx, room.room_id());
         }
         // Tabs change layout and controls in draw_walk, outside the cached
         // children that a partial View redraw would update.
@@ -892,6 +898,7 @@ impl Widget for MobileChatInfo {
             if self.view.button(cx, ids!(members_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Members);return;}
             if self.view.button(cx, ids!(memory_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Memory);return;}
             if self.view.button(cx, ids!(skills_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Skills);return;}
+            if self.view.button(cx, ids!(watches_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Watches);return;}
             if self.tab == InfoTab::Overview && self.services_open && self.view.button(cx, ids!(refresh_services)).clicked(actions) {self.load_services(cx);return;}
             if self.view.drop_down(cx, ids!(room_services)).changed(actions).is_some()
                 && let Some(index) = self.view.drop_down(cx, ids!(room_services)).selected_item().checked_sub(1)
@@ -999,10 +1006,14 @@ impl Widget for MobileChatInfo {
         let members = self.tab == InfoTab::Members;
         let skills = self.tab == InfoTab::Skills;
         self.view.widget(cx, ids!(skills_panel)).set_visible(cx, skills);
-        // A side panel (Memory or Skills) replaces the information list.
+        let watches = self.tab == InfoTab::Watches;
+        self.view.widget(cx, ids!(watches_panel)).set_visible(cx, watches);
+        // TODO(R4): this file is over budget; split the side-panel tabs (Memory,
+        // Skills, Watches) into home/chat_info_tabs.rs.
+        // A side panel (Memory, Skills or Watches) replaces the information list.
         let memory_only = self.tab == InfoTab::Memory;
         self.view.widget(cx, ids!(memory_panel)).set_visible(cx, memory_only);
-        let memory = memory_only || skills;
+        let memory = memory_only || skills || watches;
         self.view.label(cx,ids!(ownership_status)).set_visible(cx,members && self.ownership_unavailable);
         self.view.view(cx, ids!(services_panel)).set_visible(cx, !members && !memory && self.services_open);
         self.view.view(cx, ids!(information_list)).set_visible(cx, !memory && (members || !self.services_open));
@@ -1026,7 +1037,7 @@ impl Widget for MobileChatInfo {
         // restyling the tabs each time kept the open panel drawing for ever.
         if self.styled_tab != Some(self.tab) {
             self.styled_tab = Some(self.tab);
-            for (id, selected) in [(ids!(overview_tab), !members && !memory), (ids!(members_tab), members), (ids!(memory_tab), memory_only), (ids!(skills_tab), skills)] {
+            for (id, selected) in [(ids!(overview_tab), !members && !memory), (ids!(members_tab), members), (ids!(memory_tab), memory_only), (ids!(skills_tab), skills), (ids!(watches_tab), watches)] {
                 let mut button = self.view.button(cx, id);
                 if selected {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SELECTED} draw_text +: {color: mod.widgets.RINX_ACCENT}});}
                 else {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SURFACE} draw_text +: {color: mod.widgets.RINX_INK}});}

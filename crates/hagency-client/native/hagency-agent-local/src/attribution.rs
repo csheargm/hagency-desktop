@@ -17,6 +17,11 @@ pub fn register_agent_identity(agent_id: &str, label: &str, mxid: &str) {
     IDENTITIES.write().unwrap_or_else(|p| p.into_inner()).insert(agent_id.to_owned(), (label.trim().to_owned(), mxid.to_owned()));
 }
 
+/// The display name the host registered for Agent `agent_id`.
+pub fn agent_label(agent_id: &str) -> Option<String> {
+    IDENTITIES.read().unwrap_or_else(|p| p.into_inner()).get(agent_id).map(|(label, _)| label.clone())
+}
+
 /// The identity rules for Agent `agent_id`, once the host registered it.
 pub fn identity_instructions(agent_id: &str) -> Option<String> {
     let identities = IDENTITIES.read().unwrap_or_else(|p| p.into_inner());

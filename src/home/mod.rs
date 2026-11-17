@@ -6,6 +6,7 @@ pub(crate) mod agent_ask_badge;
 pub mod room_memory;
 pub mod room_plan;
 pub mod room_skills;
+pub mod room_watches;
 pub mod account_menu;
 pub mod account_list;
 pub mod add_room;
@@ -75,6 +76,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     joined_spaces::script_mod(vm);
     room_memory::script_mod(vm);
     room_skills::script_mod(vm);
+    room_watches::script_mod(vm);
     room_plan::script_mod(vm);
     agent_ask_badge::script_mod(vm);
     mobile_chat_info::script_mod(vm);

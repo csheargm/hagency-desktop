@@ -453,6 +453,7 @@ async fn drive<H: Host, C: Capture>(
                                     .with_memory()
                                     .with_skills()
                                     .with_plans()
+                                    .with_watches()
                                     .parse(name, &input)
                                     .is_ok(),
                         ));

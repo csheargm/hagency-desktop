@@ -2742,7 +2742,7 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                if let Err(error) = provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_memory().with_skills().with_plans()).await {
+                if let Err(error) = provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_memory().with_skills().with_plans().with_watches()).await {
                     // The tools channel did not start: answer without it rather than
                     // fail the turn. No model input was sent, so a fresh process is safe.
                     provider_failure("provider_room_tools", &error);

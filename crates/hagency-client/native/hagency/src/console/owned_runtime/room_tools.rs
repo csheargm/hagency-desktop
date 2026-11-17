@@ -16,6 +16,7 @@ const ENCRYPTED_CONTEXT_INPUT_LIMIT: usize = 40 * 1024;
 mod memory;
 mod plans;
 mod skills;
+mod watches;
 fn failure(status: u16, code: &str) -> NativeError {
     NativeError {
         status,
@@ -217,6 +218,7 @@ impl Host {
             let memory_block = memory::block(&*state.source).await;
             let skill_index = skills::index(&*state.source).await;
             let memory_block = hagency_runtime::room_context::join(memory_block, skill_index);
+            let memory_block = hagency_runtime::room_context::join(memory_block, watches::own_block(&state.source).await);
             // Native warm and cold sessions own their conversation history.
             // Leave earlier room pages for explicit reads instead of appending
             // the same recent transcript to every new user turn.
@@ -261,6 +263,7 @@ impl Host {
             RoomOperation::Memory(operation) => memory::handle(&*state.source, operation).await,
             RoomOperation::Skill(operation) => skills::handle(&*state.source, operation).await,
             RoomOperation::Plan(plan) => plans::handle(&state.source, plan).await,
+            RoomOperation::Watches => watches::handle(&state.source).await,
         };
         let is_error = serde_json::from_str::<Value>(&text)
             .ok()
