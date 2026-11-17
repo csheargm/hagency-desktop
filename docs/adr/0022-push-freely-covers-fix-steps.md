@@ -174,3 +174,15 @@ Residual (as for Claude): the checks and the run are not atomic against a
 concurrent writer; the host-run local steps read the owner's global git
 config (`~/.gitconfig`). New: the host-run steps run outside Codex's
 sandbox, as Claude's do; only the pinned commands run there.
+
+### GPT review of "Deny" and "Codex" (2026-11-17)
+Adopted: the override also ends when any policy layer was saved after the
+run was admitted (the runtime builds each proposal with the current
+revisions, so the revision check alone never caught it); a queued
+`watched_repo_step` whose call was given up (its native turn ended, or the
+MCP wait expired) never starts, and a running one is stopped when its call
+is given up; at most two steps of a turn run at once; a host command keeps
+at most 1 MiB of each output stream; a trusted Codex file change is checked
+again right before its accept is sent. Rejected: "readable puppet IDs
+removed": an artifact of diffing against a base that had moved on, not part
+of this change.

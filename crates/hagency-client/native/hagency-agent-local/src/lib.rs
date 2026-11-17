@@ -1212,7 +1212,10 @@ impl Ledger {
             self.owner(owner)?;
             let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             return match admitted_policies(&tx, proposal, now) {
-                Ok(_) => Ok(Some(command)),
+                // No policy saved since the run was admitted (GPT review):
+                // a new rule, Deny or not, ends the override for this run.
+                Ok((original, current)) if original.iter().zip(&current).all(|(o, c)| o.0 == c.0) => Ok(Some(command)),
+                Ok(_) => Ok(None),
                 Err(Error::Denied) => Ok(None),
                 Err(other) => Err(other),
             };

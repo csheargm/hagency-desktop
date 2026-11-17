@@ -26,6 +26,13 @@ async fn a_turn_runs_only_card_free_steps() {
     let (out, failed) = ask(&mut r.ledger, &turn, &format!("git -C app status; touch {}", marker.display()), &mut running).await;
     assert!(failed && out.contains("not_card_free"), "{out}");
     assert!(!marker.exists(), "a refused call runs nothing");
+    // A call given up while queued (its MCP wait expired) never starts.
+    let (reply, answer) = oneshot::channel();
+    drop(answer);
+    start(&mut r.ledger, &turn, Call { command: "git -C app checkout -b late origin/main".into(), reply }, &mut running);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(std::process::Command::new("git").args(["-C", r.root.join("app").to_str().unwrap(), "rev-parse", "--verify", "-q", "late"])
+        .status().is_ok_and(|s| !s.success()), "the abandoned step ran");
     turn.enabled = false;
     let (out, failed) = ask(&mut r.ledger, &turn, "git -C app status", &mut running).await;
     assert!(failed && out.contains("runs no commands"), "{out}");

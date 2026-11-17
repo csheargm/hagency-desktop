@@ -133,12 +133,26 @@ fn group_has_others(pid: u32) -> bool {
     String::from_utf8_lossy(&out.stdout).lines().any(|l| matches!(l.split_whitespace().collect::<Vec<_>>().as_slice(), [p, g, st, ..] if *g == group && *p != me && !st.starts_with('Z')))
 }
 
+/// The most of one stream a host command keeps; the rest is read and
+/// dropped, so a huge output cannot grow the daemon (GPT review, Nov 17).
+const MAX_CAPTURED_BYTES: usize = 1024 * 1024;
+
 fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
     std::thread::spawn(move || {
         let mut text = Vec::new();
         if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 8192];
             // A broken pipe leaves what was read; the exit status decides.
-            let _ = pipe.read_to_end(&mut text);
+            loop {
+                let n = match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                let room = MAX_CAPTURED_BYTES.saturating_sub(text.len());
+                text.extend_from_slice(&chunk[..n.min(room)]);
+            }
         }
         String::from_utf8_lossy(&text).into_owned()
     })
@@ -161,6 +175,11 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(20), "far less than the 30 s the command asked for");
         killer.join().unwrap();
         assert_eq!(run(&mut Command::new("true"), None, &c), Err("the turn was stopped".into()), "nothing starts after a stop");
+    }
+    #[test]
+    fn a_huge_output_is_capped_while_the_command_still_finishes() {
+        let out = run(Command::new("/bin/sh").args(["-c", "yes x | head -c 3000000"]), None, &ctx()).unwrap();
+        assert!(out.len() <= MAX_CAPTURED_BYTES, "{}", out.len());
     }
     #[test]
     fn a_command_past_its_time_limit_is_killed() {

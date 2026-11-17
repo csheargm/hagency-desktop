@@ -46,9 +46,20 @@ pub(super) async fn forward(
     }
 }
 
-/// The cancel guards of a turn's running steps; dropped with the turn.
-#[derive(Default)]
-pub(super) struct Running(Vec<CancelOnDrop>);
+/// At most this many steps of a turn run at once (GPT review).
+const PARALLEL: usize = 2;
+
+/// The cancel guards of a turn's running steps, dropped with the turn, and
+/// the slots that bound how many run at once.
+pub(super) struct Running {
+    guards: Vec<CancelOnDrop>,
+    slots: std::sync::Arc<tokio::sync::Semaphore>,
+}
+impl Default for Running {
+    fn default() -> Self {
+        Self { guards: Vec::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)) }
+    }
+}
 
 /// What one turn's steps are checked against.
 pub(super) struct Turn<'a> {
@@ -71,6 +82,12 @@ pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &
     if !turn.enabled {
         return refuse(call, "this room's workspace runs no commands");
     }
+    // Abandoned while queued (its turn ended, or the MCP wait expired):
+    // nothing starts for a call nobody waits for (GPT review).
+    if call.reply.is_closed() {
+        return;
+    }
+    let Ok(slot) = running.slots.clone().try_acquire_owned() else { return refuse(call, "another step is still running; wait for it") };
     let Some(proposal) = proposal(ledger, turn, &call.command) else { return refuse(call, "this run cannot be checked") };
     let step = match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
         Ok(Some(step)) if step != TrustedStep::Allow => step,
@@ -80,16 +97,29 @@ pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &
     let repo = match &step { TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
     let mut ctx = HostCtx::new(turn.token.clone(), std::sync::Arc::default(), ledger.push_trust_recheck(&proposal, &repo));
     ctx.timeout = codex_step::STEP_TIMEOUT;
-    running.0.push(CancelOnDrop(ctx.cancel.clone()));
+    let cancel = ctx.cancel.clone();
+    running.guards.push(CancelOnDrop(cancel.clone()));
     let root = PathBuf::from(&proposal.canonical_directory);
+    let mut reply = call.reply;
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || codex_step::run(step, &root, &ctx)).await.unwrap_or_else(|e| Err(e.to_string()));
+        let _slot = slot;
+        let mut job = tokio::task::spawn_blocking(move || codex_step::run(step, &root, &ctx));
+        let result = tokio::select! {
+            result = &mut job => result.unwrap_or_else(|e| Err(e.to_string())),
+            // The call was given up (its native turn ended, or the MCP wait
+            // expired): the step is stopped, its slot freed once it is.
+            () = reply.closed() => {
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = job.await;
+                return;
+            }
+        };
         let answer = match result {
             Ok(out) => (bounded(out), false),
             Err(why) => (bounded(format!("Hagency could not run this step: {why}")), true),
         };
-        // The call may have gone (turn over, MCP wait expired): nobody to tell.
-        let _ = call.reply.send(answer);
+        // The call may have gone just now: nobody to tell.
+        let _ = reply.send(answer);
     });
 }
 

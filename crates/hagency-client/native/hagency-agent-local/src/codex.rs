@@ -2084,7 +2084,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             let rooted = crate::watch_trust::for_workspace(&request.proposal, std::path::Path::new(cwd));
             let owner = ledger.owner.clone();
             if matches!(ledger.trusted_publish(&owner, &rooted, now()), Ok(Some(crate::watch_trust::TrustedStep::Allow))) {
-                approvals.offer_trusted(request);
+                approvals.offer_trusted(request, rooted);
                 return Ok(());
             }
         }

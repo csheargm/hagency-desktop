@@ -100,3 +100,21 @@ fn a_changed_policy_or_refused_requests_still_stop_the_override() {
     current.policy_revision = [2, 1, 1];
     assert_eq!(r.ledger.trusted_publish(OWNER, &current, 11).unwrap(), None, "requests refused outright");
 }
+
+/// GPT review: the runtime builds each proposal with the CURRENT revisions,
+/// so a rule saved after the run was admitted must still end the override.
+#[test]
+fn a_rule_saved_after_admission_ends_the_override_for_that_run() {
+    let mut r = denied();
+    let status = bash(&r.root, "git -C app status");
+    assert!(r.ledger.trusted_publish(OWNER, &status, 11).unwrap().is_some());
+    let still_deny = crate::Policy {
+        budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime },
+        requests: crate::RequestPolicy::Allow,
+        high_risk: ToolPolicy::Deny,
+    };
+    r.ledger.set_policy(OWNER, &status.scope, crate::Layer::Room, 1, &still_deny).unwrap();
+    let mut fresh = status;
+    fresh.policy_revision = [1, 2, 1];
+    assert_eq!(r.ledger.trusted_publish(OWNER, &fresh, 11).unwrap(), None);
+}
