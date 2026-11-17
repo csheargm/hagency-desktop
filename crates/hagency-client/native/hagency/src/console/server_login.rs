@@ -1581,6 +1581,11 @@ pub(super) enum OwnerOperation {
     Retire {
         agent: String,
     },
+    /// The owner's explicit consent that a private Agent may serve group
+    /// Rooms it is bound to. Not a pool contribution; private is the default.
+    AllowGroupRooms {
+        agent: String,
+    },
 }
 pub(super) struct OwnerReply {
     pub owner: String,
@@ -1821,6 +1826,14 @@ impl OwnerOperation {
             Self::Retire { agent } => {
                 operation_id(&agent)?;
                 (Method::DELETE, format!("agents/{agent}"), None)
+            }
+            Self::AllowGroupRooms { agent } => {
+                operation_id(&agent)?;
+                (
+                    Method::PUT,
+                    format!("agents/{agent}/visibility"),
+                    Some(json!({"visibility":"public"})),
+                )
             }
         };
         Ok((method, format!("/hagency/api/v1/{suffix}"), body))

@@ -3500,5 +3500,8 @@
   "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room.",
   "Remove from room": "Remove from room",
   "Remove my agent from this room": "Remove my agent from this room",
-  "Removing the agent from the room…": "Removing the agent from the room…"
+  "Removing the agent from the room…": "Removing the agent from the room…",
+  "Allow in group rooms": "Allow in group rooms",
+  "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.": "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.",
+  "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.": "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool."
 }

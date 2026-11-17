@@ -240,6 +240,8 @@ pub enum AgentAction {
     Pause,
     Resume,
     Retire,
+    /// Owner consent for group Rooms (server visibility `public`).
+    AllowGroupRooms,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BindingAction {
@@ -688,6 +690,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
                 AgentAction::Pause => ("POST", "/pause"),
                 AgentAction::Resume => ("POST", "/resume"),
                 AgentAction::Retire => ("DELETE", ""),
+                AgentAction::AllowGroupRooms => ("PUT", "/group-rooms"),
             };
             (m, format!("{root}/owned-agents/{agent_id}{s}"))
         }
