@@ -360,7 +360,7 @@ pub(crate) fn agent_binding_error(code: &str) -> &'static str {
         "matrix_permission_denied" => "You do not have permission to invite members to this room. Ask a room administrator to enable invitations.",
         "agent_creation_denied" => "This space or room does not allow you to add Agents. Ask its owner to update the Agent permissions.",
         "agent_owner_binding_required" => "This Agent is not available to add. Check that it belongs to you and its resource authorization is still valid in Agent → My Agents.",
-        crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL => "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.",
+        crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL => "This Agent is private: it only answers in your private chat with it. Choose Allow in group rooms to add it to this room. This does not contribute its resources to a pool.",
         "agent_retired" => "This Agent has been retired and cannot join another room.",
         "agent_command_recovery_required" => "An original binding request needs confirmation. Resume it in Agents.",
         "sign_in_required" | "matrix_account_changed" => "Your account session changed. Reopen this room after signing in.",

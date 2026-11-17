@@ -34,18 +34,27 @@ pub(crate) fn agent_id_for(listing: &serde_json::Value, puppet: &str) -> Option<
     listing["agents"].as_array()?.iter().find(|a| a["puppetMxid"] == puppet)?["id"].as_str().map(str::to_owned)
 }
 
+/// Records the owner's "Allow in group rooms" for `puppet`, then binds it into `room_id`.
+async fn allow_and_bind(puppet: &str, room_id: &str) -> Result<bool, String> {
+    let service = Service::for_current()?;
+    let id = agent_id_for(&service.execute(Command::Agents).await?, puppet).ok_or("agent_owner_binding_required")?;
+    service.execute(Command::Agent { agent_id: id, action: AgentAction::AllowGroupRooms }).await?;
+    service.invite_agent_to_room(room_id, puppet).await
+}
+
 /// The owner clicked "Allow in group rooms": record it, then add the Agent.
 pub(super) fn allow_then_bind(agent: AgentPick, room_id: String, room: String) {
     let epoch = crate::account_session::epoch();
     crate::account_session::spawn(async move {
-        let result = async {
-            let service = Service::for_current()?;
-            let id = agent_id_for(&service.execute(Command::Agents).await?, &agent.puppet).ok_or("agent_owner_binding_required")?;
-            service.execute(Command::Agent { agent_id: id, action: AgentAction::AllowGroupRooms }).await?;
-            service.invite_agent_to_room(&room_id, &agent.puppet).await
-        }.await;
+        let result = allow_and_bind(&agent.puppet, &room_id).await;
         Cx::post_action(BindDone { epoch, agent: agent.name, room, result, target: (room_id, agent.puppet) });
     });
+}
+
+/// As [`allow_then_bind`] for a picker that shows the outcome itself: the
+/// result goes to `done` (off the UI thread) instead of a popup.
+pub(crate) fn allow_then(puppet: String, room_id: String, done: impl FnOnce(Result<bool, String>) + Send + 'static) {
+    crate::account_session::spawn(async move { done(allow_and_bind(&puppet, &room_id).await) });
 }
 
 #[cfg(test)]

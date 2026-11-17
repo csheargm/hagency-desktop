@@ -1,5 +1,7 @@
 // TODO(R4): over 300 lines; split the search/known-people logic (offer, load_known, lookup) into invite_modal/people.rs.
 //! A modal dialog for inviting a user to a room.
+mod private_consent;
+pub(crate) use private_consent::{agent_label, picker_owns};
 
 use makepad_widgets::*;
 use ruma::OwnedUserId;
@@ -135,6 +137,8 @@ enum InviteModalState {
     InviteSuccess,
     /// An error occurred while sending the invite.
     InviteError,
+    /// The server refused this private Agent; the picker asks "Allow in group rooms?".
+    ConsentNeeded(OwnedUserId),
 }
 
 
@@ -316,12 +320,12 @@ impl WidgetMatchEvent for InviteModal {
                             matches.push(person.clone());
                         }
                     }
-                    self.resolved(cx, query, matches);
+                    if !matches!(self.state, InviteModalState::ConsentNeeded(_)) { self.resolved(cx, query, matches); }
                 }
                 _ => {}
             }
         }
-        if !matches!(self.state, InviteModalState::WaitingForInvite(_)) {
+        if !matches!(self.state, InviteModalState::WaitingForInvite(_) | InviteModalState::ConsentNeeded(_)) {
             let input = self.view.text_input(cx, ids!(user_id_input));
             if let Some(query) = input.changed(actions) {
                 // An edit away from the picked name drops the pick.
@@ -348,6 +352,10 @@ impl WidgetMatchEvent for InviteModal {
 
         // Handle canceling/closing the modal.
         let cancel_clicked = cancel_button.clicked(actions);
+        if cancel_clicked && matches!(self.state, InviteModalState::ConsentNeeded(_)) {
+            self.answer_consent(cx, false);
+            return;
+        }
         if cancel_clicked ||
             actions.iter().any(|a| matches!(a.downcast_ref(), Some(ModalAction::Dismissed)))
         {
@@ -357,6 +365,8 @@ impl WidgetMatchEvent for InviteModal {
             if cancel_clicked {
                 cx.action(InviteModalAction::Close);
             }
+            // A closed picker answers nothing: a later refusal gets the shared prompt.
+            private_consent::mark_picker_bind(None);
             return;
         }
 
@@ -369,6 +379,14 @@ impl WidgetMatchEvent for InviteModal {
 
         let confirm_button = self.view.button(cx, ids!(confirm_button));
         let user_id_input = self.view.text_input(cx, ids!(user_id_input));
+
+        // Consent is granted by the Allow button only, never by Enter in the field.
+        if matches!(self.state, InviteModalState::ConsentNeeded(_)) {
+            if confirm_button.clicked(actions) && let Some((room_id, user_id)) = self.answer_consent(cx, true) {
+                private_consent::start_allowed_bind(room_id, user_id, self.epoch);
+            }
+            return;
+        }
 
         // Handle return key or invite button click.
         if let Some(user_id_str) = confirm_button.clicked(actions)
@@ -403,6 +421,7 @@ impl WidgetMatchEvent for InviteModal {
                 let offline_review = false;
                 if !offline_review { submit_async_request(request); }
                 let agent = crate::hagency::backend::is_agent_invitation(&user_id);
+                private_consent::mark_picker_bind(agent.then(|| (room_name_id.room_id().clone(), user_id.clone())));
                 self.state = InviteModalState::WaitingForInvite(user_id);
                 self.status(cx, crate::i18n::tr(if agent {"Adding Agent to this room…"} else {"Sending invite..."}), false);
                 confirm_button.set_enabled(cx, false);
@@ -434,12 +453,17 @@ impl InviteModal {
                 self.status(cx, crate::i18n::tr("Still waiting for the server. You can close this panel; the original request will continue."), false);
                 return;
             }
+            InviteResultAction::Agent {result,..} if crate::hagency::bring_agent::needs_consent(result) => {
+                self.ask_consent(cx, user.clone());
+                return;
+            }
             InviteResultAction::Agent {result:Ok(true),..} => (crate::i18n::tr("Agent joined this room. In group chats, @ the Agent to ask it to reply.").to_owned(),false,true,false),
             InviteResultAction::Agent {result:Ok(false),..} => (crate::i18n::tr("The request is saved. The Agent is still joining. You can close this panel or check its status.").to_owned(),false,false,true),
             InviteResultAction::Agent {result:Err(code),..} => (crate::i18n::tr(super::mobile_chat_info::agent_binding_error(code)).to_owned(),true,false,false),
             InviteResultAction::Sent {..} => (crate::i18n::tr("Invitation sent. Waiting for them to join.").to_owned(),false,true,false),
             InviteResultAction::Failed {error,..} => (crate::i18n::format("Failed to send invite.\n\nError: {error}", &[("error", error.to_string())]),true,false,false),
         };
+        private_consent::mark_picker_bind(None);
         self.status(cx, &text, error);
         if success {
             let mut label=self.view.label(cx,ids!(status_label_view.status_label));
@@ -592,6 +616,7 @@ impl InviteModal {
         self.offer(cx, &known);
         self.load_known(room_name_id.room_id().clone());
         self.state = InviteModalState::WaitingForUserInput;
+        private_consent::mark_picker_bind(None);
         self.picked = None;
         self.room_name_id = Some(room_name_id);
 
@@ -624,6 +649,7 @@ impl InviteModal {
     }
 
     fn update_invite_button(&mut self, cx: &mut Cx) {
+        if matches!(self.state, InviteModalState::ConsentNeeded(_)) { return; }
         let text = self.view.text_input(cx, ids!(user_id_input)).text();
         let allowed = typed_user(&text, self.picked.as_ref())
             .map_or(self.can_invite, |id| self.may_invite_user(&id));
