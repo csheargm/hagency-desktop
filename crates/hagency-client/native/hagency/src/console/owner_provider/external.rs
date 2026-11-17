@@ -166,6 +166,10 @@ pub(crate) fn paths_for_reference(
     owner: &str,
     selected: &str,
 ) -> Result<ProviderPaths, ProviderError> {
+    // TODO(split): external.rs is over budget; split reference resolution by provider.
+    if selected == hagency_agent_local::codex::ollama::LOCAL_REFERENCE {
+        return super::ollama::paths(&directory(root, origin, issuer, subject, owner)?);
+    }
     let Some((kind, profile)) = managed_reference(selected) else {
         return super::paths(root, origin, issuer, subject, owner);
     };

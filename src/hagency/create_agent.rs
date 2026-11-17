@@ -9,7 +9,7 @@ use ::hagency::simple_agent::{DEFAULT_REASONING_EFFORT, Runtime, SimpleAgentSpec
 use serde_json::Value;
 
 /// Local harnesses in dialog order.
-const HARNESSES: [Runtime; 2] = [Runtime::Claude, Runtime::Codex];
+const HARNESSES: [Runtime; 3] = [Runtime::Claude, Runtime::Codex, Runtime::Ollama];
 /// Thinking levels offered; each is the model profile's `reasoning_effort`.
 pub(crate) const THINKING: [&str; 3] = ["low", "medium", "high"];
 /// The server's Agent display-name limit (owned_agents `Create`).
@@ -80,18 +80,19 @@ pub(crate) fn failure_message(step: &str, code: &str) -> String {
 }
 
 pub(crate) fn harness_label(runtime: &Runtime) -> &'static str {
-    if *runtime == Runtime::Claude { "Claude" } else { "Codex" }
+    match runtime { Runtime::Claude => "Claude", Runtime::Ollama => "Ollama (local)", _ => "Codex" }
 }
 /// "ann-claude": the owner's name and the harness, like the demo Agents.
 pub(crate) fn default_name(localpart: &str, runtime: &Runtime) -> String {
-    format!("{localpart}-{}", harness_label(runtime).to_ascii_lowercase())
+    let harness = if *runtime == Runtime::Ollama { "ollama" } else { harness_label(runtime) };
+    format!("{localpart}-{}", harness.to_ascii_lowercase())
 }
 
 /// What the dialog holds between draws. Harness probes arrive one by one.
 #[derive(Default)]
 pub(crate) struct DialogState {
     /// Per `HARNESSES` entry: `None` while checking, then the models or the error code.
-    pub probes: [Option<Result<Vec<ModelChoice>, String>>; 2],
+    pub probes: [Option<Result<Vec<ModelChoice>, String>>; 3],
     pub harness: usize,
     pub model: usize,
     pub thinking: usize,

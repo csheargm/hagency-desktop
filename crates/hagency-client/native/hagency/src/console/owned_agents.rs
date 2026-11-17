@@ -1051,6 +1051,10 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if profile.credential_ref != provider.credential_ref {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
+                // TODO(split): owned_agents.rs is over budget; move start profile assembly out.
+                super::owner_provider::verify_local_model(&profile.credential_ref, &profile.model)
+                    .await
+                    .map_err(|e| error(e.status, e.code))?;
                 let saved_options = host
                     .0
                     .owned_runtime
@@ -1086,7 +1090,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         } else {
                             profile.reasoning_effort
                         },
-                        shared_auth: provider.shared, local_model: None,
+                        shared_auth: provider.shared,
+                        local_model: hagency_agent_local::codex::ollama::from_reference(&profile.credential_ref),
                         web_search: profile.web_search,
                         environment,
                     },
@@ -1200,6 +1205,10 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if profile.credential_ref != provider.credential_ref {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
+                // TODO(split): owned_agents.rs is over budget; move start profile assembly out.
+                super::owner_provider::verify_local_model(&profile.credential_ref, &profile.model)
+                    .await
+                    .map_err(|e| error(e.status, e.code))?;
                 if input.shared_workspace { return Err(error(409, "shared_workspace_requires_agent_service")); }
                 let environment = crate::github_access::start_environment(&agent).await;
                 let config = super::owned_runtime::StartConfig {
@@ -1225,7 +1234,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                         } else {
                             profile.reasoning_effort
                         },
-                        shared_auth: provider.shared, local_model: None,
+                        shared_auth: provider.shared,
+                        local_model: hagency_agent_local::codex::ollama::from_reference(&profile.credential_ref),
                         web_search: profile.web_search,
                         environment,
                     },

@@ -15,7 +15,7 @@ fn codex_models() -> Value {
 fn ready(claude: Option<Value>, codex: Option<Value>) -> DialogState {
     let mut state = DialogState::new(|runtime| default_name("ann", runtime));
     let probe = |reply: Option<Value>| Some(reply.map(|r| parse_models(&r)).ok_or_else(|| "local_provider_not_signed_in".to_owned()));
-    state.probes = [probe(claude), probe(codex)];
+    state.probes = [probe(claude), probe(codex), probe(None)];
     state
 }
 
@@ -111,7 +111,7 @@ fn revoked_agent_sign_in_asks_to_sign_in_again_not_for_a_provider_login() {
     // Regression: a revoked owner sign-in showed "No Claude Code or Codex login found".
     let mut state = ready(None, None);
     assert!(!state.needs_sign_in());
-    state.probes = [Some(Err("native_resume_revoked".into())), Some(Err("native_resume_revoked".into()))];
+    state.probes = std::array::from_fn(|_| Some(Err("native_resume_revoked".into())));
     assert!(state.needs_sign_in());
     assert!(state.available().is_empty());
     state.probes[1] = None;
@@ -121,6 +121,17 @@ fn revoked_agent_sign_in_asks_to_sign_in_again_not_for_a_provider_login() {
 fn account_mismatch_offers_sign_in_again_not_a_generic_error() {
     // Regression: @Anna vs @anna showed "operation could not finish" with no way out.
     let mut state = ready(None, None);
-    state.probes = [Some(Err("matrix_account_mismatch".into())), Some(Err("matrix_account_mismatch".into()))];
+    state.probes = std::array::from_fn(|_| Some(Err("matrix_account_mismatch".into())));
     assert!(state.needs_sign_in() && state.account_mismatch());
+}
+
+#[test]
+fn ollama_local_is_offered_with_its_local_models() {
+    let mut state = ready(None, None);
+    state.probes[2] = Some(Ok(parse_models(&json!({"models":[{"model":"qwen3:4b","displayName":"qwen3:4b"}]}))));
+    assert_eq!(state.runtime(), Some(Runtime::Ollama));
+    assert_eq!(harness_label(&Runtime::Ollama), "Ollama (local)");
+    state.name = default_name("ann", &Runtime::Ollama);
+    let spec = state.spec(default_spec).unwrap();
+    assert_eq!((spec.name.as_str(), spec.runtime, spec.model.as_deref()), ("ann-ollama", Runtime::Ollama, Some("qwen3:4b")));
 }

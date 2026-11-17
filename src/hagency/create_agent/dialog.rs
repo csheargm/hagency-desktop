@@ -143,7 +143,7 @@ impl CreateAgentDialog {
         self.view.label(cx, ids!(status)).set_text(cx, "");
         match Service::for_current() {
             Ok(service) => self.probe(service),
-            Err(code) => self.state.probes = [Some(Err(code.clone())), Some(Err(code))],
+            Err(code) => self.state.probes = std::array::from_fn(|_| Some(Err(code.clone()))),
         }
         self.load_rooms(cx);
         self.load_backups(cx);
@@ -153,9 +153,11 @@ impl CreateAgentDialog {
     fn probe(&self, service: Service) {
         for (index, runtime) in DialogState::probe_commands() {
             let (request, service) = (self.request, service.clone());
-            let Some(command) = simple_agent::provider_command(&runtime, ProviderAction::Models) else { continue };
+            let command = simple_agent::provider_command(&runtime, ProviderAction::Models);
+            if command.is_none() && runtime != simple_agent::Runtime::Ollama { continue }
             spawn_async_task(async move {
-                let result = service.execute(command).await;
+                // "Ollama (local)": the local catalogue, stored tool models only.
+                let result = match command { Some(command) => service.execute(command).await, None => simple_agent::ollama_models().await };
                 Cx::post_action(Probed { request, index, result });
             });
         }

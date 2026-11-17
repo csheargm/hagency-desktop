@@ -184,13 +184,24 @@ impl Caps {
         Ok(next)
     }
     /// Marks `user` running and durably charges the reservation first.
+    /// Nothing changes unless the reservation was saved.
     fn start(&mut self, user: &str) -> std::io::Result<()> {
         let reserve = self.config.reserve_tokens_per_run;
+        let before = (self.tokens.users.get(user).copied(), self.tokens.server);
         *self.tokens.users.entry(user.into()).or_default() += reserve;
         self.tokens.server += reserve;
         self.tokens.reserved.insert(user.into(), reserve);
+        if let Err(error) = self.save() {
+            match before.0 {
+                Some(total) => self.tokens.users.insert(user.into(), total),
+                None => self.tokens.users.remove(user),
+            };
+            self.tokens.server = before.1;
+            self.tokens.reserved.remove(user);
+            return Err(error);
+        }
         self.running.insert(user.into());
-        self.save()
+        Ok(())
     }
     pub fn user_tokens_today(&self, user: &str) -> u64 {
         self.tokens.users.get(user).copied().unwrap_or(0)

@@ -9,6 +9,7 @@ pub(super) fn model_input(spec: &SimpleAgentSpec, model: &str, credential: &str)
         "credential_ref": credential,
         "workspace_root": spec.workspace_root.clone().unwrap_or_default(),
         "reasoning_effort": spec.reasoning_effort.as_deref().unwrap_or(DEFAULT_REASONING_EFFORT),
-        "web_search": true,
+        // Web search would leave the machine; a local model runs without it.
+        "web_search": credential != hagency_agent_local::codex::ollama::LOCAL_REFERENCE,
     })
 }

@@ -11,6 +11,13 @@ use serde_json::Value;
 /// Codex provider ID reserved for this binding (never a built-in ID).
 pub const PROVIDER_ID: &str = "hagency-ollama";
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:11434";
+/// The Agent model profile's credential reference for "Ollama (local)": no
+/// credential exists; it names the owner's local Ollama on the default port.
+pub const LOCAL_REFERENCE: &str = "ollama-local:default";
+/// The desktop binding a model profile names, if it names one.
+pub fn from_reference(reference: &str) -> Option<LocalModel> {
+    (reference == LOCAL_REFERENCE).then(|| LocalModel::new(DEFAULT_ENDPOINT).ok()).flatten()
+}
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
 const MAX_MODEL_BYTES: usize = 128;
 
@@ -189,5 +196,24 @@ mod tests {
         let o = LocalModel::new(DEFAULT_ENDPOINT).unwrap().overrides();
         assert!(o.contains(&format!("model_provider=\"{PROVIDER_ID}\"")));
         assert!(o.iter().any(|v| v.ends_with("base_url=\"http://127.0.0.1:11434/v1\"")));
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use crate::{Ledger, ModelProfile};
+    fn profile(model: &str, web_search: bool) -> ModelProfile {
+        ModelProfile { model: model.into(), credential_ref: super::LOCAL_REFERENCE.into(),
+            workspace_root: "/tmp/agent".into(), reasoning_effort: "low".into(), web_search }
+    }
+    #[test]
+    fn ollama_model_profiles_are_stored_only_for_local_models_without_web_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path().join("l"), "@o:x").unwrap();
+        ledger.set_agent_model_profile("@o:x", "a", &profile("qwen3:4b", false)).unwrap();
+        assert!(ledger.set_agent_model_profile("@o:x", "a", &profile("gpt-oss:120b-cloud", false)).is_err());
+        assert!(ledger.set_agent_model_profile("@o:x", "a", &profile("qwen3:4b", true)).is_err());
+        assert_eq!(super::from_reference(super::LOCAL_REFERENCE).unwrap().base_url(), "http://127.0.0.1:11434/v1");
+        assert!(super::from_reference("keychain:codex:x").is_none());
     }
 }

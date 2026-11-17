@@ -17,10 +17,11 @@ fn remote(entry: &Value) -> bool {
 fn has_tools(entry: &Value) -> bool {
     entry["capabilities"].as_array().is_some_and(|c| c.iter().any(|v| v == "tools"))
 }
-/// Models on this host that are stored locally and can call tools.
-pub fn local_tool_models(tags: &Value) -> Vec<String> {
+/// Models stored on this host (not forwarded to a remote service). Tool
+/// support is read from `/api/show`: older Ollama tags carry no capabilities.
+pub fn stored_models(tags: &Value) -> Vec<String> {
     let mut names: Vec<String> = tags["models"].as_array().into_iter().flatten()
-        .filter(|m| !remote(m) && has_tools(m))
+        .filter(|m| !remote(m))
         .filter_map(|m| m["name"].as_str())
         .filter(|n| super::ollama::validate_model(n).is_ok())
         .map(str::to_owned)
@@ -38,7 +39,7 @@ pub fn check(tags: &Value, show: &Value, model: &str) -> Result<()> {
     if remote(entry) || remote(show) {
         return Err(Error::Profile("model is served by a remote Ollama service"));
     }
-    if !has_tools(entry) || !has_tools(show) {
+    if !has_tools(show) {
         return Err(Error::Profile("model cannot call tools"));
     }
     Ok(())
@@ -67,8 +68,17 @@ async fn request(local: &LocalModel, method: &str, path: &str, body: Option<&Val
     }
     Ok(serde_json::from_slice(&response[split + 4..])?)
 }
+/// The picker's models: stored on the host and able to call tools.
 pub async fn list_models(local: &LocalModel) -> Result<Vec<String>> {
-    Ok(local_tool_models(&request(local, "GET", "/api/tags", None).await?))
+    let tags = request(local, "GET", "/api/tags", None).await?;
+    let mut usable = Vec::new();
+    for model in stored_models(&tags) {
+        let show = request(local, "POST", "/api/show", Some(&json!({"model": model}))).await?;
+        if check(&tags, &show, &model).is_ok() {
+            usable.push(model);
+        }
+    }
+    Ok(usable)
 }
 pub async fn verify_model(local: &LocalModel, model: &str) -> Result<()> {
     let tags = request(local, "GET", "/api/tags", None).await?;
@@ -81,14 +91,14 @@ mod tests {
     use super::*;
     fn tags() -> Value {
         json!({"models":[
-            {"name":"qwen3:4b","model":"qwen3:4b","capabilities":["completion","tools"]},
-            {"name":"llama3.2:3b","model":"llama3.2:3b","capabilities":["completion"]},
+            {"name":"qwen3:4b","model":"qwen3:4b"},
+            {"name":"llama3.2:3b","model":"llama3.2:3b"},
             {"name":"alias:latest","model":"alias:latest","remote_host":"https://ollama.com","remote_model":"gpt-oss:120b","capabilities":["tools"]},
             {"name":"gpt-oss:120b-cloud","remote_host":"https://ollama.com","capabilities":["tools"]}]})
     }
     #[test]
-    fn picker_lists_only_stored_tool_models() {
-        assert_eq!(local_tool_models(&tags()), vec!["qwen3:4b".to_string()]);
+    fn picker_candidates_exclude_remote_models() {
+        assert_eq!(stored_models(&tags()), vec!["llama3.2:3b".to_string(), "qwen3:4b".to_string()]);
     }
     #[test]
     fn cloud_model_under_a_local_alias_is_refused() {

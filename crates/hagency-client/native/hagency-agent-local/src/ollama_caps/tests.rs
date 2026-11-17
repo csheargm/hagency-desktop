@@ -112,3 +112,13 @@ fn admin_exempt_user_skips_user_caps_but_not_server_budget() {
     }
     assert!(matches!(c.request("@admin:x", NOON), Err(Refusal::ServerDailyLimit { .. })));
 }
+
+#[test]
+fn failed_reservation_save_leaves_no_slot_or_charge() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Caps::open(CapsConfig { reserve_tokens_per_run: 10, ..wide() }, dir.path().join("missing/caps.json")).unwrap();
+    assert_eq!(c.request("@a:x", NOON), Err(Refusal::Storage));
+    assert_eq!(c.user_tokens_today("@a:x"), 0);
+    std::fs::create_dir(dir.path().join("missing")).unwrap();
+    assert_eq!(c.request("@a:x", NOON + 1), Ok(Admission::Run), "not stuck as AlreadyRunning");
+}

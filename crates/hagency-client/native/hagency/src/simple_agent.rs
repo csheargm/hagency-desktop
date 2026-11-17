@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, time::Duration};
 
-mod agents; mod approval; mod start; mod profile; mod progress;
+mod agents; mod approval; mod start; mod profile; mod progress; mod ollama;
+pub use ollama::ollama_models;
 pub use agents::{AgentIdentity, create_agent, find_agent};
 pub use approval::{DEMO_APPROVAL_MODE_ENV, demo_default_mode};
 pub use progress::{STEPS, current_step, last_failed_step, progress_text};
 use progress::{CURRENT_STEP, LAST_FAILED_STEP, step_index};
-
 pub type CommandFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, NativeError>> + Send + 'a>>;
 
 pub trait CommandExecutor: Send + Sync {
@@ -30,8 +30,8 @@ impl CommandExecutor for NativeOwner {
 pub enum Runtime {
     Codex,
     Claude,
-    /// Any OpenAI-compatible chat endpoint (vLLM, Ollama, a hosted key).
-    /// Accepted by the config surface now; the runtime is not implemented yet.
+    Ollama, // "Ollama (local)": the Codex runtime on a model in this Mac's Ollama.
+    /// Any OpenAI-compatible chat endpoint (vLLM, a hosted key); config only, no runtime yet.
     OpenAiCompatible { endpoint: String },
 }
 impl std::str::FromStr for Runtime {
@@ -40,7 +40,8 @@ impl std::str::FromStr for Runtime {
         match value.to_ascii_lowercase().as_str() {
             "codex" => Ok(Self::Codex),
             "claude" | "claude-code" | "claude_code" => Ok(Self::Claude),
-            other => Err(format!("unknown runtime {other:?}; use codex or claude")),
+            "ollama" => Ok(Self::Ollama),
+            other => Err(format!("unknown runtime {other:?}; use codex, claude or ollama")),
         }
     }
 }
@@ -145,10 +146,9 @@ async fn connect_provider(
     runtime: &Runtime,
     wanted: Option<&str>,
 ) -> Result<(String, String), NativeError> {
-    let (Some(use_local), Some(models)) = (provider_command(runtime, ProviderAction::UseLocal), provider_command(runtime, ProviderAction::Models)) else {
-        // TODO: an OpenAI-compatible runtime (local models, API keys); the config surface exists already.
-        return Err(failure("openai_compatible_runtime_not_implemented"));
-    };
+    if *runtime == Runtime::Ollama { return ollama::local_model(wanted).await; }
+    let (Some(use_local), Some(models)) = (provider_command(runtime, ProviderAction::UseLocal), provider_command(runtime, ProviderAction::Models))
+        else { return Err(failure("openai_compatible_runtime_not_implemented")) }; // TODO: API-key endpoints
     let connected = step(exec, "use-local-login", use_local).await?;
     let mut credential = text(&connected, "credentialRef");
     let listed = step(exec, "models", models).await?;
@@ -171,7 +171,7 @@ pub fn provider_command(runtime: &Runtime, action: ProviderAction) -> Option<Com
     match runtime {
         Runtime::Codex => Some(Command::Provider { action }),
         Runtime::Claude => Some(Command::RuntimeProvider { runtime: "claude".into(), action }),
-        Runtime::OpenAiCompatible { .. } => None,
+        Runtime::Ollama | Runtime::OpenAiCompatible { .. } => None,
     }
 }
 pub(super) fn local(agent_id: &str, action: LocalAction, input: Option<Value>) -> Command {
