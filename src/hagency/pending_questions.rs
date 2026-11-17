@@ -311,7 +311,10 @@ async fn consider_inner(
         match remote_run_allowed(client, room, sender, value, may_fetch).await {
             Some(allowed) => allowed,
             None => {
-                defer_membership_check(generation, client, room, value, info);
+                // In the deferred worker (`may_fetch`), it retries by itself.
+                if !may_fetch {
+                    defer_membership_check(generation, client, room, value, info);
+                }
                 return false;
             }
         }
@@ -356,15 +359,17 @@ fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: 
         for attempt in 0..DEFERRED_ATTEMPTS {
             if !current(generation) { break; }
             let Ok(_slot) = DEFERRED_SLOTS.acquire().await else { break }; // never closed
-            match tokio::time::timeout(RETRY_TIMEOUT,
-                consider(generation, &client, &room, &value, info.as_ref(), true)).await
-            {
-                Ok(result) => { changed = result; break; }
-                Err(_) => {
-                    drop(_slot);
-                    tokio::time::sleep(RETRY_TIMEOUT * 3_u32.pow(attempt)).await;
-                }
+            // Membership first: a timeout or lookup error (`None`) is retried.
+            let sender = value["sender"].as_str().unwrap_or_default();
+            let known = tokio::time::timeout(RETRY_TIMEOUT,
+                remote_run_allowed(&client, &room, sender, &value, true)).await;
+            if let Ok(Some(_)) = known {
+                changed = tokio::time::timeout(RETRY_TIMEOUT,
+                    consider(generation, &client, &room, &value, info.as_ref(), true)).await.unwrap_or(false);
+                break;
             }
+            drop(_slot);
+            tokio::time::sleep(RETRY_TIMEOUT * 3_u32.pow(attempt)).await;
         }
         DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&(generation, event_id));
         if changed {
@@ -392,9 +397,9 @@ async fn joined(room: &Room, user: &str, may_fetch: bool) -> Option<bool> {
     let Ok(user) = OwnedUserId::try_from(user) else { return Some(false) };
     let member = match room.get_member_no_sync(&user).await {
         Ok(Some(member)) => Some(member),
-        Ok(None) if may_fetch => room.get_member(&user).await.ok().flatten(),
-        Ok(None) => return None,
-        Err(_) => None,
+        // A failed lookup is unknown (`None`), so the deferred check retries it.
+        Ok(None) if may_fetch => room.get_member(&user).await.ok()?,
+        Ok(None) | Err(_) => return None,
     };
     Some(member.is_some_and(|m| *m.membership() == MembershipState::Join))
 }
