@@ -62,50 +62,62 @@ struct Control {
 #[derive(Default)]
 pub(super) struct Worker {
     control: Arc<Control>,
-    /// One task per owner instance: a replaced (stale) owner's task ends on
-    /// its own once that owner is retired, and draining waits for all.
-    tasks: tokio::sync::Mutex<Vec<(NativeOwner, tokio::task::JoinHandle<()>)>>,
+    /// Whether the cached owner is this window's personal owner, the only
+    /// one whose saved consent startup recovery restores.
+    personal: Arc<AtomicBool>,
+    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Worker {
     pub(super) fn retire(&self) {
         self.control.retired.store(true, Ordering::Release);
+        self.control.wake.notify_waiters();
         self.control.wake.notify_one();
     }
     pub(super) async fn drain(&self) {
-        let mut tasks = self.tasks.lock().await;
-        for (_, handle) in tasks.iter_mut() {
+        let mut task = self.task.lock().await;
+        if let Some(handle) = task.as_mut() {
             // A join error means the task panicked or was aborted; either way
             // it no longer runs, which is all draining needs.
             let _ = handle.await;
         }
-        tasks.clear();
+        task.take();
     }
 }
 
 impl Service {
-    /// Start the watchdog for this window's in-process personal owner.
-    pub(super) async fn start_host_watchdog(&self, owner: &NativeOwner) {
-        let control = self.0.host_watchdog.control.clone();
-        if self.check().is_err() || control.retired.load(Ordering::Acquire) {
+    /// Record which kind of owner was just opened, and start the watchdog for
+    /// a personal one. The task holds no owner between passes: each pass
+    /// borrows the currently cached owner, so a stale owner's root is never
+    /// kept open and a replacement owner is watched without a new task.
+    pub(super) async fn start_host_watchdog(&self, personal: bool) {
+        let worker = &self.0.host_watchdog;
+        worker.personal.store(personal, Ordering::Release);
+        if !personal || self.check().is_err() || worker.control.retired.load(Ordering::Acquire) {
             return;
         }
-        let mut tasks = self.0.host_watchdog.tasks.lock().await;
-        tasks.retain(|(_, handle)| !handle.is_finished());
-        if tasks.iter().any(|(watched, _)| watched.same_instance(owner)) {
+        let mut task = worker.task.lock().await;
+        if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return;
         }
-        let weak = Arc::downgrade(&self.0);
-        let watched = owner.clone();
-        let alive = move || !watched.is_retired() && weak.upgrade().is_some_and(|inner| Service(inner).check().is_ok());
-        let owner = owner.clone();
-        let key = owner.clone();
-        tasks.push((key, crate::sliding_sync::backend_runtime().spawn(async move {
-            watch(control, alive, next_delay, move || {
-                let owner = owner.clone();
-                async move { owner.restore_runtime_intents().await.map_err(|e| e.code) }
-            })
-            .await;
+        let (control, weak) = (worker.control.clone(), Arc::downgrade(&self.0));
+        let alive = {
+            let weak = weak.clone();
+            move || weak.upgrade().is_some_and(|inner| Service(inner).check().is_ok())
+        };
+        *task = Some(crate::sliding_sync::backend_runtime().spawn(watch(control, alive, next_delay, move || {
+            let weak = weak.clone();
+            async move {
+                let Some(inner) = weak.upgrade() else { return Ok(serde_json::json!({})) };
+                let owner = inner.native.lock().await.clone();
+                let personal = inner.host_watchdog.personal.load(Ordering::Acquire);
+                drop(inner);
+                match owner {
+                    Some(owner) if personal && !owner.is_retired() => owner.restore_runtime_intents().await.map_err(|e| e.code),
+                    // No open owner (or a management-only one): nothing to watch now.
+                    _ => Ok(serde_json::json!({})),
+                }
+            }
         })));
     }
 }
@@ -118,6 +130,9 @@ where
 {
     let mut failures = 0u32;
     loop {
+        if control.retired.load(Ordering::Acquire) {
+            break;
+        }
         tokio::select! { biased;
             _ = control.wake.notified() => {},
             _ = tokio::time::sleep(delay(failures)) => {},

@@ -681,8 +681,8 @@ impl Service {
                 let restore_personal = selected.is_none();
                 if restore_personal && !management_only {
                     log_runtime_recovery(owner.restore_runtime_intents().await);
-                    self.start_host_watchdog(&owner).await;
                 }
+                self.start_host_watchdog(restore_personal && !management_only).await;
                 if let Err(error) = self.check() {
                     self.close_native_owner(&owner).await?;
                     return Err(error);
