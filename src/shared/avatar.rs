@@ -29,7 +29,7 @@ const AVATAR_COLORS: [u32; 12] = [
     0x4a6b83, 0x515da8, 0x926b28, 0x677c32, 0x287c97, 0x905587,
 ];
 
-fn avatar_color(identity: &str) -> Vec4 {
+pub(crate) fn avatar_color(identity: &str) -> Vec4 {
     let hash = blake3::hash(identity.as_bytes());
     let index = u16::from_le_bytes([hash.as_bytes()[0], hash.as_bytes()[1]]) as usize;
     let rgb = AVATAR_COLORS[index % AVATAR_COLORS.len()];

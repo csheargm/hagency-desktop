@@ -1294,7 +1294,6 @@
   "New project": "New project",
   "Welcome to Hagency": "Welcome to Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.": "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.",
-  "Open Agent": "Open Agent",
   "Start with your agent": "Start with your agent",
   "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.": "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.",
   "Create your agent": "Create your agent",
@@ -3499,5 +3498,14 @@
   "Save repositories": "Save repositories",
   "Signed out": "Signed out",
   "Could not save repositories: {error}": "Could not save repositories: {error}",
-  "Agent paused by the owner": "Agent paused by the owner"
+  "Agent paused by the owner": "Agent paused by the owner",
+  "Details": "Details",
+  "Reply in thread…": "Reply in thread…",
+  "Replying in a thread. Only people who open this thread see these messages.": "Replying in a thread. Only people who open this thread see these messages.",
+  "Back to room": "Back to room",
+  "Your agents": "Your agents",
+  "Could not join {count} of your earlier rooms. Use Add agent in each room.": "Could not join {count} of your earlier rooms. Use Add agent in each room.",
+  "Remove from room": "Remove from room",
+  "Remove my agent from this room": "Remove my agent from this room",
+  "Removing the agent from the room…": "Removing the agent from the room…"
 }

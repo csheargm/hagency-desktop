@@ -1301,7 +1301,6 @@
   "New project": "新建项目",
   "Welcome to Hagency": "欢迎使用 Hagency",
   "Hagency runs coding Agents on your computer and lets you talk to them from chat. Invite your Agent to a room to work on it together, start a chat with a person, or explore rooms on your server.": "Hagency 在你的电脑上运行编程 Agent，并让你在聊天中与它对话。把你的 Agent 邀请进房间一起协作，与联系人发起聊天，或探索服务器上的房间。",
-  "Open Agent": "打开 Agent",
   "Start with your agent": "从你的 Agent 开始",
   "One button creates an agent that runs on this Mac's Claude Code login and opens its private chat. Rooms and invitations come after.": "一键创建一个使用本机 Claude Code 登录运行的 Agent，并打开它的私聊。房间和邀请可以之后再说。",
   "Create your agent": "创建你的 Agent",
@@ -3499,5 +3498,14 @@
   "Save repositories": "保存仓库",
   "Signed out": "已退出登录",
   "Could not save repositories: {error}": "无法保存仓库：{error}",
-  "Agent paused by the owner": "Agent 已被所有者暂停"
+  "Agent paused by the owner": "Agent 已被所有者暂停",
+  "Details": "详情",
+  "Reply in thread…": "在话题中回复…",
+  "Replying in a thread. Only people who open this thread see these messages.": "正在话题中回复。只有打开这个话题的人才能看到这些消息。",
+  "Back to room": "返回房间",
+  "Your agents": "你的 Agent",
+  "Could not join {count} of your earlier rooms. Use Add agent in each room.": "有 {count} 个你之前的房间未能加入。请在各房间中使用“添加 Agent”。",
+  "Remove from room": "移出房间",
+  "Remove my agent from this room": "将我的 Agent 移出此房间",
+  "Removing the agent from the room…": "正在将 Agent 移出房间…"
 }

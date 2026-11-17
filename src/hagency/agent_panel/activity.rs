@@ -28,6 +28,7 @@ impl AgentPanel {
             lines.join("\n")
         };
         self.view.label(cx, ids!(rooms)).set_text(cx, &text);
+        self.render_room_ticks(cx);
     }
 
     /// Reloads Activity when its tab is showing; the ledger is on this device only.

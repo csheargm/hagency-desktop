@@ -234,6 +234,12 @@ pub(super) struct ServerAgent {
     pub state: String,
     pub generation: i64,
 }
+impl ServerAgent {
+    /// Tells the local runtimes this Agent's display name and Matrix ID.
+    pub(super) fn register_identity(&self) {
+        hagency_agent_local::attribution::register_agent_identity(&self.id, &self.display_name, &self.puppet_mxid);
+    }
+}
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerProject {

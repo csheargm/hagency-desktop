@@ -164,3 +164,43 @@ async fn localhost_mcp_requires_capability_rejects_browser_origin_and_bounds_bod
             .starts_with("HTTP/1.1 413")
     );
 }
+
+/// Codex code-mode (scripted) calls: metadata as a JSON string, a distinct
+/// item id, or no top-level thread id. All were refused
+/// live as "room_tool_unavailable"; each must reach the host now.
+#[tokio::test]
+async fn code_mode_call_metadata_shapes_are_admitted() {
+    let bridge = Bridge::new(RoomTools::history()).await.unwrap();
+    let (queue, mut receives) = queue("first");
+    let _active = bridge.begin(&queue, "native", "one").unwrap();
+    let meta = json!({"thread_id":"native","turn_id":"one"});
+    for (n, shape) in [
+        json!({"callId":"a","itemId":"exec-a","threadId":"native","x-codex-turn-metadata":meta.to_string()}),
+        json!({"callId":"b","x-codex-turn-metadata":meta}),
+        json!({"itemId":"c","x-codex-turn-metadata":{"thread_id":"native","turn_id":"one"}}),
+    ].into_iter().enumerate() {
+        let p = json!({"name":"read_room_history","arguments":{"cursor":null},"_meta":shape});
+        let request = call(&bridge.state, bridge.tools, &p);
+        tokio::pin!(request);
+        let pending = tokio::select! { r = &mut request => panic!("shape {n} refused: {r}"), p = receives.recv() => p.unwrap() };
+        pending.reply(RoomReply::new("ok".into(), false).unwrap());
+        assert_eq!(request.await["content"][0]["text"], "ok", "shape {n}");
+    }
+}
+#[tokio::test]
+async fn refusals_name_their_reason_and_contradictions_stay_refused() {
+    let bridge = Bridge::new(RoomTools::history()).await.unwrap();
+    let no_turn = call(&bridge.state, bridge.tools, &params("native", "one", "x")).await;
+    assert!(no_turn["content"][0]["text"].as_str().unwrap().contains("no_active_turn"));
+    let (queue, _r) = queue("first");
+    let _active = bridge.begin(&queue, "native", "one").unwrap();
+    let mismatch = json!({"name":"read_room_history","arguments":{},"_meta":{"callId":"x","threadId":"other",
+        "x-codex-turn-metadata":{"thread_id":"native","turn_id":"one"}}});
+    let reply = call(&bridge.state, bridge.tools, &mismatch).await;
+    assert_eq!(reply["isError"], true);
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("thread_mismatch"));
+    let borrowed = json!({"name":"read_room_history","arguments":{},"_meta":{"callId":"y",
+        "x-codex-turn-metadata":{"thread_id":"native","turn_id":"stale","root_turn_id":"one"}}});
+    let reply = call(&bridge.state, bridge.tools, &borrowed).await;
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("turn_not_active"), "a root hint grants nothing");
+}

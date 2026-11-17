@@ -3,6 +3,7 @@
 #[macro_use]
 mod merge_note;
 pub use merge_note::{AGENT_MERGE_NOTE, ISSUE_TITLE_LABEL, REVIEW_STEPS, TRUSTED_FIX_STEPS, TRUSTED_PUSH};
+pub mod attribution;
 pub mod claude;
 pub mod codex;
 pub mod deadline;
@@ -14,5 +15,6 @@ pub mod task_mcp;
 pub mod room_memory;
 pub mod room_memory_timeline;
 pub mod room_skills;
+pub mod room_context;
 pub mod room_tools;
 pub mod live_text;

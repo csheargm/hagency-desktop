@@ -165,6 +165,8 @@ impl Widget for MentionableTextInput {
         self.view.handle_event(cx, event, scope);
         self.mention_text.sync(&self.text_input_ref().text(), Some(selection.start().index..selection.end().index), forward_delete, movement);
         self.note_broken_pills();
+        // A fresh Agents listing arrives as a signal; re-check a waiting typed name.
+        if let Event::Signal = event { self.update_agent_hint(cx); }
         if let Event::TextInput(typed) = event
             && !typed.was_paste && !typed.replace_last && typed.composition.is_none()
             && cx.has_key_focus(self.text_input_ref().area())
@@ -191,6 +193,9 @@ impl Widget for MentionableTextInput {
                 }
             }
 
+            if let Some(agent) = self.child_by_path(ids!(agent_hint)).as_composer_agent_hint().added(actions) {
+                self.mention_added_agent(cx, agent);
+            }
             let text_input = self.text_input_ref();
             if cx.has_key_focus(text_input.area()) && text_input.changed(actions).is_some() {
                 self.refresh_popup(cx);
@@ -641,6 +646,20 @@ impl MentionableTextInput {
         let cursor = cursor - pill.range.len() + pill.label.len();
         text_input.set_cursor(cx, Cursor { index: cursor, prefer_next_row: false }, false);
         self.live_pills.push((pill.user, pill.key));
+        self.redraw(cx);
+    }
+
+    /// After the hint added `agent` to the room, its typed `@name` becomes the
+    /// picker's pill, so the message mentions it even before the join lands.
+    fn mention_added_agent(&mut self, cx: &mut Cx, agent: super::live_mentions::OwnAgent) {
+        let text_input = self.text_input_ref();
+        let Some(range) = super::live_mentions::agent_mention_range(&text_input.text(), &agent) else { return };
+        if self.mention_text.covers(range.start) { return; }
+        let label = super::mention_text::mention_label(&agent.puppet, &agent.name);
+        if text_input.replace_range(cx, range.clone(), &label, text_input::UndoGroup::New).is_err() { return; }
+        self.mention_text.sync(&text_input.text(), Some(range.clone()), false, HistoryMove::Edit);
+        self.mention_text.bind(range.start..range.start + label.len(), agent.puppet.clone());
+        self.possible_mentions.user_ids.insert(agent.puppet);
         self.redraw(cx);
     }
 

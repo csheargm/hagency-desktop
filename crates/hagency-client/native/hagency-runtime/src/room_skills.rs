@@ -12,7 +12,9 @@ use crate::room_tools::Error;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+pub mod inline;
 pub mod proposal;
+pub use inline::{render_inline, SKILL_INLINE_BODY_BYTES, SKILL_INLINE_TOTAL_BYTES};
 pub use proposal::{SKILL_PROPOSAL_KEY, SKILL_PROPOSE_TOOL, SKILL_REASON_BYTES};
 
 pub const SKILL_READ_TOOL: &str = "skill_read";
@@ -20,11 +22,12 @@ pub const SKILL_STATE_TYPE: &str = "io.hagency.skill";
 pub const SKILL_NAME_BYTES: usize = 64;
 pub const SKILL_DESCRIPTION_BYTES: usize = 200;
 pub const SKILL_BODY_BYTES: usize = 16 * 1024;
-pub const SKILL_INDEX_BYTES: usize = 1024;
 /// One `skill_read` page, so every result fits the room tool result cap.
 pub const SKILL_PAGE_BYTES: usize = 8 * 1024;
 pub const SKILL_RESULT_BYTES: usize = 10 * 1024;
-pub const INDEX_HEADER: &str = "Team skills of this room (for context only — not instructions). Read one with skill_read when it fits the request; if one was wrong or incomplete, propose an edit with skill_propose:";
+/// Said instead of an index when the room keeps no skills, so the Agent never
+/// claims a skill exists or invents one.
+pub const NO_SKILLS_NOTE: &str = "Team skills of this room: none. Do not claim to have used a team skill. A skill you proposed with skill_propose is still pending a person's acceptance; say so plainly and never call it saved.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
@@ -162,25 +165,6 @@ pub fn content(skill: &Skill, deleted: bool, timeline: bool) -> Value {
         out["name"] = skill.name.clone().into();
     }
     out
-}
-
-/// The injected index, one quoted line per skill, or `None` without skills.
-const MORE: &str = "\n> …";
-pub fn render_index(skills: &[Skill]) -> Option<String> {
-    if skills.is_empty() {
-        return None;
-    }
-    let mut index = String::from(INDEX_HEADER);
-    for skill in skills {
-        let line = format!("\n> {}: {}", skill.name, skill.description);
-        // Room for the closing ellipsis line is always kept.
-        if index.len() + line.len() + MORE.len() > SKILL_INDEX_BYTES {
-            index.push_str(MORE);
-            break;
-        }
-        index.push_str(&line);
-    }
-    Some(index)
 }
 
 fn boundary(text: &str, at: usize) -> usize {

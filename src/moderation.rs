@@ -54,7 +54,7 @@ impl MemberAbilities {
     /// Returns what `own_user_id` can do to `target_user_id`.
     ///
     /// The target's `membership` should be `None` if they've never been in the room.
-    fn from_power_levels(
+    pub(crate) fn from_power_levels(
         power_levels: &RoomPowerLevels,
         own_user_id: &UserId,
         target_user_id: &UserId,
@@ -323,7 +323,7 @@ fn get_room(client: &Client, room_id: &OwnedRoomId) -> Result<Room> {
 }
 
 /// Returns the type of event that the given room's messages are sent as.
-fn get_message_event_type(room: &Room) -> MessageLikeEventType {
+pub(crate) fn get_message_event_type(room: &Room) -> MessageLikeEventType {
     if room.encryption_state().is_encrypted() {
         MessageLikeEventType::RoomEncrypted
     } else {

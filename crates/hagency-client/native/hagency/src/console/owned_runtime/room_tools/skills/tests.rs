@@ -1,7 +1,7 @@
 use super::*;
 use hagency_runtime::room_memory::PowerLevels;
 use hagency_runtime::room_memory_timeline::TimelineScan;
-use hagency_runtime::room_skills::{INDEX_HEADER, SKILL_RESULT_BYTES, SKILL_STATE_TYPE, content};
+use hagency_runtime::room_skills::{inline::INLINE_HEADER, NO_SKILLS_NOTE, SKILL_RESULT_BYTES, SKILL_STATE_TYPE, content};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
@@ -53,18 +53,18 @@ async fn read(room: &FakeRoom, name: &str) -> Value {
 async fn added_edited_deleted_skill_reaches_the_agent_in_both_storages() {
     for encrypted in [false, true] {
         let room = FakeRoom::new(encrypted);
-        assert!(index(&room).await.is_none(), "no skills, no block");
+        assert_eq!(index(&room).await.as_deref(), Some(NO_SKILLS_NOTE), "no skills says none");
         room.write("@amy:x", &skill("release-notes", "Use three bullets.", 1), false);
         let injected = index(&room).await.unwrap();
-        assert!(injected.starts_with(INDEX_HEADER));
+        assert!(injected.starts_with(INLINE_HEADER));
         assert!(injected.contains("> release-notes: How we do release-notes"));
-        assert!(!injected.contains("three bullets"), "the index never carries bodies");
+        assert!(injected.contains(">     Use three bullets."), "a short body is inlined as quoted data");
         assert_eq!(read(&room, "release-notes").await["body"], "Use three bullets.");
 
         room.write("@amy:x", &skill("release-notes", "Use five bullets.", 2), false);
         assert_eq!(read(&room, "release-notes").await["body"], "Use five bullets.");
         room.write("@amy:x", &skill("release-notes", "", 3), true);
-        assert!(index(&room).await.is_none());
+        assert_eq!(index(&room).await.as_deref(), Some(NO_SKILLS_NOTE));
         assert_eq!(read(&room, "release-notes").await["error"], "skill_not_found");
     }
 }
@@ -98,7 +98,7 @@ async fn proposed_skill_is_a_card_until_accepted_then_indexed_and_readable() {
         let propose = |body: &str| SkillOperation::Propose { skill: skill("release", body, 0), reason: "did it twice".into() };
         let reply: Value = serde_json::from_str(&handle(&room, &propose("1. test\n2. tag")).await).unwrap();
         assert_eq!((reply["status"].as_str(), reply["edit"].as_bool()), (Some("proposed"), Some(false)));
-        assert!(index(&room).await.is_none(), "a proposal alone writes nothing");
+        assert_eq!(index(&room).await.as_deref(), Some(NO_SKILLS_NOTE), "a proposal alone writes nothing");
 
         // A privileged person's client accepts the card.
         let card = room.posted.lock().unwrap()[0].clone();

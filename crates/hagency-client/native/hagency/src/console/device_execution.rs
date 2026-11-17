@@ -343,6 +343,15 @@ pub enum DeviceOperation {
     E2eeDevice {
         lease: LeaseRef,
     },
+    /// Records the run card this device already edited into the plaintext
+    /// answer: one message per answer, so the server posts no second reply.
+    CardReply {
+        lease: LeaseRef,
+        dispatch_id: String,
+        execution_id: String,
+        body: String,
+        matrix_event_id: String,
+    },
     /// Records an encrypted reply this device already sent with the Agent device.
     EncryptedReply {
         lease: LeaseRef,
@@ -383,6 +392,7 @@ impl DeviceOperation {
             | Self::E2eeConfirm { lease, .. }
             | Self::E2eeDevice { lease }
             | Self::EncryptedReply { lease, .. }
+            | Self::CardReply { lease, .. }
             | Self::ReconcileKnownReply { lease, .. } => Some(lease),
         }
     }
@@ -553,6 +563,18 @@ impl DeviceOperation {
                 )
             }
             Self::E2eeDevice { lease } => ("e2ee-device", json!({"lease":lease})),
+            Self::CardReply { lease, dispatch_id, execution_id, body, matrix_event_id } => {
+                id(dispatch_id)?;
+                id(execution_id)?;
+                event_id(matrix_event_id)?;
+                if body.is_empty() || body.len() > MAX_TEXT_BYTES {
+                    return Err(error(400, "reply_too_large"));
+                }
+                (
+                    "replies/card",
+                    json!({"lease":lease,"reply":{"dispatchId":dispatch_id,"executionId":execution_id,"body":body,"matrixEventId":matrix_event_id}}),
+                )
+            }
             Self::EncryptedReply {
                 lease,
                 dispatch_id,
@@ -638,6 +660,8 @@ fn payload_digest(
 struct EncryptedDigest<'a> {
     dispatch_id: &'a str,
     execution_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<&'a str>,
     matrix_event_id: &'a str,
 }
 /// This device already sent the encrypted reply: the server keeps no body and
@@ -650,9 +674,23 @@ fn check_encrypted_reply(
     execution_id: &str,
     matrix_event_id: &str,
 ) -> Result<(), DeviceError> {
+    check_recorded_reply(reply, lease, device, dispatch_id, execution_id, None, matrix_event_id)
+}
+/// A reply this device already put in the Room (encrypted: no body kept; a
+/// plaintext run card: its answer kept), recorded as sent under this lease.
+fn check_recorded_reply(
+    reply: &ReplyReceipt,
+    lease: &LeaseRef,
+    device: &AuthorizedDevice,
+    dispatch_id: &str,
+    execution_id: &str,
+    body: Option<&str>,
+    matrix_event_id: &str,
+) -> Result<(), DeviceError> {
     let digest = serde_json::to_vec(&EncryptedDigest {
         dispatch_id,
         execution_id,
+        body,
         matrix_event_id,
     })
     .map_err(|_| error(400, "invalid_execution_arguments"))?;
@@ -662,7 +700,7 @@ fn check_encrypted_reply(
         || reply.binding_generation < 1
         || reply.dispatch_epoch != lease.epoch
         || reply.delivery_epoch != lease.epoch
-        || !reply.body.is_empty()
+        || reply.body != body.unwrap_or_default()
         || reply.payload_digest != format!("{:x}", Sha256::digest(digest))
         || reply.matrix_txn_id != format!("hagency_{:x}", Sha256::digest(dispatch_id.as_bytes()))
         || reply.state != "sent"
@@ -908,6 +946,11 @@ fn parse_response(
             Ok(DeviceResponse::Acknowledged)
         }
         DeviceOperation::Finish { .. } if value["finished"] == true => Ok(DeviceResponse::Finished),
+        DeviceOperation::CardReply { lease, dispatch_id, execution_id, body, matrix_event_id } => {
+            let reply: ReplyReceipt = decode(&value, "reply")?;
+            check_recorded_reply(&reply, lease, device, dispatch_id, execution_id, Some(body), matrix_event_id)?;
+            Ok(DeviceResponse::ReplyQueued(reply))
+        }
         DeviceOperation::EncryptedReply {
             lease,
             dispatch_id,
@@ -1045,6 +1088,25 @@ impl Console {
 #[cfg(test)]
 mod processing_tests {
     use super::*;
+    /// The run card reply is recorded with the server's own digest of the
+    /// request (field order dispatchId, executionId, body, matrixEventId);
+    /// the encrypted record keeps its body-less digest.
+    #[test]
+    fn card_reply_request_and_digest_match_the_server_record() {
+        let lease = LeaseRef { agent_id: "agent-a".into(), epoch: 1 };
+        let op = DeviceOperation::CardReply { lease: lease.clone(), dispatch_id: "d".into(),
+            execution_id: "e".into(), body: "42".into(), matrix_event_id: "$card".into() };
+        let (path, body) = op.request().unwrap();
+        assert_eq!(path, "replies/card");
+        let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["reply"], json!({"dispatchId":"d","executionId":"e","body":"42","matrixEventId":"$card"}));
+        let card = serde_json::to_string(&EncryptedDigest { dispatch_id: "d", execution_id: "e", body: Some("42"), matrix_event_id: "$card" }).unwrap();
+        assert_eq!(card, r#"{"dispatchId":"d","executionId":"e","body":"42","matrixEventId":"$card"}"#);
+        let encrypted = serde_json::to_string(&EncryptedDigest { dispatch_id: "d", execution_id: "e", body: None, matrix_event_id: "$card" }).unwrap();
+        assert_eq!(encrypted, r#"{"dispatchId":"d","executionId":"e","matrixEventId":"$card"}"#);
+        let bad = DeviceOperation::CardReply { lease, dispatch_id: "d".into(), execution_id: "e".into(), body: String::new(), matrix_event_id: "$card".into() };
+        assert!(bad.request().is_err());
+    }
     #[test]
     fn encrypted_candidate_confirmation_accepts_real_matrix_event_ids() {
         let operation = |event: &str, root: Option<&str>| DeviceOperation::E2eeConfirm {

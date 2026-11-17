@@ -32,7 +32,7 @@ pub enum AgentPanelAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab { #[default] Identity, Context, Activity, Settings }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Load { Status, Model, Models, Retired, Activity, Backups }
+enum Load { Status, Model, Models, Retired, Activity, Backups, Left }
 #[derive(Debug)]
 struct Loaded { request: u64, load: Load, mutation: bool, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -74,6 +74,7 @@ impl Widget for AgentPanel {
         self.handle_backup_actions(cx, actions);
         self.handle_settings_actions(cx, actions);
         self.handle_room_follow_actions(cx, actions);
+        self.handle_room_leave_actions(cx, actions);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.view.draw_walk(cx, scope, walk)
@@ -171,6 +172,8 @@ impl AgentPanel {
                 self.apply_backups(value);
                 if mutation { self.note(cx, "Saved."); }
             }
+            // The Agent left a room: reload its rooms (the status says "Saved.").
+            (Load::Left, Ok(_)) => self.call(Load::Status, true, Call::Status(self.agent_id())),
             (Load::Retired, Ok(_)) => cx.action(AgentPanelAction::Retired { agent_id: self.agent_id() }),
         }
         self.render(cx);

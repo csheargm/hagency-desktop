@@ -52,13 +52,22 @@ pub(super) fn parse(arguments: &Value) -> Result<SkillOperation, Error> {
 /// The card an Agent posts. `id` is stable per dispatch and content, so a
 /// replay is the same card; `edit` says the name already exists.
 pub fn proposal_content(id: &str, skill: &Skill, reason: &str, source_event: &str, agent: &str, edit: bool) -> Value {
-    let verb = if edit { "an edit of team skill" } else { "a new team skill" };
-    json!({
+    let mut content = json!({
         "msgtype": "m.notice",
-        "body": format!("{agent} proposes {verb} \"{}\": {}\nReason: {reason}", skill.name, skill.description),
         SKILL_PROPOSAL_KEY: {"id":id,"name":skill.name,"description":skill.description,"body_md":skill.body,
             "reason":reason,"source_event":source_event,"author":agent,"edit":edit},
-    })
+    });
+    name_proposal(&mut content, "Agent");
+    content
+}
+
+/// The fallback body other clients show names the Agent, never its raw id.
+pub fn name_proposal(content: &mut Value, agent_name: &str) {
+    let p = &content[SKILL_PROPOSAL_KEY];
+    let verb = if p["edit"] == true { "an edit of team skill" } else { "a new team skill" };
+    let field = |key: &str| p[key].as_str().unwrap_or_default().to_owned();
+    let body = format!("{agent_name} proposes {verb} \"{}\": {}\nReason: {}", field("name"), field("description"), field("reason"));
+    content["body"] = json!(body);
 }
 
 /// A card's proposal: (id, skill, reason). The caller sets the author from the

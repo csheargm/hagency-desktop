@@ -68,7 +68,7 @@ impl Notice {
     /// instruction; people see the localized `view` instead. The fixed request
     /// comes first; the issue's own title only follows as quoted data.
     pub fn body(&self) -> String {
-        format!("🔔 New GitHub issue #{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}", self.number, self.repo, self.agent, self.url, self.merge_step(), self.title_line())
+        format!("{}#{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}", ::hagency::ISSUE_NOTICE_LEAD, self.number, self.repo, self.agent, self.url, self.merge_step(), self.title_line())
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent

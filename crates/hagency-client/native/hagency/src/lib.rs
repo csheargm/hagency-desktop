@@ -23,7 +23,7 @@ pub mod bootstrap;
 pub mod bot_commands;
 pub mod console;
 /// Room memory rules (ADR 0013), shared with the desktop client's Memory list.
-pub use hagency_runtime::{room_memory, room_memory_timeline, room_skills, ISSUE_TITLE_LABEL, REVIEW_STEPS};
+pub use hagency_runtime::{attribution::ISSUE_NOTICE_LEAD, room_memory, room_memory_timeline, room_skills, ISSUE_TITLE_LABEL, REVIEW_STEPS};
 /// Per-user owner daemon and its private local control API (ADR 0012).
 pub mod daemon;
 mod documents;

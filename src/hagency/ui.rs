@@ -2453,6 +2453,8 @@ impl HagencyPanel {
                 self.agents_loading = false;
                 self.agents = array(value, "agents");
                 crate::hagency::agent_presence::set_has_agent(!self.agents.is_empty());
+                // Retries a catch-up that an earlier listing could not finish.
+                crate::hagency::bring_agent::catch_up_agents();
                 self.runtime_list.clear(); self.runtime_list_loading=false;
                 self.execution_devices = array(value, "devices");
                 self.current_device_id = string(value, "currentDeviceId").into();

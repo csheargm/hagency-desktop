@@ -590,6 +590,8 @@ fn verify_execution_device(
     {
         return Err(RuntimeError::ExecutionDevice);
     }
+    // The runtime signs this Agent's GitHub work with its own name and ID.
+    record.register_identity();
     Ok(())
 }
 impl OwnedRuntime {
@@ -1200,6 +1202,7 @@ impl Transport for PinnedConsole {
                 | Op::Reply { .. }
                 | Op::ReconcileKnownReply { .. }
                 | Op::EncryptedReply { .. }
+                | Op::CardReply { .. }
                 | Op::Finish { .. }
         );
         self.console
@@ -1238,6 +1241,9 @@ fn transport_error(status: u16, code: &str, acquiring: bool, request: bool) -> R
                 | "encrypted_reply_requires_encrypted_room"
         )
     {
+        RuntimeError::Request
+    } else if request && status == 400 && code == "unsupported_operation" {
+        // A server older than this operation (the run card reply record).
         RuntimeError::Request
     } else if matches!(status, 401 | 403 | 409) {
         RuntimeError::Authorization
@@ -2773,7 +2779,10 @@ async fn run_turn<T: Transport>(
         let notice = async {
             if started_rx.await.is_ok() {
                 if let Some(turn) = admission.as_mut() { turn.started(); }
+                // The run card already shows "⏳ Thinking…": one signal, not two.
+                let carded = controls.as_ref().is_some_and(|c| c.has_card());
                 match &device {
+                    _ if carded => {}
                     Some(device) => device.mark_processing(&prepared.dispatch).await,
                     None => {
                         let (send, receive) = tokio::sync::oneshot::channel();
@@ -2802,14 +2811,21 @@ async fn run_turn<T: Transport>(
             tracing::warn!(code = "agent_message_delivery_pending", "Native messages remain in encrypted local custody");
         }
         use crate::agent_run_controls::State;
-        controls.finish(match &result {
+        // The run card's final edit carries the answer: one message per
+        // answer. The reply then records the card (encrypted: this device's
+        // event; plaintext: `send_card_reply`) instead of posting it again.
+        let answer = match &result {
+            Ok(Ok(completed)) => Some(reply_text(completed, tools_unavailable)),
+            _ => None,
+        };
+        controls.finish_answered(match &result {
             Ok(Ok(completed)) if completed.status == codex::TurnStatus::Interrupted => {
                 State::Interrupted
             }
             Ok(Ok(_)) => State::Completed,
             Ok(Err(_)) => State::Failed,
             Err(_) => State::Unknown,
-        });
+        }, answer.as_deref());
     }
     let retain = matches!(&result, Ok(Ok(completed)) if completed.usage.is_reported())
         && provider.session.can_continue();
@@ -2827,13 +2843,7 @@ async fn run_turn<T: Transport>(
             return Ok(None);
         }
     };
-    let reply = if completed.status == codex::TurnStatus::Interrupted && completed.text.is_empty() {
-        "⏹️ 本次运行已停止。".to_owned()
-    } else if tools_unavailable {
-        format!("{ROOM_TOOLS_UNAVAILABLE}\n\n{}", completed.text)
-    } else {
-        completed.text.clone()
-    };
+    let reply = reply_text(&completed, tools_unavailable);
     let reply = reply.as_str();
     if reply.is_empty() || reply.len() > 65_536 {
         return Err(RuntimeError::Profile);
@@ -2848,6 +2858,60 @@ async fn run_turn<T: Transport>(
     ))?;
     if retain { sessions.retain(session_key, provider); }
     Ok(None)
+}
+
+/// Plaintext Room: when the run card's final edit already carries this answer,
+/// the server records the card as the reply and posts nothing. `Ok(false)`
+/// means no such card (or an older server): post the reply as before.
+async fn send_card_reply<T: Transport>(
+    console: &T,
+    owner: &str,
+    ledger: &mut Ledger,
+    lease: &LeaseRef,
+    cancel: &mut watch::Receiver<bool>,
+    config: &StartConfig,
+    record: &inbox::Record,
+) -> Result<bool, RuntimeError> {
+    let (Some(execution), Some(body)) = (record.execution_id.clone(), record.reply.clone()) else { return Ok(false) };
+    if console.approval_host().is_none() || record.dispatch.dispatch_epoch != Some(lease.epoch) {
+        return Ok(false);
+    }
+    let device = match e2ee::device(console, lease, config, cancel).await {
+        Ok(device) => device,
+        Err(RuntimeError::Stopped) => return Err(RuntimeError::Stopped),
+        Err(_) => return Ok(false), // no device now: the server posts the answer
+    };
+    let Some(card) = run_controls::deliver_answer(&device, &record.dispatch, &execution, &body).await? else {
+        return Ok(false);
+    };
+    let op = Op::CardReply {
+        lease: lease.clone(), dispatch_id: record.dispatch.id.clone(),
+        execution_id: execution.clone(), body, matrix_event_id: card,
+    };
+    match operation(console, cancel, op).await {
+        Ok(Response::ReplyQueued(receipt))
+            if receipt.binding_id == record.dispatch.binding_id
+                && receipt.room_id == record.dispatch.room_id
+                && receipt.binding_generation == record.dispatch.binding_generation => {}
+        // An older server without the card record: its own reply still delivers.
+        Err(RuntimeError::Request) => return Ok(false),
+        Err(error) => return Err(error),
+        Ok(_) => return Err(RuntimeError::Transport),
+    }
+    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))?;
+    run_controls::answer_recorded(&device, &record.dispatch, &execution);
+    Ok(true)
+}
+
+/// The chat answer for a finished turn.
+fn reply_text(completed: &codex::Completed, tools_unavailable: bool) -> String {
+    if completed.status == codex::TurnStatus::Interrupted && completed.text.is_empty() {
+        "⏹️ 本次运行已停止。".to_owned()
+    } else if tools_unavailable {
+        format!("{ROOM_TOOLS_UNAVAILABLE}\n\n{}", completed.text)
+    } else {
+        completed.text.clone()
+    }
 }
 
 /// Recover only this exact dispatch's immutable outgoing messages. A
@@ -2904,7 +2968,12 @@ async fn retry_reply<T: Transport>(
     let sent = if record.dispatch.body.is_empty() {
         send_encrypted_reply(console, owner, ledger, lease, cancel, config, record).await
     } else {
-        send_reply(console, owner, ledger, lease, cancel, record).await
+        // Card failures go to the reply-error handling below, like any reply.
+        match send_card_reply(console, owner, ledger, lease, cancel, config, record).await {
+            Ok(true) => Ok(()),
+            Ok(false) => send_reply(console, owner, ledger, lease, cancel, record).await,
+            Err(error) => Err(error),
+        }
     };
     match sent {
         Err(RuntimeError::Stopped) => Err(RuntimeError::Stopped),
@@ -2930,7 +2999,13 @@ async fn send_encrypted_reply<T: Transport>(
     let execution = record.execution_id.clone().ok_or(RuntimeError::Profile)?;
     let body = record.reply.as_deref().ok_or(RuntimeError::Profile)?;
     let device = e2ee::device(console, lease, config, cancel).await?;
-    let matrix_event_id = device.send_reply(&record.dispatch, body).await?;
+    // The run card's final edit may already carry this answer: record the
+    // card as the reply instead of posting the answer a second time.
+    let carded = run_controls::deliver_answer(&device, &record.dispatch, &execution, body).await?;
+    let matrix_event_id = match carded.clone() {
+        Some(card_event) => card_event,
+        None => device.send_reply(&record.dispatch, body).await?,
+    };
     let recorded = operation(
         console,
         cancel,
@@ -2956,7 +3031,12 @@ async fn send_encrypted_reply<T: Transport>(
         Err(error) => return Err(error),
         Ok(_) => return Err(RuntimeError::Transport),
     }
-    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))
+    local(ledger.confirm_matrix_delivery(owner, &record.dispatch.id, &execution))?;
+    // Only after the local ledger is durable may the card record go.
+    if carded.is_some() {
+        run_controls::answer_recorded(&device, &record.dispatch, &execution);
+    }
+    Ok(())
 }
 async fn send_reply<T: Transport>(
     console: &T,

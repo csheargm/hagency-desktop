@@ -33,3 +33,17 @@ pub fn proposal_of(event: &matrix_sdk_ui::timeline::EventTimelineItem, room: &ma
 pub fn proposal_intro(sender: &str) -> String {
     crate::i18n::format("{agent} suggests a team skill for this room:", &[("agent", sender.to_owned())])
 }
+
+/// A proposal's fallback body that names the Agent by its raw id
+/// ("agt_01m7k… proposes a new team skill", "Memory proposal from agt_…:"),
+/// with the sender's display name in its place. Cards posted before the
+/// runtime named the Agent, or not drawn as a card, still read well.
+pub fn named_fallback(body: &str, sender_name: &str) -> Option<String> {
+    const MEMORY_FROM: &str = "Memory proposal from ";
+    let (lead, rest) = body.strip_prefix(MEMORY_FROM).map_or(("", body), |rest| (MEMORY_FROM, rest));
+    let id_len = rest.strip_prefix("agt_")?.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))? + 4;
+    let tail = &rest[id_len..];
+    let known = [" proposes ", ::hagency::room_memory::PROPOSAL_BODY_MARK].iter().any(|mark| tail.starts_with(mark))
+        || (!lead.is_empty() && tail.starts_with(':'));
+    known.then(|| format!("{lead}{sender_name}{tail}"))
+}
