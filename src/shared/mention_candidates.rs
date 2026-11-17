@@ -13,9 +13,17 @@ use matrix_sdk::{room::RoomMember, ruma::{RoomId, UserId}, RoomMemberships};
 /// Agent puppets use `_hagency_agt_…` and stay mentionable.
 pub(crate) const HAGENCY_SERVICE_LOCALPART: &str = "_hagency_service";
 
-/// A Hagency service account on any server: system plumbing, not someone to @.
+/// Every Hagency-reserved localpart starts with this; agent puppets add `agt_`.
+const HAGENCY_RESERVED_PREFIX: &str = "_hagency";
+const HAGENCY_AGENT_PREFIX: &str = "_hagency_agt_";
+
+/// A Hagency service account on any server (`_hagency_service` or any other
+/// `_hagency*` account that is not an Agent puppet): system plumbing, not
+/// someone to @ or pick.
 pub(crate) fn is_hagency_service_account(user: &UserId) -> bool {
-    user.localpart() == HAGENCY_SERVICE_LOCALPART
+    let localpart = user.localpart();
+    localpart == HAGENCY_SERVICE_LOCALPART
+        || (localpart.starts_with(HAGENCY_RESERVED_PREFIX) && !localpart.starts_with(HAGENCY_AGENT_PREFIX))
 }
 
 /// Whether `user` belongs in the "@" suggestions.
@@ -51,6 +59,8 @@ mod tests {
         assert!(is_mention_candidate(user_id!("@_hagency_agt_ann5agent:a.server"), Some(me)));
         assert!(is_mention_candidate(user_id!("@webster2:b.server"), Some(me)));
         assert!(is_mention_candidate(user_id!("@hagency_service:a.server"), None));
+        assert!(!is_mention_candidate(user_id!("@_hagency_bridge:a.server"), Some(me)));
+        assert!(!is_mention_candidate(user_id!("@_hagency:a.server"), Some(me)));
     }
 
     #[test]

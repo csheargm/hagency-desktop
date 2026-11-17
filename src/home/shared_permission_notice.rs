@@ -4,6 +4,11 @@ use serde_json::Value;
 use crate::hagency::backend::Service;
 use ::hagency::native_owner::ManagementCommand;
 
+/// Shown when the management read failed; it may mean this account's Hagency
+/// sign-in lapsed, so the notice offers the re-sign-in flow beside it.
+const STATUS_UNCONFIRMED: &str = "Could not confirm permission status; retrying.";
+/// Whether the notice offers "Sign in again": only while status is unconfirmed.
+fn offers_sign_in(error:&str)->bool {error==STATUS_UNCONFIRMED}
 #[derive(Debug)]
 struct PermissionResult {identity:String,room:String,thread:String,nonce:u64,value:Result<Value,String>}
 fn execution_row<'a>(value:&'a Value,room:&str,thread:&str)->Option<&'a Value> {
@@ -66,6 +71,7 @@ script_mod! {
             deny := Button {width: Fill text: #(crate::i18n::tr("Deny")) i18n_text: "Deny"}
         }
         next := Button {text: #(crate::i18n::tr("Next request")) i18n_text: "Next request" visible: false}
+        sign_in := Button {text: #(crate::i18n::tr("Sign in again")) i18n_text: "Sign in again" visible: false}
     }
 }
 /// What the notice shows, worked out from the room's requests and from this
@@ -209,6 +215,7 @@ impl SharedPermissionNotice {
         }
         self.view.widget(cx,ids!(actions)).set_visible(cx,shown.once || shown.session || shown.always || shown.deny);
         self.view.widget(cx,ids!(next)).set_visible(cx,shown.next);
+        self.view.widget(cx,ids!(sign_in)).set_visible(cx,shown.visible && offers_sign_in(&self.error));
         self.view.redraw(cx);
     }
     /// Read the room's requests and the run's state again.
@@ -257,7 +264,7 @@ impl Widget for SharedPermissionNotice {
                             if crate::hagency::pending_approvals::merge_room(&self.identity,&self.room,value,self.active){cx.action(PendingApprovalsChanged);}
                             self.render(cx);
                         },
-                        Err(_)=>{self.error="Could not confirm permission status; retrying.".into();self.render(cx);},
+                        Err(_)=>{self.error=STATUS_UNCONFIRMED.into();self.render(cx);},
                     }
                     if self.active{self.timer=cx.start_timeout(2.0);}
                 }
@@ -275,6 +282,8 @@ impl Widget for SharedPermissionNotice {
             for (id,decision) in [(ids!(once),"approve_once"),(ids!(session),"approve_session"),(ids!(always),crate::hagency::local_approvals::ALWAYS),(ids!(deny),"deny")] {
                 if self.view.button(cx,id).clicked(actions){self.decide(cx,decision);}
             }
+            // The same re-sign-in the Agent spaces panel offers.
+            if self.view.button(cx,ids!(sign_in)).clicked(actions) && offers_sign_in(&self.error){cx.action(crate::accounts::AccountAction::Reauthenticate);}
             if self.view.button(cx,ids!(next)).clicked(actions) && !self.rows.is_empty(){self.selected=(self.selected+1)%self.rows.len();self.render(cx);}
         }
         self.view.handle_event(cx,event,scope);
@@ -296,6 +305,16 @@ impl SharedPermissionNoticeRef {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn sign_in_is_offered_only_while_permission_status_is_unconfirmed() {
+        assert!(offers_sign_in(STATUS_UNCONFIRMED));
+        assert!(!offers_sign_in(""));
+        assert!(!offers_sign_in("Could not send the decision. Try again."));
+        // The catalog must keep translating the exact string shown.
+        let en:Value=serde_json::from_str(include_str!("../../resources/i18n/en.json")).unwrap();
+        assert!(en[STATUS_UNCONFIRMED].is_string() && en["Sign in again"].is_string());
+    }
+
     #[test]
     fn shared_protocol_blocked_notice_keeps_the_original_message_and_stops_activity() {
         for (reason, explanation) in [
