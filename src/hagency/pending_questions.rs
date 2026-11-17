@@ -11,7 +11,8 @@
 //! member. The UI mirrors that audience; enforcement stays with the executor.
 //!
 //! A card is drawn only when it is what an executor posts: from an Agent
-//! account of the room's own server, authenticated by Megolm in an encrypted
+//! account of the room's own server (a run card also from the owner's Agent
+//! on another server), authenticated by Megolm in an encrypted
 //! room (never a plaintext card there), first posted waiting, with an expiry
 //! within one run's answer budget. Only that sender may settle it. A card or
 //! edit whose keys or sender device are not known yet is tried again later.
@@ -266,7 +267,7 @@ async fn consider(
     };
     let Some(sender) = value["sender"]
         .as_str()
-        .filter(|s| protocol::is_agent_on(s, &server))
+        .filter(|s| protocol::is_agent(s))
     else {
         return false;
     };
@@ -299,6 +300,16 @@ async fn consider(
     )
 }
 
+/// An Agent of the room's own server, or (federated rooms) a run card from
+/// an Agent whose owner is on that Agent's own server. Ciphertext from any
+/// Agent is only parked; its plaintext is admitted by this same rule.
+fn admits_sender(sender: &str, room_server: &str, value: &Value) -> bool {
+    protocol::is_agent_on(sender, room_server)
+        || (protocol::is_agent(sender)
+            && (value["type"] == "m.room.encrypted"
+                || ::hagency::agent_run_controls::Card::sent_by_owners_agent(sender, &value["content"])))
+}
+
 /// The same admission boundary handles live sync and a successful retry.
 /// `plaintext` means the SDK positively knows this room is unencrypted.
 fn accept_event(
@@ -314,7 +325,7 @@ fn accept_event(
     else {
         return false;
     };
-    if !protocol::is_agent_on(sender, server)
+    if !admits_sender(sender, server, value)
         || OwnedEventId::try_from(event_id).is_err()
         || value
             .get("room_id")
@@ -1719,6 +1730,39 @@ mod tests {
         reset("@different:example.test".into());
         assert!(!accept(generation, &value, Some(&trusted), false));
         assert!(super::super::run_controls::for_event(room, "$trigger", true).is_empty());
+    }
+
+    // TODO(R4): pending_questions.rs is over budget; split admission from presentation.
+    /// Regression: a federated owner's Agent (another server) ran in this
+    /// room, but its card and final edit were never admitted, so the card
+    /// stayed "Working…" under a "1 reply" thread bar.
+    #[test]
+    fn a_run_card_from_the_owners_agent_on_another_server_is_shown_and_completed() {
+        let _guard = serial();
+        let generation = reset("@me:example.test".into());
+        let remote = "@_hagency_agt_b:beta.test";
+        let mut card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({
+            "version":1,"id":"run_fed","dispatchId":"dispatch","executionId":"execution",
+            "roomId":"!room:example.test","eventId":"$fedtrigger","threadRoot":"$fedtrigger",
+            "requester":"@me:example.test","owner":"@bird:beta.test","runtime":"codex","state":"running","revision":0
+        })).unwrap();
+        let from = |id: &str, content: Value| {
+            let mut v = event(id, content);
+            v["sender"] = remote.into();
+            v
+        };
+        assert!(accept(generation, &from("$fedrun", card.content()), None, true));
+        card.revision = 1; card.state = ::hagency::agent_run_controls::State::Completed;
+        assert!(accept(generation, &from("$fededit", card.edit_content("$fedrun").unwrap()), None, true));
+        let room = matrix_sdk::ruma::room_id!("!room:example.test");
+        let shown = super::super::run_controls::for_event(room, "$fedtrigger", true);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].card.state, ::hagency::agent_run_controls::State::Completed);
+        let mut forged = card.clone();
+        forged.id = "run_forged".into(); forged.revision = 0; forged.state = ::hagency::agent_run_controls::State::Running;
+        let mut v = event("$forged", forged.content());
+        v["sender"] = "@_hagency_agt_x:evil.test".into();
+        assert!(!accept(generation, &v, None, true), "another server cannot post beta's runs");
     }
 
     #[test]
