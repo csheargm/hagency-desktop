@@ -3504,5 +3504,10 @@
   "Allow in group rooms": "允许加入群聊",
   "This Agent is private: it only answers in your private chat with it. Allow in group rooms lets members of rooms you add it to @ it. This does not contribute its resources to a pool.": "这个 Agent 是私有的：只在你与它的私聊中回复。选择“允许加入群聊”后，你把它加入的聊天室成员都可以 @ 它。这不会把它的资源贡献到资源池。",
   "This Agent is private: it only answers in your private chat with it. To let it join group rooms, open Room info → Members → Add agent and choose Allow in group rooms. This does not contribute its resources to a pool.": "这个 Agent 是私有的：只在你与它的私聊中回复。要让它加入群聊，请打开聊天室信息 → 成员 → 添加 Agent，并选择“允许加入群聊”。这不会把它的资源贡献到资源池。",
-  "{agent} is private: it only answers in your private chat with it. Allow it in group rooms and add it to {room}? Members of rooms you add it to can then @ it. This does not contribute its resources to a pool.": "{agent} 是私有的：它只在你与它的私聊中回复。允许它进入群聊并加入 {room} 吗？之后你把它加入的聊天室的成员都可以 @ 它。这不会把它的资源贡献到资源池。"
+  "{agent} is private: it only answers in your private chat with it. Allow it in group rooms and add it to {room}? Members of rooms you add it to can then @ it. This does not contribute its resources to a pool.": "{agent} 是私有的：它只在你与它的私聊中回复。允许它进入群聊并加入 {room} 吗？之后你把它加入的聊天室的成员都可以 @ 它。这不会把它的资源贡献到资源池。",
+  "Continue with Google": "使用 Google 继续",
+  "Signed in as {user}. Not you? Sign out in Settings and sign in again.": "已登录为 {user}。不是你？请在设置中退出后重新登录。",
+  "@{name} is available": "@{name} 可以使用",
+  "@{name} is taken": "@{name} 已被占用",
+  "Use lowercase letters, numbers and . _ = - / + (not starting with _).": "请使用小写字母、数字和 . _ = - / +（不能以 _ 开头）。"
 }

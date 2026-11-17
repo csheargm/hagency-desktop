@@ -13,6 +13,9 @@ use super::LoginScreen;
 #[derive(Default)]
 pub struct AccountUi {
     github_available: bool,
+    google_available: bool,
+    /// The live username check whose reply is awaited, if any.
+    username_request: Option<u64>,
     recovery: RecoveryState,
     /// The recovery call whose reply is awaited, if any.
     recovery_request: Option<u64>,
@@ -28,6 +31,8 @@ impl LoginScreen {
     pub(super) fn reset_account_options(&mut self, cx: &mut Cx) {
         self.account = AccountUi::default();
         self.view.button(cx, ids!(github_login_button)).set_visible(cx, false);
+        self.view.button(cx, ids!(google_login_button)).set_visible(cx, false);
+        self.view.label(cx, ids!(registration_username_status)).set_text(cx, "");
         self.view.view(cx, ids!(recovery_form)).set_visible(cx, false);
         self.view.text_input(cx, ids!(registration_email)).set_text(cx, "");
         self.view.text_input(cx, ids!(registration_code)).set_text(cx, "");
@@ -39,6 +44,8 @@ impl LoginScreen {
         let oauth = self.methods.as_ref().is_some_and(|m| m.oauth);
         let visible = options::github_button_visible(self.account.github_available, oauth, self.registration_form_open);
         self.view.button(cx, ids!(github_login_button)).set_visible(cx, visible);
+        let google = options::github_button_visible(self.account.google_available, oauth, self.registration_form_open);
+        self.view.button(cx, ids!(google_login_button)).set_visible(cx, google);
         let password = self.methods.as_ref().is_some_and(|m| m.password || m.oauth);
         self.view.button(cx, ids!(forgot_password_button)).set_visible(cx, password);
         if oauth && !self.account.github_available {
@@ -101,6 +108,10 @@ impl LoginScreen {
         if !self.login_pending && self.view.button(cx, ids!(github_login_button)).clicked(actions) {
             self.start_sso(cx, Some(options::GITHUB_LOGIN_HINT.to_owned()), false);
         }
+        if !self.login_pending && self.view.button(cx, ids!(google_login_button)).clicked(actions) {
+            self.start_sso(cx, Some(options::GOOGLE_LOGIN_HINT.to_owned()), false);
+        }
+        self.handle_live_username(cx, actions);
         if !self.login_pending && self.view.button(cx, ids!(forgot_password_button)).clicked(actions) {
             let user = self.view.text_input(cx, ids!(user_id_input)).text();
             if user.contains('@') && !user.starts_with('@') {
@@ -124,6 +135,20 @@ impl LoginScreen {
                     self.view.button(cx, ids!(github_login_button)).set_visible(cx, visible);
                     self.redraw(cx);
                 }
+                Some(AccountOptionsAction::GoogleAvailability { generation, available }) if *generation == self.discovery_generation => {
+                    self.account.google_available = *available;
+                    // Not refresh_account_options: that restarts the provider check.
+                    let oauth = self.methods.as_ref().is_some_and(|m| m.oauth);
+                    let visible = options::github_button_visible(*available, oauth, self.registration_form_open);
+                    self.view.button(cx, ids!(google_login_button)).set_visible(cx, visible);
+                    self.redraw(cx);
+                }
+                Some(AccountOptionsAction::UsernameAvailability { request, typed, status }) if options::accepts_reply(self.account.username_request, *request) => {
+                    // Show it only while the field still holds the checked name.
+                    if self.view.text_input(cx, ids!(registration_username)).text() == *typed {
+                        self.view.label(cx, ids!(registration_username_status)).set_text(cx, status);
+                    }
+                }
                 Some(AccountOptionsAction::RecoveryRequested { request, result }) if options::accepts_reply(self.account.recovery_request, *request) => {
                     self.account.recovery_request = None;
                     let state = match result { Ok(()) => RecoveryState::CheckEmail, Err(e) => RecoveryState::Failed(e.clone()) };
@@ -136,6 +161,22 @@ impl LoginScreen {
                 _ => {}
             }
         }
+    }
+
+    /// Lowercase the sign-up name as it is typed and check it on the server.
+    fn handle_live_username(&mut self, cx: &mut Cx, actions: &Actions) {
+        let input = self.view.text_input(cx, ids!(registration_username));
+        let Some(typed) = input.changed(actions) else { return };
+        let name = options::live_username(&typed);
+        if name != typed { input.set_text(cx, &name); }
+        self.view.label(cx, ids!(registration_username_status)).set_text(cx, "");
+        let Some(server) = self.homeserver().filter(|_| !name.is_empty()) else {
+            self.account.username_request = None;
+            return;
+        };
+        let request = options::next_request_id();
+        self.account.username_request = Some(request);
+        options::spawn_username_check(request, server, name);
     }
 
     fn send_recovery(&mut self, cx: &mut Cx) {

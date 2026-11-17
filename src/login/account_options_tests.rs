@@ -62,3 +62,18 @@ fn signup_username_is_trimmed_and_lowercased() {
     assert_eq!(normalize_signup_username("alice"), "alice");
     assert_eq!(normalize_signup_username(""), "");
 }
+
+#[test]
+fn live_username_is_lowercase_localpart_characters_only() {
+    assert_eq!(live_username(" Alice.Smith "), "alice.smith");
+    assert_eq!(live_username("Bob Ü!"), "bob");
+    assert_eq!(live_username("a_b-c=d/e+f9"), "a_b-c=d/e+f9");
+}
+
+#[test]
+fn availability_text_names_the_lowercased_account() {
+    assert!(availability_text(Ok(("available", Some("bob")))).contains("@bob"));
+    assert!(availability_text(Ok(("taken", Some("bob")))).contains("taken"));
+    assert!(!availability_text(Ok(("invalid", None))).is_empty());
+    assert!(availability_text(Err("offline".into())).is_empty());
+}
