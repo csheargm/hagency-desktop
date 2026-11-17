@@ -331,6 +331,8 @@ async fn consider_inner(
 /// Deferred membership checks: at most this many queued, a few at a time.
 const MAX_DEFERRED: usize = 256;
 const DEFERRED_CONCURRENCY: usize = 4;
+/// Timed-out lookups are tried this many times in all (5 s, 15 s, 45 s pauses).
+const DEFERRED_ATTEMPTS: u32 = 4;
 static DEFERRED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
 static DEFERRED_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(DEFERRED_CONCURRENCY));
@@ -349,11 +351,21 @@ fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: 
     }
     let (client, room, value, info) = (client.clone(), room.clone(), value.clone(), info.cloned());
     crate::sliding_sync::spawn_async_task(async move {
-        let changed = match DEFERRED_SLOTS.acquire().await {
-            Ok(_slot) => tokio::time::timeout(RETRY_TIMEOUT,
-                consider(generation, &client, &room, &value, info.as_ref(), true)).await.unwrap_or(false),
-            Err(_) => false, // the semaphore is never closed
-        };
+        // A timed-out lookup is retried with growing pauses, not dropped.
+        let mut changed = false;
+        for attempt in 0..DEFERRED_ATTEMPTS {
+            if !current(generation) { break; }
+            let Ok(_slot) = DEFERRED_SLOTS.acquire().await else { break }; // never closed
+            match tokio::time::timeout(RETRY_TIMEOUT,
+                consider(generation, &client, &room, &value, info.as_ref(), true)).await
+            {
+                Ok(result) => { changed = result; break; }
+                Err(_) => {
+                    drop(_slot);
+                    tokio::time::sleep(RETRY_TIMEOUT * 3_u32.pow(attempt)).await;
+                }
+            }
+        }
         DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&event_id);
         if changed {
             Cx::post_action(PendingQuestionsChanged);
