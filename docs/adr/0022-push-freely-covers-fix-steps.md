@@ -123,12 +123,15 @@ then checks only the dispatch (binding, expiry, admitted scope, unchanged
 policy revisions, requests not refused) and authorizes the step. Outside
 the scope nothing changes and Deny still refuses: another repository or
 checkout, a chained or unlisted command, a paused watch or push freely off,
-another Room or requester (including another member's read-only query),
-a saved policy change since the run was admitted, or requests refused
+another Room or requester, a saved policy change since the run was admitted, or requests refused
 outright. Threat: anyone who can make the owner's own hand-off run read
 injected text gets the push-freely capabilities above even where the
 owner's tool rule said Deny; the switch is the owner's explicit opt-in for
 that repository, and it is the only thing that grants this.
+Amended later the same day (ADR 0019 "Anyone in the report Room"): the
+read-only `gh` queries on a watched repository override Deny for ANY
+requester in the watch's report Room, push freely on or off; only the
+fix steps above stay owner-only.
 
 ## Codex (Chris, 2026-11-17)
 Why it was Claude-only: Claude's permission callback answers with

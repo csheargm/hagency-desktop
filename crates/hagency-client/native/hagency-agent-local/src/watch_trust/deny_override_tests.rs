@@ -50,7 +50,9 @@ fn deny_still_wins_outside_the_scope() {
     let status = bash(&r.root, "git -C app status");
     let mut elsewhere = status.clone();
     elsewhere.scope.room = "!other:example.org".into();
-    let mut stranger = bash(&r.root, &format!("gh issue view 33 -R {REPO}"));
+    // Another member of the Room: their read-only query is answered
+    // (ADR 0019), anything else keeps the tool rule.
+    let mut stranger = status.clone();
     stranger.scope.requester = "@mallory:example.org".into();
     let mut expired = status.clone();
     expired.expires = 5;
@@ -73,14 +75,15 @@ fn deny_still_wins_outside_the_scope() {
 }
 
 #[test]
-fn a_watch_without_push_freely_never_lifts_deny() {
+fn a_watch_without_push_freely_lifts_deny_only_for_read_only_queries() {
     let mut r = denied();
     let setting = WatchSetting { mode: WatchMode::All, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: false };
     r.ledger.set_issue_watch(OWNER, "bird", setting, 1).unwrap();
-    // The owner's read-only query on a watched repository: card-free under
-    // Ask (ADR 0019), but push freely is off, so Deny keeps refusing it.
+    // A read-only query on the watched repository: the watch reports it to
+    // this Room anyway, so Deny does not refuse it (Chris, Nov 17).
     let read = bash(&r.root, &format!("gh issue view 33 -R {REPO}"));
-    assert_eq!(r.ledger.trusted_publish(OWNER, &read, 11).unwrap(), None);
+    assert!(matches!(r.ledger.trusted_publish(OWNER, &read, 11).unwrap(), Some(super::TrustedStep::Command(_))));
+    // Push freely is off: every other step keeps the Deny.
     assert_eq!(r.ledger.trusted_publish(OWNER, &bash(&r.root, "git -C app status"), 11).unwrap(), None);
 }
 

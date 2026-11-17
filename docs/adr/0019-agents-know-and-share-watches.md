@@ -42,6 +42,17 @@ owner's rules blocked" the command.
    The repository must be watched with reports to the turn's Room (an active
    legacy watch or a work-list entry). Any requester in that Room: the watch
    already reports that repository's activity there.
+   **Anyone in the report Room, Deny included** (Chris, 2026-11-17 amendment).
+   Such a query overrides the high-risk tool rule for every requester in the
+   report Room, push freely on or off, Deny included, the same way push
+   freely overrides it for the owner's fix steps (ADR 0022 "Deny"). The case
+   that prompted this: Betty saved only her Agent's rule, so Anna's own
+   requester and Room layers kept the default Deny. Anna's `gh issue list` on
+   the watched repository was refused with no card. What stays: the dispatch
+   must still check out (a Requests Deny for that requester, a stale
+   proposal, or any rule saved after the run was admitted ends the shortcut),
+   and edits, pushes, other repositories and other Rooms keep the owner's
+   rules (a card under Ask, a refusal under Deny).
 5. **An unanswered card is not a refusal.** When the card could not be shown,
    expired or was withdrawn, the Agent is told it is waiting for its owner's
    approval in their window and never that rules blocked it.

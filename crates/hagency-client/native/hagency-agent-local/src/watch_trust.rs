@@ -94,16 +94,15 @@ fn room_entries(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<c
 
 /// Whether `proposal` is a one-line shell step (a foreground Claude `Bash`
 /// call or a Codex [`codex_step`] call) read-only GitHub query on a
-/// repository its Agent watches from this Room (any requester: what it reads
-/// is the watched repository the watch already reports here); with
-/// `push_freely`, only on a repository whose watch has the switch on.
-pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal, push_freely: bool) -> crate::Result<bool> {
+/// repository its Agent watches from this Room, push trust or not. Any
+/// requester in that Room: what it reads is what the watch already reports
+/// there (ADR 0019 "Anyone in the report Room").
+pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate::Result<bool> {
     if proposal.risk == "permission_expansion" || !is_shell_step(proposal) {
         return Ok(false);
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
-    let repos = if push_freely { trusted_repos(db, proposal)? } else { watched_repos(db, proposal)? };
-    Ok(repos.iter().any(|repo| read_only::allowed(line, repo)))
+    Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
 }
 
 /// A foreground Claude `Bash` call, or a Codex call of the host's
