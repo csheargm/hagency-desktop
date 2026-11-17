@@ -145,11 +145,14 @@ fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 255 && !value.chars().any(char::is_control)
 }
 
+// TODO(R4): agent_questions.rs is over budget; split card parsing/answers from
+// the Matrix wiring (event handlers, sending) along that seam.
 /// Whether `user` is a Hagency Agent puppet on any server. No Agent ever
 /// answers a card, whichever server it is on.
 pub fn is_agent(user: &str) -> bool {
     user.strip_prefix('@')
-        .is_some_and(|rest| rest.starts_with("_hagency_agt_"))
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(local, _)| hagency_core::puppet::is_puppet_localpart(local))
         && user_id(user)
 }
 
@@ -162,7 +165,7 @@ pub fn server_name(id: &str) -> Option<&str> {
 
 /// Whether `user` is an Agent on `server`, the room's own homeserver. Only
 /// such an Agent's card is drawn: another server could name any account
-/// `_hagency_agt_…`.
+/// `_hagency_…`.
 pub fn is_agent_on(user: &str, server: &str) -> bool {
     is_agent(user) && server_name(user) == Some(server)
 }
@@ -990,6 +993,8 @@ mod tests {
         wrong["answers"]["db"] = json!({"option":"SQLite","text":"both"});
         assert!(card.parse_answer("$card", &wrong).is_none());
         assert!(is_agent("@_hagency_agt_01abc:example.test"));
+        assert!(is_agent("@_hagency_csheargm_anna-claude:localhost:8450"), "readable puppet IDs");
+        assert!(is_agent("@_hagency_csheargm_anna-claude-2:localhost:8450"));
         assert!(!is_agent("@alice:example.test") && !is_agent("@_hagency_service:example.test"));
     }
 
@@ -1071,6 +1076,8 @@ mod tests {
         );
         assert_eq!(server_name("!opaque"), None);
         assert!(is_agent_on("@_hagency_agt_a:example.test", "example.test"));
+        assert!(is_agent_on("@_hagency_ann_helper:example.test", "example.test"));
+        assert!(!is_agent_on("@_hagency_ann_helper:elsewhere.test", "example.test"));
         assert!(
             !is_agent_on("@_hagency_agt_a:elsewhere.test", "example.test"),
             "another server's lookalike"

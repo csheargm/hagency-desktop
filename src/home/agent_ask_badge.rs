@@ -31,10 +31,6 @@ script_mod! {
     }
 }
 
-/// Reserved localpart prefix of Agent puppets (see `hagency::backend::is_agent_invitation`).
-/// Puppet localparts are `_hagency_` + the Agent ID, which itself starts with
-/// `agt_` (e.g. `@_hagency_agt_01m76q…`).
-const PUPPET_PREFIX: &str = "_hagency_";
 /// `RequestPolicy::AskOwner` wire name; `mapping` has no simple choice for it.
 const REQUESTS_ASK_OWNER: &str = "AskOwner";
 /// Upper bound of policy reads per refresh (the member list caps its roster alike).
@@ -65,11 +61,13 @@ pub(crate) fn badge_text(requests: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether `puppet` is the reserved puppet of `agent_id` on the owner's server.
+/// Whether `puppet` can be the owner's Agent: a reserved puppet name on the
+/// owner's server. Which Agent it is comes from the listing's own pairing; the
+/// ID is never derived from the name (new puppets carry readable IDs).
 pub(crate) fn is_owned_puppet(puppet: &UserId, agent_id: &str, owner: &UserId) -> bool {
     !agent_id.is_empty()
         && puppet.server_name() == owner.server_name()
-        && puppet.localpart() == format!("{PUPPET_PREFIX}{}", agent_id.to_lowercase())
+        && hagency_core::puppet::is_puppet_localpart(puppet.localpart())
 }
 
 /// Puppet → Agent ID for the owner's own Agents in a `Command::Agents` listing.
@@ -221,16 +219,17 @@ mod tests {
             {"id": "agt_02def", "puppetMxid": "@_hagency_agt_02def:s", "ownerMxid": "@alice:s"},
             {"id": "agt_03BOB", "puppetMxid": "@_hagency_agt_03bob:s", "ownerMxid": "@bob:s"},
             {"id": "agt_04FOR", "puppetMxid": "@_hagency_agt_04for:other"},
-            {"id": "agt_05MIS", "puppetMxid": "@_hagency_agt_99zzz:s"},
-            {"id": "agt_06PFX", "puppetMxid": "@_hagency_agt_06pfx_x:s"},
+            {"id": "agt_05RDB", "puppetMxid": "@_hagency_alice_anna-claude:s"},
+            {"id": "agt_06SVC", "puppetMxid": "@_hagency_service:s"},
             {"id": "", "puppetMxid": "@_hagency_agt_:s"},
             {"id": "agt_07BAD", "puppetMxid": "not a user id"},
             {"puppetMxid": "@_hagency_agt_08:s"}
         ]);
         let index = puppet_index(&rows, &owner);
-        assert_eq!(index.len(), 2, "{index:?}");
+        assert_eq!(index.len(), 3, "{index:?}");
         assert_eq!(index[&user("@_hagency_agt_01abc:s")], "agt_01ABC");
         assert_eq!(index[&user("@_hagency_agt_02def:s")], "agt_02def");
+        assert_eq!(index[&user("@_hagency_alice_anna-claude:s")], "agt_05RDB", "readable IDs pair by the listing");
         assert!(!is_owned_puppet(&user("@alice:s"), "alice", &owner), "people are never Agents");
     }
 

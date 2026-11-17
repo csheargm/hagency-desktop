@@ -13,6 +13,8 @@ pub mod graphs;
 pub mod messages;
 pub mod peers;
 pub mod project;
+/// Hagency Agent puppet Matrix IDs, old and readable forms.
+pub mod puppet;
 pub mod qualification;
 pub mod recurring_quota;
 pub mod replies;
