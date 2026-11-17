@@ -137,7 +137,10 @@ impl LoginScreen {
                 }
                 Some(AccountOptionsAction::GoogleAvailability { generation, available }) if *generation == self.discovery_generation => {
                     self.account.google_available = *available;
-                    self.refresh_account_options(cx);
+                    // Not refresh_account_options: that restarts the provider check.
+                    let oauth = self.methods.as_ref().is_some_and(|m| m.oauth);
+                    let visible = options::github_button_visible(*available, oauth, self.registration_form_open);
+                    self.view.button(cx, ids!(google_login_button)).set_visible(cx, visible);
                     self.redraw(cx);
                 }
                 Some(AccountOptionsAction::UsernameAvailability { request, typed, status }) if options::accepts_reply(self.account.username_request, *request) => {

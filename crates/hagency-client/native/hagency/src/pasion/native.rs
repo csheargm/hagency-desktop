@@ -69,9 +69,13 @@ pub fn request_body(authorize_url: &str, username: &str, password: &str) -> Resu
 pub async fn authorize(origin: &str, authorize_url: &str, username: &str, password: &str, register: bool) -> Result<String, LoginError> {
     let body = request_body(authorize_url, username, password)?;
     let path = if register { "register" } else { "login" };
-    let reply: Value = http()?.post(api(origin, path)).json(&body).send().await?.json().await.unwrap_or_default();
+    let response = http()?.post(api(origin, path)).json(&body).send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    // A gateway page instead of the API's JSON keeps its HTTP status.
+    let reply: Value = serde_json::from_str(&text).map_err(|_| step(path, format!("status {status}")))?;
     match (reply["status"].as_str(), reply["redirect_url"].as_str()) {
-        (Some("success"), Some(url)) if same_loopback(authorize_url, url) => Ok(url.to_owned()),
+        (Some("success"), Some(url)) if status.is_success() && same_loopback(authorize_url, url) => Ok(url.to_owned()),
         (Some("success"), _) => Err(step(path, "unexpected redirect")),
         _ => Err(step(path, reply["error"].as_str().unwrap_or("unknown_error").to_owned())),
     }

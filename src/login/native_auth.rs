@@ -33,44 +33,67 @@ pub(crate) fn uses_native_client(client: &Client, config: &NativeConfig) -> bool
     client.oauth().client_id().is_some_and(|id| id.as_str() == config.client_id)
 }
 
+/// Longest the detached native call may run (the SDK itself waits 300 s).
+const NATIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// Password sign-in or sign-up entirely in-app: the native API answers the
-/// SDK's own PKCE request with its loopback callback, delivered here.
+/// SDK's own PKCE request with its loopback callback, delivered here. A
+/// native failure is returned with the server's reason, not as "cancelled".
 pub(crate) async fn password_sign_in(client: &Client, origin: String, username: String, password: String, register: bool) -> Result<()> {
-    super::homeserver::oauth_browser_login(client, false, |url| async move {
+    let failure = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let task = std::sync::Arc::new(std::sync::Mutex::new(None::<tokio::task::JoinHandle<()>>));
+    let (slot, handle) = (failure.clone(), task.clone());
+    let result = super::homeserver::oauth_browser_login(client, false, |url| async move {
         // Detached: the SDK polls its loopback listener only after we return.
-        tokio::spawn(deliver(origin, url, username, password, register));
+        let job = tokio::spawn(async move {
+            let outcome = tokio::time::timeout(NATIVE_DEADLINE, deliver(origin, url.clone(), username, password, register)).await;
+            let error = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => crate::i18n::tr("Your server did not answer in time. Try again.").to_owned(),
+            };
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            if let Some(callback) = error_callback(&url, &error) {
+                // The SDK learns of the failure here; the reason comes from `slot`.
+                let sent = match callback_client() {
+                    Ok(http) => http.get(callback).send().await.map(drop).map_err(anyhow::Error::from),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = sent {
+                    makepad_widgets::log!("Native sign-in error callback failed: {error}");
+                }
+            }
+        });
+        *handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
         Ok(())
     })
-    .await
+    .await;
+    if let Some(job) = task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        job.abort();
+    }
+    let reason = failure.lock().unwrap_or_else(|e| e.into_inner()).take();
+    match (result, reason) {
+        (Err(_), Some(reason)) => Err(anyhow::anyhow!(reason)),
+        (result, _) => result,
+    }
+}
+
+/// Loopback-only HTTP: never through a proxy, never following redirects.
+fn callback_client() -> Result<matrix_sdk::reqwest::Client> {
+    Ok(crate::http::client_builder().no_proxy().redirect(matrix_sdk::reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(8)).build()?)
 }
 
 /// Call the native API, wait for a new account to be provisioned, then hand
-/// the code (or the error, as an OAuth error) to the SDK's listener.
-async fn deliver(origin: String, authorize_url: String, username: String, password: String, register: bool) {
-    let result = async {
-        let callback = native::authorize(&origin, &authorize_url, &username, &password, register).await?;
-        if register {
-            use super::provision_wait::{wait_for_new_account, PROVISION_POLL, PROVISION_WAIT};
-            wait_for_new_account(&origin, &username, PROVISION_WAIT, PROVISION_POLL).await?;
-        }
-        anyhow::Ok(callback)
+/// the code to the SDK's listener.
+async fn deliver(origin: String, authorize_url: String, username: String, password: String, register: bool) -> Result<()> {
+    let callback = native::authorize(&origin, &authorize_url, &username, &password, register).await?;
+    if register {
+        use super::provision_wait::{wait_for_new_account, PROVISION_POLL, PROVISION_WAIT};
+        wait_for_new_account(&origin, &username, PROVISION_WAIT, PROVISION_POLL).await?;
     }
-    .await;
-    let target = match result {
-        Ok(callback) => Some(callback),
-        Err(error) => error_callback(&authorize_url, &error.to_string()),
-    };
-    let Some(target) = target else { return };
-    // A failed delivery leaves the SDK waiting; its own timeout then reports
-    // "Sign-in was cancelled or expired", so the person is never stuck.
-    match crate::http::client_builder().build() {
-        Ok(http) => {
-            if let Err(error) = http.get(target).send().await {
-                makepad_widgets::log!("Native sign-in callback failed: {error}");
-            }
-        }
-        Err(error) => makepad_widgets::log!("Native sign-in callback client failed: {error}"),
-    }
+    callback_client()?.get(callback).send().await?;
+    Ok(())
 }
 
 /// The SDK loopback URL reporting `detail` as an OAuth error for this request.

@@ -222,6 +222,9 @@ fn native_reply(route: &str, payload: &Value, device: &Mutex<Option<String>>) ->
         return json!({"client_id":"desktop-native","password_registration_enabled":true,"providers":[]});
     }
     assert_eq!(payload["client_id"], "desktop-native", "the SDK must use the native client");
+    if payload["username"] == "wrong" {
+        return json!({"status":"error","error":"invalid_credentials"});
+    }
     *device.lock().unwrap() = payload["scope"].as_str().and_then(|s| s.split_whitespace().find_map(|t| t.split_once("device:").map(|(_, d)| d.to_owned())));
     let mut callback = Url::parse(payload["redirect_uri"].as_str().unwrap()).unwrap();
     callback.query_pairs_mut().append_pair("code", "fixture-code").append_pair("state", payload["state"].as_str().unwrap());

@@ -71,6 +71,12 @@ async fn server_error_codes_surface() {
     let error = authorize(&origin, AUTHORIZE, "amy", "bad", false).await.unwrap_err().to_string();
     assert!(error.contains("invalid_credentials"), "{error}");
     assert!(request_body("http://h/authorize?client_id=x", "a", "b").is_err(), "incomplete SDK request");
+    let (origin, _) = fake(vec![("/native/login", 503, "<html>bad gateway</html>".into())]);
+    let error = authorize(&origin, AUTHORIZE, "amy", "pw", false).await.unwrap_err().to_string();
+    assert!(error.contains("503"), "{error}");
+    let ok = r#"{"status":"success","redirect_url":"http://127.0.0.1:5123/?code=c&state=s1"}"#;
+    let (origin, _) = fake(vec![("/native/login", 500, ok.into())]);
+    assert!(authorize(&origin, AUTHORIZE, "amy", "pw", false).await.is_err(), "success JSON on an error status");
 }
 
 #[tokio::test]

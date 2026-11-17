@@ -37,3 +37,14 @@ async fn servers_without_the_native_api_keep_the_older_flow() {
     assert!(crate::login::native_auth::adopt_native_client(&client, &origin).await.is_none());
     assert!(client.oauth().client_id().is_none());
 }
+
+#[tokio::test]
+async fn a_refused_password_reports_the_server_reason_not_cancelled() {
+    let fixture = Fixture::new();
+    let client = Client::builder().homeserver_url(&fixture.origin).build().await.unwrap();
+    let origin = fixture.origin.clone();
+    crate::login::native_auth::adopt_native_client(&client, &origin).await.unwrap();
+    let error = crate::login::native_auth::password_sign_in(&client, origin, "wrong".into(), "pw".into(), false).await.unwrap_err();
+    assert!(error.to_string().contains("invalid_credentials"), "{error}");
+    assert!(client.oauth().full_session().is_none());
+}
