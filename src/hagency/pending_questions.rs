@@ -195,7 +195,7 @@ pub fn attach(client: &Client) {
             let Ok(value) = event.deserialize_as::<Value>() else {
                 return;
             };
-            if consider(generation, &client, &room, &value, info.as_ref()).await {
+            if consider(generation, &client, &room, &value, info.as_ref(), false).await {
                 Cx::post_action(PendingQuestionsChanged);
             }
         },
@@ -254,13 +254,26 @@ fn room_server(client: &Client, room: &Room) -> Option<String> {
 }
 
 /// Takes one timeline event if it is a card or a card's edit an executor
-/// could have posted. Returns whether the shown cards changed.
-async fn consider(
+/// could have posted. Returns whether the shown cards changed. `may_fetch`
+/// is false inside the sync event handler: no network there, or one slow
+/// member lookup stalls every later event (other Agents' cards included).
+fn consider<'a>(
+    generation: u64,
+    client: &'a Client,
+    room: &'a Room,
+    value: &'a Value,
+    info: Option<&'a EncryptionInfo>,
+    may_fetch: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+    Box::pin(consider_inner(generation, client, room, value, info, may_fetch))
+}
+async fn consider_inner(
     generation: u64,
     client: &Client,
     room: &Room,
     value: &Value,
     info: Option<&EncryptionInfo>,
+    may_fetch: bool,
 ) -> bool {
     if !current(generation) {
         return false;
@@ -292,8 +305,20 @@ async fn consider(
             .unwrap_or_else(|| user.localpart().to_owned()),
         Err(_) => return false,
     };
-    let remote_trusted = !protocol::is_agent_on(sender, &server)
-        && remote_run_allowed(client, room, sender, value).await;
+    let remote_trusted = if protocol::is_agent_on(sender, &server) {
+        false // the room's own server: admitted by the original rule
+    } else {
+        match remote_run_allowed(client, room, sender, value, may_fetch).await {
+            Some(allowed) => allowed,
+            None => {
+                // In the deferred worker (`may_fetch`), it retries by itself.
+                if !may_fetch {
+                    defer_membership_check(generation, client, room, value, info);
+                }
+                return false;
+            }
+        }
+    };
     accept_event(
         generation,
         room.room_id().as_str(),
@@ -304,6 +329,53 @@ async fn consider(
         plaintext,
         remote_trusted,
     )
+}
+
+/// Deferred membership checks: at most this many queued, a few at a time.
+const MAX_DEFERRED: usize = 256;
+const DEFERRED_CONCURRENCY: usize = 4;
+/// Timed-out lookups are tried this many times in all (5 s, 15 s, 45 s pauses).
+const DEFERRED_ATTEMPTS: u32 = 4;
+static DEFERRED: LazyLock<Mutex<HashSet<(u64, String)>>> = LazyLock::new(Default::default);
+static DEFERRED_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(DEFERRED_CONCURRENCY));
+
+/// Membership not cached: look it up off the sync handler, keeping the
+/// event's encryption evidence. Each event is queued once per login, within a bound.
+fn defer_membership_check(generation: u64, client: &Client, room: &Room, value: &Value, info: Option<&EncryptionInfo>) {
+    let Some(event_id) = value["event_id"].as_str().map(str::to_owned) else { return };
+    {
+        let mut queued = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
+        if queued.len() >= MAX_DEFERRED || !queued.insert((generation, event_id.clone())) {
+            // Full: the card stays an ordinary message until it is seen again.
+            makepad_widgets::warning!("run_card_membership_check_deferred_full");
+            return;
+        }
+    }
+    let (client, room, value, info) = (client.clone(), room.clone(), value.clone(), info.cloned());
+    crate::sliding_sync::spawn_async_task(async move {
+        // A timed-out lookup is retried with growing pauses, not dropped.
+        let mut changed = false;
+        for attempt in 0..DEFERRED_ATTEMPTS {
+            if !current(generation) { break; }
+            let Ok(_slot) = DEFERRED_SLOTS.acquire().await else { break }; // never closed
+            // Membership first: a timeout or lookup error (`None`) is retried.
+            let sender = value["sender"].as_str().unwrap_or_default();
+            let known = tokio::time::timeout(RETRY_TIMEOUT,
+                remote_run_allowed(&client, &room, sender, &value, true)).await;
+            if let Ok(Some(_)) = known {
+                changed = tokio::time::timeout(RETRY_TIMEOUT,
+                    consider(generation, &client, &room, &value, info.as_ref(), true)).await.unwrap_or(false);
+                break;
+            }
+            drop(_slot);
+            tokio::time::sleep(RETRY_TIMEOUT * 3_u32.pow(attempt)).await;
+        }
+        DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).remove(&(generation, event_id));
+        if changed {
+            Cx::post_action(PendingQuestionsChanged);
+        }
+    });
 }
 
 /// Comma-separated homeservers whose Agents may post run cards into rooms
@@ -317,32 +389,46 @@ fn trusted_peer(server: &str, own_server: Option<&str>, configured: &str) -> boo
     own_server == Some(server) || configured.split(',').map(str::trim).any(|s| !s.is_empty() && s == server)
 }
 
-async fn joined(room: &Room, user: &str) -> bool {
+/// `None`: not cached and `may_fetch` is false. `get_member` loads a member
+/// missing from lazy-loaded state, so a joined owner is not rejected only
+/// because the client never cached them.
+async fn joined(room: &Room, user: &str, may_fetch: bool) -> Option<bool> {
     use matrix_sdk::ruma::events::room::member::MembershipState;
-    let Ok(user) = OwnedUserId::try_from(user) else { return false };
-    // `get_member` loads a member missing from lazy-loaded state, so a joined
-    // owner is not rejected only because the client never cached them.
-    matches!(room.get_member(&user).await, Ok(Some(m)) if *m.membership() == MembershipState::Join)
+    let Ok(user) = OwnedUserId::try_from(user) else { return Some(false) };
+    let member = match room.get_member_no_sync(&user).await {
+        Ok(Some(member)) => Some(member),
+        // A failed lookup is unknown (`None`), so the deferred check retries it.
+        Ok(None) if may_fetch => room.get_member(&user).await.ok()?,
+        Ok(None) | Err(_) => return None,
+    };
+    Some(member.is_some_and(|m| *m.membership() == MembershipState::Join))
 }
 
 /// A run card from another server's Agent: that server is a trusted peer,
 /// the Agent is joined, and (once readable) the run's owner is a joined
 /// member on the Agent's server. Ciphertext is rechecked after decryption.
-async fn remote_run_allowed(client: &Client, room: &Room, sender: &str, value: &Value) -> bool {
-    let Some(agent_server) = protocol::server_name(sender) else { return false };
+async fn remote_run_allowed(client: &Client, room: &Room, sender: &str, value: &Value, may_fetch: bool) -> Option<bool> {
+    let Some(agent_server) = protocol::server_name(sender) else { return Some(false) };
     let own = client.user_id().map(|u| u.server_name().to_string());
     let configured = std::env::var(TRUSTED_PEERS_ENV).unwrap_or_default();
-    if !trusted_peer(agent_server, own.as_deref(), &configured) || !joined(room, sender).await {
-        return false;
+    if !trusted_peer(agent_server, own.as_deref(), &configured) {
+        return Some(false);
     }
-    if value["type"] == "m.room.encrypted" {
-        return true;
-    }
+    // Only run cards and their edits ever need membership; skip lookups otherwise.
     let content = &value["content"];
     let card = if content["m.relates_to"]["rel_type"] == "m.replace" { &content["m.new_content"] } else { content };
-    match ::hagency::agent_run_controls::Card::from_content(card) {
-        Some(card) => protocol::server_name(&card.owner) == Some(agent_server) && joined(room, &card.owner).await,
-        None => false,
+    let owner = match ::hagency::agent_run_controls::Card::from_content(card) {
+        Some(card) if protocol::server_name(&card.owner) == Some(agent_server) => Some(card.owner),
+        Some(_) => return Some(false),
+        None if value["type"] == "m.room.encrypted" => None,
+        None => return Some(false),
+    };
+    if !joined(room, sender, may_fetch).await? {
+        return Some(false);
+    }
+    match owner {
+        Some(owner) => joined(room, &owner, may_fetch).await,
+        None => Some(true), // ciphertext: rechecked once decrypted
     }
 }
 
@@ -587,7 +673,7 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
                 info = room.get_encryption_info(&session, &sender).await;
             }
             if let Some(info) = info {
-                return consider(generation, client, &room, &value, Some(&info)).await;
+                return consider(generation, client, &room, &value, Some(&info), true).await;
             }
         }
         None => {
@@ -606,6 +692,7 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
                     &room,
                     &value,
                     Some(&decrypted.encryption_info),
+                    true,
                 )
                 .await;
             }
@@ -1825,6 +1912,26 @@ mod tests {
         let mut v = event("$forged", forged.content());
         v["sender"] = "@_hagency_agt_x:evil.test".into();
         assert!(!remote(&v, true), "another server cannot post beta's runs, even if trusted");
+    }
+
+    /// Regression: Betty (@bird on beta, trusting alpha) must still see
+    /// anna-claude's runs (Agent and owner on alpha, the room's server).
+    #[test]
+    fn a_room_server_agent_is_a_card_for_a_viewer_on_another_server() {
+        let _guard = serial();
+        let generation = reset("@bird:localhost:8452".into());
+        let agent = "@_hagency_agt_anna:localhost:8450";
+        let card: ::hagency::agent_run_controls::Card = serde_json::from_value(serde_json::json!({
+            "version":1,"id":"run_anna","dispatchId":"dispatch","executionId":"execution",
+            "roomId":"!dev:localhost:8450","eventId":"$req","threadRoot":"$req",
+            "requester":"@will:localhost:8452","owner":"@csheargm:localhost:8450","runtime":"codex","state":"running","revision":0
+        })).unwrap();
+        let value = serde_json::json!({"event_id":"$annarun","room_id":"!dev:localhost:8450","sender":agent,
+            "origin_server_ts": now_ms(),"type":"m.room.message","content":card.content()});
+        assert!(admits_sender(agent, "localhost:8450", &value, false));
+        assert!(accept_event(generation, "!dev:localhost:8450", "localhost:8450", "anna-claude", &value, None, true, false));
+        let room = matrix_sdk::ruma::room_id!("!dev:localhost:8450");
+        assert_eq!(super::super::run_controls::for_event(room, "$req", true).len(), 1);
     }
 
     #[test]
