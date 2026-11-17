@@ -1,7 +1,7 @@
 //! The open-pull-request cap of one repository (`open_prs`), split out of
 //! `work.rs`: what is open, plus what was handed off and is on its way.
 use super::work::{Holder, Worker, claim};
-use ::hagency::issue_watch::{GITHUB_API, Issue, OwnerRules, fetch_open_pr_count, fetch_open_pulls};
+use ::hagency::issue_watch::{MAX_PAGES, PAGE_SIZE, GITHUB_API, Issue, OwnerRules, fetch_open_pr_count, fetch_open_pulls};
 use std::collections::HashSet;
 
 /// The slots left under `open_prs`: minus the login's open pull requests
@@ -13,6 +13,10 @@ use std::collections::HashSet;
 /// GPT review P1). Errors fail the pass.
 pub(super) async fn open_slots(worker: &Worker<'_>, entry: &OwnerRules, login: &str, seen: &HashSet<i64>, issues: &[Issue]) -> Result<PrSlots, String> {
     let Some(limit) = entry.open_prs else { return Ok(PrSlots::Unlimited) };
+    if listing_truncated(issues.len()) {
+        // A pending hand-off may sit past the page cap: fail closed (GPT review).
+        return Err(crate::i18n::tr("Too many open issues to enforce the open pull request limit").to_owned());
+    }
     let open = fetch_open_pr_count(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.map_err(|e| e.to_string())?;
     if open >= u64::from(limit) {
         return Ok(PrSlots::Left(0));
@@ -66,6 +70,10 @@ pub(crate) fn closes_issue(body: &str, repo: &str, number: i64) -> bool {
             before && after
         })
     })
+}
+/// Whether an issue listing of `count` items hit the engine's page cap.
+pub(crate) fn listing_truncated(count: usize) -> bool {
+    count >= (PAGE_SIZE * MAX_PAGES) as usize
 }
 const CLOSING_WORDS: [&str; 9] = ["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"];
 

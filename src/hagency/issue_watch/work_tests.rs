@@ -57,3 +57,9 @@ fn only_a_closing_keyword_links_a_pull_request_to_its_issue() {
     assert!(!closes_issue("see #12", r, 12), "a mention is no link");
     assert!(!closes_issue("encloses #12", r, 12));
 }
+
+#[test]
+fn a_truncated_issue_listing_fails_the_cap_closed() {
+    assert!(super::listing_truncated(1000));
+    assert!(!super::listing_truncated(999));
+}
