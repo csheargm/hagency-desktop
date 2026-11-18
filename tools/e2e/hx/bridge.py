@@ -1,17 +1,21 @@
-"""Client for Makepad's localhost control bridge (MAKEPAD_REMOTE=<port>).
+"""Drive a demo window through its makepad-remote endpoint (see remote_wire).
 
-Same surface as tools/agentchat-probe/probe_approval.py: /snap lists widget
-rects ({"i": id, "ty": type, "r": [x, y, w, h], "t": text}), /click injects a
-real click. Never calls /gq or /quit: these are the live demo windows."""
+Reads take the whole semantic tree in one request (`ui json=1`): nodes with
+role, name, text, actions, widget path and bounds, so every match is made
+within one snapshot. Buttons are pressed by node id (`ui act press`); only
+nodes that are not buttons (a room-list row, the + icon) get a pointer click.
+Each step captures the person's input counter before it reads the tree and
+sends it with the act (`if_user_seq`), so the window refuses the act if the
+person touched it meanwhile. Only an allowlist of commands is ever sent."""
 import json
-import socket
+import subprocess
 import time
-import urllib.parse
-import urllib.request
 
-BRIDGE_PORTS = {"anna": 8771, "betty": 8772}
-TIMEOUT_S = 20
-FORBIDDEN_ROUTES = ("/gq", "/quit", "/close")
+from . import config
+from .remote_wire import Session, WireError, socket_path
+
+WINDOW_LABELS = {"anna": "fresh-anna", "betty": "fresh-betty"}
+ALLOWED = ("status", "ui", "ui act press", "click")
 
 
 class BridgeDown(RuntimeError):
@@ -19,98 +23,114 @@ class BridgeDown(RuntimeError):
 
 
 class StepNotFound(RuntimeError):
-    """A UI element the flow needs is not on screen."""
+    """A UI element the flow needs is not on screen, or not safely identifiable."""
 
 
-def port_open(port: int) -> bool:
-    with socket.socket() as s:
-        s.settimeout(1)
-        return s.connect_ex(("127.0.0.1", port)) == 0
+def window_pid(owner: str) -> int:
+    pid_file = config.RUN / WINDOW_LABELS[owner] / "desktop.pid"
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError) as e:
+        raise BridgeDown(f"bridge not up yet: {pid_file} has no pid ({e})") from e
+    cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    expected = f"/Hagency-{WINDOW_LABELS[owner]}.app/Contents/MacOS/"
+    if pid <= 1 or expected not in cmd:
+        raise BridgeDown(f"bridge not up yet: pid {pid} is not {owner}'s window")
+    return pid
 
 
 class Bridge:
-    def __init__(self, owner: str):
-        self.owner, self.port = owner, BRIDGE_PORTS[owner]
-        if not port_open(self.port):
-            raise BridgeDown(f"bridge not up yet: {owner}'s window has no listener on 127.0.0.1:{self.port} "
-                             "(needs a window restart with MAKEPAD_REMOTE)")
-
-    def get(self, path: str) -> dict:
-        if path.split("?")[0] in FORBIDDEN_ROUTES:
-            raise ValueError(f"{path} would close a demo window")
+    def __init__(self, owner: str, session_factory=None):
+        self.owner, self.seq = owner, None
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=TIMEOUT_S) as r:
-                return json.loads(r.read().decode() or "{}")
-        except (OSError, ValueError) as e:  # URLError, timeouts, bad JSON: all mean "no usable bridge"
-            raise BridgeDown(f"{self.owner}'s bridge stopped answering on {path.split('?')[0]}: {e}") from e
+            path = socket_path(window_pid(owner))
+            if not path.exists():
+                raise BridgeDown(f"bridge not up yet: {owner}'s window has no endpoint socket {path}")
+            self.session = (session_factory or Session)(path)
+        except (WireError, OSError) as e:
+            raise BridgeDown(f"bridge not up yet: {owner}'s window endpoint: {e}") from e
 
-    def snap(self, query: str = "", every: bool = False) -> list:
-        params = {k: v for k, v in (("q", query), ("all", "1" if every else "")) if v}
-        return self.get("/snap?" + urllib.parse.urlencode(params)).get("s", [])
+    def cmd(self, words: str, **params) -> list:
+        """One allowlisted `cmd` request in the JSON request form."""
+        if words not in ALLOWED or "cmd" in params:
+            raise ValueError(f"`{words}` is not something the runner may send to a demo window")
+        try:
+            return self.session.request(json.dumps({"cmd": words, **params}))
+        except (WireError, OSError, ValueError) as e:
+            raise BridgeDown(f"{self.owner}'s window stopped answering `{words}`: {e}") from e
 
-    def click(self, widget: dict, settle: float = 1.0):
-        """Click `widget` only if a fresh snapshot still shows the same id and
-        text at the same place (guards against layout changes and overlays)."""
-        if not still_there(self.snap(every=True), widget):
-            raise StepNotFound(f"{widget.get('i')} {text(widget)!r} moved or vanished before the click")
-        x, y = center(widget)
-        self.get(f"/click?x={x:.0f}&y={y:.0f}&wait=1")
+    def snapshot(self) -> list:
+        """Start a step: capture the input counter, then read the whole tree once."""
+        self.seq = self.user_seq()
+        out = []
+        for row in self.cmd("ui", json=1, full=1):
+            for tree in row.get("trees", [row] if "nodes" in row else []):
+                out += [{**n, "window": tree.get("window", "1:0")} for n in tree.get("nodes", [])]
+        return [n for n in out if visible(n)]
+
+    def user_seq(self) -> int:
+        """The person's input counter; refuses to act while they are using the window."""
+        activity = self.cmd("status")[0].get("activity", {})
+        if activity.get("user_active"):
+            raise StepNotFound(f"{self.owner}'s window is in use by a person; not acting")
+        return int(activity.get("user_seq") or 0)
+
+    def _seq(self) -> int:
+        if self.seq is None:
+            raise StepNotFound("act without a snapshot: refusing to act on unread state")
+        return self.seq
+
+    def press(self, node: dict, settle: float = 1.0):
+        """Press a button by node id. A node without a press action fails closed."""
+        if "press" not in node.get("actions", ""):
+            raise StepNotFound(f"{label(node)!r} ({node.get('path', '')[-60:]}) offers no press action")
+        self.cmd("ui act press", node=node["id"], wait=1, if_user_seq=self._seq(), json=1)
+        self.seq = None
         time.sleep(settle)
 
-    def grab(self) -> str:
-        """Path or payload of a window capture, for evidence."""
-        return str(self.get("/g").get("png", ""))[:200]
+    def click_at(self, node: dict, settle: float = 1.0):
+        """Pointer click for a non-button node (row, icon); never for a button."""
+        if node.get("role") == "button":
+            raise StepNotFound(f"{label(node)!r} is a button: press it, never click its coordinates")
+        x, y, w, h = node["bounds"]
+        win = node.get("window", "1:0").split(":")[1]
+        self.cmd("click", x=round(x + w / 2), y=round(y + h / 2), w=int(win), wait=1, if_user_seq=self._seq())
+        self.seq = None
+        time.sleep(settle)
 
 
-def center(w: dict) -> tuple:
-    x, y, width, height = w["r"]
-    return x + width / 2.0, y + height / 2.0
+def visible(n: dict) -> bool:
+    b = n.get("bounds") or [0, 0, 0, 0]
+    return b[2] > 0 and b[3] > 0 and "hidden" not in n.get("states", "") and "offscreen" not in n.get("states", "")
 
 
-def still_there(widgets: list, widget: dict, slack: float = 2.0) -> bool:
-    same = [w for w in widgets if w.get("i") == widget.get("i") and text(w) == text(widget)]
-    return any(all(abs(a - b) <= slack for a, b in zip(w["r"], widget["r"])) for w in same)
+def label(n: dict) -> str:
+    return (n.get("name") or n.get("text") or n.get("value") or "").strip()
 
 
-def exact(widgets: list, label: str) -> list:
-    """Widgets whose whole text is `label` (case-insensitive), largest first."""
-    hits = [w for w in widgets if text(w).lower() == label.lower()]
-    return sorted(hits, key=lambda w: -w["r"][2] * w["r"][3])
+def ends(n: dict, *segments: str) -> bool:
+    return n.get("path", "").split(".")[-len(segments):] == list(segments)
 
 
-def text(w: dict) -> str:
-    return (w.get("t") or "").strip()
+def exact(nodes: list, text: str) -> list:
+    return [n for n in nodes if label(n).lower() == text.lower()]
 
 
-def by_id(widgets: list, wid: str) -> list:
-    """Widgets whose id is exactly `wid`, largest first."""
-    hits = [w for w in widgets if w.get("i") == wid]
-    return sorted(hits, key=lambda w: -w["r"][2] * w["r"][3])
+def same_card(anchor: dict, button: dict, depth: int) -> bool:
+    """Whether `button` sits in the container that also holds `anchor`: the
+    button's path minus its last `depth` segments is a prefix of the anchor's,
+    in the same window."""
+    container = button["path"].split(".")[:-depth]
+    return bool(container) and anchor.get("window") == button.get("window") and \
+        anchor["path"].split(".")[:len(container)] == container
 
 
-def with_text(widgets: list, needle: str) -> list:
-    """Widgets whose text contains `needle` (case-insensitive), largest first."""
-    hits = [w for w in widgets if needle.lower() in text(w).lower()]
-    return sorted(hits, key=lambda w: -w["r"][2] * w["r"][3])
-
-
-MAX_CARD_SPAN = 320  # px from a card's text to its own buttons
-
-
-def nearest_below(anchor: dict, candidates: list, fences: tuple = ()) -> dict | None:
-    """The candidate closest under (or level with) `anchor`, within one card:
-    at most MAX_CARD_SPAN below, and no fence (another card's text) between."""
-    ax, ay = center(anchor)
-    below = [c for c in candidates if ay - 4 <= center(c)[1] <= ay + MAX_CARD_SPAN
-             and not any(ay < center(f)[1] < center(c)[1] for f in fences if f is not anchor)]
-    return min(below, key=lambda c: abs(center(c)[1] - ay) + abs(center(c)[0] - ax) / 4, default=None)
-
-
-def wait_widget(bridge: Bridge, find, timeout_s: float, poll_s: float = 1.5):
-    """Poll full snapshots until `find(widgets)` returns something."""
+def wait_step(bridge: Bridge, find, timeout_s: float, poll_s: float = 1.5):
+    """Snapshot until `find(nodes)` returns something; the bridge keeps that
+    snapshot's input counter for the act that follows. None at the deadline."""
     deadline = time.monotonic() + timeout_s
     while True:
-        found = find(bridge.snap(every=True))
+        found = find(bridge.snapshot())
         if found:
             return found
         if time.monotonic() >= deadline:

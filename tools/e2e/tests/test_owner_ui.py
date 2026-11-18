@@ -1,4 +1,4 @@
-"""Bridge-driven owner steps against a fake bridge (no live window)."""
+"""Owner steps against a fake window (no live demo)."""
 import sys
 import unittest
 from pathlib import Path
@@ -8,147 +8,141 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hx import bridge, owner_ui  # noqa: E402
 
+NOTICE = "body.room.d6fc.shared_permission_notice"
 
-def w(i, t="", r=(0, 0, 100, 20), ty="Button"):
-    return {"i": i, "t": t, "r": list(r), "ty": ty}
+
+def n(nid, path, name="", actions="", bounds=(0, 0, 100, 20), role="button"):
+    return {"id": nid, "path": path, "name": name, "text": name, "actions": actions,
+            "bounds": list(bounds), "role": role, "window": "1:0"}
+
+
+ROOM_ROW = n("r1", "dock.rooms_list.list.FullPreview.top.room_name", "e2e room", role="static_text")
 
 
 class FakeBridge:
-    """Serves scripted snapshots; records clicks."""
+    """Answers every query with the current screen; records presses/clicks."""
 
-    def __init__(self, screens):
-        self.owner, self.screens, self.clicks, self.clicked = "betty", list(screens), [], []
+    def __init__(self, screen):
+        self.owner, self.screen, self.done = "betty", screen, []
 
-    def snap(self, query="", every=False):
-        return self.screens[0] if len(self.screens) == 1 else self.screens.pop(0)
+    def snapshot(self):
+        return list(self.screen)
 
-    def click(self, widget, settle=1.0):
-        self.clicks.append(widget["i"] or widget["t"])
-        self.clicked.append(widget)
+    def press(self, node, settle=1.0):
+        self.done.append(("press", node["id"]))
 
-
-class BridgeBasics(unittest.TestCase):
-    def test_closed_port_says_bridge_not_up(self):
-        with mock.patch.object(bridge, "port_open", return_value=False):
-            with self.assertRaisesRegex(bridge.BridgeDown, "bridge not up yet"):
-                bridge.Bridge("betty")
-
-    def test_never_closes_a_demo_window(self):
-        with mock.patch.object(bridge, "port_open", return_value=True):
-            b = bridge.Bridge("anna")
-        for route in ("/gq", "/quit", "/close"):
-            with self.assertRaises(ValueError):
-                b.get(route)
-
-    def test_nearest_below_picks_the_same_card(self):
-        anchor = w("details", "git push e2e-1-s6", (0, 100, 300, 20))
-        mine = w("deny", "Deny", (0, 160, 100, 20))
-        other = w("deny", "Deny", (0, 600, 100, 20))
-        above = w("deny", "Deny", (0, 20, 100, 20))
-        self.assertIs(bridge.nearest_below(anchor, [other, above, mine]), mine)
+    def click_at(self, node, settle=1.0):
+        self.done.append(("click", node["id"]))
 
 
-class Anchors(unittest.TestCase):
-    def test_card_anchor_ignores_the_runners_own_chat_message(self):
-        ws = [w("message", "please create branch e2e-1-s6"), w("details", "git push origin e2e-1-s6")]
-        self.assertEqual([a["i"] for a in owner_ui.card_anchors(ws, "e2e-1-s6")], ["details"])
+class Matching(unittest.TestCase):
+    def test_same_card_by_widget_path(self):
+        deny = n("d", f"{NOTICE}.actions.deny", "Deny", "focus,press")
+        details = n("t", f"{NOTICE}.request_details.details", "git push origin e2e-1-s6")
+        chat = n("m", "body.room.timeline.message.text", "please create branch e2e-1-s6")
+        self.assertTrue(bridge.same_card(details, deny, 2))
+        self.assertFalse(bridge.same_card(chat, deny, 2))
 
-    def test_prompt_anchor_is_the_sentence_not_the_room_row(self):
-        ws = [w("room_name", "e2e room"), w("text", "Bring bird-claude into e2e room?")]
-        self.assertEqual([a["i"] for a in owner_ui.prompt_anchors(ws)], ["text"])
+    def test_deny_only_on_the_card_naming_the_token(self):
+        ours = [n("t1", f"{NOTICE}.request_details.details", "git push origin e2e-1-s6"),
+                n("d1", f"{NOTICE}.actions.deny", "Deny", "focus,press")]
+        other = [n("t2", "inbox.row0.text", "ls -a ./sandbox"),
+                 n("d2", "inbox.row0.buttons.deny", "Deny", "focus,press")]
+        chat = [n("m", "timeline.message.text", "please create branch e2e-1-s6")]
+        self.assertEqual([d["id"] for d in owner_ui.card_deny(ours + other + chat, "e2e-1-s6")], ["d1"])
+        self.assertEqual(owner_ui.card_deny(other + chat, "e2e-1-s6"), [])
+
+    def test_prompt_button_needs_the_e2e_room_in_its_own_prompt(self):
+        mine = [n("p", "prompt.body.text", "Bring bird-codex into e2e room?"),
+                n("b", "prompt.buttons.bring", "Bring", "press")]
+        elsewhere = [n("p2", "prompt2.body.text", "Bring bird-codex into dev room?"),
+                     n("b2", "prompt2.buttons.bring", "Bring", "press"), ROOM_ROW]
+        self.assertEqual([b["id"] for b, _ in owner_ui.prompt_buttons(mine + elsewhere)], ["b"])
+
+    def test_room_row_must_be_unique_and_in_the_room_list(self):
+        header = n("h", "room_screen.header.room_name", "e2e room", role="static_text")
+        self.assertEqual([x["id"] for x in owner_ui.room_rows([ROOM_ROW, header], "e2e room")], ["r1"])
+        fake = FakeBridge([ROOM_ROW, dict(ROOM_ROW, id="r2")])
+        with mock.patch("time.sleep"), self.assertRaisesRegex(bridge.StepNotFound, "2 candidates"):
+            owner_ui.open_room(fake, "e2e room")
+
+    def test_private_allow_needs_agent_and_room(self):
+        other_room = [n("t", "modal.body.text", "bird-codex is private ... add it to dev room?"),
+                      n("a", "modal.buttons.allow", "Allow in group rooms", "press")]
+        ours = [n("t2", "modal2.body.text", "bird-codex is private ... add it to e2e room?"),
+                n("a2", "modal2.buttons.allow", "Allow in group rooms", "press")]
+        self.assertEqual([x["id"] for x in owner_ui.private_allow(other_room + ours, "bird-codex")], ["a2"])
 
     def test_there_is_no_approve_path(self):
+        src = Path(owner_ui.__file__).read_text()
+        self.assertNotIn("once", src.replace("answered once", ""))
         self.assertFalse(hasattr(owner_ui, "decide_card"))
-        self.assertNotIn('"once"', Path(owner_ui.__file__).read_text())
-
-    def test_room_row_must_match_exactly(self):
-        ws = [w("row", "old e2e room"), w("msg", "see e2e room later"), w("row2", "e2e room")]
-        self.assertEqual([x["i"] for x in bridge.exact(ws, "e2e room")], ["row2"])
-
-    def test_deny_never_crosses_into_the_next_card(self):
-        anchor = w("details", "git push e2e-1-s6", (0, 100, 300, 20))
-        next_title = w("title", "bird-claude wants to use Bash", (0, 140, 300, 20))
-        next_deny = w("deny", "Deny", (0, 200, 100, 20))
-        self.assertIsNone(bridge.nearest_below(anchor, [next_deny], (next_title,)))
-
-    def test_moved_widget_is_not_clicked(self):
-        with mock.patch.object(bridge, "port_open", return_value=True):
-            b = bridge.Bridge("betty")
-        target = w("deny", "Deny", (0, 100, 100, 20))
-        with mock.patch.object(b, "snap", return_value=[w("deny", "Deny", (0, 300, 100, 20))]), \
-                mock.patch.object(b, "get") as get, self.assertRaises(bridge.StepNotFound):
-            b.click(target)
-        get.assert_not_called()
-
-    def test_bridge_errors_become_bridge_down(self):
-        with mock.patch.object(bridge, "port_open", return_value=True):
-            b = bridge.Bridge("betty")
-        with mock.patch("urllib.request.urlopen", side_effect=OSError("reset")), \
-                self.assertRaises(bridge.BridgeDown):
-            b.snap()
 
 
 class Flows(unittest.TestCase):
     def setUp(self):
         self.statuses = []
-        patcher = mock.patch.object(owner_ui, "_status", side_effect=self._next_status)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        sleep = mock.patch("time.sleep")
-        sleep.start()
-        self.addCleanup(sleep.stop)
+        for target, value in ((owner_ui, "_status"),):
+            p = mock.patch.object(target, value, side_effect=self._next_status)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch("time.sleep")
+        p.start()
+        self.addCleanup(p.stop)
 
     def _next_status(self, _room):
         return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
 
-    def test_join_is_skipped_when_already_joined(self):
+    def test_join_skipped_when_already_joined(self):
         self.statuses = [{"owner:betty": "join"}]
-        fake, log = FakeBridge([[]]), []
+        fake, log = FakeBridge([]), []
         owner_ui.join_room(fake, "!r", log)
-        self.assertEqual(fake.clicks, [])
-        self.assertIn("already joined", log[0])
+        self.assertEqual(fake.done, [])
 
-    def test_join_clicks_room_then_join_room_and_waits_for_matrix(self):
-        self.statuses = [{"owner:betty": "invite"}, {"owner:betty": "invite"}, {"owner:betty": "join"}]
-        screen = [w("room_row", "e2e room"), w("accept_button", "Join Room")]
-        fake, log = FakeBridge([screen]), []
-        owner_ui.join_room(fake, "!r", log)
-        self.assertEqual(fake.clicks, ["room_row", "accept_button"])
+    def test_join_opens_room_then_presses_join_and_waits_for_matrix(self):
+        self.statuses = [{"owner:betty": "invite"}] * 2 + [{"owner:betty": "join"}]
+        fake = FakeBridge([ROOM_ROW, n("j", "invite_screen.buttons.accept_button", "Join Room", "press")])
+        owner_ui.join_room(fake, "!r", [])
+        self.assertEqual(fake.done, [("click", "r1"), ("press", "j")])
 
-    def test_missing_join_button_is_a_named_failure(self):
+    def test_missing_join_button_is_named(self):
         self.statuses = [{"owner:betty": "invite"}]
-        fake = FakeBridge([[w("room_row", "e2e room")]])
-        with mock.patch.object(owner_ui, "wait_widget", side_effect=[[w("room_row", "e2e room")], None]):
+        fake = FakeBridge([ROOM_ROW])
+        with mock.patch.object(owner_ui, "wait_step", side_effect=[[ROOM_ROW], None]):
             with self.assertRaisesRegex(bridge.StepNotFound, "Join Room"):
                 owner_ui.join_room(fake, "!r", [])
 
+    def test_add_agent_walks_plus_picker_invite(self):
+        self.statuses = [{"agent:bird-codex": "absent"}] * 2 + [{"agent:bird-codex": "join"}]
+        fake = FakeBridge([ROOM_ROW, n("plus", "search_row.new_or_join_button.icon", role="image"),
+                           n("add", "menu.plus_add_agent", "Add agent to this room", "press"),
+                           n("pp", "invite_modal.people_section.people_list.Person.person_name", "bird-codex",
+                             role="static_text"),
+                           n("ok", "invite_modal.buttons_view.confirm_button", "Invite", "press")])
+        with mock.patch.object(owner_ui, "_allow_if_private"):
+            owner_ui.add_agent(fake, "!r", "bird-codex", [])
+        self.assertEqual(fake.done, [("click", "r1"), ("click", "plus"), ("press", "add"), ("click", "pp"),
+                                     ("press", "ok")])
+
+    def test_pending_invite_is_not_resent(self):
+        self.statuses = [{"agent:bird-codex": "invite"}] * 2 + [{"agent:bird-codex": "join"}]
+        fake = FakeBridge([])
+        owner_ui.add_agent(fake, "!r", "bird-codex", [])
+        self.assertEqual(fake.done, [])
+
     def test_add_agent_skips_present_agent(self):
         self.statuses = [{"agent:bird-codex": "join"}]
-        fake, log = FakeBridge([[]]), []
-        owner_ui.add_agent(fake, "!r", "bird-codex", log)
-        self.assertEqual(fake.clicks, [])
+        fake = FakeBridge([])
+        owner_ui.add_agent(fake, "!r", "bird-codex", [])
+        self.assertEqual(fake.done, [])
 
-    def test_add_agent_walks_plus_menu_picker_and_invite(self):
-        self.statuses = [{"agent:bird-codex": "absent"}] * 2 + [{"agent:bird-codex": "join"}]
-        screen = [w("room_row", "e2e room"), w("new_or_join_button"), w("plus_add_agent", "Add agent to this room"),
-                  w("person_name", "bird-codex", ty="Label"), w("confirm_button", "Invite")]
-        fake, log = FakeBridge([screen]), []
-        with mock.patch.object(owner_ui, "_allow_if_private"):
-            owner_ui.add_agent(fake, "!r", "bird-codex", log)
-        self.assertEqual(fake.clicks, ["room_row", "new_or_join_button", "plus_add_agent", "person_name",
-                                       "confirm_button"])
-
-    def test_deny_clicks_only_the_card_naming_the_token(self):
-        screen = [w("room_row", "e2e room"), w("message", "create branch e2e-1-s6", (0, 50, 300, 20)),
-                  w("deny", "Deny", (0, 80, 100, 20)),  # under the chat message, not ours
-                  w("details", "git push origin e2e-1-s6", (0, 300, 300, 20)),
-                  w("deny", "Deny", (0, 360, 100, 20))]
-        fake = FakeBridge([screen])
+    def test_deny_presses_only_our_card(self):
+        fake = FakeBridge([ROOM_ROW, n("t", f"{NOTICE}.request_details.details", "git push e2e-1-s6"),
+                           n("d", f"{NOTICE}.actions.deny", "Deny", "press"),
+                           n("o", f"{NOTICE}.actions.once", "Approve once", "press")])
         with mock.patch.object(owner_ui, "Bridge", return_value=fake):
             owner_ui.deny_card("betty", "e2e-1-s6")
-        self.assertEqual(len(fake.clicks), 2)  # room row, then the card's own Deny
-        self.assertEqual(fake.clicks[-1], "deny")
-        self.assertEqual(fake.clicked[-1]["r"][1], 360, "the Deny under the card, not under the chat message")
+        self.assertEqual(fake.done, [("click", "r1"), ("press", "d")])
 
 
 if __name__ == "__main__":
