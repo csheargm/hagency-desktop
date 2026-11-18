@@ -14,6 +14,7 @@ JOIN_WAIT_S = 120  # a beta account joining an alpha room federates first
 FOLLOW_WAIT_S = 30
 BIND_WAIT_S = 90
 CARD_WAIT_S = 120
+GONE_WAIT_S = 30  # an answered card leaves the window within this
 
 
 def _status(room_id: str) -> dict:
@@ -183,20 +184,48 @@ def card_deny(nodes: list, token: str) -> list:
     snapshot: the room notice or an inbox row. A chat message quoting the token
     is in no card, so it never qualifies."""
     texts = [n for n in nodes if token in label(n)]
+    places = [n for n in nodes if label(n).startswith(f"In {config.E2E_ROOM_NAME} ")]
     denies = [n for n in nodes if ends(n, "deny") and "press" in n.get("actions", "")]
-    return [d for d in denies if any(same_card(t, d, 2) for t in texts)]
+    return [d for d in denies if any(same_card(t, d, 2) for t in texts) and in_e2e_room(d, places)]
 
 
-def deny_card(owner: str, token: str) -> str:
+def one_card(denies: list) -> list:
+    """The same pending request shows twice: in the open room's notice and as
+    an owner-inbox row. Prefer the room notice; otherwise the inbox rows as
+    they are (several rows stay ambiguous and stop the flow)."""
+    notice = [d for d in denies if ".shared_permission_notice." in f".{d['path']}."]
+    return notice if len(notice) == 1 else denies
+
+
+def in_e2e_room(deny: dict, places: list) -> bool:
+    """An owner-inbox row lists cards of every room: it must say "In e2e room".
+    The room notice belongs to the open room, which open_room made the e2e room."""
+    if ".owner_approvals_inbox." not in f".{deny['path']}.":
+        return True
+    return any(same_card(p, deny, 2) for p in places)
+
+
+def deny_card(owner: str, token: str, timeout_s: float = CARD_WAIT_S) -> str:
     """Deny the permission card for the runner's own request. Never approves."""
     bridge = Bridge(owner)
     open_room(bridge, config.E2E_ROOM_NAME)
-    deny = _unique(bridge, lambda ns: card_deny(ns, token), f"a permission card naming {token}", CARD_WAIT_S)
-    again = _unique(bridge, lambda ns: card_deny(ns, token), f"the card naming {token} (re-check)", 5)
+    deny = _unique(bridge, lambda ns: one_card(card_deny(ns, token)), f"a permission card naming {token}", timeout_s)
+    again = _unique(bridge, lambda ns: one_card(card_deny(ns, token)), f"the card naming {token} (re-check)", 5)
     if again["id"] != deny["id"]:
         raise StepNotFound(f"{owner}: the card naming {token} changed between reads; not pressing")
     bridge.press(again, settle=2.0)
-    return f"{owner}: pressed Deny on the card naming {token}"
+    if wait_step(bridge, lambda ns: not card_deny(ns, token) and ["gone"], GONE_WAIT_S) is None:
+        raise StepNotFound(f"{owner}: pressed Deny but the card naming {token} is still pending")
+    return f"{owner}: denied the pending card naming {token} (card gone)"
+
+
+def pending_cards(owner: str, token: str) -> int:
+    """How many pending (still answerable) cards name `token`, read only.
+    Member requests' cards live in the window (room notice, owner inbox),
+    not in the ledger's approvals table."""
+    bridge = Bridge(owner)
+    open_room(bridge, config.E2E_ROOM_NAME)
+    return len(card_deny(bridge.snapshot(), token))
 
 
 def visible_texts(owner: str, room_name: str, needles: tuple) -> list:
