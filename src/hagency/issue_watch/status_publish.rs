@@ -101,10 +101,23 @@ async fn write(room_id: &OwnedRoomId, agent_mxid: &str, repo: &str, mut fresh: V
     };
     carry_over(&current, &mut fresh);
     let Some(content) = publish_content(&current, agent_mxid, repo, &fresh, now) else { return Ok(()) };
-    room.send_state_event_raw(ISSUE_STATUS_STATE_TYPE, me.as_str(), content)
-        .await
-        .map(|_| ())
-        .map_err(|e| crate::i18n::format("Issue status not shared with the room: {error}", &[("error", e.to_string())]))
+    let Err(error) = room.send_state_event_raw(ISSUE_STATUS_STATE_TYPE, me.as_str(), content).await else { return Ok(()) };
+    let forbidden = error.client_api_error_kind() == Some(&matrix_sdk::ruma::api::error::ErrorKind::Forbidden);
+    let below = room.power_levels().await.is_ok_and(|l| !l.user_can_send_state(&me, StateEventType::from(ISSUE_STATUS_STATE_TYPE)));
+    Err(share_failure(forbidden && below, error.to_string()))
+}
+
+/// The room refused for want of power: that is the room's setting, so the
+/// watch panel says who can change it instead of the server's raw 403.
+pub(crate) const NEEDS_ADMIN: &str = "Issue status can't be shared in this room yet — a room admin needs to allow it (linking a repository does this).";
+
+/// The watch panel's line for a failed status write.
+fn share_failure(lacks_power: bool, raw: String) -> String {
+    if lacks_power {
+        crate::i18n::tr(NEEDS_ADMIN).to_owned()
+    } else {
+        crate::i18n::format("Issue status not shared with the room: {error}", &[("error", raw)])
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +127,16 @@ mod tests {
 
     fn track(number: i64, state: State) -> Track {
         Track { repo: "o/r".into(), number, state, attempts: 1, handed_at: 5, pr: Some(9), notified: false, free_retries: 0, changed_at: 0 }
+    }
+
+    #[test]
+    fn a_refusal_for_power_reads_as_a_plain_admin_step_in_both_languages() {
+        let raw = "M_FORBIDDEN: sender does not have enough power to send event".to_owned();
+        assert_eq!(share_failure(true, raw.clone()), crate::i18n::tr(NEEDS_ADMIN));
+        assert!(!crate::i18n::tr(NEEDS_ADMIN).contains("M_FORBIDDEN"));
+        let zh = crate::i18n::text_for(crate::i18n::Language::Chinese, NEEDS_ADMIN);
+        assert_ne!(zh, NEEDS_ADMIN, "the Chinese catalog translates it");
+        assert!(share_failure(false, "timed out".into()).ends_with("timed out"), "other failures keep their reason");
     }
 
     #[test]
