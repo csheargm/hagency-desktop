@@ -28,6 +28,16 @@ struct Change {
     /// The issue loop's follow-through record of one issue (ADR 0020).
     #[serde(default)]
     track: Option<hagency_agent_local::issue_track::TrackChange>,
+    /// The daily digest of one repository was posted for this local day (ADR 0028).
+    #[serde(default)]
+    digest_sent: Option<DigestSent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DigestSent {
+    repo: String,
+    day: String,
 }
 
 #[derive(Deserialize)]
@@ -125,8 +135,9 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
     }
     let plans = ledger.open_plans(agent).map_err(local_error)?;
     let track = ledger.issue_tracks(agent).map_err(local_error)?;
+    let digest_sent = ledger.digest_days(agent).map_err(local_error)?;
     let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
-    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track}))
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "digestSent": digest_sent}))
 }
 
 fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -> hagency_agent_local::Result<()> {
@@ -141,6 +152,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     }
     if let Some(track) = change.track {
         ledger.track_issue(agent, &track, now())?;
+    }
+    if let Some(sent) = change.digest_sent {
+        ledger.record_digest_sent(agent, &sent.repo, &sent.day)?;
     }
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
@@ -189,6 +203,9 @@ mod tests {
         let change: Change = serde_json::from_value(json!({"issueSeen": {"repo": "a/b", "number": 3}, "track": {"repo": "a/b", "number": 3, "handed": 1}})).unwrap();
         assert_eq!(change.track.unwrap().handed, Some(1));
         assert!(serde_json::from_value::<Change>(json!({"track": {"repo": "a/b", "number": 3, "merge": true}})).is_err());
+        let sent: Change = serde_json::from_value(json!({"digestSent": {"repo": "a/b", "day": "2026-11-18"}})).unwrap();
+        assert_eq!(sent.digest_sent.map(|d| d.day).as_deref(), Some("2026-11-18"));
+        assert!(serde_json::from_value::<Change>(json!({"digestSent": {"repo": "a/b", "day": "2026-11-18", "text": "x"}})).is_err());
     }
 
     #[test]

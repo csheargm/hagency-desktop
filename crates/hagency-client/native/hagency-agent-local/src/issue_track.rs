@@ -29,7 +29,7 @@ pub(crate) fn ensure_schema(db: &rusqlite::Connection) -> Result<()> {
     if !has {
         db.execute_batch("ALTER TABLE issue_track ADD COLUMN free_retries INTEGER NOT NULL DEFAULT 0")?;
     }
-    Ok(())
+    digest::ensure_schema(db)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +86,9 @@ pub struct Track {
     /// Re-hand-offs after restart-interrupted runs (not attempts).
     #[serde(default)]
     pub free_retries: u32,
+    /// Unix seconds of the record's last move (0: before it was kept), for the daily digest.
+    #[serde(default)]
+    pub changed_at: i64,
 }
 
 /// What GitHub says about one tracked issue right now.
@@ -213,11 +216,11 @@ pub struct TrackChange {
 impl Ledger {
     /// Every record of `agent`, oldest issue first.
     pub fn issue_tracks(&self, agent: &str) -> Result<Vec<Track>> {
-        let mut statement = self.db.prepare("SELECT repo, number, state, attempts, handed_at, pr, notified, free_retries FROM issue_track WHERE agent=? ORDER BY repo, number")?;
-        let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?)))?;
+        let mut statement = self.db.prepare("SELECT repo, number, state, attempts, handed_at, pr, notified, free_retries, changed_at FROM issue_track WHERE agent=? ORDER BY repo, number")?;
+        let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get(8)?)))?;
         rows.map(|row| {
-            let (repo, number, state, attempts, handed_at, pr, notified, free) = row?;
-            Ok(Track { repo, number, state: State::parse(&state)?, attempts: attempts as u32, handed_at, pr: pr.map(|p| p as u64), notified: notified != 0, free_retries: free as u32 })
+            let (repo, number, state, attempts, handed_at, pr, notified, free, changed_at) = row?;
+            Ok(Track { repo, number, state: State::parse(&state)?, attempts: attempts as u32, handed_at, pr: pr.map(|p| p as u64), notified: notified != 0, free_retries: free as u32, changed_at })
         })
         .collect()
     }
@@ -236,8 +239,8 @@ impl Ledger {
 
     fn save_track(&mut self, agent: &str, track: &Track) -> Result<()> {
         self.db.execute(
-            "INSERT INTO issue_track (agent, repo, number, state, attempts, handed_at, pr, notified, free_retries) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(agent,repo,number) DO UPDATE SET state=excluded.state, attempts=excluded.attempts, handed_at=excluded.handed_at, pr=excluded.pr, notified=excluded.notified, free_retries=excluded.free_retries",
-            (agent, &track.repo, track.number, track.state.wire(), track.attempts as i64, track.handed_at, track.pr.map(|p| p as i64), track.notified as i64, track.free_retries as i64),
+            "INSERT INTO issue_track (agent, repo, number, state, attempts, handed_at, pr, notified, free_retries, changed_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(agent,repo,number) DO UPDATE SET state=excluded.state, attempts=excluded.attempts, handed_at=excluded.handed_at, pr=excluded.pr, notified=excluded.notified, free_retries=excluded.free_retries, changed_at=excluded.changed_at",
+            (agent, &track.repo, track.number, track.state.wire(), track.attempts as i64, track.handed_at, track.pr.map(|p| p as i64), track.notified as i64, track.free_retries as i64, track.changed_at),
         )?;
         Ok(())
     }
@@ -246,13 +249,22 @@ impl Ledger {
 /// One change to the stored record `current`. A hand-off only counts when
 /// it is the next attempt (a replay is a no-op) and never revives a terminal
 /// record; a state change never leaves a terminal state; a record starts at
-/// its first hand-off. Pure, so the desktop's tests share the ledger's rule.
+/// its first hand-off; a move stamps `changed_at`. Pure: the desktop's tests share it.
 pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> Result<Track> {
+    let before = current.as_ref().map(|t| (t.state, t.attempts, t.pr, t.notified, t.free_retries));
+    let mut track = apply_fields(current, change, now)?;
+    if before != Some((track.state, track.attempts, track.pr, track.notified, track.free_retries)) {
+        track.changed_at = now;
+    }
+    Ok(track)
+}
+
+fn apply_fields(current: Option<Track>, change: &TrackChange, now: i64) -> Result<Track> {
     if !crate::issue_watch::valid_repo(&change.repo) || change.number <= 0 {
         return Err(Error::Invalid("an issue track needs owner/name and an issue number"));
     }
     let mut track = match (current, change.handed) {
-        (None, Some(1)) => Track { repo: change.repo.clone(), number: change.number, state: State::HandedOff, attempts: 0, handed_at: now, pr: None, notified: false, free_retries: 0 },
+        (None, Some(1)) => Track { repo: change.repo.clone(), number: change.number, state: State::HandedOff, attempts: 0, handed_at: now, pr: None, notified: false, free_retries: 0, changed_at: now },
         (None, _) => return Err(Error::Invalid("an issue is tracked from its first hand-off")),
         (Some(track), _) => track,
     };
@@ -283,5 +295,6 @@ pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> R
     Ok(track)
 }
 
+pub mod digest;
 #[cfg(test)]
 mod tests;
