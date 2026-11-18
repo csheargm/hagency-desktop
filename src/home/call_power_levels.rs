@@ -15,11 +15,11 @@
 //!
 //! The merge rules (ADR 0029) decide what Agents may merge, so they are for
 //! room admins only: both paths add `events[MERGE_RULES_STATE_TYPE] = 100`
-//! when the room has no entry. An entry already there is an admin's choice
+//! (or a stricter `state_default`) when the room has no entry. An entry already there is an admin's choice
 //! and is never lowered or overwritten.
 use matrix_sdk::{
     Room,
-    ruma::{Int, UserId, api::client::state::get_state_event_for_key::v3 as get_state, events::{StateEventType, TimelineEventType, room::power_levels::RoomPowerLevels}},
+    ruma::{Int, OwnedUserId, UserId, api::client::state::get_state_event_for_key::v3 as get_state, events::{StateEventType, TimelineEventType, room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource}}, room_version_rules::AuthorizationRules},
 };
 use serde_json::Value;
 
@@ -40,9 +40,14 @@ const EXISTING_ROOM_EVENTS: [&str; 2] = [::hagency::repo_status::ISSUE_STATUS_ST
 /// Bound on the follow-up so a stalled server cannot leave creation at "Creating…".
 const FOLLOW_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The level Hagency gives `key`: admins for admin-only state, else members.
-fn target_level(key: &str) -> i64 {
-    if ADMIN_STATE_EVENTS.contains(&key) { ADMIN_LEVEL } else { MEMBER_LEVEL }
+/// The Matrix default `state_default` when power levels leave it out.
+const DEFAULT_STATE_LEVEL: i64 = 50;
+
+/// The level Hagency gives `key`: members for member state; for admin-only
+/// state at least admins, never below a stricter `state_default` the room
+/// already applies to it (GPT review: filling the entry must not loosen it).
+fn target_level(key: &str, state_default: i64) -> i64 {
+    if ADMIN_STATE_EVENTS.contains(&key) { ADMIN_LEVEL.max(state_default) } else { MEMBER_LEVEL }
 }
 
 /// For a room just created: call membership and issue status opened to PL 0,
@@ -63,9 +68,10 @@ pub fn add_missing_member_state(levels: Value, keys: &[&'static str]) -> anyhow:
     set_where(levels, keys, |_, level| level.is_none())
 }
 
-/// Sets each of `keys` whose current entry `reset` selects to [`target_level`].
+/// Sets each of `keys` whose current entry `reset` selects to its [`target_level`].
 fn set_where(mut levels: Value, keys: &[&'static str], reset: impl Fn(&str, Option<&Value>) -> bool) -> anyhow::Result<Option<Value>> {
     let object = levels.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels are not an object"))?;
+    let state_default = object.get("state_default").and_then(Value::as_i64).unwrap_or(DEFAULT_STATE_LEVEL);
     let events = object.entry("events").or_insert_with(|| Value::Object(Default::default()));
     let events = events.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels events is not an object"))?;
     let changed: Vec<&str> = keys.iter().copied().filter(|key| reset(key, events.get(*key))).collect();
@@ -73,7 +79,7 @@ fn set_where(mut levels: Value, keys: &[&'static str], reset: impl Fn(&str, Opti
         return Ok(None);
     }
     for key in changed {
-        events.insert(key.into(), target_level(key).into());
+        events.insert(key.into(), target_level(key, state_default).into());
     }
     Ok(Some(levels))
 }
@@ -94,7 +100,7 @@ pub fn addable_member_state(levels: &RoomPowerLevels, me: &UserId) -> Vec<&'stat
     }
     let mine = levels.for_user(me);
     missing_member_state(levels).into_iter()
-        .filter(|key| levels.user_can_send_state(me, StateEventType::from(*key)) && mine >= Int::new_saturating(target_level(key)))
+        .filter(|key| levels.user_can_send_state(me, StateEventType::from(*key)) && mine >= Int::new_saturating(target_level(key, i64::from(levels.state_default))))
         .collect()
 }
 
@@ -110,19 +116,31 @@ async fn server_levels(room: &Room) -> anyhow::Result<Value> {
 /// admin's explicit link, never in the background (GPT review).
 pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<bool> {
     let me = room.client().user_id().ok_or_else(|| anyhow::anyhow!("signed out"))?.to_owned();
-    let addable = addable_member_state(&room.power_levels().await?, &me);
-    if addable.is_empty() {
-        return Ok(false);
-    }
     let send = async {
-        // Re-read from the server: the PUT replaces the whole content, so it is
-        // built from the newest copy; only a change landing in the moment
-        // between this read and the write could be lost.
-        let Some(updated) = add_missing_member_state(server_levels(room).await?, &addable)? else { return Ok(false) };
+        // From the server, not the sync store (GPT review: a stale store could skip
+        // the entry or misjudge this account); the PUT replaces the whole content,
+        // so it is built from this newest copy too.
+        let current = server_levels(room).await?;
+        let typed = typed_levels(room, current.clone()).ok_or_else(|| anyhow::anyhow!("the room's power levels are unreadable"))?;
+        let addable = addable_member_state(&typed, &me);
+        let Some(updated) = add_missing_member_state(current, &addable)? else { return Ok(false) };
         room.send_state_event_raw("m.room.power_levels", "", updated).await?;
         anyhow::Ok(true)
     };
     tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))?
+}
+
+/// Power-level `content` as `room`'s typed power levels (its version's rules
+/// and creators), or `None` when unreadable.
+pub fn typed_levels(room: &Room, content: Value) -> Option<RoomPowerLevels> {
+    let rules = room.clone_info().room_version_rules_or_default().authorization;
+    levels_from(content, &rules, room.creators()?)
+}
+
+/// Power-level `content` under `rules` with `creators`, or `None` when unreadable.
+pub fn levels_from(content: Value, rules: &AuthorizationRules, creators: Vec<OwnedUserId>) -> Option<RoomPowerLevels> {
+    let content: RoomPowerLevelsEventContent = serde_json::from_value(content).ok()?;
+    Some(RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), rules, creators))
 }
 
 /// Hagency's levels for a room the user just created (as creator they may

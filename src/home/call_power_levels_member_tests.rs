@@ -115,15 +115,42 @@ async fn an_admin_opens_issue_status_in_an_old_room_and_keeps_the_rest() {
     assert_eq!(puts(&server).await, vec![expected]);
 }
 
-/// A plain member's desktop never tries: no read, no write.
+/// A plain member's desktop judges by the server's levels and never writes.
 #[tokio::test]
 async fn a_member_without_permission_sends_nothing() {
     let server = wiremock::MockServer::start().await;
     let room = synced_as(&server, "@member:x", &old_room()).await;
     mount_levels(&server, &old_room()).await;
     assert!(!allow_member_state_in(&room).await.unwrap());
-    let touched = server.received_requests().await.unwrap().into_iter().any(|r| r.url.path().contains("power_levels"));
-    assert!(!touched);
+    assert!(puts(&server).await.is_empty());
+}
+
+/// GPT review: the sync store still shows an explicit rules entry the server
+/// no longer has; linking judges by the server and adds it.
+#[tokio::test]
+async fn a_stale_sync_store_does_not_skip_the_rules_entry() {
+    let server = wiremock::MockServer::start().await;
+    let mut cached = old_room();
+    cached["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
+    let now = cached.clone();
+    cached["events"][RULES] = json!(50);
+    let room = synced_as(&server, "@admin:x", &cached).await;
+    mount_levels(&server, &now).await;
+    assert!(allow_member_state_in(&room).await.unwrap());
+    let mut expected = now;
+    expected["events"][RULES] = json!(100);
+    assert_eq!(puts(&server).await, vec![expected]);
+}
+
+/// GPT review: filling the missing entry never loosens a stricter state_default.
+#[test]
+fn a_stricter_state_default_is_kept_for_the_rules_entry() {
+    let strict = json!({"users":{"@owner:x":200},"state_default":150});
+    let updated = add_missing_member_state(strict.clone(), &EXISTING_ROOM_EVENTS).unwrap().unwrap();
+    assert_eq!((updated["events"][RULES].as_i64(), updated["events"][ISSUE_STATUS_STATE_TYPE].as_i64()), (Some(150), Some(0)));
+    assert_eq!(open_call_membership(strict.clone()).unwrap().unwrap()["events"][RULES], 150);
+    let levels = typed(strict, &AuthorizationRules::V10, &[]);
+    assert_eq!(addable_member_state(&levels, user_id!("@owner:x")).len(), 2);
 }
 
 /// Already present (locally): nothing is read or sent.

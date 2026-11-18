@@ -157,8 +157,8 @@ pub fn refresh(room: &RoomId) {
 }
 
 async fn read_into(account: String, joined: matrix_sdk::Room) {
-    let shown = match room_rules::read(&joined).await {
-        Ok(read) => Shown::Ready { read, editable: room_rules::can_edit(&joined).await },
+    let shown = match room_rules::read_with_editor(&joined).await {
+        Ok((read, editable)) => Shown::Ready { read, editable },
         Err(error) => Shown::Failed(error),
     };
     set(account, joined.room_id(), shown);
