@@ -1561,6 +1561,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // event bound well before it is a runaway. The turn's time limit is
         // the real bound; this one only stops an endless stream.
         for _ in 0..16 * hagency_runtime::codex::session::MAX_EVENTS {
+            repo_running.settle(ledger)?;
             controls.expire();
             if controls.can_receive()
                 && let Some(pending) = stream
@@ -1580,6 +1581,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 room_turn.take();
                 // Running repo steps stop with the turn's callbacks, and no
                 // queued one starts after (GPT review).
+                repo_running.settle(ledger)?;
                 repo_running = repo_steps::Running::default();
                 repo_open = false;
                 callbacks_stopped = true;
@@ -1733,7 +1735,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     call = repo_calls.recv(), if repo_open && !controls.holds_answers() => {
                         match call {
-                            Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running),
+                            Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running).await,
                             None => repo_open = false,
                         }
                         continue;
