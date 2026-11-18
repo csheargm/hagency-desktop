@@ -164,3 +164,38 @@ fn rename_field_shows_the_name_and_a_saved_rename_updates_the_header() {
     panel.apply(&mut cx, Load::Renamed, true, &Err("agent_retired".into()));
     assert_eq!(panel.agent["displayName"], "After", "a refused rename keeps the saved name");
 }
+
+/// The rooms `actions` navigate to.
+fn navigated(actions: &Actions) -> Vec<String> {
+    actions.iter().filter_map(|a| match a.downcast_ref::<crate::app::AppStateAction>() {
+        Some(crate::app::AppStateAction::NavigateToRoom { destination_room, .. }) => Some(destination_room.room_id().to_string()),
+        _ => None,
+    }).collect()
+}
+
+#[test]
+fn message_after_leaving_the_private_chat_reopens_it() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = panel(&mut cx);
+    panel.open(&mut cx, &json!({"id": "agt_1", "displayName": "ann-claude", "puppetMxid": "@_hagency_agt_1:s"}));
+    // After Leave the binding is no longer active, so the status has no chat.
+    panel.status = json!({"here": true, "chat": null, "rooms": []});
+    panel.render(&mut cx);
+    assert!(panel.view.button(&mut cx, ids!(message)).borrow().unwrap().enabled(), "Message stays usable after Leave");
+    // Ensure invited and joined the owner (here: into a replacement Room).
+    panel.busy = true;
+    let ensured = Ok(json!({"ownerDirectRoomId": "!direct2:s", "ownerDirect": {"roomId": "!direct2:s", "state": "joining", "phase": "pending"}}));
+    let actions = cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &ensured));
+    assert!(!panel.busy);
+    assert_eq!(navigated(&actions), vec!["!direct2:s".to_owned()], "the private chat opens");
+    assert!(actions.iter().any(|a| matches!(a.downcast_ref::<crate::home::main_desktop_ui::MainDesktopUiAction>(), Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))));
+    // Still setting up, or refused: say so, open nothing.
+    // A failed join leaves the journal's Room in a pending reply: not opened (GPT review).
+    for room in [json!(null), json!("!direct2:s")] {
+        let pending = Ok(json!({"ownerDirect": {"roomId": room, "state": "pending"}, "ownerDirectRoomId": room}));
+        assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &pending))).is_empty(), "{room}");
+        assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "The private chat is still being set up. Click Message again in a moment.");
+    }
+    assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &Err("owner_scope_required".into())))).is_empty());
+    assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "Could not open the private chat: owner_scope_required");
+}

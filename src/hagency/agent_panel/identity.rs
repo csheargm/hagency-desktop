@@ -30,10 +30,27 @@ impl AgentPanel {
         };
         self.view.label(cx, ids!(runs_on)).set_text(cx, &line);
         self.render_about(cx);
-        self.view.button(cx, ids!(message)).set_enabled(cx, self.chat_room().is_some());
+        // Message also works after the owner left the private chat: ensure
+        // asks the server to invite them back (server ADR 0003) and joins.
+        self.view.button(cx, ids!(message)).set_enabled(cx, !self.busy && !self.agent_id().is_empty());
     }
-    fn chat_room(&self) -> Option<matrix_sdk::ruma::OwnedRoomId> {
-        matrix_sdk::ruma::OwnedRoomId::try_from(self.status["chat"]["roomId"].as_str()?).ok()
+    /// The reply to `EnsureAgentOwnerDirect`: opens the private chat it names.
+    pub(super) fn open_chat(&mut self, cx: &mut Cx, result: &Result<serde_json::Value, String>) {
+        // A `pending` reply names the journal's Room before the owner joined
+        // or its state was validated: opening it would show a join prompt.
+        let room = result.as_ref().ok()
+            .filter(|v| v["ownerDirect"].is_object() && v["ownerDirect"]["state"] != "pending")
+            .and_then(|v| v["ownerDirect"]["roomId"].as_str())
+            .and_then(|room| matrix_sdk::ruma::OwnedRoomId::try_from(room).ok());
+        match (room, result) {
+            (Some(room_id), _) => {
+                self.note(cx, "");
+                crate::hagency::ui::open_agent_chat(cx, room_id);
+                self.call(Load::Status, false, Call::Status(self.agent_id()));
+            }
+            (None, Ok(_)) => self.note(cx, "The private chat is still being set up. Click Message again in a moment."),
+            (None, Err(code)) => self.view.label(cx, ids!(status)).set_text(cx, &crate::i18n::format("Could not open the private chat: {code}", &[("code", code.clone())])),
+        }
     }
     /// The saved model's index among the provider's choices.
     fn model_index(&self) -> Option<usize> {
@@ -91,8 +108,9 @@ impl AgentPanel {
 
     pub(super) fn handle_identity_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         self.handle_about_actions(cx, actions);
-        if self.view.button(cx, ids!(message)).clicked(actions) && let Some(room_id) = self.chat_room() {
-            crate::hagency::ui::open_agent_chat(cx, room_id);
+        if self.view.button(cx, ids!(message)).clicked(actions) {
+            self.note(cx, "Opening the private chat…");
+            self.command(Load::Chat, true, Command::EnsureAgentOwnerDirect { agent_id: self.agent_id() });
         }
         if let Some(index) = self.view.drop_down(cx, ids!(panel_model)).selected(actions) {
             self.save_model(cx, index, None);

@@ -37,7 +37,7 @@ pub enum AgentPanelAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab { #[default] Identity, Context, Activity, Settings }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Load { Status, Model, Models, Retired, Renamed, Activity, Backups, Left, Added, OwnerRooms }
+enum Load { Status, Model, Models, Retired, Renamed, Activity, Backups, Left, Added, OwnerRooms, Chat }
 #[derive(Debug)]
 struct Loaded { request: u64, load: Load, mutation: bool, result: Result<Value, String> }
 static REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -152,6 +152,7 @@ impl AgentPanel {
     fn apply(&mut self, cx: &mut Cx, load: Load, mutation: bool, result: &Result<Value, String>) {
         if mutation { self.busy = false; }
         match (load, result) {
+            (Load::Chat, result) => self.open_chat(cx, result),
             (_, Err(code)) => {
                 let text = if mutation { "Not saved: {code}" } else { "Could not load: {code}" };
                 self.view.label(cx, ids!(status)).set_text(cx, &crate::i18n::format(text, &[("code", code.clone())]));

@@ -1508,6 +1508,10 @@ pub(super) enum OwnerOperation {
         agent: String,
         room: String,
     },
+    /// Server ADR 0003: re-invite the owner, or swap in a replacement Room.
+    OwnerDirectRecover {
+        agent: String,
+    },
     Projects,
     ScopeState {
         project: String,
@@ -1789,6 +1793,10 @@ impl OwnerOperation {
                     format!("agents/{agent}/owner-direct"),
                     Some(json!({"roomId":room})),
                 )
+            }
+            Self::OwnerDirectRecover { agent } => {
+                operation_id(&agent)?;
+                (Method::POST, format!("agents/{agent}/owner-direct/recover"), None)
             }
             Self::Bindings { agent } => {
                 operation_id(&agent)?;

@@ -39,6 +39,19 @@ struct OAuthState {
     direct_deny: bool,
     direct_foreign: bool,
     direct_journal: Option<std::path::PathBuf>,
+    direct_rejoin: Rejoin,
+}
+/// Server ADR 0003 recovery as the fake server and homeserver see it.
+#[derive(Default)]
+struct Rejoin {
+    /// The owner's membership in the current owner-direct Room; `None` is join.
+    owner: Option<&'static str>,
+    /// The Agent's puppet left the Room too, so recovery replaces it.
+    puppet_gone: bool,
+    /// The current Room was created by the puppet (a replacement).
+    puppet_created: bool,
+    outcomes: Vec<&'static str>,
+    joins: Vec<String>,
 }
 #[handler]
 impl OAuthFixture {
@@ -265,13 +278,15 @@ async fn oauth(req: &mut Request, depot: &Depot, res: &mut Response) {
             } else {
                 owner
             };
+            let creator = if state.direct_rejoin.puppet_created { "@_hagency_agt_fixture:example.test" } else { marker_owner };
+            let membership = state.direct_rejoin.owner.unwrap_or("join");
             json!([
-              {"type":"m.room.create","state_key":"","sender":owner,"content":{}},
-              {"type":"im.hagency.agent.owner_direct","state_key":"","sender":marker_owner,"content":{"version":1,"agentId":"agt_fixture","ownerMxid":marker_owner}},
+              {"type":"m.room.create","state_key":"","sender":creator,"content":{}},
+              {"type":"im.hagency.agent.owner_direct","state_key":"","sender":creator,"content":{"version":1,"agentId":"agt_fixture","ownerMxid":marker_owner}},
               {"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"joined"}},
               {"type":"m.room.guest_access","state_key":"","content":{"guest_access":"forbidden"}},
               {"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}},
-              {"type":"m.room.member","state_key":owner,"content":{"membership":"join"}},
+              {"type":"m.room.member","state_key":owner,"content":{"membership":membership}},
               {"type":"m.room.member","state_key":"@_hagency_agt_fixture:example.test","content":{"membership":"invite"}}
             ])
         }
@@ -288,6 +303,41 @@ async fn oauth(req: &mut Request, depot: &Depot, res: &mut Response) {
             } else {
                 state.direct_index.clone()
             }
+        }
+        "/hagency/api/v1/agents/agt_fixture/owner-direct/recover" => {
+            assert_eq!(req.method(), Method::POST);
+            let mut state = f.state.lock().unwrap();
+            let current = state.direct_mapping.clone();
+            let rejoin = &mut state.direct_rejoin;
+            let (outcome, room) = match (current, rejoin.owner, rejoin.puppet_gone) {
+                (None, _, _) => ("none", None),
+                (Some(_), _, true) => ("replaced", Some("!direct2:example.test".to_owned())),
+                (Some(room), None | Some("join"), _) => ("joined", Some(room)),
+                (Some(room), Some("invite"), _) => ("invited", Some(room)),
+                (Some(room), _, _) => ("reinvited", Some(room)),
+            };
+            if outcome == "replaced" {
+                (rejoin.puppet_gone, rejoin.puppet_created) = (false, true);
+            }
+            if matches!(outcome, "replaced" | "reinvited") {
+                rejoin.owner = Some("invite");
+            }
+            rejoin.outcomes.push(outcome);
+            if outcome == "replaced" {
+                state.direct_room = room.clone();
+                state.direct_mapping = room.clone();
+            }
+            json!({"outcome":outcome,"ownerDirectRoomId":room})
+        }
+        p if p.starts_with("/_matrix/client/v3/join/") => {
+            assert_eq!(req.method(), Method::POST);
+            let room = percent_encoding::percent_decode_str(p.strip_prefix("/_matrix/client/v3/join/").unwrap())
+                .decode_utf8().unwrap().into_owned();
+            let mut state = f.state.lock().unwrap();
+            assert_eq!(state.direct_rejoin.owner, Some("invite"), "the owner joins only an invited Room");
+            state.direct_rejoin.owner = None;
+            state.direct_rejoin.joins.push(room.clone());
+            json!({"room_id":room})
         }
         "/hagency/api/v1/agents/agt_fixture/owner-direct" => {
             let input = if req.method() == Method::POST {
@@ -697,6 +747,7 @@ async fn native_server_login_pkce_device_authorization_and_revocation() {
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(
@@ -862,6 +913,7 @@ async fn native_server_login_background_refresh_logout_and_issuer_pin() {
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(
@@ -992,6 +1044,7 @@ async fn native_server_login_offline_logout_retries_after_restart_without_restor
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(
@@ -1101,6 +1154,7 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(
@@ -1765,6 +1819,44 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
     );
     assert_eq!(fake.state.lock().unwrap().direct_creates, 1);
     fake.state.lock().unwrap().direct_foreign = false;
+    // Server ADR 0003: after the owner leaves, Message (ensure) brings them back.
+    fake.state.lock().unwrap().direct_rejoin.owner = Some("leave");
+    let mut back = post(ensure, &cookie).send(&service).await;
+    let back = back.take_json::<Value>().await.unwrap();
+    assert_eq!(back["ownerDirect"]["roomId"], "!direct:example.test", "{back}");
+    assert_eq!(back["ownerDirect"]["state"], "active");
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.direct_rejoin.outcomes.last(), Some(&"reinvited"));
+        assert_eq!(state.direct_rejoin.joins, vec!["!direct:example.test".to_owned()]);
+        assert_eq!(state.direct_creates, 1, "re-invitation never creates a Room");
+    }
+    // The Agent left as well: the server swaps in a Room its puppet created.
+    {
+        let mut state = fake.state.lock().unwrap();
+        (state.direct_rejoin.owner, state.direct_rejoin.puppet_gone) = (Some("leave"), true);
+    }
+    let mut replaced = post(ensure, &cookie).send(&service).await;
+    let replaced = replaced.take_json::<Value>().await.unwrap();
+    assert_eq!(replaced["ownerDirect"]["roomId"], "!direct2:example.test", "{replaced}");
+    assert_eq!(replaced["ownerDirectRoomId"], "!direct2:example.test");
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.direct_rejoin.outcomes.last(), Some(&"replaced"));
+        assert_eq!(state.direct_rejoin.joins.last().map(String::as_str), Some("!direct2:example.test"));
+        assert_eq!(state.direct_creates, 1, "the owner's client never creates the replacement");
+        assert_eq!(
+            state.direct_index["@_hagency_agt_fixture:example.test"],
+            json!(["!direct:example.test", "!direct2:example.test"])
+        );
+    }
+    // Joined again: ensure is a no-op that joins nothing.
+    assert_eq!(post(ensure, &cookie).send(&service).await.status_code, Some(StatusCode::OK));
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.direct_rejoin.outcomes.last(), Some(&"joined"));
+        assert_eq!(state.direct_rejoin.joins.len(), 2);
+    }
 
     for (verb, expected) in [("pause", "suspended"), ("resume", "active")] {
         let mut result = post(
@@ -2357,6 +2449,7 @@ async fn native_account_profiles_switch_revoke_old_tabs_and_pin_pasion_identity(
                 direct_deny: false,
                 direct_foreign: false,
                 direct_journal: None,
+            direct_rejoin: Rejoin::default(),
             })),
         };
         let handler = Service::new(
@@ -2628,6 +2721,7 @@ async fn native_owner_space_candidates_use_own_oauth_and_paginate_partial_failur
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(
@@ -2808,6 +2902,7 @@ async fn native_in_process_facade_pins_matrix_account_without_exposing_credentia
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let handler = Service::new(

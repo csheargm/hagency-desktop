@@ -174,6 +174,7 @@ async fn enrolled_owner_runtime_survives_two_controller_detaches_and_restart() {
             direct_deny: false,
             direct_foreign: false,
             direct_journal: None,
+            direct_rejoin: Rejoin::default(),
         })),
     };
     let whoami = Arc::new(AtomicU64::new(0));

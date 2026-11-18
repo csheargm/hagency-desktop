@@ -8,6 +8,8 @@ use tokio::sync::Mutex;
 static COMMANDS: Mutex<()> = Mutex::const_new(());
 const MARKER: &str = "im.hagency.agent.owner_direct";
 mod recovery;
+// TODO(R4): direct.rs is over budget; split `validate`/`merge` into direct/room_state.rs.
+mod rejoin;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Record {
@@ -85,10 +87,14 @@ fn validate(state: &Value, owner: &str, agent: &str, puppet: &str) -> Result<(),
         .ok_or_else(|| error(409, "owner_direct_room_identity_mismatch"))?;
     let joins = one("m.room.join_rules")
         .ok_or_else(|| error(409, "owner_direct_room_identity_mismatch"))?;
-    if create["sender"] != owner
-        || create["content"].get("type").is_some()
-        || create["content"].get("creator").is_some_and(|v| v != owner)
-        || marker["sender"] != owner
+    // The owner created the original Room; a replacement after the owner left
+    // is created by the Agent's puppet (server ADR 0003). Either way the
+    // creator also wrote the marker.
+    let creator = create["sender"].as_str().filter(|s| *s == owner || *s == puppet)
+        .ok_or_else(|| error(409, "owner_direct_room_identity_mismatch"))?;
+    if create["content"].get("type").is_some()
+        || create["content"].get("creator").is_some_and(|v| v != creator)
+        || marker["sender"] != creator
         || marker["content"] != json!({"version":1,"agentId":agent,"ownerMxid":owner})
         || !matches!(
             history["content"]["history_visibility"].as_str(),
@@ -295,6 +301,7 @@ async fn advance(
     name: &str,
 ) -> Result<Value, OwnerError> {
     let cookie = cookie(req).map_err(|_| error(401, "sign_in_required"))?;
+    rejoin::rejoin(req, depot, expected, cookie, record, path).await?;
     let known = api(
         req,
         depot,

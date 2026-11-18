@@ -91,6 +91,9 @@ pub(in crate::console) enum MatrixOperation {
     Discovery,
     JoinedRooms,
     State(String),
+    /// The owner accepts an invitation to this Room (owner-direct recovery).
+    // TODO(R4): matrix_creations.rs is over budget; split MatrixOperation into matrix_creations/operation.rs.
+    Join(String),
     InviteService { room: String, owner: String, discovery: Value },
     Child(String, String, Value),
     Parent(String, String, Value),
@@ -193,6 +196,11 @@ impl MatrixOperation {
                 Some(json!({"user_id": service_identity(&discovery, &owner)?})),
             ),
             Self::JoinedRooms => (Method::GET, "/_matrix/client/v3/joined_rooms".into(), None),
+            Self::Join(room) => (
+                Method::POST,
+                format!("/_matrix/client/v3/join/{}", segment(&room)?),
+                Some(json!({})),
+            ),
             Self::State(room) => (
                 Method::GET,
                 format!("/_matrix/client/v3/rooms/{}/state", segment(&room)?),

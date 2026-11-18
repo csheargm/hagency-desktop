@@ -72,10 +72,11 @@ pub(crate) fn agent_chat_delete_body() -> &'static str {
 }
 const AGENT_CHAT_DELETE_BODY: &str = "Remove your private chat with this Agent from this device and hide its existing history here? You stay in the chat, so the Message button in the Agent's details opens it again; earlier messages stay hidden on this device. Messages remain on the server and other devices.";
 const AGENT_CHAT_LEAVE_TITLE: &str = "Leave your private chat with this Agent?";
-const AGENT_CHAT_LEAVE_BODY: &str = "Leaving \"{room}\" ends your private chat with this Agent. It is invite-only, so you lose access until someone invites you back, and the Agent's Message button will not reopen it.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.";
+const AGENT_CHAT_LEAVE_BODY: &str = "Leaving \"{room}\" ends your private chat with this Agent for now. The Agent's Message button reopens it: the Agent invites you back, or starts a new private chat if this one can no longer be used.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.";
 
-/// Leave in an Agent's private chat: the room is invite-only and stays the
-/// Agent's private chat, so nothing reopens it for the owner afterwards.
+/// Leave in an Agent's private chat: the room is invite-only, so the Agent's
+/// Message button reopens it by having the Agent invite the owner back, or by
+/// starting a replacement chat (server ADR 0003).
 pub(crate) fn agent_chat_leave_text(room: &str) -> (&'static str, String) {
     (AGENT_CHAT_LEAVE_TITLE, crate::i18n::format(AGENT_CHAT_LEAVE_BODY, &[("room", room.to_owned())]))
 }
@@ -140,7 +141,7 @@ pub(crate) mod tests {
     fn agent_chat_confirmations_say_what_leaving_and_deleting_do() {
         let (title, body) = agent_chat_leave_text("yue-claude");
         assert!(title.contains("private chat"));
-        assert!(body.contains("\"yue-claude\"") && body.contains("ends your private chat") && body.contains("will not reopen") && body.contains("invites you back"));
+        assert!(body.contains("\"yue-claude\"") && body.contains("ends your private chat") && body.contains("Message button reopens it") && body.contains("invites you back") && !body.contains("will not reopen"));
         assert!(agent_chat_delete_body().contains("You stay in the chat") && agent_chat_delete_body().contains("Message button") && agent_chat_delete_body().contains("stay hidden"));
         for key in [AGENT_CHAT_LEAVE_TITLE, AGENT_CHAT_DELETE_BODY, AGENT_CHAT_LEAVE_BODY] {
             assert_ne!(crate::i18n::text_for(crate::i18n::Language::Chinese, key), key, "{key} has a Chinese translation");
