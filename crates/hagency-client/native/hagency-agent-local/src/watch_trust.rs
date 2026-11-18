@@ -144,7 +144,8 @@ pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, 
     Box::new(move || {
         let Some(path) = &path else { return false };
         let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
-        trusted_repos(&db, &proposal).is_ok_and(|r| r.iter().any(|t| t.eq_ignore_ascii_case(&repo)))
+        // The same admission as the authorization, not only the watch.
+        crate::still_admitted(&db, &proposal) && trusted_repos(&db, &proposal).is_ok_and(|r| r.iter().any(|t| t.eq_ignore_ascii_case(&repo)))
     })
 }
 

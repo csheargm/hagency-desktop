@@ -201,3 +201,15 @@ the worker before a pinned command starts. The step starts right after its
 check on the same turn; a push still rechecks the watch right before it
 publishes, as for Claude. A policy saved in that window applies from the
 next call (residual).
+
+### Integration GPT review (2026-11-17, final 1117 @ 38b68cf8)
+Adopted: `gh pr create` no longer takes `--fill`, `-f`, `--fill-first`,
+`--fill-verbose` or `-T/--template`: gh reads those from the git checkout
+it runs in (for Codex the Room workspace, for Claude the shell's
+directory), which need not be the watched repository's, so another private
+checkout's commit messages or files could become the PR text. Title and
+body are explicit, or `-F` from the own checkout. The host's last check
+before a push (and before clone, pull and fetch hand anything over) now
+re-reads the same admission as the authorization, not only the watch: the
+owner's own run, binding and scope, Requests not refused, and no policy
+layer saved since the run was admitted.

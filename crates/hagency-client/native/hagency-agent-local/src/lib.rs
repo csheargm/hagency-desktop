@@ -1216,7 +1216,7 @@ impl Ledger {
         match admitted_policies(&tx, proposal, now) {
             // No policy saved since the run was admitted (GPT review):
             // a new rule, Deny or not, ends the override for this run.
-            Ok((original, current)) if original.iter().zip(&current).all(|(o, c)| o.0 == c.0) => Ok(Some(command)),
+            Ok((original, current)) if unchanged(&original, &current) => Ok(Some(command)),
             Ok(_) => Ok(None),
             Err(Error::Denied) => Ok(None),
             Err(other) => Err(other),
@@ -1407,6 +1407,20 @@ fn settle_transaction(
     Ok(())
 }
 
+/// Whether no policy layer was saved since the dispatch was admitted.
+fn unchanged(original: &Layers, current: &Layers) -> bool {
+    original.iter().zip(current).all(|(o, c)| o.0 == c.0)
+}
+/// The owner's own `proposal`, already authorized, is still admitted as it
+/// was (binding, scope, requests not refused, no policy saved since the run
+/// was admitted): the host's check right before a push or another network
+/// step (integration GPT review, Nov 17). Expiry was checked at
+/// authorization; this re-reads the policy, not the clock.
+pub(crate) fn still_admitted(db: &Connection, proposal: &ToolProposal) -> bool {
+    let owner: Option<String> = db.query_row("SELECT owner FROM identity", [], |r| r.get(0)).ok();
+    owner.as_deref() == Some(proposal.scope.requester.as_str())
+        && admitted_policies(db, proposal, proposal.expires - 1).is_ok_and(|(original, current)| unchanged(&original, &current))
+}
 /// Each layer's saved revision and policy.
 type Layers = Vec<(i64, Policy)>;
 /// The dispatch `proposal` belongs to, checked: its binding, expiry, keys,
