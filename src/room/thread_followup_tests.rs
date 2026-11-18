@@ -167,6 +167,61 @@ fn the_composer_takes_a_target_only_for_its_own_thread() {
     assert_eq!(bar.widget(&mut cx, ids!(thread_followup_hint)).as_thread_followup_hint().active(), None);
 }
 
+/// ADR 0023, R6: Agent answers sit in the room. Anna replies to
+/// anna-claude's answer to her "@anna-claude what are the issues?": what
+/// leaves the composer quotes the answer and mentions the Agent, so it
+/// continues with her. Betty replying to the same answer only quotes it: no
+/// mention, the Agent is not woken. A reply to a person mentions as before.
+#[test]
+fn replying_to_an_agents_answer_continues_for_the_requester_only() {
+    let (anna, betty, claude, codex) = (id(ANNA), id(BOB), id(CLAUDE), id(CODEX));
+    let request = mentions(&[&claude]);
+    let target = answer_followup(&anna, &claude, &anna, Some(&request), agent).expect("Anna continues");
+    assert_eq!(target, claude);
+    assert_eq!(reply_mentions(&claude, false, agent), AddMentions::No, "quoting an Agent alone wakes nobody");
+    let mut message = RoomMessageEventContent::text_plain("and the oldest one?");
+    assert!(address_followup(&mut message, &target, Some(&claude)));
+    let sent = serde_json::to_value(&message).unwrap();
+    assert_eq!(sent["m.mentions"]["user_ids"], serde_json::json!([CLAUDE]));
+    assert_eq!(answer_followup(&betty, &claude, &anna, Some(&request), agent), None, "Betty must mention it herself");
+    assert_eq!(answer_followup(&anna, &anna, &anna, Some(&request), agent), None, "a person's message is not an answer");
+    assert_eq!(answer_followup(&anna, &claude, &anna, Some(&mentions(&[&claude, &codex])), agent), None, "two Agents asked");
+    assert_eq!(reply_mentions(&betty, false, agent), AddMentions::Yes, "a reply to a person mentions them");
+    assert_eq!(reply_mentions(&claude, true, agent), AddMentions::Yes, "a direct chat reaches the Agent anyway");
+}
+
+/// The room's composer takes a reply's target; a thread keeps its own rule.
+#[test]
+fn the_room_composer_shows_the_reply_target() {
+    use crate::room::room_input_bar::RoomInputBarWidgetRefExt;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let bar = cx.with_vm(|vm| {
+        makepad_widgets::script_mod(vm);
+        crate::app::register_widgets(vm);
+        let value = script_eval!(vm, {mod.widgets.RoomInputBar {}});
+        let widget = WidgetRef::script_from_value(vm, value);
+        widget.register_as_ui_root(vm);
+        widget
+    });
+    let room: ruma::OwnedRoomId = "!dev:test".try_into().unwrap();
+    let main = TimelineKind::MainRoom { room_id: room.clone() };
+    let thread = TimelineKind::Thread { room_id: room.clone(), thread_root_event_id: "$t:test".try_into().unwrap() };
+    let target = || Some(FollowupTarget { agent: id(CLAUDE), name: "anna-claude".into() });
+    let input = bar.as_room_input_bar();
+    let active = |cx: &mut Cx| bar.widget(cx, ids!(thread_followup_hint)).as_thread_followup_hint().active();
+    input.set_room_context(&mut cx, WidgetUid(1), main.clone(), None);
+    input.set_reply_followup(&mut cx, &thread, target());
+    assert_eq!(active(&mut cx), None, "another timeline's target");
+    input.set_reply_followup(&mut cx, &main, target());
+    assert_eq!(active(&mut cx), Some(id(CLAUDE)), "Replying to anna-claude");
+    assert_eq!(bar.label(&mut cx, ids!(thread_followup_hint.followup_text)).text(), "Replying to anna-claude");
+    input.set_reply_followup(&mut cx, &main, None);
+    assert_eq!(active(&mut cx), None);
+    input.set_room_context(&mut cx, WidgetUid(1), thread.clone(), None);
+    input.set_reply_followup(&mut cx, &thread, target());
+    assert_eq!(active(&mut cx), None, "a thread keeps the thread rule");
+}
+
 #[test]
 fn hint_words_have_a_chinese_translation() {
     use crate::i18n::{Language, text_for};

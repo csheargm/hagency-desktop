@@ -97,13 +97,15 @@ async fn publish(device: &e2ee::AgentDevice, record: &mut Record) -> Result<(), 
     if device.is_revoked() {
         return Err(());
     }
+    // ADR 0023: the room's choice; a retried open reuses its transaction.
+    let mode = device.reply_mode(&record.card.room_id).await;
     if record.event.is_none() {
         let event = tokio::time::timeout(
             IO_WAIT,
             device.send_room_message(
                 &record.card.room_id,
                 &format!("{}_open", record.card.id),
-                record.original.content(),
+                record.original.content_in(mode),
             ),
         )
         .await
@@ -115,7 +117,7 @@ async fn publish(device: &e2ee::AgentDevice, record: &mut Record) -> Result<(), 
     if record.published != Some(record.card.revision) {
         let content = record
             .card
-            .edit_content(record.event.as_deref().ok_or(())?)
+            .edit_content_in(record.event.as_deref().ok_or(())?, mode)
             .map_err(|_| ())?;
         tokio::time::timeout(
             IO_WAIT,

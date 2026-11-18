@@ -28,6 +28,8 @@ mod history;
 mod recent;
 mod documents;
 mod files;
+mod placement;
+pub(in crate::console) use placement::placed_reply_content;
 // TODO(R4): this file is over budget; split the Agent device (send, history, files, memory) into e2ee/ modules in a refactor session.
 mod memory;
 pub(in crate::console) use documents::RoomFile;
@@ -547,7 +549,9 @@ impl AgentDevice {
         dispatch: &inbox::Dispatch,
         body: &str,
     ) -> Result<String, RuntimeError> {
-        let content = reply_content(dispatch, body)?;
+        let mode = self.reply_mode(&dispatch.room_id).await;
+        let quote = self.request_quote(dispatch).await;
+        let content = placed_reply_content(dispatch, body, mode, quote.as_deref())?;
         self.send(dispatch, txn("hagency", &dispatch.id), content)
             .await
     }
@@ -747,11 +751,7 @@ impl AgentDevice {
         let mut content = RoomMessageEventContent::notice_plain(
             "🔐 这条加密消息在 Agent 设备上无法解密（可能是在 Agent 设备加入前发送的）。请重新发送一次。",
         );
-        if dispatch.thread_root != dispatch.room_id
-            && let Ok(root) = OwnedEventId::try_from(dispatch.thread_root.as_str())
-        {
-            content.relates_to = Some(Relation::Thread(Thread::plain(root.clone(), root)));
-        }
+        content.relates_to = placement::notice_relation(dispatch, self.reply_mode(&dispatch.room_id).await);
         let _ = self
             .send(dispatch, txn("hagency_unreadable", &dispatch.id), content)
             .await;

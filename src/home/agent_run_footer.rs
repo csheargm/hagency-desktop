@@ -116,20 +116,13 @@ pub(crate) fn what_i_did(card: &Card) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// The link to the run's progress thread, "3 updates"; `None` for none.
+/// The link that opens the run's progress in place, "3 updates"; `None` for none.
 pub(crate) fn updates_text(count: usize) -> Option<String> {
     match count {
         0 => None,
         1 => Some(crate::i18n::tr("1 update").to_owned()),
         n => Some(crate::i18n::format("{n} updates", &[("n", n.to_string())])),
     }
-}
-
-/// Asks the room to open a run's progress thread.
-#[derive(Clone, Debug)]
-pub struct ShowRunUpdates {
-    pub room: String,
-    pub thread_root: String,
 }
 
 #[cfg(test)]

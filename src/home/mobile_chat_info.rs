@@ -4,6 +4,7 @@ use makepad_widgets::*;
 use crate::home::room_memory::panel::RoomMemoryPanelWidgetExt;
 use crate::home::room_skills::panel::RoomSkillsPanelWidgetExt;
 use crate::home::room_watches::panel::RoomWatchesPanelWidgetExt;
+use crate::home::agent_replies_setting::AgentRepliesSettingWidgetExt;
 use std::collections::{HashMap, HashSet};
 use matrix_sdk::{
     notification_settings::RoomNotificationMode,
@@ -103,6 +104,8 @@ script_mod! {
         memory_panel := mod.widgets.RoomMemoryPanel {}
         skills_panel := mod.widgets.RoomSkillsPanel {}
         watches_panel := mod.widgets.RoomWatchesPanel {}
+        // "Agent replies: In the room / In threads" (agent_replies_setting.rs), on Overview.
+        agent_replies_setting := mod.widgets.AgentRepliesSetting {}
         information_list := View {width: Fill height: Fill
             list := PortalList {
                 width: Fill height: Fill flow: Down
@@ -560,6 +563,8 @@ impl MobileChatInfo {
     fn fetch_info(&mut self, cx: &mut Cx, room: RoomNameId) {
         if self.room.as_ref().is_none_or(|open| open.room_id() != room.room_id()) {self.recently_left.clear();}
         self.room = Some(room.clone());
+        // TODO(R4): over budget; the Overview's room settings belong in home/chat_info_tabs.rs.
+        self.view.agent_replies_setting(cx, ids!(agent_replies_setting)).show(cx, room.room_id());
         let epoch = crate::account_session::epoch();
         let Some(client) = get_client() else { return };
         let Some(owner) = client.user_id().map(ToOwned::to_owned) else {
@@ -1097,6 +1102,7 @@ impl Widget for MobileChatInfo {
         self.view.label(cx,ids!(ownership_status)).set_visible(cx,members && self.ownership_unavailable);
         self.view.view(cx, ids!(services_panel)).set_visible(cx, !members && !memory && self.services_open);
         self.view.view(cx, ids!(information_list)).set_visible(cx, !memory && (members || !self.services_open));
+        self.view.widget(cx, ids!(agent_replies_setting)).set_visible(cx, !members && !memory && !self.services_open && self.room.is_some());
         let service_selected = self.view.drop_down(cx, ids!(room_services)).selected_item().checked_sub(1).is_some_and(|i| i < self.services.len());
         self.view.button(cx, ids!(configure_service)).set_enabled(cx, service_selected && !self.services_busy && self.pin_is_current());
         self.view.button(cx, ids!(refresh_services)).set_enabled(cx, !self.services_busy);

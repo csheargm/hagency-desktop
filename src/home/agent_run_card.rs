@@ -45,6 +45,11 @@ script_mod! {
             visible: false width: Fill height: Fit
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
         }
+        // "N updates" opened in place (agent_run_updates.rs).
+        updates_list := Label {
+            visible: false width: Fill height: Fit flow: Flow.Right{wrap: true}
+            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+        }
         // More runs than slots: the last card pages through them.
         pager := View {
             visible: false width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
@@ -108,6 +113,9 @@ pub struct AgentRunCard {
     /// The run the reader paged to, kept while it is still listed.
     #[rust]
     page_key: Option<String>,
+    /// The progress thread's reply count, for "N updates".
+    #[rust]
+    updates_count: usize,
 }
 /// How often a running card's elapsed time ticks.
 const CLOCK_TICK_SECS: f64 = 1.0;
@@ -163,6 +171,11 @@ impl Widget for AgentRunCard {
         {
             super::agent_run_answer::act(cx, action, entry);
         }
+        let ours = |c: &super::agent_run_updates::RunUpdatesChanged| self.run.as_ref().is_some_and(|(card, _)| c.room == card.room_id && c.thread_root == card.thread_root);
+        if actions.iter().any(|a| a.downcast_ref().is_some_and(ours)) {
+            self.show_updates(cx);
+            self.view.redraw(cx);
+        }
         let Some(key) = self.key.as_deref() else {
             return;
         };
@@ -180,7 +193,7 @@ impl Widget for AgentRunCard {
                 cx.action(crate::agent_chat::approval_inbox::ApprovalInboxAction::Open { project: Some(project) });
             }
             if self.view.button(cx, ids!(links.updates)).clicked(actions) {
-                cx.action(super::agent_run_footer::ShowRunUpdates { room: card.room_id.clone(), thread_root: card.thread_root.clone() });
+                super::agent_run_updates::toggle(&card.room_id, &card.thread_root, self.updates_count);
             }
         }
         if let Some(text) = self.view.text_input(cx, ids!(input)).changed(actions) {
@@ -233,14 +246,33 @@ impl AgentRunCard {
         }
     }
 }
-impl AgentRunCardRef {
-    /// The "N updates" link to the progress thread; hidden for none.
-    pub fn set_updates(&self, cx: &mut Cx, count: usize) {
-        let Some(inner) = self.borrow() else { return };
-        let link = inner.view.button(cx, ids!(links.updates));
-        let text = super::agent_run_footer::updates_text(count);
+impl AgentRunCard {
+    /// "N updates", or "Hide updates" over the list it opened in place.
+    // TODO(R4): over budget; move the links row (details, updates) out with the file split.
+    fn show_updates(&mut self, cx: &mut Cx) {
+        let open = self.run.as_ref().and_then(|(card, _)| super::agent_run_updates::shown(&card.room_id, &card.thread_root));
+        let link = self.view.button(cx, ids!(links.updates));
+        let text = match &open {
+            Some(_) => Some(crate::i18n::tr("Hide updates").to_owned()),
+            None => super::agent_run_footer::updates_text(self.updates_count),
+        };
         link.set_visible(cx, text.is_some());
         link.set_text(cx, text.as_deref().unwrap_or_default());
+        let list = self.view.label(cx, ids!(updates_list));
+        list.set_visible(cx, open.is_some() && self.updates_count > 0);
+        list.set_text(cx, &open.as_ref().map(super::agent_run_updates::text).unwrap_or_default());
+    }
+}
+impl AgentRunCardRef {
+    /// The "N updates" link to the progress thread; hidden for none. Open
+    /// updates follow the thread as it grows.
+    pub fn set_updates(&self, cx: &mut Cx, count: usize) {
+        let Some(mut inner) = self.borrow_mut() else { return };
+        inner.updates_count = count;
+        if let Some((card, _)) = inner.run.as_ref() {
+            super::agent_run_updates::follow(&card.room_id, &card.thread_root, count);
+        }
+        inner.show_updates(cx);
     }
     /// The viewer's own request no run card answers yet: its waiting line,
     /// shown while this card has no run.

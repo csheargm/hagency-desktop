@@ -3639,5 +3639,17 @@
   "Opening the private chat…": "正在打开私聊…",
   "The private chat is still being set up. Click Message again in a moment.": "私聊仍在设置中。请稍后再点击“消息”。",
   "Could not open the private chat: {code}": "无法打开私聊：{code}",
-  "Replying to {0}": "回复 {0}"
+  "Replying to {0}": "回复 {0}",
+  "Agent replies": "Agent 回复",
+  "In the room": "在群聊中",
+  "In threads": "在话题中",
+  "Agent answers appear in the room for everyone, quoting the question.": "Agent 的回答直接显示在群聊中，所有成员可见，并引用原问题。",
+  "Agent answers open a thread under each question.": "Agent 的回答会在每个问题下开一个话题。",
+  "Could not change where Agents reply: {reason}": "无法更改 Agent 的回复位置：{reason}",
+  "Room not found": "找不到该聊天室",
+  "Loading updates…": "正在加载进度…",
+  "Could not load the updates. Close and open them to try again.": "无法加载进度。请收起后重新展开再试。",
+  "No updates yet.": "暂无进度。",
+  "Hide updates": "收起进度",
+  "Could not find message in timeline to reply to. Please try again.": "在时间线中找不到要回复的消息，请重试。"
 }

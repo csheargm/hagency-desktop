@@ -3639,5 +3639,17 @@
   "Opening the private chat…": "Opening the private chat…",
   "The private chat is still being set up. Click Message again in a moment.": "The private chat is still being set up. Click Message again in a moment.",
   "Could not open the private chat: {code}": "Could not open the private chat: {code}",
-  "Replying to {0}": "Replying to {0}"
+  "Replying to {0}": "Replying to {0}",
+  "Agent replies": "Agent replies",
+  "In the room": "In the room",
+  "In threads": "In threads",
+  "Agent answers appear in the room for everyone, quoting the question.": "Agent answers appear in the room for everyone, quoting the question.",
+  "Agent answers open a thread under each question.": "Agent answers open a thread under each question.",
+  "Could not change where Agents reply: {reason}": "Could not change where Agents reply: {reason}",
+  "Room not found": "Room not found",
+  "Loading updates…": "Loading updates…",
+  "Could not load the updates. Close and open them to try again.": "Could not load the updates. Close and open them to try again.",
+  "No updates yet.": "No updates yet.",
+  "Hide updates": "Hide updates",
+  "Could not find message in timeline to reply to. Please try again.": "Could not find message in timeline to reply to. Please try again."
 }

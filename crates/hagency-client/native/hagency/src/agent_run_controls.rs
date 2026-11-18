@@ -1,7 +1,9 @@
 //! Matrix run controls carry no tool-approval authority. The executor combines
 //! these closed-schema values with the authenticated Matrix sender and the
 //! still-running dispatch/lease before accepting an action.
+// TODO(R4): over budget; split the card's Matrix wire shape (content, edits, room body) from the action rules.
 use serde::{Deserialize, Serialize};
+use hagency_core::agent_replies::{self, Mode, Placement};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -367,21 +369,32 @@ impl Card {
             state => status_text(state).to_owned(),
         }
     }
-    /// One message per run: a reply to the request in the main timeline, or
-    /// in the request's own thread. The run never opens a thread itself.
+    /// One message per run, placed as the room's threads setting was before
+    /// ADR 0023: in the request's thread. See [`Self::content_in`].
     pub fn content(&self) -> Value {
-        let relation = if event(&self.thread_root) {
-            json!({"rel_type":"m.thread","event_id":self.thread_root,"is_falling_back":true,"m.in_reply_to":{"event_id":self.event_id}})
-        } else {
-            json!({"m.in_reply_to":{"event_id":self.event_id}})
+        self.content_in(Mode::Thread)
+    }
+    /// One message per run: a reply to the request in the main timeline, or
+    /// in a thread when the request was written in one or the room keeps
+    /// Agent replies in threads (`mode`, ADR 0023).
+    pub fn content_in(&self, mode: Mode) -> Value {
+        let placement = match agent_replies::placement(mode, &self.room_id, &self.event_id, &self.thread_root) {
+            // Even a top-level owner DM's card names the request it runs for.
+            Placement::Top => Placement::Reply { to: &self.event_id },
+            placed => placed,
         };
+        let relation = agent_replies::relation(placement, Some(&self.event_id));
         json!({"msgtype":MSGTYPE,"body":self.room_body(),MSGTYPE:self,"m.relates_to":relation})
     }
     pub fn edit_content(&self, card_event: &str) -> Result<Value, &'static str> {
+        self.edit_content_in(card_event, Mode::Thread)
+    }
+    /// The edit of a card posted with [`Self::content_in`]`(mode)`.
+    pub fn edit_content_in(&self, card_event: &str, mode: Mode) -> Result<Value, &'static str> {
         if !event(card_event) {
             return Err("invalid_run_event");
         }
-        let content = self.content();
+        let content = self.content_in(mode);
         Ok(
             json!({"msgtype":MSGTYPE,"body":content["body"],MSGTYPE:self,"m.new_content":content,"m.relates_to":{"rel_type":"m.replace","event_id":card_event}}),
         )
@@ -527,7 +540,14 @@ pub(crate) mod tests {
                 sender: "@requester:test".into(), outcome: "unavailable".into() });
         }
         assert!(late.answer_edit_fits(), "late receipts never push the answer edit over budget");
+        let mut own = card.clone();
+        own.thread_root = own.event_id.clone();
+        assert_eq!(own.content()["m.relates_to"]["rel_type"], "m.thread", "the threads setting: a thread under the request");
+        let flat = own.content_in(Mode::Room);
+        assert_eq!(flat["m.relates_to"], json!({"m.in_reply_to":{"event_id":"$trigger"}}), "default: in the main timeline");
+        assert!(own.edit_content_in("$card", Mode::Room).unwrap()["m.new_content"]["m.relates_to"]["rel_type"].is_null());
         card.thread_root = "$thread".into();
+        assert_eq!(card.content_in(Mode::Room)["m.relates_to"]["event_id"], "$thread", "a person's thread stays one");
         let threaded = card.content();
         assert_eq!(threaded["m.relates_to"]["rel_type"], "m.thread");
         assert_eq!(threaded["m.relates_to"]["event_id"], "$thread");

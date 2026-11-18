@@ -16,6 +16,14 @@ pub struct ForwardRunAnswer {
     pub name: String,
 }
 
+/// Asks the room to quote a run card's answer in the composer (ADR 0023).
+#[derive(Clone, Debug)]
+pub struct ReplyToRunAnswer {
+    pub room: String,
+    /// The run's status event, which carries the answer and replies to the request.
+    pub run_event: String,
+}
+
 /// The room's forwardable messages with the run's status event standing for
 /// its answer text, and the event to preselect. A status event no longer in
 /// the loaded timeline is added from the card, so Forward always works.
@@ -37,6 +45,7 @@ pub fn act(cx: &mut makepad_widgets::Cx, action: crate::agent_chat::reply::Answe
     use crate::agent_chat::reply::AnswerAction;
     let answer = entry.card.answer.as_str();
     match action {
+        AnswerAction::Reply => cx.action(ReplyToRunAnswer { room: entry.card.room_id.clone(), run_event: entry.key.clone() }),
         AnswerAction::Copy => cx.copy_to_clipboard(&crate::shared::mentions_as_names(answer)),
         AnswerAction::Markdown => crate::agent_chat::answer_export::save(answer.to_owned(), false),
         AnswerAction::Pdf => crate::agent_chat::answer_export::save(answer.to_owned(), true),
