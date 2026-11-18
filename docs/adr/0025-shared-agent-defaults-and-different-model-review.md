@@ -158,7 +158,7 @@ Decision:
 - A member's harmless look inside the Room workspace needs no card
   (`member_inspection.rs`, `outside::inspects_workspace`): a Claude `Read`
   whose only path is an absolute `file_path` inside the workspace, or a shell
-  line of plain viewers (`pwd`, `ls` without recursion or link following,
+  line of plain viewers (`pwd`, `ls -a|-A|-1|-F` (no recursion, long listing or link following),
   `cat`, `head`/`tail -n|-c <number>`, `wc`, `date`) and `cd` inside, every
   directory entered and file named resolved through links, inside the
   workspace and never git metadata; no search tool (Grep, Glob, `grep`, `rg`
@@ -204,3 +204,10 @@ residual as outside mode); a Room-file create replay returns the exact prior
 receipt of that same member's authorized operation before the card; the
 watch and shared-review shortcuts (`trusted_publish`) still override a saved
 Deny by design (ADR 0019, ADR 0022 "Deny").
+Second pass, adopted: options only before the first file (BSD tools stop
+reading options there), no `+` words (tail's legacy follow form), no `$`
+anywhere (a quoted `$?` would expand), no `..` step (the shell's logical `cd`
+differs from the physical check), `pwd` and `date` take no operands (a
+`date` operand sets the clock), and no `ls -l` (it prints link targets).
+Residual: a hard link inside the workspace to protected content reads as an
+ordinary file, and a link swapped between the check and the run.

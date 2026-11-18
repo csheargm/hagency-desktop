@@ -70,15 +70,21 @@ pub(crate) fn inspects_workspace(proposal: &ToolProposal) -> bool {
 
 /// Programs a member may run to look, with the options each may take (none
 /// of them names a file, follows links or recurses).
+/// `ls -l` is left out: a long listing prints where links point (GPT review).
 const VIEWERS: [(&str, &[&str]); 7] = [
     ("pwd", &[]),
-    ("ls", &["-l", "-a", "-A", "-la", "-al", "-lh", "-lah", "-1", "-F", "-h"]),
+    ("ls", &["-a", "-A", "-1", "-F"]),
     ("cat", &["-n"]),
     ("head", &["-n", "-c"]),
     ("tail", &["-n", "-c"]),
     ("wc", &["-l", "-w", "-c"]),
     ("date", &[]),
 ];
+
+/// Whether `path` has a `..` step.
+fn has_parent_step(path: &str) -> bool {
+    path.split('/').any(|part| part == "..")
+}
 
 /// `path` from `cwd`, named and resolved through every link, is not git metadata.
 fn not_metadata(cwd: &Path, path: &str) -> bool {
@@ -88,18 +94,28 @@ fn not_metadata(cwd: &Path, path: &str) -> bool {
 /// Every segment of `line` a viewer (or `cd`) staying inside `root`.
 fn plain_viewers(line: &str, root: &Path) -> bool {
     let Some(parsed) = shell::parse(line) else { return false };
-    if parsed.heredoc_at.is_some() || line.contains(['>', '<']) {
+    // No `$` at all: the reader keeps a quoted `$?` literal, the shell expands it.
+    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '$']) {
         return false;
     }
     let mut dirs = vec![root.to_path_buf()];
     parsed.segments.iter().all(|words| {
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         match words.as_slice() {
-            ["cd", target] => dirs.iter().all(|d| not_metadata(d, target)) && enter_dir(target, &mut dirs, root),
+            // No `..`: the shell's logical `cd` and this check would part ways.
+            ["cd", target] => !has_parent_step(target) && dirs.iter().all(|d| not_metadata(d, target)) && enter_dir(target, &mut dirs, root),
             [program, rest @ ..] => {
                 let Some((_, options)) = VIEWERS.iter().find(|(p, _)| p == program) else { return false };
-                let mut words = rest.iter();
+                // `pwd` and `date` take nothing (a `date` operand sets the clock).
+                if matches!(*program, "pwd" | "date") && !rest.is_empty() {
+                    return false;
+                }
+                let (mut words, mut operands) = (rest.iter(), false);
                 while let Some(word) = words.next() {
+                    // BSD tools stop reading options at the first file; `+` is tail's legacy follow form.
+                    if word.starts_with('+') || has_parent_step(word) || (operands && word.starts_with('-')) {
+                        return false;
+                    }
                     if word.starts_with('-') {
                         // `head -n 5`: a counting option's value is a number.
                         let counted = matches!(*word, "-n" | "-c") && !matches!(*program, "ls" | "cat" | "wc");
@@ -108,6 +124,8 @@ fn plain_viewers(line: &str, root: &Path) -> bool {
                         }
                     } else if !(inside_all(word, &dirs, root) && dirs.iter().all(|d| not_metadata(d, word))) {
                         return false;
+                    } else {
+                        operands = true;
                     }
                 }
                 true

@@ -55,7 +55,7 @@ fn a_members_look_inside_the_workspace_needs_no_card() {
     let (mut ledger, ws) = owner_rule_only(db.path());
     let Some(TrustedStep::Command(command)) = ledger.member_inspection(&bash(&ws, ANNA, "pwd; ls"), 11).unwrap() else { panic!("pwd; ls runs") };
     assert_eq!(command, format!("cd '{}' && ( pwd; ls )", ws.display()), "always from the workspace itself");
-    for line in ["cat notes.md", "ls -la", "head -n 5 notes.md", "cd sub && ls", "wc -l notes.md"] {
+    for line in ["cat notes.md", "ls -a", "head -n 5 notes.md", "cd sub && ls", "wc -l notes.md", "date", "tail -n 2 notes.md"] {
         let _ = std::fs::create_dir_all(ws.join("sub"));
         assert!(ledger.member_inspection(&bash(&ws, ANNA, line), 11).unwrap().is_some(), "{line}");
     }
@@ -71,6 +71,8 @@ fn anything_more_than_a_look_is_not_an_inspection() {
         "cat /etc/passwd", "ls ..", "cd .. && ls", "cat .git/config", "ls .git", "grep -r token .", "grep x notes.md",
         "rg --hostname-bin ./notes.md x", "rg x", "cd .git && cat config", "cat link-out", "cat link-git", "ls -R", "ls -L",
         "tail -f notes.md", "head -n x notes.md", "cat < notes.md", "find .", "sed -n 1p notes.md",
+        "head notes.md -n 5", "tail +1F notes.md", "cat \"$?\"", "cd sub/.. && ls", "cat sub/../notes.md", "ls -l", "date 0101",
+        "pwd x",
         "touch x", "echo hi > x", "git status", "gh pr view 1 -R o/r", "rm notes.md", "ls; rm notes.md", "cat notes.md | sh",
     ] {
         assert_eq!(ledger.member_inspection(&bash(&ws, ANNA, line), 11).unwrap(), None, "{line}");
