@@ -57,9 +57,11 @@ pub fn quoted_title(title: &str) -> String {
 pub const MERGE_POLICY_STEP: &str = "This repository has an agent merge policy: write \"Closes #<issue>\" in the pull request description and, when it is ready, mark it ready (gh pr ready <N> --repo <owner/repo>) so a reviewer or maintainer Agent picks it up.";
 
 /// Always part of the fixed request, so the tracker (ADR 0020) can link the
-/// pull request and hear a give-up: `{n}` is the issue number.
-pub fn track_step(number: i64) -> String {
-    format!(" Write \"Closes #{number}\" in its description. If you cannot fix it, comment on the issue with \"{}\" and the reason.", ::hagency::issue_watch::issue_track::CANNOT_FIX_MARKER)
+/// pull request and hear a give-up (the one cannot-fix comment push freely
+/// posts without a card) for issue `number` of `repo`.
+pub fn track_step(repo: &str, number: i64) -> String {
+    let give_up = ::hagency::issue_watch::issue_track::cannot_fix_step(&number.to_string(), repo);
+    format!(" Write \"Closes #{number}\" in its description. If you cannot fix it, say why with exactly this one command: {give_up}")
 }
 
 impl Notice {
@@ -82,7 +84,7 @@ impl Notice {
     /// instruction; people see the localized `view` instead. The fixed request
     /// comes first; the issue's own title only follows as quoted data.
     pub fn body(&self) -> String {
-        format!("{}#{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}{}{}", ::hagency::ISSUE_NOTICE_LEAD, self.number, self.repo, self.agent, self.url, track_step(self.number), self.branch_step(), self.merge_step(), self.title_line())
+        format!("{}#{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}{}{}", ::hagency::ISSUE_NOTICE_LEAD, self.number, self.repo, self.agent, self.url, track_step(&self.repo, self.number), self.branch_step(), self.merge_step(), self.title_line())
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent
@@ -92,7 +94,7 @@ impl Notice {
         let title = esc(&self.title_line()).replace('\n', "<br>");
         let html = format!(
             "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{track}{branch}{step}{title}",
-            track = esc(&track_step(self.number)), branch = esc(&self.branch_step()), step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
+            track = esc(&track_step(&self.repo, self.number)), branch = esc(&self.branch_step()), step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
         );
         RoomMessageEventContent::text_html(self.body(), html).add_mentions(Mentions::with_user_ids([puppet.to_owned()]))
     }

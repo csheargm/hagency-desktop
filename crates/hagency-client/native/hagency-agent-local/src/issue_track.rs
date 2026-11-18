@@ -130,6 +130,26 @@ pub struct Facts {
 /// opening with this, then the reason (the hand-off asks for it).
 pub const CANNOT_FIX_MARKER: &str = "🤖 Hagency: cannot fix";
 
+/// The exact cannot-fix comment "push freely" posts without a card
+/// (`watch_trust::cannot_fix`), for issue `number` of `repo` (or
+/// placeholders): the hand-off and the Codex step tool both state it.
+pub fn cannot_fix_step(number: &str, repo: &str) -> String {
+    format!("gh issue comment {number} --repo {repo} --body '{CANNOT_FIX_MARKER} - <the reason on one line, without quotes, $, backticks or backslashes>'")
+}
+
+/// Whether `agent` was handed issue `number` of `repo` (any letter case)
+/// and that record is still open (not merged, closed, failed or given up).
+pub(crate) fn is_handed(db: &rusqlite::Connection, agent: &str, repo: &str, number: u64) -> Result<bool> {
+    let mut statement = db.prepare("SELECT state FROM issue_track WHERE agent=? AND repo=? COLLATE NOCASE AND number=?")?;
+    let states = statement.query_map((agent, repo, number as i64), |r| r.get::<_, String>(0))?;
+    for state in states {
+        if !State::parse(&state?)?.is_terminal() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Whether `login` (the Agent's GitHub identity) posted the cannot-fix
 /// comment during the current attempt (at or after `since`).
 pub fn says_cannot_fix(comments: &[crate::issue_watch::wire::Comment], login: &str, since: i64) -> bool {
