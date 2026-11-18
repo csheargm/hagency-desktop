@@ -212,7 +212,9 @@ fn a_used_up_budget_holds_every_hand_off_until_it_allows_again() {
     assert_eq!(decide(&handed(1, T0), &out(Facts { run_ended: true, no_run: true, ..open(later) })), Action::HoldBudget);
     assert_eq!(decide(&handed(1, T0), &out(open(later))), Action::HoldBudget, "a timed-out attempt is not re-posted either");
     let last = Track { free_retries: MAX_FREE_RETRIES, ..handed(MAX_ATTEMPTS, T0) };
-    assert_eq!(decide(&last, &out(Facts { run_ended: true, no_run: true, ..open(later) })), Action::GiveUp, "out of attempts still ends");
+    assert_eq!(decide(&last, &out(Facts { run_ended: true, no_run: true, ..open(later) })), Action::HoldBudget, "a refusal at the caps is still held, never failed");
+    assert_eq!(decide(&last, &out(Facts { run_ended: true, ..open(later) })), Action::GiveUp, "a last attempt that ran still ends");
+    assert_eq!(decide(&handed(1, T0), &out(Facts { run_ended: true, ..open(later) })), Action::HoldBudget, "a real run that used the budget up: the retry waits");
     assert_eq!(decide(&handed(1, T0), &out(open(T0 + 1))), Action::Wait, "a running hand-off just waits");
     assert_eq!(decide(&handed(1, T0), &out(Facts { open_pr: Some(9), ..open(later) })), Action::FollowPr { pr: 9 }, "a pull request is still followed");
 }

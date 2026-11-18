@@ -4,9 +4,9 @@
 //! model not called", and all three were marked failed), on the tracker's
 //! fakes: held while the budget is used up, then re-handed without an
 //! attempt, never twice within the back-off.
-use super::run_end::{RunEnd, run_end_in};
+use super::run_end::{RunEnd, RunView, run_end_in};
 use super::tracker_tests::{Fake, T0, check, first_hand_off, issue};
-use ::hagency::issue_watch::issue_track::{MAX_FREE_RETRIES, REHAND_BACKOFF_SECS, State};
+use ::hagency::issue_watch::issue_track::{MAX_ATTEMPTS, MAX_FREE_RETRIES, REHAND_BACKOFF_SECS, State};
 use serde_json::json;
 
 const ME: &str = "@betty:x";
@@ -18,7 +18,8 @@ fn three_hand_offs_refused_for_the_budget_are_held_not_failed() {
         first_hand_off(&fake, n);
     }
     let open = [issue(90), issue(91), issue(92)];
-    fake.run.set(Some(RunEnd::NoRun { budget_out: true }));
+    fake.run.set(Some(RunEnd::NoRun));
+    fake.budget_out.set(true);
     for minute in 1..=10 {
         check(&fake, T0 + minute * 60, &open, &[]);
     }
@@ -29,7 +30,7 @@ fn three_hand_offs_refused_for_the_budget_are_held_not_failed() {
         assert_eq!((track.state, track.attempts, track.free_retries), (State::HandedOff, 1, 0), "#{}", track.number);
     }
     // The UTC day turns: each issue gets its own run again, not counted.
-    fake.run.set(Some(RunEnd::NoRun { budget_out: false }));
+    fake.budget_out.set(false);
     assert_eq!(check(&fake, T0 + 11 * 60, &open, &[]), ["#90 retrying (1/3)", "#91 retrying (1/3)", "#92 retrying (1/3)"]);
     assert_eq!(*fake.handed.borrow(), [(90, 1), (91, 1), (92, 1)], "the same attempt");
     assert!(fake.said.borrow()[3].2.starts_with("🔁 #90: the run ended before the model started"));
@@ -40,7 +41,7 @@ fn three_hand_offs_refused_for_the_budget_are_held_not_failed() {
 fn a_refused_run_is_re_handed_only_after_the_back_off_then_counts_at_the_cap() {
     let fake = Fake::default();
     first_hand_off(&fake, 90);
-    fake.run.set(Some(RunEnd::NoRun { budget_out: false }));
+    fake.run.set(Some(RunEnd::NoRun));
     // 50 s after the hand-off, as on Nov 18: too soon.
     assert_eq!(check(&fake, T0 + 50, &[issue(90)], &[]), ["#90 waiting for a pull request"]);
     assert!(fake.handed.borrow().is_empty());
@@ -67,8 +68,29 @@ fn the_activity_view_names_a_no_run_and_whether_the_budget_is_used_up() {
         r
     };
     let view = |extra, used_up| json!({"requests": [req(extra)], "budgetUsedUp": used_up});
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), ME, track), RunEnd::NoRun { budget_out: true });
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), false), ME, track), RunEnd::NoRun { budget_out: false });
-    assert_eq!(run_end_in(&view(json!({}), true), ME, track), RunEnd::Ended, "a model reply is a real end, budget or not");
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), "@other:x", track), RunEnd::Running, "only this account's hand-offs");
+    let seen = |run, budget_out| RunView { run, budget_out };
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), ME, track), seen(RunEnd::NoRun, true));
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), false), ME, track), seen(RunEnd::NoRun, false));
+    assert_eq!(run_end_in(&view(json!({}), true), ME, track), seen(RunEnd::Ended, true), "the budget is carried after a real run too");
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), "@other:x", track), seen(RunEnd::Running, true), "only this account's hand-offs");
+}
+
+#[test]
+fn a_real_run_that_used_the_budget_up_holds_its_retry_and_a_capped_refusal_never_fails() {
+    // GPT review: #93-like run spends the last tokens and ends without a PR.
+    let fake = Fake::default();
+    first_hand_off(&fake, 93);
+    fake.run.set(Some(RunEnd::Ended));
+    fake.budget_out.set(true);
+    assert_eq!(check(&fake, T0 + 120, &[issue(93)], &[]), ["#93 waiting for the Agent's token budget"]);
+    assert!(fake.handed.borrow().is_empty(), "the retry would be refused: not posted");
+    // A refusal on the last attempt with no free retries left: held, not failed.
+    let last = Fake::default();
+    first_hand_off(&last, 90);
+    last.store.borrow_mut().get_mut(&90).unwrap().attempts = MAX_ATTEMPTS;
+    last.store.borrow_mut().get_mut(&90).unwrap().free_retries = MAX_FREE_RETRIES;
+    last.run.set(Some(RunEnd::NoRun));
+    last.budget_out.set(true);
+    check(&last, T0 + 600, &[issue(90)], &[]);
+    assert_eq!(last.tracks()[0].state, State::HandedOff);
 }

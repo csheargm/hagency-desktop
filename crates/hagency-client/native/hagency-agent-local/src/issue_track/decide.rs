@@ -57,7 +57,11 @@ pub fn decide(track: &Track, facts: &Facts) -> Action {
         return if facts.open_pr.is_some() { Action::FollowPr { pr } } else { Action::Wait };
     }
     let ended = facts.run_ended && track.state == State::HandedOff;
-    let next = if ended {
+    let next = if ended && facts.no_run && facts.budget_out {
+        // Refused for the budget, not run: never a give-up or a counted
+        // attempt, whatever the caps (GPT review); resumes after the turn.
+        Action::HoldBudget
+    } else if ended {
         after_ended_run(track, facts)
     } else if facts.now < deadline(track) {
         Action::Wait

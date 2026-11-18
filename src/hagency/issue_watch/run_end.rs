@@ -32,8 +32,23 @@ pub enum RunEnd {
     Unanswered,
     /// An owner-policy notice answered before the model started (a used-up
     /// budget, a denial, a signed-out provider): the Agent never ran
-    /// (Nov 18, #90-#92). `budget_out`: the Agent's budget is used up now.
-    NoRun { budget_out: bool },
+    /// (Nov 18, #90-#92).
+    NoRun,
+}
+
+/// The current hand-off's run, and whether the Agent's token budget is used
+/// up now (any next hand-off would be refused), read together (GPT review:
+/// the budget holds a retry after a real run too, not only after a no-run).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunView {
+    pub run: RunEnd,
+    pub budget_out: bool,
+}
+
+impl Default for RunView {
+    fn default() -> Self {
+        Self { run: RunEnd::Running, budget_out: false }
+    }
 }
 
 impl RunEnd {
@@ -55,7 +70,7 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
     });
     let Some(newest) = ours.max_by_key(|r| r["receivedAt"].as_i64()) else { return RunEnd::Running };
     match newest["outcome"].as_str() {
-        Some("answered") if newest["noRun"] == true => RunEnd::NoRun { budget_out: false },
+        Some("answered") if newest["noRun"] == true => RunEnd::NoRun,
         Some("answered") if newest["unanswered"] == true => RunEnd::Unanswered,
         Some("answered" | "declined") => RunEnd::Ended,
         Some("failed") if newest["interrupted"] == true => RunEnd::Interrupted,
@@ -66,12 +81,9 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
 
 /// The current hand-off's run of `track` in the owner API's Activity view
 /// (`{requests, budgetUsedUp}`), counting only `requester`'s hand-offs.
-pub fn run_end_in(activity: &Value, requester: &str, track: &Track) -> RunEnd {
+pub fn run_end_in(activity: &Value, requester: &str, track: &Track) -> RunView {
     let ours = requested_by(&activity["requests"], requester);
-    match run_end_of(&ours, &track.repo, track.number, track.handed_at) {
-        RunEnd::NoRun { .. } => RunEnd::NoRun { budget_out: activity["budgetUsedUp"] == true },
-        run => run,
-    }
+    RunView { run: run_end_of(&ours, &track.repo, track.number, track.handed_at), budget_out: activity["budgetUsedUp"] == true }
 }
 
 /// Only the requests `requester` sent: the hand-offs this device's account
@@ -122,7 +134,7 @@ pub const ENDED_NO_PR: &str = "🔁 #{number}: the run ended without a pull requ
 pub const RUN_LOST: &str = "🔁 #{number}: the run was lost before it finished — retrying (attempt {attempt} of {max})";
 pub const RESTARTED: &str = "🔁 #{number}: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt {attempt} of {max}, not counted)";
 pub const NO_RUN: &str = "🔁 #{number}: the run ended before the model started (an owner limit or a signed-out provider answered instead) — handing it off again (attempt {attempt} of {max}, not counted)";
-pub const BUDGET_HELD: &str = "⏸️ #{number}: {agent}'s token budget for this period is used up, so its run was refused before the model started — the issue waits until the budget allows again (not counted)";
+pub const BUDGET_HELD: &str = "⏸️ #{number}: {agent}'s token budget for this period is used up — the next hand-off waits until the budget allows again (not counted)";
 pub const UNANSWERED: &str = "🔁 #{number}: the run stopped at an approval card nobody answered — handing it off again (attempt {attempt} of {max}, not counted); approve its card in the owner's Hagency window";
 
 /// Which hand-off a retry is.
@@ -160,7 +172,7 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
     let status = crate::i18n::format("#{number} retrying ({attempt}/{max})", &args);
     let (key, template) = match (again, run, branch) {
         (Again::Rehand, RunEnd::Unanswered, _) => (format!("rehand-{attempt}-{free}"), UNANSWERED),
-        (Again::Rehand, RunEnd::NoRun { .. }, _) => (format!("rehand-{attempt}-{free}"), NO_RUN),
+        (Again::Rehand, RunEnd::NoRun, _) => (format!("rehand-{attempt}-{free}"), NO_RUN),
         (Again::Rehand, ..) => (format!("rehand-{attempt}-{free}"), RESTARTED),
         (_, RunEnd::Running, _) => (format!("retry-{attempt}"), RETRYING),
         (_, _, Some(branch)) => {
@@ -168,7 +180,7 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
             (format!("retry-{attempt}"), PUSHED_NO_PR)
         }
         (_, RunEnd::Lost | RunEnd::Interrupted, None) => (format!("retry-{attempt}"), RUN_LOST),
-        (_, RunEnd::Ended | RunEnd::Unanswered | RunEnd::NoRun { .. }, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
+        (_, RunEnd::Ended | RunEnd::Unanswered | RunEnd::NoRun, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
     };
     io.say(n, &key, crate::i18n::format(template, &args)).await?;
     Ok(Some(status))

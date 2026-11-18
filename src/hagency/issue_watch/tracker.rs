@@ -7,7 +7,7 @@
 //! and attempt, so a check that dies in between repeats a duplicate the
 //! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
 use super::merge_hold::Missing;
-use super::run_end::{Again, RunEnd, branch_names_issue, hand_again, hold_for_budget};
+use super::run_end::{Again, RunEnd, RunView, branch_names_issue, hand_again, hold_for_budget};
 use super::work_slots::closes_issue;
 use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -45,7 +45,7 @@ pub(crate) trait TrackIo {
     /// holds the issue's claim.
     async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>, again: u32) -> Result<bool, String>;
     /// Whether the current hand-off's run is over (its Activity record).
-    async fn run_end(&self, track: &Track) -> Result<RunEnd, String>;
+    async fn run_end(&self, track: &Track) -> Result<RunView, String>;
     /// The one branch the Agent pushed for issue `number`, if any.
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String>;
     /// The Agent's name for room lines.
@@ -120,19 +120,15 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
     // A run that already ended without a pull request is retried now (e2e, Nov 17).
     // An unreadable run only falls back to the deadline (GPT review): never stuck.
-    let run = if fact == IssueFact::Open && open_pr.is_none() && !cannot_fix && track.state == State::HandedOff {
+    let RunView { run, budget_out } = if fact == IssueFact::Open && open_pr.is_none() && !cannot_fix && track.state == State::HandedOff {
         io.run_end(track).await.unwrap_or_else(|e| {
             makepad_widgets::log!("WARN issue_track_run_unreadable #{}: {e}", track.number);
-            RunEnd::Running
+            RunView::default()
         })
     } else {
-        RunEnd::Running
+        RunView::default()
     };
-    let (no_run, budget_out) = match run {
-        RunEnd::NoRun { budget_out } => (true, budget_out),
-        _ => (false, false),
-    };
-    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted, unanswered: run == RunEnd::Unanswered, no_run, budget_out };
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted, unanswered: run == RunEnd::Unanswered, no_run: run == RunEnd::NoRun, budget_out };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }

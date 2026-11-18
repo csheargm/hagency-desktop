@@ -8,7 +8,7 @@ use super::review_loop::{self, LoopCtx, LoopIo};
 use super::reviewer_pick::{self, Candidate, Pick};
 use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
-use super::run_end::RunEnd;
+use super::run_end::RunView;
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
 use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_reviews, fetch_branches, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
@@ -218,7 +218,7 @@ impl TrackIo for LiveTrack<'_> {
         let outcome = super::handoff::hand_off(&live, &[issue]).await;
         outcome.error.map_or(Ok(true), Err)
     }
-    async fn run_end(&self, track: &Track) -> Result<RunEnd, String> {
+    async fn run_end(&self, track: &Track) -> Result<RunView, String> {
         let ask = crate::hagency::model::Command::Local { agent_id: self.agent_id().into(), action: crate::hagency::model::LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
         let activity = self.worker.service.execute(ask).await?;
         Ok(super::run_end::run_end_in(&activity, crate::sliding_sync::current_user_id().ok_or("Signed out")?.as_str(), track))
