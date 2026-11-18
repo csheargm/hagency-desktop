@@ -3,7 +3,7 @@
 //! spaced) before any hold; a draft whose fixer's run ended is asked to be
 //! readied once per head; the merge line names the Agent and the room rules.
 use super::super::loop_notice::{DRAFT_STEP, LoopNotice, Target};
-use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, ask_again, ask_ready, unrecorded_verdict};
+use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, ask_again, ask_ready, asks_again, unrecorded_verdict};
 use super::super::review_loop::LoopIo;
 use super::super::run_end::RunEnd;
 use super::super::tracker::Followed;
@@ -64,15 +64,16 @@ fn no_approval() -> Value {
 #[test]
 fn pr_105_an_unrecorded_github_verdict_is_what_asks_again() {
     let verdict = vec![("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), HEAD.to_owned())];
-    assert!(unrecorded_verdict(&no_approval(), &verdict, HEAD));
+    assert!(unrecorded_verdict(&no_approval(), (&verdict, "CSHEARGM"), HEAD));
+    assert!(!unrecorded_verdict(&no_approval(), (&verdict, "mallory"), HEAD), "only the Agents' own GitHub account's verdict");
     let comment = vec![("csheargm".to_owned(), "COMMENTED".to_owned(), HEAD.to_owned())];
-    assert!(!unrecorded_verdict(&no_approval(), &comment, HEAD), "a plain comment is no verdict");
+    assert!(!unrecorded_verdict(&no_approval(), (&comment, "csheargm"), HEAD), "a plain comment is no verdict");
     let older = vec![("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), "1".repeat(40))];
-    assert!(!unrecorded_verdict(&no_approval(), &older, HEAD), "a verdict of another head");
+    assert!(!unrecorded_verdict(&no_approval(), (&older, "csheargm"), HEAD), "a verdict of another head");
     let recorded = json!({"decision": "human", "head": HEAD, "kind": "approvals", "approvers": 1});
-    assert!(!unrecorded_verdict(&recorded, &verdict, HEAD), "a recorded approval needs no second review");
+    assert!(!unrecorded_verdict(&recorded, (&verdict, "csheargm"), HEAD), "a recorded approval needs no second review");
     let rules = json!({"decision": "human", "head": HEAD, "kind": "rules", "approvers": 0});
-    assert!(!unrecorded_verdict(&rules, &verdict, HEAD), "only a missing approval is the reviewer's to fix");
+    assert!(!unrecorded_verdict(&rules, (&verdict, "csheargm"), HEAD), "only a missing approval is the reviewer's to fix");
 }
 
 #[test]
@@ -96,6 +97,23 @@ fn pr_105_the_reviewer_is_asked_again_twice_spaced_out_then_the_hold_may_follow(
     let moved = Target { head: "2".repeat(40), ..t };
     assert_eq!(run(ask_again(&room, &moved, &codex(), Some(60))), Ok(Again::Waiting));
     assert_eq!(run(ask_again(&room, &moved, &codex(), None)), Ok(Again::Asked));
+}
+
+/// GPT review: both requests went out before a restart; the reviewer still
+/// gets its wait from the first check after it before the hold.
+#[test]
+fn after_a_restart_with_every_request_sent_the_hold_still_waits_once() {
+    let room = Room::default();
+    let t = target(905);
+    for step in REREVIEW_STEPS {
+        room.steps.borrow_mut().insert(format!("{step}@{HEAD}"));
+    }
+    let verdict = vec![("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), HEAD.to_owned())];
+    let at = |now| run(asks_again(&room, &t, (&no_approval(), &verdict, "csheargm"), &codex(), now));
+    assert_eq!(at(T0), Ok(true), "waits: this process never saw the last request");
+    assert_eq!(at(T0 + 60), Ok(true));
+    assert_eq!(at(T0 + REREVIEW_WAIT_SECS), Ok(false), "then the hold asks a person");
+    assert!(room.posted.borrow().is_empty(), "never more requests than the steps allow");
 }
 
 #[test]

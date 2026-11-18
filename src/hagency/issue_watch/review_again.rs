@@ -31,13 +31,14 @@ pub enum Again {
     Exhausted,
 }
 
-/// Whether GitHub holds an approving verdict of exactly `head` while the
-/// gate, judging that same head, counts no approval at all.
-pub fn unrecorded_verdict(readiness: &Value, reviews: &[(String, String, String)], head: &str) -> bool {
+/// Whether GitHub holds an approving verdict of exactly `head`, posted by
+/// `login` (the GitHub account this owner's Agents post as), while the gate,
+/// judging that same head, counts no approval at all.
+pub fn unrecorded_verdict(readiness: &Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> bool {
     readiness["kind"] == "approvals"
         && readiness["approvers"].as_u64() == Some(0)
         && readiness["head"].as_str() == Some(head)
-        && reviews.iter().any(|(_, state, commit)| state == APPROVE_VERDICT && commit == head)
+        && reviews.iter().any(|(who, state, commit)| who.eq_ignore_ascii_case(login) && state == APPROVE_VERDICT && commit == head)
 }
 
 /// Ask `reviewer` to review `target` again, unless it was asked in the last
@@ -70,14 +71,17 @@ fn lock_asked() -> std::sync::MutexGuard<'static, std::collections::HashMap<Stri
 
 /// The merge step's re-request for `target` at `now`: true when the step
 /// waits on the reviewer (asked now or recently) instead of holding.
-pub async fn asks_again(io: &impl LoopIo, target: &Target, (readiness, reviews): (&Value, &[(String, String, String)]), reviewer: &OwnedUserId, now: i64) -> Result<bool, String> {
-    if !unrecorded_verdict(readiness, reviews, &target.head) {
+/// `login` is the GitHub account this owner's Agents post as.
+pub async fn asks_again(io: &impl LoopIo, target: &Target, (readiness, reviews, login): (&Value, &[(String, String, String)], &str), reviewer: &OwnedUserId, now: i64) -> Result<bool, String> {
+    if !unrecorded_verdict(readiness, (reviews, login), &target.head) {
         return Ok(false);
     }
     let since = lock_asked().get(&target.url).filter(|(head, _)| *head == target.head).map(|(_, at)| now - at);
     let again = ask_again(io, target, reviewer, since).await?;
-    if again == Again::Asked {
+    // Every request already sent before a restart: its wait starts now (GPT review).
+    if again == Again::Asked || (again == Again::Exhausted && since.is_none()) {
         lock_asked().insert(target.url.clone(), (target.head.clone(), now));
+        return Ok(true);
     }
     Ok(again != Again::Exhausted)
 }

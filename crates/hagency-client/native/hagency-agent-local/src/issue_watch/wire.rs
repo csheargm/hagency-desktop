@@ -193,7 +193,8 @@ pub fn parse_reviews(body: &str) -> Result<Vec<(String, String, String)>, FetchE
         let (login, commit) = (r.user.map(|u| u.login).unwrap_or_default(), r.commit_id.unwrap_or_default());
         let body = r.body.unwrap_or_default();
         let bound = !commit.is_empty() && body.contains(&commit);
-        let verdict = !commit.is_empty() && body.contains(&format!("{} {commit}", crate::merge_policy::gate::APPROVE_MARKER));
+        // The verdict's own first words, never a quote of one inside another comment (GPT review).
+        let verdict = !commit.is_empty() && body.starts_with(&format!("{} {commit}", crate::merge_policy::gate::APPROVE_MARKER));
         let state = match r.state.as_str() {
             "APPROVED" if !bound => "UNBOUND".to_owned(),
             "COMMENTED" if verdict => APPROVE_VERDICT.to_owned(),

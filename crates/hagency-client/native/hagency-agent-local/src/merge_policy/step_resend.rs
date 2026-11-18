@@ -52,7 +52,8 @@ pub type LoopStep = (&'static str, String, String, String);
 /// The step a loop notice's `body` dispatches: only an exact
 /// [`merge_command`] or [`review_ask`], addressed to the Matrix ID just before it.
 pub fn loop_step_of(body: &str) -> Option<LoopStep> {
-    let addressee = |lead: &str| body[..body.find(lead)?].split_whitespace().rev().find(|w| w.starts_with('@')).map(str::to_owned);
+    // The ID may follow the Agent's display name in parentheses: "bird-claude (@agent:x)".
+    let addressee = |lead: &str| body[..body.find(lead)?].split_whitespace().rev().map(|w| w.trim_start_matches('(').trim_end_matches(')')).find(|w| w.starts_with('@')).map(str::to_owned);
     let parse = |lead: &str, words: &[&str]| -> Option<(u64, String, String)> {
         let rest = &body[body.find(lead)? + lead.len()..];
         let mut it = rest.split_whitespace();

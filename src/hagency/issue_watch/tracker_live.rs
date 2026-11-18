@@ -167,7 +167,7 @@ impl LiveTrack<'_> {
         let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         // A verdict on GitHub the gate never recorded: ask the reviewer again before holding (PR #105).
-        if let Some(peer) = &self.peer && super::review_again::asks_again(io, target, (&readiness, &reviews), &peer.reviewer, now).await? {
+        if let Some(peer) = &self.peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
         let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
