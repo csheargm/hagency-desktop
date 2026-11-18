@@ -55,11 +55,19 @@ pub struct Activity {
     /// device's app or Agent host restarted (or could not tell its result).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub interrupted: bool,
+    /// A hand-off's run asked its owner to approve a tool call and nobody
+    /// answered the card: the run stopped on a person, not on the Agent, so
+    /// the issue loop does not count it as an attempt (e2e, Nov 17 23:32).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unanswered: bool,
 }
 
 /// Which issue each received hand-off names, kept apart from the request
 /// body (compaction clears that body, GPT review): only repo and number.
-pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS handoff_issues (dispatch TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL) STRICT;";
+/// `handoff_unanswered` holds the hand-offs whose run left an approval card
+/// unanswered (see [`Ledger::note_unanswered_approval`]).
+pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS handoff_issues (dispatch TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL) STRICT; \
+CREATE TABLE IF NOT EXISTS handoff_unanswered (dispatch TEXT PRIMARY KEY) STRICT;";
 
 /// Remember the issue a just-received request `dispatch` hands off, if any;
 /// rows of requests no longer in the inbox are dropped.
@@ -68,6 +76,7 @@ pub(crate) fn remember_handoff(db: &rusqlite::Connection, dispatch: &str, body: 
         db.execute("INSERT OR IGNORE INTO handoff_issues VALUES (?,?,?)", (dispatch, &issue.repo, issue.number))?;
     }
     db.execute("DELETE FROM handoff_issues WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
+    db.execute("DELETE FROM handoff_unanswered WHERE dispatch NOT IN (SELECT dispatch FROM handoff_issues)", [])?;
     Ok(())
 }
 
@@ -99,11 +108,19 @@ fn charged(call_state: Option<&str>, usage: Option<&str>) -> Option<u64> {
     Some(usage.input.saturating_add(usage.output))
 }
 
-const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number FROM local_inbox i \
+const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number,u.dispatch IS NOT NULL FROM local_inbox i \
 JOIN bindings b ON b.id=i.binding LEFT JOIN calls c ON c.id=i.execution_id LEFT JOIN handoff_issues h ON h.dispatch=i.id \
-WHERE b.agent=? ORDER BY i.received_at DESC,i.id DESC LIMIT ?";
+LEFT JOIN handoff_unanswered u ON u.dispatch=i.id WHERE b.agent=? ORDER BY i.received_at DESC,i.id DESC LIMIT ?";
 
 impl Ledger {
+    /// The run of `dispatch` asked its owner to approve a tool call and the
+    /// card ended unanswered (or could not be shown). Kept only for issue
+    /// hand-offs; any other request is left alone.
+    pub fn note_unanswered_approval(&mut self, dispatch: &str) -> Result<()> {
+        self.db.execute("INSERT OR IGNORE INTO handoff_unanswered SELECT dispatch FROM handoff_issues WHERE dispatch=?", [dispatch])?;
+        Ok(())
+    }
+
     /// The last `limit` requests for `agent`, newest first.
     pub fn recent_activity(&self, owner: &str, agent: &str, limit: usize) -> Result<Vec<Activity>> {
         self.owner(owner)?;
@@ -121,11 +138,12 @@ impl Ledger {
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, Option<i64>>(6)?,
+                r.get::<_, bool>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (envelope, state, received_at, call_state, usage, repo, number) = row?;
+            let (envelope, state, received_at, call_state, usage, repo, number, unanswered) = row?;
             let dispatch: Dispatch = serde_json::from_str(&envelope)?;
             out.push(Activity {
                 dispatch_id: dispatch.id,
@@ -137,6 +155,7 @@ impl Ledger {
                 tokens: charged(call_state.as_deref(), usage.as_deref()),
                 issue: repo.zip(number).map(|(repo, number)| IssueRef { repo, number }).or_else(|| handoff_issue(&dispatch.body)),
                 interrupted: state == "unknown",
+                unanswered,
             });
         }
         Ok(out)

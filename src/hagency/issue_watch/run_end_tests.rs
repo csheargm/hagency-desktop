@@ -171,3 +171,33 @@ fn an_interrupted_run_reads_from_its_activity_record() {
     assert_eq!(run_end_of(&req(true), "acme/app", 62, 1_000), RunEnd::Interrupted);
     assert_eq!(run_end_of(&req(false), "acme/app", 62, 1_000), RunEnd::Lost);
 }
+
+#[test]
+fn runs_stopped_at_unanswered_approval_cards_do_not_use_up_the_attempts() {
+    // e2e Nov 17: #69's runs (23:26:52, 23:37:49, 23:43:51) each ended at a
+    // `gh pr create` card nobody answered; the loop spent all three attempts
+    // in 22 minutes and gave up with a pushed fix and no pull request.
+    let fake = Fake::default();
+    first_hand_off(&fake, 69);
+    fake.run.set(Some(RunEnd::Unanswered));
+    assert_eq!(check(&fake, T0 + 60, &[issue(69)], &[]), ["#69 retrying (1/3)"]);
+    let track = fake.tracks()[0].clone();
+    assert_eq!((track.state, track.attempts, track.free_retries), (State::HandedOff, 1, 1), "not counted");
+    assert_eq!(*fake.handed.borrow(), [(69, 1)]);
+    assert_eq!(fake.said.borrow()[0].2, "🔁 #69: the run stopped at an approval card nobody answered — handing it off again (attempt 1 of 3, not counted); approve its card in the owner's Hagency window");
+    // An owner who never comes back still ends the loop: the cap, then counted attempts.
+    for minute in 2..12 {
+        check(&fake, T0 + minute * 60, &[issue(69)], &[]);
+    }
+    assert_eq!(fake.keys(), ["69:rehand-1-1", "69:rehand-1-2", "69:retry-2", "69:retry-3", "69:failed"]);
+    assert_eq!((fake.tracks()[0].state, fake.tracks()[0].free_retries), (State::Failed, MAX_FREE_RETRIES));
+}
+
+#[test]
+fn an_unanswered_card_reads_from_its_activity_record() {
+    let req = |outcome: &str, unanswered: bool| json!([{"receivedAt": 1_000, "outcome": outcome, "unanswered": unanswered, "issue": {"repo": "acme/app", "number": 69}}]);
+    assert_eq!(run_end_of(&req("answered", true), "acme/app", 69, 1_000), RunEnd::Unanswered);
+    assert_eq!(run_end_of(&req("answered", false), "acme/app", 69, 1_000), RunEnd::Ended);
+    assert_eq!(run_end_of(&req("running", true), "acme/app", 69, 1_000), RunEnd::Running, "a card still open: the run goes on");
+    assert_eq!(run_end_of(&req("failed", true), "acme/app", 69, 1_000), RunEnd::Lost);
+}

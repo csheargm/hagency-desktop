@@ -127,7 +127,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     } else {
         RunEnd::Running
     };
-    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted };
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted, unanswered: run == RunEnd::Unanswered };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }

@@ -1080,27 +1080,41 @@ async fn permission(
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
         }
         Ok(ToolPolicy::AskOwner) => {
-            let (pending, decision) = codex::pending_approval(proposal.clone());
-            if !queue.offer(pending) {
-                // No card could be shown: the owner is not there, nobody refused.
-                return ToolAnswer::Unanswered;
+            let answer = ask_owner(ledger, owner, &proposal, queue).await;
+            if matches!(answer, ToolAnswer::Unanswered)
+                && let Err(error) = ledger.note_unanswered_approval(dispatch)
+            {
+                // Only the issue loop's attempt count reads the mark: without
+                // it the run counts as an ended attempt, as before this fix.
+                eprintln!("issue hand-off unanswered-approval mark not saved: {error}");
             }
-            let _waiting = queue.show_approval_wait();
-            match tokio::time::timeout(Duration::from_secs(280), decision).await {
-                // The owner never answered: nobody refused.
-                Err(_) => ToolAnswer::Unanswered,
-                Ok(Ok(true)) => ToolAnswer::allowed(
-                    ledger
-                        .approve_tool(owner, &proposal, now())
-                        .and_then(|_| ledger.authorize_tool(&proposal, now()))
-                        .is_ok(),
-                ),
-                // The card went away unanswered (expired or withdrawn): not a refusal.
-                Ok(Err(_)) => ToolAnswer::Unanswered,
-                Ok(Ok(false)) => ToolAnswer::Deny,
-            }
+            answer
         }
         _ => ToolAnswer::Deny,
+    }
+}
+
+/// Put one tool call to the owner as a card and wait for the answer.
+async fn ask_owner(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, queue: &ApprovalQueue) -> claude_turn::ToolAnswer {
+    use claude_turn::ToolAnswer;
+    let (pending, decision) = codex::pending_approval(proposal.clone());
+    if !queue.offer(pending) {
+        // No card could be shown: the owner is not there, nobody refused.
+        return ToolAnswer::Unanswered;
+    }
+    let _waiting = queue.show_approval_wait();
+    match tokio::time::timeout(Duration::from_secs(280), decision).await {
+        // The owner never answered: nobody refused.
+        Err(_) => ToolAnswer::Unanswered,
+        Ok(Ok(true)) => ToolAnswer::allowed(
+            ledger
+                .approve_tool(owner, proposal, now())
+                .and_then(|_| ledger.authorize_tool(proposal, now()))
+                .is_ok(),
+        ),
+        // The card went away unanswered (expired or withdrawn): not a refusal.
+        Ok(Err(_)) => ToolAnswer::Unanswered,
+        Ok(Ok(false)) => ToolAnswer::Deny,
     }
 }
 type TurnResult = claude_turn::Outcome;

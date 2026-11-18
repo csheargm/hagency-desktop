@@ -15,9 +15,11 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS issue_track (agent T
 pub const HANDOFF_TIMEOUT_SECS: i64 = 30 * 60;
 /// Hand-offs per issue, the first one included; then the issue is `failed`.
 pub const MAX_ATTEMPTS: u32 = 3;
-/// Re-hand-offs per issue after a run a restart interrupted (the owner's app
-/// or Agent host stopped): they never count as attempts, and the cap ends a
-/// crash loop, after which an interrupted run counts like any ended one.
+/// Re-hand-offs per issue after a run that stopped on something other than
+/// the Agent: a restart interrupted it (the owner's app or Agent host
+/// stopped), or it waited on an approval card nobody answered. They never
+/// count as attempts, and the cap ends a crash or no-owner loop, after which
+/// such a run counts like any ended one.
 pub const MAX_FREE_RETRIES: u32 = 2;
 
 /// Adds the free-retry count to a ledger created before it existed.
@@ -110,6 +112,9 @@ pub struct Facts {
     /// That run was interrupted by a restart of the owner's app or Agent
     /// host (the ledger marked it unknown on recovery), not ended by the Agent.
     pub interrupted: bool,
+    /// That run stopped at an approval card its owner never answered (e2e,
+    /// Nov 17 23:32: #69 used all three attempts on unanswered cards).
+    pub unanswered: bool,
 }
 
 /// How the Agent tells the loop it cannot fix an issue: an issue comment
@@ -128,7 +133,8 @@ pub enum Action {
     Wait,
     /// Hand the issue off again as attempt `attempt`.
     Retry { attempt: u32 },
-    /// A restart interrupted the run: hand it off again, same attempt.
+    /// A restart interrupted the run, or it waited on an unanswered approval
+    /// card: hand it off again, same attempt.
     Rehand,
     /// Out of attempts: record `failed` and say so once.
     GiveUp,
@@ -168,8 +174,9 @@ pub fn decide(track: &Track, facts: &Facts) -> Action {
         return if facts.open_pr.is_some() { Action::FollowPr { pr } } else { Action::Wait };
     }
     let ended = facts.run_ended && track.state == State::HandedOff;
-    // Never charged to the Agent, and never the final give-up (Nov 17 22:35).
-    if ended && facts.interrupted && track.free_retries < MAX_FREE_RETRIES {
+    // Never charged to the Agent, and never the final give-up (Nov 17 22:35):
+    // a restart, or a person who did not answer its card (Nov 17 23:32).
+    if ended && (facts.interrupted || facts.unanswered) && track.free_retries < MAX_FREE_RETRIES {
         return Action::Rehand;
     }
     if facts.now < deadline(track) && !ended {
