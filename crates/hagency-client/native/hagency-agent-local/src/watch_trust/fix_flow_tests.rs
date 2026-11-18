@@ -66,6 +66,7 @@ pub(crate) fn run_under(high_risk: ToolPolicy) -> Run {
 pub(crate) fn watch(ledger: &mut Ledger, mode: WatchMode) {
     let setting = WatchSetting { mode, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: true };
     ledger.set_issue_watch(OWNER, "bird", setting, 1).unwrap();
+    ledger.allow_loop_in(OWNER, "bird", ROOM);
 }
 
 pub(crate) fn proposal(root: &Path, room: &str, tool: &str, arguments: Value) -> ToolProposal {

@@ -127,7 +127,10 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
 pub(super) async fn record_read_scope(source: &std::sync::Arc<Source>) {
     let d = &source.gate.expected;
     let owners = super::owners::of_room(source).await;
-    let named = source.device.read_scope(&d.room_id, &d.requester_mxid, &owners, source.now()).await.unwrap_or_default();
+    let (named, linked) = source.device.read_scope(&d.room_id, &d.requester_mxid, &owners, source.now()).await.unwrap_or_default();
+    // Issues may be filed on the room's own linked repositories (ADR 0030), public or not:
+    // the room's level and the owner's "may work" decide, in the engine.
+    hagency_agent_local::watch_trust::room_scope::record_linked(&d.room_id, &d.requester_mxid, linked);
     let client = crate::issue_watch::new_client();
     let mut public = Vec::new();
     for repo in named.into_iter().take(MAX_SCOPE_CHECKS) {

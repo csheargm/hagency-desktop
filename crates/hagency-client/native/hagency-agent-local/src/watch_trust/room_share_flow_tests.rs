@@ -1,7 +1,7 @@
 //! User flow (Chris, 2026-11-17): Betty added bird to the dev room, which
 //! reports csheargm/hagency-demo-sandbox. Anna, a member, asks bird to review
 //! PR #7: the verdict posts with no card. Anna's request to fix an issue
-//! follows Betty's rules (a card) until Betty lets bird fix without asking;
+//! follows Betty's rules (a card) until Betty lets bird work in the room (ADR 0030);
 //! a review on a repository outside the room asks; Betty turning "review
 //! PRs" off for the room makes the review ask again.
 use super::fix_flow_tests::{self, git, run_under};
@@ -63,49 +63,55 @@ fn the_owner_turning_reviews_off_makes_them_ask() {
     assert!(ledger.trusted_publish(OWNER, &proposal(ROOM, REVIEW), 11).unwrap().is_some(), "back on");
 }
 
+/// ADR 0030: a member's fix step in the room follows "May work in this room"
+/// and the room's level (it replaced "fix issues without asking").
 #[test]
-fn a_room_members_fix_follows_the_owners_rules_until_the_owner_lets_it_fix() {
+fn a_room_members_fix_follows_may_work_and_the_room_level() {
     let r = run_under(ToolPolicy::AskOwner);
     git(&r.root, &["clone", "-q", r.target.to_str().unwrap(), "app"]);
     git(&r.root.join("app"), &["remote", "set-url", "origin", &format!("https://github.com/{}.git", fix_flow_tests::REPO)]);
     let mut status = fix_flow_tests::proposal(&r.root, fix_flow_tests::ROOM, "claude.Bash", json!({"command": "git -C app status"}));
     status.scope.requester = "@anna:example.org".into();
     let owner = fix_flow_tests::OWNER;
-    assert_eq!(pinned(&r.ledger.db, &status, owner).unwrap(), None, "default: Anna's fix step asks Betty");
     let mut ledger = r.ledger;
-    ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare { fix: true, ..RoomShare::default() }).unwrap();
-    assert!(matches!(pinned(&ledger.db, &status, owner).unwrap(), Some(TrustedStep::Command(_))), "Betty let bird fix in this room");
-    // Only in that room, and push freely is still the owner's per-repository switch.
+    ledger.set_may_work(owner, "bird", fix_flow_tests::ROOM, false).unwrap();
+    assert_eq!(pinned(&ledger.db, &status, owner).unwrap(), None, "may not work here: Anna's fix step asks Betty");
+    ledger.set_may_work(owner, "bird", fix_flow_tests::ROOM, true).unwrap();
+    assert!(matches!(pinned(&ledger.db, &status, owner).unwrap(), Some(TrustedStep::Command(_))), "Betty let bird work in this room");
     let mut elsewhere = status.clone();
     elsewhere.scope.room = "!other:example.org".into();
-    assert_eq!(pinned(&ledger.db, &elsewhere, owner).unwrap(), None);
-    let off = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::All, label: String::new(), repo: fix_flow_tests::REPO.into(), room_id: fix_flow_tests::ROOM.into(), push_trusted: false };
-    ledger.set_issue_watch(owner, "bird", off, 1).unwrap();
-    assert_eq!(pinned(&ledger.db, &status, owner).unwrap(), None, "push freely off: asks");
+    assert_eq!(pinned(&ledger.db, &elsewhere, owner).unwrap(), None, "only in that room");
+    let off = crate::room_autonomy::AutonomySnapshot { room_id: fix_flow_tests::ROOM.into(), ..Default::default() };
+    ledger.set_room_autonomy(owner, &off, crate::merge_policy::room_rules::unix_now()).unwrap();
+    assert_eq!(pinned(&ledger.db, &status, owner).unwrap(), None, "the room is Off: asks");
 }
 
-/// GPT review: the host's check right before a member's push rereads the
-/// owner's "fix" choice, so turning it off stops a push already authorized.
+/// GPT review: the host's check right before a push rereads the room, so
+/// Pause (or "may work" off) stops a push already authorized, for a member
+/// and for the owner.
 #[test]
-fn turning_fix_off_stops_a_members_push_at_the_last_check() {
+fn pausing_the_room_stops_a_push_at_the_last_check() {
     let r = run_under(ToolPolicy::AskOwner);
     let owner = fix_flow_tests::OWNER;
     let mut ledger = r.ledger;
-    ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare { fix: true, ..RoomShare::default() }).unwrap();
     let mut push = fix_flow_tests::proposal(&r.root, fix_flow_tests::ROOM, "claude.Bash", json!({"command": "git -C app push origin fix/x"}));
     push.scope.requester = "@anna:example.org".into();
     // The recheck follows an authorization: the member's run must be admitted (its own dispatch).
     push.dispatch = "d-member".into();
     let push = super::tests::admitted_by(&mut ledger, owner, push);
     let still = ledger.push_trust_recheck(&push, fix_flow_tests::REPO);
-    assert!(still(), "on: the push goes ahead");
-    ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare::default()).unwrap();
-    assert!(!still(), "off: refused right before it publishes");
+    assert!(still(), "running: the push goes ahead");
+    let paused = crate::room_autonomy::AutonomySnapshot { room_id: fix_flow_tests::ROOM.into(), level: Some(crate::room_autonomy::Level::Autonomous), paused: true, unread: false, owner_maintainer: true };
+    ledger.set_room_autonomy(owner, &paused, crate::merge_policy::room_rules::unix_now()).unwrap();
+    assert!(!still(), "paused: refused right before it publishes");
     let mut own = push.clone();
     own.scope.requester = owner.into();
     own.dispatch = "d-own".into();
     let own = super::tests::admitted_by(&mut ledger, owner, own);
-    assert!(ledger.push_trust_recheck(&own, fix_flow_tests::REPO)(), "the owner's own push is unchanged");
+    assert!(!ledger.push_trust_recheck(&own, fix_flow_tests::REPO)(), "the owner's own push stops too");
+    ledger.allow_loop_in(owner, "bird", fix_flow_tests::ROOM);
+    ledger.set_may_work(owner, "bird", fix_flow_tests::ROOM, false).unwrap();
+    assert!(!still(), "may work off: refused");
 }
 
 #[test]

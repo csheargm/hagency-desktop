@@ -187,6 +187,7 @@ pub(super) fn admitted_by(ledger: &mut Ledger, owner: &str, mut p: ToolProposal)
 fn watch(ledger: &mut Ledger, mode: WatchMode, trusted: bool) {
     let setting = WatchSetting { mode, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: trusted };
     ledger.set_issue_watch(OWNER, "a", setting, 1).unwrap();
+    ledger.allow_loop_in(OWNER, "a", ROOM);
 }
 
 #[test]
@@ -204,7 +205,17 @@ fn only_the_watched_room_with_the_switch_on_skips_the_card() {
     assert!(!pinned(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap().is_some(), "another Room");
     assert!(!pinned(&ledger.db, &proposal(&root, ROOM, "claude.Bash", "permission_expansion"), OWNER).unwrap().is_some());
     assert!(!pinned(&ledger.db, &proposal(&root, ROOM, "codex.command", "high"), OWNER).unwrap().is_some(), "Codex cannot pin the command");
-    assert!(!pinned(&ledger.db, &here, "@bob:example.org").unwrap().is_some(), "a non-owner requester asks");
+    // ADR 0030: a member of a room the Agent may work in gets the same steps;
+    // the room's level and Pause decide for everyone.
+    assert!(pinned(&ledger.db, &here, "@bob:example.org").unwrap().is_some(), "a room member, as the owner");
+    let room_state = |paused| crate::room_autonomy::AutonomySnapshot { room_id: ROOM.into(), level: Some(crate::room_autonomy::Level::Assist), paused, unread: false, owner_maintainer: false };
+    ledger.set_room_autonomy(OWNER, &room_state(true), crate::merge_policy::room_rules::unix_now()).unwrap();
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_none(), "paused: asks");
+    ledger.set_room_autonomy(OWNER, &room_state(false), crate::merge_policy::room_rules::unix_now()).unwrap();
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some(), "Assist runs the work steps");
+    ledger.set_may_work(OWNER, "a", ROOM, false).unwrap();
+    assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_none(), "may not work here: asks");
+    ledger.set_may_work(OWNER, "a", ROOM, true).unwrap();
     let mut background = proposal(&root, ROOM, "claude.Bash", "high");
     background.arguments["run_in_background"] = json!(true);
     assert!(!pinned(&ledger.db, &background, OWNER).unwrap().is_some(), "a background call asks");
@@ -329,6 +340,7 @@ fn a_work_list_entry_with_push_freely_trusts_its_repo_and_room() {
     let here = proposal(&root, ROOM, "claude.Bash", "high");
     let entry = |push_freely| OwnerRules { repo: REPO.into(), role: Role::Developer, room_id: ROOM.into(), push_freely, ..Default::default() };
     ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(false))).unwrap();
+    ledger.allow_loop_in(OWNER, "a", ROOM);
     assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_none(), "on the work list but not trusted");
     ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(true))).unwrap();
     assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some());

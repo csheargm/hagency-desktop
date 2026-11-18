@@ -157,12 +157,9 @@ impl OwnerRules {
 }
 
 impl Ledger {
-    /// Store (or with `None`, remove) the owner's rules for `repo`; a new
-    /// watch starts its trial (ADR 0027).
+    /// Store (or with `None`, remove) the owner's rules for `repo`.
     pub fn set_owner_rules(&mut self, owner: &str, agent: &str, repo: &str, rules: Option<OwnerRules>) -> Result<()> {
-        let before = self.work_repos(agent)?;
-        self.store_owner_rules(owner, agent, repo, rules)?;
-        self.start_new_watch_trials(agent, &before)
+        self.store_owner_rules(owner, agent, repo, rules)
     }
     fn store_owner_rules(&mut self, owner: &str, agent: &str, repo: &str, rules: Option<OwnerRules>) -> Result<()> {
         self.owner(owner)?;
@@ -225,14 +222,12 @@ impl Ledger {
         if work.iter().any(|w| !repos.insert(w.repo.to_ascii_lowercase())) {
             return Err(Error::Invalid("a repository is listed twice"));
         }
-        // Read before the list is replaced: only a repository new to it starts a trial.
-        let before = self.work_repos(agent)?;
         self.db.execute("DELETE FROM agent_work WHERE agent=?", [agent])?;
         for entry in work {
             let repo = entry.repo.clone();
             self.store_owner_rules(owner, agent, &repo, Some(entry))?;
         }
-        self.start_new_watch_trials(agent, &before)
+        Ok(())
     }
     /// Every repository on the Agent's work list here.
     pub fn all_owner_rules(&self, agent: &str) -> Result<Vec<OwnerRules>> {

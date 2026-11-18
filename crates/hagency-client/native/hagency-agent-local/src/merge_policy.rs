@@ -27,7 +27,6 @@ pub mod review_loop;
 pub mod codex_review;
 pub mod codex_observed;
 pub mod pending;
-pub mod trial;
 pub mod room_rules;
 pub mod step_resend;
 
@@ -59,8 +58,8 @@ pub fn reason_kind(reason: &str) -> &'static str {
         "approvals"
     } else if [CI_PENDING, CI_FAILED, NO_CI].contains(&reason) {
         "ci"
-    } else if trial::trial_counts(reason).is_some() {
-        "trial"
+    } else if crate::room_autonomy::is_autonomy_reason(reason) {
+        "autonomy"
     } else {
         "rules"
     }
@@ -286,3 +285,5 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod autonomy_gate_tests;

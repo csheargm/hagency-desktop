@@ -16,7 +16,7 @@ const CHANGES: &str = "gh pr review 7 --request-changes -b \"Hagency verdict: CH
 fn setup(dir: &Path) -> Ledger {
     let mut ledger = ledger_with(dir, &["fixer", "reviewer"]);
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(OWNER, agent, true).unwrap();
+        ledger.allow_loop(OWNER, agent, true);
     }
     ledger
 }
@@ -38,7 +38,7 @@ async fn a_request_for_changes_withdraws_approvals_only_once_it_ran() {
     ledger.settle_tool_call("rc", false).unwrap();
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["reviewer"], "a failed or denied request withdraws nothing");
     // The owner's card answers it (switch off), and it runs: withdrawn.
-    ledger.set_auto_merge(OWNER, "reviewer", false).unwrap();
+    ledger.allow_loop(OWNER, "reviewer", false);
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &changes, "rc2", 11, &docs).await, None);
     ledger.settle_tool_call("rc2", true).unwrap();
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
@@ -66,7 +66,7 @@ async fn a_codex_request_for_changes_withdraws_once_its_command_ran() {
     let mut ledger = setup(temp.path());
     let docs = Fake::new(vec![file("README.md", 2)]);
     approve(&mut ledger, temp.path(), &docs, "rv").await;
-    ledger.set_auto_merge(OWNER, "reviewer", false).unwrap();
+    ledger.allow_loop(OWNER, "reviewer", false);
     for (item, status, exit, kept) in [("c1", "declined", json!(null), true), ("c2", "completed", json!(0), false)] {
         let mut proposal = bash(CHANGES, temp.path(), "reviewer");
         proposal.tool = "codex.command".into();

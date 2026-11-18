@@ -44,12 +44,12 @@ fn rules(repo: &str, role: Role) -> OwnerRules {
 }
 fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
-    ledger.set_auto_merge(OWNER, "anna", true).unwrap();
+    ledger.allow_loop(OWNER, "anna", true);
     ledger.set_work(OWNER, "anna", work.clone()).unwrap();
     // These watches are past their trial (ADR 0027, see `trial_tests`),
     // and their room's rules allow any path (ADR 0029).
     for rules in &work {
-        ledger.end_watch_trial(OWNER, "anna", &rules.repo).unwrap();
+        
         set_room_rules(&mut ledger, &rules.repo, Some(ANY_PATH));
     }
     ledger
@@ -245,10 +245,10 @@ async fn gpt_review_fixes_hold() {
     // Even with the switch off (the owner's card answers), and a held approval cannot settle afterwards.
     let again = format!("gh pr review 7 --repo {A} --approve -b \"Hagency verdict: APPROVE {HEAD} - second look\"");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&again, temp.path(), "anna"), "held", 11, &src).await, Some(true));
-    ledger.set_auto_merge(OWNER, "anna", false).unwrap();
+    ledger.allow_loop(OWNER, "anna", false);
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&changes, temp.path(), "anna"), "rc2", 11, &src).await, None, "the card asks");
     ledger.settle_agent_review("held", true).unwrap();
-    ledger.set_auto_merge(OWNER, "anna", true).unwrap();
+    ledger.allow_loop(OWNER, "anna", true);
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, None, "still withdrawn");
 }
 

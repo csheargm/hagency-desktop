@@ -118,12 +118,13 @@ async fn owner_wait_does_not_hide_a_second_native_approval() {
 }
 
 /// User flow (ADR 0022, "Codex"): bird-codex under a Deny tool rule edits a
-/// file of the watched repository's own clone while push freely is on. Its
-/// native file change is accepted without a card; the same change from
-/// another requester is refused by the Deny, never shown to the owner.
+/// file of the watched repository's own clone while it may work in the room
+/// (ADR 0030). Its native file change is accepted without a card, for the
+/// owner and for a member of that room alike ("may work" replaces the
+/// per-room "fix issues without asking").
 #[tokio::test]
 async fn push_freely_accepts_a_codex_file_change_in_the_watched_clone() {
-    for (requester, accepted) in [("@alice:test", 1), ("@bob:test", 0)] {
+    for (requester, accepted) in [("@alice:test", 1), ("@bob:test", 1)] {
         let (_temp, mut ledger, profile) = setup(true);
         let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&profile.cwd).args(args)
             .envs(crate::agent_env::GIT_HELPERS_OFF_ENV).status().unwrap().success());
@@ -132,6 +133,7 @@ async fn push_freely_accepts_a_codex_file_change_in_the_watched_clone() {
         let setting = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::All, label: String::new(),
             repo: "acme/app".into(), room_id: scope().room, push_trusted: true };
         ledger.set_issue_watch("@alice:test", "agent", setting, 1).unwrap();
+        ledger.allow_loop_in("@alice:test", "agent", &scope().room);
         let bound = Scope { requester: requester.into(), ..scope() };
         let (mut session, effects, peer) = fake(profile.cwd.to_str().unwrap().into(), true, true, 10, "file_watched");
         session.initialize().await.unwrap();
