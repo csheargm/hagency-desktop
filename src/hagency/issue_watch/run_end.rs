@@ -27,6 +27,9 @@ pub enum RunEnd {
     /// A restart of this device's app or Agent host interrupted the run (the
     /// ledger marked it unknown): not the Agent's failure (Nov 17 22:35).
     Interrupted,
+    /// The run ended at an approval card its owner never answered: it
+    /// stopped on a person, not the Agent (Nov 17 23:32, #69).
+    Unanswered,
 }
 
 impl RunEnd {
@@ -48,11 +51,19 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
     });
     let Some(newest) = ours.max_by_key(|r| r["receivedAt"].as_i64()) else { return RunEnd::Running };
     match newest["outcome"].as_str() {
+        Some("answered") if newest["unanswered"] == true => RunEnd::Unanswered,
         Some("answered" | "declined") => RunEnd::Ended,
         Some("failed") if newest["interrupted"] == true => RunEnd::Interrupted,
         Some("failed") => RunEnd::Lost,
         _ => RunEnd::Running,
     }
+}
+
+/// Only the requests `requester` sent: the hand-offs this device's account
+/// posted. A room member's look-alike notice never ends, re-hands or charges
+/// a tracked issue's attempt (GPT review).
+pub fn requested_by(requests: &Value, requester: &str) -> Value {
+    Value::Array(requests.as_array().into_iter().flatten().filter(|r| r["requester"].as_str() == Some(requester)).cloned().collect())
 }
 
 /// The longest branch name the loop repeats.
@@ -93,13 +104,15 @@ pub const PUSHED_NO_PR: &str = "🔁 #{number}: {agent} pushed {branch} but open
 pub const ENDED_NO_PR: &str = "🔁 #{number}: the run ended without a pull request — retrying (attempt {attempt} of {max})";
 pub const RUN_LOST: &str = "🔁 #{number}: the run was lost before it finished — retrying (attempt {attempt} of {max})";
 pub const RESTARTED: &str = "🔁 #{number}: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt {attempt} of {max}, not counted)";
+pub const UNANSWERED: &str = "🔁 #{number}: the run stopped at an approval card nobody answered — handing it off again (attempt {attempt} of {max}, not counted); approve its card in the owner's Hagency window";
 
 /// Which hand-off a retry is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Again {
     /// The next attempt (counted).
     Attempt(u32),
-    /// The current attempt again, after a restart interrupted its run.
+    /// The current attempt again, after a restart interrupted its run or
+    /// it stopped at an unanswered approval card.
     Rehand,
 }
 
@@ -127,6 +140,7 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
     let mut args = vec![("number", n.to_string()), ("attempt", attempt.to_string()), ("max", MAX_ATTEMPTS.to_string())];
     let status = crate::i18n::format("#{number} retrying ({attempt}/{max})", &args);
     let (key, template) = match (again, run, branch) {
+        (Again::Rehand, RunEnd::Unanswered, _) => (format!("rehand-{attempt}-{free}"), UNANSWERED),
         (Again::Rehand, ..) => (format!("rehand-{attempt}-{free}"), RESTARTED),
         (_, RunEnd::Running, _) => (format!("retry-{attempt}"), RETRYING),
         (_, _, Some(branch)) => {
@@ -134,7 +148,7 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
             (format!("retry-{attempt}"), PUSHED_NO_PR)
         }
         (_, RunEnd::Lost | RunEnd::Interrupted, None) => (format!("retry-{attempt}"), RUN_LOST),
-        (_, RunEnd::Ended, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
+        (_, RunEnd::Ended | RunEnd::Unanswered, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
     };
     io.say(n, &key, crate::i18n::format(template, &args)).await?;
     Ok(Some(status))

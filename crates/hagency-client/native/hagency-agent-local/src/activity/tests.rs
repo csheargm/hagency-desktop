@@ -124,3 +124,25 @@ fn a_hand_offs_issue_survives_the_body_compaction() {
     let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
     assert_eq!((json[0]["issue"]["number"].as_i64(), json[0]["interrupted"].as_bool()), (Some(62), Some(true)));
 }
+
+#[test]
+fn a_hand_off_whose_approval_card_went_unanswered_says_so() {
+    // e2e Nov 17 23:32: #69's `gh pr create` card ended unanswered; the run
+    // replied, and the loop counted it as a failed attempt.
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let mut waited = dispatch("waited", "agent", "bind");
+    waited.body = "🔔 New GitHub issue #69 in a/b — @bird please fix it".into();
+    record(&mut l, &waited, 10, "replied", None);
+    let mut done = dispatch("done", "agent", "bind2");
+    done.body = "🔔 New GitHub issue #68 in a/b — @bird please fix it".into();
+    record(&mut l, &done, 20, "replied", None);
+    record(&mut l, &dispatch("plain", "agent", "bind3"), 30, "replied", None);
+    l.note_unanswered_approval("waited").unwrap();
+    l.note_unanswered_approval("waited").unwrap(); // a second card: same mark
+    l.note_unanswered_approval("plain").unwrap(); // not a hand-off: ignored
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    assert_eq!((json[0]["dispatchId"].as_str(), json[0].get("unanswered")), (Some("plain"), None));
+    assert_eq!((json[1]["dispatchId"].as_str(), json[1].get("unanswered")), (Some("done"), None));
+    assert_eq!((json[2]["dispatchId"].as_str(), json[2]["unanswered"].as_bool(), json[2]["outcome"].as_str()), (Some("waited"), Some(true), Some("answered")));
+}

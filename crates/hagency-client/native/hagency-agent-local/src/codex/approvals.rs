@@ -29,6 +29,8 @@ enum Decision {
     /// exactly as it answers a Claude `Bash` call.
     Gate(bool),
     Owner(bool),
+    /// The card could not be shown, expired or was withdrawn: nobody refused.
+    Unanswered,
     Deny,
 }
 type Wait = Pin<Box<dyn Future<Output = Decision> + Send>>;
@@ -72,12 +74,13 @@ impl Approvals {
                 let waiting = if sent { queue.show_approval_wait() } else { None };
                 Box::pin(async move {
                     let _waiting = waiting;
-                    Decision::Owner(
-                        sent && matches!(
-                            tokio::time::timeout_at(until, receiver).await,
-                            Ok(Ok(true))
-                        ),
-                    )
+                    if !sent {
+                        return Decision::Unanswered;
+                    }
+                    match tokio::time::timeout_at(until, receiver).await {
+                        Ok(Ok(answer)) => Decision::Owner(answer),
+                        Ok(Err(_)) | Err(_) => Decision::Unanswered,
+                    }
                 })
             }
             _ => Box::pin(std::future::ready(Decision::Deny)),
@@ -169,6 +172,14 @@ impl Answer {
                 Ok(Some(crate::watch_trust::TrustedStep::Allow))
             ),
             Decision::Gate(allowed) => allowed,
+            Decision::Unanswered => {
+                if let Err(error) = ledger.note_unanswered_approval(&request.proposal.dispatch) {
+                    // Only the issue loop's attempt count reads the mark: without
+                    // it the run counts as an ended attempt, as before this fix.
+                    eprintln!("issue hand-off unanswered-approval mark not saved: {error}");
+                }
+                false
+            }
             Decision::Owner(false) | Decision::Deny => false,
         };
         let result = if let Some(native) = request.native {
@@ -223,6 +234,20 @@ mod tests {
         approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
         approvals.clear();
         assert_eq!(text.current_step().0, "running gh issue close 1");
+    }
+
+    /// A card that ended unanswered is told apart from a refusal, so an issue
+    /// hand-off's run is not charged to the Agent (e2e, Nov 17 23:32).
+    #[tokio::test]
+    async fn a_card_nobody_answered_is_unanswered_not_refused() {
+        let (queue, mut cards) = crate::codex::approval_queue(1).unwrap();
+        let mut approvals = Approvals::default();
+        approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
+        drop(cards.recv().await.unwrap()); // the card went away unanswered
+        assert!(matches!(approvals.next().await.decision, Decision::Unanswered));
+        approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
+        cards.recv().await.unwrap().decide(false);
+        assert!(matches!(approvals.next().await.decision, Decision::Owner(false)), "a refusal stays a refusal");
     }
 
     /// GPT review: a rule's or the owner's accept is noted for observation only

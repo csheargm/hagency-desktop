@@ -6,7 +6,7 @@ fn handed(attempts: u32, at: i64) -> Track {
     Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false, free_retries: 0 }
 }
 fn open(now: i64) -> Facts {
-    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false }
+    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false, unanswered: false }
 }
 fn change(handed: Option<u32>, state: Option<State>, pr: Option<u64>) -> TrackChange {
     TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None, rehanded: None }
@@ -146,4 +146,21 @@ fn an_older_ledger_gains_the_free_retry_count() {
     super::ensure_schema(&db).unwrap();
     let free: i64 = db.query_row("SELECT free_retries FROM issue_track", [], |r| r.get(0)).unwrap();
     assert_eq!(free, 0);
+}
+
+#[test]
+fn a_run_stopped_on_an_unanswered_approval_card_keeps_its_attempt_up_to_the_cap() {
+    // e2e Nov 17: #69's three runs (23:26, 23:37, 23:44) each ended at a
+    // `gh pr create` card nobody answered; all three attempts were used.
+    let waited = Facts { run_ended: true, unanswered: true, ..open(T0 + 300) };
+    assert_eq!(decide(&handed(1, T0), &waited), Action::Rehand, "not the Agent's failure");
+    assert_eq!(decide(&handed(MAX_ATTEMPTS, T0), &waited), Action::Rehand, "never the give-up either");
+    let capped = Track { free_retries: MAX_FREE_RETRIES, ..handed(1, T0) };
+    assert_eq!(decide(&capped, &waited), Action::Retry { attempt: 2 }, "an absent owner still ends the loop");
+    let last = Track { free_retries: MAX_FREE_RETRIES, ..handed(MAX_ATTEMPTS, T0) };
+    assert_eq!(decide(&last, &waited), Action::GiveUp);
+    // Still running with a card open: wait, as before.
+    assert_eq!(decide(&handed(1, T0), &Facts { run_ended: false, unanswered: true, ..open(T0 + 300) }), Action::Wait);
+    // A pull request opened after all wins.
+    assert_eq!(decide(&handed(1, T0), &Facts { open_pr: Some(74), ..waited }), Action::FollowPr { pr: 74 });
 }
