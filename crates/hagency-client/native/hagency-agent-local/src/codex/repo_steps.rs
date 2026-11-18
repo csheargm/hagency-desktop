@@ -126,7 +126,7 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
         None => match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
             Ok(Some(step)) if step != TrustedStep::Allow => step,
             // Not a card-free step, or the ledger could not say: nothing runs.
-            _ => return refuse(call, "outside what push freely covers here"),
+            _ => return refuse(call, "neither a read of this room's repositories nor a step push freely covers here"),
         },
     };
     // Given up while the gate read GitHub: nothing starts, and what the gate held goes back.
