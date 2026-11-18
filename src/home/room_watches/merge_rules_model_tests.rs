@@ -129,3 +129,14 @@ fn a_stale_editor_is_refused_when_the_rules_changed_since_it_opened() {
     assert!(unchanged_since(&opened, &RoomRead::None, true).is_err(), "removed meanwhile");
     assert!(unchanged_since(&opened, &opened.clone(), false).is_err(), "demoted meanwhile");
 }
+
+/// GPT review: a glob holding a comma (block-list text) is never re-split,
+/// which would widen it, when an admin only changes another field.
+#[test]
+fn an_untouched_path_list_is_never_re_split_into_wider_globs() {
+    let block = "require_ci: true\ntier: trusted\nmax_lines: 200\npaths:\n  - \"docs/a, **\"\n";
+    let read = rules(block);
+    assert!(matches!(read.state(), RoomRulesState::Read(ref p) if p.trusted_paths == ["docs/a, **"]), "the parser takes it as one glob");
+    let draft = Draft { max_lines: "100".into(), ..draft_of(&read) };
+    assert!(policy_of(&draft, &read).is_err(), "refused, never saved as docs/a and **");
+}

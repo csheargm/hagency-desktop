@@ -37,17 +37,18 @@ fn base(read: &RoomRead) -> MergePolicy {
 /// trusted tier its own paths (empty: any path) and line limit (empty: none).
 pub fn draft_of(read: &RoomRead) -> Draft {
     let policy = base(read);
-    let (paths, max_lines) = if policy.trusted {
-        (&policy.trusted_paths, policy.trusted_max_lines.map(|n| n.to_string()).unwrap_or_default())
-    } else {
-        (&policy.low_risk_paths, policy.max_changed_lines.to_string())
-    };
+    let max_lines = if policy.trusted { policy.trusted_max_lines.map(|n| n.to_string()).unwrap_or_default() } else { policy.max_changed_lines.to_string() };
     Draft {
-        paths: paths.join(", "),
+        paths: tier_paths(&policy).join(", "),
         max_lines,
         approvals: policy.required_agent_approvals.max(MIN_AGENT_APPROVALS).to_string(),
         require_ci: policy.require_ci,
     }
+}
+
+/// The paths the gate judges `policy`'s tier by.
+fn tier_paths(policy: &MergePolicy) -> &Vec<String> {
+    if policy.trusted { &policy.trusted_paths } else { &policy.low_risk_paths }
 }
 
 fn line_limit(text: &str) -> Result<u64, String> {
@@ -58,7 +59,11 @@ fn line_limit(text: &str) -> Result<u64, String> {
 /// paths, are kept), editing the fields of `read`'s tier; the reason when a
 /// field is not usable or the rules would be too long to store.
 pub fn policy_of(draft: &Draft, read: &RoomRead) -> Result<MergePolicy, String> {
-    let paths: Vec<String> = draft.paths.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect();
+    // An untouched field keeps the room's own list: re-splitting a glob that holds a
+    // comma would widen it (GPT review); kept whole, the render below refuses it.
+    let paths: Vec<String> = if draft.paths == draft_of(read).paths { tier_paths(&base(read)).clone() } else {
+        draft.paths.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()
+    };
     let required_agent_approvals = draft.approvals.trim().parse::<u32>().ok().filter(|n| *n >= MIN_AGENT_APPROVALS)
         .ok_or_else(|| format("Approvals are a whole number, at least {n}", &[("n", MIN_AGENT_APPROVALS.to_string())]))?;
     let mut policy = MergePolicy { required_agent_approvals, require_ci: draft.require_ci, ..base(read) };

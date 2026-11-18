@@ -172,7 +172,8 @@ pub(crate) fn recorded(repo: &str, room_id: &str, read: Result<RoomRead, String>
 /// as unread, so its last rules stop counting. Only a failed recording
 /// leaves the old snapshot, which then ages out within the TTL.
 pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Vec<String> {
-    // Signed out still records every room as unread (GPT review): no client, no rules.
+    // No client: every room is recorded unread where the owner API still answers; when it
+    // cannot (signed out), the old snapshot ages out within the TTL (GPT review).
     let client = crate::sliding_sync::get_client();
     let (mut snapshots, mut errors) = (Vec::new(), Vec::new());
     for (repo, room_id) in watched_rooms(saved) {
