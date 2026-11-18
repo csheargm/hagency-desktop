@@ -1506,6 +1506,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         self.items.clear();
         self.server_ids.clear();
         let text = crate::attribution::turn_context(owner, scope, input);
+        // Full trust: Codex asks no approvals, so the gate sees no review.
+        let mut unasked = false;
         let mut turn_start = value!({"threadId":thread,"input":[{"type":"text","text":text,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user"});
         self.native_sandbox().apply_to_turn(&mut turn_start, cwd);
         // The owner's full trust lifts the Room folder's sandbox and its
@@ -1513,6 +1515,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // next one is confined as soon as the owner takes the trust back.
         if self.native_sandbox() == NativeSandbox::RoomFolder && ledger.fully_trusts(scope, dispatch) {
             turn_start["approvalPolicy"] = "never".into();
+            unasked = true;
             turn_start["sandboxPolicy"] = value!({"type":"dangerFullAccess"});
         }
         let reply=self.rpc("turn/start",turn_start).await?;
@@ -1909,7 +1912,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     tools.item(item, method == "item/completed");
                     if method == "item/completed" {
                         // A review the gate held under this command counts only now.
-                        crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
+                        let gated = crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
+                        if !gated && unasked && event_scope.root {
+                            // Ran without asking (full trust): record a qualifying review it posted.
+                            let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+                            crate::merge_policy::codex_review::record_observed(ledger, scope, dispatch, cwd, item, now(), &github).await;
+                        }
                     }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).
                     if event_scope.root

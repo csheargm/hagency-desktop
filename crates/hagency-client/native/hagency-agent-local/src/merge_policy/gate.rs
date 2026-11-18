@@ -305,7 +305,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
 /// its current head to be a low-risk change under the policy at its base
 /// commit; a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
 /// (and takes the one automatic merge). `None` when facts cannot be read.
-async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, agent: &str, source: &impl PrSource) -> Option<bool> {
+pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, agent: &str, source: &impl PrSource) -> Option<bool> {
     let repo = super::github::repo_of_url(&view.url, command.number)?;
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);

@@ -9,7 +9,7 @@
 //! withdrawn, stopped or unsent answer never counts).
 use super::gate;
 use super::github::PrSource;
-use crate::{Ledger, Result, ToolProposal};
+use crate::{Ledger, Result, Scope, ToolProposal};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -44,21 +44,86 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, method: &str, proposa
 /// command itself, its accept was sent (`sent`, the keys this turn answered
 /// through the gate) and it completed with exit code 0. Failed, declined,
 /// unsent or unknown outcomes drop the held review.
-pub fn settle(ledger: &mut Ledger, (thread, turn): (&str, &str), item: &Value, sent: &mut HashSet<String>) -> Result<()> {
+/// True when the item was a command whose accept the gate sent this turn.
+pub fn settle(ledger: &mut Ledger, (thread, turn): (&str, &str), item: &Value, sent: &mut HashSet<String>) -> Result<bool> {
     if item["type"] != "commandExecution" {
-        return Ok(());
+        return Ok(false);
     }
     let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) else {
-        return Ok(());
+        return Ok(false);
     };
     let key = call_key(thread, turn, id);
     let ran = item["status"] == "completed" && item["exitCode"] == 0;
     // A request for changes withdraws approvals once it ran, whoever allowed it.
     ledger.settle_withdrawal(&key, ran)?;
-    let succeeded = sent.remove(&key) && ran;
-    ledger.settle_agent_review(&key, succeeded)
+    let gated = sent.remove(&key);
+    ledger.settle_agent_review(&key, gated && ran)?;
+    Ok(gated)
 }
+
+/// A command Codex ran without asking (the owner's full trust turns
+/// approvals off, so the gate never saw it): an approving review of the
+/// exact current head is recorded when the gate would have allowed it —
+/// same parse (one `gh pr review <N> --repo <owner/repo>` with the
+/// marker), auto-merge switch, scope and policy checks, and the repository's
+/// owner rules (if any) bound to this room. A blocking review that ran
+/// withdraws this Agent's approvals. Nothing is authorized here: this only
+/// records what demonstrably ran (live PR #50, Nov 17), and only for a root
+/// turn that asked no approvals at all (the caller's `unasked`). A newline inside the
+/// review body reads as a space: any word it would start outside the body
+/// makes the command unreadable, so nothing is recorded.
+pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str, cwd: &str, item: &Value, now: i64, source: &impl PrSource) -> Option<()> {
+    if item["type"] != "commandExecution" || item["status"] != "completed" || item["exitCode"] != 0 {
+        return None;
+    }
+    let raw = item["command"].as_str()?;
+    let line = raw.replace(['\n', '\r'], " ");
+    // The turn's own workspace, never a directory the item reports (GPT review).
+    let directory = cwd;
+    let versions = ledger.policy_snapshot(scope).ok()?;
+    let proposal = ToolProposal {
+        scope: scope.clone(),
+        dispatch: dispatch.into(),
+        tool: "codex.command".into(),
+        arguments: serde_json::json!({ "command": line }),
+        canonical_directory: directory.into(),
+        risk: "high".into(),
+        policy_revision: versions.map(|v| v.revision),
+        expires: now + OBSERVED_LIFETIME_SECS,
+    };
+    let command = gate::parse_command(&proposal)?;
+    let repo = command.repo.clone()?;
+    if !matches!(command.kind, gate::Kind::Review | gate::Kind::RequestChanges) || !ledger.auto_merge(&scope.agent).ok()? {
+        return None;
+    }
+    if matches!(ledger.tool_disposition(&proposal, now).ok()?, crate::ToolPolicy::Deny) {
+        return None;
+    }
+    if ledger.owner_rules(&scope.agent, &repo).ok()?.is_some_and(|rules| rules.room_id != scope.room) {
+        return None;
+    }
+    // A room member's review counts only while the owner lets the Agent review there, as in the gate.
+    if scope.requester != ledger.owner && !ledger.room_share(&scope.agent, &scope.room).ok()?.review {
+        return None;
+    }
+    let view = source.pull_request(&command).await?;
+    if command.kind == gate::Kind::RequestChanges {
+        return ledger.withdraw_agent_review(&view.url, &scope.agent).ok();
+    }
+    // The marker and the head it names must be one unbroken run of the text
+    // that ran: a newline can never make an ordinary comment an approval (GPT review).
+    if !raw.contains(&format!("{} {}", gate::APPROVE_MARKER, view.head_sha)) || !gate::qualifies(ledger, &command, &view, &scope.agent, source).await? {
+        return None;
+    }
+    ledger.record_agent_review(&view.url, &view.head_sha, &scope.agent).ok()
+}
+
+/// Seconds the reconstructed proposal of an observed command stays valid.
+const OBSERVED_LIFETIME_SECS: i64 = 300;
 
 #[cfg(test)]
 #[path = "codex_review_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "codex_observed_tests.rs"]
+mod observed_tests;
