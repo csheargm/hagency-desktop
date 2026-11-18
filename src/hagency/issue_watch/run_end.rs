@@ -59,6 +59,13 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
     }
 }
 
+/// Only the requests `requester` sent: the hand-offs this device's account
+/// posted. A room member's look-alike notice never ends, re-hands or charges
+/// a tracked issue's attempt (GPT review).
+pub fn requested_by(requests: &Value, requester: &str) -> Value {
+    Value::Array(requests.as_array().into_iter().flatten().filter(|r| r["requester"].as_str() == Some(requester)).cloned().collect())
+}
+
 /// The longest branch name the loop repeats.
 const MAX_BRANCH_CHARS: usize = 100;
 

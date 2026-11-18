@@ -2,7 +2,7 @@
 //! pushed branches but opened none; #43/#44 lost their runs to a 502 on
 //! lease renewal), on the tracker's fakes: retried at once with one room
 //! line saying why, never waiting out the deadline silently.
-use super::run_end::{RunEnd, branch_names_issue, issue_branch, run_end_of};
+use super::run_end::{RunEnd, branch_names_issue, issue_branch, requested_by, run_end_of};
 use super::tracker::{Inputs, follow};
 use super::tracker_tests::{Fake, REPO, T0, check, first_hand_off, issue};
 use std::collections::HashSet;
@@ -200,4 +200,15 @@ fn an_unanswered_card_reads_from_its_activity_record() {
     assert_eq!(run_end_of(&req("answered", false), "acme/app", 69, 1_000), RunEnd::Ended);
     assert_eq!(run_end_of(&req("running", true), "acme/app", 69, 1_000), RunEnd::Running, "a card still open: the run goes on");
     assert_eq!(run_end_of(&req("failed", true), "acme/app", 69, 1_000), RunEnd::Lost);
+}
+
+#[test]
+fn a_room_members_look_alike_request_never_counts_for_the_hand_off() {
+    // GPT review: a member can send a notice-shaped request and leave its card unanswered.
+    let requests = json!([
+        {"requester": "@mallory:x", "receivedAt": 1_010, "outcome": "answered", "unanswered": true, "issue": {"repo": "acme/app", "number": 69}},
+        {"requester": "@bird:x", "receivedAt": 1_001, "outcome": "running", "issue": {"repo": "acme/app", "number": 69}},
+    ]);
+    assert_eq!(run_end_of(&requested_by(&requests, "@bird:x"), "acme/app", 69, 1_000), RunEnd::Running);
+    assert_eq!(run_end_of(&requested_by(&json!(null), "@bird:x"), "acme/app", 69, 1_000), RunEnd::Running);
 }
