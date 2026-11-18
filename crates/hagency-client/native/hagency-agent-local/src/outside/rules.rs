@@ -14,7 +14,7 @@
 
 use super::filters;
 
-pub(super) const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
+const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
 /// Git subcommands that only read local history. `fetch` is deliberately not
 /// here: `-u`/`--upload-pack`, URLs, `remote::` helpers, remotes, submodules
 /// and refspecs make it a network and code-execution surface (GPT review,
@@ -30,8 +30,9 @@ const GIT_DENIED: [&str; 12] = [
     "--ext-diff", "--textconv", "--exec-path", "--git-dir", "--work-tree", "--config-env", "--output", "--upload-pack",
     "--receive-pack", "--open-files-in-pager", "--namespace", "--super-prefix",
 ];
-/// `rg` options that run another program on the files it reads.
-const RG_DENIED: [&str; 4] = ["--pre", "--pre-glob", "-z", "--search-zip"];
+/// `rg` options that run another program on the files it reads
+/// (`--hostname-bin` runs one for hyperlinks, GPT review Nov 17).
+const RG_DENIED: [&str; 5] = ["--pre", "--pre-glob", "-z", "--search-zip", "--hostname-bin"];
 /// `gh` reads: `(area, verb)`. None of these changes anything on GitHub.
 /// `gh run` is left out: Actions logs can carry secrets a job printed.
 /// Shared with `remembered::network`: only these `gh` forms may be "Always allow"ed.

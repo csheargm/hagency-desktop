@@ -156,16 +156,22 @@ Decision:
   remembered "Always allow" rules: those are the owner's choices for their
   own Agent, and a member's request meets the owner's card first.
 - A member's harmless look inside the Room workspace needs no card
-  (`member_inspection.rs`, `outside::inspects_workspace`): Claude
-  Read/Glob/Grep of a path inside the workspace, or a shell line of plain
-  readers (`ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `grep` without
-  recursion, `rg`, `echo`, `date`, `cd` inside), every path inside it, never
-  git metadata, no git, no `gh`, no write, no redirect, not in the
+  (`member_inspection.rs`, `outside::inspects_workspace`): a Claude `Read`
+  whose only path is an absolute `file_path` inside the workspace, or a shell
+  line of plain viewers (`pwd`, `ls` without recursion or link following,
+  `cat`, `head`/`tail -n|-c <number>`, `wc`, `date`) and `cd` inside, every
+  directory entered and file named resolved through links, inside the
+  workspace and never git metadata; no search tool (Grep, Glob, `grep`, `rg`
+  descend into `.git`), no git, no `gh`, no write, no redirect, not in the
   background. It is checked against the Room workspace (never the directory
   derived from the call's own path argument) and a shell line runs as
-  `cd '<workspace>' && ( <line> )`. A saved Deny, a saved tool rule leaving
-  the tool out, a policy saved since admission, or refused requests end it.
-  Codex's native commands are not covered (they cannot be pinned) and ask.
+  `cd '<workspace>' && ( <line> )`. A saved Deny, a saved tool rule that
+  leaves out the tool or the workspace, a policy saved since admission, or
+  refused requests end it. Codex's native commands are not covered (they
+  cannot be pinned) and ask.
+- No automatic path answers that default card in the owner's name: the
+  auto-merge gate returns to the card for a member's request under an
+  unsaved layer (`Ledger::member_default_asks`).
 - Read-only GitHub queries keep ADR 0019/0023's scope (the room's repository
   set); in a room without repositories they now ask instead of failing.
 
@@ -183,3 +189,18 @@ never applies to `permission_expansion`, and (now) never skips the card of a
 member's request under a layer the owner did not save. It was not the cause
 of the E2E refusals: the unsaved member layers' Deny was decided before the
 mode is consulted.
+
+### GPT review of "Asks, never a silent deny" (2026-11-17)
+Adopted: `rg --hostname-bin` runs a program (now denied in outside mode too)
+and search tools reach git metadata, so the inspection allowlist is viewers
+only (no grep/rg/Grep/Glob, no file-naming options); every `cd` target and
+file is checked for git metadata through links; `Read` is checked on exactly
+`file_path` (another path field asks); saved directory rules are honored; the
+auto-merge gate never answers a member's default card in the owner's name.
+Rejected: typed host-side reads in place of a pinned shell line (a larger
+redesign; the viewers here open only the files named, checked through
+links). Residual: a link swapped between the check and the run (the same
+residual as outside mode); a Room-file create replay returns the exact prior
+receipt of that same member's authorized operation before the card; the
+watch and shared-review shortcuts (`trusted_publish`) still override a saved
+Deny by design (ADR 0019, ADR 0022 "Deny").

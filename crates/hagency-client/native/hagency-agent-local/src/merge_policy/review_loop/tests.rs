@@ -305,3 +305,20 @@ async fn a_members_review_skips_the_card_only_while_reviews_are_on_in_the_room()
     let own = bash(&line("review", A), temp.path(), "anna");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &own, "rv3", 11, &src).await, Some(true), "the owner's own review loop is unchanged");
 }
+
+/// GPT review (ADR 0025): a member's request under a layer the owner never
+/// saved is the owner's card; the auto-merge gate never answers it.
+#[tokio::test]
+async fn a_members_request_under_an_unsaved_layer_is_never_auto_answered() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    let mut member = bash(&line("review", A), temp.path(), "anna");
+    member.scope.requester = "@mallory:example.org".into();
+    member.dispatch = "d-unsaved".into();
+    ledger.register_binding(OWNER, &member.scope).unwrap();
+    ledger.reserve(&member.scope, "call-unsaved", "d-unsaved", 10, 10).unwrap();
+    member.policy_revision = ledger.policy_snapshot(&member.scope).unwrap().map(|v| v.revision);
+    let src = Src::new(vec![file("src/main.rs", 120)]);
+    assert_eq!(ledger.tool_disposition(&member, 11).unwrap(), crate::ToolPolicy::AskOwner, "a card to the owner");
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &member, "rv", 11, &src).await, None, "never approved in the owner's name");
+}

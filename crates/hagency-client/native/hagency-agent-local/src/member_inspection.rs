@@ -1,5 +1,5 @@
 //! A room member's harmless look inside the Agent's Room workspace runs
-//! without a card (ADR 0025): `pwd`, `ls`, reading files there
+//! without a card (ADR 0025): `pwd`, `ls`, `cat`, a `Read` of a file there
 //! ([`crate::outside::inspects_workspace`]). Checked against the Room
 //! workspace, never the directory the permission callback derives from the
 //! call's own path argument. A shell line runs from the workspace itself
@@ -31,7 +31,10 @@ impl Ledger {
         // A saved Deny, or a saved tool rule that leaves this tool out, refuses.
         let refuses = |rule: &ToolPolicy| match rule {
             ToolPolicy::Deny => true,
-            ToolPolicy::AllowWithRules { tools, .. } => !rule.is_full_trust() && !tools.contains(&proposal.tool),
+            // The directories too, as the ordinary validator reads them (GPT review).
+            ToolPolicy::AllowWithRules { tools, directories } => {
+                !rule.is_full_trust() && !(tools.contains(&proposal.tool) && directories.contains(&proposal.canonical_directory))
+            }
             ToolPolicy::AskOwner => false,
         };
         let saved_deny = applicable_marked(&tool_layers(&original, &current), false).iter().any(|(rule, _)| refuses(rule));
@@ -45,6 +48,19 @@ impl Ledger {
             }
             _ => watch_trust::TrustedStep::Allow,
         }))
+    }
+}
+
+impl Ledger {
+    /// Whether a layer the owner never saved makes `proposal` (a room
+    /// member's request) ask: that card is the owner's alone, so no automatic
+    /// path may answer it in the owner's name (GPT review, Nov 17).
+    pub(crate) fn member_default_asks(&self, proposal: &ToolProposal, now: i64) -> Result<bool> {
+        if proposal.scope.requester == self.owner {
+            return Ok(false);
+        }
+        let (original, current) = admitted_policies(&self.db, proposal, now)?;
+        Ok(applicable_marked(&tool_layers(&original, &current), false).iter().any(|(_, member_default)| *member_default))
     }
 }
 

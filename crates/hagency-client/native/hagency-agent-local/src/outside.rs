@@ -44,11 +44,12 @@ pub(crate) fn stays_in_workspace(proposal: &ToolProposal) -> bool {
     }
 }
 
-/// True when `proposal` only LOOKS inside `cwd` (the Room workspace): a Claude
-/// Read/Glob/Grep there, or a shell line of plain readers (`ls`, `pwd`,
-/// `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `echo`, `date`, `cd` inside),
-/// every path inside and none of it git metadata (ADR 0025). No git, no `gh`,
-/// no write of any kind.
+/// True when `proposal` only LOOKS inside `cwd` (the Room workspace), ADR
+/// 0025: a Claude `Read` whose only path is an absolute `file_path` inside it,
+/// or a shell line of plain viewers ([`VIEWERS`]: no recursion, no option that
+/// names a file or runs a program) and `cd` inside, every directory entered
+/// and every file named resolved through links and none of it git metadata.
+/// No git, `gh`, search tool, write or redirect.
 pub(crate) fn inspects_workspace(proposal: &ToolProposal) -> bool {
     if proposal.risk == "permission_expansion" {
         return false;
@@ -56,34 +57,64 @@ pub(crate) fn inspects_workspace(proposal: &ToolProposal) -> bool {
     let cwd = Path::new(&proposal.canonical_directory);
     let args = &proposal.arguments;
     match proposal.tool.as_str() {
-        "claude.Read" | "claude.Glob" | "claude.Grep" => {
-            let value = args.get("path").or(args.get("file_path"));
-            let named = value.and_then(Value::as_str).unwrap_or(".");
-            let real = real_path(cwd, named);
-            path_in(value, cwd, true) && !is_git_metadata(Path::new(named)) && real.is_some_and(|r| !is_git_metadata(&r))
+        // Exactly the field Read opens (GPT review): a second path field asks.
+        "claude.Read" => {
+            let allowed = args.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "file_path" | "offset" | "limit")));
+            let Some(path) = args.get("file_path").and_then(Value::as_str).filter(|p| p.starts_with('/')) else { return false };
+            allowed && resolves_inside(path, cwd) && not_metadata(cwd, path)
         }
-        "claude.Bash" if args["run_in_background"] != true => args["command"].as_str().is_some_and(|line| plain_readers(line, cwd)),
+        "claude.Bash" if args["run_in_background"] != true => args["command"].as_str().is_some_and(|line| plain_viewers(line, cwd)),
         _ => false,
     }
 }
 
-/// Every segment of `line` a plain reader (or `cd`) staying inside `root`.
-fn plain_readers(line: &str, root: &Path) -> bool {
+/// Programs a member may run to look, with the options each may take (none
+/// of them names a file, follows links or recurses).
+const VIEWERS: [(&str, &[&str]); 7] = [
+    ("pwd", &[]),
+    ("ls", &["-l", "-a", "-A", "-la", "-al", "-lh", "-lah", "-1", "-F", "-h"]),
+    ("cat", &["-n"]),
+    ("head", &["-n", "-c"]),
+    ("tail", &["-n", "-c"]),
+    ("wc", &["-l", "-w", "-c"]),
+    ("date", &[]),
+];
+
+/// `path` from `cwd`, named and resolved through every link, is not git metadata.
+fn not_metadata(cwd: &Path, path: &str) -> bool {
+    !is_git_metadata(Path::new(path)) && real_path(cwd, path).is_some_and(|real| !is_git_metadata(&real))
+}
+
+/// Every segment of `line` a viewer (or `cd`) staying inside `root`.
+fn plain_viewers(line: &str, root: &Path) -> bool {
     let Some(parsed) = shell::parse(line) else { return false };
+    if parsed.heredoc_at.is_some() || line.contains(['>', '<']) {
+        return false;
+    }
     let mut dirs = vec![root.to_path_buf()];
-    parsed.heredoc_at.is_none()
-        && parsed.segments.iter().all(|words| {
-            let words: Vec<&str> = words.iter().map(String::as_str).collect();
-            match words.as_slice() {
-                ["cd", target] => enter_dir(target, &mut dirs, root),
-                // A recursive grep also reads git metadata (remote URLs can hold a token).
-                ["grep", rest @ ..] if rest.iter().any(|w| matches!(*w, "-r" | "-R" | "--recursive" | "-d") || w.starts_with("--directories") || (w.starts_with('-') && !w.starts_with("--") && w.contains(['r', 'R', 'd']))) => false,
-                [program, ..] if rules::READ_ONLY_PROGRAMS.contains(program) => {
-                    segment_in_workspace(&words, &dirs, root) && rules::paths(&words).all(|w| !is_git_metadata(Path::new(w)))
+    parsed.segments.iter().all(|words| {
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["cd", target] => dirs.iter().all(|d| not_metadata(d, target)) && enter_dir(target, &mut dirs, root),
+            [program, rest @ ..] => {
+                let Some((_, options)) = VIEWERS.iter().find(|(p, _)| p == program) else { return false };
+                let mut words = rest.iter();
+                while let Some(word) = words.next() {
+                    if word.starts_with('-') {
+                        // `head -n 5`: a counting option's value is a number.
+                        let counted = matches!(*word, "-n" | "-c") && !matches!(*program, "ls" | "cat" | "wc");
+                        if !options.contains(word) || (counted && !words.next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))) {
+                            return false;
+                        }
+                    } else if !(inside_all(word, &dirs, root) && dirs.iter().all(|d| not_metadata(d, word))) {
+                        return false;
+                    }
                 }
-                _ => false,
+                true
             }
-        })
+            [] => false,
+        }
+    })
 }
 
 /// A path argument that resolves inside `cwd`; an absent one means `cwd` itself

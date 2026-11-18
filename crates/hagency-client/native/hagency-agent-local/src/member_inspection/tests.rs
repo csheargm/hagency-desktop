@@ -28,6 +28,9 @@ pub(crate) fn owner_rule_only(dir: &Path) -> (Ledger, std::path::PathBuf) {
     let workspace = dir.join("workspace").canonicalize().unwrap_or_else(|_| {
         std::fs::create_dir_all(dir.join("workspace/.git")).unwrap();
         std::fs::write(dir.join("workspace/notes.md"), "hello").unwrap();
+        std::fs::write(dir.join("workspace/.git/config"), "[remote]").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", dir.join("workspace/link-out")).unwrap();
+        std::os::unix::fs::symlink(dir.join("workspace/.git/config"), dir.join("workspace/link-git")).unwrap();
         dir.join("workspace").canonicalize().unwrap()
     });
     let mut ledger = Ledger::open(dir.join("local.db"), OWNER).unwrap();
@@ -65,11 +68,17 @@ fn anything_more_than_a_look_is_not_an_inspection() {
     let db = tempfile::tempdir().unwrap();
     let (mut ledger, ws) = owner_rule_only(db.path());
     for line in [
-        "cat /etc/passwd", "ls ..", "cd .. && ls", "cat .git/config", "ls .git", "grep -r token .", "grep -rn x notes.md",
+        "cat /etc/passwd", "ls ..", "cd .. && ls", "cat .git/config", "ls .git", "grep -r token .", "grep x notes.md",
+        "rg --hostname-bin ./notes.md x", "rg x", "cd .git && cat config", "cat link-out", "cat link-git", "ls -R", "ls -L",
+        "tail -f notes.md", "head -n x notes.md", "cat < notes.md", "find .", "sed -n 1p notes.md",
         "touch x", "echo hi > x", "git status", "gh pr view 1 -R o/r", "rm notes.md", "ls; rm notes.md", "cat notes.md | sh",
     ] {
         assert_eq!(ledger.member_inspection(&bash(&ws, ANNA, line), 11).unwrap(), None, "{line}");
     }
+    let both = proposal(&ws, ANNA, "claude.Read", json!({"file_path": ws.join("notes.md"), "path": "/etc/passwd"}));
+    assert_eq!(ledger.member_inspection(&both, 11).unwrap(), None, "only the field Read opens");
+    let glob = proposal(&ws, ANNA, "claude.Grep", json!({"pattern": "token", "path": ws}));
+    assert_eq!(ledger.member_inspection(&glob, 11).unwrap(), None, "searches descend into git metadata: they ask");
     let outside = proposal(&ws, ANNA, "claude.Read", json!({"file_path": "/etc/passwd"}));
     assert_eq!(ledger.member_inspection(&outside, 11).unwrap(), None);
     let metadata = proposal(&ws, ANNA, "claude.Read", json!({"file_path": ws.join(".git/config")}));
