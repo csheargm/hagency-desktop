@@ -130,6 +130,14 @@ impl Answer {
     pub fn withdrawn(&self, params: &Value) -> bool {
         self.request.withdrawn(params)
     }
+    /// The held-review key of a command the gate allowed, to note once its
+    /// accept is sent ([`crate::merge_policy::codex_review::settle`]).
+    pub fn gated_call(&self) -> Option<String> {
+        let item = self.request.proposal.arguments["itemId"].as_str().filter(|item| !item.is_empty())?;
+        let command = self.request.method == crate::merge_policy::codex_review::COMMAND_APPROVAL;
+        (command && matches!(self.decision, Decision::Gate(true)))
+            .then(|| crate::merge_policy::codex_review::call_key(&self.request.thread, &self.request.turn, item))
+    }
     pub fn response(self, ledger: &mut Ledger, owner: &str) -> Value {
         let request = self.request;
         let allow = match self.decision {

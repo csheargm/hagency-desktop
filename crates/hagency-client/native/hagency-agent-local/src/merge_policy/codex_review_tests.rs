@@ -6,6 +6,7 @@ use super::*;
 use crate::merge_policy::gate::APPROVE_MARKER;
 use crate::merge_policy::tests::{bash, file, ledger_with, merge_line, Fake, BASE, HEAD, URL};
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::Path;
 
 const OWNER: &str = "@owner:example.org";
@@ -25,6 +26,12 @@ fn review_line(head: &str) -> String {
 }
 fn done(item: &str, status: &str, exit: Value) -> Value {
     json!({"id": item, "type": "commandExecution", "status": status, "exitCode": exit})
+}
+/// Codex completes `item` in `(thread, turn)`, after this turn sent the gate's
+/// accept for the request it asked in `asked` (as `codex.rs` notes it).
+fn fin(ledger: &mut Ledger, asked: (&str, &str), (thread, turn): (&str, &str), item: &Value) {
+    let mut sent: HashSet<String> = item["id"].as_str().map(|id| call_key(asked.0, asked.1, id)).into_iter().collect();
+    settle(ledger, (thread, turn), item, &mut sent).unwrap();
 }
 async fn ask(ledger: &mut Ledger, proposal: &ToolProposal, source: &Fake) -> Option<bool> {
     auto_answer(ledger, OWNER, COMMAND_APPROVAL, proposal, (THREAD, TURN), 11, source).await
@@ -47,7 +54,7 @@ async fn a_codex_reviewers_approval_of_the_head_lets_another_agent_merge() {
     let review = codex(&review_line(HEAD), temp.path(), "bird-codex", "call_review");
     assert_eq!(ask(&mut ledger, &review, &docs).await, Some(true), "answered without a card, as for Claude");
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "nothing counts before the command completes");
-    settle(&mut ledger, THREAD, TURN, &done("call_review", "completed", json!(0))).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_review", "completed", json!(0)));
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["bird-codex"]);
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &merge, "m1", 11, &docs).await, Some(true), "the merge gate passes");
 }
@@ -66,7 +73,7 @@ async fn a_failed_declined_or_foreign_completion_never_counts() {
         let mut ledger = setup(temp.path());
         let docs = Fake::new(vec![file("README.md", 3)]);
         assert_eq!(ask(&mut ledger, &codex(&review_line(HEAD), temp.path(), "bird-codex", "call_review"), &docs).await, Some(true));
-        settle(&mut ledger, thread, turn, &item).unwrap();
+        fin(&mut ledger, (THREAD, TURN), (thread, turn), &item);
         assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "{thread} {turn} {item}");
     }
 }
@@ -78,11 +85,11 @@ async fn an_approval_of_an_older_head_does_not_count() {
     let docs = Fake::new(vec![file("README.md", 3)]);
     let stale = codex(&review_line(BASE), temp.path(), "bird-codex", "call_stale");
     assert_eq!(ask(&mut ledger, &stale, &docs).await, None, "it names another head: the card asks");
-    settle(&mut ledger, THREAD, TURN, &done("call_stale", "completed", json!(0))).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_stale", "completed", json!(0)));
     assert!(ledger.agent_reviewers(URL, BASE).unwrap().is_empty() && ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
     // Approved at the head, which then moves: the merge of the new head needs a new approval.
     assert_eq!(ask(&mut ledger, &codex(&review_line(HEAD), temp.path(), "bird-codex", "call_ok"), &docs).await, Some(true));
-    settle(&mut ledger, THREAD, TURN, &done("call_ok", "completed", json!(0))).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_ok", "completed", json!(0)));
     let moved = "3333333333333333333333333333333333333333";
     *docs.head.borrow_mut() = moved.into();
     let merge = bash(&merge_line().replace(HEAD, moved), temp.path(), "fixer");
@@ -96,7 +103,7 @@ async fn the_author_agent_cannot_approve_its_own_pull_request() {
     let docs = Fake::new(vec![file("README.md", 3)]);
     // A Codex fixer approves its own pull request, then asks to merge it.
     assert_eq!(ask(&mut ledger, &codex(&review_line(HEAD), temp.path(), "fixer", "call_self"), &docs).await, Some(true));
-    settle(&mut ledger, THREAD, TURN, &done("call_self", "completed", json!(0))).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_self", "completed", json!(0)));
     let merge = codex(&merge_line(), temp.path(), "fixer", "call_merge");
     assert_eq!(ask(&mut ledger, &merge, &docs).await, None, "its own approval does not count: the card asks");
 }
@@ -113,11 +120,11 @@ async fn another_room_requester_or_owner_cannot_record_an_approval() {
     stranger.scope.requester = "@mallory:example.org".into();
     for proposal in [other_room, stranger] {
         assert_ne!(ask(&mut ledger, &proposal, &docs).await, Some(true), "{:?}", proposal.scope);
-        settle(&mut ledger, THREAD, TURN, &done("call_review", "completed", json!(0))).unwrap();
+        fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_review", "completed", json!(0)));
     }
     let not_owner = auto_answer(&mut ledger, "@mallory:example.org", COMMAND_APPROVAL, &review, (THREAD, TURN), 11, &docs).await;
     assert_ne!(not_owner, Some(true), "only the owner's own approval answers the card");
-    settle(&mut ledger, THREAD, TURN, &done("call_review", "completed", json!(0))).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_review", "completed", json!(0)));
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
 }
 
@@ -136,6 +143,40 @@ async fn only_a_codex_shell_command_reaches_the_gate() {
     let mut unnamed = review.clone();
     unnamed.arguments["itemId"] = Value::Null;
     assert_eq!(ask(&mut ledger, &unnamed, &docs).await, Some(true));
-    settle(&mut ledger, THREAD, TURN, &json!({"id": "", "type": "commandExecution", "status": "completed", "exitCode": 0})).unwrap();
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &json!({"id": "", "type": "commandExecution", "status": "completed", "exitCode": 0}));
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
+}
+
+/// GPT review: a held review counts only when its accept was actually sent
+/// (not withdrawn, stopped or lost), and a nested `execve` approval inside an
+/// enclosing command is never answered by the gate.
+#[tokio::test]
+async fn an_unsent_accept_or_a_nested_approval_never_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = setup(temp.path());
+    let docs = Fake::new(vec![file("README.md", 3)]);
+    assert_eq!(ask(&mut ledger, &codex(&review_line(HEAD), temp.path(), "bird-codex", "call_review"), &docs).await, Some(true));
+    settle(&mut ledger, (THREAD, TURN), &done("call_review", "completed", json!(0)), &mut HashSet::new()).unwrap();
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "the answer was never sent");
+    let mut nested = codex(&review_line(HEAD), temp.path(), "bird-codex", "call_outer");
+    nested.arguments["approvalId"] = json!("execve-1");
+    assert_eq!(ask(&mut ledger, &nested, &docs).await, None, "the card asks");
+}
+
+/// The live command of PR #36, as Codex rendered it: a login zsh still asks
+/// the owner (it sources startup files); the same review sent with the shell
+/// the note teaches (non-login /bin/bash) is judged and recorded.
+#[tokio::test]
+async fn the_rendered_codex_review_command_reaches_the_gate_only_without_a_login_shell() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = setup(temp.path());
+    let docs = Fake::new(vec![file("README.md", 3)]);
+    let review = format!("gh pr review 7 --repo csheargm/hagency-demo-sandbox --comment -b \"{APPROVE_MARKER} {HEAD} - README-only. Opened by agent bird-codex (@_hagency_agt_01:localhost:8452) on request from @bird:localhost:8452\"");
+    let login = codex(&format!("/bin/zsh -lc '{review}'"), temp.path(), "bird-codex", "call_zsh");
+    assert_eq!(ask(&mut ledger, &login, &docs).await, None);
+    let plain = codex(&format!("/bin/bash -c '{review}'"), temp.path(), "bird-codex", "call_bash");
+    assert_eq!(ask(&mut ledger, &plain, &docs).await, Some(true));
+    fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_bash", "completed", json!(0)));
+    assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["bird-codex"]);
+    assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("shell \"/bin/bash\" and login false"));
 }

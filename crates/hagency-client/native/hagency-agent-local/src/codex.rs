@@ -1534,6 +1534,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut answer: Option<questions::Answer> = None;
         let mut approvals = approvals::Approvals::default();
         let mut approval_answer: Option<approvals::Answer> = None;
+        // Gate-allowed commands whose accept was sent: only these settle a review.
+        let mut gated_sent = std::collections::HashSet::new();
         let mut file_calls = host_files::Calls::default();
         let mut file_answer: Option<host_files::Answer> = None;
         let mut controls = controls::Controls::default();
@@ -1671,7 +1673,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                                 tools.returned.insert(key);
                             }
                         } else if let Some(approved) = approval_answer.take() {
-                            if approved.active(&tree) { self.write(approved.response(ledger, owner)).await?; }
+                            if approved.active(&tree) {
+                                let gated = approved.gated_call();
+                                self.write(approved.response(ledger, owner)).await?;
+                                gated_sent.extend(gated);
+                            }
                         } else if let Some(answer) = answer.take()
                             && tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
                     let response = match &answer.submitted {
@@ -1887,7 +1893,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     tools.item(item, method == "item/completed");
                     if method == "item/completed" {
                         // A review the gate held under this command counts only now.
-                        crate::merge_policy::codex_review::settle(ledger, event_thread, event_turn, item)?;
+                        crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
                     }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).
                     if event_scope.root

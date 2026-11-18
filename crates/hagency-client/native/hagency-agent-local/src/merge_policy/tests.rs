@@ -279,6 +279,8 @@ fn codex_merge_ready_and_review_commands_are_read_like_claude_ones() {
     let wrapped = parse(json!(["/bin/bash", "-c", "cd repo && gh pr merge 7 --squash -R o/r"])).unwrap();
     assert!(wrapped.dir.ends_with("repo"));
     assert_eq!(parse(json!(["/bin/sh", "-c", format!("gh pr review 7 --comment -b \"{APPROVE_MARKER}: ok\"")])).unwrap().kind, gate::Kind::Review);
+    let rendered = parse(json!(format!("/bin/bash -c 'gh pr review 7 --comment -b \"{APPROVE_MARKER} - ok (agent @a:x)\"'"))).unwrap();
+    assert_eq!((rendered.kind, rendered.body.as_str()), (gate::Kind::Review, format!("{APPROVE_MARKER} - ok (agent @a:x)").as_str()));
 }
 
 #[test]
@@ -298,6 +300,10 @@ fn codex_chained_redirected_or_expanded_commands_still_get_a_card() {
         assert!(parse(json!([program, "-c", "gh pr merge 7 --squash -R o/r"])).is_none(), "{program} is not a system shell");
     }
     assert!(parse(json!(["/bin/bash", "-lc", "gh pr merge 7 --squash -R o/r"])).is_none(), "a login shell sources startup files");
+    // The app-server's one-line rendering of the same argv is read the same way.
+    for line in ["/bin/zsh -lc 'gh pr merge 7 --squash -R o/r'", "/bin/bash -lc 'gh pr merge 7 --squash -R o/r'", "bash -c 'gh pr merge 7 --squash -R o/r'", "/bin/bash -c 'gh pr merge 7 --squash; rm -rf x'", "cd .. && /bin/bash -c 'gh pr merge 7 --squash -R o/r'"] {
+        assert!(parse(json!(line)).is_none(), "{line}");
+    }
     for line in ["gh pr merge 7 --squash", "gh pr ready 7", "gh pr merge 7 --squash -d -R o/r", "gh pr merge 7 --squash --delete-branch -R o/r"] {
         assert!(parse(json!(line)).is_none(), "{line}: exact merge with an explicit repository only");
         assert!(gate::parse_command(&bash(line, dir.path(), "a")).is_none(), "{line}");
