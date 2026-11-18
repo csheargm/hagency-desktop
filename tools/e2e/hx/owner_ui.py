@@ -10,7 +10,7 @@ import time
 from . import config, room
 from .bridge import Bridge, StepNotFound, ends, exact, label, same_card, wait_step
 
-JOIN_WAIT_S = 60
+JOIN_WAIT_S = 120  # a beta account joining an alpha room federates first
 FOLLOW_WAIT_S = 30
 BIND_WAIT_S = 90
 CARD_WAIT_S = 120
@@ -51,16 +51,32 @@ def _by_path(*segments):
     return lambda ns: [n for n in ns if ends(n, *segments)]
 
 
+def join_buttons(nodes: list) -> list:
+    """The invite screen's "Join Room" (never the confirmation modal's button)."""
+    return [n for n in nodes if ends(n, "accept_button") and ".join_leave_modal." not in f".{n['path']}."
+            and label(n) == "Join Room"]
+
+
+def confirm_buttons(nodes: list) -> list:
+    """"Yes" in the "Accept this invite?" modal whose own text names the e2e room."""
+    texts = [n for n in nodes if f'"{config.E2E_ROOM_NAME}"' in label(n) and ".join_leave_modal." in f".{n['path']}."]
+    return [n for n in nodes if ends(n, "accept_button") and ".join_leave_modal." in f".{n['path']}."
+            and label(n) == "Yes" and any(same_card(t, n, 2) for t in texts)]
+
+
 def join_room(bridge: Bridge, room_id: str, log: list):
+    """Join Room opens "Accept this invite? … join "e2e room"?" — answer Yes."""
     key = f"owner:{bridge.owner}"
     if _status(room_id).get(key) == "join":
         log.append(f"{bridge.owner}: already joined")
         return
-    open_room(bridge, config.E2E_ROOM_NAME)
-    bridge.press(_unique(bridge, _by_path("accept_button"), "'Join Room' on the e2e room invite"), 3.0)
+    if not confirm_buttons(bridge.snapshot()):  # a confirmation left open by an earlier run is answered directly
+        open_room(bridge, config.E2E_ROOM_NAME)
+        bridge.press(_unique(bridge, join_buttons, "'Join Room' on the e2e room invite"), 2.0)
+    bridge.press(_unique(bridge, confirm_buttons, "'Yes' in the e2e room's accept-invite prompt"), 3.0)
     if not _wait_status(room_id, key, "join", JOIN_WAIT_S):
-        raise StepNotFound(f"{bridge.owner}: pressed Join Room but Matrix shows no join in {JOIN_WAIT_S}s")
-    log.append(f"{bridge.owner}: joined via Join Room")
+        raise StepNotFound(f"{bridge.owner}: confirmed Join but Matrix shows no join in {JOIN_WAIT_S}s")
+    log.append(f"{bridge.owner}: joined via Join Room → Yes")
 
 
 def prompt_buttons(nodes: list) -> list:
@@ -85,7 +101,33 @@ def answer_follow_prompts(bridge: Bridge, log: list, timeout_s: float = FOLLOW_W
         time.sleep(2)
 
 
+INVITE_TITLE = f"Invite to {config.E2E_ROOM_NAME}"
+
+
+def _in_invite_modal(n: dict) -> bool:
+    return ".invite_modal." in f".{n['path']}."
+
+
+def invite_modal_open(nodes: list) -> bool:
+    return any(_in_invite_modal(n) and label(n) == INVITE_TITLE for n in nodes)
+
+
+def _close_invite_modal(bridge: Bridge):
+    """Close the e2e room's own invite dialog (Okay after an invite, else Cancel)."""
+    nodes = bridge.snapshot()
+    if not invite_modal_open(nodes):
+        return
+    for wid in ("okay_button", "cancel_button"):
+        hit = [n for n in nodes if _in_invite_modal(n) and ends(n, wid) and "press" in n.get("actions", "")]
+        if hit:
+            bridge.press(hit[0], settle=1.0)
+            return
+
+
 def add_agent(bridge: Bridge, room_id: str, agent: str, log: list):
+    """+ → Add agent to this room → type the Agent's exact MXID → Invite.
+    The picker list is not used: it labels every Agent "Your agent", including
+    other owners' (product finding), so a pick by name could choose the wrong one."""
     key = f"agent:{agent}"
     state = _status(room_id).get(key)
     if state in ("join", "invite"):  # an invite still binding is not re-sent
@@ -93,14 +135,19 @@ def add_agent(bridge: Bridge, room_id: str, agent: str, log: list):
         if state == "invite" and not _wait_status(room_id, key, "join", BIND_WAIT_S):
             raise StepNotFound(f"{agent}: invited earlier but not joined within {BIND_WAIT_S}s")
         return
+    _close_invite_modal(bridge)
     open_room(bridge, config.E2E_ROOM_NAME)
     bridge.click_at(_unique(bridge, _by_path("new_or_join_button", "icon"), "the + button"), 1.5)
     bridge.press(_unique(bridge, _by_path("plus_add_agent"), "'Add agent to this room'"), 1.5)
-    bridge.click_at(_unique(bridge, lambda ns: [n for n in exact(ns, agent) if ".people_list." in f".{n['path']}."],
-                            f"{agent} in the invite picker"))
-    bridge.press(_unique(bridge, _by_path("confirm_button"), "the Invite button"), 3.0)
+    field = _unique(bridge, lambda ns: [n for n in ns if _in_invite_modal(n) and ends(n, "user_id_input")]
+                    if invite_modal_open(ns) else [], f"the '{INVITE_TITLE}' field")
+    bridge.type_into(field, config.AGENTS[agent][1])
+    bridge.press(_unique(bridge, lambda ns: [n for n in ns if _in_invite_modal(n) and ends(n, "confirm_button")
+                                             and label(n) == "Invite"], "the Invite button"), 3.0)
     _allow_if_private(bridge, agent, log)
-    if not _wait_status(room_id, key, "join", BIND_WAIT_S):
+    joined = _wait_status(room_id, key, "join", BIND_WAIT_S)
+    _close_invite_modal(bridge)
+    if not joined:
         raise StepNotFound(f"{agent}: invited by {bridge.owner} but not joined within {BIND_WAIT_S}s")
     log.append(f"{agent}: added by {bridge.owner}")
 

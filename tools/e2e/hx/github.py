@@ -1,15 +1,20 @@
 """GitHub reads and writes through the logged-in `gh` CLI (csheargm).
 
 Only the sandbox repo is ever written, and only items carrying TEST_MARK."""
+import base64
 import functools
 import json
 import os
 import re
 import subprocess
+import time
 
 from . import config
 
 GH_TIMEOUT_S = 60
+READ_RETRIES = 3
+RETRY_PAUSE_S = 5
+TRANSIENT = ("TLS handshake timeout", "connection reset", "i/o timeout", "502 Bad Gateway", "EOF")
 GH_ACCOUNT = "csheargm"  # gh's *active* account can change under us (seen 2026-11-17)
 
 
@@ -21,10 +26,23 @@ def gh(*args: str, parse=True):
     cmd = ["gh", *args]
     if any("hagency-org" in a for a in args):
         raise GitHubError("hagency-org is off limits")
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S, env=_pinned_env())
-    if done.returncode != 0:
+    tries = READ_RETRIES if is_read(args) else 1
+    for attempt in range(tries):
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S, env=_pinned_env())
+        if done.returncode == 0:
+            return json.loads(done.stdout) if parse and done.stdout.strip() else done.stdout
+        if attempt + 1 < tries and any(t in done.stderr for t in TRANSIENT):
+            time.sleep(RETRY_PAUSE_S)  # a read is safe to repeat; a write never is
+            continue
         raise GitHubError(f"{' '.join(cmd[:4])}…: {done.stderr.strip()[:300]}")
-    return json.loads(done.stdout) if parse and done.stdout.strip() else done.stdout
+    raise GitHubError("unreachable")
+
+
+def is_read(args: tuple) -> bool:
+    """gh calls that change nothing on GitHub."""
+    if args[:1] == ("api",):
+        return not any(a in ("-X", "--method", "-f", "-F", "--field", "--raw-field") for a in args)
+    return len(args) > 1 and args[0] in ("pr", "issue") and args[1] in ("view", "list")
 
 
 @functools.lru_cache(maxsize=1)
@@ -98,6 +116,21 @@ def branches_naming_issue(number: int) -> list:
     names = gh("api", f"repos/{config.SANDBOX_REPO}/branches?per_page=100", "--jq", "[.[].name]")
     pattern = re.compile(rf"issue-?{number}(\b|[^0-9])")
     return [n for n in names if n not in ("main", "master") and pattern.search(n)]
+
+
+def create_test_pr(branch: str, path: str, title: str) -> int:
+    """A one-file `[e2e]` PR on a new branch from main (for review scenarios)."""
+    _require_test_title(title)
+    if not branch.startswith("e2e-"):
+        raise GitHubError(f"test branches start with e2e-: {branch!r}")
+    main = gh("api", f"repos/{config.SANDBOX_REPO}/git/ref/heads/main")["object"]["sha"]
+    gh("api", "-X", "POST", f"repos/{config.SANDBOX_REPO}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={main}")
+    content = base64.b64encode(f"e2e review target {branch}\n".encode()).decode()
+    gh("api", "-X", "PUT", f"repos/{config.SANDBOX_REPO}/contents/{path}", "-f", f"message={title}",
+       "-f", f"content={content}", "-f", f"branch={branch}")
+    url = gh("pr", "create", "-R", config.SANDBOX_REPO, "--head", branch, "--base", "main", "--title", title,
+             "--body", "Automated end-to-end test PR (review target). Closed by the runner.", parse=False)
+    return int(url.strip().rsplit("/", 1)[1])
 
 
 def branch_exists(name: str) -> bool:

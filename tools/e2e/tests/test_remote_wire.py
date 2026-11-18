@@ -133,6 +133,13 @@ class BridgeGuards(unittest.TestCase):
             b.press({"id": "d45", "actions": "press"})
         b.session.request.assert_not_called()
 
+    def test_type_only_into_text_fields(self):
+        b = self._bridge()
+        b.seq = 1
+        with self.assertRaises(bridge.StepNotFound):
+            b.type_into({"id": "x", "role": "button"}, "hi")
+        b.session.request.assert_not_called()
+
     def test_buttons_are_never_clicked_by_coordinate(self):
         b = self._bridge()
         b.seq = 1

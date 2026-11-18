@@ -129,10 +129,14 @@ def s8_cross_model_review(ctx) -> Result:
     name = "8 cross-model review (Anna-side asks bird-codex to review a PR)"
     if (b := blocked(name, ctx, ["bird-codex"])):
         return b
-    prs = [st["pr"] for st in ctx.loop_states.values() if st.get("pr")]
-    if not prs:
-        return Result(name, FAIL, note="no PR from scenario 7 to review", kind="dependency")
     r, t0 = Result(name), time.time()
+    prs = [st["pr"] for st in ctx.loop_states.values() if st.get("pr")]
+    if not prs:  # scenario 7 not run: review a PR of the runner's own
+        branch = f"e2e-{ctx.run_id}-s8"
+        ctx.created_branches.append(branch)
+        prs = [github.create_test_pr(branch, f"e2e/{branch}.md", f"{config.TEST_MARK} docs: add e2e/{branch}.md")]
+        ctx.created_prs.append(prs[0])
+        r.evidence.append(f"review target: runner PR #{prs[0]}")
     number, since = prs[0], now_ms()
     ev = personas.persona("zz-anna").send(ctx.room, mention_content(
         f"{config.TEST_MARK} please review PR #{number} in {config.SANDBOX_REPO} and post your review "
@@ -144,7 +148,8 @@ def s8_cross_model_review(ctx) -> Result:
                       f"GitHub after ask: {[(k, t) for k, t, _ in posted or []]}")
     ok = bool(reply) and bool(posted)
     if not ok:
-        r.note = "no room answer" if not reply else "answered in room but nothing new posted on the PR"
+        r.note = "no room answer" if not reply else \
+            f"answered in room but nothing new posted on the PR; bird-codex said: {reply['content'].get('body', '')[:240]!r}"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
 
@@ -166,6 +171,8 @@ def cleanup(ctx) -> list:
         if not st.get("pr"):
             for b in github.branches_naming_issue(issue):
                 done.append(_try(f"branch {b} (no PR)", lambda b=b: github.delete_branch(b) or "deleted"))
+    for pr in ctx.created_prs:
+        done.append(_try(f"PR #{pr}", lambda pr=pr: github.close_pr_if_unmerged(pr, "e2e cleanup: review target")))
     for n in ctx.created_issues:
         done.append(_try(f"issue #{n}", lambda n=n: github.close_issue(n, "e2e cleanup: closed by the test runner")
                          or "closed (or already closed)"))

@@ -30,6 +30,7 @@ class Ctx:
     created_issues: list = field(default_factory=list)
     created_branches: list = field(default_factory=list)
     loop_states: dict = field(default_factory=dict)
+    created_prs: list = field(default_factory=list)
     setup_log: list = field(default_factory=list)
     read_dev_room: bool = False  # opt-in: navigates Betty's window to the dev room
 
@@ -75,16 +76,53 @@ def _threaded(content: dict, thread_root: str) -> dict:
 
 
 def agent_messages(viewer: str, room: str, agent: str, since_ms: int) -> list:
-    """Messages the Agent sent since `since_ms`, as one persona's server sees them."""
+    """Messages the Agent sent since `since_ms`, as one persona's server sees
+    them, each showing its latest edit: an Agent posts "⏳ Thinking…" and then
+    edits that message into its answer."""
     puppet = config.AGENTS[agent][1]
-    events = personas.persona(viewer).messages_after(room, since_ms)
-    return [e for e in events if e["sender"] == puppet and e["type"] == "m.room.message"
-            and e["content"].get("m.relates_to", {}).get("rel_type") != "m.replace"]
+    events = [e for e in personas.persona(viewer).messages_after(room, since_ms)
+              if e["sender"] == puppet and e["type"] == "m.room.message"]
+    return apply_edits(events)
+
+
+def apply_edits(events: list) -> list:
+    """Originals (oldest first) with content and timestamp of their newest
+    m.replace by the same sender; the original's relation (thread) is kept."""
+    edits = {}
+    for e in events:
+        rel = e["content"].get("m.relates_to", {})
+        if rel.get("rel_type") == "m.replace" and "m.new_content" in e["content"]:
+            prior = edits.get(rel.get("event_id"))
+            if prior is None or e["origin_server_ts"] >= prior["origin_server_ts"]:
+                edits[rel.get("event_id")] = e
+    out = []
+    for e in events:
+        if e["content"].get("m.relates_to", {}).get("rel_type") == "m.replace":
+            continue
+        edit = edits.get(e["event_id"])
+        if edit and edit["sender"] == e["sender"]:
+            content = {**edit["content"]["m.new_content"]}
+            if "m.relates_to" in e["content"]:
+                content["m.relates_to"] = e["content"]["m.relates_to"]
+            e = {**e, "content": content, "origin_server_ts": edit["origin_server_ts"],
+                 "edited_by": edit["event_id"]}
+        out.append(e)
+    return out
+
+
+def last_said(viewer: str, room: str, agent: str, since_ms: int) -> str:
+    """The Agent's latest message text since `since_ms` (edits applied), for evidence."""
+    said = agent_messages(viewer, room, agent, since_ms)
+    return said[-1]["content"].get("body", "")[:240] if said else "(nothing)"
+
+
+PROGRESS_MARK = "⏳"  # "⏳ Thinking…", "⏳ running …": an Agent's in-progress status, later edited
 
 
 def substantive(events: list) -> list:
-    """Agent messages that are answers, not "working on it" status lines."""
-    return [e for e in events if len(e["content"].get("body", "")) >= 2]
+    """Agent messages that are answers, not "⏳ working on it" status lines."""
+    return [e for e in events if len(e["content"].get("body", "").strip()) >= 2
+            and not e["content"].get("body", "").lstrip().startswith(PROGRESS_MARK)]
 
 
 def first_reply(viewer: str, room: str, agent: str, since_ms: int, timeout_s: float):

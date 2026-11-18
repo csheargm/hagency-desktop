@@ -4,7 +4,8 @@ import time
 
 from hx import config, evidence, github, owner_ui, personas
 from hx.bridge import BridgeDown, StepNotFound
-from hx.scenario import FAIL, PASS, Result, agent_messages, blocked, mention_content, server_ts, wait_for
+from hx.scenario import (FAIL, PASS, Result, agent_messages, blocked, last_said, mention_content, server_ts,
+                         wait_for)
 
 ANSWER_TIMEOUT_S = 300
 APPROVAL_TIMEOUT_S = 300
@@ -50,7 +51,8 @@ def s5_readonly_query(ctx) -> Result:
     if found:
         r.evidence.append(f"reply {found[0]['event_id']} after {(found[0]['origin_server_ts'] - since) / 1000:.1f}s")
     else:
-        r.note += f"no answer quoting the heading in {ANSWER_TIMEOUT_S}s. "
+        r.note += (f"no answer quoting the heading in {ANSWER_TIMEOUT_S}s; bird-claude said: "
+                   f"{last_said('zz-betty', ctx.room, 'bird-claude', since)!r}. ")
     if new:
         r.note += f"approval(s) raised for a read-only query: {[d[:12] for d in new]}. "
     ok = bool(found) and not new
@@ -101,7 +103,8 @@ def s6_write_needs_approval(ctx) -> Result:
     r.evidence += [f"approval {d[:12]}…" for d in (new or [])]
     r.evidence.append(f"log lines mentioning pending/approval: {len(hits)} in {sorted({k for k, _ in hits})}")
     if not new:
-        r.note += f"no approval in Betty's queue within {APPROVAL_TIMEOUT_S}s. "
+        r.note += (f"no approval in Betty's queue within {APPROVAL_TIMEOUT_S}s; bird-claude said: "
+                   f"{last_said('zz-will', ctx.room, 'bird-claude', server_ts('zz-will', ctx.room, ev))!r}. ")
     if pushed:
         r.note += f"branch {branch} was pushed without approval. "
     ok = bool(new) and not pushed and (denied is None or bool(denied))

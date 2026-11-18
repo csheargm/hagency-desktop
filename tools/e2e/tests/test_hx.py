@@ -45,9 +45,50 @@ class Waiting(unittest.TestCase):
         seq = iter([None, [], ["x"]])
         self.assertEqual(scenario.wait_for(lambda: next(seq), 5, 0.01), ["x"])
 
-    def test_substantive_drops_empty_bodies(self):
-        evs = [{"content": {"body": ""}}, {"content": {"body": "ok"}}]
-        self.assertEqual(scenario.substantive(evs), [evs[1]])
+    def test_substantive_drops_empty_and_progress_bodies(self):
+        evs = [{"content": {"body": ""}}, {"content": {"body": "⏳ Thinking…"}},
+               {"content": {"body": "⏳ running gh pr view"}}, {"content": {"body": "ok"}}]
+        self.assertEqual(scenario.substantive(evs), [evs[3]])
+
+
+class Paging(unittest.TestCase):
+    def test_follows_end_tokens_until_older_than_since(self):
+        from hx import matrix
+        pages = [{"chunk": [{"event_id": "$4", "origin_server_ts": 40}], "end": "t1"},
+                 {"chunk": [{"event_id": "$3", "origin_server_ts": 30}, {"event_id": "$2", "origin_server_ts": 20}],
+                  "end": "t2"},
+                 {"chunk": [{"event_id": "$1", "origin_server_ts": 10}], "end": "t3"}]
+        c = matrix.Client.__new__(matrix.Client)
+        with mock.patch.object(matrix.Client, "call", side_effect=pages) as call:
+            got = c.messages_after("!r", 20)
+        self.assertEqual([e["event_id"] for e in got], ["$2", "$3", "$4"])
+        self.assertEqual(call.call_count, 3)
+        self.assertIn("from=t1", call.call_args_list[1].args[1])
+
+
+class Edits(unittest.TestCase):
+    def test_answer_arrives_as_an_edit_of_thinking(self):
+        a = "@_hagency_agt_x:s"
+        evs = [{"event_id": "$t", "sender": a, "origin_server_ts": 1,
+                "content": {"body": "⏳ Thinking…", "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+               {"event_id": "$e1", "sender": a, "origin_server_ts": 2,
+                "content": {"m.relates_to": {"rel_type": "m.replace", "event_id": "$t"},
+                            "m.new_content": {"body": "⏳ running gh"}}},
+               {"event_id": "$e2", "sender": a, "origin_server_ts": 3,
+                "content": {"m.relates_to": {"rel_type": "m.replace", "event_id": "$t"},
+                            "m.new_content": {"body": "TOKEN done"}}}]
+        out = scenario.apply_edits(evs)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["content"]["body"], "TOKEN done")
+        self.assertEqual(out[0]["content"]["m.relates_to"]["event_id"], "$root")
+        self.assertEqual(out[0]["origin_server_ts"], 3)
+
+    def test_edit_by_someone_else_is_ignored(self):
+        evs = [{"event_id": "$t", "sender": "@a:s", "origin_server_ts": 1, "content": {"body": "x"}},
+               {"event_id": "$e", "sender": "@b:s", "origin_server_ts": 2,
+                "content": {"m.relates_to": {"rel_type": "m.replace", "event_id": "$t"},
+                            "m.new_content": {"body": "y"}}}]
+        self.assertEqual(scenario.apply_edits(evs)[0]["content"]["body"], "x")
 
 
 class Blocking(unittest.TestCase):
@@ -86,6 +127,13 @@ class GitHubGuards(unittest.TestCase):
         names = ["main", "agent/issue-45-e2e-doc", "fix/issue-450-x", "issue45"]
         with mock.patch.object(github, "gh", return_value=names):
             self.assertEqual(github.branches_naming_issue(45), ["agent/issue-45-e2e-doc", "issue45"])
+
+    def test_only_reads_are_retried(self):
+        self.assertTrue(github.is_read(("pr", "view", "5")))
+        self.assertTrue(github.is_read(("api", "repos/x/branches")))
+        self.assertFalse(github.is_read(("api", "-X", "DELETE", "repos/x/git/refs/heads/b")))
+        self.assertFalse(github.is_read(("pr", "create", "--title", "t")))
+        self.assertFalse(github.is_read(("issue", "close", "4")))
 
     def test_never_deletes_default_branch(self):
         with mock.patch.object(github, "gh") as gh, self.assertRaises(github.GitHubError):

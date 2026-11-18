@@ -16,6 +16,7 @@ LOOPBACK = "http://127.0.0.1:47999/"  # never listened on: only the code is read
 SCOPE_API = "urn:matrix:org.matrix.msc2967.client:api:*"
 SCOPE_DEVICE = "urn:matrix:org.matrix.msc2967.client:device:"
 HTTP_TIMEOUT = 40
+MAX_PAGES = 50
 ALLOWED_ORIGINS = ("http://127.0.0.1:8090", "http://127.0.0.1:8092")
 
 
@@ -131,14 +132,23 @@ class Client:
     def state(self, room: str, etype: str, key: str = ""):
         return self.call("GET", f"/rooms/{q(room)}/state/{etype}/{q(key)}")
 
-    def messages_after(self, room: str, since_ms: int, limit: int = 300) -> list:
-        """Timeline events (oldest first) with origin_server_ts >= since_ms."""
+    def messages_after(self, room: str, since_ms: int, limit: int = 100, max_pages: int = MAX_PAGES) -> list:
+        """Timeline events (oldest first) with origin_server_ts >= since_ms.
+        Follows `end` tokens: a server may answer with a short page (Palpo
+        returned 4 events for limit=300), so one page is not "everything"."""
         flt = urllib.parse.quote(json.dumps({"lazy_load_members": True}))
-        res = self.call("GET", f"/rooms/{q(room)}/messages?dir=b&limit={limit}&filter={flt}")
-        if "chunk" not in res:
-            raise MatrixError("messages", 0, "reply without a chunk")
-        events = [e for e in res["chunk"] if e.get("origin_server_ts", 0) >= since_ms]
-        return sorted(events, key=lambda e: e["origin_server_ts"])
+        events, token = [], ""
+        for _ in range(max_pages):
+            frm = f"&from={urllib.parse.quote(token)}" if token else ""
+            res = self.call("GET", f"/rooms/{q(room)}/messages?dir=b&limit={limit}&filter={flt}{frm}")
+            if "chunk" not in res:
+                raise MatrixError("messages", 0, "reply without a chunk")
+            chunk = res["chunk"]
+            events += [e for e in chunk if e.get("origin_server_ts", 0) >= since_ms]
+            if not chunk or not res.get("end") or min(e.get("origin_server_ts", 0) for e in chunk) < since_ms:
+                return sorted(events, key=lambda e: e["origin_server_ts"])
+            token = res["end"]
+        raise MatrixError("messages", 0, f"more than {max_pages} pages back to {since_ms}; window too wide")
 
     def event(self, room: str, event_id: str) -> dict:
         return self.call("GET", f"/rooms/{q(room)}/event/{q(event_id)}")

@@ -15,7 +15,7 @@ from . import config
 from .remote_wire import Session, WireError, socket_path
 
 WINDOW_LABELS = {"anna": "fresh-anna", "betty": "fresh-betty"}
-ALLOWED = ("status", "ui", "ui act press", "click")
+ALLOWED = ("status", "ui", "ui act press", "ui type", "click")
 
 
 class BridgeDown(RuntimeError):
@@ -95,6 +95,15 @@ class Bridge:
         x, y, w, h = node["bounds"]
         win = node.get("window", "1:0").split(":")[1]
         self.cmd("click", x=round(x + w / 2), y=round(y + h / 2), w=int(win), wait=1, if_user_seq=self._seq())
+        self.seq = None
+        time.sleep(settle)
+
+
+    def type_into(self, node: dict, text: str, settle: float = 0.5):
+        """Replace a text field's content (only text fields)."""
+        if node.get("role") != "text_field":
+            raise StepNotFound(f"{label(node)!r} is not a text field")
+        self.cmd("ui type", node=node["id"], t=text, if_user_seq=self._seq(), json=1)
         self.seq = None
         time.sleep(settle)
 
