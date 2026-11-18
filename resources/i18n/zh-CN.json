@@ -3785,5 +3785,6 @@
   "no line limit": "不限行数",
   "GitHub branch protection is on for {branch}. Keep it on.": "{branch} 已开启 GitHub 分支保护。请保持开启。",
   "Recommended: turn on GitHub branch protection for {branch} (it is off).": "建议：为 {branch} 开启 GitHub 分支保护（目前未开启）。",
-  "Recommended: turn on GitHub branch protection for the default branch of {repo}.": "建议：为 {repo} 的默认分支开启 GitHub 分支保护。"
+  "Recommended: turn on GitHub branch protection for the default branch of {repo}.": "建议：为 {repo} 的默认分支开启 GitHub 分支保护。",
+  "Safeguards could not be read: {error}": "无法读取安全保障：{error}"
 }

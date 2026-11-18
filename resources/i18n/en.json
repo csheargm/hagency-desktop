@@ -3785,5 +3785,6 @@
   "no line limit": "no line limit",
   "GitHub branch protection is on for {branch}. Keep it on.": "GitHub branch protection is on for {branch}. Keep it on.",
   "Recommended: turn on GitHub branch protection for {branch} (it is off).": "Recommended: turn on GitHub branch protection for {branch} (it is off).",
-  "Recommended: turn on GitHub branch protection for the default branch of {repo}.": "Recommended: turn on GitHub branch protection for the default branch of {repo}."
+  "Recommended: turn on GitHub branch protection for the default branch of {repo}.": "Recommended: turn on GitHub branch protection for the default branch of {repo}.",
+  "Safeguards could not be read: {error}": "Safeguards could not be read: {error}"
 }
