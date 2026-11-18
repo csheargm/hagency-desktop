@@ -31,7 +31,7 @@ def _check_answer(result: Result, ctx, asker, agent, label, viewers, thread_root
     result.evidence.append(f"{label}: reply {reply['event_id']} after {latency:.1f}s")
     ok = True
     for viewer in viewers:
-        if not wait_for(lambda v=viewer: seen_on(v, ctx.room, reply["event_id"]), 60):
+        if not wait_for(lambda v=viewer: seen_on(v, ctx.room, reply.get("edited_by", reply["event_id"])), 60):
             result.note += f"{label}: reply not visible from {viewer}'s server. "
             ok = False
     rel = reply["content"].get("m.relates_to", {})

@@ -7,10 +7,14 @@ import json
 import os
 import re
 import subprocess
+import time
 
 from . import config
 
 GH_TIMEOUT_S = 60
+READ_RETRIES = 3
+RETRY_PAUSE_S = 5
+TRANSIENT = ("TLS handshake timeout", "connection reset", "i/o timeout", "502 Bad Gateway", "EOF")
 GH_ACCOUNT = "csheargm"  # gh's *active* account can change under us (seen 2026-11-17)
 
 
@@ -22,10 +26,23 @@ def gh(*args: str, parse=True):
     cmd = ["gh", *args]
     if any("hagency-org" in a for a in args):
         raise GitHubError("hagency-org is off limits")
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S, env=_pinned_env())
-    if done.returncode != 0:
+    tries = READ_RETRIES if is_read(args) else 1
+    for attempt in range(tries):
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S, env=_pinned_env())
+        if done.returncode == 0:
+            return json.loads(done.stdout) if parse and done.stdout.strip() else done.stdout
+        if attempt + 1 < tries and any(t in done.stderr for t in TRANSIENT):
+            time.sleep(RETRY_PAUSE_S)  # a read is safe to repeat; a write never is
+            continue
         raise GitHubError(f"{' '.join(cmd[:4])}…: {done.stderr.strip()[:300]}")
-    return json.loads(done.stdout) if parse and done.stdout.strip() else done.stdout
+    raise GitHubError("unreachable")
+
+
+def is_read(args: tuple) -> bool:
+    """gh calls that change nothing on GitHub."""
+    if args[:1] == ("api",):
+        return not any(a in ("-X", "--method", "-f", "-F", "--field", "--raw-field") for a in args)
+    return len(args) > 1 and args[0] in ("pr", "issue") and args[1] in ("view", "list")
 
 
 @functools.lru_cache(maxsize=1)

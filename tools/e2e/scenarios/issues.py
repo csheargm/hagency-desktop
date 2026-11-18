@@ -148,7 +148,8 @@ def s8_cross_model_review(ctx) -> Result:
                       f"GitHub after ask: {[(k, t) for k, t, _ in posted or []]}")
     ok = bool(reply) and bool(posted)
     if not ok:
-        r.note = "no room answer" if not reply else "answered in room but nothing new posted on the PR"
+        r.note = "no room answer" if not reply else \
+            f"answered in room but nothing new posted on the PR; bird-codex said: {reply['content'].get('body', '')[:240]!r}"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
 
