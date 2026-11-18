@@ -34,9 +34,25 @@ fn the_roster_names_owners_and_pauses_only() {
 
 #[test]
 fn own_agents_show_config_facts_and_others_say_who_sees_settings() {
-    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, runtime: Some("Claude"), status: Some("Running") };
+    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, runtime: Some("Claude"), status: Some("Running"), shared: None };
     assert_eq!(fact_lines(&own, Some("Anna"), false), vec!["Owner: Anna", "Runtime: Claude", "Status: Running"]);
     let theirs = AgentFacts { status: Some("Paused"), ..Default::default() };
     assert_eq!(fact_lines(&theirs, Some("Betty"), true), vec!["Agent of Betty", "Status: Paused", "Settings are visible only to Betty"]);
     assert_eq!(fact_lines(&AgentFacts::default(), None, false), vec!["Owner not shared in this room", "Settings are visible only to its owner"]);
+}
+
+/// Chris (Nov 17): the hover card says what a shared Agent does for the
+/// room's members, for each of its group rooms only.
+#[test]
+fn an_own_agents_group_rooms_carry_its_shared_choices() {
+    let status = serde_json::json!({
+        "rooms": [{"roomId": "!dev:s", "name": "dev", "state": "active"}, {"roomId": "!gone:s", "name": "gone", "state": "left"}],
+        "approvals": {"roomShares": [{"room": "!dev:s", "answer": true, "review": false, "fix": false}]}
+    });
+    let shares = super::group_room_shares(&status);
+    assert_eq!(shares.len(), 1, "a room it left is not a group room any more");
+    let share = shares["!dev:s"];
+    assert!(share.answer && !share.review && !share.fix);
+    let facts = AgentFacts { own_agent_id: Some("agt_1".into()), shared: Some(share), ..Default::default() };
+    assert_eq!(fact_lines(&facts, Some("Betty"), false), vec!["Owner: Betty", "Shared in this room: answers questions; reviews, fixes need Betty's OK"]);
 }

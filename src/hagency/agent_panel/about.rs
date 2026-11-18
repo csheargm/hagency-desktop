@@ -1,6 +1,7 @@
 //! Identity tab, About card (top): read-only facts about the Agent — Matrix
 //! ID (with Copy), name, owner, where and on what it runs, state, created
-//! date and how many rooms it is in (opens the Context tab).
+//! date and how many rooms it is in (opens the Context tab), then one line per
+//! group room saying what it does there for the room's members.
 use super::*;
 
 /// The About card's rows, as `(label, value)`; unknown facts are left out.
@@ -66,8 +67,10 @@ impl AgentPanel {
         let name = owner.as_ref().map(|owner| crate::profile::agent_facts::owner_name(cx, owner, None));
         let mut agent = self.agent.clone();
         if let (Some(owner), Some(row)) = (owner.as_ref(), agent.as_object_mut()) { row.insert("ownerMxid".into(), owner.to_string().into()); }
-        let lines: Vec<String> = about_rows(&agent, &self.status, &self.model, name.as_deref()).into_iter()
+        let mut lines: Vec<String> = about_rows(&agent, &self.status, &self.model, name.as_deref()).into_iter()
             .map(|(label, value)| format!("{}: {value}", crate::i18n::tr(label))).collect();
+        // What it does for each group room's members (ADR 0024).
+        lines.extend(crate::hagency::room_share::summaries(&self.status, name.as_deref().unwrap_or(crate::i18n::tr("its owner"))));
         self.view.label(cx, ids!(about)).set_text(cx, &lines.join("\n"));
         let text = rooms_line(rooms::joined_rooms(&self.status).len());
         self.view.button(cx, ids!(about_rooms)).set_text(cx, &text);

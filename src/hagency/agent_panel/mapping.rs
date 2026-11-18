@@ -140,6 +140,8 @@ pub(crate) fn approval_mode_change(index: usize) -> Option<Value> {
 /// "Pull request merges" choices in dropdown order: off (People merge), on.
 pub(crate) fn auto_merge_labels() -> [&'static str; 2] { ["People merge", "Agents merge low-risk PRs"] }
 pub(crate) const AUTO_MERGE_HINT: &str = "Only pull requests inside the repository's .hagency/merge-policy.yml, approved by another Agent. Everything else still asks you.";
+/// Under the "In group rooms" choices: what stays the same whatever is ticked.
+pub(crate) const SHARE_HINT: &str = "Room members may ask it. Merges follow each repository's merge rules, anything outside the room's repositories asks you, and Pause and the budget still apply.";
 /// The `{autoMerge}` change to save for a dropdown index.
 pub(crate) fn auto_merge_change(index: usize) -> Option<Value> { (index < 2).then(|| json!({"autoMerge": index == 1})) }
 /// The `{forget}` change that revokes one remembered rule: exactly its key.

@@ -15,6 +15,7 @@ mod rename;
 pub(crate) mod mapping;
 pub(crate) mod rooms;
 mod settings;
+mod sharing;
 pub use design::script_mod;
 
 use crate::hagency::{backend::Service, create_agent::ModelChoice, model::{Command, LocalAction}};

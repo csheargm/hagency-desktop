@@ -41,6 +41,7 @@ pub mod host_git;
 pub mod host_run;
 pub(crate) mod local_git;
 pub mod read_only;
+pub mod review_post;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +106,36 @@ pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate
     Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
 }
 
+/// The repositories of `proposal`'s Room a shared Agent reviews there:
+/// those it watches with reports to this Room.
+// TODO(room-repos): when feat/room-repo-status merges, return its `read_scope`
+// (the Room's repository set, linked `org.hagency.room_repos` included) so
+// reviews and read-only queries share one set.
+fn room_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    watched_repos(db, proposal)
+}
+
+/// Whether `proposal` is a shell step posting a PR review verdict on a
+/// repository of its Room while the owner lets the Agent review PRs there
+/// (ADR 0024): the pinned command that runs in its place, else `None`.
+/// Any requester in the Room, as for the read-only queries.
+pub(crate) fn review_step(db: &Connection, proposal: &ToolProposal) -> crate::Result<Option<TrustedStep>> {
+    if proposal.risk == "permission_expansion" || !is_shell_step(proposal) {
+        return Ok(None);
+    }
+    let Some(post) = proposal.arguments["command"].as_str().and_then(review_post::ReviewPost::parse) else { return Ok(None) };
+    if !crate::room_share::read(db, &proposal.scope.agent, &proposal.scope.room)?.review || !post.on_any(&room_repos(db, proposal)?) {
+        return Ok(None);
+    }
+    Ok(Some(TrustedStep::Command(post.command())))
+}
+
+/// Whether `proposal`'s requester gets the owner's push trust: the owner, or
+/// a member of a Room where the owner let the Agent fix issues without asking.
+fn fixes_for(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<bool> {
+    Ok(proposal.scope.requester == owner || crate::room_share::read(db, &proposal.scope.agent, &proposal.scope.room)?.fix)
+}
+
 /// A foreground Claude `Bash` call, or a Codex call of the host's
 /// [`codex_step::TOOL`] (Codex's own shell is never answered here: its
 /// command cannot be pinned, see [`codex_step`]).
@@ -146,7 +177,7 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
     let edit = matches!(proposal.tool.as_str(), "claude.Write" | "claude.Edit" | "claude.MultiEdit");
     let read = matches!(proposal.tool.as_str(), "claude.Read" | "claude.Glob" | "claude.Grep");
     let patch = proposal.tool == "codex.file_change";
-    if proposal.risk == "permission_expansion" || !(edit || read || patch || is_shell_step(proposal)) || proposal.scope.requester != owner {
+    if proposal.risk == "permission_expansion" || !(edit || read || patch || is_shell_step(proposal)) || !fixes_for(db, proposal, owner)? {
         return Ok(None);
     }
     let root = Path::new(&proposal.canonical_directory);
@@ -246,8 +277,10 @@ pub(crate) fn github_repo_of(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod read_only_flow_tests;
+pub(crate) mod read_only_flow_tests;
 #[cfg(test)]
 pub(crate) mod fix_flow_tests;
 #[cfg(test)]
 mod deny_override_tests;
+#[cfg(test)]
+mod room_share_flow_tests;

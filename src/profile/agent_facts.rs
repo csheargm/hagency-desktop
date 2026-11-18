@@ -40,6 +40,9 @@ pub struct AgentFacts {
     pub runtime: Option<&'static str>,
     /// An English status key ("Running", "Paused", …), translated when shown.
     pub status: Option<&'static str>,
+    /// An own Agent in one of its group rooms: what it does there for the
+    /// room's members (ADR 0024).
+    pub shared: Option<crate::hagency::room_share::RoomShare>,
 }
 
 /// An own Agent's status from its listing `state` and local `service` state
@@ -70,6 +73,10 @@ pub fn roster_status(binding_state: &str) -> Option<&'static str> {
 pub struct RosterRow {
     pub owner: OwnedUserId,
     pub binding_state: String,
+    /// "claude", "codex" or "octos" when the server shares it.
+    // TODO(roster-runtime): the server does not publish it yet; the
+    // different-model reviewer pick (ADR 0024) reads it once it does.
+    pub runtime: Option<&'static str>,
 }
 
 /// Puppet → roster row for a `RoomRoster` reply's `agents`.
@@ -78,13 +85,14 @@ pub fn roster_rows(rows: &Value) -> HashMap<OwnedUserId, RosterRow> {
         let puppet = OwnedUserId::try_from(row["puppetMxid"].as_str()?).ok()?;
         let owner = OwnedUserId::try_from(row["ownerMxid"].as_str()?).ok()?;
         let binding_state = row["bindingState"].as_str().unwrap_or_default().to_owned();
-        Some((puppet, RosterRow { owner, binding_state }))
+        let runtime = match row["runtime"].as_str() { Some("claude") => Some("claude"), Some("codex") => Some("codex"), Some("octos") => Some("octos"), _ => None };
+        Some((puppet, RosterRow { owner, binding_state, runtime }))
     }).collect()
 }
 
 /// An own Agent's local reply: its service state, and its runtime if known.
 #[derive(Clone, Debug)]
-struct Local { at: Instant, service: Option<String>, runtime: Option<&'static str> }
+struct Local { at: Instant, service: Option<String>, runtime: Option<&'static str>, shares: HashMap<String, crate::hagency::room_share::RoomShare> }
 
 #[derive(Default)]
 struct Cache {
@@ -128,6 +136,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
             owner: Some(account),
             runtime: local.as_ref().and_then(|l| l.runtime),
             status: own_status(&row.state, local.as_ref().and_then(|l| l.service.as_deref())),
+            shared: local.as_ref().and_then(|l| l.shares.get(room.as_str()).copied()),
         };
     }
     let roster = {
@@ -141,6 +150,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         status: row.as_ref().and_then(|r| roster_status(&r.binding_state)),
         owner: row.map(|r| r.owner),
         runtime: None,
+        shared: None,
     }
 }
 
@@ -155,24 +165,38 @@ fn load_local(account: &OwnedUserId, agent_id: &str) {
         };
         let Some(mut cache) = cache_if(&account) else { return };
         cache.local_loading.remove(&agent_id);
+        let shares = status.as_ref().map(group_room_shares).unwrap_or_default();
         let service = match status {
             Ok(status) => Some(status["service"]["state"].as_str().unwrap_or("unknown").to_owned()),
             // An unread status is not "Offline": show none until a later hover asks again.
             Err(code) => { log!("Agent status for the hover card failed: {code}"); None }
         };
-        cache.local.insert(agent_id, Local { at: Instant::now(), service, runtime });
+        cache.local.insert(agent_id, Local { at: Instant::now(), service, runtime, shares });
         drop(cache);
         Cx::post_action(AgentFactsChanged);
     });
 }
 
-/// The runtime of an Agent that runs here, from its saved model's credential.
+/// The owner's choices per group room of an own Agent's status reply.
+fn group_room_shares(status: &Value) -> HashMap<String, crate::hagency::room_share::RoomShare> {
+    mapping::watch_rooms(status).into_iter()
+        .filter_map(|(id, _)| crate::hagency::room_share::for_room(&status["approvals"], &id).map(|share| (id, share)))
+        .collect()
+}
+
+/// The runtime label of an Agent that runs here.
 async fn saved_runtime(agent_id: &str) -> Option<&'static str> {
     let service = crate::hagency::backend::Service::for_current().ok()?;
+    runtime_kind(&service, agent_id).await.map(mapping::harness_label)
+}
+
+/// "claude", "codex" or "octos" for an own Agent that runs here, from its
+/// saved model's credential; `None` when it is not known on this device.
+pub(crate) async fn runtime_kind(service: &crate::hagency::backend::Service, agent_id: &str) -> Option<&'static str> {
     let command = Command::Local { agent_id: agent_id.into(), action: LocalAction::AgentModel, input: None, binding_id: None, requester: None };
     let model = service.execute(command).await.ok()?;
     let credential = model["modelProfile"]["credential_ref"].as_str().filter(|c| !c.is_empty())?;
-    Some(mapping::harness_label(mapping::runtime_of(credential)))
+    Some(mapping::runtime_of(credential))
 }
 
 // TODO(R3): mobile_chat_info::fetch_member_owners reads the same roster for
@@ -195,7 +219,11 @@ fn load_roster(account: &OwnedUserId, room: OwnedRoomId) {
 }
 
 async fn room_roster(room: &str) -> Result<HashMap<OwnedUserId, RosterRow>, String> {
-    let service = crate::hagency::backend::Service::for_current()?;
+    room_roster_with(&crate::hagency::backend::Service::for_current()?, room).await
+}
+
+/// The project roster of `room`'s Agents, every owner's, keyed by puppet.
+pub(crate) async fn room_roster_with(service: &crate::hagency::backend::Service, room: &str) -> Result<HashMap<OwnedUserId, RosterRow>, String> {
     let context = service.agents_for_registered_room(room).await?;
     let project = context["projectId"].as_str().filter(|id| !id.is_empty()).ok_or("room_discovery_unavailable")?;
     let roster = service.execute(Command::RoomRoster { project_id: project.into(), room_id: room.into() }).await?;
@@ -225,6 +253,9 @@ pub fn fact_lines(facts: &AgentFacts, owner: Option<&str>, profile: bool) -> Vec
     }
     if let Some(status) = facts.status {
         lines.push(format("Status: {status}", &[("status", tr(status).to_owned())]));
+    }
+    if let Some(share) = facts.shared {
+        lines.push(crate::hagency::room_share::summary(share, tr("this room"), owner.unwrap_or(tr("its owner"))));
     }
     if facts.own_agent_id.is_none() {
         lines.push(match owner {

@@ -8,11 +8,11 @@ use crate::merge_policy::work::OwnerRules;
 use crate::{Layer, Ledger, Scope, ToolPolicy, ToolProposal};
 use serde_json::json;
 
-const OWNER: &str = "@betty:example.org";
-const ROOM: &str = "!dev:example.org";
-const REPO: &str = "csheargm/hagency-demo-sandbox";
+pub(crate) const OWNER: &str = "@betty:example.org";
+pub(crate) const ROOM: &str = "!dev:example.org";
+pub(crate) const REPO: &str = "csheargm/hagency-demo-sandbox";
 
-fn proposal(room: &str, line: &str) -> ToolProposal {
+pub(crate) fn proposal(room: &str, line: &str) -> ToolProposal {
     ToolProposal {
         scope: Scope { agent: "bird".into(), binding: "b".into(), room: room.into(), requester: "@anna:example.org".into(), thread: "t".into() },
         dispatch: "d".into(), tool: "claude.Bash".into(), arguments: json!({"command": line}),
@@ -20,7 +20,7 @@ fn proposal(room: &str, line: &str) -> ToolProposal {
     }
 }
 
-fn ask_owner_ledger(dir: &std::path::Path) -> Ledger {
+pub(crate) fn ask_owner_ledger(dir: &std::path::Path) -> Ledger {
     let mut ledger = Ledger::open(dir.join("local.db"), OWNER).unwrap();
     let scope = proposal(ROOM, "x").scope;
     ledger.register_binding(OWNER, &scope).unwrap();

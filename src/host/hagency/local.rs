@@ -41,7 +41,7 @@ struct SetService {
 pub(crate) enum Call {
     Status(String),
     Service(String, bool),
-    /// `{forget}`, `{mode}` or `{autoMerge}` for the Agent's approval settings.
+    /// `{forget}`, `{mode}`, `{autoMerge}` or `{roomShare}` for the Agent's approval settings.
     Approvals(String, Value),
     ChatOpen(String),
     ChatEncrypt(String),

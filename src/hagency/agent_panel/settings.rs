@@ -1,4 +1,5 @@
-//! Settings tab: approval mode and remembered rules (Revoke), issue watching
+//! Settings tab: approval mode and remembered rules (Revoke), group-room
+//! sharing (`sharing`), issue watching
 //! and GitHub access (the int build's own blocks), budget and period, workspace folder, Pause/Resume service and Retire.
 use super::mapping;
 use super::*;
@@ -11,6 +12,7 @@ impl AgentPanel {
     pub(super) fn render_settings(&mut self, cx: &mut Cx) {
         let (here, idle) = (self.here(), !self.busy);
         self.render_approvals(cx, here && idle);
+        self.render_sharing(cx, here && idle);
         self.render_budget(cx, here && idle);
         let workspace = self.model["modelProfile"]["workspace_root"].as_str().filter(|w| !w.is_empty());
         self.view.label(cx, ids!(panel_workspace)).set_text(cx, workspace.unwrap_or(crate::i18n::tr("Chosen when the agent first runs on this Mac")));
@@ -91,6 +93,7 @@ impl AgentPanel {
     }
 
     pub(super) fn handle_settings_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        self.handle_sharing_actions(cx, actions);
         if let Some(change) = self.view.drop_down(cx, ids!(approval_mode)).selected(actions).and_then(mapping::approval_mode_change) {
             self.save_approvals(cx, change);
         }
@@ -121,7 +124,7 @@ impl AgentPanel {
             self.render(cx);
         }
     }
-    fn save_approvals(&mut self, cx: &mut Cx, change: Value) {
+    pub(super) fn save_approvals(&mut self, cx: &mut Cx, change: Value) {
         self.note(cx, "Saving…");
         self.call(Load::Status, true, Call::Approvals(self.agent_id(), change));
         self.render(cx);

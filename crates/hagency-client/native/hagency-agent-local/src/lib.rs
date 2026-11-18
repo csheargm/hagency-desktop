@@ -19,6 +19,7 @@ pub mod remembered;
 pub mod demo_env;
 pub mod inbox;
 pub mod questions;
+pub mod room_share;
 pub mod room_tools;
 pub mod run_controls;
 pub mod reconciliation;
@@ -386,6 +387,7 @@ impl Ledger {
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;
         db.execute_batch(issue_track::SCHEMA)?;
+        db.execute_batch(room_share::SCHEMA)?;
         remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
         db.execute_batch("COMMIT")?;
@@ -1077,6 +1079,11 @@ impl Ledger {
                 _ => {}
             }
         }
+        // A room member's request waits for the owner when the owner turned
+        // "answer questions" off for this Agent in this room (ADR 0024).
+        if scope.requester != self.owner && !self.room_share(&scope.agent, &scope.room)?.answer {
+            ask = true;
+        }
         Ok(if ask {
             RequestPolicy::AskOwner
         } else {
@@ -1202,11 +1209,16 @@ impl Ledger {
                 let line = proposal.arguments["command"].as_str().unwrap_or_default();
                 watch_trust::TrustedStep::Command(watch_trust::read_only::command(line))
             }
-            None => return Ok(None),
+            // A shared Agent's PR review verdict on a room repository (ADR 0024).
+            None => match watch_trust::review_step(&self.db, proposal)? {
+                Some(step) => step,
+                None => return Ok(None),
+            },
         };
         // Inside the exact scope (the owner's run in the watch's Room for every
         // step `pinned` answers; anyone's read-only query on a repository
-        // watched from this Room) the watch is the owner's decision, so it
+        // watched from this Room, or review verdict where the owner lets the
+        // Agent review PRs, ADR 0024) the watch is the owner's decision, so it
         // overrides the high-risk tool rule, Deny included (Chris, Nov 17;
         // ADR 0022 "Deny", ADR 0019 "Anyone in the report Room"). The dispatch
         // itself must still check out: a Requests Deny for this requester

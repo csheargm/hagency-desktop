@@ -3,11 +3,14 @@
 //! ledger as the Agent policy, so the owner check and ledger opening match it.
 //! GET returns `{mode, rules}`; POST applies `{forget}` (revoke one rule)
 //! and/or `{mode}` (`ask`, `remember` or `outside`) and/or `{autoMerge}` (the
-//! opt-in agent auto-merge switch, off by default) in one transaction, then
+//! opt-in agent auto-merge switch, off by default) and/or `{roomShare: {room,
+//! answer, review, fix}}` (what the Agent does for members of one group room,
+//! ADR 0024; GET lists the saved rooms as `roomShares`) in one transaction, then
 //! answers like GET. Writes need this device to be the Agent's execution device.
 //! Rules are only ever created by the owner's "Always allow this" on a card.
 use super::*;
 use hagency_agent_local::remembered::RememberedRequest;
+use hagency_agent_local::room_share::SavedRoomShare;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,6 +21,8 @@ struct Change {
     mode: Option<String>,
     #[serde(default)]
     auto_merge: Option<bool>,
+    #[serde(default)]
+    room_share: Option<SavedRoomShare>,
 }
 
 pub(super) async fn handle(req: &mut Request, depot: &Depot, agent: String) -> Result<Value, OwnerError> {
@@ -65,8 +70,9 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>) -
     let rules = ledger.remembered_requests(&reply.owner, agent).map_err(local_error)?;
     let mode = ledger.approval_mode(agent).map_err(local_error)?;
     let auto_merge = ledger.auto_merge(agent).map_err(local_error)?;
+    let room_shares = ledger.room_shares(agent).map_err(local_error)?;
     let rules: Vec<Value> = rules.iter().map(|rule| json!({"tool": rule.tool, "directory": rule.directory, "request": rule.request, "created": rule.created, "room": rule.room, "label": label(rule)})).collect();
-    Ok(json!({"agentId": agent, "mode": mode, "autoMerge": auto_merge, "rules": rules}))
+    Ok(json!({"agentId": agent, "mode": mode, "autoMerge": auto_merge, "roomShares": room_shares, "rules": rules}))
 }
 
 /// What the owner's panel names a rule by: the exact command, else the tool
@@ -97,6 +103,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     if let Some(enabled) = change.auto_merge {
         ledger.set_auto_merge(owner, agent, enabled)?;
     }
+    if let Some(saved) = change.room_share {
+        ledger.set_room_share(owner, agent, &saved.room, saved.share())?;
+    }
     Ok(())
 }
 
@@ -110,6 +119,11 @@ mod tests {
         assert_eq!(change.mode.as_deref(), Some("remember"));
         let change: Change = serde_json::from_value(json!({"autoMerge": true})).unwrap();
         assert_eq!(change.auto_merge, Some(true));
+        let change: Change = serde_json::from_value(json!({"roomShare": {"room": "!dev:s", "answer": true, "review": false, "fix": false}})).unwrap();
+        assert!(!change.room_share.unwrap().review);
+        // Every choice is explicit; nothing else (a merge rule) can ride along.
+        assert!(serde_json::from_value::<Change>(json!({"roomShare": {"room": "!dev:s", "answer": true}})).is_err());
+        assert!(serde_json::from_value::<Change>(json!({"roomShare": {"room": "!dev:s", "answer": true, "review": true, "fix": true, "merge": true}})).is_err());
         let change: Change = serde_json::from_value(json!({"forget": {"tool": "claude.Bash", "directory": "/w", "request": "{\"command\":\"cargo test\"}"}})).unwrap();
         assert_eq!(change.forget.unwrap().request, r#"{"command":"cargo test"}"#);
         // A rule is never created here: only the owner's card decision does that.
