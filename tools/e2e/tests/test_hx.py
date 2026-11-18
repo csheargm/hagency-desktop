@@ -80,7 +80,12 @@ class GitHubGuards(unittest.TestCase):
                 {"number": 6, "title": "t", "body": "Closes #120"},
                 {"number": 7, "title": "x (#12)", "body": ""}]
         with mock.patch.object(github, "gh", return_value=rows):
-            self.assertEqual([p["number"] for p in github.prs_closing(12)], [5, 7])
+            self.assertEqual([p["number"] for p in github.prs_closing(12)], [5])
+
+    def test_never_deletes_default_branch(self):
+        with mock.patch.object(github, "gh") as gh, self.assertRaises(github.GitHubError):
+            github.delete_branch("main")
+        gh.assert_not_called()
 
 
 class IssueLoop(unittest.TestCase):
@@ -89,6 +94,21 @@ class IssueLoop(unittest.TestCase):
         text = issues._describe(7, st)
         self.assertIn("handed+30s", text)
         self.assertIn("missing: pr_opened, reviewed, merged, closed", text)
+
+
+    def test_out_of_order_stages_fail(self):
+        st = {s: 100.0 + i for i, s in enumerate(issues.STAGES)}
+        self.assertTrue(issues._complete(st))
+        st["reviewed"] = st["merged"] + 60
+        self.assertFalse(issues._complete(st))
+        self.assertIn("merged after reviewed", " ".join(issues._order_problems(st)))
+
+    def test_cleanup_skips_prs_not_naming_the_issue(self):
+        ctx = scenario.Ctx(room="!r", setup={}, run_id="t")
+        ctx.loop_states = {12: {"pr": 9, "branch": "feature", "pr_body": "unrelated"}}
+        with mock.patch.object(github, "close_pr_if_unmerged") as close:
+            issues.cleanup(ctx)
+        close.assert_not_called()
 
 
 class Ledger(unittest.TestCase):
@@ -120,6 +140,16 @@ class Reporting(unittest.TestCase):
         self.assertIn("1 product finding(s)", summary)
         self.assertIn("a\\|b", text)
         self.assertIn("BLOCKED (setup)", text)
+
+
+class ExitCodes(unittest.TestCase):
+    def test_nothing_verified_is_not_success(self):
+        import run
+        R = scenario.Result
+        self.assertEqual(run.exit_code([]), 2)
+        self.assertEqual(run.exit_code([R("a", scenario.BLOCKED)]), 2)
+        self.assertEqual(run.exit_code([R("a", scenario.PASS), R("b", scenario.FAIL)]), 1)
+        self.assertEqual(run.exit_code([R("a", scenario.PASS), R("b", scenario.OPT_IN)]), 0)
 
 
 if __name__ == "__main__":

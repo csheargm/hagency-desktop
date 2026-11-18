@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hx import room  # noqa: E402
 from hx.report import write_report  # noqa: E402
-from hx.scenario import FAIL, Ctx, Result  # noqa: E402
+from hx.scenario import BLOCKED, FAIL, Ctx, Result  # noqa: E402
 from scenarios import approvals, chat, issues, manual  # noqa: E402
 
 
@@ -46,6 +46,32 @@ def preflight() -> tuple:
     return ctx_room, setup, wrong
 
 
+def run_all(args, ctx) -> list:
+    wanted = set(filter(None, args.only.split(",")))
+    table = scenario_table(args)
+    unknown = wanted - {k for k, _ in table}
+    if unknown:
+        raise SystemExit(f"unknown scenario(s): {sorted(unknown)}")
+    results = []
+    for key, fn in table:
+        if wanted and key not in wanted:
+            continue
+        print(f"[{datetime.now():%H:%M:%S}] scenario {key} …", flush=True)
+        res = run_one(key, fn, ctx)
+        print(f"[{datetime.now():%H:%M:%S}]   {res.status} ({res.seconds:.0f}s) {res.note[:160]}", flush=True)
+        results.append(res)
+    return results
+
+
+def exit_code(results: list) -> int:
+    """1 on any FAIL; 2 when nothing was verified (none ran, or any BLOCKED); else 0."""
+    if any(r.status == FAIL for r in results):
+        return 1
+    if not results or any(r.status == BLOCKED for r in results):
+        return 2
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
@@ -53,23 +79,17 @@ def main() -> int:
     ap.add_argument("--no-cleanup", action="store_true")
     args = ap.parse_args()
     started = datetime.now()
-    run_id = started.strftime("%m%d%H%M")
     e2e_room, setup, wrong = preflight()
-    ctx = Ctx(room=e2e_room, setup=setup, run_id=run_id)
-    wanted = set(filter(None, args.only.split(",")))
-    results = []
-    for key, fn in scenario_table(args):
-        if wanted and key not in wanted:
-            continue
-        print(f"[{datetime.now():%H:%M:%S}] scenario {key} …", flush=True)
-        res = run_one(key, fn, ctx)
-        print(f"[{datetime.now():%H:%M:%S}]   {res.status} ({res.seconds:.0f}s) {res.note[:160]}", flush=True)
-        results.append(res)
-    cleanup = [] if args.no_cleanup else issues.cleanup(ctx)
-    path, summary = write_report(started, ctx, results, wrong, cleanup)
-    print(summary)
-    print(f"report: {path}")
-    return 1 if any(r.status == FAIL for r in results) else 0
+    ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"))
+    results, cleanup = [], []
+    try:
+        results = run_all(args, ctx)
+    finally:  # an interrupt still cleans up and still writes the report
+        cleanup = ["skipped (--no-cleanup)"] if args.no_cleanup else issues.cleanup(ctx)
+        path, summary = write_report(started, ctx, results, wrong, cleanup)
+        print(summary)
+        print(f"report: {path}")
+    return exit_code(results)
 
 
 if __name__ == "__main__":

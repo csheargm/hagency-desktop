@@ -37,12 +37,12 @@ class Ctx:
 
 def wait_for(probe, timeout_s: float, poll_s: float = POLL_S):
     """Call probe() until it returns something truthy or the time runs out."""
-    deadline = time.time() + timeout_s
+    deadline = time.monotonic() + timeout_s
     while True:
         value = probe()
         if value:
             return value
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             return None
         time.sleep(poll_s)
 
@@ -88,6 +88,19 @@ def substantive(events: list) -> list:
 def first_reply(viewer: str, room: str, agent: str, since_ms: int, timeout_s: float):
     found = wait_for(lambda: substantive(agent_messages(viewer, room, agent, since_ms)), timeout_s)
     return found[0] if found else None
+
+
+def reply_with(viewer: str, room: str, agent: str, since_ms: int, token: str, timeout_s: float):
+    """The Agent's first message containing `token`: progress notices and
+    unrelated messages never count as the answer."""
+    found = wait_for(lambda: [e for e in agent_messages(viewer, room, agent, since_ms)
+                              if token in e["content"].get("body", "")], timeout_s)
+    return found[0] if found else None
+
+
+def server_ts(viewer: str, room: str, event_id: str) -> int:
+    """origin_server_ts of an event: latency is measured on the server clock."""
+    return personas.persona(viewer).event(room, event_id)["origin_server_ts"]
 
 
 def seen_on(viewer: str, room: str, event_id: str) -> bool:

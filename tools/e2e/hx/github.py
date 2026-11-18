@@ -40,13 +40,16 @@ def issue(number: int) -> dict:
               "--json", "number,title,state,closedAt,createdAt,comments,url")
 
 
+def closes(body: str, number: int) -> bool:
+    """Whether a PR body links issue `number` with a closing keyword."""
+    return bool(re.search(rf"\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #{number}\b", body or "", re.IGNORECASE))
+
+
 def prs_closing(number: int) -> list:
-    """PRs whose body or title says "Closes #N" (any state)."""
-    rows = gh("pr", "list", "-R", config.SANDBOX_REPO, "--state", "all", "-L", "30",
+    """PRs whose body says "Closes #N" (any state), newest 100 scanned."""
+    rows = gh("pr", "list", "-R", config.SANDBOX_REPO, "--state", "all", "-L", "100",
               "--json", "number,title,body,state,headRefName,createdAt,mergedAt,url,reviews,comments")
-    closes = re.compile(rf"\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #{number}\b", re.IGNORECASE)
-    in_title = re.compile(rf"\(#{number}\)")
-    return [p for p in rows if closes.search(p.get("body") or "") or in_title.search(p.get("title", ""))]
+    return [p for p in rows if closes(p.get("body"), number)]
 
 
 def pr(number: int) -> dict:
@@ -82,4 +85,6 @@ def branch_exists(name: str) -> bool:
 
 
 def delete_branch(name: str):
+    if name in ("main", "master") or not name:
+        raise GitHubError(f"refusing to delete branch {name!r}")
     gh("api", "-X", "DELETE", f"repos/{config.SANDBOX_REPO}/git/refs/heads/{name}", parse=False)

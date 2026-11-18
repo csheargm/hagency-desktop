@@ -16,6 +16,17 @@ LOOPBACK = "http://127.0.0.1:47999/"  # never listened on: only the code is read
 SCOPE_API = "urn:matrix:org.matrix.msc2967.client:api:*"
 SCOPE_DEVICE = "urn:matrix:org.matrix.msc2967.client:device:"
 HTTP_TIMEOUT = 40
+ALLOWED_ORIGINS = ("http://127.0.0.1:8090", "http://127.0.0.1:8092")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the bearer token to wherever it points."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class MatrixError(RuntimeError):
@@ -27,8 +38,8 @@ class MatrixError(RuntimeError):
 
 
 def http(method: str, url: str, body=None, token=None, form=False, timeout=HTTP_TIMEOUT):
-    if any(p in url for p in (":8088/", ":8088?")):
-        raise MatrixError(url, 0, "port 8088 is off limits")
+    if not url.startswith(tuple(o + "/" for o in ALLOWED_ORIGINS)):
+        raise MatrixError(url.split("?")[0], 0, "only the alpha/beta demo servers may be called")
     headers = {"Accept": "application/json"}
     data = None
     if body is not None:
@@ -42,7 +53,7 @@ def http(method: str, url: str, body=None, token=None, form=False, timeout=HTTP_
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             text = resp.read().decode()
     except urllib.error.HTTPError as e:
         raise MatrixError(f"{method} {url.split('?')[0]}", e.code, e.read().decode(errors="replace")) from e
@@ -120,11 +131,13 @@ class Client:
     def state(self, room: str, etype: str, key: str = ""):
         return self.call("GET", f"/rooms/{q(room)}/state/{etype}/{q(key)}")
 
-    def messages_after(self, room: str, since_ms: int, limit: int = 100) -> list:
+    def messages_after(self, room: str, since_ms: int, limit: int = 300) -> list:
         """Timeline events (oldest first) with origin_server_ts >= since_ms."""
         flt = urllib.parse.quote(json.dumps({"lazy_load_members": True}))
         res = self.call("GET", f"/rooms/{q(room)}/messages?dir=b&limit={limit}&filter={flt}")
-        events = [e for e in res.get("chunk", []) if e.get("origin_server_ts", 0) >= since_ms]
+        if "chunk" not in res:
+            raise MatrixError("messages", 0, "reply without a chunk")
+        events = [e for e in res["chunk"] if e.get("origin_server_ts", 0) >= since_ms]
         return sorted(events, key=lambda e: e["origin_server_ts"])
 
     def event(self, room: str, event_id: str) -> dict:

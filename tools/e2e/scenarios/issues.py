@@ -10,28 +10,52 @@ LOOP_POLL_S = 20
 REVIEW_TIMEOUT_S = 600
 LOOP_AGENT = "bird-claude"  # its issue watch covers SANDBOX_REPO (mode "all")
 STAGES = ("created", "handed", "pr_opened", "reviewed", "merged", "closed")
+CLOCK_SLACK_S = 5  # GitHub and the ledger use different clocks
 
 
 def _ts(iso: str | None) -> float | None:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() if iso else None
 
 
+def _ledger_row(number: int):
+    rows = evidence.ledger("betty", "select state, handed_at, pr from issue_track where agent=? and repo=? "
+                           "and number=?", (evidence.agent_id(LOOP_AGENT), config.SANDBOX_REPO, number))
+    return rows[0] if rows else (None, None, None)
+
+
+def _loop_pr(number: int, ledger_pr):
+    """The PR the ledger recorded for this issue, else the only PR closing it."""
+    if ledger_pr:
+        return github.pr(int(ledger_pr))
+    prs = github.prs_closing(number)
+    return prs[0] if len(prs) == 1 else None
+
+
 def _stages(number: int) -> dict:
     """Wall-clock time of each loop stage reached so far for one issue."""
     issue = github.issue(number)
-    st = {"created": _ts(issue["createdAt"]), "closed": _ts(issue.get("closedAt"))}
-    rows = evidence.ledger("betty", "select state, handed_at, pr from issue_track where agent=? and repo=? "
-                           "and number=?", (evidence.agent_id(LOOP_AGENT), config.SANDBOX_REPO, number))
-    st["ledger_state"] = rows[0][0] if rows else None
-    st["handed"] = float(rows[0][1]) if rows else None
-    prs = github.prs_closing(number)
-    if prs:
-        p = sorted(prs, key=lambda x: x["createdAt"])[0]
+    st = {"created": _ts(issue["createdAt"]), "issue_state": issue["state"],
+          "closed": _ts(issue.get("closedAt")) if issue["state"] == "CLOSED" else None}
+    state, handed, ledger_pr = _ledger_row(number)
+    st["ledger_state"], st["handed"] = state, float(handed) if handed else None
+    p = _loop_pr(number, ledger_pr)
+    if p:
         st.update(pr=p["number"], pr_url=p["url"], pr_opened=_ts(p["createdAt"]),
-                  merged=_ts(p.get("mergedAt")), branch=p["headRefName"])
+                  merged=_ts(p.get("mergedAt")), branch=p["headRefName"], pr_body=p.get("body") or "")
         reviews = [x for x in p.get("reviews", []) if x.get("submittedAt")]
         st["reviewed"] = min((_ts(x["submittedAt"]) for x in reviews), default=None)
     return st
+
+
+def _order_problems(st: dict) -> list:
+    """Stages present but out of order (e.g. reviewed after merge)."""
+    times = [(s, st.get(s)) for s in STAGES]
+    return [f"{a} after {b}" for (b, tb), (a, ta) in zip(times, times[1:])
+            if ta and tb and ta + CLOCK_SLACK_S < tb]
+
+
+def _complete(st: dict) -> bool:
+    return all(st.get(s) for s in STAGES) and not _order_problems(st)
 
 
 def _open_issue(ctx, label: str) -> int:
@@ -52,6 +76,7 @@ def _describe(number: int, st: dict) -> str:
         parts.append(st["pr_url"])
     if missing:
         parts.append(f"missing: {', '.join(missing)} (ledger state {st.get('ledger_state')})")
+    parts += [f"order: {p}" for p in _order_problems(st)]
     return " ".join(parts)
 
 
@@ -59,22 +84,28 @@ def s7_issue_loop(ctx) -> Result:
     name = "7 issue loop ×2 in parallel: issue→hand-off→PR→review→merge→closed"
     r, t0 = Result(name), time.time()
     numbers = [_open_issue(ctx, "a"), _open_issue(ctx, "b")]
-    done = lambda st: all(st.get(s) for s in STAGES)  # noqa: E731
-    states = {}
+    states = ctx.loop_states  # shared at once so cleanup sees PRs even if this raises
 
     def probe():
         for n in numbers:
             states[n] = _stages(n)
-        return all(done(states[n]) for n in numbers)
+        return all(_complete(states[n]) for n in numbers)
 
     wait_for(probe, LOOP_TIMEOUT_S, LOOP_POLL_S)
     r.evidence = [_describe(n, states[n]) for n in numbers]
-    ok = all(done(states[n]) for n in numbers)
+    ok = all(_complete(states[n]) for n in numbers)
     if not ok:
-        r.note = f"not every stage reached within {LOOP_TIMEOUT_S // 60} min"
-    ctx.loop_states = states
+        r.note = f"not every stage reached in order within {LOOP_TIMEOUT_S // 60} min"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
+
+
+def _activity_since(number: int, since_s: float) -> list:
+    """Reviews and comments on the PR created after `since_s` (one snapshot)."""
+    p = github.pr(number)
+    items = [("review", x.get("submittedAt"), x.get("body", "")) for x in p.get("reviews", [])]
+    items += [("comment", x.get("createdAt"), x.get("body", "")) for x in p.get("comments", [])]
+    return [(k, t, b) for k, t, b in items if t and _ts(t) >= since_s - CLOCK_SLACK_S and b.strip()]
 
 
 def s8_cross_model_review(ctx) -> Result:
@@ -85,37 +116,55 @@ def s8_cross_model_review(ctx) -> Result:
     if not prs:
         return Result(name, FAIL, note="no PR from scenario 7 to review", kind="dependency")
     r, t0 = Result(name), time.time()
-    number = prs[0]
-    before = len(github.pr(number)["reviews"]) + len(github.pr(number)["comments"])
-    since = now_ms()
+    number, since = prs[0], now_ms()
     ev = personas.persona("zz-anna").send(ctx.room, mention_content(
         f"{config.TEST_MARK} please review PR #{number} in {config.SANDBOX_REPO} and post your review "
         "on GitHub.", ["bird-codex"]))
     r.evidence.append(f"ask {ev} for PR #{number}")
     reply = first_reply("zz-anna", ctx.room, "bird-codex", since, REVIEW_TIMEOUT_S)
-    posted = wait_for(lambda: len(github.pr(number)["reviews"]) + len(github.pr(number)["comments"]) > before, 120)
-    r.evidence.append(f"room reply {reply['event_id'] if reply else 'none'}; GitHub review posted: {bool(posted)}")
+    posted = wait_for(lambda: _activity_since(number, since / 1000), 120)
+    r.evidence.append(f"room reply {reply['event_id'] if reply else 'none'}; "
+                      f"GitHub after ask: {[(k, t) for k, t, _ in posted or []]}")
     ok = bool(reply) and bool(posted)
     if not ok:
-        r.note = "no room answer" if not reply else "answered in room but nothing posted on the PR"
+        r.note = "no room answer" if not reply else "answered in room but nothing new posted on the PR"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
 
 
+def _is_test_pr(st: dict, issue: int) -> bool:
+    """Only a PR that names a runner-made issue, from a non-default branch."""
+    return bool(st.get("branch")) and st["branch"] not in ("main", "master") and \
+        github.closes(st.get("pr_body", ""), issue)
+
+
 def cleanup(ctx) -> list:
-    """Close runner-made issues/PRs that did not merge; delete runner-made branches."""
+    """Close runner-made issues/PRs that did not merge; delete runner-made branches.
+    Every step is attempted; failures are reported, not swallowed."""
     done = []
-    for st in ctx.loop_states.values():
-        if st.get("pr") and not st.get("merged"):
-            done.append(f"PR #{st['pr']}: {github.close_pr_if_unmerged(st['pr'], 'e2e cleanup: not merged')}")
-        if st.get("merged") and st.get("branch") and github.branch_exists(st["branch"]):
-            github.delete_branch(st["branch"])
-            done.append(f"deleted merged branch {st['branch']}")
+    for issue, st in ctx.loop_states.items():
+        if st.get("pr") and _is_test_pr(st, issue):
+            done.append(_try(f"PR #{st['pr']}", lambda s=st: _settle_pr(s)))
     for n in ctx.created_issues:
-        github.close_issue(n, "e2e cleanup: closed by the test runner")
-        done.append(f"issue #{n} closed/kept closed")
+        done.append(_try(f"issue #{n}", lambda n=n: github.close_issue(n, "e2e cleanup: closed by the test runner")
+                         or "closed (or already closed)"))
     for b in ctx.created_branches:
-        if github.branch_exists(b):
-            github.delete_branch(b)
-            done.append(f"deleted branch {b}")
+        done.append(_try(f"branch {b}", lambda b=b: github.delete_branch(b) or "deleted"
+                         if github.branch_exists(b) else "absent"))
     return done
+
+
+def _settle_pr(st: dict) -> str:
+    if not st.get("merged"):
+        return github.close_pr_if_unmerged(st["pr"], "e2e cleanup: not merged")
+    if github.branch_exists(st["branch"]):
+        github.delete_branch(st["branch"])
+        return f"merged, kept; deleted head branch {st['branch']}"
+    return "merged, kept"
+
+
+def _try(label: str, step) -> str:
+    try:
+        return f"{label}: {step()}"
+    except Exception as e:  # noqa: BLE001 — recorded in the report's Cleanup section as a failure
+        return f"{label}: CLEANUP FAILED: {str(e)[:200]}"

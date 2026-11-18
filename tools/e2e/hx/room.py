@@ -8,17 +8,25 @@ from .matrix import MatrixError
 ROOM_FILE = config.STATE_DIR / "room.json"
 
 
-def _saved_room():
-    if ROOM_FILE.exists():
-        return json.loads(ROOM_FILE.read_text())["room_id"]
-    return None
+def _saved_room(creator):
+    """The saved room, only if it is still the runner's own e2e room."""
+    if not ROOM_FILE.exists():
+        return None
+    room = json.loads(ROOM_FILE.read_text())["room_id"]
+    if room not in creator.joined_rooms():
+        return None
+    name = creator.state(room, "m.room.name").get("name")
+    created_by = creator.state(room, "m.room.create").get("creator")
+    if name != config.E2E_ROOM_NAME or created_by != creator.user_id or room == config.DEV_ROOM:
+        raise RuntimeError(f"{ROOM_FILE} names {room}, which is not the runner's e2e room")
+    return room
 
 
 def ensure_room() -> str:
     """Create the room once; later calls re-invite anyone who left."""
     creator = personas.persona("zz-anna")
-    room = _saved_room()
-    if room is None or room not in creator.joined_rooms():
+    room = _saved_room(creator)
+    if room is None:
         owners = [config.mxid(lp, srv) for srv, lp in config.OWNERS.values()]
         room = creator.create_room(config.E2E_ROOM_NAME, invite=owners)
         ROOM_FILE.parent.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,7 @@ PROVISION_WAIT_S = 90
 
 def _write_private(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.chmod(path, 0o600)
@@ -47,14 +47,14 @@ def _cached(key: str, origin: str):
 
 def _session(key: str, server: str, localpart: str, password: str, allow_register: bool) -> Client:
     origin = config.SERVERS[server]["http"]
+    expected = config.mxid(localpart, server)
     client = _cached(key, origin)
-    if client:
+    if client and client.user_id == expected:
         return client
     register = allow_register and username_available(origin, localpart)
     grant = native_sign_in(origin, localpart, password, register=register)
     _write_private(_token_path(key), json.dumps(grant))
     client = _await_provisioned(origin, grant["access_token"])
-    expected = config.mxid(localpart, server)
     if client.user_id != expected:
         raise MatrixError("sign-in", 0, f"signed in as {client.user_id}, expected {expected}")
     return client

@@ -5,10 +5,11 @@ automated injection pauses Betty's demo window with SIGSTOP and always resumes
 it with SIGCONT in a `finally`, so it is reversible even when the check fails."""
 import os
 import signal
+import subprocess
 import time
 
 from hx import config, personas
-from hx.scenario import FAIL, OPT_IN, PASS, Result, blocked, first_reply, mention_content, now_ms
+from hx.scenario import FAIL, OPT_IN, PASS, Result, blocked, mention_content, now_ms, reply_with, server_ts
 
 BLOCKED_MANUAL = "MANUAL"
 PAUSE_S = 45
@@ -35,22 +36,35 @@ def s9_failure_injection(ctx, enabled: bool) -> Result:
         return Result(name, OPT_IN, note=f"default off. Run with --inject pause-betty. Manual list: {listing}")
     if (b := blocked(name, ctx, ["bird-claude"])):
         return b
-    pid = int(BETTY_PID_FILE.read_text().strip())
+    pid = _betty_pid()
     r, t0 = Result(name), time.time()
-    since = now_ms()
+    token = f"E2E-{ctx.run_id}-s9"
     os.kill(pid, signal.SIGSTOP)
     try:
         ev = personas.persona("zz-betty").send(ctx.room, mention_content(
-            f"{config.TEST_MARK} reply with the word E2E-{ctx.run_id}-s9", ["bird-claude"]))
+            f"{config.TEST_MARK} reply with the word {token}", ["bird-claude"]))
         r.evidence.append(f"asked {ev} while pid {pid} stopped for {PAUSE_S}s")
         time.sleep(PAUSE_S)
     finally:
         os.kill(pid, signal.SIGCONT)
-    reply = first_reply("zz-betty", ctx.room, "bird-claude", since, RESUME_ANSWER_TIMEOUT_S)
+    resumed_ms = now_ms()
+    reply = reply_with("zz-betty", ctx.room, "bird-claude", server_ts("zz-betty", ctx.room, ev),
+                       token, RESUME_ANSWER_TIMEOUT_S)
     r.evidence.append(f"reply after resume: {reply['event_id'] if reply else 'none'}")
-    r.status, r.seconds = (PASS if reply else FAIL), time.time() - t0
-    r.kind = "" if reply else "finding"
+    ok = bool(reply) and reply["origin_server_ts"] >= resumed_ms - 5000
+    if reply and not ok:
+        r.note = "answered while the owner's window was paused: the answer did not come from that window"
+    r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
+
+
+def _betty_pid() -> int:
+    """Betty's window pid, only if that pid really is her demo window."""
+    pid = int(BETTY_PID_FILE.read_text().strip())
+    cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    if pid <= 1 or "fresh-betty" not in cmd:
+        raise RuntimeError(f"{BETTY_PID_FILE} pid {pid} is not Betty's window; not signalling it")
+    return pid
 
 
 def s10_agent_lifecycle(ctx) -> Result:
