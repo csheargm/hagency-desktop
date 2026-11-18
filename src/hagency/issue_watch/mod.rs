@@ -7,6 +7,10 @@
 //! so sign-out aborts it; an Agent set to Off is skipped. The result of each
 //! check is a status line under the setting (`section`).
 pub(crate) mod choices;
+mod digest;
+mod digest_live;
+#[cfg(test)]
+mod digest_tests;
 mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;
@@ -32,6 +36,10 @@ pub mod notice;
 pub(crate) mod plans;
 pub mod section;
 mod section_state;
+pub(crate) mod safeguards;
+pub mod safeguards_card;
+#[cfg(test)]
+mod safeguards_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -203,6 +211,8 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
     let mut worked = work::run(&worker, &saved).await;
     worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
+    // The day's digest per watched repository (ADR 0028), from this check's ledger snapshot.
+    worked.errors.extend(digest_live::send_due(&digest_live::LiveDigest { service, agent, epoch }, &saved, digest::window_at(&chrono::Local::now())).await);
     if !single_repo_watch_runs(&watch, &saved) {
         return Ok(Some((Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }, worked.tracked)));
     }

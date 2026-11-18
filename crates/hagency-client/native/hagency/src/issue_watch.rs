@@ -12,6 +12,7 @@ pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, cl
 
 /// The issue loop's follow-through records and state machine (ADR 0020).
 pub use hagency_agent_local::issue_track;
+#[path = "issue_watch_safeguards.rs"] pub mod safeguards;
 use hagency_agent_local::issue_watch::recent::{closed_url, open_items, parse_closed};
 pub use hagency_runtime::repo_status::table::GithubItem;
 
@@ -248,7 +249,6 @@ pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, t
     }
     Ok(())
 }
-
 /// A repository's open issues and pull requests (first page, newest first)
 /// and those closed since `since`, for the room's status table (ADR 0023).
 /// `token` is `None` for a public read: a repository only another owner

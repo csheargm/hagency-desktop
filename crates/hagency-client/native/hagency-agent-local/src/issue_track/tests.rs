@@ -3,7 +3,7 @@ use super::*;
 const T0: i64 = 1_000_000;
 
 fn handed(attempts: u32, at: i64) -> Track {
-    Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false, free_retries: 0 }
+    Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false, free_retries: 0, changed_at: at }
 }
 fn open(now: i64) -> Facts {
     Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false, unanswered: false }
@@ -64,7 +64,7 @@ fn the_ledger_counts_each_attempt_once_and_keeps_terminal_states() {
     l.track_issue("a1", &TrackChange { notified: Some(true), ..change(None, None, None) }, T0 + 91).unwrap();
     // A late retry or state write after the merge changes nothing.
     l.track_issue("a1", &change(Some(3), Some(State::HandedOff), Some(40)), T0 + 99).unwrap();
-    let merged = Track { state: State::Merged, pr: Some(32), notified: true, ..handed(2, T0 + 70) };
+    let merged = Track { state: State::Merged, pr: Some(32), notified: true, changed_at: T0 + 91, ..handed(2, T0 + 70) };
     assert_eq!(l.issue_tracks("a1").unwrap(), vec![merged]);
     assert!(l.issue_tracks("other").unwrap().is_empty());
 }
@@ -163,4 +163,18 @@ fn a_run_stopped_on_an_unanswered_approval_card_keeps_its_attempt_up_to_the_cap(
     assert_eq!(decide(&handed(1, T0), &Facts { run_ended: false, unanswered: true, ..open(T0 + 300) }), Action::Wait);
     // A pull request opened after all wins.
     assert_eq!(decide(&handed(1, T0), &Facts { open_pr: Some(74), ..waited }), Action::FollowPr { pr: 74 });
+}
+
+#[test]
+fn a_move_stamps_changed_at_and_a_replay_does_not() {
+    let (_t, mut l) = ledger();
+    l.track_issue("a", &change(Some(1), None, None), T0).unwrap();
+    assert_eq!(l.issue_tracks("a").unwrap()[0].changed_at, T0);
+    l.track_issue("a", &change(Some(1), None, None), T0 + 5).unwrap();
+    assert_eq!(l.issue_tracks("a").unwrap()[0].changed_at, T0, "a replayed hand-off is no move");
+    l.track_issue("a", &change(None, Some(State::Merged), Some(41)), T0 + 9).unwrap();
+    let merged = &l.issue_tracks("a").unwrap()[0];
+    assert_eq!((merged.state, merged.changed_at), (State::Merged, T0 + 9));
+    l.track_issue("a", &change(None, Some(State::HandedOff), None), T0 + 20).unwrap();
+    assert_eq!(l.issue_tracks("a").unwrap()[0].changed_at, T0 + 9, "a terminal record does not move");
 }

@@ -31,6 +31,16 @@ struct Change {
     /// The owner ends the trial of the watch of this repository early (ADR 0027).
     #[serde(default)]
     end_trial: Option<String>,
+    /// The daily digest of one repository was posted for this local day (ADR 0028).
+    #[serde(default)]
+    digest_sent: Option<DigestSent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DigestSent {
+    repo: String,
+    day: String,
 }
 
 #[derive(Deserialize)]
@@ -129,8 +139,21 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
     let plans = ledger.open_plans(agent).map_err(local_error)?;
     let track = ledger.issue_tracks(agent).map_err(local_error)?;
     let trials = trials(&ledger, agent).map_err(local_error)?;
+    let digest_sent = ledger.digest_days(agent).map_err(local_error)?;
+    let watch = with_trial(serde_json::to_value(&watch).map_err(|_| error(500, "local_state_unavailable"))?, &trials);
     let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
-    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials}))
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials, "digestSent": digest_sent}))
+}
+
+/// The saved watch with `trialOwnerMerges` (the trial's N) while its
+/// repository is in its trial: what the Safeguards card reads (ADR 0026, 0027).
+fn with_trial(mut watch: Value, trials: &Value) -> Value {
+    let repo = watch["repo"].as_str().unwrap_or_default().to_owned();
+    let trial = trials.as_array().into_iter().flatten().find(|t| !repo.is_empty() && t["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(&repo)));
+    if let Some(trial) = trial {
+        watch["trialOwnerMerges"] = trial["required"].clone();
+    }
+    watch
 }
 
 /// The watches still in their trial: `[{repo, merged, required}]` (ADR 0027).
@@ -161,6 +184,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     }
     if let Some(repo) = change.end_trial {
         ledger.end_watch_trial(owner, agent, &repo)?;
+    }
+    if let Some(sent) = change.digest_sent {
+        ledger.record_digest_sent(agent, &sent.repo, &sent.day)?;
     }
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
@@ -209,6 +235,17 @@ mod tests {
         let change: Change = serde_json::from_value(json!({"issueSeen": {"repo": "a/b", "number": 3}, "track": {"repo": "a/b", "number": 3, "handed": 1}})).unwrap();
         assert_eq!(change.track.unwrap().handed, Some(1));
         assert!(serde_json::from_value::<Change>(json!({"track": {"repo": "a/b", "number": 3, "merge": true}})).is_err());
+        let sent: Change = serde_json::from_value(json!({"digestSent": {"repo": "a/b", "day": "2026-11-18"}})).unwrap();
+        assert_eq!(sent.digest_sent.map(|d| d.day).as_deref(), Some("2026-11-18"));
+        assert!(serde_json::from_value::<Change>(json!({"digestSent": {"repo": "a/b", "day": "2026-11-18", "text": "x"}})).is_err());
+    }
+
+    #[test]
+    fn the_saved_watch_carries_its_running_trial_for_the_safeguards_card() {
+        let trials = json!([{"repo": "acme/app", "merged": 1, "required": 3}]);
+        assert_eq!(with_trial(json!({"repo": "Acme/App"}), &trials)["trialOwnerMerges"], 3);
+        assert!(with_trial(json!({"repo": "acme/other"}), &trials).get("trialOwnerMerges").is_none(), "no trial: no line");
+        assert!(with_trial(json!({"repo": ""}), &json!([{"repo": "", "required": 3}])).get("trialOwnerMerges").is_none());
     }
 
     #[test]
