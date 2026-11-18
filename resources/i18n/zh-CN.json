@@ -3738,5 +3738,7 @@
   "Review by a different model": "由其他模型审查",
   "Agent owners are unavailable: {error}": "无法获取 Agent 的所有者：{error}",
   "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "部分发布的状态并非来自 Agent 的所有者，或已过期，已隐藏。",
-  "The signed-in account changed; nothing was changed": "登录的账号已变更，未做任何修改"
+  "The signed-in account changed; nothing was changed": "登录的账号已变更，未做任何修改",
+  "your merge (trial)": "由你合并（试用期）",
+  "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.": "试用期：第 {next}/{required} 个 PR 需要你来合并 — 你合并 {required} 个之后，此监视会自行合并低风险 PR。"
 }

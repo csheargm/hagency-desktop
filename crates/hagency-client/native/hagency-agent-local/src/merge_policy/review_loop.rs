@@ -108,7 +108,8 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
             return Some(decision);
         }
     }
-    Some(Decision::Merge)
+    // A new watch's trial (ADR 0026): the owner merges its first pull requests.
+    super::trial::hold(ledger, merger, repo).ok()?.or(Some(Decision::Merge))
 }
 
 #[cfg(test)]

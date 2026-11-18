@@ -65,6 +65,8 @@ pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_gith
 
 /// The owner's work list types (ADR 0016), for the desktop's Work block and poller.
 pub use hagency_agent_local::merge_policy::review_loop::HOLD_STEP;
+/// Trial mode of a new watch (ADR 0026): the gate's reason, read back for the room notice.
+pub use hagency_agent_local::merge_policy::trial::{TRIAL_PRS, trial_counts, trial_reason};
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 
 /// The open issues (and pull requests, flagged `is_pr`) of `repo`, newest
