@@ -37,6 +37,9 @@ fn the_answer_row_is_tagged_named_and_its_avatar_opens_the_profile() {
     (other.key, other.agent, other.name) = ("$b".into(), "@_hagency_agt_b:beta".into(), "bird-codex".into());
     populate(&mut cx, &widget, &room(), &[entry, other], None);
     assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "anna-claude · bird-codex");
+    let by = |cx: &mut Cx, path: &[LiveId]| widget.label(cx, &[path, ids!(by_agent).as_slice()].concat()).text();
+    assert_eq!(by(&mut cx, ids!(agent_runs.agent_run_card)), "anna-claude", "each answer names its own Agent");
+    assert_eq!(by(&mut cx, ids!(agent_runs.agent_run_card_1)), "bird-codex");
     let info = widget.avatar(&mut cx, ids!(agent_runs.agent_avatar)).profile_info().expect("the first Agent's profile");
     assert_eq!((info.user_id.as_str(), info.username.as_deref()), ("@_hagency_agt_a:alpha", Some("anna-claude")), "its own name, not both");
 }
@@ -48,10 +51,24 @@ fn the_row_names_each_answering_agent_once() {
     let mut b = a.clone();
     b.key = "$b".into();
     let mut c = a.clone();
-    c.name = "Codex".into();
+    (c.key, c.agent, c.name) = ("$c".into(), "@_hagency_agt_c:beta".into(), "Codex".into());
     assert_eq!(row_name(&[a.clone(), b]), "Claude");
     assert_eq!(row_name(&[a, c]), "Claude · Codex");
     assert_eq!(row_name(&[]), "");
+}
+
+/// GPT integration review: two Agents named alike (or both falling back to
+/// "Agent") collapsed into one name, so one Agent seemed to give both answers.
+#[test]
+fn two_agents_named_alike_stay_two_agents() {
+    let mut a = fixture("$a", State::Completed, "x");
+    (a.agent, a.name) = ("@_hagency_agt_a:alpha".into(), "Agent".into());
+    let mut b = a.clone();
+    (b.key, b.agent) = ("$b".into(), "@_hagency_agt_b:beta".into());
+    assert_eq!(row_name(&[a.clone(), b.clone()]), "Agent (@_hagency_agt_a:alpha) · Agent (@_hagency_agt_b:beta)");
+    let mut again = a.clone();
+    again.key = "$a2".into();
+    assert_eq!(row_name(&[a, again]), "Agent", "one Agent's two runs: named once, no ID");
 }
 
 /// Live finding: the answer drew inside the asker's right-side bubble. It

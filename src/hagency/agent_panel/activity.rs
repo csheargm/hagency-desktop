@@ -17,16 +17,24 @@ pub(super) fn room_lines(status: &Value) -> Vec<String> {
     lines
 }
 
+/// The Context tab's text: nothing while the status loads, an error (not "Not
+/// in any room yet") when its Rooms read failed, else one line per room.
+pub(super) fn context_text(status: &Value) -> String {
+    let lines = room_lines(status);
+    if status.is_null() {
+        String::new()
+    } else if !status["rooms"].is_array() {
+        crate::i18n::tr("Couldn't load this Agent's rooms. Open this tab again to retry.").to_owned()
+    } else if lines.is_empty() {
+        crate::i18n::tr("Not in any room yet.").to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
 impl AgentPanel {
     pub(super) fn render_context(&mut self, cx: &mut Cx) {
-        let lines = room_lines(&self.status);
-        let text = if self.status.is_null() {
-            String::new()
-        } else if lines.is_empty() {
-            crate::i18n::tr("Not in any room yet.").to_owned()
-        } else {
-            lines.join("\n")
-        };
+        let text = context_text(&self.status);
         self.view.label(cx, ids!(rooms)).set_text(cx, &text);
         self.render_room_ticks(cx);
     }
@@ -54,5 +62,23 @@ impl AgentPanel {
             lines.join("\n")
         };
         self.view.label(cx, ids!(activity)).set_text(cx, &text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// GPT integration review: when the Agent's Rooms read failed, Context
+    /// said "Not in any room yet." (or listed only the private chat).
+    #[test]
+    fn a_failed_rooms_read_is_shown_as_an_error_not_an_empty_list() {
+        let failed = json!({"here": true, "chat": {"roomId": "!dm:s"}, "rooms": null});
+        assert_eq!(context_text(&failed), "Couldn't load this Agent's rooms. Open this tab again to retry.");
+        assert_eq!(context_text(&json!({"here": true, "rooms": []})), "Not in any room yet.");
+        let both = json!({"chat": {"roomId": "!dm:s"}, "rooms": [{"name": "dev room", "state": "active"}]});
+        assert_eq!(context_text(&both), "Private chat with you\ndev room");
+        assert_eq!(context_text(&Value::Null), "", "still loading");
     }
 }
