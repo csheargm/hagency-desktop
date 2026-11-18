@@ -3690,5 +3690,6 @@
   "PR": "PR",
   "Enter a repository as owner/name": "Enter a repository as owner/name",
   "This room links as many repositories as it can": "This room links as many repositories as it can",
-  "Show what this room's Agents are doing": "Show what this room's Agents are doing"
+  "Show what this room's Agents are doing": "Show what this room's Agents are doing",
+  "{n} more repositories not shown": "{n} more repositories not shown"
 }

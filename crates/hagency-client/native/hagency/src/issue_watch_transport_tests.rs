@@ -60,6 +60,18 @@ async fn recording(bodies: [&'static str; 2]) -> (String, tokio::task::JoinHandl
     (api, server)
 }
 
+/// ADR 0023: room state widens card-free reads only to repositories GitHub
+/// shows without a token; the check itself sends none.
+#[tokio::test]
+async fn visibility_is_read_without_a_token() {
+    let (api, server) = recording([r#"{"private":false}"#, r#"{"private":true}"#]).await;
+    let client = new_client();
+    assert!(super::fetch_is_public(&client, &api, "owner/repo").await.unwrap());
+    assert!(!super::fetch_is_public(&client, &api, "owner/secret").await.unwrap());
+    assert!(server.await.unwrap().iter().all(|r| !r.contains("authorization:")));
+    assert!(super::fetch_is_public(&client, &api, "not a repo").await.is_err());
+}
+
 /// ADR 0023: a repository only another owner watches is read without this
 /// device's token; open and recently closed items come back together.
 #[tokio::test]

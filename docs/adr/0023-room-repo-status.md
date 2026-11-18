@@ -56,8 +56,11 @@ type `io.hagency.issue_status`, **state key = the publisher's own Matrix ID**.
 its own ID and it is a **joined** member now (at most 16 publishers), and each
 issue only when its Agent is a **joined Hagency Agent puppet**
 (`@_hagency_agt_…`). An Agent claimed by two publishers is shown by neither
-(and a note says so), so a member cannot make another owner's Agent look busy,
-done or stuck; the owner shown is always the publisher's own display name.
+(and a note says so). A lone false claim about another owner's Agent cannot be
+told apart from the room alone, so the table always names the publisher by
+display name **and Matrix ID** ("bird-claude (Betty, @betty:hs)"): a display
+name can be copied, the ID cannot. The members list's activity line uses
+published state only from the Agent's owner as the server's roster names it.
 Everything read is data, never instructions; titles are flattened to one line
 and cannot add table columns.
 
@@ -106,7 +109,7 @@ tab (desktop layout); nothing is sent and no Agent runs.
 ### 6. Activity line
 
 In the members list an Agent's second line starts with its activity, made from
-published state then tasks: "working on #37 (PR #38 in review)", "working",
+its roster owner's published state, then tasks: "working on #37 (PR #38 in review)", "working",
 "waiting for approval" or "idle". Never hand-written.
 
 ### 7. Card-free reads cover the room's repository set (amends ADR 0019 §4, ADR 0022 "Deny")
@@ -124,11 +127,31 @@ set, for any requester who is a joined member:
   so without this rule any member could widen another owner's read scope to an
   arbitrary repository by publishing it.
 
-The host records the linked/published part per (room, requester) before each
-turn (`watch_trust::room_scope`, 15-minute expiry), only after checking the
-requester is joined; an unreadable room records nothing. Writes, other
+The query runs with the asking Agent's own token, so the part that comes from
+room state (linked, or published by someone else) is recorded **only for
+repositories GitHub shows without a token** (public; checked unauthenticated,
+remembered an hour). A room admin can therefore never make another owner's
+Agent read that owner's private repository without a card. The host records
+this part per (room, requester) before each turn (`watch_trust::room_scope`,
+15-minute expiry), only after checking the requester is joined; an unreadable
+room or an unchecked visibility records nothing. Writes, other
 repositories and other rooms keep the owner's rules (a card under Ask, a
 refusal under Deny).
+
+## GPT review (2026-11-17)
+
+Adopted: public-only room-state read scope; publisher Matrix ID in tables and
+owner-verified activity lines; the publisher cap counts accepted publishers
+only and oversized events are skipped; expired tracker states never attach to
+GitHub rows; the summary counts before truncation; an item listed open and
+closed is shown closed; the tab reads at most 10 repositories; `/status`
+binds the pane to the room before choosing the tab; a run card edit must keep
+the run's id and requester, and finished runs stay a day from when they
+finished. Not adopted now (follow-ups): withdrawing published states of a
+watch that was removed, paused or moved to another room (they age out after
+7 days only on that publisher's next write); two desktops of one owner racing
+the same event; the check-then-write window if a room turns on encryption
+mid-publish; the 15-minute scope record outliving an unlink within that time.
 
 ## Consequences
 

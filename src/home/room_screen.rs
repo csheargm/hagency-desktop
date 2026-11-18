@@ -4273,6 +4273,8 @@ impl RoomScreen {
         self.chat_info_requested = true;
         for info in [ids!(desktop_chat_info), ids!(compact_chat_info)] {
             let pane = self.view.mobile_chat_info(cx, info);
+            // Bind the room first: a first load resets the tab (GPT review).
+            pane.ensure_room(cx, room.clone());
             if status { pane.show_status(cx) } else { pane.show_overview(cx) }
         }
     }

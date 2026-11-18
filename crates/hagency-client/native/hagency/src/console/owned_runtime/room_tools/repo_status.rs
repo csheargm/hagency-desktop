@@ -82,7 +82,7 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
     let repos: Vec<String> = match requested {
         Some(wanted) => match all.iter().find(|r| r.eq_ignore_ascii_case(wanted)) {
             Some(repo) => vec![repo.clone()],
-            None => return json!({"error": "repo_not_in_this_room", "roomRepos": all}).to_string(),
+            None => return json!({"error": "repo_not_in_this_room", "roomRepos": all.iter().take(20).collect::<Vec<_>>()}).to_string(),
         },
         None => all,
     };
@@ -113,12 +113,43 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
 }
 
 /// Before each turn: the room's repository set beyond this device's own
-/// watches, for the card-free read-only GitHub queries (ADR 0023). A room
-/// that cannot be read records an empty set: nothing is widened then.
+/// watches, for the card-free read-only GitHub queries (ADR 0023). Only
+/// PUBLIC repositories are recorded: the query runs with this Agent's token,
+/// and a name in room state must never let it read a private repository
+/// without its owner's card (GPT review). A room that cannot be read, or a
+/// visibility that cannot be checked, records nothing: nothing is widened.
 pub(super) async fn record_read_scope(source: &std::sync::Arc<Source>) {
     let d = &source.gate.expected;
-    let repos = source.device.read_scope(&d.room_id, &d.requester_mxid).await.unwrap_or_default();
-    hagency_agent_local::watch_trust::room_scope::record(&d.room_id, &d.requester_mxid, repos);
+    let named = source.device.read_scope(&d.room_id, &d.requester_mxid).await.unwrap_or_default();
+    let client = crate::issue_watch::new_client();
+    let mut public = Vec::new();
+    for repo in named.into_iter().take(MAX_SCOPE_CHECKS) {
+        if public_repo(&client, &repo).await {
+            public.push(repo);
+        }
+    }
+    hagency_agent_local::watch_trust::room_scope::record(&d.room_id, &d.requester_mxid, public);
+}
+
+/// Visibility checks per turn; a room naming more repositories widens only these.
+const MAX_SCOPE_CHECKS: usize = 20;
+const VISIBILITY_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+type Visibility = std::collections::HashMap<String, (std::time::Instant, bool)>;
+static VISIBILITY: std::sync::LazyLock<std::sync::Mutex<Visibility>> = std::sync::LazyLock::new(Default::default);
+
+/// Whether GitHub shows `repo` without a token, remembered for an hour.
+async fn public_repo(client: &crate::issue_watch::Client, repo: &str) -> bool {
+    let key = repo.to_ascii_lowercase();
+    // A poisoned lock still holds a whole map: inserts are single operations.
+    if let Some((at, public)) = VISIBILITY.lock().unwrap_or_else(|p| p.into_inner()).get(&key)
+        && at.elapsed() < VISIBILITY_TTL
+    {
+        return *public;
+    }
+    // An unchecked repository is treated as private: it then still asks its owner.
+    let Ok(public) = crate::issue_watch::fetch_is_public(client, crate::issue_watch::GITHUB_API, repo).await else { return false };
+    VISIBILITY.lock().unwrap_or_else(|p| p.into_inner()).insert(key, (std::time::Instant::now(), public));
+    public
 }
 
 /// Repositories read in one call (two GitHub requests each).

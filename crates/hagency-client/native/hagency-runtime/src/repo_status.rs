@@ -135,7 +135,7 @@ pub fn sanitized(issue: &Published) -> Option<Published> {
 
 fn issues_of(content: &Value) -> Vec<Published> {
     let listed = content["issues"].as_array().map(Vec::as_slice).unwrap_or_default();
-    listed.iter().take(MAX_PUBLISHED_ISSUES * 2).filter_map(|i| serde_json::from_value::<Published>(i.clone()).ok()).filter_map(|i| sanitized(&i)).collect()
+    listed.iter().take(MAX_PUBLISHED_ISSUES).filter_map(|i| serde_json::from_value::<Published>(i.clone()).ok()).filter_map(|i| sanitized(&i)).collect()
 }
 
 fn same_watch(issue: &Published, agent: &str, repo: &str) -> bool {
@@ -188,7 +188,8 @@ pub struct Accepted {
 /// Every Matrix ID [`accepted`] will ask `member` about, bounded.
 pub fn people_in(events: &[Value]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for event in events.iter().filter(|e| e["type"] == ISSUE_STATUS_STATE_TYPE).take(MAX_PUBLISHERS) {
+    let own_key = |e: &&Value| e["state_key"].as_str().is_some() && e["state_key"] == e["sender"];
+    for event in events.iter().filter(|e| e["type"] == ISSUE_STATUS_STATE_TYPE).filter(own_key).take(MAX_PUBLISHERS * 4) {
         out.extend(event["sender"].as_str().filter(|s| mxid_shaped(s)).map(str::to_owned));
         out.extend(issues_of(&event["content"]).into_iter().map(|i| i.agent));
     }
@@ -199,14 +200,16 @@ pub fn accepted(events: &[Value], member: impl Fn(&str) -> Member) -> Accepted {
     let mut out = Accepted::default();
     let mut claims: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut kept = Vec::new();
-    let typed = events.iter().filter(|e| e["type"] == ISSUE_STATUS_STATE_TYPE);
-    for (index, event) in typed.enumerate() {
+    let mut publishers = 0;
+    for event in events.iter().filter(|e| e["type"] == ISSUE_STATUS_STATE_TYPE) {
         let sender = event["sender"].as_str().unwrap_or_default();
         let own_key = event["state_key"].as_str() == Some(sender) && mxid_shaped(sender);
-        if index >= MAX_PUBLISHERS || !own_key || !member(sender).joined {
+        // The cap counts accepted publishers only, so junk events cannot hide real ones (GPT review).
+        if publishers >= MAX_PUBLISHERS || !own_key || !member(sender).joined || event["content"].to_string().len() > MAX_CONTENT_BYTES * 2 {
             out.ignored_events += 1;
             continue;
         }
+        publishers += 1;
         for issue in issues_of(&event["content"]) {
             if issue.agent.starts_with(AGENT_PUPPET_PREFIX) && member(&issue.agent).joined {
                 claims.entry(issue.agent.clone()).or_default().insert(sender.to_owned());

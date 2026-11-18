@@ -10,6 +10,9 @@ use matrix_sdk::{Client, room::{MessagesOptions, Room}, ruma::{RoomId, UserId, e
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Repositories the tab reads per load (two GitHub requests each).
+const MAX_TABLES: usize = 10;
+
 /// One of this owner's watches reporting to the room (agent id, repo, active).
 pub type OwnWatch = (String, String, bool);
 
@@ -29,8 +32,11 @@ pub struct RoomStatus {
 }
 
 /// "working on #37 (PR #38 in review)", "waiting for approval" or "idle".
-pub fn activity(status: &RoomStatus, agent: &str) -> String {
-    let busy = status.seen.iter().filter(|s| s.issue.agent == agent && !s.issue.state.is_terminal()).max_by_key(|s| s.issue.updated_at);
+/// Published state counts only from `owner`, the Agent's owner as the
+/// server's roster names it: a member's claim about someone else's Agent is
+/// never shown on that Agent's row (GPT review). Unknown owner: tasks only.
+pub fn activity(status: &RoomStatus, agent: &str, owner: Option<&str>) -> String {
+    let busy = status.seen.iter().filter(|s| s.issue.agent == agent && Some(s.publisher.as_str()) == owner && !s.issue.state.is_terminal()).max_by_key(|s| s.issue.updated_at);
     if let Some(s) = busy {
         let i = &s.issue;
         return match i.pr {
@@ -117,6 +123,10 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
 async fn tables(out: &mut RoomStatus, repos: &[String], own: &[OwnWatch], seen: &[Seen], now: i64) {
     let github = ::hagency::issue_watch::new_client();
     for repo in repos {
+        if out.tables.len() >= MAX_TABLES {
+            out.notes.push(crate::i18n::format("{n} more repositories not shown", &[("n", (repos.len() - MAX_TABLES).to_string())]));
+            break;
+        }
         let token = match own.iter().find(|(_, r, active)| *active && r.eq_ignore_ascii_case(repo)) {
             Some((agent, _, _)) => crate::hagency::issue_watch::github_token(agent).await.ok(),
             None => None,

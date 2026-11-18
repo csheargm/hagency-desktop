@@ -49,7 +49,7 @@ fn fake(events: Vec<Value>, linked: Vec<String>, own: Vec<OwnWatch>) -> Fake {
 async fn another_owners_watcher_state_is_read_and_github_is_read_publicly() {
     let io = fake(vec![published(BETTY, BETTY, "reviewed")], Vec::new(), Vec::new());
     let out = answer(&io, None).await;
-    assert!(out.contains("in review (attempt 1) · PR #38 · bird-claude (Betty)"), "{out}");
+    assert!(out.contains("in review (attempt 1) · PR #38 · bird-claude (Betty, @betty:hs.test)"), "{out}");
     assert!(out.contains("1 in progress across 1 repo"), "{out}");
     assert_eq!(*io.reads.lock().unwrap(), vec![(ROOM_REPO.to_owned(), None)], "never this device's token for another owner's repository");
 }
@@ -61,7 +61,7 @@ async fn a_spoofed_publisher_is_ignored() {
     assert!(out.contains("repo_not_in_this_room"), "a forged event adds no repository: {out}");
     let io = fake(vec![published(BETTY, BETTY, "reviewed"), published(MALLORY, MALLORY, "merged")], Vec::new(), Vec::new());
     let out = answer(&io, None).await;
-    assert!(!out.contains("bird-claude (Mallory)") && !out.contains("bird-claude (Betty)"), "a contested Agent shows nobody's claim: {out}");
+    assert!(!out.contains("bird-claude (Mallory") && !out.contains("bird-claude (Betty, @betty:hs.test)"), "a contested Agent shows nobody's claim: {out}");
     assert!(out.contains("claimed by more than one owner"));
 }
 

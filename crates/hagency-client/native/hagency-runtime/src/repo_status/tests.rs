@@ -119,7 +119,7 @@ fn the_table_merges_github_with_trackers_and_recent_closes() {
     assert_eq!(numbers, vec![31, 33, 40, 32, 20], "tracked first, the 8-day-old close left out, other repos ignored");
     assert_eq!(t.rows.iter().find(|r| r.number == 32).unwrap().fixes, Some(31));
     let out = table::render(&[t], &[]);
-    assert!(out.contains("in review (attempt 1) · PR #32 · held: green CI · bird-claude (Betty)"), "{out}");
+    assert!(out.contains("in review (attempt 1) · PR #32 · held: green CI · bird-claude (Betty, @betty:hs.test)"), "{out}");
     assert!(out.contains("Open / untracked"), "a title cannot add table columns");
     assert!(out.contains("failed") && out.contains("not listed"));
     assert!(out.contains("\"summary\":\"1 in progress across 1 repo\""), "{out}");
@@ -137,3 +137,27 @@ fn github_unavailable_still_shows_trackers_and_the_result_is_capped() {
 }
 
 use table::Table;
+
+#[test]
+fn junk_events_do_not_use_up_the_publisher_cap() {
+    let mut events: Vec<Value> = (0..MAX_PUBLISHERS * 2).map(|n| event(MALLORY, &format!("@other{n}:hs.test"), json!({}))).collect();
+    events.push(event(BETTY, BETTY, json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Reviewed, NOW)]})));
+    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD]));
+    assert_eq!(got.seen.len(), 1, "Betty's event is still read");
+}
+
+#[test]
+fn expired_trackers_never_attach_counts_precede_truncation_and_closes_win() {
+    let github = vec![
+        GithubItem { number: 5, title: "Was open".into(), is_pr: false, state: GithubState::Open, closed_at: None },
+        GithubItem { number: 5, title: "Was open".into(), is_pr: false, state: GithubState::Closed, closed_at: Some(NOW - 5) },
+    ];
+    let old = Seen { issue: Published { pr: Some(6), ..issue(BIRD, REPO, 5, TrackState::Merged, NOW - RECENT_SECS - 1) }, publisher: BETTY.into() };
+    let t = table::build(REPO, Some(&github), &[old], str::to_owned, NOW);
+    assert_eq!(t.rows.len(), 1);
+    assert_eq!(t.rows[0].github, Some(GithubState::Closed));
+    assert!(t.rows[0].trackers.is_empty(), "an expired state is not shown as current");
+    let many: Vec<Seen> = (1..=60).map(|n| Seen { issue: issue(BIRD, REPO, n, TrackState::HandedOff, NOW), publisher: BETTY.into() }).collect();
+    let t = table::build(REPO, None, &many, str::to_owned, NOW);
+    assert_eq!((t.rows.len(), table::in_progress(&t)), (table::MAX_ROWS, 60));
+}

@@ -147,10 +147,10 @@ pub fn set_link(room: &RoomId, repo: String, link: bool) {
 }
 
 /// "bird-claude's" activity in `room` for the members list, once the tab loaded it.
-pub fn activity(room: &RoomId, agent: &str) -> Option<String> {
+pub fn activity(room: &RoomId, agent: &str, owner: Option<&str>) -> Option<String> {
     let loaded = current(room)?.ok()?;
     let status = loaded.status.ok()?;
-    Some(status::activity(&status, agent))
+    Some(status::activity(&status, agent, owner))
 }
 
 /// Reloads `room`'s list; the result (or the reason it failed) is shown in the tab.

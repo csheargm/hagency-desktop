@@ -67,6 +67,8 @@ pub struct Table {
     pub github_read: bool,
     pub rows: Vec<Row>,
     pub truncated: usize,
+    /// Tracked issues not finished, counted before rows were truncated.
+    pub in_progress: usize,
 }
 
 fn recent(item: &GithubItem, now: i64) -> bool {
@@ -77,28 +79,35 @@ fn recent(item: &GithubItem, now: i64) -> bool {
 /// `seen` may hold other repositories (ignored); `name` turns a Matrix ID
 /// into the display name the room shows.
 pub fn build(repo: &str, github: Option<&[GithubItem]>, seen: &[Seen], name: impl Fn(&str) -> String, now: i64) -> Table {
-    let mut rows: Vec<Row> = github.unwrap_or_default().iter().filter(|i| i.number > 0 && recent(i, now)).map(|i| Row {
-        number: i.number, is_pr: i.is_pr, title: one_line(&i.title, TITLE_BYTES), github: Some(i.state), trackers: Vec::new(), fixes: None,
-    }).collect();
-    for s in seen.iter().filter(|s| s.issue.repo.eq_ignore_ascii_case(repo)) {
+    let mut rows: Vec<Row> = Vec::new();
+    for i in github.unwrap_or_default().iter().filter(|i| i.number > 0 && recent(i, now)) {
+        // Open and closed are two reads: an item that closed in between is listed once, as closed.
+        match rows.iter_mut().find(|r| r.number == i.number) {
+            Some(row) if i.state != GithubState::Open => row.github = Some(i.state),
+            Some(_) => {}
+            None => rows.push(Row { number: i.number, is_pr: i.is_pr, title: one_line(&i.title, TITLE_BYTES), github: Some(i.state), trackers: Vec::new(), fixes: None }),
+        }
+    }
+    let fresh = |s: &&Seen| !s.issue.state.is_terminal() || now.saturating_sub(s.issue.updated_at) <= RECENT_SECS;
+    for s in seen.iter().filter(|s| s.issue.repo.eq_ignore_ascii_case(repo)).filter(fresh) {
         let issue = &s.issue;
-        let tracker = Tracker { state: issue.state, attempts: issue.attempts, pr: issue.pr, hold: issue.hold.clone(), agent: name(&issue.agent), owner: name(&s.publisher) };
+        // The publisher's stable ID beside its name: a display name can be anyone's (GPT review).
+        let owner = format!("{}, {}", name(&s.publisher), s.publisher);
+        let tracker = Tracker { state: issue.state, attempts: issue.attempts, pr: issue.pr, hold: issue.hold.clone(), agent: name(&issue.agent), owner };
         if let Some(pr) = issue.pr.and_then(|pr| i64::try_from(pr).ok()) {
             rows.iter_mut().filter(|r| r.is_pr && r.number == pr).for_each(|r| r.fixes = Some(issue.number));
         }
         match rows.iter_mut().find(|r| !r.is_pr && r.number == issue.number) {
             Some(row) => row.trackers.push(tracker),
-            None if !issue.state.is_terminal() || now.saturating_sub(issue.updated_at) <= RECENT_SECS => rows.push(Row {
-                number: issue.number, is_pr: false, title: issue.title.clone(), github: None, trackers: vec![tracker], fixes: None,
-            }),
-            None => {}
+            None => rows.push(Row { number: issue.number, is_pr: false, title: issue.title.clone(), github: None, trackers: vec![tracker], fixes: None }),
         }
     }
     // Tracked work first, then open items, then what just closed; newest numbers first.
     rows.sort_by_key(|r| (r.trackers.is_empty(), r.github != Some(GithubState::Open), std::cmp::Reverse(r.number)));
+    let in_progress = rows.iter().map(|r| r.trackers.iter().filter(|t| !t.state.is_terminal()).count()).sum();
     let truncated = rows.len().saturating_sub(MAX_ROWS);
     rows.truncate(MAX_ROWS);
-    Table { repo: repo.to_owned(), github_read: github.is_some(), rows, truncated }
+    Table { repo: repo.to_owned(), github_read: github.is_some(), rows, truncated, in_progress }
 }
 
 /// "in review (attempt 2) · PR #32 · held: green CI · bird-claude (Betty)".
@@ -134,7 +143,7 @@ fn table_json(table: &Table, rows: usize) -> Value {
 
 /// Tracked issues still in progress (not finished) in `table`.
 pub fn in_progress(table: &Table) -> usize {
-    table.rows.iter().map(|r| r.trackers.iter().filter(|t| !t.state.is_terminal()).count()).sum()
+    table.in_progress
 }
 
 /// "5 in progress across 3 repos": tracked work not finished, over every table.

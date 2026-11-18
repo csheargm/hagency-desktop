@@ -77,24 +77,27 @@ pub fn tasks(events: &[Value], joined: impl Fn(&str) -> bool, now_ms: i64) -> Ve
         let (target, edit, card) = card_of(event)?;
         Some((target, sender.to_owned(), event["origin_server_ts"].as_i64().unwrap_or(now_ms), edit, card))
     }).collect();
-    // (sender, posted at, newest card) by original event id.
-    let mut runs: BTreeMap<String, (String, i64, Card)> = BTreeMap::new();
+    // (sender, posted at, newest card, its time) by original event id.
+    let mut runs: BTreeMap<String, (String, i64, Card, i64)> = BTreeMap::new();
     for (target, sender, ts, _, card) in cards.iter().filter(|c| !c.3) {
-        runs.insert(target.clone(), (sender.clone(), *ts, card.clone()));
+        runs.insert(target.clone(), (sender.clone(), *ts, card.clone(), *ts));
     }
-    for (target, sender, _, _, card) in cards.into_iter().filter(|c| c.3) {
-        if let Some((owner, _, newest)) = runs.get_mut(&target)
+    for (target, sender, ts, _, card) in cards.into_iter().filter(|c| c.3) {
+        // Same sender and the same run: an edit never swaps in another run's identity.
+        if let Some((owner, _, newest, at)) = runs.get_mut(&target)
             && *owner == sender
             && card.revision > newest.revision
+            && (card.id.as_str(), card.requester.as_str()) == (newest.id.as_str(), newest.requester.as_str())
         {
-            *newest = card;
+            (*newest, *at) = (card, ts);
         }
     }
-    let mut out: Vec<Task> = runs.into_values().map(|(agent, first, card)| Task {
+    // A finished run stays listed for a day from when it finished.
+    let mut out: Vec<Task> = runs.into_values().filter(|(_, _, card, at)| state_of(card).open() || (now_ms - at) / 1000 <= DONE_SECS).map(|(agent, first, card, _)| Task {
         agent, requester: card.requester.clone(), state: state_of(&card),
         step: card.progress.as_ref().map(|p| p.step.clone()).filter(|s| s != APPROVAL_WAIT_STEP).unwrap_or_default(),
         age_secs: (now_ms - first).max(0) / 1000,
-    }).filter(|t| t.state.open() || t.age_secs <= DONE_SECS).collect();
+    }).collect();
     out.sort_by_key(|t| (!t.state.open(), t.age_secs));
     out.truncate(MAX_TASKS);
     out

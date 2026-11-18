@@ -54,11 +54,13 @@ fn several_repositories_group_into_sections_with_a_summary_and_a_filter() {
 #[test]
 fn activity_comes_from_published_state_then_tasks_else_idle() {
     let s = status_with(Vec::new(), vec![seen("h/desktop", 37, TrackState::Reviewed, Some(38)), seen("h/desktop", 30, TrackState::Merged, Some(31))], Vec::new());
-    assert_eq!(activity(&s, BIRD), "working on #37 (PR #38 in review)");
+    assert_eq!(activity(&s, BIRD, Some(BETTY)), "working on #37 (PR #38 in review)");
+    assert_eq!(activity(&s, BIRD, Some("@mallory:hs.test")), "idle", "a claim from someone who is not the Agent's owner is not shown");
+    assert_eq!(activity(&s, BIRD, None), "idle");
     let working = Task { agent: "@_hagency_agt_x:hs.test".into(), requester: "@anna:hs.test".into(), state: TaskState::Working, step: String::new(), age_secs: 5 };
     let s = status_with(Vec::new(), Vec::new(), vec![working]);
-    assert_eq!(activity(&s, "@_hagency_agt_x:hs.test"), "working");
-    assert_eq!(activity(&s, BIRD), "idle");
+    assert_eq!(activity(&s, "@_hagency_agt_x:hs.test", None), "working");
+    assert_eq!(activity(&s, BIRD, Some(BETTY)), "idle");
 }
 
 fn card(id: &str, state: &str, revision: u64, step: &str) -> serde_json::Value {

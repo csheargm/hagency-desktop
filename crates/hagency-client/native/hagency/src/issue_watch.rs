@@ -238,6 +238,17 @@ pub async fn fetch_status_items(client: &Client, api: &str, repo: &str, token: O
     Ok(open_items(&open).into_iter().chain(closed).collect())
 }
 
+/// Whether `repo` is public: GitHub shows it to a request with no token
+/// (a private or missing repository answers 404).
+pub async fn fetch_is_public(client: &Client, api: &str, repo: &str) -> Result<bool, FetchError> {
+    pulls_url(api, repo)?; // refuses anything but owner/name
+    match get_as(client, &format!("{api}/repos/{repo}"), None).await {
+        Ok(body) => Ok(serde_json::from_str::<serde_json::Value>(&body).map_err(|e| FetchError::Parse(e.to_string()))?["private"] == false),
+        Err(FetchError::Status { status: 404, .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 async fn get(client: &Client, url: &str, token: &str) -> Result<String, FetchError> {
     get_as(client, url, Some(token)).await
 }

@@ -1185,7 +1185,8 @@ impl Widget for MobileChatInfo {
                         // Who may ask one's own Agent (UX A4) leads its second line.
                         let detail = super::agent_ask_badge::policy(self.owner.as_ref(), &profile.user_id).map_or(detail.clone(), |policy| format!("{policy} · {detail}"));
                         let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
-                        let activity = badge.as_ref().and_then(|_| super::room_watches::activity(data.room.room_id(), profile.user_id.as_str()));
+                        let owner = self.member_owners.get(&profile.user_id).map(|o| o.to_string());
+                        let activity = badge.as_ref().and_then(|_| super::room_watches::activity(data.room.room_id(), profile.user_id.as_str(), owner.as_deref()));
                         let detail = activity.map_or(detail.clone(), |activity| format!("{activity} · {detail}"));
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
                         widget.view(cx, ids!(agent_badge)).set_visible(cx, badge.is_some());
