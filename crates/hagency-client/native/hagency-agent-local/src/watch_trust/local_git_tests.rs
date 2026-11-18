@@ -258,3 +258,16 @@ fn the_watch_block_names_the_trusted_shapes() {
     let off = crate::watch_info::render_own(&[], "!r:x", "@o:x");
     assert!(!off.contains(text), "said only when the switch is on");
 }
+
+/// #67 attempt 1 (Nov 17, 23:22) asked for this listing: `--list` patterns
+/// are read-only. Without `--list` a name still creates a branch, and asks.
+#[test]
+fn a_branch_listing_with_a_pattern_is_pinned() {
+    let (_t, root) = workspace();
+    for line in ["git -C ./app branch -r --list 'origin/HEAD' -v", "git -C app branch --list 'fix/*'", "git -C app branch -a --list fix/27"] {
+        assert!(command(line, &root).is_some(), "{line}");
+    }
+    for line in ["git -C app branch -r 'origin/HEAD'", "git -C app branch --list -D fix/27", "git -C app branch --list '-D'", "git -C app branch --list 'a:b'"] {
+        assert_eq!(pinned_line(line, &root, REPO), None, "{line}");
+    }
+}

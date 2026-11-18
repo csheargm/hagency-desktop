@@ -91,6 +91,15 @@ fn only_one_branch_naming_the_issue_counts() {
     let two = vec!["issue-7-a".to_owned(), "agent/7-b".to_owned()];
     assert_eq!(issue_branch(&two, 7), None, "two candidates: cannot tell which, retry plainly");
     assert!(branch_names_issue("agent/33-readme", 33) && !branch_names_issue("issue-333", 33));
+    // The Nov 17 #69 runs pushed `<agent>/<slug>-<N>` and `fix/<slug>-<N>`.
+    for named in ["bird-claude/status-line-69", "fix/readme-status-69", "docs-69"] {
+        assert!(branch_names_issue(named, 69), "{named}");
+    }
+    for other in ["fix/readme-status-169", "fix/status-69x", "fix/v1.69", "bird-claude/status-line-69/x", "69"] {
+        assert!(!branch_names_issue(other, 69), "{other}");
+    }
+    let pushed = vec!["main".to_owned(), "bird-claude/status-line-69".to_owned()];
+    assert_eq!(issue_branch(&pushed, 69).as_deref(), Some("bird-claude/status-line-69"));
     assert!(parse_branches(r#"[{"sha":"x"}]"#).is_err());
 }
 

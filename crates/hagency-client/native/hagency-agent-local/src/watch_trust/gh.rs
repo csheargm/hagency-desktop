@@ -123,3 +123,7 @@ fn target_repo(target: &str) -> Option<Option<&str>> {
     let number_ok = !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit());
     number_ok.then(|| crate::merge_policy::gate::repo_name(repo)).flatten().map(Some)
 }
+
+#[cfg(test)]
+#[path = "agent_shapes_tests.rs"]
+mod agent_shapes_tests;
