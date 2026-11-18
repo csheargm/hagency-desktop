@@ -3723,6 +3723,7 @@
   "Agent owners are unavailable: {error}": "无法获取 Agent 的所有者：{error}",
   "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "部分发布的状态并非来自 Agent 的所有者，或已过期，已隐藏。",
   "The signed-in account changed; nothing was changed": "登录的账号已变更，未做任何修改",
+  "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.": "此提交需要一个 Agent 批准（合并闸门说 {said}）。通过 Hagency 发布的审查 Agent 结论（Codex 或 Claude）才算数，普通 GitHub 评论不算；结论未被记录时 Hagency 会再次请审查者审查，而此提交目前还没有任何记录的批准。请你自己审查并合并。",
   "Safeguards": "安全保障",
   "May do alone": "可以自行完成",
   "Needs you": "需要你确认",

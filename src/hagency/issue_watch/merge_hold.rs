@@ -69,7 +69,7 @@ impl Missing {
     fn line(self, reason: &str, repo: &str) -> String {
         let said = quoted_title(reason);
         match self {
-            Self::Approval => format!("an Agent approval of this head (the merge gate says {said}). Only an approval another Agent posts through Hagency's approval gate counts; a Codex Agent's review or a plain GitHub comment is not recorded. Ask another (Claude) Agent in this room to review it again, or review and merge it yourself."),
+            Self::Approval => crate::i18n::format(APPROVAL_LINE, &[("said", said)]),
             Self::Ci => format!("green CI (the merge gate says {said}). Fix or re-run the checks, or merge it yourself."),
             Self::Rules => format!("a person: the repo rules say {said}. Review and merge it yourself."),
             Self::Autonomy => format!("a person: the room's setting says {said}. Merge it yourself, or the room's owner or a maintainer can change the level in Room info → Status."),
@@ -77,6 +77,10 @@ impl Missing {
         }
     }
 }
+
+/// The missing-approval line: Codex and Claude verdicts are both recorded;
+/// an unrecorded one was already asked for again ([`super::review_again`]).
+pub const APPROVAL_LINE: &str = "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.";
 
 /// What the merge step does for one head this check.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,7 +183,7 @@ async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice)
 pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, ctx: &LoopCtx<'_>, settled: bool) -> Result<Gate, String> {
     let gate = gate_of(target, readiness, ctx.permission, settled);
     match &gate {
-        Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone() }).await?,
+        Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone(), name: ctx.name.to_owned() }).await?,
         Gate::Hold(missing) => {
             let step = hold_step(missing);
             let lines = missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect();
@@ -221,4 +225,18 @@ pub async fn after_failure(io: &impl LoopIo, target: &Target, failures: u32) -> 
     }
     let step = format!("{HOLD_STEP}{UNREACHABLE_STEP}");
     once(io, target, &step, LoopNotice::Unreachable { target: target.clone(), step: step.clone() }).await
+}
+
+/// When each pull request's head was first seen, for the per-head review wait.
+pub(super) fn lock_clock() -> std::sync::MutexGuard<'static, HeadClock> {
+    static CLOCK: std::sync::LazyLock<std::sync::Mutex<HeadClock>> = std::sync::LazyLock::new(Default::default);
+    // Plain timestamps: still usable after a panic elsewhere held the lock.
+    CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The merge step's failure streaks, shared by every check of this process.
+pub(super) fn lock_streaks() -> std::sync::MutexGuard<'static, Streaks> {
+    static STREAKS: std::sync::LazyLock<std::sync::Mutex<Streaks>> = std::sync::LazyLock::new(Default::default);
+    // A panic while holding it left plain counters: still usable.
+    STREAKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

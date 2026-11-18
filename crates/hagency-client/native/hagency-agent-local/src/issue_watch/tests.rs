@@ -252,6 +252,12 @@ fn the_owners_own_pull_request_merges_only_on_another_accounts_approval_of_the_h
     assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, "LGTM")]), "anna", &head), "an approval not naming its commit is unbound");
     assert!(!approved_by_other(&reviews(vec![review("bob", "APPROVED", &head, &bound), review("bob", "CHANGES_REQUESTED", &head, "")]), "anna", &head), "the latest decisive review wins");
     assert!(parse_reviews("{}").is_err());
+    // Live PR #105: the shared login's approving verdict is a comment naming its head.
+    let verdict = reviews(vec![review("csheargm", "COMMENTED", &head, &format!("Hagency verdict: APPROVE {head} - ok; fine")), review("csheargm", "COMMENTED", &head, "looks fine")]);
+    assert_eq!((verdict[0].1.as_str(), verdict[1].1.as_str()), (super::wire::APPROVE_VERDICT, "COMMENTED"));
+    assert!(!approved_by_other(&verdict, "anna", &head), "a verdict comment is never a GitHub approval");
+    let quoted = reviews(vec![review("bob", "COMMENTED", &head, &format!("as said: Hagency verdict: APPROVE {head}"))]);
+    assert_eq!(quoted[0].1, "COMMENTED", "a comment quoting a verdict is none");
     let ghost = reviews(vec![json!({"user": null, "state": "APPROVED", "commit_id": head, "body": bound})]);
     assert_eq!(ghost.len(), 1, "a deleted account's review keeps the page full for pagination");
     assert!(!approved_by_other(&ghost, "anna", &head), "and never counts as an approval");

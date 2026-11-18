@@ -3723,6 +3723,7 @@
   "Agent owners are unavailable: {error}": "Agent owners are unavailable: {error}",
   "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "Some published states were not from the Agent's own owner, or were stale, and are hidden.",
   "The signed-in account changed; nothing was changed": "The signed-in account changed; nothing was changed",
+  "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.": "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.",
   "Safeguards": "Safeguards",
   "May do alone": "May do alone",
   "Needs you": "Needs you",

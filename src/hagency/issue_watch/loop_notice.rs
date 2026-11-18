@@ -14,6 +14,16 @@ use serde_json::{Map, Value, json};
 /// The content field that marks a message as the review loop's.
 pub const MARKER: &str = "io.hagency.review_loop";
 
+/// The once-per-head step of the "still a draft" notice (a hold step: the
+/// owner API keeps it once per head like the other holds).
+pub const DRAFT_STEP: &str = "hold-draft";
+
+/// An Agent as the room reads it: its display name, then its Matrix ID
+/// (the mention it needs); the ID alone when it has no name.
+fn named(name: &str, agent: &OwnedUserId) -> String {
+    if name.is_empty() { agent.to_string() } else { format!("{name} ({agent})") }
+}
+
 /// One pull request head the loop acts on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -27,8 +37,11 @@ pub struct Target {
 pub enum LoopNotice {
     /// Ask `reviewer` (an Agent in the room) to review `Target`.
     ReviewRequested { target: Target, reviewer: OwnedUserId },
-    /// An approval qualifies the head: `fixer` runs the pinned merge.
-    Approved { target: Target, fixer: OwnedUserId },
+    /// An approval qualifies the head: `fixer` (display name `name`) runs the pinned merge.
+    Approved { target: Target, fixer: OwnedUserId, name: String },
+    /// The loop's pull request is still a draft after the fixer's run ended:
+    /// `fixer` is asked once per head to mark it ready (step [`DRAFT_STEP`]).
+    MarkReady { target: Target, fixer: OwnedUserId, name: String },
     /// Approved and within the rules, but this device's GitHub login cannot merge.
     /// `step` is a hold step, so the merge step stays free for this head.
     NeedsMaintainer { target: Target, step: String },
@@ -49,13 +62,14 @@ pub enum LoopNotice {
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } | Self::MarkReady { target, .. } => target,
         }
     }
     /// The once-per-head loop step this notice is recorded under.
     pub(crate) fn step(&self) -> &str {
         match self {
             Self::ReviewRequested { .. } => "review",
+            Self::MarkReady { .. } => DRAFT_STEP,
             Self::Held { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } => step,
             _ => "merge",
         }
@@ -64,7 +78,7 @@ impl LoopNotice {
     pub(crate) fn mention(&self) -> Option<&OwnedUserId> {
         match self {
             Self::ReviewRequested { reviewer, .. } => Some(reviewer),
-            Self::Approved { fixer, .. } => Some(fixer),
+            Self::Approved { fixer, .. } | Self::MarkReady { fixer, .. } => Some(fixer),
             _ => None,
         }
     }
@@ -78,10 +92,15 @@ impl LoopNotice {
                 let steps = ::hagency::REVIEW_STEPS.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo);
                 format!("{}{reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
             }
-            Self::Approved { fixer, .. } => format!(
-                "{lead}{short} — merging under the repo rules: {fixer} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
+            Self::Approved { fixer, name, .. } => format!(
+                "{lead}{short} — merging under the room rules: {who} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
                 lead = ::hagency::issue_watch::MERGE_NOTICE_LEAD,
+                who = named(name, fixer),
                 command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
+            ),
+            Self::MarkReady { fixer, name, .. } => format!(
+                "📝 PR #{} in {} at {short} is still a draft, so no review can start: {who} if the fix is done, run exactly `gh pr ready {} --repo {}` as its own command; otherwise say what is left. {}",
+                t.number, t.repo, t.number, t.repo, t.url, who = named(name, fixer),
             ),
             Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs someone with GitHub write access: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
             Self::NeedsOwner { reason, .. } => format!("⚠️ PR #{} in {} at {short} needs the owner: {}. {}", t.number, t.repo, quoted_title(reason), t.url),
