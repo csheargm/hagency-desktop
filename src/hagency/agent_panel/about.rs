@@ -39,8 +39,16 @@ fn device_line(here: bool, device: &str) -> String {
     }
 }
 
-/// "In 1 room · View" / "In 3 rooms · View".
-fn rooms_line(count: usize) -> String {
+/// How many group rooms the Agent is in, from the same rooms as the card's
+/// "Shared in …" lines; `None` until the status has read its Rooms (still
+/// loading, or the read failed): never a made-up 0.
+fn rooms_count(status: &Value) -> Option<usize> {
+    status["rooms"].is_array().then(|| mapping::watch_rooms(status).len())
+}
+
+/// "In 1 room · View" / "In 3 rooms · View"; "Rooms · View" before the count is known.
+fn rooms_line(count: Option<usize>) -> String {
+    let Some(count) = count else { return crate::i18n::tr("Rooms · View").to_owned() };
     let key = if count == 1 { "In {count} room · View" } else { "In {count} rooms · View" };
     crate::i18n::format(key, &[("count", count.to_string())])
 }
@@ -72,7 +80,7 @@ impl AgentPanel {
         // What it does for each group room's members (ADR 0025).
         lines.extend(crate::hagency::room_share::summaries(&self.status, name.as_deref().unwrap_or(crate::i18n::tr("its owner"))));
         self.view.label(cx, ids!(about)).set_text(cx, &lines.join("\n"));
-        let text = rooms_line(rooms::joined_rooms(&self.status).len());
+        let text = rooms_line(rooms_count(&self.status));
         self.view.button(cx, ids!(about_rooms)).set_text(cx, &text);
     }
 
@@ -114,8 +122,33 @@ mod tests {
     /// Live finding: "In 1 rooms".
     #[test]
     fn the_rooms_count_is_singular_for_one_room() {
-        assert_eq!(rooms_line(1), "In 1 room · View");
-        assert_eq!(rooms_line(0), "In 0 rooms · View");
-        assert_eq!(rooms_line(3), "In 3 rooms · View");
+        assert_eq!(rooms_line(Some(1)), "In 1 room · View");
+        assert_eq!(rooms_line(Some(0)), "In 0 rooms · View");
+        assert_eq!(rooms_line(Some(3)), "In 3 rooms · View");
+    }
+
+    /// Live finding (2026-11-18, bird-claude in dev + e2e room on alpha, owner
+    /// on beta): "In 0 rooms · View" while the status was still loading (it
+    /// took ~20 s), and a failed Rooms read would also have said 0.
+    #[test]
+    fn the_rooms_count_waits_for_the_agents_rooms() {
+        // The beta server's bindings rows for bird-claude, as the status builds them.
+        let rows = [
+            json!({"id": "bnd_01m7k84mkv45aajspr87rzjdcd", "agentId": "agt_01m7k84kgg5a5mtm2epqhbpjb5", "projectId": null, "scopeKind": "owner_direct", "roomId": "!UGKDID7ea14wLtXxlh:localhost:8452", "state": "active", "generation": 1}),
+            json!({"id": "bnd_01m7k85dxq758k08z530vjh7bc", "agentId": "agt_01m7k84kgg5a5mtm2epqhbpjb5", "projectId": "prj_01m7k6ws2rg5qha2vgffp9s85e", "scopeKind": "project", "roomId": "!a3cQXHR8GZ4RP5n71s:localhost:8450", "state": "active", "generation": 1}),
+            json!({"id": "bnd_01m7pfc1axdner3h83f4wa63sj", "agentId": "agt_01m7k84kgg5a5mtm2epqhbpjb5", "projectId": "prj_01m7k6ws2rg5qha2vgffp9s85e", "scopeKind": "project", "roomId": "!VBvsrVXbTdOC6fOclj:localhost:8450", "state": "active", "generation": 1}),
+        ];
+        let rooms: Vec<Value> = crate::host::hagency::local::group_room_entries(&rows, |_| String::new());
+        let loaded = json!({"here": true, "rooms": rooms});
+        assert_eq!(rooms_count(&loaded), Some(2), "the dev room and the e2e room; the private chat is not counted");
+        assert_eq!(rooms_line(rooms_count(&loaded)), "In 2 rooms · View");
+        assert_eq!(rooms_count(&Value::Null), None, "not loaded yet: no count");
+        assert_eq!(rooms_count(&json!({"here": true, "rooms": null})), None, "the Rooms read failed: no count");
+        assert_eq!(rooms_line(None), "Rooms · View");
+        // Live finding (anna-claude): "Shared in dev room" listed, count 0. The
+        // count reads the rooms those lines read, whatever else a row lacks.
+        let shared = json!({"rooms": [{"roomId": "!dev:s", "name": "dev room", "state": "active"}], "approvals": {"roomShares": []}});
+        assert_eq!(rooms_count(&shared), Some(crate::hagency::room_share::summaries(&shared, "Anna").len()));
+        assert_eq!(rooms_count(&shared), Some(1));
     }
 }
