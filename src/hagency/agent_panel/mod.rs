@@ -16,7 +16,11 @@ pub(crate) mod mapping;
 pub(crate) mod rooms;
 mod settings;
 mod sharing;
-pub use design::script_mod;
+/// The panel's widgets, after the Safeguards card it places under issue watching.
+pub fn script_mod(vm: &mut ScriptVm) {
+    crate::hagency::issue_watch::safeguards_card::script_mod(vm);
+    design::script_mod(vm);
+}
 
 use crate::hagency::{backend::Service, create_agent::ModelChoice, model::{Command, LocalAction}};
 use crate::host::hagency::local::Call;

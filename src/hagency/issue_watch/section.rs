@@ -78,7 +78,7 @@ pub struct IssueWatchSection {
 static LATEST: std::sync::Mutex<Option<Reply>> = std::sync::Mutex::new(None);
 /// Wakes the UI so `draw_walk` can apply `LATEST`.
 #[derive(Debug)]
-struct IssueWatchReplyReady;
+pub(crate) struct IssueWatchReplyReady;
 
 /// How long a read or save may take before the section says so and enables the controls.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

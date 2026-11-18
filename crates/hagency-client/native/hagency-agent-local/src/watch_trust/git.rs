@@ -6,7 +6,7 @@ use std::path::Path;
 /// Push options that change nothing about what is pushed or where.
 const PUSH_FLAGS: [&str; 4] = ["-u", "--set-upstream", "-q", "--quiet"];
 /// Branches that are never pushed under trust, whatever the remote says.
-pub(super) const PROTECTED: [&str; 2] = ["main", "master"];
+pub const PROTECTED: [&str; 2] = ["main", "master"];
 
 /// `git push [flags] <remote> <branch>`: both named, so neither HEAD nor
 /// `push.default` decides what goes (GPT review: `git switch -c master &&

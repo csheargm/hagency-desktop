@@ -31,9 +31,9 @@ pub mod pending;
 /// Where the policy lives in a repository.
 pub const POLICY_PATH: &str = ".hagency/merge-policy.yml";
 /// Paths that are never low risk: the policy itself and CI/workflow config.
-const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];
+pub const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];
 /// A file with this name, in any directory, assigns code owners: always a person.
-const CODEOWNERS: &str = "CODEOWNERS";
+pub const CODEOWNERS: &str = "CODEOWNERS";
 /// The reason a merge waits rather than asks: CI has not finished.
 pub const CI_PENDING: &str = "CI checks are still running";
 const CI_FAILED: &str = "a CI check failed";
@@ -63,7 +63,7 @@ pub fn reason_kind(reason: &str) -> &'static str {
     }
 }
 const DEFAULT_MAX_CHANGED_LINES: u64 = 50;
-const MIN_AGENT_APPROVALS: u32 = 1;
+pub const MIN_AGENT_APPROVALS: u32 = 1;
 
 /// The owner's policy, as read from [`POLICY_PATH`].
 #[derive(Clone, Debug, PartialEq, Eq)]

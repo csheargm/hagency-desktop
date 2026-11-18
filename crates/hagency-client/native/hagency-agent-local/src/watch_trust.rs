@@ -35,7 +35,7 @@ use std::path::Path;
 
 pub mod codex_step;
 pub(crate) mod gh;
-pub(crate) mod git;
+pub mod git;
 pub(crate) mod host_clone;
 pub mod host_git;
 pub mod host_run;

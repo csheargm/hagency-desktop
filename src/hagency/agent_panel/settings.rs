@@ -83,12 +83,15 @@ impl AgentPanel {
         use crate::hagency::issue_watch::section::IssueWatchSectionWidgetExt;
         use crate::hagency::github_access::GithubAccessSectionWidgetExt;
         use crate::hagency::issue_watch::work_section::WorkSectionWidgetExt;
+        use crate::hagency::issue_watch::safeguards_card::SafeguardsCardWidgetExt;
         let agent = self.agent_id();
         let rooms = mapping::watch_rooms(&self.status);
         // `None` until the status arrives, so the block says it is waiting instead of greying out silently.
         let editable = self.status.is_object().then(|| self.here());
         self.view.work_section(cx, ids!(work)).set_context(cx, &agent, editable, rooms.clone());
         self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, editable, rooms);
+        let auto_merge = self.status["approvals"]["autoMerge"] == true;
+        self.view.safeguards_card(cx, ids!(safeguards)).set_context(cx, &agent, editable, auto_merge);
         self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }
 

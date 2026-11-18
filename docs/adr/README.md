@@ -24,3 +24,4 @@ implemented. An ADR is not evidence that a feature has shipped.
 | [0023](0023-room-repo-status.md) | Accepted | Room repository status from every owner's tracker (room state), Agent tasks and /status for every room, linked repos, card-free reads over the room's repository set |
 | [0024](0024-agent-replies-in-the-room.md) | Accepted | Agent answers are main-timeline replies quoting the request (room setting "Agent replies: In the room / In threads"); progress opens in place |
 | [0025](0025-shared-agent-defaults-and-different-model-review.md) | Accepted | Shared-agent defaults per group room in the owner's ledger (answer, card-free PR review verdicts, fixes on the owner's OK); room setting "Review by a different model" for the issue loop's reviewer pick |
+| [0026](0026-watch-safeguards-card.md) | Accepted | Safeguards card per issue watch: may do alone, needs you, limits, branch protection, every line from the enforced constants and the gate's parsed policy |
