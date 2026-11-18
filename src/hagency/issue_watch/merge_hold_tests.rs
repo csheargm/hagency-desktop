@@ -251,3 +251,17 @@ fn github_failures_in_a_row_are_told_once_then_the_streak_ends_on_success() {
     assert_eq!(check(&fake, Some("admin"), true), Gate::Merge);
     assert!(matches!(fake.posted.borrow().last(), Some(LoopNotice::Approved { .. })));
 }
+
+#[test]
+fn a_new_watchs_trial_holds_the_merge_with_one_notice_naming_the_count() {
+    // ADR 0027: the gate holds an otherwise mergeable PR during the trial.
+    let reason = ::hagency::issue_watch::trial_reason(2, 3);
+    let fake = Fake::new(human("trial", &reason, true));
+    for _ in 0..2 {
+        assert_eq!(check(&fake, Some("admin"), false), Gate::Hold(vec![(Missing::Trial, reason.clone())]), "no wait for a review: the trial is the owner's");
+    }
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(bodies[0].contains("Trial: PR 2 of 3 needs you to merge — after 3 owner merges this watch merges low-risk PRs by itself."), "{}", bodies[0]);
+    assert_eq!(Missing::Trial.step(), "hold-trial");
+}

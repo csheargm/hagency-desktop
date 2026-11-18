@@ -52,7 +52,11 @@ fn rules(repo: &str, role: Role) -> OwnerRules {
 fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
     ledger.set_auto_merge(OWNER, "anna", true).unwrap();
-    ledger.set_work(OWNER, "anna", work).unwrap();
+    ledger.set_work(OWNER, "anna", work.clone()).unwrap();
+    // These watches are past their trial (ADR 0027, see `trial_tests`).
+    for rules in &work {
+        ledger.end_watch_trial(OWNER, "anna", &rules.repo).unwrap();
+    }
     ledger
 }
 fn line(verb: &str, repo: &str) -> String {

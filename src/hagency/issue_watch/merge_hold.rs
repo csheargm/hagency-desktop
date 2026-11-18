@@ -7,7 +7,7 @@
 use super::loop_notice::{LoopNotice, Target};
 use super::notice::quoted_title;
 use super::review_loop::{self, LoopCtx, LoopIo, can_merge};
-use ::hagency::issue_watch::HOLD_STEP;
+use ::hagency::issue_watch::{HOLD_STEP, TRIAL_PRS, trial_counts};
 use serde_json::{Value, json};
 
 /// How long after the pull request opened the loop waits for a verdict
@@ -23,6 +23,8 @@ pub enum Missing {
     Ci,
     /// The repository rules (paths, size, author) need a person.
     Rules,
+    /// The watch is in its trial (ADR 0027): the owner merges its first pull requests.
+    Trial,
     /// The merging Agent's "Pull request merges" switch is off.
     MergesOff,
     /// This owner's GitHub account cannot merge the repository.
@@ -36,6 +38,7 @@ impl Missing {
             Self::Approval => "approvals",
             Self::Ci => "ci",
             Self::Rules => "rules",
+            Self::Trial => "trial",
             Self::MergesOff => "merges-off",
             Self::Permission => "permission",
         }
@@ -45,6 +48,7 @@ impl Missing {
         match kind {
             Some("approvals") => Self::Approval,
             Some("ci") => Self::Ci,
+            Some("trial") => Self::Trial,
             _ => Self::Rules,
         }
     }
@@ -58,6 +62,7 @@ impl Missing {
             Self::Approval => "an Agent approval",
             Self::Ci => "green CI",
             Self::Rules => "a person (repo rules)",
+            Self::Trial => "your merge (trial)",
             Self::MergesOff => "Pull request merges switched on",
             Self::Permission => "a maintainer to merge",
         }
@@ -70,11 +75,19 @@ impl Missing {
             Self::Approval => format!("an Agent approval of this head (the merge gate says {said}). Only an approval another Agent posts through Hagency's approval gate counts; a Codex Agent's review or a plain GitHub comment is not recorded. Ask another (Claude) Agent in this room to review it again, or review and merge it yourself."),
             Self::Ci => format!("green CI (the merge gate says {said}). Fix or re-run the checks, or merge it yourself."),
             Self::Rules => format!("a person: the repo rules say {said}. Review and merge it yourself."),
+            Self::Trial => {
+                // The gate's own numbers; an unreadable reason still names the trial.
+                let (next, required) = trial_counts(reason).unwrap_or((1, TRIAL_PRS));
+                crate::i18n::format(TRIAL_LINE, &[("next", next.to_string()), ("required", required.to_string())])
+            }
             Self::MergesOff => "Pull request merges switched on for this Agent: it is off, so no Agent may merge. Turn it on in the Agent's settings, or merge it yourself.".to_owned(),
             Self::Permission => format!("a maintainer: this owner's GitHub account cannot merge {repo}. Someone with write access must merge it."),
         }
     }
 }
+
+/// The trial's notice line (ADR 0027).
+pub const TRIAL_LINE: &str = "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.";
 
 /// What the merge step does for one head this check.
 #[derive(Clone, Debug, PartialEq, Eq)]

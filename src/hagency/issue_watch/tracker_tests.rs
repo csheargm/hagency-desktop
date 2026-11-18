@@ -89,8 +89,8 @@ impl TrackIo for Fake {
     fn agent_label(&self) -> String {
         "bird-claude".into()
     }
-    async fn pr_merged(&self, pr: u64) -> Result<bool, String> {
-        Ok(self.merged.borrow().contains(&pr))
+    async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String> {
+        Ok(self.merged.borrow().contains(&pr).then_some(true))
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())

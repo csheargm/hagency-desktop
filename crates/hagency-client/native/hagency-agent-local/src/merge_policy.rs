@@ -27,6 +27,7 @@ pub mod review_loop;
 pub mod codex_review;
 pub mod codex_observed;
 pub mod pending;
+pub mod trial;
 
 /// Where the policy lives in a repository.
 pub const POLICY_PATH: &str = ".hagency/merge-policy.yml";
@@ -58,6 +59,8 @@ pub fn reason_kind(reason: &str) -> &'static str {
         "approvals"
     } else if [CI_PENDING, CI_FAILED, NO_CI].contains(&reason) {
         "ci"
+    } else if trial::trial_counts(reason).is_some() {
+        "trial"
     } else {
         "rules"
     }

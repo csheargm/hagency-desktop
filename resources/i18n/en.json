@@ -3751,6 +3751,8 @@
   "Agent owners are unavailable: {error}": "Agent owners are unavailable: {error}",
   "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "Some published states were not from the Agent's own owner, or were stale, and are hidden.",
   "The signed-in account changed; nothing was changed": "The signed-in account changed; nothing was changed",
+  "your merge (trial)": "your merge (trial)",
+  "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.": "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.",
   "Safeguards": "Safeguards",
   "May do alone": "May do alone",
   "Needs you": "Needs you",
