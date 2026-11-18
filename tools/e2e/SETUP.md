@@ -11,38 +11,51 @@ The runner does everything it can by itself:
   (`@bird:localhost:8452`). The room id is kept in
   `hagency-server/.run/e2e/room.json`.
 
-## Owner steps: automated through each window's bridge
+## Owner steps: automated through each window's UI endpoint
 
 An Agent serves a room only after its **owner binds it** there, and that is an
 owner command the desktop runs in-process (no external endpoint; the server
 ignores a bare puppet invite). The runner therefore drives the owners' own
-windows through Makepad's localhost bridge (`MAKEPAD_REMOTE`, enabled in
-`int-demo-up.sh`: Anna 127.0.0.1:8771, Betty 127.0.0.1:8772).
+windows through the Makepad endpoint every app opens by default:
+
+- socket `/tmp/makepad-<uid>/makepad-remote-<pid>.sock`, pid from
+  `hagency-server/.run/fresh-<owner>/desktop.pid` (checked to be that window);
+- directory 0700 and socket 0600, both checked by the client; the app also
+  checks the peer's uid (`getpeereid`). Nothing listens on the network;
+- no launch flag is needed. `MAKEPAD_REMOTE=<port>` makes the app exit, and
+  `=1` only adds a "[remote]" title tag and focus/instance changes.
+
+The runner speaks makepad-remote's wire (`hx/remote_wire.py`: HELLO, `cmd`
+channel, JSON lines) and uses the semantic tree: `ui find` gives nodes with
+widget path, name, actions and bounds; buttons are pressed by node id
+(`ui act press`), and only a node with no press action (a room-list row, the +
+icon) gets a click at its bounds. Every act carries `if_user_seq`, and the
+runner does nothing while `status` says a person is using the window.
 
 `run.py` preflight, per owner, skipped when the owner and all their Agents are
 already joined (checked over Matrix as zz-anna):
 
-1. open **e2e room** in the room list → click **Join Room** (`accept_button`),
-   then wait until Matrix shows the owner joined;
-2. answer only prompts whose sentence names the e2e room: **Bring**
-   (`bring`) / **Allow in group rooms**;
-3. for each Agent still absent: **+** (`new_or_join_button`) → **Add agent to
-   this room** (`plus_add_agent`) → the Agent's row → **Invite**
-   (`confirm_button`) → **Allow in group rooms** if the private-Agent prompt
-   appears; then wait until Matrix shows the Agent joined.
+1. click the room-list row named exactly **e2e room** → press **Join Room**
+   (`accept_button`); wait until Matrix shows the owner joined;
+2. press **Bring** / **Allow in group rooms** only in a prompt whose own text
+   names the e2e room, each prompt once;
+3. for each Agent still absent: **+** (`new_or_join_button.icon`) → **Add agent
+   to this room** (`plus_add_agent`) → the picker row named exactly the Agent
+   → **Invite** (`confirm_button`) → **Allow in group rooms** if that Agent's
+   private prompt appears; wait until Matrix shows the Agent joined.
 
-If a port is closed the report says "bridge not up yet" and the agent
-scenarios stay BLOCKED. A missing button stops that owner's setup with a named
-`StepNotFound` (never a guess). `--no-ui-setup` skips all of this.
+If the window or its socket is missing the report says "bridge not up yet" and
+the agent scenarios stay BLOCKED. A missing element stops that owner's setup
+with a named `StepNotFound`. `--no-ui-setup` skips all of this.
 
-Other bridge uses, all scoped to what the runner caused:
+Other uses, all scoped to what the runner caused:
 - scenario 6 **denies** (never approves) the permission card whose own text
-  (`title`/`context`/`details`) names the runner's unique branch;
+  (same widget container as its Deny) names the runner's unique branch;
 - scenario 7, on failure and only with `--read-dev-room`, opens the dev room
   in Betty's window and copies the visible lines that mention the test issues
   (sends nothing, but it changes which room that window shows).
 
-The bridge's `/gq`, `/quit` and `/close` routes are refused by the client.
+The client refuses quit, close, gq, input, cap, design, tweak, window and resize.
 
 ## History: before the bridge
 
