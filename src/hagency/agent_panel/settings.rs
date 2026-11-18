@@ -1,5 +1,5 @@
 //! Settings tab: approval mode and remembered rules (Revoke), group-room
-//! sharing (`sharing`), issue watching
+//! sharing (`sharing`), "May work in <room>" (ADR 0030)
 //! and GitHub access (the int build's own blocks), budget and period, workspace folder, Pause/Resume service and Retire.
 use super::mapping;
 use super::*;
@@ -49,11 +49,6 @@ impl AgentPanel {
         self.view.drop_down(cx, ids!(rules)).set_selected_item(cx, selected);
         self.view.widget(cx, ids!(rules)).set_disabled(cx, rules.is_empty());
         self.view.button(cx, ids!(revoke)).set_enabled(cx, editable && !rules.is_empty());
-        let merge = mapping::auto_merge_labels().iter().map(|l| crate::i18n::tr(l).to_owned()).collect();
-        self.view.drop_down(cx, ids!(auto_merge)).set_labels(cx, merge);
-        let on = self.status["approvals"]["autoMerge"] == true;
-        self.view.drop_down(cx, ids!(auto_merge)).set_selected_item(cx, usize::from(on));
-        self.view.widget(cx, ids!(auto_merge)).set_disabled(cx, !editable || !loaded);
     }
     fn render_budget(&mut self, cx: &mut Cx, editable: bool) {
         let budget = &self.model["policy"]["policy"]["budget"];
@@ -77,30 +72,24 @@ impl AgentPanel {
         self.view.drop_down(cx, ids!(panel_period)).set_selected_item(cx, mapping::period_index(budget["period"].as_str().unwrap_or("")));
     }
 
-    /// Hands this Agent and its Rooms to the issue-watch and GitHub access
+    /// Hands this Agent and its Rooms to the "May work in" and GitHub access
     /// blocks; each keeps its own state and saves through its own owner call.
     pub(super) fn fill_settings_sections(&mut self, cx: &mut Cx) {
-        use crate::hagency::issue_watch::section::IssueWatchSectionWidgetExt;
         use crate::hagency::github_access::GithubAccessSectionWidgetExt;
-        use crate::hagency::issue_watch::work_section::WorkSectionWidgetExt;
+        use crate::hagency::issue_watch::may_work_section::MayWorkSectionWidgetExt;
         use crate::hagency::issue_watch::safeguards_card::SafeguardsCardWidgetExt;
         let agent = self.agent_id();
         let rooms = mapping::watch_rooms(&self.status);
         // `None` until the status arrives, so the block says it is waiting instead of greying out silently.
         let editable = self.status.is_object().then(|| self.here());
-        self.view.work_section(cx, ids!(work)).set_context(cx, &agent, editable, rooms.clone());
-        self.view.issue_watch_section(cx, ids!(issue_watch)).set_context(cx, &agent, editable, rooms);
-        let auto_merge = self.status["approvals"]["autoMerge"] == true;
-        self.view.safeguards_card(cx, ids!(safeguards)).set_context(cx, &agent, editable, auto_merge);
+        self.view.may_work_section(cx, ids!(may_work)).set_context(cx, &agent, editable, rooms);
+        self.view.safeguards_card(cx, ids!(safeguards)).set_context(cx, &agent, editable);
         self.view.github_access_section(cx, ids!(github_access)).set_context(cx, &agent);
     }
 
     pub(super) fn handle_settings_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         self.handle_sharing_actions(cx, actions);
         if let Some(change) = self.view.drop_down(cx, ids!(approval_mode)).selected(actions).and_then(mapping::approval_mode_change) {
-            self.save_approvals(cx, change);
-        }
-        if let Some(change) = self.view.drop_down(cx, ids!(auto_merge)).selected(actions).and_then(mapping::auto_merge_change) {
             self.save_approvals(cx, change);
         }
         if self.view.button(cx, ids!(revoke)).clicked(actions)

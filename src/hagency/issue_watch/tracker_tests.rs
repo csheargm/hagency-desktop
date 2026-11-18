@@ -283,8 +283,8 @@ fn a_reviewed_pr_that_cannot_merge_shows_what_is_missing_and_is_marked_told() {
     let track = &fake.tracks()[0];
     assert_eq!((track.state, track.pr, track.notified), (State::Reviewed, Some(36), true), "the review loop's notice was the one told");
     assert!(fake.said.borrow().is_empty(), "the tracker adds no second notice");
-    *fake.outcome.borrow_mut() = Some(Followed::Held(vec![Missing::MergesOff, Missing::Permission]));
-    assert_eq!(check(&fake, T0 + 600, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 needs: Pull request merges switched on; a maintainer to merge"]);
+    *fake.outcome.borrow_mut() = Some(Followed::Held(vec![Missing::Autonomy, Missing::Permission]));
+    assert_eq!(check(&fake, T0 + 600, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 needs: a person (room setting); someone with GitHub write access to merge"]);
     *fake.outcome.borrow_mut() = Some(Followed::WaitingCi);
     assert_eq!(check(&fake, T0 + 660, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 waiting for CI"]);
     *fake.outcome.borrow_mut() = Some(Followed::Unreachable(3));

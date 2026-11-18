@@ -1,6 +1,7 @@
 //! Settings tab, "In group rooms" card (ADR 0025): for one of the Agent's
 //! group rooms at a time, what it does for the room's members without asking
-//! the owner (answer questions, review PRs, fix issues). Saved through the
+//! the owner (answer questions, review PRs; fixing is "May work in this room",
+//! ADR 0030, and an older saved "fix" choice is kept as it was). Saved through the
 //! approval settings call into the owner's ledger; the kill switch and the
 //! budget stay where they are.
 use super::mapping;
@@ -29,7 +30,7 @@ impl AgentPanel {
         let room = self.share_room(cx);
         let share = room.as_ref().and_then(|(id, _)| room_share::for_room(&self.status["approvals"], id));
         let shown = share.unwrap_or(room_share::DEFAULT);
-        for (id, on) in [(ids!(share_answer), shown.answer), (ids!(share_review), shown.review), (ids!(share_fix), shown.fix)] {
+        for (id, on) in [(ids!(share_answer), shown.answer), (ids!(share_review), shown.review)] {
             self.view.check_box(cx, id).set_active(cx, on, Animate::No);
             self.view.widget(cx, id).set_disabled(cx, !editable || share.is_none());
         }
@@ -54,15 +55,16 @@ impl AgentPanel {
         if self.view.drop_down(cx, ids!(share_room)).selected(actions).is_some() {
             self.render(cx);
         }
-        let changed = [ids!(share_answer), ids!(share_review), ids!(share_fix)].into_iter().any(|id| self.view.check_box(cx, id).changed(actions).is_some());
+        let changed = [ids!(share_answer), ids!(share_review)].into_iter().any(|id| self.view.check_box(cx, id).changed(actions).is_some());
         if !changed {
             return;
         }
         let Some((room, _)) = self.share_room(cx) else { return };
+        let kept = room_share::for_room(&self.status["approvals"], &room).unwrap_or(room_share::DEFAULT);
         let share = RoomShare {
             answer: self.view.check_box(cx, ids!(share_answer)).active(cx),
             review: self.view.check_box(cx, ids!(share_review)).active(cx),
-            fix: self.view.check_box(cx, ids!(share_fix)).active(cx),
+            fix: kept.fix,
         };
         self.save_approvals(cx, room_share::change(&room, share));
     }

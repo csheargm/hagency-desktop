@@ -1,6 +1,8 @@
 //! User flow (Chris, Nov 18): people agree on a change in the project room,
-//! Anna says "@bird go build this", and bird files the issues on the room's
-//! linked repository with no card, while the room runs (Assist/Autonomous).
+//! Anna (a maintainer) says "@bird go build this", and bird files the issues on
+//! the room's linked repository with no card, while the room runs
+//! (Assist/Autonomous). The host records the linked set only for the room's
+//! owner or a maintainer; for anyone else nothing is recorded, so it asks.
 use super::*;
 use crate::room_autonomy::{AutonomySnapshot, Level};
 use crate::watch_trust::read_only_flow_tests::{ask_owner_ledger, proposal, OWNER, REPO, ROOM};
@@ -55,7 +57,7 @@ fn a_member_files_on_a_linked_repo_while_the_room_runs() {
     assert_eq!(ledger.trusted_publish(OWNER, &other, 11).unwrap(), None, "a repository the room does not link");
     let mut stranger = proposal(ROOM, FILE);
     stranger.scope.requester = "@stranger:example.org".into();
-    assert_eq!(ledger.trusted_publish(OWNER, &stranger, 11).unwrap(), None, "nothing recorded for a non-member");
+    assert_eq!(ledger.trusted_publish(OWNER, &stranger, 11).unwrap(), None, "nothing recorded for a plain member or a non-member: the card asks");
     ledger.set_may_work(OWNER, "bird", ROOM, false).unwrap();
     assert_eq!(ledger.trusted_publish(OWNER, &ask, 11).unwrap(), None, "may not work here: asks");
 }

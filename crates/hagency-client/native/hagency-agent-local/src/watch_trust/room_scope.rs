@@ -35,8 +35,9 @@ pub fn repos(room: &str, requester: &str) -> Vec<String> {
 }
 
 /// The repositories `room` itself links (`io.hagency.room_repos`, from a
-/// sender the room's power levels still let link them), recorded per turn for
-/// a joined requester: the only ones a card-free issue may be filed on
+/// sender the room's power levels still let link them), recorded per turn only
+/// for a requester who is the room's owner or a maintainer: the only ones a
+/// card-free issue may be filed on
 /// (ADR 0030, [`super::issue_create`]). Same lifetime as [`repos`].
 static LINKED: RwLock<Option<HashMap<Key, (Instant, Vec<String>)>>> = RwLock::new(None);
 

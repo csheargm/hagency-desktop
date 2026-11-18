@@ -68,7 +68,7 @@ pub(crate) fn step(db: &Connection, proposal: &ToolProposal) -> crate::Result<Op
     if crate::room_autonomy::loop_may_work_in(db, agent, room).is_err() {
         return Ok(None);
     }
-    // Recorded only for a joined member, and only the room's own linked repositories.
+    // Recorded only for the room's owner or a maintainer, and only the room's own linked repositories.
     let linked = super::room_scope::linked(room, requester);
     if !linked.iter().any(|r| r.eq_ignore_ascii_case(issue.repo)) {
         return Ok(None);

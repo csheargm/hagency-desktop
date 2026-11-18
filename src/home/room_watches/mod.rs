@@ -6,6 +6,8 @@
 //! `repo_status` Agent tools return. Limits, tokens and watches reporting to
 //! other rooms are never shown here. The room's merge rules (ADR 0029) are
 //! shown to every member and editable by room admins (`merge_rules`).
+pub mod autonomy;
+pub mod autonomy_setup;
 pub mod merge_rules;
 pub mod merge_rules_model;
 pub mod panel;
@@ -24,6 +26,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 pub fn script_mod(vm: &mut ScriptVm) {
+    autonomy::script_mod(vm);
     review_setting::script_mod(vm);
     merge_rules::script_mod(vm);
     panel::script_mod(vm);

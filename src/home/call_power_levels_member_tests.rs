@@ -4,6 +4,7 @@
 use super::*;
 use ::hagency::issue_watch::safeguards::MERGE_RULES_STATE_TYPE as RULES;
 use ::hagency::repo_status::ISSUE_STATUS_STATE_TYPE;
+use ::hagency::issue_watch::safeguards::room_autonomy::{ROOM_AUTONOMY_STATE_TYPE as AUTONOMY, ROOM_PAUSE_STATE_TYPE as PAUSE};
 use matrix_sdk::ruma::{events::room::power_levels::{RoomPowerLevelsEventContent, RoomPowerLevelsSource}, room_version_rules::AuthorizationRules, user_id};
 use serde_json::json;
 
@@ -13,10 +14,11 @@ fn typed(levels: Value, rules: &AuthorizationRules, creators: &[&str]) -> RoomPo
     RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), rules, creators)
 }
 
-/// A pre-status room: calls already open, issue status absent.
+/// A pre-status room: calls already open, issue status absent (its agent
+/// work entries, ADR 0030, already set, so these tests keep to the rules and status).
 fn old_room() -> Value {
     json!({"users":{"@admin:x":100,"@mod:x":50},"users_default":0,"state_default":50,
-        "events":{"m.room.power_levels":100,"m.room.tombstone":150,CALL_MEMBER_EVENT:0,"custom.locked":75}})
+        "events":{"m.room.power_levels":100,"m.room.tombstone":150,CALL_MEMBER_EVENT:0,"custom.locked":75,AUTONOMY:50,PAUSE:0}})
 }
 
 #[test]
@@ -43,7 +45,7 @@ fn an_entry_an_admin_set_is_never_changed_even_a_raised_one() {
     let got = |key: &str| updated["events"][key].as_i64();
     assert_eq!((got(CALL_MEMBER_EVENT), got(ISSUE_STATUS_STATE_TYPE), got(RULES)), (Some(100), Some(0), Some(50)));
     let bare = add_missing_member_state(json!({"users_default":0}), &EXISTING_ROOM_EVENTS).unwrap().unwrap();
-    assert_eq!(bare, json!({"users_default":0,"events":{ISSUE_STATUS_STATE_TYPE:0, RULES:100}}), "call membership is not opened in an existing room");
+    assert_eq!(bare, json!({"users_default":0,"events":{ISSUE_STATUS_STATE_TYPE:0, RULES:100, AUTONOMY:50, PAUSE:0}}), "call membership is not opened in an existing room");
     assert!(add_missing_member_state(json!({"events":[]}), &EXISTING_ROOM_EVENTS).is_err(), "malformed is an error, not 'present'");
 }
 
@@ -150,7 +152,8 @@ fn a_stricter_state_default_is_kept_for_the_rules_entry() {
     assert_eq!((updated["events"][RULES].as_i64(), updated["events"][ISSUE_STATUS_STATE_TYPE].as_i64()), (Some(150), Some(0)));
     assert_eq!(open_call_membership(strict.clone()).unwrap().unwrap()["events"][RULES], 150);
     let levels = typed(strict, &AuthorizationRules::V10, &[]);
-    assert_eq!(addable_member_state(&levels, user_id!("@owner:x")).len(), 2);
+    assert_eq!(addable_member_state(&levels, user_id!("@owner:x")).len(), 4);
+    assert_eq!(add_missing_member_state(json!({"state_default":150}), &EXISTING_ROOM_EVENTS).unwrap().unwrap()["events"][AUTONOMY], 150, "the autonomy entry is not loosened either");
     let legacy = json!({"users":{"@owner:x":200},"state_default":"150"});
     let updated = add_missing_member_state(legacy, &EXISTING_ROOM_EVENTS).unwrap().unwrap();
     assert_eq!(updated["events"][RULES], 150, "a room v9 string level is kept too");

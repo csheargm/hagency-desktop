@@ -6,7 +6,6 @@
 //! dispatch and approval flow applies. The task runs in the account session,
 //! so sign-out aborts it; an Agent set to Off is skipped. The result of each
 //! check is a status line under the setting (`section`).
-pub(crate) mod choices;
 mod digest;
 mod digest_gate;
 mod digest_live;
@@ -19,6 +18,9 @@ pub(crate) mod live;
 pub mod loop_notice;
 mod merge_hold;
 mod merged_link;
+mod migrate;
+pub mod may_work_section;
+pub(crate) mod room_loop;
 #[cfg(test)]
 mod merge_hold_tests;
 mod review_loop;
@@ -33,17 +35,15 @@ mod run_end_tests;
 mod no_run_tests;
 mod tracker;
 mod tracker_live;
+pub(crate) use tracker_live::MARKER as TRACK_MARKER;
 mod status_publish;
 #[cfg(test)]
 mod tracker_tests;
 mod work;
 mod work_slots;
 pub mod work_lines;
-pub mod work_section;
 pub mod notice;
 pub(crate) mod plans;
-pub mod section;
-mod section_state;
 pub(crate) mod safeguards;
 pub mod safeguards_card;
 #[cfg(test)]
@@ -210,25 +210,25 @@ pub(crate) fn single_repo_watch_runs(watch: &IssueWatch, saved: &Value) -> bool 
     watch.setting.mode != WatchMode::Off && !tracker_live::on_work_list(saved, &watch.setting.repo)
 }
 
-/// One Agent's check and the tracker's status parts; `Ok(None)` while its watch is Off.
+/// One Agent's check and the tracker's status parts; `Ok(None)` while it has no loop.
 async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Value, peers: &[Value]) -> Result<Option<(Outcome, Vec<String>)>, String> {
     let id = agent["id"].as_str().unwrap_or_default();
-    let saved = live::saved(service, id, None).await?;
+    // The rooms' level and Pause first (ADR 0030), then the room merge rules (ADR 0029),
+    // so this check's steps are judged by fresh ones.
+    let Some(prepared) = room_loop::prepare(service, agent).await? else { return Ok(None) };
+    let (saved, rooms, mut held) = prepared;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
-    let has_work = saved["work"].as_array().is_some_and(|w| !w.is_empty()) || saved["plans"].as_array().is_some_and(|p| !p.is_empty());
-    if watch.setting.mode == WatchMode::Off && !has_work {
-        return Ok(None);
-    }
-    // The watch rooms' merge rules first, so this check's merges are judged by fresh ones (ADR 0029).
-    let rule_errors = room_rules::sync(service, id, &saved).await;
+    held.extend(room_rules::sync(service, id, &saved).await);
     let token = github_token(id).await?;
     let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
-    let mut worked = work::run(&worker, &saved).await;
-    worked.errors.extend(rule_errors);
+    let (running, room_held) = room_loop::running_only(&saved, &rooms);
+    let mut worked = work::run(&worker, &running).await;
+    worked.errors.extend(held.into_iter().chain(room_held));
     worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
     // The day's digest per watched repository (ADR 0028), from this check's ledger snapshot.
     worked.errors.extend(digest_live::send_due(&digest_live::LiveDigest { service, agent, epoch }, &saved, digest::window_at(&chrono::Local::now())).await);
-    if !single_repo_watch_runs(&watch, &saved) {
+    let legacy_runs = single_repo_watch_runs(&watch, &saved) && rooms.runs(&watch.setting.room_id).is_ok();
+    if !legacy_runs {
         return Ok(Some((Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }, worked.tracked)));
     }
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;

@@ -818,8 +818,6 @@ script_mod! {
                         save_model := Primary {text: #(crate::i18n::tr("Save local model profile")) i18n_text: "Save local model profile"}
                         Text {text: #(crate::i18n::tr("Restart the Agent service to apply saved model settings.")) i18n_text: "Restart the Agent service to apply saved model settings." draw_text.color: mod.widgets.RINX_MUTED}
                         Hr {width: Fill height: 1}
-                        issue_watch := mod.widgets.IssueWatchSection {}
-                        Hr {width: Fill height: 1}
                         github_access := mod.widgets.GithubAccessSection {}
                     }
                     runtime_section := View {visible: false width: Fill height: Fit flow: Down spacing: 12
@@ -1392,14 +1390,10 @@ impl HagencyPanel {
     }
     // TODO(R4): ui.rs is far over its size budget; Agent settings blocks such
     // as issue watching should move into their own module when it is split.
-    /// Hands the selected Agent and its Rooms to the issue-watch block, and the
-    /// Agent to the GitHub access block; each keeps its own state.
-    fn sync_issue_watch(&self, cx: &mut Cx, assigned_here: bool) {
+    /// Hands the selected Agent to the GitHub access block, which keeps its own state.
+    /// (Agent work is the room's setting now, ADR 0030; "may work" is in the Agent panel.)
+    fn sync_issue_watch(&self, cx: &mut Cx, _assigned_here: bool) {
         let agent = self.agent(cx).unwrap_or_default();
-        let bindings: Vec<Value> = self.bindings.iter().filter(|b| string(b, "agentId") == agent).cloned().collect();
-        let rooms = super::issue_watch::choices::rooms(&bindings, |b| self.binding_label(cx, b));
-        use super::issue_watch::section::IssueWatchSectionWidgetRefExt;
-        self.detail_issue_watch(cx).as_issue_watch_section().set_context(cx, &agent, Some(assigned_here), rooms);
         use super::github_access::GithubAccessSectionWidgetRefExt;
         self.detail_github_access(cx).as_github_access_section().set_context(cx, &agent);
     }
