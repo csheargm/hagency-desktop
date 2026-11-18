@@ -21,3 +21,4 @@ implemented. An ADR is not evidence that a feature has shipped.
 | [0020](0020-issue-loop-tracker.md) | Accepted; implemented | Issue loop tracker: per-issue state, retries with backoff, PR follow-through to review and merge, restart-safe |
 | [0021](0021-owner-approvals-inbox.md) | Accepted | Owner approvals inbox: every pending approval of your agents is shown, notified, and recorded when it expires |
 | [0022](0022-push-freely-covers-fix-steps.md) | Accepted | "Push freely" also covers the local fix steps (status/diff/log/add/commit/restore, pull, clone, reads and edits) in the watched repo's own checkout |
+| [0023](0023-room-repo-status.md) | Accepted | Room repository status from every owner's tracker (room state), Agent tasks and /status for every room, linked repos, card-free reads over the room's repository set |

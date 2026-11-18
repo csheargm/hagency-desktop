@@ -112,6 +112,8 @@ working directory without asking, so this adds no exposure.
   Answered by "Deny" below: push freely lifts it for its own scope only.
 
 ## Deny (Chris, 2026-11-17)
+
+ADR 0023 widens only the read-only part of this override to the room's repository set; push-freely fix steps keep the watched repository of the Agent's own watch.
 Live: the issue #33 hand-off run of a hosted Agent failed with "policy
 declines (high-risk tools)": its default high-risk rule is Deny, and push
 freely only narrowed what Ask-owner asks. Decision: inside the exact scope
