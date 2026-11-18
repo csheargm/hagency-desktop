@@ -179,7 +179,17 @@ pub(in crate::console) fn history_record(raw: &Value, unavailable: bool) -> Opti
         // An edit without a well-formed target or replacement text is not an
         // edit of anything; it is dropped rather than blanking the original.
         let target = matrix_id(&relation["event_id"], '$')?;
-        let body = content["m.new_content"]["body"].as_str()?;
+        let new = &content["m.new_content"];
+        // A run card's edit stands for its answer once the run completed with
+        // one (ADR 0024: a flat follow-up's context must carry that answer);
+        // its status lines (⏳ step, Stopping…) are not messages.
+        let answer = (new["msgtype"] == crate::agent_run_controls::MSGTYPE)
+            .then(|| crate::agent_run_controls::Card::from_content(new))
+            .map(|card| card.filter(|c| c.state == crate::agent_run_controls::State::Completed && !c.answer.trim().is_empty()).map(|c| c.answer));
+        let body = match answer {
+            Some(answer) => answer?,
+            None => new["body"].as_str()?.to_owned(),
+        };
         record["status"] = "edit".into();
         record["target"] = target.into();
         record["body"] = body.into();

@@ -107,7 +107,7 @@ impl Widget for AgentRepliesSetting {
                 // Shown at once; a refused write puts the confirmed choice back.
                 self.ticket = next_ticket();
                 self.show_mode(cx, wanted);
-                if !save(room, wanted, self.confirmed, self.ticket) {
+                if !save(room, wanted, self.ticket) {
                     let confirmed = self.confirmed;
                     self.show_mode(cx, confirmed);
                 }
@@ -149,41 +149,65 @@ fn load(room_id: OwnedRoomId, ticket: u64) {
     let Some(client) = crate::sliding_sync::get_client() else { return };
     let account = account();
     crate::sliding_sync::spawn_async_task(async move {
-        let request = get_state::Request::new(room_id.clone(), StateEventType::from(STATE_EVENT), String::new());
-        let mode = match client.send(request).await {
-            Ok(response) => serde_json::from_str::<serde_json::Value>(response.event_or_content.get())
-                .map(|content| Mode::from_content(&content))
-                .unwrap_or_default(),
-            // M_NOT_FOUND is the common case: the room never chose. Any other
-            // failure also shows the default, which is what Agents then use.
-            Err(_) => Mode::default(),
-        };
+        let mode = read(&client, &room_id).await;
         Cx::post_action(AgentRepliesLoaded { room_id, mode, ticket, account });
     });
 }
 
-/// Writes the room's choice; a refusal (most often: only moderators may
-/// change room settings) is shown and the previous choice comes back.
+/// The room's choice on the server. M_NOT_FOUND is the common case: the room
+/// never chose. Any other failure also gives the default, which Agents use too.
+async fn read(client: &matrix_sdk::Client, room_id: &RoomId) -> Mode {
+    let request = get_state::Request::new(room_id.to_owned(), StateEventType::from(STATE_EVENT), String::new());
+    match client.send(request).await {
+        Ok(response) => serde_json::from_str::<serde_json::Value>(response.event_or_content.get())
+            .map(|content| Mode::from_content(&content))
+            .unwrap_or_default(),
+        Err(_) => Mode::default(),
+    }
+}
+
+/// The newest choice per room and its ticket. Every write sends the newest
+/// choice under a per-room lock, so whatever order the writes run in, the last
+/// one on the server is the last one chosen (integration review).
+type Pending = std::collections::HashMap<OwnedRoomId, (Mode, u64)>;
+static PENDING: std::sync::LazyLock<std::sync::Mutex<Pending>> = std::sync::LazyLock::new(Default::default);
+fn room_lock(room_id: &RoomId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    type Locks = std::collections::HashMap<OwnedRoomId, std::sync::Arc<tokio::sync::Mutex<()>>>;
+    static LOCKS: std::sync::LazyLock<std::sync::Mutex<Locks>> = std::sync::LazyLock::new(Default::default);
+    LOCKS.lock().unwrap_or_else(|p| p.into_inner()).entry(room_id.to_owned()).or_default().clone()
+}
+/// Records `mode` as the room's newest choice.
+fn choose(room_id: &RoomId, mode: Mode, ticket: u64) {
+    PENDING.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id.to_owned(), (mode, ticket));
+}
+fn newest(room_id: &RoomId) -> Option<(Mode, u64)> {
+    PENDING.lock().unwrap_or_else(|p| p.into_inner()).get(room_id).copied()
+}
+
+/// Writes the room's newest choice, then shows what the server holds. A
+/// refusal (most often: only moderators may change room settings) is shown.
 /// False when there is no signed-in client to write with.
-fn save(room_id: OwnedRoomId, mode: Mode, previous: Mode, ticket: u64) -> bool {
+fn save(room_id: OwnedRoomId, mode: Mode, ticket: u64) -> bool {
     let Some(client) = crate::sliding_sync::get_client() else { return false };
     let account = account();
+    choose(&room_id, mode, ticket);
     crate::sliding_sync::spawn_async_task(async move {
+        let lock = room_lock(&room_id);
+        let _guard = lock.lock().await;
+        let Some((mode, ticket)) = newest(&room_id) else { return };
         let sent = match client.get_room(&room_id) {
             Some(room) => room.send_state_event_raw(STATE_EVENT, "", mode.content()).await.map(|_| ()).map_err(|e| e.to_string()),
             None => Err(crate::i18n::tr("Room not found").to_owned()),
         };
-        let shown = match sent {
-            Ok(()) => mode,
-            Err(reason) => {
-                enqueue_popup_notification(
-                    crate::i18n::format("Could not change where Agents reply: {reason}", &[("reason", reason)]),
-                    PopupKind::Error,
-                    Some(6.0),
-                );
-                previous
-            }
-        };
+        if let Err(reason) = sent {
+            enqueue_popup_notification(
+                crate::i18n::format("Could not change where Agents reply: {reason}", &[("reason", reason)]),
+                PopupKind::Error,
+                Some(6.0),
+            );
+        }
+        // Whatever happened, the server's value is what the setting shows.
+        let shown = read(&client, &room_id).await;
         Cx::post_action(AgentRepliesLoaded { room_id, mode: shown, ticket, account });
     });
     true
@@ -229,6 +253,16 @@ mod tests {
         deliver(&mut cx, Mode::Thread, ticket);
         assert_eq!(widget.drop_down(&mut cx, ids!(agent_replies_mode)).selected_item(), 1, "the room chose threads");
         assert_eq!(widget.label(&mut cx, ids!(agent_replies_hint)).text(), crate::i18n::tr(hint(Mode::Thread)));
+    }
+
+    /// Integration review: two quick changes; whichever write runs last sends
+    /// the newest choice, never an older one.
+    #[test]
+    fn every_write_sends_the_newest_choice() {
+        let room: OwnedRoomId = "!order:test".try_into().unwrap();
+        choose(&room, Mode::Thread, 7);
+        choose(&room, Mode::Room, 8);
+        assert_eq!(newest(&room), Some((Mode::Room, 8)), "the first write to run already sends the second choice");
     }
 
     #[test]
