@@ -53,7 +53,7 @@ fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
     ledger.set_auto_merge(OWNER, "anna", true).unwrap();
     ledger.set_work(OWNER, "anna", work.clone()).unwrap();
-    // These watches are past their trial (ADR 0026, see `trial_tests`).
+    // These watches are past their trial (ADR 0028, see `trial_tests`).
     for rules in &work {
         ledger.end_watch_trial(OWNER, "anna", &rules.repo).unwrap();
     }

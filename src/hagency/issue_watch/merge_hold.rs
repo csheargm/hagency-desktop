@@ -23,7 +23,7 @@ pub enum Missing {
     Ci,
     /// The repository rules (paths, size, author) need a person.
     Rules,
-    /// The watch is in its trial (ADR 0026): the owner merges its first pull requests.
+    /// The watch is in its trial (ADR 0028): the owner merges its first pull requests.
     Trial,
     /// The merging Agent's "Pull request merges" switch is off.
     MergesOff,
@@ -86,7 +86,7 @@ impl Missing {
     }
 }
 
-/// The trial's notice line (ADR 0026).
+/// The trial's notice line (ADR 0028).
 pub const TRIAL_LINE: &str = "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.";
 
 /// What the merge step does for one head this check.

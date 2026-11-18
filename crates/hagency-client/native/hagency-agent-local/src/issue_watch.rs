@@ -200,8 +200,9 @@ impl Ledger {
         let old = self.issue_watch(agent)?;
         let restart = old.setting.mode == WatchMode::Off || old.setting.repo != setting.repo;
         let enabled_at = if setting.mode == WatchMode::Off { old.enabled_at } else if restart { now } else { old.enabled_at };
-        // A watch of a repository it did not watch before starts its trial (ADR 0026).
-        if setting.mode != WatchMode::Off && !old.setting.repo.eq_ignore_ascii_case(&setting.repo) {
+        // A watch of a repository it did not watch before starts its trial
+        // (ADR 0028), even saved Off: switching it on later is no edit (GPT review).
+        if !setting.repo.is_empty() && !old.setting.repo.eq_ignore_ascii_case(&setting.repo) {
             self.start_watch_trial(agent, &setting.repo)?;
         }
         self.db.execute(

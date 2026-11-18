@@ -9,7 +9,7 @@ fn open(now: i64) -> Facts {
     Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false, unanswered: false }
 }
 fn change(handed: Option<u32>, state: Option<State>, pr: Option<u64>) -> TrackChange {
-    TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None, rehanded: None }
+    TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None, rehanded: None, owner_merged: None }
 }
 fn ledger() -> (tempfile::TempDir, Ledger) {
     let tmp = tempfile::tempdir().unwrap();
@@ -125,7 +125,7 @@ fn a_restart_interrupted_run_is_handed_off_again_without_an_attempt_until_the_ca
     let interrupted = |now| Facts { run_ended: true, interrupted: true, ..open(now) };
     let third = handed(MAX_ATTEMPTS, T0);
     assert_eq!(decide(&third, &interrupted(T0 + 60)), Action::Rehand, "never the final give-up");
-    let change = |rehanded| TrackChange { repo: "acme/app".into(), number: 33, handed: None, state: None, pr: None, notified: None, rehanded };
+    let change = |rehanded| TrackChange { repo: "acme/app".into(), number: 33, handed: None, state: None, pr: None, notified: None, rehanded, owner_merged: None };
     let once = apply_change(Some(third.clone()), &change(Some(1)), T0 + 70).unwrap();
     assert_eq!((once.attempts, once.free_retries, once.handed_at), (MAX_ATTEMPTS, 1, T0 + 70), "same attempt, its own clock");
     assert_eq!(apply_change(Some(once.clone()), &change(Some(1)), T0 + 75).unwrap(), once, "a replayed save changes nothing");

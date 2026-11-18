@@ -63,9 +63,8 @@ fn write_transport(error: reqwest::Error) -> FetchError {
 /// The one GitHub token rule, shared with the Agent runtime (create, poller, run time).
 pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_github_token};
 
-/// The owner's work list types (ADR 0016), for the desktop's Work block and poller.
+/// The owner's work list types (ADR 0016) and a new watch's trial (ADR 0028), for the desktop's Work block and poller.
 pub use hagency_agent_local::merge_policy::review_loop::HOLD_STEP;
-/// Trial mode of a new watch (ADR 0026): the gate's reason, read back for the room notice.
 pub use hagency_agent_local::merge_policy::trial::{TRIAL_PRS, trial_counts, trial_reason};
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 
@@ -215,12 +214,12 @@ pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i
     Ok((text("state"), text("state_reason")))
 }
 
-/// Whether pull request `number` of `repo` was merged.
-pub async fn fetch_pull_merged(client: &Client, api: &str, repo: &str, number: u64, token: &str) -> Result<bool, FetchError> {
+/// The login that merged pull request `number` of `repo` ("" when GitHub names none), if it was merged.
+pub async fn fetch_pull_merged(client: &Client, api: &str, repo: &str, number: u64, token: &str) -> Result<Option<String>, FetchError> {
     pulls_url(api, repo)?;
     let body = get(client, &format!("{api}/repos/{repo}/pulls/{number}"), token).await?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
-    Ok(value["merged"] == true)
+    Ok((value["merged"] == true).then(|| value["merged_by"]["login"].as_str().unwrap_or_default().to_owned()))
 }
 
 /// All of an issue's comments, oldest first, following full pages up to the

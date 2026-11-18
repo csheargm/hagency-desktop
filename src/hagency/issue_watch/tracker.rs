@@ -50,8 +50,9 @@ pub(crate) trait TrackIo {
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String>;
     /// The Agent's name for room lines.
     fn agent_label(&self) -> String;
-    /// Whether pull request `pr` was merged (GitHub's own answer).
-    async fn pr_merged(&self, pr: u64) -> Result<bool, String>;
+    /// Whether pull request `pr` was merged (GitHub's own answer): `Some(true)`
+    /// when this owner's own GitHub login merged it.
+    async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String>;
     /// A tracked issue missing from the open list: GitHub's own answer.
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String>;
     /// The Agent's cannot-fix comment during the current attempt.
@@ -194,9 +195,9 @@ async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullReq
 async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), String> {
     let n = track.number;
     // Only a pull request GitHub reports merged is announced as the fix (GPT review).
-    let merged = match track.pr {
-        Some(pr) if io.pr_merged(pr).await? => Some(pr),
-        _ => None,
+    let (merged, by_owner) = match track.pr {
+        Some(pr) => io.pr_merged(pr).await?.map_or((None, false), |own| (Some(pr), own)),
+        None => (None, false),
     };
     let text = match merged {
         Some(pr) => crate::i18n::format(FIXED, &[("number", n.to_string()), ("pr", pr.to_string())]),
@@ -206,7 +207,8 @@ async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), St
     // "merged" only for a pull request GitHub reports merged; an issue closed
     // as completed without it is "closed" (integration GPT review).
     let state = if merged.is_some() { "merged" } else { "closed" };
-    io.record(change_of(repo, n, json!({"state": state, "notified": true}))).await
+    // The owner's own merge is what a new watch's trial counts (ADR 0028).
+    io.record(change_of(repo, n, json!({"state": state, "notified": true, "ownerMerged": by_owner}))).await
 }
 /// Whether pull request `pr` is linked to issue `number`: a closing keyword
 /// in its description, or a head branch naming the issue ("issue-33",

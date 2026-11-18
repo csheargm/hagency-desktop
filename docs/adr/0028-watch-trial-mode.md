@@ -1,4 +1,4 @@
-# 0026. Trial mode for a new watch
+# 0028. Trial mode for a new watch
 
 Status: accepted (Chris, 2026-11-17, "Loop safeguards queue")
 
@@ -23,11 +23,13 @@ repository, so the first merges should be theirs.
 - The count is the owner's, in this device's ledger (`watch_trial`,
   `watch_trial_merges`). A pull request counts when the issue tracker records
   its issue `merged`, which it does only after GitHub reports the pull
-  request merged (ADR 0020), through the owner API
-  (`Ledger::count_trial_merge`, owner-checked). During the trial the gate
-  never merges, so such a merge is the owner's: on GitHub, or by approving
-  the Agent's merge card. A merge the gate answered itself (an
-  `auto_merge_head_used` claim) never counts, and a replay counts once.
+  request merged (ADR 0020), AND GitHub's `merged_by` is this owner's own
+  login (the tracker sends `ownerMerged` with the track change; the owner
+  API calls `Ledger::count_trial_merge`, owner-checked). Every Agent shares
+  that login, but during the trial the gate never merges, so such a merge is
+  the owner's: on GitHub, or by approving the Agent's merge card. Another
+  maintainer's merge never counts (GPT review). A merge the gate answered
+  itself (an `auto_merge_head_used` claim) never counts, and a replay counts once.
 - After N owner merges the trial is over and the gate merges low-risk pull
   requests as before. The owner may end it early through the owner API
   (`{endTrial: "owner/repo"}`, `Ledger::end_watch_trial`, owner-checked);
@@ -37,15 +39,16 @@ repository, so the first merges should be theirs.
 - Migration: a watch without a trial row is past its trial. No row is
   written for existing watches, so the running watches keep merging. A row
   is written only when a repository is new to the work list
-  (`set_work`/`set_owner_rules`) or the legacy watch moves to a repository
-  it did not watch before; editing, pausing or resuming a watch does not
-  start one, and removing and re-adding a watch keeps its count.
+  (`set_work`/`set_owner_rules`) or the legacy watch is saved with a
+  repository it did not watch before, even saved Off (switching it on later
+  is no way round the trial, GPT review); editing, pausing or resuming a
+  watch does not start one, and removing and re-adding a watch keeps its count.
 
 ## Consequences
-- Every Agent shares the owner's GitHub login, so "merged by the owner"
-  cannot be read from GitHub's `merged_by`; it is inferred from the gate not
-  having merged it. An owner's standing "allow" rule for merge commands
-  counts as the owner's merge.
+- Every Agent shares the owner's GitHub login, so `merged_by` alone cannot
+  tell the owner from an Agent; with the gate holding every trial merge, an
+  Agent's merge needs the owner's card. An owner's standing "allow" rule for
+  merge commands counts as the owner's merge.
 - Only pull requests the issue tracker follows count. A maintainer's merges
   of other people's pull requests do not advance the trial.
   TODO(trial): count an owner-approved merge card for untracked PRs.

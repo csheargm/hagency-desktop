@@ -1,4 +1,4 @@
-//! Trial mode (ADR 0026), end to end through the gate: a new watch's first
+//! Trial mode (ADR 0028), end to end through the gate: a new watch's first
 //! merges go to the owner, the owner's merges end the trial, and nothing an
 //! Agent or room member does can end it.
 use super::*;
@@ -33,12 +33,18 @@ async fn review_then_merge(ledger: &mut Ledger, dir: &Path, src: &Src, call: &st
     let merge = format!("gh pr merge 7 --squash --match-head-commit {HEAD} --repo {A}");
     gate::auto_answer(ledger, OWNER, &bash(&merge, dir, "anna"), call, 11, src).await
 }
-/// Issue `issue` was fixed by pull request `pr`, which GitHub reports merged.
-fn merged(ledger: &mut Ledger, issue: i64, pr: u64) {
-    let change = |handed, state, pr| TrackChange { repo: A.into(), number: issue, handed, state, pr, notified: None, rehanded: None };
+/// Issue `issue` was fixed by pull request `pr`, which GitHub reports merged
+/// (by the owner's own login when `by_owner`): the owner API's merged change.
+fn merged_by(ledger: &mut Ledger, issue: i64, pr: u64, by_owner: bool) -> TrackChange {
+    let change = |handed, state, pr| TrackChange { repo: A.into(), number: issue, handed, state, pr, notified: None, rehanded: None, owner_merged: Some(by_owner) };
     ledger.track_issue("anna", &change(Some(1), None, None), 1).unwrap();
     ledger.track_issue("anna", &change(None, Some(State::PrOpened), Some(pr)), 2).unwrap();
-    ledger.track_issue("anna", &change(None, Some(State::Merged), None), 3).unwrap();
+    let done = change(None, Some(State::Merged), None);
+    ledger.track_issue("anna", &done, 3).unwrap();
+    done
+}
+fn merged(ledger: &mut Ledger, issue: i64, pr: u64) -> TrackChange {
+    merged_by(ledger, issue, pr, true)
 }
 fn readiness_command(dir: &Path) -> GhPr {
     GhPr { dir: dir.into(), number: 7, repo: Some(A.into()), head: None, kind: Kind::Merge, body: String::new() }
@@ -72,9 +78,9 @@ async fn owner_merges_advance_the_count_and_after_the_trial_low_risk_prs_merge_b
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path());
     for (i, pr) in [11u64, 12, 13].into_iter().enumerate() {
-        merged(&mut ledger, i as i64 + 1, pr);
-        assert!(ledger.count_trial_merge(OWNER, "anna", A, i as i64 + 1).unwrap());
-        assert!(!ledger.count_trial_merge(OWNER, "anna", A, i as i64 + 1).unwrap(), "a replay counts once");
+        let done = merged(&mut ledger, i as i64 + 1, pr);
+        assert!(ledger.count_trial_merge(OWNER, "anna", &done).unwrap());
+        assert!(!ledger.count_trial_merge(OWNER, "anna", &done).unwrap(), "a replay counts once");
         if i + 1 < TRIAL_PRS as usize {
             assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((i as u32 + 1, TRIAL_PRS)));
         }
@@ -108,8 +114,8 @@ fn a_legacy_watch_starts_a_trial_only_for_a_new_repository() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = ledger_with(temp.path(), &["anna"]);
     let setting = |repo: &str, mode| WatchSetting { mode, label: String::new(), repo: repo.into(), room_id: "!r:x".into(), push_trusted: false };
-    ledger.set_issue_watch(OWNER, "anna", setting(A, WatchMode::Trusted), 1).unwrap();
-    assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((0, TRIAL_PRS)));
+    ledger.set_issue_watch(OWNER, "anna", setting(A, WatchMode::Off), 1).unwrap();
+    assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((0, TRIAL_PRS)), "saved Off first: switching it on is no way round the trial");
     ledger.db.execute_batch("DELETE FROM watch_trial").unwrap();
     for mode in [WatchMode::Off, WatchMode::Trusted, WatchMode::All] {
         ledger.set_issue_watch(OWNER, "anna", setting(A, mode), 2).unwrap();
@@ -123,16 +129,20 @@ async fn agents_and_room_members_cannot_end_or_count_the_trial_and_the_owner_can
     let mut ledger = anna(temp.path());
     assert!(matches!(ledger.end_watch_trial(MEMBER, "anna", A), Err(Error::Unauthorized)));
     assert!(matches!(ledger.end_watch_trial("anna", "anna", A), Err(Error::Unauthorized)));
-    merged(&mut ledger, 1, 11);
-    assert!(matches!(ledger.count_trial_merge(MEMBER, "anna", A, 1), Err(Error::Unauthorized)));
+    let done = merged(&mut ledger, 1, 11);
+    assert!(matches!(ledger.count_trial_merge(MEMBER, "anna", &done), Err(Error::Unauthorized)));
+    // Another maintainer's merge on GitHub is no owner merge (GPT review).
+    let other = merged_by(&mut ledger, 4, 14, false);
+    assert!(!ledger.count_trial_merge(OWNER, "anna", &other).unwrap());
     // A merge the gate answered itself is the Agent's own: it never counts.
     ledger.claim_auto_merge("https://github.com/csheargm/hagency-demo-sandbox/pull/12", HEAD, "anna").unwrap();
-    merged(&mut ledger, 2, 12);
-    assert!(!ledger.count_trial_merge(OWNER, "anna", A, 2).unwrap());
+    let own = merged(&mut ledger, 2, 12);
+    assert!(!ledger.count_trial_merge(OWNER, "anna", &own).unwrap());
     // An issue that closed without a merged pull request never counts.
-    let handed = TrackChange { repo: A.into(), number: 3, handed: Some(1), state: None, pr: None, notified: None, rehanded: None };
+    let handed = TrackChange { repo: A.into(), number: 3, handed: Some(1), state: None, pr: None, notified: None, rehanded: None, owner_merged: None };
     ledger.track_issue("anna", &handed, 1).unwrap();
-    assert!(!ledger.count_trial_merge(OWNER, "anna", A, 3).unwrap());
+    let unmerged = TrackChange { state: Some(State::Merged), owner_merged: Some(true), ..handed };
+    assert!(!ledger.count_trial_merge(OWNER, "anna", &unmerged).unwrap(), "the stored record is not merged");
     assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((0, TRIAL_PRS)));
     ledger.end_watch_trial(OWNER, "anna", A).unwrap();
     assert_eq!(ledger.trial_status("anna", A).unwrap(), None);

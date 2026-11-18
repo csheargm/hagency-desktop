@@ -254,7 +254,7 @@ fn github_failures_in_a_row_are_told_once_then_the_streak_ends_on_success() {
 
 #[test]
 fn a_new_watchs_trial_holds_the_merge_with_one_notice_naming_the_count() {
-    // ADR 0026: the gate holds an otherwise mergeable PR during the trial.
+    // ADR 0028: the gate holds an otherwise mergeable PR during the trial.
     let reason = ::hagency::issue_watch::trial_reason(2, 3);
     let fake = Fake::new(human("trial", &reason, true));
     for _ in 0..2 {

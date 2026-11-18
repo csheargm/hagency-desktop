@@ -208,6 +208,10 @@ pub struct TrackChange {
     /// its free retry number `rehanded`: a replayed save is a no-op (GPT review).
     #[serde(default)]
     pub rehanded: Option<u32>,
+    /// With `state: merged`: GitHub says the owner's own login merged the
+    /// pull request, the evidence a watch's trial counts (ADR 0028). Not stored.
+    #[serde(default)]
+    pub owner_merged: Option<bool>,
 }
 
 impl Ledger {

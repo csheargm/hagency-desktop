@@ -1,4 +1,4 @@
-//! Trial mode for a new watch (ADR 0026): the first [`TRIAL_PRS`] pull
+//! Trial mode for a new watch (ADR 0028): the first [`TRIAL_PRS`] pull
 //! requests of a newly created watch need the owner to merge, even where the
 //! merge policy would let an Agent merge them. The Agent still opens and
 //! reviews them; the gate holds only the merge ([`hold`]), with a reason the
@@ -6,14 +6,16 @@
 //!
 //! The count is the owner's: a pull request counts once GitHub reports it
 //! merged for an issue this watch tracked, recorded through the owner API
-//! ([`Ledger::count_trial_merge`]). A merge the gate answered itself (the one
+//! ([`Ledger::count_trial_merge`]) when GitHub says the owner's own login
+//! merged it (every Agent shares that login, but during the trial no Agent
+//! merges without the owner's card). A merge the gate answered itself (the one
 //! automatic merge) never counts, so an Agent cannot earn its own way out.
 //! Only the owner ends a trial early ([`Ledger::end_watch_trial`]).
 //!
 //! A watch with no trial row is past its trial: every watch created before
 //! this existed, so the running watches keep merging as before.
 use super::Decision;
-use crate::issue_track::State;
+use crate::issue_track::{State, TrackChange};
 use crate::{key, Ledger, Result};
 
 /// Pull requests the owner merges before a new watch merges by itself.
@@ -69,11 +71,16 @@ impl Ledger {
         self.db.execute("UPDATE watch_trial SET ended=1 WHERE agent=? AND repo=?", (agent, repo.to_ascii_lowercase()))?;
         Ok(())
     }
-    /// A tracked issue of `agent` in `repo` was recorded merged: its pull
-    /// request counts toward the trial unless the gate merged it itself.
-    /// True when it counted.
-    pub fn count_trial_merge(&mut self, owner: &str, agent: &str, repo: &str, issue: i64) -> Result<bool> {
+    /// After `change` was applied: when it recorded the issue merged by the
+    /// owner's own GitHub login (`owner_merged`; another maintainer's merge
+    /// is no evidence, GPT review), its pull request counts toward the trial
+    /// unless the gate merged it itself. True when it counted.
+    pub fn count_trial_merge(&mut self, owner: &str, agent: &str, change: &TrackChange) -> Result<bool> {
         self.owner(owner)?;
+        if change.state != Some(State::Merged) || change.owner_merged != Some(true) {
+            return Ok(false);
+        }
+        let (repo, issue) = (change.repo.as_str(), change.number);
         let track = self.issue_tracks(agent)?.into_iter().find(|t| t.repo.eq_ignore_ascii_case(repo) && t.number == issue);
         let Some(pr) = track.filter(|t| t.state == State::Merged).and_then(|t| t.pr) else { return Ok(false) };
         if self.trial_status(agent, repo)?.is_none() || self.auto_merged(repo, pr)? {
