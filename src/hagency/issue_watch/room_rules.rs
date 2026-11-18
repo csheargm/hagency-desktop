@@ -172,13 +172,15 @@ pub(crate) fn recorded(repo: &str, room_id: &str, read: Result<RoomRead, String>
 /// as unread, so its last rules stop counting. Only a failed recording
 /// leaves the old snapshot, which then ages out within the TTL.
 pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Vec<String> {
-    let Some(client) = crate::sliding_sync::get_client() else { return Vec::new() };
+    // Signed out still records every room as unread (GPT review): no client, no rules.
+    let client = crate::sliding_sync::get_client();
     let (mut snapshots, mut errors) = (Vec::new(), Vec::new());
     for (repo, room_id) in watched_rooms(saved) {
-        let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.get_room(&id));
-        let read = match joined {
-            Some(room) => read(&room).await,
-            None => Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned()),
+        let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.as_ref()?.get_room(&id));
+        let read = match (&client, joined) {
+            (None, _) => Err(crate::i18n::tr("Signed out").to_owned()),
+            (Some(_), Some(room)) => read(&room).await,
+            (Some(_), None) => Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned()),
         };
         let (snapshot, error) = recorded(&repo, &room_id, read);
         snapshots.push(snapshot);

@@ -88,8 +88,10 @@ impl Widget for RoomMergeRules {
         if actions.iter().any(|a| a.downcast_ref::<MergeRulesChanged>().is_some_and(|c| c.room_id == room)) {
             self.view.redraw(cx);
         }
+        // The read the fields were filled from is the save's baseline, not a newer
+        // one a refresh stored before the next draw refilled them (GPT review).
         if self.view.button(cx, ids!(rules_save)).clicked(actions)
-            && let Shown::Ready { read, editable: true } = current(&room)
+            && let Some(Shown::Ready { read, editable: true }) = self.filled.clone()
         {
             match model::policy_of(&self.draft(cx), &read) {
                 Ok(policy) => save(&room, policy, read),
