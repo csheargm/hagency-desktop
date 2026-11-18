@@ -110,33 +110,81 @@ fn the_saved_watch_maps_to_the_cards_watch_and_the_trial_setting_is_optional() {
     assert!(shown.needs_you.contains(&"Merging its first 3 pull requests (trial)".to_owned()));
 }
 
-/// The card as the owner sees it: hidden until a watch is shown, then the
-/// three groups and the recommendation, and hidden again for an Off watch.
-#[test]
-fn the_card_widget_shows_the_models_lines() {
-    use super::safeguards_card::{SafeguardsCard, bullets, test_support::show};
+fn card_widget(cx: &mut makepad_widgets::Cx) -> super::safeguards_card::SafeguardsCard {
     use makepad_widgets::*;
-    let mut cx = Cx::new(Box::new(|_, _| {}));
-    let mut widget = cx.with_vm(|vm| {
+    cx.with_vm(|vm| {
         makepad_widgets::script_mod(vm);
         crate::app::register_widgets(vm);
         vm.bx.captured_errors = Some(Vec::new());
         let value = script_eval!(vm, {mod.widgets.SafeguardsCard {}});
-        let widget = SafeguardsCard::script_from_value(vm, value);
+        let widget = super::safeguards_card::SafeguardsCard::script_from_value(vm, value);
         assert!(vm.take_errors().is_empty());
         widget
-    });
-    assert!(!widget.visible(), "hidden before anything is read");
+    })
+}
+
+/// The card as the owner sees it: empty until a watch is shown, then the
+/// three groups and the recommendation, and empty again for an Off watch.
+#[test]
+fn the_card_widget_shows_the_models_lines() {
+    use super::safeguards_card::{Shown, bullets, test_support::show};
+    use makepad_widgets::*;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut widget = card_widget(&mut cx);
+    assert!(!widget.view(&mut cx, ids!(content)).visible(), "empty before anything is read");
     let repo = read(SANDBOX_POLICY, Some(false));
-    show(&mut widget, &mut cx, "agt_1", Some((sandbox_watch(), repo.clone())));
+    show(&mut widget, &mut cx, "agt_1", Shown::Card(sandbox_watch(), repo.clone()));
     let model = card(&sandbox_watch(), &repo, &Enforced::current());
-    assert!(widget.visible());
+    assert!(widget.view(&mut cx, ids!(content)).visible());
     assert_eq!(widget.label(&mut cx, ids!(alone)).text(), bullets(&model.alone));
     assert_eq!(widget.label(&mut cx, ids!(needs_you)).text(), bullets(&model.needs_you));
     assert_eq!(widget.label(&mut cx, ids!(limits)).text(), bullets(&model.limits));
     assert_eq!(widget.label(&mut cx, ids!(protection)).text(), model.protection);
-    show(&mut widget, &mut cx, "agt_1", None);
-    assert!(!widget.visible(), "an Off watch hides the card");
+    show(&mut widget, &mut cx, "agt_1", Shown::Hidden);
+    assert!(!widget.view(&mut cx, ids!(content)).visible(), "an Off watch shows no card");
+}
+
+/// Regression (live 2026-11-18, Betty's bird-claude): the card's own root
+/// started `visible: false`. A parent View never calls `draw_walk` on a
+/// hidden child and drops actions for a hidden subtree, so a read that
+/// finished while the Settings tab was hidden (it always is: the panel opens
+/// on Identity) was never applied. The root must stay drawn, and the draw
+/// pass must pick up the finished read.
+#[test]
+fn a_read_that_finished_while_hidden_is_shown_on_the_next_draw() {
+    use super::safeguards_card::{Shown, test_support::finish_unrouted};
+    use makepad_widgets::*;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut widget = card_widget(&mut cx);
+    assert!(widget.visible(), "the root is drawn even with nothing to show");
+    let repo = read(SANDBOX_POLICY, Some(true));
+    finish_unrouted(&mut widget, &mut cx, "agt_hidden_tab", Shown::Card(sandbox_watch(), repo));
+    assert!(widget.view(&mut cx, ids!(content)).visible(), "the draw pass applied the dropped read");
+}
+
+/// R5: an active watch whose saved state cannot be read says so instead of
+/// leaving the card out silently.
+#[test]
+fn an_unreadable_watch_shows_the_reason() {
+    use super::safeguards_card::{Shown, test_support::show};
+    use makepad_widgets::*;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut widget = card_widget(&mut cx);
+    show(&mut widget, &mut cx, "agt_2", Shown::Failed("no answer within 10 s".into()));
+    assert!(widget.view(&mut cx, ids!(content)).visible());
+    assert!(widget.view(&mut cx, ids!(failed)).visible());
+    assert!(!widget.view(&mut cx, ids!(groups)).visible());
+    assert_eq!(widget.label(&mut cx, ids!(reason)).text(), "Safeguards could not be read: no answer within 10 s");
+}
+
+/// Regression (live 2026-11-18): the owner API's own reply for a fully
+/// automatic, push-freely watch (`IssueWatch` serialised camelCase with
+/// `enabledAt`, next to `trials`) maps to a card.
+#[test]
+fn the_owner_apis_fully_automatic_watch_maps_to_a_card() {
+    let reply = json!({"agentId": "agt_1", "issueWatch": {"mode": "all", "label": "agent-fix", "repo": "csheargm/hagency-demo-sandbox",
+        "roomId": "!a3cQXHR8GZ4RP5n71s:localhost:8450", "pushTrusted": true, "enabledAt": 1794869107}, "issueSeen": [], "trials": []});
+    assert_eq!(watch_of(&reply["issueWatch"], true), Some(sandbox_watch()));
 }
 
 /// Prints the card for the sandbox watch (`--nocapture`), for the report.
