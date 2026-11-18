@@ -6,10 +6,11 @@
 //!   runtime from its saved model when it runs on this computer.
 //! - Another owner's Agent: the Room's Agent roster (`Command::RoomRoster`)
 //!   names its owner and whether it is paused in that Room. Another server's
-//!   Agent has no roster row: its own profile names its owner
-//!   ([`super::agent_profile_owner`]), else its run cards in the Room do, and
-//!   name its runtime ([`super::agent_room_cards`]); the Room's Status lists
-//!   what it does now ("idle", "working on #12").
+//!   Agent has no roster row: its own profile ([`super::agent_profile_owner`])
+//!   and its run cards in the Room ([`super::agent_room_cards`]) say whose it
+//!   is, which is only the Agent's word ([`OwnerBasis::StatedByAgent`]), and
+//!   no owner at all when they disagree; the cards name its runtime, and the
+//!   Room's Status lists what it does now ("idle", "working on #12").
 //!
 //! Reads never block drawing: a lookup returns what is cached and starts at
 //! most one fetch, whose reply posts [`AgentFactsChanged`].
@@ -21,6 +22,7 @@ use serde_json::Value;
 use crate::hagency::{agent_panel::mapping, model::{Command, LocalAction}};
 use super::own_agents;
 pub use super::agent_fact_lines::{fact_lines, owner_label, owner_name};
+pub use super::agent_owner_claims::{OwnerBasis, owner_basis, with_profile_owner};
 
 /// How long an own Agent's service status is shown before it is asked again.
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -49,6 +51,8 @@ pub struct AgentFacts {
     /// Set only for this account's own Agents: what "Agent details" opens.
     pub own_agent_id: Option<String>,
     pub owner: Option<OwnedUserId>,
+    /// How `owner` is known (or, with no owner, whether claims conflicted).
+    pub owner_basis: OwnerBasis,
     /// "Claude", "Codex" or "Octos".
     pub runtime: Option<&'static str>,
     /// An English status key ("Running", "Paused", …), translated when shown.
@@ -154,6 +158,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         return AgentFacts {
             own_agent_id: Some(row.agent_id),
             owner: Some(account),
+            owner_basis: OwnerBasis::Listed,
             runtime: local.as_ref().and_then(|l| l.runtime).or(cards.runtime),
             status: if cards.working && status == Some("Running") { Some(WORKING) } else { status },
             activity: None,
@@ -165,8 +170,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         cache.rosters.get(room).map(|(at, rows)| (at.elapsed() > ROSTER_TTL, rows.get(agent).cloned()))
     };
     if roster.as_ref().is_none_or(|(stale, _)| *stale) { load_roster(&account, room.to_owned()); }
-    let mut cards = super::agent_room_cards::in_room(room, agent);
-    cards.owner = super::agent_profile_owner::owner_of(agent).or(cards.owner);
+    let cards = with_profile_owner(super::agent_room_cards::in_room(room, agent), super::agent_profile_owner::owner_of(agent));
     let mut facts = others_facts(roster.and_then(|(_, row)| row), cards);
     facts.activity = facts.status.is_none().then(|| {
         crate::home::room_watches::activity(room, agent.as_str(), facts.owner.as_ref().map(|o| o.as_str()))
@@ -178,7 +182,8 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
 const WORKING: &str = "Working on a request";
 
 /// Another owner's Agent from its roster row (this server's projects) and
-/// its run cards in the Room (any server): the roster wins where both say.
+/// its run cards in the Room (any server): the roster wins where both say;
+/// without it the owner is only the Agent's word.
 pub fn others_facts(row: Option<RosterRow>, cards: super::agent_room_cards::CardFacts) -> AgentFacts {
     let paused = row.as_ref().is_some_and(|r| r.binding_state == "suspended");
     let status = match (paused, cards.working) {
@@ -186,11 +191,13 @@ pub fn others_facts(row: Option<RosterRow>, cards: super::agent_room_cards::Card
         (false, true) => Some(WORKING),
         (false, false) => row.as_ref().and_then(|r| roster_status(&r.binding_state)),
     };
+    let owner_basis = owner_basis(row.is_some(), &cards);
     AgentFacts {
         own_agent_id: None,
         status,
         runtime: row.as_ref().and_then(|r| r.runtime).map(mapping::harness_label).or(cards.runtime),
         owner: row.map(|r| r.owner).or(cards.owner),
+        owner_basis,
         activity: None,
         shared: None,
     }

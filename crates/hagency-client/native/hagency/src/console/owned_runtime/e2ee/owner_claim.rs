@@ -1,47 +1,55 @@
 //! The Agent publishes whose Agent it is in its own Matrix profile
 //! ([`hagency_core::agent_owner`]), so a room member on another server can
 //! name its owner before it has posted anything. Sent once per Agent and
-//! owner per process, the first time its device is used; a failed write is
-//! tried again the next time the device is used.
+//! owner per process, the first time its device is used (and again whenever
+//! its owner changes, back to an earlier one too); a failed write is tried
+//! again the next time the device is used.
 use super::*;
 use hagency_core::agent_owner::{OWNER_FIELD, may_claim};
 use matrix_sdk::ruma::api::client::profile::ProfileFieldValue;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-/// `"<agent> <owner>"` pairs published (or being published) by this process.
-static CLAIMED: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+/// Agent → the owner this process last published (or is publishing) for it.
+/// Only the last value counts: after A → B, naming A again must write A.
+static CLAIMED: LazyLock<std::sync::Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
 
 impl AgentDevice {
     /// Publishes `owner` as this Agent's owner unless it already did, in the
     /// background: the device's work never waits for it.
     pub(in crate::console) fn claim_owner(&self, owner: &str) {
         let Some(agent) = self.client.user_id().map(ToString::to_string) else { return };
-        let Some(key) = start_claim(&agent, owner) else { return };
+        if !start_claim(&agent, owner) { return; }
         let (client, owner) = (self.client.clone(), owner.to_owned());
         tokio::spawn(async move {
             if let Err(error) = publish(&client, &owner).await {
                 // Retried on the next use; until then readers fall back to
                 // the room roster and the Agent's run cards.
                 tracing::warn!(stage = "agent_owner_claim", %error, "Agent owner not published; retrying on next use");
-                forget_claim(&key);
+                forget_claim(&agent, &owner);
             }
         });
     }
 }
 
-/// The key to publish under, or `None` when this pair is already published or
-/// is not a claim the Agent may make (an owner on another server).
-fn start_claim(agent: &str, owner: &str) -> Option<String> {
+/// Whether to publish `owner` now: not when it is already the last value
+/// published for `agent`, or not a claim the Agent may make (an owner on
+/// another server).
+fn start_claim(agent: &str, owner: &str) -> bool {
     if !may_claim(agent, owner) {
         tracing::warn!(stage = "agent_owner_claim", "Agent owner is not a person on the Agent's server; not published");
-        return None;
+        return false;
     }
-    let key = format!("{agent} {owner}");
-    CLAIMED.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()).then_some(key)
+    let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    if claimed.get(agent).is_some_and(|last| last == owner) { return false; }
+    claimed.insert(agent.to_owned(), owner.to_owned());
+    true
 }
 
-fn forget_claim(key: &str) {
-    CLAIMED.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
+/// A failed write of `owner`: forgotten so the next use retries, unless a
+/// newer owner was started since (that write is the one that counts).
+fn forget_claim(agent: &str, owner: &str) {
+    let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    if claimed.get(agent).is_some_and(|last| last == owner) { claimed.remove(agent); }
 }
 
 async fn publish(client: &Client, owner: &str) -> Result<(), matrix_sdk::Error> {
@@ -56,17 +64,30 @@ mod tests {
     #[test]
     fn a_pair_is_published_once_and_again_after_a_failure() {
         let (agent, owner) = ("@_hagency_agt_claim1:beta", "@bird:beta");
-        let key = start_claim(agent, owner).expect("first use publishes");
-        assert_eq!(start_claim(agent, owner), None, "a second use does not send again");
-        forget_claim(&key);
-        assert!(start_claim(agent, owner).is_some(), "a failed write is retried");
-        assert!(start_claim(agent, "@eve:beta").is_some(), "a new owner is published");
+        assert!(start_claim(agent, owner), "first use publishes");
+        assert!(!start_claim(agent, owner), "a second use does not send again");
+        forget_claim(agent, owner);
+        assert!(start_claim(agent, owner), "a failed write is retried");
+        assert!(start_claim(agent, "@eve:beta"), "a new owner is published");
+    }
+
+    /// GPT integration review: the cache held every pair ever published, so
+    /// after A → B naming A again was skipped and the profile kept saying B.
+    #[test]
+    fn going_back_to_an_earlier_owner_publishes_it_again() {
+        let agent = "@_hagency_agt_claim4:beta";
+        assert!(start_claim(agent, "@bird:beta"));
+        assert!(start_claim(agent, "@eve:beta"));
+        assert!(start_claim(agent, "@bird:beta"), "A → B → A writes A again");
+        assert!(!start_claim(agent, "@bird:beta"), "A is now the last value");
+        forget_claim(agent, "@eve:beta");
+        assert!(!start_claim(agent, "@bird:beta"), "an older failed write does not drop the newer owner");
     }
 
     #[test]
     fn an_owner_on_another_server_is_never_published() {
-        assert_eq!(start_claim("@_hagency_agt_claim2:beta", "@anna:alpha"), None);
-        assert_eq!(start_claim("@bird:beta", "@bird:beta"), None, "not an Agent");
+        assert!(!start_claim("@_hagency_agt_claim2:beta", "@anna:alpha"));
+        assert!(!start_claim("@bird:beta", "@bird:beta"), "not an Agent");
     }
 
     /// User flow: the Agent's device is signed in and the claim reaches

@@ -48,19 +48,29 @@ pub fn card_paths() -> [&'static [LiveId]; 3] {
     ]
 }
 
-/// The name shown over the answer: one Agent's name, or every distinct one.
+/// The name shown over the answer: one Agent's name, or every answering one.
 pub fn row_name(entries: &[Entry]) -> String {
-    names(entries, |entry| if entry.name.is_empty() { entry.agent.clone() } else { entry.name.clone() })
+    joined(&agent_labels(entries, |entry| if entry.name.is_empty() { entry.agent.clone() } else { entry.name.clone() }))
 }
 
-/// Every distinct `name_of` the entries, in order, joined.
-fn names(entries: &[Entry], mut name_of: impl FnMut(&Entry) -> String) -> String {
-    let mut names: Vec<String> = Vec::new();
+/// Each answering Agent once, by its Matrix ID (two Agents may share a name,
+/// or both fall back to "Agent"), in order, as `(agent ID, shown name)`. A
+/// name more than one of them shows gets its Agent's Matrix ID added, so
+/// every answer stays attributed to its own Agent.
+fn agent_labels(entries: &[Entry], mut name_of: impl FnMut(&Entry) -> String) -> Vec<(String, String)> {
+    let mut agents: Vec<(String, String)> = Vec::new();
     for entry in entries {
-        let name = name_of(entry);
-        if !names.contains(&name) { names.push(name); }
+        if !agents.iter().any(|(agent, _)| *agent == entry.agent) { agents.push((entry.agent.clone(), name_of(entry))); }
     }
-    names.join(" · ")
+    let names: Vec<String> = agents.iter().map(|(_, name)| name.clone()).collect();
+    for (agent, name) in &mut agents {
+        if names.iter().filter(|other| *other == name).count() > 1 { *name = format!("{name} ({agent})"); }
+    }
+    agents
+}
+
+fn joined(labels: &[(String, String)]) -> String {
+    labels.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>().join(" · ")
 }
 
 /// An answering Agent's name as the room knows it (see `agent_run_requester::agent_name`).
@@ -107,13 +117,17 @@ pub fn populate(cx: &mut Cx, item: &WidgetRef, room: &OwnedRoomId, entries: &[En
     let pending = pending.filter(|_| entries.is_empty());
     let row = item.view(cx, ids!(agent_runs));
     row.set_visible(cx, !entries.is_empty() || pending.is_some());
+    let labels = agent_labels(entries, |e| entry_name(cx, e, room));
+    // Several Agents in one row: each card names its own (the avatar is the first's).
+    let card_labels = if labels.len() > 1 { labels.clone() } else { Vec::new() };
     for (index, (path, shown)) in card_paths().into_iter().zip(super::agent_run_pager::slot_entries(entries)).enumerate() {
         let card = item.agent_run_card(cx, path);
+        card.set_agent_labels(card_labels.clone());
         card.set_pending(cx, if index == 0 { pending.clone() } else { None });
         card.set_entries(cx, shown);
     }
     let (name, first_name, agent) = match (entries.first(), &pending) {
-        (Some(first), _) => (names(entries, |e| entry_name(cx, e, room)), entry_name(cx, first, room), OwnedUserId::try_from(first.agent.as_str()).ok()),
+        (Some(first), _) => (joined(&labels), entry_name(cx, first, room), OwnedUserId::try_from(first.agent.as_str()).ok()),
         (None, Some(p)) => (p.name.clone(), p.name.clone(), Some(p.agent.clone())),
         (None, None) => return,
     };

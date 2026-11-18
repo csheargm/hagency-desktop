@@ -36,7 +36,7 @@ fn the_roster_names_owners_and_pauses_only() {
 
 #[test]
 fn own_agents_show_config_facts_and_others_say_who_sees_settings() {
-    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, runtime: Some("Claude"), status: Some("Running"), activity: None, shared: None };
+    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, owner_basis: OwnerBasis::Listed, runtime: Some("Claude"), status: Some("Running"), activity: None, shared: None };
     assert_eq!(fact_lines(&own, Some("Anna"), false), vec!["Owner: Anna", "Runtime: Claude", "Status: Running"]);
     let theirs = AgentFacts { status: Some("Paused"), ..Default::default() };
     assert_eq!(fact_lines(&theirs, Some("Betty"), true), vec!["Agent of Betty", "Status: Paused", "Settings are visible only to Betty"]);
@@ -61,23 +61,46 @@ fn an_own_agents_group_rooms_carry_its_shared_choices() {
 
 /// Live finding (Nov 18, Anna's dev room): Betty's federated bird-claude had
 /// no roster row, so its profile said "Owner not shared in this room" while
-/// its run cards named Betty. A viewer now reads whose it is, by name and
-/// Matrix ID, its runtime and what it does.
+/// its run cards named Betty. A viewer now reads whose it says it is, by name
+/// and Matrix ID, its runtime and what it does.
 #[test]
 fn a_federated_agents_profile_names_its_owner_from_its_run_cards() {
     use super::super::agent_room_cards::CardFacts;
-    let cards = CardFacts { owner: Some(user_id!("@bird:beta").to_owned()), runtime: Some("Claude"), working: false };
+    let cards = CardFacts { owner: Some(user_id!("@bird:beta").to_owned()), owner_conflict: false, runtime: Some("Claude"), working: false };
     let mut facts = others_facts(None, cards.clone());
     assert_eq!(facts.owner.as_deref(), Some(user_id!("@bird:beta")));
     facts.activity = Some("idle".into());
     assert_eq!(fact_lines(&facts, Some("Betty"), true),
-        vec!["Agent of Betty (@bird:beta)", "Runtime: Claude", "Status: idle", "Settings are visible only to Betty"]);
+        vec!["Agent of Betty (@bird:beta), as stated by the Agent", "Runtime: Claude", "Status: idle", "Settings are visible only to its owner"]);
     let working = others_facts(None, CardFacts { working: true, ..cards.clone() });
     assert_eq!(working.status, Some("Working on a request"));
     let row = RosterRow { owner: user_id!("@betty:alpha").to_owned(), binding_state: "suspended".into(), runtime: Some("codex") };
     let paused = others_facts(Some(row), CardFacts { working: true, ..cards });
     assert_eq!((paused.owner.as_deref(), paused.status, paused.runtime), (Some(user_id!("@betty:alpha")), Some("Paused"), Some("Codex")),
         "the roster wins where both say; a paused binding stays paused");
+    assert_eq!(fact_lines(&paused, Some("Betty"), false)[0], "Owner: Betty (@betty:alpha)", "a roster row is established");
+}
+
+/// GPT integration review: a federated Agent's own profile field named its
+/// owner as fact and silently overrode run cards naming someone else. Both
+/// are only the Agent's word: worded so, and no owner when they disagree.
+#[test]
+fn an_agents_self_claimed_owner_is_worded_as_its_claim_and_conflicts_show_none() {
+    use super::super::agent_room_cards::CardFacts;
+    let (bird, eve) = (user_id!("@bird:beta").to_owned(), user_id!("@eve:beta").to_owned());
+    let stated = others_facts(None, with_profile_owner(CardFacts::default(), Some(bird.clone())));
+    assert_eq!((stated.owner.as_deref(), stated.owner_basis), (Some(&*bird), OwnerBasis::StatedByAgent));
+    assert_eq!(fact_lines(&stated, Some("Betty"), false),
+        vec!["Owner (as stated by the Agent): Betty (@bird:beta)", "Settings are visible only to its owner"]);
+    let cards = CardFacts { owner: Some(eve), ..Default::default() };
+    let conflict = others_facts(None, with_profile_owner(cards.clone(), Some(bird.clone())));
+    assert_eq!((conflict.owner.clone(), conflict.owner_basis), (None, OwnerBasis::Conflicting), "profile and cards disagree: neither wins");
+    assert_eq!(fact_lines(&conflict, None, true),
+        vec!["Owner unknown: the Agent names different owners", "Settings are visible only to its owner"]);
+    let cards_conflict = CardFacts { owner_conflict: true, ..Default::default() };
+    assert_eq!(others_facts(None, with_profile_owner(cards_conflict, Some(bird.clone()))).owner, None, "the profile does not settle conflicting cards");
+    let agreeing = with_profile_owner(CardFacts { owner: Some(bird.clone()), ..Default::default() }, Some(bird));
+    assert_eq!(others_facts(None, agreeing).owner_basis, OwnerBasis::StatedByAgent, "agreeing claims are still claims");
 }
 
 #[test]

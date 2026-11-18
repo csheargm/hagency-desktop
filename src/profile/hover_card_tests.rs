@@ -102,6 +102,7 @@ fn my_agents_card_offers_agent_details_and_its_facts() {
     card.facts = Some(AgentFacts {
         own_agent_id: Some("agt_1".into()),
         owner: Some(owned_user_id!("@anna:hagency.test")),
+        owner_basis: Default::default(),
         runtime: Some("Claude"),
         status: Some("Running"),
         activity: None,

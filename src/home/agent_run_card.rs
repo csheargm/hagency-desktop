@@ -18,6 +18,11 @@ script_mod! {
         padding: 12
         show_bg: true
         draw_bg +: {color: mod.widgets.RINX_FIELD}
+        // Which Agent this answer is from, when one row answers for several.
+        by_agent := Label {
+            visible: false width: Fill height: Fit
+            draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_bold {font_size: 11}}
+        }
         preview := HtmlOrPlaintext { width: Fill height: Fit selectable: true }
         // A finished answer, with the same actions as an Agent's reply message.
         answer := mod.widgets.AgentReply {width: Fill}
@@ -119,6 +124,10 @@ pub struct AgentRunCard {
     /// The shown run's Agent: its own messages are the updates.
     #[rust]
     agent: String,
+    /// Agent ID → its name on the card, set only when the row holds several
+    /// Agents' answers (`agent_run_row::agent_labels`).
+    #[rust]
+    agent_labels: Vec<(String, String)>,
 }
 /// How often a running card's elapsed time ticks.
 const CLOCK_TICK_SECS: f64 = 1.0;
@@ -288,6 +297,10 @@ impl AgentRunCardRef {
             inner.show_status(cx);
         }
     }
+    /// Names each run's Agent on the card (empty: the row's name says whose).
+    pub fn set_agent_labels(&self, labels: Vec<(String, String)>) {
+        if let Some(mut inner) = self.borrow_mut() { inner.agent_labels = labels; }
+    }
     pub fn set_entry(&self, cx: &mut Cx, entry: Option<&Entry>) {
         self.set_entries(cx, entry.map(std::slice::from_ref).unwrap_or_default());
     }
@@ -316,6 +329,13 @@ impl AgentRunCard {
         self.view.label(cx, ids!(pager.page)).set_text(cx, &pager::pager_text(page, self.pages.len()));
         self.show(cx, entry.as_ref());
     }
+    /// The shown run's Agent above its answer, when the row answers for several.
+    fn show_byline(&mut self, cx: &mut Cx) {
+        let by = self.agent_labels.iter().find(|(agent, _)| *agent == self.agent).map(|(_, name)| name.as_str());
+        let label = self.view.label(cx, ids!(by_agent));
+        label.set_visible(cx, by.is_some());
+        label.set_text(cx, by.unwrap_or_default());
+    }
     // TODO(R4): split this file on the seam between the card's live run view
     // and its answer/pager presentation.
     fn show(&mut self, cx: &mut Cx, entry: Option<&Entry>) {
@@ -328,7 +348,7 @@ impl AgentRunCard {
             inner.show_status(cx);
             show_answer(cx, &inner.view, None);
             // Only the waiting line of a pending request, if any.
-            for part in [ids!(preview), ids!(links), ids!(what_i_did), ids!(input), ids!(buttons), ids!(hint), ids!(unconfirmed_notice), ids!(unconfirmed)] {
+            for part in [ids!(by_agent), ids!(preview), ids!(links), ids!(what_i_did), ids!(input), ids!(buttons), ids!(hint), ids!(unconfirmed_notice), ids!(unconfirmed)] {
                 inner.view.widget(cx, part).set_visible(cx, false);
             }
             inner.view.set_visible(cx, inner.pending.is_some());
@@ -340,6 +360,7 @@ impl AgentRunCard {
         }
         inner.key = Some(entry.key.clone());
         inner.agent = entry.agent.clone();
+        inner.show_byline(cx);
         inner.view.set_visible(cx, true);
         inner.view.view(cx, ids!(links)).set_visible(cx, true);
         // The row above already names the Agent; the runtime sits in "What I did".

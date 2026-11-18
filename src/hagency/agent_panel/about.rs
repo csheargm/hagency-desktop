@@ -46,12 +46,20 @@ fn rooms_count(status: &Value) -> Option<usize> {
     status["rooms"].is_array().then(|| mapping::watch_rooms(status).len())
 }
 
-/// "In 1 room · View" / "In 3 rooms · View"; "Rooms · View" before the count is known.
-fn rooms_line(count: Option<usize>) -> String {
-    let Some(count) = count else { return crate::i18n::tr("Rooms · View").to_owned() };
+/// "In 1 room · View" / "In 3 rooms · View"; "Rooms · View" while the status
+/// loads, and "Couldn't load rooms · Retry" once it came back without its
+/// Rooms (opening Context reads them again).
+fn rooms_line(status: &Value) -> String {
+    let Some(count) = rooms_count(status) else {
+        let key = if status.is_null() { "Rooms · View" } else { ROOMS_FAILED_LINK };
+        return crate::i18n::tr(key).to_owned();
+    };
     let key = if count == 1 { "In {count} room · View" } else { "In {count} rooms · View" };
     crate::i18n::format(key, &[("count", count.to_string())])
 }
+
+/// The About link when the Agent's Rooms could not be read.
+const ROOMS_FAILED_LINK: &str = "Couldn't load rooms · Retry";
 
 fn state_label(state: &str) -> String {
     let label = match state { "active" => "Active", "suspended" => "Paused", "creating" => "Being created", "retired" => "Retired", other => other };
@@ -80,7 +88,7 @@ impl AgentPanel {
         // What it does for each group room's members (ADR 0025).
         lines.extend(crate::hagency::room_share::summaries(&self.status, name.as_deref().unwrap_or(crate::i18n::tr("its owner"))));
         self.view.label(cx, ids!(about)).set_text(cx, &lines.join("\n"));
-        let text = rooms_line(rooms_count(&self.status));
+        let text = rooms_line(&self.status);
         self.view.button(cx, ids!(about_rooms)).set_text(cx, &text);
     }
 
@@ -122,9 +130,9 @@ mod tests {
     /// Live finding: "In 1 rooms".
     #[test]
     fn the_rooms_count_is_singular_for_one_room() {
-        assert_eq!(rooms_line(Some(1)), "In 1 room · View");
-        assert_eq!(rooms_line(Some(0)), "In 0 rooms · View");
-        assert_eq!(rooms_line(Some(3)), "In 3 rooms · View");
+        let rooms = |n: usize| json!({"rooms": vec![json!({"roomId": "!r:s", "state": "active"}); n]});
+        assert_eq!(rooms_line(&rooms(1)), "In 1 room · View");
+        assert_eq!(rooms_line(&rooms(0)), "In 0 rooms · View");
     }
 
     /// Live finding (2026-11-18, bird-claude in dev + e2e room on alpha, owner
@@ -141,10 +149,12 @@ mod tests {
         let rooms: Vec<Value> = crate::host::hagency::local::group_room_entries(&rows, |_| String::new());
         let loaded = json!({"here": true, "rooms": rooms});
         assert_eq!(rooms_count(&loaded), Some(2), "the dev room and the e2e room; the private chat is not counted");
-        assert_eq!(rooms_line(rooms_count(&loaded)), "In 2 rooms · View");
+        assert_eq!(rooms_line(&loaded), "In 2 rooms · View");
         assert_eq!(rooms_count(&Value::Null), None, "not loaded yet: no count");
         assert_eq!(rooms_count(&json!({"here": true, "rooms": null})), None, "the Rooms read failed: no count");
-        assert_eq!(rooms_line(None), "Rooms · View");
+        assert_eq!(rooms_line(&Value::Null), "Rooms · View", "still loading");
+        assert_eq!(rooms_line(&json!({"here": true, "rooms": null})), "Couldn't load rooms · Retry",
+            "GPT integration review: a failed read is not a neutral \"Rooms\" link");
         // Live finding (anna-claude): "Shared in dev room" listed, count 0. The
         // count reads the rooms those lines read, whatever else a row lacks.
         let shared = json!({"rooms": [{"roomId": "!dev:s", "name": "dev room", "state": "active"}], "approvals": {"roomShares": []}});

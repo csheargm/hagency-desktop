@@ -24,6 +24,9 @@ pub struct Entry {
     pub recovered_drafts: Vec<String>,
     /// When this app first saw the run, for the card's ticking elapsed time.
     pub started: std::time::Instant,
+    /// When this app last saw the card change (admitted, or an edit applied):
+    /// a run that stops updating is not shown as working forever.
+    pub updated: std::time::Instant,
     sent_event: Option<String>,
     sent_owner: Option<String>,
     pending_drafts: Vec<PendingDraft>,
@@ -86,6 +89,7 @@ fn apply(entry: &mut Entry, card: Card) -> bool {
     }
     apply_receipts(entry, &card);
     entry.card = card;
+    entry.updated = std::time::Instant::now();
     true
 }
 fn apply_receipts(entry: &mut Entry, card: &Card) {
@@ -206,6 +210,7 @@ pub(super) fn authenticated(
         pending_drafts: Vec::new(),
         recovered_drafts: Vec::new(),
         started: std::time::Instant::now(),
+        updated: std::time::Instant::now(),
         retry: None,
     };
     let mut edits: Vec<_> = store
@@ -253,12 +258,13 @@ pub fn is_card_event(room: &RoomId, event: &str) -> bool {
 }
 // TODO(R4): run_controls.rs is over budget; split these read-only queries
 // (for_event, is_card_event, cards_of, newest_running_in_thread) into run_queries.rs.
-/// Every admitted run card `agent` posted in `room`, oldest first (what its
-/// profile says about it: `profile::agent_room_cards`).
-pub fn cards_of(room: &RoomId, agent: &str) -> Vec<Card> {
+/// Every admitted run card `agent` posted in `room`, oldest first, with how
+/// long ago it last changed (what its profile says about it:
+/// `profile::agent_room_cards`).
+pub fn cards_of(room: &RoomId, agent: &str) -> Vec<(Card, Duration)> {
     STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
         .filter(|e| e.card.room_id == room.as_str() && e.agent == agent)
-        .map(|e| e.card.clone())
+        .map(|e| (e.card.clone(), e.updated.elapsed()))
         .collect()
 }
 /// The newest running run in a thread, for its collapsed summary.
@@ -470,6 +476,7 @@ mod tests {
             may_stop: true,
             recovered_drafts: Vec::new(),
             started: std::time::Instant::now(),
+            updated: std::time::Instant::now(),
             sent_event: Some("$action".into()),
             sent_owner: Some("@requester:test".into()),
             pending_drafts: Vec::new(),
