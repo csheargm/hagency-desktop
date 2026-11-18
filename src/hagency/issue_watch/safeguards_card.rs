@@ -178,13 +178,23 @@ async fn read(service: &Service, agent_id: &str, auto_merge: bool) -> Result<Sho
         Ok(token) => {
             let client = ::hagency::issue_watch::new_client();
             match ::hagency::issue_watch::safeguards::fetch_repo_guards(&client, ::hagency::issue_watch::GITHUB_API, &watch.repo, &token).await {
-                Ok(guards) => Repo::Read { branch: guards.branch, protected: guards.protected, policy: guards.policy },
+                Ok(guards) => match room_rules(&watch.room_id).await {
+                    Ok(rules) => Repo::Read { branch: guards.branch, protected: guards.protected, rules },
+                    Err(error) => Repo::Failed(error),
+                },
                 Err(error) => Repo::Failed(error.to_string()),
             }
         }
         Err(error) => Repo::Failed(error),
     };
     Ok(Shown::Card(watch, repo))
+}
+
+/// The watch room's merge rules (ADR 0029), as the gate would judge them.
+async fn room_rules(room_id: &str) -> Result<::hagency::issue_watch::safeguards::RoomRulesState, String> {
+    let room = matrix_sdk::ruma::RoomId::parse(room_id).ok().and_then(|id| crate::sliding_sync::get_client()?.get_room(&id));
+    let room = room.ok_or_else(|| crate::i18n::tr("this desktop has not joined the watch's room").to_owned())?;
+    Ok(super::room_rules::read(&room).await?.state())
 }
 
 /// One "• line" per entry.

@@ -24,6 +24,7 @@ script_mod! {
         }
         watches_notice := WatchText {visible: false margin: Inset{left: 16 right: 16 bottom: 8}}
         review_setting := mod.widgets.RoomReviewSetting {}
+        merge_rules := mod.widgets.RoomMergeRules {}
         repo_filter := RobrixSettingsDropDown {visible: false width: Fill height: 36 margin: Inset{left: 16 right: 16 bottom: 8} labels: ["All repositories"]
             popup_menu_position: PopupMenuPosition.BelowInput
         }
@@ -183,6 +184,8 @@ impl RoomWatchesPanelRef {
         super::refresh(room);
         use super::review_setting::RoomReviewSettingWidgetExt;
         panel.view.room_review_setting(cx, ids!(review_setting)).show(cx, room);
+        use super::merge_rules::RoomMergeRulesWidgetExt;
+        panel.view.room_merge_rules(cx, ids!(merge_rules)).show(cx, room);
         panel.view.redraw(cx);
     }
 }

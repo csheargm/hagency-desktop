@@ -1,19 +1,22 @@
 //! The Safeguards card states what the code enforces: every number and
-//! protected name comes from `Enforced` and the gate's parsed policy, so a
+//! protected name comes from `Enforced` and the gate's parsed room rules, so a
 //! changed constant (here: a changed fixture) changes the line.
 use super::safeguards::{Card, Enforced, Repo, Watch, card, trial_owner_merges, watch_of};
-use ::hagency::issue_watch::safeguards::{self as engine, PolicyFile, parse_policy};
+use ::hagency::issue_watch::safeguards::{self as engine, RoomRulesState, parse_policy};
 use serde_json::json;
 
-/// The sandbox repository's own policy file (csheargm/hagency-demo-sandbox).
+/// The dev room's rules for csheargm/hagency-demo-sandbox (the old repository file's values).
 const SANDBOX_POLICY: &str = "low_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: false\n";
 
+/// The demo's dev room, where the sandbox watch reports.
+const DEV_ROOM: &str = "!a3cQXHR8GZ4RP5n71s:localhost:8450";
+
 fn sandbox_watch() -> Watch {
-    Watch { repo: "csheargm/hagency-demo-sandbox".into(), push_freely: true, auto_merge: true, trial_owner_merges: None }
+    Watch { repo: "csheargm/hagency-demo-sandbox".into(), room_id: DEV_ROOM.into(), push_freely: true, auto_merge: true, trial_owner_merges: None }
 }
 fn read(policy: &str, protected: Option<bool>) -> Repo {
-    let policy = parse_policy(policy).map_or(PolicyFile::Unreadable, PolicyFile::Read);
-    Repo::Read { branch: "main".into(), protected, policy }
+    let rules = parse_policy(policy).map_or(RoomRulesState::Unreadable, RoomRulesState::Read);
+    Repo::Read { branch: "main".into(), protected, rules }
 }
 fn all_lines(card: &Card) -> String {
     [&card.alone, &card.needs_you, &card.limits].into_iter().flatten().cloned().chain([card.protection.clone()]).collect::<Vec<_>>().join("\n")
@@ -25,13 +28,14 @@ fn the_enforced_values_are_the_engines_constants() {
     assert_eq!(enforced.max_attempts, engine::MAX_ATTEMPTS);
     assert_eq!(enforced.free_retries, engine::MAX_FREE_RETRIES);
     assert_eq!(enforced.handoff_secs, engine::HANDOFF_TIMEOUT_SECS);
-    assert_eq!(enforced.policy_path, engine::POLICY_PATH);
+    assert_eq!(enforced.suggested_paths, engine::SUGGESTED_LOW_RISK_PATHS.to_vec());
     assert_eq!(enforced.protected_paths, engine::PROTECTED_PREFIXES.to_vec());
     assert_eq!(enforced.protected_branches, engine::PROTECTED_BRANCHES.to_vec());
     let text = all_lines(&card(&sandbox_watch(), &read(SANDBOX_POLICY, Some(false)), &enforced));
     assert!(text.contains(&format!("{} tries per issue", engine::MAX_ATTEMPTS)), "{text}");
     assert!(text.contains(&format!("{} minutes per try", engine::HANDOFF_TIMEOUT_SECS / 60)), "{text}");
     assert!(text.contains(engine::CODEOWNERS), "{text}");
+    assert!(!text.contains("merge-policy.yml"), "no repository file is named: {text}");
 }
 
 #[test]
@@ -52,28 +56,30 @@ fn changing_an_enforced_value_changes_its_line() {
 }
 
 #[test]
-fn the_merge_rule_line_follows_the_policy_file() {
+fn the_merge_rule_line_follows_the_room_rules() {
     let enforced = Enforced::current();
     let rule = |policy: &str| card(&sandbox_watch(), &read(policy, None), &enforced).limits[3].clone();
-    assert_eq!(rule(SANDBOX_POLICY), "Merge rule (.hagency/merge-policy.yml): **/*.md, docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent");
+    assert_eq!(rule(SANDBOX_POLICY), "Merge rule (room policy): **/*.md, docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent");
     let stricter = "low_risk_paths: [\"docs/**\"]\nmax_changed_lines: 10\nrequired_agent_approvals: 2\nrequire_ci: true\nalways_human: [\"docs/legal/**\"]\n";
-    assert_eq!(rule(stricter), "Merge rule (.hagency/merge-policy.yml): docs/**, up to 10 changed lines, CI required, 2 approval(s) from another Agent");
-    assert_eq!(rule("tier: trusted\n"), "Merge rule (.hagency/merge-policy.yml): any path, no line limit, CI required, 1 approval(s) from another Agent");
+    assert_eq!(rule(stricter), "Merge rule (room policy): docs/**, up to 10 changed lines, CI required, 2 approval(s) from another Agent");
+    assert_eq!(rule("tier: trusted\n"), "Merge rule (room policy): any path, no line limit, CI required, 1 approval(s) from another Agent");
     assert!(card(&sandbox_watch(), &read(stricter, None), &enforced).limits[4].ends_with(", docs/legal/**"));
     let zero = "low_risk_paths: [\"docs/**\"]\nrequired_agent_approvals: 0\n";
-    assert!(rule(zero).ends_with(&format!("{} approval(s) from another Agent", engine::MIN_AGENT_APPROVALS)), "the gate's floor, not the file's 0");
+    assert!(rule(zero).ends_with(&format!("{} approval(s) from another Agent", engine::MIN_AGENT_APPROVALS)), "the gate's floor, not the room's 0");
 }
 
 #[test]
-fn merges_need_the_owner_without_the_switch_or_a_readable_policy() {
+fn merges_need_the_owner_without_the_switch_or_valid_room_rules() {
     let enforced = Enforced::current();
     let manual = Watch { auto_merge: false, ..sandbox_watch() };
     let off = card(&manual, &read(SANDBOX_POLICY, None), &enforced);
     assert!(off.needs_you.contains(&"Every merge (merges are set to People merge)".to_owned()));
     assert!(!all_lines(&off).contains("Approve and merge"));
-    let absent = card(&sandbox_watch(), &Repo::Read { branch: "main".into(), protected: None, policy: PolicyFile::Absent }, &enforced);
-    assert!(absent.needs_you.contains(&"Every merge: the repository has no .hagency/merge-policy.yml".to_owned()));
-    assert_eq!(absent.limits[3], "Merge rule: none, the repository has no .hagency/merge-policy.yml");
+    let absent = card(&sandbox_watch(), &Repo::Read { branch: "main".into(), protected: None, rules: RoomRulesState::Absent }, &enforced);
+    assert!(absent.needs_you.contains(&"Every merge: this room has no merge rules — a room admin can set them in Room info → Status".to_owned()));
+    let suggested = engine::SUGGESTED_LOW_RISK_PATHS.join(", ");
+    assert_eq!(absent.limits[3], format!("Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {suggested})"));
+    assert!(suggested.contains("AUTHORS") && !suggested.contains("LICENSE"), "the owner's Nov 18 list");
     let bad = card(&sandbox_watch(), &read("merge_everything: yes\n", None), &enforced);
     assert!(bad.needs_you.iter().any(|l| l.contains("does not accept")));
     let failed = card(&sandbox_watch(), &Repo::Failed("HTTP 403".into()), &enforced);
@@ -86,7 +92,7 @@ fn without_push_freely_nothing_runs_alone() {
     let shown = card(&ask, &Repo::Loading, &Enforced::current());
     assert_eq!(shown.alone, vec!["Nothing yet: every step asks you".to_owned()]);
     assert_eq!(shown.needs_you[0], "Every push, pull request and command");
-    assert_eq!(shown.limits[3], "Merge rule: reading .hagency/merge-policy.yml…");
+    assert_eq!(shown.limits[3], "Merge rule (room policy): reading the room's rules…");
 }
 
 #[test]
@@ -101,7 +107,7 @@ fn branch_protection_is_recommended_with_its_state_when_known() {
 #[test]
 fn the_saved_watch_maps_to_the_cards_watch_and_the_trial_setting_is_optional() {
     let saved = json!({"mode": "trusted", "repo": "acme/app", "pushTrusted": true});
-    assert_eq!(watch_of(&saved, true), Some(Watch { repo: "acme/app".into(), push_freely: true, auto_merge: true, trial_owner_merges: None }));
+    assert_eq!(watch_of(&saved, true), Some(Watch { repo: "acme/app".into(), room_id: String::new(), push_freely: true, auto_merge: true, trial_owner_merges: None }));
     assert_eq!(watch_of(&json!({"mode": "off", "repo": "acme/app"}), true), None, "Off shows no card");
     assert_eq!(watch_of(&json!({"mode": "all", "repo": ""}), true), None);
     assert_eq!(trial_owner_merges(&json!({"trialOwnerMerges": 3})), Some(3));
@@ -183,7 +189,7 @@ fn an_unreadable_watch_shows_the_reason() {
 #[test]
 fn the_owner_apis_fully_automatic_watch_maps_to_a_card() {
     let reply = json!({"agentId": "agt_1", "issueWatch": {"mode": "all", "label": "agent-fix", "repo": "csheargm/hagency-demo-sandbox",
-        "roomId": "!a3cQXHR8GZ4RP5n71s:localhost:8450", "pushTrusted": true, "enabledAt": 1794869107}, "issueSeen": [], "trials": []});
+        "roomId": DEV_ROOM, "pushTrusted": true, "enabledAt": 1794869107}, "issueSeen": [], "trials": []});
     assert_eq!(watch_of(&reply["issueWatch"], true), Some(sandbox_watch()));
 }
 
