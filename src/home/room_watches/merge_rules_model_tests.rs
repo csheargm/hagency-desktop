@@ -61,3 +61,27 @@ fn unusable_fields_are_refused_before_anything_is_sent() {
         assert!(policy_of(&bad, &RoomRead::None).is_err(), "{bad:?}");
     }
 }
+
+/// Under the entry a Hagency desktop adds (100), a moderator reads the rules
+/// but gets no editor; without it the room's state_default (50) still lets them.
+#[test]
+fn moderators_get_read_only_rules_once_the_admin_entry_is_set() {
+    use crate::hagency::issue_watch::room_rules::may_set_rules;
+    use matrix_sdk::ruma::{events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource}, room_version_rules::AuthorizationRules, user_id};
+    let typed = |levels: serde_json::Value| {
+        let content: RoomPowerLevelsEventContent = serde_json::from_value(levels).unwrap();
+        RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), &AuthorizationRules::V10, Vec::new())
+    };
+    let shown = |levels: &RoomPowerLevels, who| Shown::Ready { read: rules(SANDBOX), editable: may_set_rules(levels, who) };
+    let room = serde_json::json!({"users":{"@admin:x":100,"@mod:x":50},"state_default":50});
+    let created = typed(crate::home::call_power_levels::open_call_membership(room.clone()).unwrap().unwrap());
+    let (moderator, admin) = (user_id!("@mod:x"), user_id!("@admin:x"));
+    assert!(!editor_shown(&shown(&created, moderator)), "a moderator is read-only in a new room");
+    assert!(editor_shown(&shown(&created, admin)));
+    assert_eq!(hint(&shown(&created, moderator)), "Only a room admin can change the merge rules.");
+    let rules_type = ::hagency::issue_watch::safeguards::MERGE_RULES_STATE_TYPE;
+    let linked = typed(crate::home::call_power_levels::add_missing_member_state(room.clone(), &[rules_type]).unwrap().unwrap());
+    assert!(!editor_shown(&shown(&linked, moderator)) && editor_shown(&shown(&linked, admin)), "an old room after an admin links");
+    let unpatched = typed(room);
+    assert!(editor_shown(&shown(&unpatched, moderator)), "the check follows the room's actual level");
+}

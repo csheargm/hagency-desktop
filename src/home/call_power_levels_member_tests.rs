@@ -1,6 +1,8 @@
 //! Opening member-written Hagency state in rooms made before it existed:
-//! only missing entries are added, and only by a moderator or admin.
+//! only missing entries are added, and only by a moderator or admin; the
+//! admin-only merge rules (ADR 0029) only by an admin.
 use super::*;
+use ::hagency::issue_watch::safeguards::MERGE_RULES_STATE_TYPE as RULES;
 use ::hagency::repo_status::ISSUE_STATUS_STATE_TYPE;
 use matrix_sdk::ruma::{events::room::power_levels::{RoomPowerLevelsEventContent, RoomPowerLevelsSource}, room_version_rules::AuthorizationRules, user_id};
 use serde_json::json;
@@ -18,12 +20,15 @@ fn old_room() -> Value {
 }
 
 #[test]
-fn adds_only_the_missing_entry_and_keeps_every_other_field() {
-    let updated = add_missing_member_state(old_room()).unwrap().unwrap();
+fn adds_only_the_missing_entries_and_keeps_every_other_field() {
+    let updated = add_missing_member_state(old_room(), &EXISTING_ROOM_EVENTS).unwrap().unwrap();
     let mut expected = old_room();
     expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
+    expected["events"][RULES] = json!(100);
     assert_eq!(updated, expected);
-    assert!(add_missing_member_state(updated).unwrap().is_none(), "nothing to send once present");
+    assert!(add_missing_member_state(updated, &EXISTING_ROOM_EVENTS).unwrap().is_none(), "nothing to send once present");
+    let status_only = add_missing_member_state(old_room(), &[ISSUE_STATUS_STATE_TYPE]).unwrap().unwrap();
+    assert!(status_only["events"].get(RULES).is_none(), "only the keys asked for are added");
 }
 
 #[test]
@@ -31,29 +36,33 @@ fn an_entry_an_admin_set_is_never_changed_even_a_raised_one() {
     let mut levels = old_room();
     levels["events"][CALL_MEMBER_EVENT] = json!(100);
     levels["events"][ISSUE_STATUS_STATE_TYPE] = json!(50);
-    assert!(add_missing_member_state(levels.clone()).unwrap().is_none());
+    levels["events"][RULES] = json!(50);
+    assert!(add_missing_member_state(levels.clone(), &EXISTING_ROOM_EVENTS).unwrap().is_none(), "an explicit 50 for the rules is kept");
     levels["events"].as_object_mut().unwrap().remove(ISSUE_STATUS_STATE_TYPE);
-    let updated = add_missing_member_state(levels).unwrap().unwrap();
-    assert_eq!((updated["events"][CALL_MEMBER_EVENT].as_i64(), updated["events"][ISSUE_STATUS_STATE_TYPE].as_i64()), (Some(100), Some(0)));
-    let bare = add_missing_member_state(json!({"users_default":0})).unwrap().unwrap();
-    assert_eq!(bare, json!({"users_default":0,"events":{ISSUE_STATUS_STATE_TYPE:0}}), "call membership is not opened in an existing room");
-    assert!(add_missing_member_state(json!({"events":[]})).is_err(), "malformed is an error, not 'present'");
+    let updated = add_missing_member_state(levels, &EXISTING_ROOM_EVENTS).unwrap().unwrap();
+    let got = |key: &str| updated["events"][key].as_i64();
+    assert_eq!((got(CALL_MEMBER_EVENT), got(ISSUE_STATUS_STATE_TYPE), got(RULES)), (Some(100), Some(0), Some(50)));
+    let bare = add_missing_member_state(json!({"users_default":0}), &EXISTING_ROOM_EVENTS).unwrap().unwrap();
+    assert_eq!(bare, json!({"users_default":0,"events":{ISSUE_STATUS_STATE_TYPE:0, RULES:100}}), "call membership is not opened in an existing room");
+    assert!(add_missing_member_state(json!({"events":[]}), &EXISTING_ROOM_EVENTS).is_err(), "malformed is an error, not 'present'");
 }
 
 #[test]
 fn only_an_account_that_may_change_power_levels_adds_entries() {
     let levels = typed(old_room(), &AuthorizationRules::V10, &[]);
-    assert_eq!(missing_member_state(&levels), vec![ISSUE_STATUS_STATE_TYPE]);
-    assert!(may_add_member_state(&levels, user_id!("@admin:x")));
-    assert!(!may_add_member_state(&levels, user_id!("@member:x")), "a plain member is skipped");
-    assert!(!may_add_member_state(&levels, user_id!("@mod:x")), "power levels need 100 here");
+    assert_eq!(missing_member_state(&levels), vec![ISSUE_STATUS_STATE_TYPE, RULES]);
+    assert_eq!(addable_member_state(&levels, user_id!("@admin:x")), vec![ISSUE_STATUS_STATE_TYPE, RULES]);
+    assert!(addable_member_state(&levels, user_id!("@member:x")).is_empty(), "a plain member is skipped");
+    assert!(addable_member_state(&levels, user_id!("@mod:x")).is_empty(), "power levels need 100 here");
     let mut moderated = old_room();
     moderated["events"]["m.room.power_levels"] = json!(50);
+    let levels = typed(moderated.clone(), &AuthorizationRules::V10, &[]);
+    assert_eq!(addable_member_state(&levels, user_id!("@mod:x")), vec![ISSUE_STATUS_STATE_TYPE], "a moderator cannot add the admin-only rules entry");
     moderated["state_default"] = json!(75);
     let levels = typed(moderated, &AuthorizationRules::V10, &[]);
-    assert!(!may_add_member_state(&levels, user_id!("@mod:x")), "below the missing event's current level");
+    assert!(addable_member_state(&levels, user_id!("@mod:x")).is_empty(), "below the missing event's current level");
     let creator = typed(old_room(), &AuthorizationRules::V12, &["@owner:x"]);
-    assert!(may_add_member_state(&creator, user_id!("@owner:x")), "a room v12 creator outranks every level");
+    assert_eq!(addable_member_state(&creator, user_id!("@owner:x")).len(), 2, "a room v12 creator outranks every level");
 }
 
 fn sync_body(levels: &Value) -> Value {
@@ -102,6 +111,7 @@ async fn an_admin_opens_issue_status_in_an_old_room_and_keeps_the_rest() {
     assert!(allow_member_state_in(&room).await.unwrap());
     let mut expected = old_room();
     expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
+    expected["events"][RULES] = json!(100);
     assert_eq!(puts(&server).await, vec![expected]);
 }
 
@@ -122,8 +132,24 @@ async fn a_room_with_the_entry_is_left_alone() {
     let server = wiremock::MockServer::start().await;
     let mut levels = old_room();
     levels["events"][ISSUE_STATUS_STATE_TYPE] = json!(50);
+    levels["events"][RULES] = json!(50);
     let room = synced_as(&server, "@admin:x", &levels).await;
     mount_levels(&server, &levels).await;
     assert!(!allow_member_state_in(&room).await.unwrap());
     assert!(puts(&server).await.is_empty());
+}
+
+/// User flow: a moderator allowed to change power levels links a repository;
+/// members get issue status, but the merge rules stay for an admin to close.
+#[tokio::test]
+async fn a_moderator_opens_issue_status_but_never_sets_the_rules_level() {
+    let server = wiremock::MockServer::start().await;
+    let mut levels = old_room();
+    levels["events"]["m.room.power_levels"] = json!(50);
+    let room = synced_as(&server, "@mod:x", &levels).await;
+    mount_levels(&server, &levels).await;
+    assert!(allow_member_state_in(&room).await.unwrap());
+    let mut expected = levels;
+    expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
+    assert_eq!(puts(&server).await, vec![expected]);
 }

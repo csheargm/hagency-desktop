@@ -8,7 +8,8 @@ use crate::hagency::backend::Service;
 use ::hagency::issue_watch::safeguards::{MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, watch_entries};
 use matrix_sdk::Room;
-use matrix_sdk::ruma::events::StateEventType;
+use matrix_sdk::ruma::UserId;
+use matrix_sdk::ruma::events::{StateEventType, room::power_levels::RoomPowerLevels};
 use serde_json::{Value, json};
 
 /// What a room's state says about its merge rules.
@@ -80,10 +81,17 @@ pub fn snapshot(repo: &str, room_id: &str, read: &RoomRead) -> RoomRulesSnapshot
     }
 }
 
+/// Whether `user` may set the merge rules under `levels`: the room's actual
+/// required level for the event, so the admin-only entry (100) a Hagency
+/// desktop adds (call_power_levels) keeps moderators out.
+pub fn may_set_rules(levels: &RoomPowerLevels, user: &UserId) -> bool {
+    levels.user_can_send_state(user, StateEventType::from(MERGE_RULES_STATE_TYPE))
+}
+
 /// Whether this account may set `room`'s merge rules (the room's power levels decide).
 pub async fn can_edit(room: &Room) -> bool {
     let Some(user) = room.client().user_id().map(ToOwned::to_owned) else { return false };
-    room.power_levels().await.is_ok_and(|levels| levels.user_can_send_state(&user, StateEventType::from(MERGE_RULES_STATE_TYPE)))
+    room.power_levels().await.is_ok_and(|levels| may_set_rules(&levels, &user))
 }
 
 /// `room`'s rules, read from the homeserver now (rules and membership in one
@@ -97,8 +105,8 @@ pub async fn read(room: &Room) -> Result<RoomRead, String> {
     // Unreadable power levels: nobody's rules count (fail closed).
     let levels = room.power_levels().await.ok();
     let may_send = |sender: &str| {
-        let user = matrix_sdk::ruma::UserId::parse(sender).ok();
-        levels.as_ref().zip(user).is_some_and(|(l, u)| l.user_can_send_state(&u, StateEventType::from(MERGE_RULES_STATE_TYPE)))
+        let user = UserId::parse(sender).ok();
+        levels.as_ref().zip(user).is_some_and(|(l, u)| may_set_rules(l, &u))
     };
     Ok(accept(&events, room.room_id().as_str(), may_send))
 }

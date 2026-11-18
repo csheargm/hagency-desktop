@@ -188,8 +188,9 @@ pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool)
 }
 
 /// Linking is the admin's go-ahead to let members publish their own issue
-/// status in a room that predates it (ADR 0023), when this account may change
-/// power levels; otherwise nothing is sent. Only a missing entry is added.
+/// status in a room that predates it (ADR 0023), and, for an admin, to make
+/// the merge rules admin-only (ADR 0029), when this account may change power
+/// levels; otherwise nothing is sent. Only missing entries are added.
 async fn allow_member_status(room: &Room) -> Result<(), String> {
     crate::home::call_power_levels::allow_member_state_in(room).await.map(|_| ())
         .map_err(|e| crate::i18n::format("Members cannot share issue status here yet: {error}", &[("error", format!("{e:#}"))]))
