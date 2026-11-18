@@ -51,7 +51,7 @@ impl AgentDevice {
     /// enforces) and those other owners publish as watched, but only from a
     /// publisher whose own power level could have linked them. Empty when
     /// the requester is not a joined member.
-    pub(in crate::console) async fn read_scope(&self, room: &str, requester: &str) -> Result<Vec<String>, RuntimeError> {
+    pub(in crate::console) async fn read_scope(&self, room: &str, requester: &str, owners: &BTreeMap<String, String>, now: i64) -> Result<Vec<String>, RuntimeError> {
         use hagency_runtime::repo_status::{accepted, linked::room_repos};
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let joined = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
@@ -63,7 +63,7 @@ impl AgentDevice {
         let status = self.issue_status_room(room).await?;
         let levels = joined.power_levels().await.map_err(|_| RuntimeError::Transport)?;
         let may_link = |id: &str| OwnedUserId::try_from(id).is_ok_and(|u| levels.user_can_send_state(&u, StateEventType::from(ROOM_REPOS_STATE_TYPE)));
-        let seen = accepted(&status.events, |id| status.members.get(id).cloned().unwrap_or_default()).seen;
+        let seen = accepted(&status.events, |id| status.members.get(id).cloned().unwrap_or_default(), |agent| owners.get(agent).cloned(), now).seen;
         let published = seen.iter().filter(|s| may_link(&s.publisher)).map(|s| s.issue.repo.as_str());
         Ok(room_repos(published, &status.linked))
     }

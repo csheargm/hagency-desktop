@@ -9,7 +9,8 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 /// How long a recorded set is believed without the host reading it again.
-pub const SCOPE_TTL: Duration = Duration::from_secs(15 * 60);
+/// Each turn records it afresh; a longer turn then asks again (fails closed).
+pub const SCOPE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Repositories one room's set may hold.
 const MAX_REPOS: usize = 64;
 

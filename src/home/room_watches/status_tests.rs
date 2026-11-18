@@ -80,9 +80,13 @@ fn run_cards_become_tasks_with_the_newest_edit_and_only_from_joined_agents() {
             "content": {"m.relates_to": {"rel_type": "m.replace", "event_id": "$c1"}, "m.new_content": card("run_c1", "completed", 9, "")}}),
         json!({"type": "m.room.message", "event_id": "$c2", "sender": "@anna:hs.test", "origin_server_ts": ms, "content": card("run_c2", "running", 1, "")}),
     ];
-    let got = tasks::tasks(&events, |id| id != "@_hagency_agt_gone:hs.test", ms);
+    // The roster names bird and the "evil" puppet as Agents; Anna is a person.
+    let got = tasks::tasks(&events, |id| id == BIRD || id == "@_hagency_agt_evil:hs.test", ms);
     assert_eq!(got.len(), 1, "a person's forged card is not a task: {got:?}");
     assert_eq!((got[0].state, got[0].step.as_str(), got[0].age_secs), (TaskState::Working, "running gh pr create", 300));
-    let newest_first: Vec<_> = events.into_iter().rev().collect();
-    assert_eq!(tasks::tasks(&newest_first, |_| true, ms), got, "history order does not let another Agent's edit win");
+    let newest_first: Vec<_> = events.iter().rev().cloned().collect();
+    assert_eq!(tasks::tasks(&newest_first, |id| id == BIRD || id == "@_hagency_agt_evil:hs.test", ms), got, "history order does not let another Agent's edit win");
+    assert!(tasks::tasks(&events, |_| false, ms).is_empty(), "a lookalike puppet the roster does not name posts no tasks");
+    let readable = json!({"type": "m.room.message", "event_id": "$c9", "sender": "@_hagency_csheargm_bird-claude:hs.test", "origin_server_ts": ms, "content": card("run_c9", "running", 1, "")});
+    assert_eq!(tasks::tasks(&[readable], |_| true, ms).len(), 1, "readable puppet IDs count");
 }

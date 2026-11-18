@@ -101,15 +101,16 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
         members.insert(id.clone(), member(&room, &id).await);
     }
     let now = chrono::Utc::now();
-    out.tasks = tasks::tasks(&recent, |id| members.get(id).is_some_and(|m| m.joined), now.timestamp_millis());
+    let owners = owners_of(room_id, &me, &mut out.notes).await;
+    out.tasks = tasks::tasks(&recent, |id| members.get(id).is_some_and(|m| m.joined) && owners.contains_key(id), now.timestamp_millis());
     for task in &out.tasks {
         if !members.contains_key(&task.requester) {
             members.insert(task.requester.clone(), member(&room, &task.requester).await);
         }
     }
-    let accepted = status::accepted(&events, |id| members.get(id).cloned().unwrap_or_default());
-    if !accepted.conflicts.is_empty() {
-        out.notes.push(crate::i18n::tr("Some Agents were claimed by more than one owner; their published states are hidden.").to_owned());
+    let accepted = status::accepted(&events, |id| members.get(id).cloned().unwrap_or_default(), |agent| owners.get(agent).cloned(), now.timestamp());
+    if accepted.ignored_claims > 0 {
+        out.notes.push(crate::i18n::tr("Some published states were not from the Agent's own owner, or were stale, and are hidden.").to_owned());
     }
     out.names = members.iter().filter_map(|(id, m)| m.name.clone().map(|n| (id.clone(), n))).collect();
     let watched = own.iter().map(|(_, repo, _)| repo.as_str()).chain(accepted.seen.iter().map(|s| s.issue.repo.as_str()));
@@ -117,6 +118,18 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
     tables(&mut out, &repos, own, &accepted.seen, now.timestamp()).await;
     out.seen = accepted.seen;
     Ok(out)
+}
+
+/// Whose Agent each puppet is, from the server's listings only (GPT
+/// integration review); unavailable listings leave the map empty (fail closed).
+async fn owners_of(room_id: &RoomId, me: &matrix_sdk::ruma::OwnedUserId, notes: &mut Vec<String>) -> BTreeMap<String, String> {
+    match crate::home::mobile_chat_info::fetch_member_owners(room_id.as_str(), me).await {
+        Ok((owners, _)) => owners.into_iter().map(|(agent, owner)| (agent.to_string(), owner.to_string())).collect(),
+        Err(error) => {
+            notes.push(crate::i18n::format("Agent owners are unavailable: {error}", &[("error", error)]));
+            BTreeMap::new()
+        }
+    }
 }
 
 /// One table per repository; a GitHub failure becomes a note and a table of tracker states only.
@@ -148,6 +161,9 @@ async fn tables(out: &mut RoomStatus, repos: &[String], own: &[OwnWatch], seen: 
 /// Link (`true`) or unlink `repo` under this account's own power level; the
 /// homeserver refuses a member below the room's level for the event.
 pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool) -> Result<(), String> {
+    // One change at a time per process, each re-reading the list first (GPT review).
+    static LINKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _linking = LINKING.lock().await;
     let room = client.get_room(room_id).ok_or_else(|| crate::i18n::tr("This desktop has not joined the room").to_owned())?;
     if !room.latest_encryption_state().await.is_ok_and(|s| !s.is_unknown() && !s.is_encrypted()) {
         // Plaintext state would show the repositories to the homeserver (ADR 0023).

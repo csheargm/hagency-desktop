@@ -13,7 +13,7 @@
 use crate::room_tools::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub mod linked;
 pub mod table;
@@ -34,8 +34,6 @@ const MXID_BYTES: usize = 255;
 pub const RECENT_SECS: i64 = 7 * 24 * 60 * 60;
 /// Publisher events read per room; more are ignored (and counted).
 pub const MAX_PUBLISHERS: usize = 16;
-/// Only Hagency Agent puppets are named as the Agent of a published issue.
-pub const AGENT_PUPPET_PREFIX: &str = "@_hagency_agt_";
 const CONTENT_VERSION: u64 = 1;
 
 /// The tracker states, on the wire exactly as the ledger's `issue_track` names them.
@@ -174,15 +172,30 @@ pub struct Member {
 
 /// Published issues a reader may show, from raw state events. A publisher
 /// counts only when its event's state key is its own ID and it is joined
-/// now; each issue only when its Agent is a joined Hagency Agent. An Agent
-/// claimed by two publishers is shown by neither (`conflicts`), so nobody
-/// can make another owner's Agent look busy, done or stuck.
+/// now; each issue only when its Agent is a joined Hagency Agent puppet whose
+/// owner, as the server's roster says (`owner_of`), IS that publisher. A
+/// claim about anyone else's Agent is ignored, so nobody can make another
+/// owner's Agent look busy, done or stuck, nor hide its real state (GPT
+/// integration review). An Agent whose owner is unknown shows nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Accepted {
     pub seen: Vec<Seen>,
     /// Events dropped: wrong state key, sender not joined, over the publisher cap.
     pub ignored_events: usize,
-    pub conflicts: Vec<String>,
+    /// Issues dropped: their Agent is not the publisher's own, or not in the room.
+    pub ignored_claims: usize,
+}
+
+/// A not-finished issue whose publisher has not refreshed it this long is
+/// treated as gone (its watch moved, or its desktop stopped publishing).
+pub const STALE_SECS: i64 = 36 * 60 * 60;
+/// Publishers refresh an unchanged not-finished issue this often.
+pub const REFRESH_SECS: i64 = 12 * 60 * 60;
+
+/// Whether `id` is a Hagency Agent puppet by the shared naming rule. A naming
+/// test only: authority comes from the roster's owner (`owner_of`).
+pub fn is_puppet(id: &str) -> bool {
+    id.strip_prefix('@').and_then(|rest| rest.split_once(':')).is_some_and(|(local, _)| hagency_core::puppet::is_puppet_localpart(local))
 }
 
 /// Every Matrix ID [`accepted`] will ask `member` about, bounded.
@@ -196,10 +209,8 @@ pub fn people_in(events: &[Value]) -> BTreeSet<String> {
     out
 }
 
-pub fn accepted(events: &[Value], member: impl Fn(&str) -> Member) -> Accepted {
+pub fn accepted(events: &[Value], member: impl Fn(&str) -> Member, owner_of: impl Fn(&str) -> Option<String>, now: i64) -> Accepted {
     let mut out = Accepted::default();
-    let mut claims: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut kept = Vec::new();
     let mut publishers = 0;
     for event in events.iter().filter(|e| e["type"] == ISSUE_STATUS_STATE_TYPE) {
         let sender = event["sender"].as_str().unwrap_or_default();
@@ -211,14 +222,15 @@ pub fn accepted(events: &[Value], member: impl Fn(&str) -> Member) -> Accepted {
         }
         publishers += 1;
         for issue in issues_of(&event["content"]) {
-            if issue.agent.starts_with(AGENT_PUPPET_PREFIX) && member(&issue.agent).joined {
-                claims.entry(issue.agent.clone()).or_default().insert(sender.to_owned());
-                kept.push(Seen { issue, publisher: sender.to_owned() });
+            let own = is_puppet(&issue.agent) && member(&issue.agent).joined && owner_of(&issue.agent).as_deref() == Some(sender);
+            let stale = !issue.state.is_terminal() && now.saturating_sub(issue.updated_at) > STALE_SECS;
+            if own && !stale {
+                out.seen.push(Seen { issue, publisher: sender.to_owned() });
+            } else {
+                out.ignored_claims += 1;
             }
         }
     }
-    out.conflicts = claims.iter().filter(|(_, by)| by.len() > 1).map(|(agent, _)| agent.clone()).collect();
-    out.seen = kept.into_iter().filter(|s| !out.conflicts.contains(&s.issue.agent)).collect();
     out
 }
 

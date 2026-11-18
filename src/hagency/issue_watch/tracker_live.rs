@@ -62,8 +62,15 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
         || watched.open_issues.iter().any(|i| watched.seen.contains(&i.number) && !tracked.contains(&i.number));
     let now = chrono::Utc::now().timestamp();
     if !busy {
-        // Only finished records: their lines need no GitHub read.
-        return Ok(Followups { lines: tracks.iter().filter(ours).filter_map(tracker::terminal_line).collect(), ..Default::default() });
+        // Only finished records: their lines need no GitHub read. The room's
+        // copy is still brought up to date: a final write that failed is
+        // retried here (a no-op without network once it went through, GPT review).
+        let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
+        let mut done = Followups { lines: tracks.iter().filter(ours).filter_map(tracker::terminal_line).collect(), ..Default::default() };
+        if let Err(error) = share(worker, watched, &room, &[]).await {
+            done.errors.push(error);
+        }
+        return Ok(done);
     }
     let login = fetch_login(worker.client, GITHUB_API, worker.token).await.map_err(|e| e.to_string())?;
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, repo, worker.token).await.map_err(|e| e.to_string())?;

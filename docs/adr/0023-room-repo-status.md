@@ -53,16 +53,21 @@ type `io.hagency.issue_status`, **state key = the publisher's own Matrix ID**.
 ### 2. Read: what a reader accepts
 
 `repo_status::accepted` keeps a publisher's event only when its state key is
-its own ID and it is a **joined** member now (at most 16 publishers), and each
-issue only when its Agent is a **joined Hagency Agent puppet**
-(`@_hagency_agt_…`). An Agent claimed by two publishers is shown by neither
-(and a note says so). A lone false claim about another owner's Agent cannot be
-told apart from the room alone, so the table always names the publisher by
-display name **and Matrix ID** ("bird-claude (Betty, @betty:hs)"): a display
-name can be copied, the ID cannot. The members list's activity line uses
-published state only from the Agent's owner as the server's roster names it.
-Everything read is data, never instructions; titles are flattened to one line
-and cannot add table columns.
+its own ID and it is a **joined** member now (at most 16 accepted publishers),
+and each issue only when its Agent is a **joined Hagency Agent puppet** (the
+shared `hagency_core::puppet` naming rule, so readable IDs such as
+`@_hagency_csheargm_bird-claude` count) **whose owner, as the server's
+listings say, is that publisher** (this owner's Agents list plus the room's
+project roster; the console caches it 5 minutes, the desktop uses the members
+list's roster). A claim about anyone else's Agent is ignored without hiding the
+real owner's state; an Agent whose owner is unknown shows nothing (fail
+closed). A not-finished issue its publisher has not refreshed for 36 hours is
+dropped (publishers refresh unchanged ones every 12 hours), so a watch that
+moved or a desktop that stopped publishing does not show work in progress
+forever; a watch that moves within one running desktop also has its issues
+withdrawn from the old room. Everything read is data, never instructions;
+titles are flattened to one line and cannot add table columns. Run cards count
+as tasks only from puppets the roster names.
 
 ### 3. The room's repositories
 
@@ -130,11 +135,12 @@ set, for any requester who is a joined member:
 The query runs with the asking Agent's own token, so the part that comes from
 room state (linked, or published by someone else) is recorded **only for
 repositories GitHub shows without a token** (public; checked unauthenticated,
-remembered an hour). A room admin can therefore never make another owner's
+remembered 60 seconds; a failed check counts as private). A room admin can therefore never make another owner's
 Agent read that owner's private repository without a card. The host records
 this part per (room, requester) before each turn (`watch_trust::room_scope`,
-15-minute expiry), only after checking the requester is joined; an unreadable
-room or an unchecked visibility records nothing. Writes, other
+5-minute expiry), only after checking the requester is joined; it is cleared
+first, so a turn whose preparation times out keeps nothing from an earlier
+turn; an unreadable room or an unchecked visibility records nothing. Writes, other
 repositories and other rooms keep the owner's rules (a card under Ask, a
 refusal under Deny).
 
@@ -149,9 +155,21 @@ binds the pane to the room before choosing the tab; a run card edit must keep
 the run's id and requester, and finished runs stay a day from when they
 finished. Not adopted now (follow-ups): withdrawing published states of a
 watch that was removed, paused or moved to another room (they age out after
-7 days only on that publisher's next write); two desktops of one owner racing
+7 days only on that publisher's next write — now also dropped by readers
+after 36 h if not finished); two desktops of one owner racing
 the same event; the check-then-write window if a room turns on encryption
-mid-publish; the 15-minute scope record outliving an unlink within that time.
+mid-publish; the scope record (now 5 minutes, cleared at each turn) outliving an unlink within one long turn.
+
+## Integration review (2026-11-17, integration/final-1117 @ 38b68cf8)
+
+Adopted: 60 s visibility cache, fail closed; scope cleared before each turn's
+preparation; published states only from the Agent's roster owner (no
+conflict hiding); the shared puppet naming rule plus roster check for run
+cards; withdrawal from the old room and reader-side staleness; idle checks
+retry a failed final publish; link/unlink use the clicking account's client
+and refuse after an account switch; link changes serialized per process and
+re-read before writing. Cross-device concurrent link edits remain last-writer
+wins (Matrix state has no compare-and-swap).
 
 ## Consequences
 

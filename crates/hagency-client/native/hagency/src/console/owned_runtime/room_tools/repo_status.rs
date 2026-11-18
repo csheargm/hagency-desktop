@@ -24,6 +24,8 @@ pub(super) trait StatusIo {
     async fn own_watches(&self) -> Result<Vec<OwnWatch>, &'static str>;
     /// `agent`: read with that Agent's token; `None`: a public read.
     async fn github(&self, repo: &str, agent: Option<&str>, since: i64) -> Result<Vec<GithubItem>, String>;
+    /// Agent puppet → owner, from the server's listings only.
+    async fn owners(&self) -> std::collections::BTreeMap<String, String>;
     fn now(&self) -> i64;
 }
 
@@ -59,6 +61,9 @@ impl StatusIo for std::sync::Arc<Source> {
             .await
             .map_err(|e| short(&e.to_string()))
     }
+    async fn owners(&self) -> std::collections::BTreeMap<String, String> {
+        super::owners::of_room(self).await
+    }
     fn now(&self) -> i64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
     }
@@ -76,7 +81,8 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
         (Err(code), _) | (_, Err(code)) => return json!({"error": code}).to_string(),
     };
     let member = |id: &str| room.members.get(id).cloned().unwrap_or(Member::default());
-    let accepted = status::accepted(&room.events, member);
+    let owners = io.owners().await;
+    let accepted = status::accepted(&room.events, member, |agent| owners.get(agent).cloned(), io.now());
     let watched = own.iter().map(|w| w.repo.as_str()).chain(accepted.seen.iter().map(|s| s.issue.repo.as_str()));
     let all = room_repos(watched, &room.linked);
     let repos: Vec<String> = match requested {
@@ -90,8 +96,8 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
     if room.events.is_empty() && room.linked.is_empty() && own.is_empty() {
         notes.push("No repository is watched for or linked to this room.".to_owned());
     }
-    if !accepted.conflicts.is_empty() {
-        notes.push(format!("{} Agent(s) were claimed by more than one owner; their published states are not shown.", accepted.conflicts.len()));
+    if accepted.ignored_claims > 0 {
+        notes.push(format!("{} published state(s) were not from the Agent's own owner, or were stale, and are not shown.", accepted.ignored_claims));
     }
     let name = |id: &str| room.members.get(id).and_then(|m| m.name.clone()).unwrap_or_else(|| id.to_owned());
     let (now, mut tables) = (io.now(), Vec::new());
@@ -120,7 +126,8 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
 /// visibility that cannot be checked, records nothing: nothing is widened.
 pub(super) async fn record_read_scope(source: &std::sync::Arc<Source>) {
     let d = &source.gate.expected;
-    let named = source.device.read_scope(&d.room_id, &d.requester_mxid).await.unwrap_or_default();
+    let owners = super::owners::of_room(source).await;
+    let named = source.device.read_scope(&d.room_id, &d.requester_mxid, &owners, source.now()).await.unwrap_or_default();
     let client = crate::issue_watch::new_client();
     let mut public = Vec::new();
     for repo in named.into_iter().take(MAX_SCOPE_CHECKS) {
@@ -133,11 +140,13 @@ pub(super) async fn record_read_scope(source: &std::sync::Arc<Source>) {
 
 /// Visibility checks per turn; a room naming more repositories widens only these.
 const MAX_SCOPE_CHECKS: usize = 20;
-const VISIBILITY_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// A repository that turns private stops being card-free within this long (GPT integration review).
+const VISIBILITY_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 type Visibility = std::collections::HashMap<String, (std::time::Instant, bool)>;
 static VISIBILITY: std::sync::LazyLock<std::sync::Mutex<Visibility>> = std::sync::LazyLock::new(Default::default);
 
-/// Whether GitHub shows `repo` without a token, remembered for an hour.
+/// Whether GitHub shows `repo` without a token, remembered for [`VISIBILITY_TTL`];
+/// a failed check is never remembered and counts as private.
 async fn public_repo(client: &crate::issue_watch::Client, repo: &str) -> bool {
     let key = repo.to_ascii_lowercase();
     // A poisoned lock still holds a whole map: inserts are single operations.
