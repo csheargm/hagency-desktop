@@ -47,7 +47,7 @@ fn target() -> Target {
 }
 fn check(fake: &Fake) -> Gate {
     let agent = owned_user_id!("@_hagency_agt_bird_claude:alpha");
-    let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
+    let ctx = LoopCtx { agent: &agent, name: "bird-claude", maintainer: true, permission: Some("admin") };
     let ready = json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true});
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow_gate(fake, &target(), &ready, &ctx, true)).unwrap()
 }
@@ -80,7 +80,7 @@ fn pr_94_the_refused_merge_is_held_on_the_budget_then_posted_again_once() {
 #[test]
 fn a_re_send_is_a_new_message_and_each_round_has_its_own_line() {
     let agent = owned_user_id!("@_hagency_agt_bird_claude:alpha");
-    let approved = LoopNotice::Approved { target: target(), fixer: agent };
+    let approved = LoopNotice::Approved { target: target(), fixer: agent, name: "bird-claude".into() };
     assert_eq!(approved.txn_id_again("agt", 0), approved.txn_id("agt"), "the first post keeps its id");
     assert_ne!(approved.txn_id_again("agt", 1), approved.txn_id("agt"));
     assert_ne!(approved.txn_id_again("agt", 1), approved.txn_id_again("agt", 2));
