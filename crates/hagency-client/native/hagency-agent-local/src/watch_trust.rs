@@ -173,8 +173,11 @@ pub(crate) fn recheck(path: Option<std::path::PathBuf>, proposal: ToolProposal, 
     Box::new(move || {
         let Some(path) = &path else { return false };
         let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
-        // A room member's step also needs the owner's "fix" choice, read afresh (GPT review).
+        // The same admission as the authorization (no policy saved since, no refused
+        // requests), and the requester's right to fix: the owner, or a room member while
+        // the owner's "fix" choice for this room is on — both read afresh (GPT reviews).
         fixes_for(&db, &proposal, &owner).unwrap_or(false)
+            && crate::still_admitted(&db, &proposal)
             && trusted_repos(&db, &proposal).is_ok_and(|r| r.iter().any(|t| t.eq_ignore_ascii_case(&repo)))
     })
 }

@@ -160,6 +160,30 @@ fn proposal(root: &Path, room: &str, tool: &str, risk: &str) -> ToolProposal {
         canonical_directory: root.to_string_lossy().into(), risk: risk.into(), policy_revision: [1, 1, 1], expires: 1,
     }
 }
+/// `p` as a run admitted under Ask-owner rules (binding, policies, dispatch).
+fn admitted(ledger: &mut Ledger, p: ToolProposal) -> ToolProposal {
+    admitted_by(ledger, OWNER, p)
+}
+/// Admits `p`'s run for `owner`'s ledger, so a pre-push recheck has an authorization to follow.
+pub(super) fn admitted_by(ledger: &mut Ledger, owner: &str, mut p: ToolProposal) -> ToolProposal {
+    ledger.register_binding(owner, &p.scope).unwrap();
+    let ask = crate::Policy {
+        budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime },
+        requests: crate::RequestPolicy::Allow,
+        high_risk: crate::ToolPolicy::AskOwner,
+    };
+    for layer in [crate::Layer::Agent, crate::Layer::Room, crate::Layer::Requester] {
+        // A ledger built by `run_under` already holds these layers (revision 0): keep them.
+        match ledger.set_policy(owner, &p.scope, layer, 0, &ask) {
+            Ok(_) | Err(crate::Error::Conflict) => {}
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+    let call = format!("call-{}", p.dispatch);
+    ledger.reserve(&p.scope, &call, &p.dispatch, 10, 10).unwrap();
+    p.expires = 100;
+    p
+}
 fn watch(ledger: &mut Ledger, mode: WatchMode, trusted: bool) {
     let setting = WatchSetting { mode, label: String::new(), repo: REPO.into(), room_id: ROOM.into(), push_trusted: trusted };
     ledger.set_issue_watch(OWNER, "a", setting, 1).unwrap();
@@ -309,6 +333,8 @@ fn a_work_list_entry_with_push_freely_trusts_its_repo_and_room() {
     ledger.set_owner_rules(OWNER, "a", REPO, Some(entry(true))).unwrap();
     assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_some());
     assert!(pinned(&ledger.db, &proposal(&root, "!other:example.org", "claude.Bash", "high"), OWNER).unwrap().is_none(), "another Room");
+    // The recheck follows an authorization: the run must be admitted.
+    let here = admitted(&mut ledger, here);
     let still = ledger.push_trust_recheck(&here, REPO);
     assert!(still());
     assert!(!ledger.push_trust_recheck(&here, "acme/other")(), "trust in one repository is not trust in another");

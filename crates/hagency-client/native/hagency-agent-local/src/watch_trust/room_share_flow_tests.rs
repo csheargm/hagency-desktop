@@ -94,12 +94,17 @@ fn turning_fix_off_stops_a_members_push_at_the_last_check() {
     ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare { fix: true, ..RoomShare::default() }).unwrap();
     let mut push = fix_flow_tests::proposal(&r.root, fix_flow_tests::ROOM, "claude.Bash", json!({"command": "git -C app push origin fix/x"}));
     push.scope.requester = "@anna:example.org".into();
+    // The recheck follows an authorization: the member's run must be admitted (its own dispatch).
+    push.dispatch = "d-member".into();
+    let push = super::tests::admitted_by(&mut ledger, owner, push);
     let still = ledger.push_trust_recheck(&push, fix_flow_tests::REPO);
     assert!(still(), "on: the push goes ahead");
     ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare::default()).unwrap();
     assert!(!still(), "off: refused right before it publishes");
     let mut own = push.clone();
     own.scope.requester = owner.into();
+    own.dispatch = "d-own".into();
+    let own = super::tests::admitted_by(&mut ledger, owner, own);
     assert!(ledger.push_trust_recheck(&own, fix_flow_tests::REPO)(), "the owner's own push is unchanged");
 }
 

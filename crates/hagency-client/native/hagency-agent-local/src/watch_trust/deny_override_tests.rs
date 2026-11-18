@@ -121,3 +121,40 @@ fn a_rule_saved_after_admission_ends_the_override_for_that_run() {
     fresh.policy_revision = [1, 2, 1];
     assert_eq!(r.ledger.trusted_publish(OWNER, &fresh, 11).unwrap(), None);
 }
+
+/// Integration GPT review: the host's last check before a push re-reads
+/// the same admission, not only the watch: a rule saved after the run was
+/// admitted, or Requests Deny, stops the push in flight.
+#[test]
+fn the_pre_push_recheck_rereads_the_admission() {
+    let mut r = denied();
+    let push = bash(&r.root, "git -C app push -u origin fix/x");
+    let still = r.ledger.push_trust_recheck(&push, REPO);
+    assert!(still(), "admitted and trusted");
+    let mut stranger = push.clone();
+    stranger.scope.requester = "@mallory:example.org".into();
+    assert!(!r.ledger.push_trust_recheck(&stranger, REPO)(), "only the owner's own run");
+    let refuse = crate::Policy {
+        budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime },
+        requests: crate::RequestPolicy::Deny,
+        high_risk: ToolPolicy::Deny,
+    };
+    r.ledger.set_policy(OWNER, &push.scope, crate::Layer::Room, 1, &refuse).unwrap();
+    assert!(!still(), "a rule saved since admission stops the push");
+    let mut fresh = push;
+    fresh.policy_revision = [1, 2, 1];
+    assert!(!r.ledger.push_trust_recheck(&fresh, REPO)(), "Requests Deny stops it whatever the revision");
+}
+
+/// Integration GPT review: `--fill*` and `--template` read the git checkout
+/// gh runs in, which need not be the watched repository's: they ask.
+#[test]
+fn pr_autofill_and_templates_ask() {
+    let mut r = denied();
+    let base = format!("gh pr create --repo {REPO} --head fix/x");
+    assert!(r.ledger.trusted_publish(OWNER, &bash(&r.root, &format!("{base} --title t --body b")), 11).unwrap().is_some());
+    for extra in ["--fill", "-f", "--fill-first", "--fill-verbose", "--title t --template bug.md", "-T bug.md"] {
+        let line = format!("{base} {extra}");
+        assert_eq!(r.ledger.trusted_publish(OWNER, &bash(&r.root, &line), 11).unwrap(), None, "{line}");
+    }
+}

@@ -5,11 +5,14 @@ use crate::outside;
 use std::path::Path;
 
 /// `gh pr create` options that take a value / take none.
-const CREATE_VALUED: [&str; 22] = [
+/// No `--fill*` and no `--template`: those read commit messages or files
+/// from the git checkout gh runs in, which need not be the watched
+/// repository's (integration GPT review, Nov 17); the body is explicit.
+const CREATE_VALUED: [&str; 20] = [
     "-a", "--assignee", "-B", "--base", "-b", "--body", "-H", "--head", "-l", "--label", "-m", "--milestone",
-    "-p", "--project", "-r", "--reviewer", "-t", "--title", "-T", "--template", "-F", "--body-file",
+    "-p", "--project", "-r", "--reviewer", "-t", "--title", "-F", "--body-file",
 ];
-const CREATE_FLAGS: [&str; 7] = ["-d", "--draft", "-f", "--fill", "--fill-first", "--fill-verbose", "--no-maintainer-edit"];
+const CREATE_FLAGS: [&str; 3] = ["-d", "--draft", "--no-maintainer-edit"];
 /// `gh pr edit` options that take a value / take none.
 const EDIT_VALUED: [&str; 18] = [
     "--add-assignee", "--add-label", "--add-project", "--add-reviewer", "-B", "--base", "-b", "--body", "-F",
