@@ -60,6 +60,14 @@ fn a_reply_addressing_someone_else_is_sent_as_typed() {
     let mut quoting = RoomMessageEventContent::text_plain("this?");
     assert!(!address_followup(&mut quoting, &claude, Some(&bob)));
     assert!(quoting.mentions.is_none());
+    // A command, `!` line or emote is addressed by its own rules.
+    for body in ["/status@anna-codex", "!help", "  /me waves"] {
+        let mut command = RoomMessageEventContent::text_plain(body);
+        assert!(!address_followup(&mut command, &claude, None), "{body}");
+        assert!(command.mentions.is_none());
+    }
+    let mut emote = RoomMessageEventContent::emote_plain("waves");
+    assert!(!address_followup(&mut emote, &claude, None));
     // Already mentioning the Agent, or quoting it, stays one mention.
     let mut again = typed(&[&claude]);
     assert!(address_followup(&mut again, &claude, Some(&claude)));
@@ -110,9 +118,53 @@ fn the_hint_shows_the_agent_and_can_be_removed() {
     // The same thread keeps the removal; leaving the thread clears it.
     hint_ref.set_target(&mut cx, Some(target));
     assert_eq!(hint_ref.active(), None);
+    // GPT review: the Agent's name resolving later is the same Agent, so the
+    // removal holds; only another Agent offers the hint again.
+    hint_ref.set_target(&mut cx, Some(FollowupTarget { agent: id(CLAUDE), name: "Anna Claude".into() }));
+    assert_eq!(hint_ref.active(), None);
+    assert!(!hint.visible());
+    hint_ref.set_target(&mut cx, Some(FollowupTarget { agent: id(CODEX), name: "anna-codex".into() }));
+    assert_eq!(hint_ref.active(), Some(id(CODEX)));
+    // Quoting someone else's message hides it; quoting the Agent does not.
+    hint_ref.set_quoting(&mut cx, Some(&id(BOB)));
+    assert!(!hint.visible());
+    assert_eq!(hint_ref.active(), None);
+    hint_ref.set_quoting(&mut cx, Some(&id(CODEX)));
+    assert_eq!(hint_ref.active(), Some(id(CODEX)));
+    hint_ref.set_quoting(&mut cx, None);
     hint_ref.set_target(&mut cx, None);
     assert!(!hint.visible());
     assert_eq!(hint_ref.active(), None);
+}
+
+/// The composer takes a target only for the thread it is showing.
+#[test]
+fn the_composer_takes_a_target_only_for_its_own_thread() {
+    use crate::room::room_input_bar::RoomInputBarWidgetRefExt;
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let bar = cx.with_vm(|vm| {
+        makepad_widgets::script_mod(vm);
+        crate::app::register_widgets(vm);
+        let value = script_eval!(vm, {mod.widgets.RoomInputBar {}});
+        let widget = WidgetRef::script_from_value(vm, value);
+        widget.register_as_ui_root(vm);
+        widget
+    });
+    let room: ruma::OwnedRoomId = "!room:test".try_into().unwrap();
+    let thread = |root: &str| TimelineKind::Thread { room_id: room.clone(), thread_root_event_id: root.try_into().unwrap() };
+    let target = || Some(FollowupTarget { agent: id(CLAUDE), name: "anna-claude".into() });
+    let input = bar.as_room_input_bar();
+    input.set_room_context(&mut cx, WidgetUid(1), thread("$a:test"), None);
+    input.set_thread_followup(&mut cx, &thread("$b:test"), target());
+    assert_eq!(bar.widget(&mut cx, ids!(thread_followup_hint)).as_thread_followup_hint().active(), None, "another thread's target");
+    input.set_thread_followup(&mut cx, &thread("$a:test"), target());
+    assert_eq!(bar.widget(&mut cx, ids!(thread_followup_hint)).as_thread_followup_hint().active(), Some(id(CLAUDE)));
+    // Leaving for the room clears it; the main timeline never takes one.
+    let main = TimelineKind::MainRoom { room_id: room.clone() };
+    input.set_room_context(&mut cx, WidgetUid(1), main.clone(), None);
+    assert_eq!(bar.widget(&mut cx, ids!(thread_followup_hint)).as_thread_followup_hint().active(), None);
+    input.set_thread_followup(&mut cx, &main, target());
+    assert_eq!(bar.widget(&mut cx, ids!(thread_followup_hint)).as_thread_followup_hint().active(), None);
 }
 
 #[test]

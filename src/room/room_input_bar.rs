@@ -1276,7 +1276,9 @@ impl RoomInputBar {
         reply_preview_content.set_visible(cx, true);
         reply_preview_content.as_collapsible_preview().reset_measured_height();
         reply_preview_content.view(cx, ids!(preview_content)).redraw_texture_cache();
+        let quoted = replying_to.0.sender().to_owned();
         self.replying_to = Some(replying_to);
+        self.view.thread_followup_hint(cx, ids!(thread_followup_hint)).set_quoting(cx, Some(&quoted));
 
         // 2. Hide other views that are irrelevant to a reply, e.g.,
         //    the `EditingPane` would improperly cover up the ReplyPreview.
@@ -1352,6 +1354,7 @@ impl RoomInputBar {
     fn clear_replying_to(&mut self, cx: &mut Cx) {
         self.view(cx, ids!(replying_preview)).set_visible(cx, false);
         self.replying_to = None;
+        self.view.thread_followup_hint(cx, ids!(thread_followup_hint)).set_quoting(cx, None);
     }
 
     /// Shows the editing pane to allow the user to edit the given event.
@@ -1771,10 +1774,17 @@ impl RoomInputBarRef {
 
     // TODO(R4): room_input_bar.rs is over budget; split thread mode (banner, follow-up hint) out.
     /// Shows which Agent a plain reply in this thread continues with, if any.
-    pub fn set_thread_followup(&self, cx: &mut Cx, target: Option<crate::room::thread_followup::FollowupTarget>) {
+    /// `kind` is the timeline `target` was read from: a target for another
+    /// thread, or for a direct room (where every message already reaches the
+    /// Agent), is dropped.
+    pub fn set_thread_followup(&self, cx: &mut Cx, kind: &TimelineKind, target: Option<crate::room::thread_followup::FollowupTarget>) {
         let Some(inner) = self.borrow() else { return };
-        let target = target.filter(|_| inner.in_thread());
-        inner.view.thread_followup_hint(cx, ids!(thread_followup_hint)).set_target(cx, target);
+        if inner.timeline_kind.as_ref() != Some(kind) { return; }
+        let direct = cx.has_global::<RoomsListRef>() && cx.get_global::<RoomsListRef>().is_direct_room(kind.room_id()).unwrap_or(false);
+        let target = target.filter(|_| inner.in_thread() && !direct);
+        let hint = inner.view.thread_followup_hint(cx, ids!(thread_followup_hint));
+        hint.set_target(cx, target);
+        hint.set_quoting(cx, inner.replying_to.as_ref().map(|(event, _)| event.sender()));
     }
 
     /// Save a snapshot of the UI state of this `RoomInputBar`.

@@ -20,7 +20,7 @@ use makepad_widgets::*;
 use matrix_sdk_ui::timeline::{MsgLikeKind, TimelineDetails, TimelineItem, TimelineItemContent};
 use ruma::{
     OwnedUserId, UserId,
-    events::{Mentions, room::message::RoomMessageEventContent},
+    events::{Mentions, room::message::{MessageType, RoomMessageEventContent}},
 };
 use std::sync::Arc;
 
@@ -93,6 +93,12 @@ pub fn address_followup(
     if reply_to.is_some_and(|sender| sender != agent) {
         return false;
     }
+    // Only an ordinary text reply: a `/command@agent`, `!command`, emote or
+    // notice is addressed (or not) by its own rules and is sent as typed.
+    let MessageType::Text(text) = &message.msgtype else { return false };
+    if text.body.trim_start().starts_with(['/', '!']) {
+        return false;
+    }
     if let Some(mentions) = &message.mentions {
         if mentions.room || mentions.user_ids.iter().any(|u| u != agent) {
             return false;
@@ -128,8 +134,10 @@ pub fn target_in(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineItem>>) -
 pub struct ThreadFollowupHint {
     #[deref] view: View,
     #[rust] target: Option<FollowupTarget>,
-    /// The user removed the hint for this target.
+    /// The user removed the hint for this target's Agent.
     #[rust] removed: bool,
+    /// The draft quotes someone other than the Agent, so it addresses them.
+    #[rust] quoting_other: bool,
 }
 
 impl Widget for ThreadFollowupHint {
@@ -149,13 +157,23 @@ impl ThreadFollowupHint {
     /// The reply is sent as typed until the thread or its Agent changes.
     fn remove(&mut self, cx: &mut Cx) {
         self.removed = true;
-        self.view.set_visible(cx, false);
+        self.refresh(cx);
+    }
+
+    fn active(&self) -> Option<&FollowupTarget> {
+        self.target.as_ref().filter(|_| !self.removed && !self.quoting_other)
+    }
+
+    fn refresh(&mut self, cx: &mut Cx) {
+        let shown = self.active().is_some();
+        self.view.set_visible(cx, shown);
         self.view.redraw(cx);
     }
 }
 
 impl ThreadFollowupHintRef {
-    /// Shows `target`, or hides the hint. A new target clears a removal.
+    /// Shows `target`, or hides the hint. Only a different Agent (or none)
+    /// clears a removal: a name that resolves later is the same Agent.
     pub fn set_target(&self, cx: &mut Cx, target: Option<FollowupTarget>) {
         let Some(mut inner) = self.borrow_mut() else { return };
         if inner.target == target { return; }
@@ -163,17 +181,26 @@ impl ThreadFollowupHintRef {
             let text = crate::i18n::tr(REPLYING_TO_TEXT).replace("{0}", &t.name);
             inner.view.label(cx, ids!(followup_text)).set_text(cx, &text);
         }
-        inner.removed = false;
-        inner.view.set_visible(cx, target.is_some());
+        if inner.target.as_ref().map(|t| &t.agent) != target.as_ref().map(|t| &t.agent) {
+            inner.removed = false;
+        }
         inner.target = target;
-        inner.view.redraw(cx);
+        inner.refresh(cx);
+    }
+
+    /// The sender of the message the draft quotes, if any. Quoting someone
+    /// other than the Agent addresses them, so the hint steps aside.
+    pub fn set_quoting(&self, cx: &mut Cx, quoted: Option<&UserId>) {
+        let Some(mut inner) = self.borrow_mut() else { return };
+        let other = quoted.is_some_and(|q| inner.target.as_ref().is_some_and(|t| t.agent != q));
+        if inner.quoting_other == other { return; }
+        inner.quoting_other = other;
+        inner.refresh(cx);
     }
 
     /// The Agent a plain reply should mention now: shown and not removed.
     pub fn active(&self) -> Option<OwnedUserId> {
-        let inner = self.borrow()?;
-        if inner.removed { return None; }
-        inner.target.as_ref().map(|t| t.agent.clone())
+        self.borrow()?.active().map(|t| t.agent.clone())
     }
 }
 

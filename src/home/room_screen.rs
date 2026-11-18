@@ -3062,7 +3062,7 @@ impl RoomScreen {
                 own_send_indices(&tl.items, tl.kind.thread_root_event_id().is_none());
         }
         // TODO(R4): room_screen.rs is over budget; split timeline-derived composer state out.
-        let followup = items_changed.then(|| crate::room::thread_followup::target_in(&tl.kind, &tl.items));
+        let followup = items_changed.then(|| (tl.kind.clone(), crate::room::thread_followup::target_in(&tl.kind, &tl.items)));
 
         let blocked_send = tl.index_of_first_own_failed
             .and_then(|i| tl.items.get(i))
@@ -3091,8 +3091,8 @@ impl RoomScreen {
 
         self.view.failed_send_banner(cx, ids!(failed_send_banner))
             .show_or_hide(cx, blocked_send);
-        if let Some(followup) = followup {
-            self.view.room_input_bar(cx, ids!(room_input_bar)).set_thread_followup(cx, followup);
+        if let Some((kind, followup)) = followup {
+            self.view.room_input_bar(cx, ids!(room_input_bar)).set_thread_followup(cx, &kind, followup);
         }
 
         if let Some(resets) = identity_resets {
@@ -4224,7 +4224,7 @@ impl RoomScreen {
             tl_state.tombstone_info.as_ref(),
             tl_state.is_encrypted,
         );
-        room_input_bar.set_thread_followup(cx, crate::room::thread_followup::target_in(&tl_state.kind, &tl_state.items));
+        room_input_bar.set_thread_followup(cx, &tl_state.kind, crate::room::thread_followup::target_in(&tl_state.kind, &tl_state.items));
     }
 
     /// Sets this `RoomScreen` widget to display the timeline for the given room.
