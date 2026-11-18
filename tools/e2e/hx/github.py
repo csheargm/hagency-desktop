@@ -1,6 +1,7 @@
 """GitHub reads and writes through the logged-in `gh` CLI (csheargm).
 
 Only the sandbox repo is ever written, and only items carrying TEST_MARK."""
+import base64
 import functools
 import json
 import os
@@ -98,6 +99,21 @@ def branches_naming_issue(number: int) -> list:
     names = gh("api", f"repos/{config.SANDBOX_REPO}/branches?per_page=100", "--jq", "[.[].name]")
     pattern = re.compile(rf"issue-?{number}(\b|[^0-9])")
     return [n for n in names if n not in ("main", "master") and pattern.search(n)]
+
+
+def create_test_pr(branch: str, path: str, title: str) -> int:
+    """A one-file `[e2e]` PR on a new branch from main (for review scenarios)."""
+    _require_test_title(title)
+    if not branch.startswith("e2e-"):
+        raise GitHubError(f"test branches start with e2e-: {branch!r}")
+    main = gh("api", f"repos/{config.SANDBOX_REPO}/git/ref/heads/main")["object"]["sha"]
+    gh("api", "-X", "POST", f"repos/{config.SANDBOX_REPO}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={main}")
+    content = base64.b64encode(f"e2e review target {branch}\n".encode()).decode()
+    gh("api", "-X", "PUT", f"repos/{config.SANDBOX_REPO}/contents/{path}", "-f", f"message={title}",
+       "-f", f"content={content}", "-f", f"branch={branch}")
+    url = gh("pr", "create", "-R", config.SANDBOX_REPO, "--head", branch, "--base", "main", "--title", title,
+             "--body", "Automated end-to-end test PR (review target). Closed by the runner.", parse=False)
+    return int(url.strip().rsplit("/", 1)[1])
 
 
 def branch_exists(name: str) -> bool:

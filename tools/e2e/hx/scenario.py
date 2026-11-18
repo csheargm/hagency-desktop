@@ -30,6 +30,7 @@ class Ctx:
     created_issues: list = field(default_factory=list)
     created_branches: list = field(default_factory=list)
     loop_states: dict = field(default_factory=dict)
+    created_prs: list = field(default_factory=list)
     setup_log: list = field(default_factory=list)
     read_dev_room: bool = False  # opt-in: navigates Betty's window to the dev room
 

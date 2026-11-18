@@ -99,29 +99,51 @@ class Flows(unittest.TestCase):
         owner_ui.join_room(fake, "!r", log)
         self.assertEqual(fake.done, [])
 
-    def test_join_opens_room_then_presses_join_and_waits_for_matrix(self):
+    def test_join_presses_join_room_then_yes_in_the_e2e_prompt(self):
         self.statuses = [{"owner:betty": "invite"}] * 2 + [{"owner:betty": "join"}]
-        fake = FakeBridge([ROOM_ROW, n("j", "invite_screen.buttons.accept_button", "Join Room", "press")])
+        modal = "overlay.join_leave_modal.content"
+        screens = [[ROOM_ROW, n("j", "dock.abc.buttons.accept_button", "Join Room", "press")],
+                   [ROOM_ROW, n("j", "dock.abc.buttons.accept_button", "Join Room", "press"),
+                    n("body", f"{modal}.body", 'Are you sure you want to accept this invite to join "e2e room"?'),
+                    n("y", f"{modal}.buttons_view.accept_button", "Yes", "press")]]
+        fake = FakeBridge(screens[0])
+        orig = fake.press
+
+        def press(node, settle=1.0):
+            orig(node, settle)
+            fake.screen = screens[1]
+        fake.press = press
         owner_ui.join_room(fake, "!r", [])
-        self.assertEqual(fake.done, [("click", "r1"), ("press", "j")])
+        self.assertEqual(fake.done, [("click", "r1"), ("press", "j"), ("press", "y")])
+
+    def test_open_prompt_for_another_room_is_not_confirmed(self):
+        modal = "overlay.join_leave_modal.content"
+        other = [n("body", f"{modal}.body", 'Are you sure you want to accept this invite to join "dev room"?'),
+                 n("y", f"{modal}.buttons_view.accept_button", "Yes", "press")]
+        self.assertEqual(owner_ui.confirm_buttons(other), [])
+        self.assertEqual(owner_ui.join_buttons(other), [])
 
     def test_missing_join_button_is_named(self):
         self.statuses = [{"owner:betty": "invite"}]
         fake = FakeBridge([ROOM_ROW])
-        with mock.patch.object(owner_ui, "wait_step", side_effect=[[ROOM_ROW], None]):
+        with mock.patch.object(owner_ui, "wait_step", side_effect=[[ROOM_ROW], None]), \
+                mock.patch.object(owner_ui, "confirm_buttons", return_value=[]):
             with self.assertRaisesRegex(bridge.StepNotFound, "Join Room"):
                 owner_ui.join_room(fake, "!r", [])
 
-    def test_add_agent_walks_plus_picker_invite(self):
+    def test_add_agent_types_the_exact_mxid_then_invites(self):
         self.statuses = [{"agent:bird-codex": "absent"}] * 2 + [{"agent:bird-codex": "join"}]
+        modal = "overlay.invite_modal.content"
         fake = FakeBridge([ROOM_ROW, n("plus", "search_row.new_or_join_button.icon", role="image"),
                            n("add", "menu.plus_add_agent", "Add agent to this room", "press"),
-                           n("pp", "invite_modal.people_section.people_list.Person.person_name", "bird-codex",
-                             role="static_text"),
-                           n("ok", "invite_modal.buttons_view.confirm_button", "Invite", "press")])
-        with mock.patch.object(owner_ui, "_allow_if_private"):
+                           n("title", f"{modal}.title", "Invite to e2e room", role="static_text"),
+                           n("in", f"{modal}.user_id_input", "", "set_text", role="text_field"),
+                           n("ok", f"{modal}.buttons_view.confirm_button", "Invite", "press")])
+        fake.type_into = lambda node, text, settle=0.5: fake.done.append(("type", node["id"], text))
+        with mock.patch.object(owner_ui, "_allow_if_private"), mock.patch.object(owner_ui, "_close_invite_modal"):
             owner_ui.add_agent(fake, "!r", "bird-codex", [])
-        self.assertEqual(fake.done, [("click", "r1"), ("click", "plus"), ("press", "add"), ("click", "pp"),
+        puppet = owner_ui.config.AGENTS["bird-codex"][1]
+        self.assertEqual(fake.done, [("click", "r1"), ("click", "plus"), ("press", "add"), ("type", "in", puppet),
                                      ("press", "ok")])
 
     def test_pending_invite_is_not_resent(self):
