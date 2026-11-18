@@ -132,9 +132,30 @@ fn a_step_runs_pinned_in_the_workspace_and_a_file_edit_never_runs() {
     // The model's environment never reaches the step: only the host's few
     // variables, and an empty gh config.
     let env = run(TrustedStep::Command("env".into()), &r.root, &ctx).unwrap();
-    assert!(env.lines().all(|l| ["PATH=", "HOME=", "USER=", "LOGNAME=", "TMPDIR=", "LANG=", "GH_CONFIG_DIR=", "GIT_TERMINAL_PROMPT=", "GH_PROMPT_DISABLED=", "PWD=", "SHLVL=", "_="].iter().any(|k| l.starts_with(k))), "{env}");
+    assert!(env.lines().all(|l| ["PATH=", "HOME=", "USER=", "LOGNAME=", "TMPDIR=", "LANG=", "GH_CONFIG_DIR=", "GIT_CONFIG_NOSYSTEM=", "GIT_CONFIG_GLOBAL=", "GIT_TERMINAL_PROMPT=", "GH_PROMPT_DISABLED=", "PWD=", "SHLVL=", "_="].iter().any(|k| l.starts_with(k))), "{env}");
     let token = HostCtx::new(Some("agent-token".into()), std::sync::Arc::default(), Box::new(|| true));
     assert!(run(TrustedStep::Command("printf %s \"$GH_TOKEN\"".into()), &r.root, &token).is_ok_and(|t| t == "agent-token"));
+}
+
+/// Regression (Nov 17): a review post with no Agent token reached GitHub as
+/// the owner: the step kept the owner's `HOME`, so `gh` read the owner's
+/// keychain login. A tokenless `gh` step is refused before it runs, and even
+/// a `gh` the guard does not see finds no login in the step's environment
+/// (`gh auth token` is local, no network call).
+#[test]
+fn a_step_without_a_token_never_signs_in_as_the_owner() {
+    let r = cloned();
+    let ctx = HostCtx::new(None, std::sync::Arc::default(), Box::new(|| true));
+    let home = run(TrustedStep::Command("printf %s \"$HOME\"".into()), &r.root, &ctx).unwrap();
+    assert!(std::env::var_os("HOME").is_none_or(|h| h.to_string_lossy() != home), "the step kept the host's HOME");
+    let review = "GH_HOST='github.com' gh pr review 70 --approve -R csheargm/hagency-demo-sandbox -b 'Hagency verdict: APPROVE'";
+    assert_eq!(run(TrustedStep::Command(review.into()), &r.root, &ctx), Err(super::super::step_env::NO_TOKEN.into()), "gh never ran");
+    let blank = HostCtx::new(Some("  ".into()), std::sync::Arc::default(), Box::new(|| true));
+    assert_eq!(run(TrustedStep::Command(review.into()), &r.root, &blank), Err(super::super::step_env::NO_TOKEN.into()));
+    if std::process::Command::new("gh").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let login = run(TrustedStep::Command("env gh auth token --hostname github.com".into()), &r.root, &ctx);
+        assert!(login.is_err(), "gh found a stored login (the owner's)");
+    }
 }
 
 /// User flow: bird-codex, hosted under Deny, is handed issue #1 and fixes

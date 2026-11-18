@@ -254,3 +254,31 @@ fn clean_up_script_runs_under_zsh_bash_and_sh() {
         }
     }
 }
+
+/// Regression (Nov 17): with no Agent token, a host fetch asked
+/// `gh auth git-credential`, which found the owner's keychain login through
+/// the inherited `HOME`. No token means no credential helper and no
+/// credential at all; with one, the helper hands out exactly that token.
+#[test]
+fn a_host_step_without_a_token_gets_no_credential() {
+    let w = world();
+    let scratch = w.root.join("scratch.git");
+    run(host_command(&scratch, None, None).args(["init", "-q", "--bare"]), None, &ctx()).unwrap();
+    let none = host_command(&scratch, Some("https"), None);
+    let home = none.get_envs().find(|(k, _)| *k == "HOME").and_then(|(_, v)| v.map(std::ffi::OsStr::to_owned));
+    assert!(home.is_some() && home != std::env::var_os("HOME"), "the step kept the host's HOME");
+    assert!(!none.get_args().any(|a| a.to_string_lossy().contains("gh auth git-credential")), "gh is asked without a token");
+    assert_eq!(passwords(none), Vec::<String>::new(), "a credential reached the step");
+    if Command::new("gh").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        assert_eq!(passwords(host_command(&scratch, Some("https"), Some("agent-token"))), ["agent-token"]);
+    }
+}
+
+/// The passwords `git credential fill` gets for github.com under `fill`.
+fn passwords(mut fill: Command) -> Vec<String> {
+    fill.args(["credential", "fill"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    let mut child = fill.spawn().unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"protocol=https\nhost=github.com\n\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.strip_prefix("password=")).map(str::to_owned).collect()
+}

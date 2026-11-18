@@ -99,21 +99,23 @@ pub(crate) fn run_with(step: TrustedStep, root: &Path, ctx: &HostCtx, host: impl
 }
 
 /// `command` (a pinned line push trust produced, never the model's text)
-/// under `/bin/sh` in `root`, with the host's small environment, the Agent's
-/// token and an empty gh config (never the daemon's login).
+/// under `/bin/sh` in `root`, in the step environment ([`super::step_env`]):
+/// the Agent's token, an empty gh config and a `HOME` holding only the
+/// host's commit identity (never the daemon's login). With no token, a `gh`
+/// step is refused before it runs.
 fn shell(command: &str, root: &Path, ctx: &HostCtx) -> Result<String, String> {
+    use super::step_env;
+    let token = ctx.token.as_deref().filter(|t| !t.trim().is_empty());
+    if token.is_none() && step_env::runs_gh(command) {
+        return Err(step_env::NO_TOKEN.into());
+    }
     let config = GhConfig::new()?;
+    let home = config.0.join("home");
     let mut sh = Command::new("/bin/sh");
-    sh.arg("-c").arg(command).current_dir(root).env_clear();
-    for key in super::host_git::HOST_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            sh.env(key, value);
-        }
-    }
-    sh.env("GH_CONFIG_DIR", &config.0).env("GIT_TERMINAL_PROMPT", "0").env("GH_PROMPT_DISABLED", "1");
-    if let Some(token) = ctx.token.as_deref() {
-        sh.env(crate::agent_env::GITHUB_TOKEN_VARIABLE, token);
-    }
+    sh.arg("-c").arg(command).current_dir(root);
+    step_env::isolate(&mut sh, &home, &config.0, token);
+    // Pinned git lines unset GIT_CONFIG_GLOBAL, so the same file is $HOME/.gitconfig.
+    sh.env("GIT_CONFIG_GLOBAL", step_env::write_global_config(&home, &step_env::host_identity())?);
     super::host_run::run(&mut sh, None, ctx)
 }
 

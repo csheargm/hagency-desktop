@@ -17,7 +17,7 @@ use std::process::Command;
 
 /// Config of every host network command; with no system or global config
 /// read, this is all the config there is (the scratch repository has none).
-const HOST_CONFIG: [&str; 10] = [
+const HOST_CONFIG: [&str; 9] = [
     "core.hooksPath=/dev/null",
     "core.fsmonitor=false",
     "core.sshCommand=false",
@@ -25,7 +25,6 @@ const HOST_CONFIG: [&str; 10] = [
     "core.alternateRefsCommand=true",
     "protocol.allow=never",
     "credential.helper=",
-    "credential.helper=!gh auth git-credential",
     // Keep fetched objects as one pack the host can hand to the checkout.
     "fetch.unpackLimit=1",
     "transfer.unpackLimit=1",
@@ -40,13 +39,6 @@ const AGENT_CONFIG: [&str; 6] = [
     "protocol.file.allow=always",
     "fetch.recurseSubmodules=false",
 ];
-/// The only variables a host network command inherits. No token variable
-/// and no gh config directory: the Agent's own token is set by
-/// [`host_command`] and gh's config points at an empty directory, so the
-/// daemon's GitHub login is never used for the Agent's step (GPT review, Nov 16).
-pub(crate) const HOST_ENV: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"];
-/// The variable gh reads the Agent's token from.
-const TOKEN_ENV: &str = crate::agent_env::GITHUB_TOKEN_VARIABLE;
 
 /// A step the host runs itself when push trust answers the Agent's command.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -272,25 +264,21 @@ impl Drop for Scratch {
 }
 
 /// `git --git-dir <scratch>` with no system, global or repository config but
-/// [`HOST_CONFIG`], only [`HOST_ENV`] inherited, and `token` (the Agent's)
-/// as the one GitHub credential; gh reads no stored login.
+/// [`HOST_CONFIG`], the step environment ([`super::step_env`]) and `token`
+/// (the Agent's) as the one GitHub credential; gh reads no stored login.
 pub(crate) fn host_command(git_dir: &Path, protocol: Option<&str>, token: Option<&str>) -> Command {
     let mut command = Command::new("git");
-    command.env_clear();
-    for key in HOST_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-    // An empty, host-owned directory: no hosts.yml, so no daemon login.
-    command.env("GH_CONFIG_DIR", git_dir.join("gh-config-none"));
-    if let Some(token) = token {
-        command.env(TOKEN_ENV, token);
-    }
-    command.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_TERMINAL_PROMPT", "0");
+    // Paths inside the host-owned scratch that never exist: no hosts.yml,
+    // no keychain or ~/.gitconfig through HOME, so never the daemon's login.
+    super::step_env::isolate(&mut command, &git_dir.join("home-none"), &git_dir.join("gh-config-none"), token);
     command.arg("--git-dir").arg(git_dir);
     for pin in HOST_CONFIG {
         command.arg("-c").arg(pin);
+    }
+    // gh is asked only for the Agent's own token: without one it would fall
+    // back to a stored (keyring) login, which may be the owner's.
+    if token.is_some_and(|t| !t.trim().is_empty()) {
+        command.arg("-c").arg("credential.helper=!gh auth git-credential");
     }
     if let Some(protocol) = protocol {
         command.arg("-c").arg(format!("protocol.{protocol}.allow=always"));
