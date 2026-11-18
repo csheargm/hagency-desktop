@@ -1,13 +1,16 @@
 """GitHub reads and writes through the logged-in `gh` CLI (csheargm).
 
 Only the sandbox repo is ever written, and only items carrying TEST_MARK."""
+import functools
 import json
+import os
 import re
 import subprocess
 
 from . import config
 
 GH_TIMEOUT_S = 60
+GH_ACCOUNT = "csheargm"  # gh's *active* account can change under us (seen 2026-11-17)
 
 
 class GitHubError(RuntimeError):
@@ -18,10 +21,25 @@ def gh(*args: str, parse=True):
     cmd = ["gh", *args]
     if any("hagency-org" in a for a in args):
         raise GitHubError("hagency-org is off limits")
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S)
+    done = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT_S, env=_pinned_env())
     if done.returncode != 0:
         raise GitHubError(f"{' '.join(cmd[:4])}…: {done.stderr.strip()[:300]}")
     return json.loads(done.stdout) if parse and done.stdout.strip() else done.stdout
+
+
+@functools.lru_cache(maxsize=1)
+def _pinned_env() -> dict:
+    """Environment that makes every gh call act as GH_ACCOUNT, whichever
+    account is active. The token stays in this process's memory and env."""
+    got = subprocess.run(["gh", "auth", "token", "--user", GH_ACCOUNT], capture_output=True,
+                         text=True, timeout=GH_TIMEOUT_S)
+    if got.returncode != 0 or not got.stdout.strip():
+        raise GitHubError(f"gh has no login for {GH_ACCOUNT}")
+    return {**os.environ, "GH_TOKEN": got.stdout.strip()}
+
+
+def whoami() -> str:
+    return gh("api", "user")["login"]
 
 
 def _require_test_title(title: str):

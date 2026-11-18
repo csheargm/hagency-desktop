@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hx import room  # noqa: E402
+from hx import github, room  # noqa: E402
 from hx.report import write_report  # noqa: E402
 from hx.scenario import BLOCKED, FAIL, Ctx, Result  # noqa: E402
 from scenarios import approvals, chat, issues, manual  # noqa: E402
@@ -40,6 +40,8 @@ def run_one(key, fn, ctx) -> Result:
 
 
 def preflight() -> tuple:
+    if github.whoami() != github.GH_ACCOUNT:
+        raise SystemExit(f"gh does not act as {github.GH_ACCOUNT}")
     ctx_room = room.ensure_room()
     setup = room.setup_status(ctx_room)
     wrong = room.verify_agent_names()
