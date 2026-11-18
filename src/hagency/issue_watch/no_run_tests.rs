@@ -10,6 +10,7 @@ use ::hagency::issue_watch::issue_track::{MAX_ATTEMPTS, MAX_FREE_RETRIES, REHAND
 use serde_json::json;
 
 const ME: &str = "@betty:x";
+const ROOM: &str = "!watch:x";
 
 #[test]
 fn three_hand_offs_refused_for_the_budget_are_held_not_failed() {
@@ -63,16 +64,21 @@ fn the_activity_view_names_a_no_run_and_whether_the_budget_is_used_up() {
     first_hand_off(&fake, 92);
     let track = &fake.tracks()[0];
     let req = |extra: serde_json::Value| {
-        let mut r = json!({"requester": ME, "receivedAt": T0 + 1, "outcome": "answered", "issue": {"repo": "acme/app", "number": 92}});
+        let mut r = json!({"requester": ME, "roomId": ROOM, "receivedAt": T0 + 1, "outcome": "answered", "issue": {"repo": "acme/app", "number": 92}});
         r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         r
     };
     let view = |extra, used_up| json!({"requests": [req(extra)], "budgetUsedUp": used_up});
     let seen = |run, budget_out| RunView { run, budget_out };
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), ME, track), seen(RunEnd::NoRun, true));
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), false), ME, track), seen(RunEnd::NoRun, false));
-    assert_eq!(run_end_in(&view(json!({}), true), ME, track), seen(RunEnd::Ended, true), "the budget is carried after a real run too");
-    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), "@other:x", track), seen(RunEnd::Running, true), "only this account's hand-offs");
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), (ME, ROOM), track), seen(RunEnd::NoRun, true));
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), false), (ME, ROOM), track), seen(RunEnd::NoRun, false));
+    assert_eq!(run_end_in(&view(json!({}), true), (ME, ROOM), track), seen(RunEnd::Ended, true), "the budget is carried after a real run too");
+    assert_eq!(run_end_in(&view(json!({"noRun": true}), true), ("@other:x", ROOM), track), seen(RunEnd::Running, true), "only this account's hand-offs");
+    // The watch room's own budget counts; another room's does not (integration GPT review).
+    let rooms = |list: serde_json::Value| json!({"requests": [req(json!({"noRun": true}))], "budgetUsedUp": false, "budgetUsedUpRooms": list});
+    assert_eq!(run_end_in(&rooms(json!([ROOM])), (ME, ROOM), track), seen(RunEnd::NoRun, true));
+    assert_eq!(run_end_in(&rooms(json!(["!elsewhere:x"])), (ME, ROOM), track), seen(RunEnd::NoRun, false));
+    assert_eq!(run_end_in(&rooms(json!([])), (ME, "!elsewhere:x"), track).run, RunEnd::Running, "a run in another room never ends this hand-off");
 }
 
 #[test]

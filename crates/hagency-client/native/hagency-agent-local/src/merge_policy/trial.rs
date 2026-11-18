@@ -45,9 +45,14 @@ pub fn trial_counts(reason: &str) -> Option<(u32, u32)> {
 /// on this device is in its trial: every Agent shares one GitHub login, so
 /// who wrote a pull request is not known reliably before the tracker sees it,
 /// and another Agent past its trial must not merge a trial watch's work (GPT reviews).
+/// Only a watch that still exists holds: on the work list, or the legacy
+/// watch switched on (integration GPT review: a removed watch's trial row,
+/// kept so re-adding it never resets the count, blocked every merge).
 pub(crate) fn hold(ledger: &Ledger, repo: &str) -> Result<Option<Decision>> {
+    const ACTIVE: &str = "SELECT agent FROM watch_trial t WHERE repo=?1 AND (EXISTS(SELECT 1 FROM agent_work w WHERE w.agent=t.agent AND lower(w.repo)=?1) \
+OR EXISTS(SELECT 1 FROM issue_watch i WHERE i.agent=t.agent AND lower(i.repo)=?1 AND i.mode!='off')) ORDER BY agent";
     let agents: Vec<String> = {
-        let mut statement = ledger.db.prepare("SELECT agent FROM watch_trial WHERE repo=? ORDER BY agent")?;
+        let mut statement = ledger.db.prepare(ACTIVE)?;
         let rows = statement.query_map([repo.to_ascii_lowercase()], |r| r.get(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };

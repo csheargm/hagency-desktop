@@ -41,6 +41,8 @@ pub(super) struct Fake {
     pub(super) asked_branch: RefCell<Vec<Option<String>>>,
     /// The reviewer pick's fallback line, when the reviewer is a fallback.
     reviewer_notice: Option<String>,
+    /// The merged pull request GitHub links to an issue, by issue.
+    pub(super) merged_link: RefCell<HashMap<i64, u64>>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
@@ -93,6 +95,9 @@ impl TrackIo for Fake {
     }
     async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String> {
         Ok(self.merged.borrow().contains(&pr).then_some(true))
+    }
+    async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
+        Ok(self.merged_link.borrow().get(&track.number).copied())
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())

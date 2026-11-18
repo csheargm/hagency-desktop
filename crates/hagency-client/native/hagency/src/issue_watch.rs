@@ -13,6 +13,9 @@ pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, cl
 /// The issue loop's follow-through records and state machine (ADR 0020).
 pub use hagency_agent_local::issue_track;
 #[path = "issue_watch_safeguards.rs"] pub mod safeguards;
+// TODO(R4): over budget; split the GitHub reads (fetch_*) from the re-exports into issue_watch_github.rs.
+#[path = "issue_watch_merged.rs"] mod merged;
+pub use merged::fetch_merged_pulls;
 use hagency_agent_local::issue_watch::recent::{closed_url, open_items, parse_closed};
 pub use hagency_runtime::repo_status::table::GithubItem;
 

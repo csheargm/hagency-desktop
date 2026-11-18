@@ -199,12 +199,30 @@ async fn readiness_reports_the_decision_without_taking_the_merge() {
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
     let src = Src::new(vec![file("src/a.rs", 3)]);
     let command = GhPr { dir: temp.path().into(), number: 7, repo: Some(A.into()), head: None, kind: gate::Kind::Merge, body: String::new() };
-    assert!(matches!(merge_readiness(&mut ledger, &command, "anna", &src).await.unwrap().1, Decision::NeedsHuman(_)), "no review yet");
+    assert!(matches!(merge_readiness(&mut ledger, &command, ("anna", "!r:x"), &src).await.unwrap().1, Decision::NeedsHuman(_)), "no review yet");
     let review = gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await;
     ledger.settle_agent_review("rv", review == Some(true)).unwrap();
-    let (view, decision) = merge_readiness(&mut ledger, &command, "anna", &src).await.unwrap();
+    let (view, decision) = merge_readiness(&mut ledger, &command, ("anna", "!r:x"), &src).await.unwrap();
     assert_eq!((view.head_sha.as_str(), decision), (HEAD, Decision::Merge));
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, Some(true), "still available");
+}
+
+// TODO(R4): over budget; split the readiness tests from the loop-step tests into their own file.
+#[tokio::test]
+async fn readiness_counts_only_approvals_given_in_the_watch_room() {
+    // Integration GPT review: an approval in room B made readiness say
+    // "merge" for room A's watch, then the gate (room-scoped) refused it.
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    let src = Src::new(vec![file("src/a.rs", 3)]);
+    let command = GhPr { dir: temp.path().into(), number: 7, repo: Some(A.into()), head: None, kind: gate::Kind::Merge, body: String::new() };
+    let review = gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await;
+    ledger.settle_agent_review("rv", review == Some(true)).unwrap();
+    let (view, other) = merge_readiness(&mut ledger, &command, ("anna", "!elsewhere:x"), &src).await.unwrap();
+    assert!(matches!(other, Decision::NeedsHuman(_)), "another room's approval never counts");
+    assert_eq!(ledger.agent_reviewers_count(&view.url, HEAD, "!elsewhere:x").unwrap(), 0);
+    assert_eq!(merge_readiness(&mut ledger, &command, ("anna", "!r:x"), &src).await.unwrap().1, Decision::Merge);
+    assert_eq!(ledger.agent_reviewers_count(&view.url, HEAD, "!r:x").unwrap(), 1);
 }
 
 #[tokio::test]

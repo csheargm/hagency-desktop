@@ -37,6 +37,9 @@ impl LoopIo for Fake {
     fn requester(&self) -> String {
         "@owner:alpha".into()
     }
+    fn room(&self) -> String {
+        "!watch:alpha".into()
+    }
 }
 
 fn target() -> Target {
@@ -69,7 +72,7 @@ fn pr_94_the_refused_merge_is_held_on_the_budget_then_posted_again_once() {
     assert_eq!(line.body(), "⏸️ Merge of PR #94 in csheargm/hagency-demo-sandbox could not start — the Agent's token budget for this period is used up; it will retry when the budget allows. https://github.com/csheargm/hagency-demo-sandbox/pull/94");
     assert!(matches!(&posted[1], (LoopNotice::Approved { .. }, 1)), "re-sent once, as a new message: {posted:?}");
     let asked = fake.asked.borrow();
-    assert_eq!(asked[0]["stepDue"], json!({"step": "merge", "pr": target().url, "head": HEAD, "requester": "@owner:alpha", "to": "@_hagency_agt_bird_claude:alpha"}));
+    assert_eq!(asked[0]["stepDue"], json!({"step": "merge", "pr": target().url, "head": HEAD, "requester": "@owner:alpha", "to": "@_hagency_agt_bird_claude:alpha", "room": "!watch:alpha"}), "only this room's dispatches count");
     assert_eq!(asked.iter().filter(|c| c.get("claimStep").is_some()).count(), 1, "claimed again after the re-post");
     assert_eq!(asked[1]["stepSaid"]["round"], 0, "the line is acknowledged once posted");
 }
@@ -85,5 +88,7 @@ fn a_re_send_is_a_new_message_and_each_round_has_its_own_line() {
     assert_ne!(line(0, "noRun", false).txn_id("agt"), line(1, "noRun", false).txn_id("agt"));
     assert!(line(1, "noRun", false).body().starts_with("🔁 Merge of PR #94 in csheargm/hagency-demo-sandbox could not start — an owner limit"));
     assert!(line(3, "lost", true).body().contains("will not be retried"), "the give-up line");
+    assert!(line(0, "unseen", false).body().contains("no run of it reached this device") && line(0, "unseen", false).body().ends_with("it will retry. https://github.com/csheargm/hagency-demo-sandbox/pull/94"));
+    assert!(line(1, "unseen", true).body().contains("it was sent again and will not be retried"), "never claims three re-sends");
     assert!(approved.body().contains(&::hagency::issue_watch::merge_command(94, HEAD, "csheargm/hagency-demo-sandbox")), "the ledger reads back this exact command");
 }

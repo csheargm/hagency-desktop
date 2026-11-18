@@ -21,6 +21,14 @@ pub(crate) trait LoopIo {
     fn paused(&self) -> bool;
     /// The account that posts the loop's notices (only its notices' runs count).
     fn requester(&self) -> String;
+    /// The room the notices go to: only its approvals and dispatches count.
+    fn room(&self) -> String;
+}
+
+/// The owner API's readiness question for pull request `number` of `repo`,
+/// judged for this loop's room as the merge gate judges it (integration GPT review).
+pub(crate) fn readiness_ask(io: &impl LoopIo, repo: &str, number: u64) -> Value {
+    json!({"readiness": {"repo": repo, "number": number, "room": io.room()}})
 }
 
 /// Who acts on one pull request and what this owner's GitHub allows.
@@ -73,7 +81,7 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     if merge.taken {
         return Ok(());
     }
-    let readiness = io.review(json!({"readiness": {"repo": target.repo, "number": target.number}})).await?["readiness"].clone();
+    let readiness = io.review(readiness_ask(io, &target.repo, target.number)).await?["readiness"].clone();
     let Some(notice) = merge_notice(target, &readiness, ctx) else { return Ok(()) };
     // A hold has its own once-per-head step, so it never takes `merge`
     // and the merge is still told once the owner fixes it (GPT review).

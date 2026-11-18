@@ -58,6 +58,8 @@ struct DueStep {
     head: String,
     requester: String,
     to: String,
+    /// The room the notices go to: only dispatches received there count.
+    room: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -78,6 +80,16 @@ struct Claim {
 struct Readiness {
     repo: String,
     number: u64,
+    /// The watch's room: only approvals given there count, as for the gate.
+    room: String,
+}
+
+/// A Matrix room ID (`!opaque:server`).
+fn room_id(room: &str) -> Result<()> {
+    if !room.starts_with('!') || !room.contains(':') || room.contains(char::is_whitespace) {
+        return Err(Error::Invalid("room must be a Matrix room ID"));
+    }
+    Ok(())
 }
 
 fn pr_head(step: &Step) -> Result<()> {
@@ -98,13 +110,14 @@ fn assigned(ledger: &Ledger, agent: &str, repo: &str) -> Result<bool> {
 
 /// The re-send of a step whose dispatch never ran (`stepDue`) and the ack of its room line (`stepSaid`).
 fn resend_parts(ledger: &mut Ledger, agent: &str, (due, said): (Option<DueStep>, Option<SaidStep>), now: i64, reply: &mut Value) -> Result<()> {
-    if let Some(DueStep { step, pr, head, requester, to }) = due {
+    if let Some(DueStep { step, pr, head, requester, to, room }) = due {
         let step = Step { step, pr, head };
         pr_head(&step)?;
+        room_id(&room)?;
         if !requester.starts_with('@') || !to.starts_with('@') {
             return Err(Error::Invalid("requester and addressee must be Matrix user IDs"));
         }
-        reply["due"] = due_json(ledger.step_due(agent, (&step.step, &step.pr, &step.head), (&requester, &to), now)?);
+        reply["due"] = due_json(ledger.step_due(agent, (&step.step, &step.pr, &step.head), (&requester, &to, &room), now)?);
     }
     if let Some(SaidStep { step, pr, head, round }) = said {
         let step = Step { step, pr, head };
@@ -138,14 +151,15 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         if !assigned(ledger, agent, &ask.repo)? {
             return Err(Error::Invalid("the repository is not on this Agent's work list"));
         }
+        room_id(&ask.room)?;
         let command = GhPr { dir: std::env::temp_dir(), number: ask.number, repo: Some(ask.repo.clone()), head: None, kind: Kind::Merge, body: String::new() };
         // Read as the Agent, the same login its own gh uses (GPT review, Nov 16).
         let token = crate::github_access::TokenStore::current().runtime_environment(agent).unwrap_or_default().agent_github_token();
-        let judged = runtime.block_on(merge_readiness(ledger, &command, agent, &GhCli { token }));
+        let judged = runtime.block_on(merge_readiness(ledger, &command, (agent, &ask.room), &GhCli { token }));
         reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision)| (view.head_sha.as_str(), decision)));
         if let Some((view, _)) = &judged {
             // Unverified: only tells "no review yet" (wait) from "a person must decide".
-            reply["readiness"]["approvers"] = ledger.agent_reviewers_count(&view.url, &view.head_sha)?.into();
+            reply["readiness"]["approvers"] = ledger.agent_reviewers_count(&view.url, &view.head_sha, &ask.room)?.into();
             // The merger's own "Pull request merges" switch: without it the
             // gate never answers the merge, so the loop says so instead.
             reply["readiness"]["autoMerge"] = ledger.auto_merge(agent)?.into();
@@ -181,10 +195,12 @@ mod tests {
     #[test]
     fn review_changes_parse_strictly() {
         let sha = "a".repeat(40);
-        let ok: ReviewChange = serde_json::from_value(json!({"claimStep": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha}, "workClaim": {"repo": "a/b", "number": 3}, "readiness": {"repo": "a/b", "number": 1}})).unwrap();
+        let ok: ReviewChange = serde_json::from_value(json!({"claimStep": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha}, "workClaim": {"repo": "a/b", "number": 3}, "readiness": {"repo": "a/b", "number": 1, "room": "!r:x"}})).unwrap();
         assert!(ok.claim_step.is_some() && ok.work_claim.is_some() && ok.readiness.is_some());
         assert!(serde_json::from_value::<ReviewChange>(json!({"merge": true})).is_err());
-        let due: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x", "to": "@bird:x"}, "stepSaid": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "round": 0}})).unwrap();
+        assert!(serde_json::from_value::<ReviewChange>(json!({"readiness": {"repo": "a/b", "number": 1}})).is_err(), "a readiness question names its room");
+        assert!(room_id("!r:x").is_ok() && room_id("r:x").is_err() && room_id("!r").is_err() && room_id("!r :x").is_err());
+        let due: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x", "to": "@bird:x", "room": "!r:x"}, "stepSaid": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "round": 0}})).unwrap();
         assert!(due.step_due.is_some() && due.step_said.is_some());
         let step = |s: &str, pr: &str, head: &str| Step { step: s.into(), pr: pr.into(), head: head.into() };
         assert!(pr_head(&step("merge", "https://github.com/a/b/pull/1", &sha)).is_ok());

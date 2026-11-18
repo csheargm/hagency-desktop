@@ -218,3 +218,17 @@ fn a_used_up_budget_holds_every_hand_off_until_it_allows_again() {
     assert_eq!(decide(&handed(1, T0), &out(open(T0 + 1))), Action::Wait, "a running hand-off just waits");
     assert_eq!(decide(&handed(1, T0), &out(Facts { open_pr: Some(9), ..open(later) })), Action::FollowPr { pr: 9 }, "a pull request is still followed");
 }
+
+#[test]
+fn a_case_only_edit_of_the_watched_repository_keeps_retrying_the_same_record() {
+    // Integration GPT review: tracked as "Acme/App", the watch edited to
+    // "acme/app"; the retry's save was refused (no record at attempt 2).
+    let (_tmp, mut l) = ledger();
+    let spelled = |repo: &str, handed| TrackChange { repo: repo.into(), ..change(handed, None, None) };
+    l.track_issue("agent", &spelled("Acme/App", Some(1)), T0).unwrap();
+    l.track_issue("agent", &spelled("acme/app", Some(2)), T0 + 10).unwrap();
+    l.track_issue("agent", &TrackChange { state: Some(State::PrOpened), pr: Some(7), ..spelled("ACME/app", None) }, T0 + 20).unwrap();
+    let tracks = l.issue_tracks("agent").unwrap();
+    assert_eq!(tracks.len(), 1, "one record, never a second spelling");
+    assert_eq!((tracks[0].repo.as_str(), tracks[0].attempts, tracks[0].state, tracks[0].pr), ("Acme/App", 2, State::PrOpened, Some(7)));
+}

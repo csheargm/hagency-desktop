@@ -6,7 +6,9 @@ use super::*;
 /// How many recent requests the Activity tab shows.
 const RECENT_LIMIT: usize = 20;
 
-/// GET returns `{agentId, requests: [Activity…], budgetUsedUp}`, newest first.
+/// GET returns `{agentId, requests: [Activity…], budgetUsedUp, budgetUsedUpRooms}`,
+/// newest first; `budgetUsedUpRooms` are the rooms where the owner's next
+/// request would be refused for that room's (or the owner's there) budget.
 pub(super) async fn handle(req: &mut Request, depot: &Depot, agent: String) -> Result<Value, OwnerError> {
     if req.uri().query().is_some() {
         return Err(error(400, "invalid_arguments"));
@@ -41,7 +43,9 @@ fn read(root: &Path, reply: &OwnerReply, agent: &str) -> Result<Value, OwnerErro
     let requests = ledger.recent_activity(&reply.owner, agent, RECENT_LIMIT).map_err(local_error)?;
     // The issue loop holds re-hand-offs while every run would be refused (Nov 18).
     let used_up = ledger.agent_budget_used_up(&reply.owner, agent, now()).map_err(local_error)?;
-    Ok(json!({"agentId": agent, "requests": requests, "budgetUsedUp": used_up}))
+    // The owner's account posts the hand-offs: its requester budget counts too (integration GPT review).
+    let rooms = ledger.budget_used_up_rooms(&reply.owner, agent, &reply.owner, now()).map_err(local_error)?;
+    Ok(json!({"agentId": agent, "requests": requests, "budgetUsedUp": used_up, "budgetUsedUpRooms": rooms}))
 }
 
 #[cfg(test)]
@@ -79,6 +83,7 @@ mod tests {
         let value = read(&root, &reply("subject-a"), "agent").unwrap();
         assert_eq!(value["agentId"], "agent");
         assert_eq!(value["budgetUsedUp"], false, "no budget set: never used up");
+        assert_eq!(value["budgetUsedUpRooms"], json!([]), "nor any room's");
         let request = &value["requests"][0];
         assert_eq!((request["dispatchId"].as_str(), request["outcome"].as_str()), (Some("dispatch-a"), Some("running")));
         assert_eq!((request["requester"].as_str(), request["receivedAt"].as_i64()), (Some("@bob:example"), Some(1_700_000_000)));

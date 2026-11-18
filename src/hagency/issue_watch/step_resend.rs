@@ -30,6 +30,7 @@ pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str, to: Optio
     let mut ask = key.clone();
     ask["requester"] = io.requester().into();
     ask["to"] = to.as_str().into();
+    ask["room"] = io.room().into();
     let due = io.review(json!({"stepDue": ask})).await?["due"].clone();
     let again = due["again"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
     if let Some((notice, round)) = line_of(target, step, &due["say"]) {
@@ -58,9 +59,11 @@ pub(crate) fn not_started_line(what: &str, why: &str, gave_up: bool, t: &Target)
         "budget" => "the Agent's token budget for this period is used up",
         "noRun" => "an owner limit or a signed-out provider answered before the model started",
         "unrecorded" => "its run was not recorded (sent before this check could see it)",
+        "unseen" => "no run of it reached this device (the Agent may be offline or on another device)",
         _ => "the run was lost or interrupted before it finished",
     };
     let (lead, next) = match (gave_up, why) {
+        (true, "unseen") => ("⚠️", "it was sent again and will not be retried; check the Agent, then do it yourself".to_owned()),
         (true, _) => ("⚠️", format!("it was sent again {MAX_RESENDS} times and will not be retried; check the Agent, then do it yourself")),
         (false, "budget") => ("⏸️", "it will retry when the budget allows".to_owned()),
         (false, _) => ("🔁", "it will retry".to_owned()),

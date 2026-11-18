@@ -53,6 +53,9 @@ pub(crate) trait TrackIo {
     /// Whether pull request `pr` was merged (GitHub's own answer): `Some(true)`
     /// when this owner's own GitHub login merged it.
     async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String>;
+    /// The Agent's merged pull request linking `track`'s issue, opened during
+    /// its current hand-off, for a record that never saw one open (opened and merged between two checks).
+    async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String>;
     /// A tracked issue missing from the open list: GitHub's own answer.
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String>;
     /// The Agent's cannot-fix comment during the current attempt.
@@ -195,8 +198,13 @@ async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullReq
 
 async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), String> {
     let n = track.number;
-    // Only a pull request GitHub reports merged is announced as the fix (GPT review).
-    let (merged, by_owner) = match track.pr {
+    // Only a pull request GitHub reports merged is announced as the fix (GPT
+    // review); one merged before any check saw it open is looked up (integration GPT review).
+    let pr = match track.pr {
+        Some(pr) => Some(pr),
+        None => io.merged_linking_pr(track).await?,
+    };
+    let (merged, by_owner) = match pr {
         Some(pr) => io.pr_merged(pr).await?.map_or((None, false), |own| (Some(pr), own)),
         None => (None, false),
     };
