@@ -15,6 +15,7 @@ pub mod task_mcp;
 pub mod room_memory;
 pub mod room_plan;
 pub mod room_watches;
+pub mod repo_status;
 pub mod room_memory_timeline;
 pub mod room_skills;
 pub mod room_context;
