@@ -8,9 +8,13 @@
 //! not `power_level_content_override`: servers replace the whole `events` map
 //! from an override, which would drop server defaults (v12 tombstone at 150)
 //! and any operator-configured restrictions. Here only the call key changes.
+//!
+//! Rooms made before the issue status existed lack its entry; a moderator or
+//! admin's desktop adds that one entry when they link a repository
+//! ([`allow_member_state_in`]): an explicit action, never a background load.
 use matrix_sdk::{
     Room,
-    ruma::{api::client::state::get_state_event_for_key::v3 as get_state, events::StateEventType},
+    ruma::{UserId, api::client::state::get_state_event_for_key::v3 as get_state, events::{StateEventType, TimelineEventType, room::power_levels::RoomPowerLevels}},
 };
 use serde_json::Value;
 
@@ -21,16 +25,30 @@ const MEMBER_LEVEL: i64 = 0;
 /// sender's own Matrix ID, which the homeserver lets nobody else write, so
 /// opening it lets each owner publish only their own Agents' states.
 const MEMBER_STATE_EVENTS: [&str; 2] = [CALL_MEMBER_EVENT, ::hagency::repo_status::ISSUE_STATUS_STATE_TYPE];
+/// What an existing room gets opened (GPT review): only Hagency's own
+/// member-written state; call membership stays as that room's admins set it.
+const EXISTING_ROOM_EVENTS: [&str; 1] = [::hagency::repo_status::ISSUE_STATUS_STATE_TYPE];
 /// Bound on the follow-up so a stalled server cannot leave creation at "Creating…".
 const FOLLOW_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The power levels with call membership and issue status opened to PL 0, or `None` when they
 /// already allow it (nothing to send). Every other field is kept verbatim.
-pub fn open_call_membership(mut levels: Value) -> anyhow::Result<Option<Value>> {
+pub fn open_call_membership(levels: Value) -> anyhow::Result<Option<Value>> {
+    open_where(levels, &MEMBER_STATE_EVENTS, |level| level.and_then(Value::as_i64) != Some(MEMBER_LEVEL))
+}
+
+/// For an existing room: the issue status, when it has no entry at all, gets one at PL 0, or
+/// `None` when it has one. An entry an admin set, even a raised one, is never changed.
+pub fn add_missing_member_state(levels: Value) -> anyhow::Result<Option<Value>> {
+    open_where(levels, &EXISTING_ROOM_EVENTS, |level| level.is_none())
+}
+
+/// Sets each of `keys` whose current entry `reopen` selects to PL 0.
+fn open_where(mut levels: Value, keys: &[&'static str], reopen: impl Fn(Option<&Value>) -> bool) -> anyhow::Result<Option<Value>> {
     let object = levels.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels are not an object"))?;
     let events = object.entry("events").or_insert_with(|| Value::Object(Default::default()));
     let events = events.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels events is not an object"))?;
-    let closed: Vec<&str> = MEMBER_STATE_EVENTS.into_iter().filter(|key| events.get(*key).and_then(Value::as_i64) != Some(MEMBER_LEVEL)).collect();
+    let closed: Vec<&str> = keys.iter().copied().filter(|key| reopen(events.get(*key))).collect();
     if closed.is_empty() {
         return Ok(None);
     }
@@ -40,15 +58,50 @@ pub fn open_call_membership(mut levels: Value) -> anyhow::Result<Option<Value>> 
     Ok(Some(levels))
 }
 
+/// The existing-room member-state events these power levels give no entry.
+pub fn missing_member_state(levels: &RoomPowerLevels) -> Vec<&'static str> {
+    EXISTING_ROOM_EVENTS.into_iter().filter(|key| !levels.events.contains_key(&TimelineEventType::from(*key))).collect()
+}
+
+/// Whether `me` may add the missing entries: they may change power levels and
+/// already reach each missing event's current level, as the homeserver's
+/// power-level rule requires of a changed entry. Moderators and admins only.
+pub fn may_add_member_state(levels: &RoomPowerLevels, me: &UserId) -> bool {
+    levels.user_can_send_state(me, StateEventType::RoomPowerLevels)
+        && missing_member_state(levels).into_iter().all(|key| levels.user_can_send_state(me, StateEventType::from(key)))
+}
+
+async fn server_levels(room: &Room) -> anyhow::Result<Value> {
+    let request = get_state::Request::new(room.room_id().to_owned(), StateEventType::RoomPowerLevels, String::new());
+    Ok(serde_json::from_str(room.client().send(request).await?.event_or_content.get())?)
+}
+
+/// Adds the missing issue-status entry to an existing room when this account
+/// may; `Ok(false)` when nothing was missing or it may not (nothing sent).
+/// Matrix has no conditional state write: a power-level change another admin
+/// makes between this read and write would be lost, so this runs only on an
+/// admin's explicit link, never in the background (GPT review).
+pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<bool> {
+    let me = room.client().user_id().ok_or_else(|| anyhow::anyhow!("signed out"))?.to_owned();
+    let levels = room.power_levels().await?;
+    if missing_member_state(&levels).is_empty() || !may_add_member_state(&levels, &me) {
+        return Ok(false);
+    }
+    let send = async {
+        // Re-read from the server: the PUT replaces the whole content, so it is
+        // built from the newest copy; only a change landing in the moment
+        // between this read and the write could be lost.
+        let Some(updated) = add_missing_member_state(server_levels(room).await?)? else { return Ok(false) };
+        room.send_state_event_raw("m.room.power_levels", "", updated).await?;
+        anyhow::Ok(true)
+    };
+    tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))?
+}
+
 /// Apply [`open_call_membership`] to a room the user just created (as creator
 /// they may edit power levels).
 pub async fn allow_call_membership(room: &Room) -> anyhow::Result<()> {
-    let request = get_state::Request::new(
-        room.room_id().to_owned(),
-        StateEventType::RoomPowerLevels,
-        String::new(),
-    );
-    let current: Value = serde_json::from_str(room.client().send(request).await?.event_or_content.get())?;
+    let current = server_levels(room).await?;
     // The room was created a moment ago by this user with no other members, so no
     // concurrent power-level change can be overwritten by this full-content PUT.
     if let Some(updated) = open_call_membership(current)? {
@@ -156,3 +209,7 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Value>(&put.body).unwrap(), expected);
     }
 }
+
+#[cfg(test)]
+#[path = "call_power_levels_member_tests.rs"]
+mod member_tests;

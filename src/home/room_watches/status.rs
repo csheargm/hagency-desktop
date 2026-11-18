@@ -179,7 +179,18 @@ pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool)
     } else {
         linked::unlink(&current, repo)
     };
-    let Some(content) = next else { return Ok(()) };
-    room.send_state_event_raw(ROOM_REPOS_STATE_TYPE, "", content).await.map(|_| ())
-        .map_err(|e| crate::i18n::format("Could not change the room's repositories: {error}", &[("error", e.to_string())]))
+    if let Some(content) = next {
+        room.send_state_event_raw(ROOM_REPOS_STATE_TYPE, "", content).await
+            .map_err(|e| crate::i18n::format("Could not change the room's repositories: {error}", &[("error", e.to_string())]))?;
+    }
+    // Also when the repository was already linked: linking again is how an admin opens an old room.
+    if link { allow_member_status(&room).await } else { Ok(()) }
+}
+
+/// Linking is the admin's go-ahead to let members publish their own issue
+/// status in a room that predates it (ADR 0023), when this account may change
+/// power levels; otherwise nothing is sent. Only a missing entry is added.
+async fn allow_member_status(room: &Room) -> Result<(), String> {
+    crate::home::call_power_levels::allow_member_state_in(room).await.map(|_| ())
+        .map_err(|e| crate::i18n::format("Members cannot share issue status here yet: {error}", &[("error", format!("{e:#}"))]))
 }
