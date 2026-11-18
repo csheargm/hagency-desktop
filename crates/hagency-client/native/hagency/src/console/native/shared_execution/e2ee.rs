@@ -1,6 +1,8 @@
 //! Ordinary Matrix devices on the enrolled execution computer. Wire records
 //! contain event references; decrypted prompts and answers stay on this host.
 use super::*;
+// TODO(R4): over budget; split the device grant cache (open_device, slot,
+// load/save grant) from the crypto poll into e2ee/ modules in a refactor session.
 use crate::console::{
     device_execution::E2eeDeviceGrant,
     owned_runtime::e2ee::{AgentDevice, forget_grant, load_grant, save_grant},
@@ -191,6 +193,7 @@ pub(super) async fn device(
     assignment: &str,
 ) -> Result<Arc<AgentDevice>, NativeError> {
     let device = open_device(io, b, assignment).await?;
+    device.claim_owner(b.scope.device.owner_mxid());
     crate::console::owned_runtime::run_controls::device_ready(device.clone());
     // Card outcomes this Agent still owes its rooms go out while it is in use.
     if let Ok(records) = question_records(io, b, assignment) {
