@@ -197,6 +197,12 @@ mod room_repo_reads {
             let Some(TrustedStep::Command(pinned)) = step else { panic!("{read}: {step:?}") };
             assert!(pinned.contains("GH_HOST='github.com'") && pinned.contains(&read), "{pinned}");
         }
+        // Its verdict on that PR is the room's review grant (ADR 0025), watch or not.
+        let verdict = format!("gh pr review 70 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - ok\"");
+        let p = super::super::proposal(&ledger, &turn, &verdict).unwrap();
+        let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
+        let Some(TrustedStep::Command(pinned)) = step else { panic!("{verdict}: {step:?}") };
+        assert!(pinned.contains("gh pr review 70 --comment -R"), "{pinned}");
     }
 
     #[tokio::test]

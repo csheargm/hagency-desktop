@@ -38,6 +38,9 @@ fn the_tool_takes_one_command_line_only() {
     assert!(hagency_runtime::CODEX_ROOM_REPO_READS.contains(MCP_TOOL));
     assert!(hagency_runtime::AGENT_MERGE_NOTE.contains(hagency_runtime::CODEX_ROOM_REPO_READS));
     assert!(definition()["description"].as_str().unwrap().contains(hagency_runtime::CODEX_ROOM_REPO_READS));
+    // e2e 8 rerun: a native `gh api user` to learn its login cost a 5-minute
+    // card, after which the room's set (5-minute record) had expired.
+    assert!(hagency_runtime::REVIEW_STEPS.contains("use --comment too when you cannot tell which account you post as, never running a command only to find out"));
 }
 
 #[test]
