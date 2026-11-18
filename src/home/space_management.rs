@@ -43,6 +43,14 @@ impl CreateRoomConfig {
         !self.space && !self.public
     }
 
+    // TODO(R4): space_management.rs is over budget; split CreateRoomConfig
+    // (and its tests) into its own module.
+    /// Every room, public too, gets Hagency's power levels after creation
+    /// (admin-only merge rules, ADR 0029); spaces hold no watches.
+    pub(crate) fn sets_room_levels(&self) -> bool {
+        !self.space
+    }
+
     pub(crate) fn request(&self) -> Result<Request> {
         let name = self.name.trim();
         ensure!(
@@ -1302,8 +1310,8 @@ impl Widget for SpaceManagementPanel {
                 }
                 matrix_context::ensure_current(&client)?;
                 let room = client.create_room(request).await?;
-                if config.opens_calls_to_members() {
-                    super::call_power_levels::allow_call_membership_after_create(&room).await;
+                if config.sets_room_levels() {
+                    super::call_power_levels::allow_call_membership_after_create(&room, config.opens_calls_to_members()).await;
                 }
                 let name = RoomNameId::new(
                     matrix_sdk::RoomDisplayName::Named(config.name.trim().into()),
@@ -1874,5 +1882,9 @@ mod tests {
         config.public = false;
         config.space = true;
         assert!(!config.opens_calls_to_members());
+        assert!(!config.sets_room_levels(), "a space holds no watches");
+        config.space = false;
+        config.public = true;
+        assert!(config.sets_room_levels(), "a public room still gets admin-only merge rules");
     }
 }

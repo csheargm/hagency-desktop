@@ -8,7 +8,8 @@ use crate::hagency::backend::Service;
 use ::hagency::issue_watch::safeguards::{MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, watch_entries};
 use matrix_sdk::Room;
-use matrix_sdk::ruma::events::StateEventType;
+use matrix_sdk::ruma::events::{StateEventType, room::power_levels::RoomPowerLevels};
+use matrix_sdk::ruma::{OwnedUserId, UserId, room_version_rules::AuthorizationRules};
 use serde_json::{Value, json};
 
 /// What a room's state says about its merge rules.
@@ -80,27 +81,50 @@ pub fn snapshot(repo: &str, room_id: &str, read: &RoomRead) -> RoomRulesSnapshot
     }
 }
 
-/// Whether this account may set `room`'s merge rules (the room's power levels decide).
-pub async fn can_edit(room: &Room) -> bool {
-    let Some(user) = room.client().user_id().map(ToOwned::to_owned) else { return false };
-    room.power_levels().await.is_ok_and(|levels| levels.user_can_send_state(&user, StateEventType::from(MERGE_RULES_STATE_TYPE)))
+/// Whether `user` may set the merge rules under `levels`: the room's actual
+/// required level for the event, so the admin-only entry (100) a Hagency
+/// desktop adds (call_power_levels) keeps moderators out.
+pub fn may_set_rules(levels: &RoomPowerLevels, user: &UserId) -> bool {
+    levels.user_can_send_state(user, StateEventType::from(MERGE_RULES_STATE_TYPE))
 }
 
-/// `room`'s rules, read from the homeserver now (rules and membership in one
-/// response). This account must be joined, or nothing counts.
+/// `room`'s rules, read from the homeserver now (rules, membership and power
+/// levels in one response). This account must be joined, or nothing counts.
 pub async fn read(room: &Room) -> Result<RoomRead, String> {
-    let events = crate::home::room_memory::server_state::events_of_types(&room.client(), room.room_id(), &[MERGE_RULES_STATE_TYPE, MEMBER_EVENT]).await?;
-    let me = room.client().user_id().map(|u| u.to_string()).unwrap_or_default();
-    if room.state() != matrix_sdk::RoomState::Joined || !joined(&events, &me) {
+    read_with_editor(room).await.map(|(read, _)| read)
+}
+
+/// [`read`], and whether this account may set the rules under the same
+/// server power levels (the Status editor, GPT review: not the sync store).
+pub async fn read_with_editor(room: &Room) -> Result<(RoomRead, bool), String> {
+    let types = [MERGE_RULES_STATE_TYPE, MEMBER_EVENT, POWER_LEVELS_EVENT];
+    let events = crate::home::room_memory::server_state::events_of_types(&room.client(), room.room_id(), &types).await?;
+    let me = room.client().user_id().map(ToOwned::to_owned);
+    if room.state() != matrix_sdk::RoomState::Joined || !me.as_ref().is_some_and(|me| joined(&events, me.as_str())) {
         return Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned());
     }
-    // Unreadable power levels: nobody's rules count (fail closed).
-    let levels = room.power_levels().await.ok();
+    // The server's power levels, not the sync store's (GPT review: the store can
+    // lag a raised level or a demotion). Unreadable: nobody's rules count (fail closed).
+    let levels = power_levels_event(&events).and_then(|content| crate::home::call_power_levels::typed_levels(room, content));
     let may_send = |sender: &str| {
-        let user = matrix_sdk::ruma::UserId::parse(sender).ok();
-        levels.as_ref().zip(user).is_some_and(|(l, u)| l.user_can_send_state(&u, StateEventType::from(MERGE_RULES_STATE_TYPE)))
+        let user = UserId::parse(sender).ok();
+        levels.as_ref().zip(user).is_some_and(|(l, u)| may_set_rules(l, &u))
     };
-    Ok(accept(&events, room.room_id().as_str(), may_send))
+    let editable = levels.as_ref().zip(me).is_some_and(|(l, me)| may_set_rules(l, &me));
+    Ok((accept(&events, room.room_id().as_str(), may_send), editable))
+}
+
+const POWER_LEVELS_EVENT: &str = "m.room.power_levels";
+
+/// The power-level content among the server's state `events`.
+fn power_levels_event(events: &[Value]) -> Option<Value> {
+    events.iter().find(|e| e["type"] == POWER_LEVELS_EVENT && e["state_key"] == "").map(|e| e["content"].clone())
+}
+
+/// The power levels among the server's state `events`, or `None` when they
+/// are missing or unreadable.
+pub fn levels_of(events: &[Value], rules: &AuthorizationRules, creators: Vec<OwnedUserId>) -> Option<RoomPowerLevels> {
+    crate::home::call_power_levels::levels_from(power_levels_event(events)?, rules, creators)
 }
 
 /// Save `policy` as `room`'s rules; the homeserver refuses a member below the event's level.

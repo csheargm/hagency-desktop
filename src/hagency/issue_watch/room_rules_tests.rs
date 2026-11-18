@@ -68,3 +68,57 @@ fn every_watch_room_of_the_saved_watch_is_synced() {
     assert_eq!(watched_rooms(&paused), [("acme/app".to_owned(), "!w:x".to_owned())], "a paused watch is not synced");
     assert!(watched_rooms(&json!({})).is_empty());
 }
+
+const ADMIN: &str = "@admin:localhost:8450";
+const MODERATOR: &str = "@member:localhost:8450";
+
+fn power_levels(rules_level: Option<i64>) -> Value {
+    let mut content = json!({"users": {ADMIN: 100, MODERATOR: 50}, "state_default": 50, "events": {}});
+    if let Some(level) = rules_level {
+        content["events"][MERGE_RULES_STATE_TYPE] = json!(level);
+    }
+    json!({"type": "m.room.power_levels", "state_key": "", "sender": ADMIN, "event_id": "$pl", "origin_server_ts": 1, "content": content})
+}
+
+/// Admin-only rules (PL 100): a moderator's rules stop counting, an admin's still do.
+#[test]
+fn the_rules_level_comes_from_the_servers_power_levels() {
+    let judged = |sender: &str, rules_level| {
+        let mut events = with(event(sender));
+        events.push(power_levels(rules_level));
+        let levels = levels_of(&events, &AuthorizationRules::V10, Vec::new()).expect("levels in the state");
+        accept(&events, ROOM, |s| UserId::parse(s).is_ok_and(|u| may_set_rules(&levels, &u)))
+    };
+    assert_eq!(judged(MODERATOR, Some(100)), RoomRead::Refused(REFUSED_SENDER));
+    assert!(matches!(judged(ADMIN, Some(100)), RoomRead::Rules { .. }));
+    assert!(matches!(judged(MODERATOR, None), RoomRead::Rules { .. }), "without the entry, state_default (50) applies");
+    assert!(levels_of(&with(event(ADMIN)), &AuthorizationRules::V10, Vec::new()).is_none(), "no levels: nobody's rules count");
+}
+
+/// User flow (GPT review): the sync store still has the old levels (no entry,
+/// moderator may send), the server already has 100: the moderator's rules
+/// are refused, because `read` judges by the server's levels.
+#[tokio::test]
+async fn read_judges_by_the_servers_levels_not_a_stale_sync_store() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path, path_regex}};
+    let server = MockServer::start().await;
+    let state = |kind: &str, content: Value| json!({"type": kind, "state_key": "", "sender": ADMIN, "content": content, "event_id": format!("${kind}"), "origin_server_ts": 1});
+    let mut stale = vec![state("m.room.create", json!({"room_version": "10", "creator": ADMIN})), power_levels(None)];
+    stale.extend(members(&[ADMIN, MODERATOR]));
+    let sync = json!({"next_batch": "s1", "rooms": {"join": {ROOM: {"state": {"events": stale}, "timeline": {"events": [], "limited": false}}}}});
+    Mock::given(method("GET")).and(path("/_matrix/client/v3/sync")).respond_with(ResponseTemplate::new(200).set_body_json(sync)).mount(&server).await;
+    let mut now = with(event(MODERATOR));
+    now.push(power_levels(Some(100)));
+    Mock::given(method("GET")).and(path_regex(r"^/_matrix/client/v3/rooms/.*/state/?$")).respond_with(ResponseTemplate::new(200).set_body_json(now)).mount(&server).await;
+    let client = matrix_sdk::Client::builder().homeserver_url(server.uri())
+        .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_11]).build().await.unwrap();
+    client.matrix_auth().restore_session(matrix_sdk::authentication::matrix::MatrixSession {
+        meta: matrix_sdk::SessionMeta { user_id: UserId::parse(ADMIN).unwrap(), device_id: "D".into() },
+        tokens: matrix_sdk::SessionTokens { access_token: "t".into(), refresh_token: None },
+    }, matrix_sdk::store::RoomLoadSettings::default()).await.unwrap();
+    client.sync_once(matrix_sdk::config::SyncSettings::default().timeout(std::time::Duration::from_secs(0))).await.unwrap();
+    let room = client.get_room(&matrix_sdk::ruma::RoomId::parse(ROOM).unwrap()).expect("room from sync");
+    let stale_levels = room.power_levels().await.unwrap();
+    assert!(may_set_rules(&stale_levels, &UserId::parse(MODERATOR).unwrap()), "the store is stale on purpose");
+    assert_eq!(read(&room).await.unwrap(), RoomRead::Refused(REFUSED_SENDER));
+}

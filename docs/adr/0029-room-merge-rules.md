@@ -19,10 +19,15 @@ its admins.
   `paths`, `max_lines`), read by the same `parse_policy`; `render_policy`
   writes it and must parse back to the same rules (globs with quotes,
   commas, `#`, brackets or control characters are refused, never escaped).
-  The type is not on the member-level (PL 0) list, so the room's
-  `state_default` applies (50 under the Matrix presets: admins and
-  moderators); the homeserver refuses anyone below it. A room that wants
-  admins only sets `events["io.hagency.merge_rules"]` to 100.
+  The type is not on the member-level (PL 0) list. Merge rules are for
+  room admins only: a room this desktop creates, and an existing room when
+  an admin links a repository, get `events["io.hagency.merge_rules"] = 100`
+  when the room has no entry (an entry already there is the admins' choice
+  and is never lowered or overwritten; a moderator's link never adds it).
+  A room without the entry falls back to its `state_default` (50 under the
+  Matrix presets: admins and moderators). The homeserver refuses anyone
+  below the room's actual level, and the desktop's acceptance check and the
+  Status editor follow the same level.
 - **Which room.** The room the watch of the repository reports to
   (`issueWatch.roomId` or the work list's `roomId`; paused watches never
   count): the merging Agent's own active watch, else the single room every watch of that repository on this device
