@@ -63,14 +63,16 @@ impl Ledger {
     pub fn settle_agent_review(&mut self, call: &str, succeeded: bool) -> Result<()> {
         use rusqlite::OptionalExtension;
         self.settle_auto_merge(call, succeeded)?;
-        let held: Option<(String, String, String)> = self
-            .db
-            .query_row("DELETE FROM auto_merge_pending_reviews WHERE call=? RETURNING pr, head, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .optional()?;
-        match held {
-            Some((pr, head, reviewer)) if succeeded => self.record_agent_review(&pr, &head, &reviewer),
-            _ => Ok(()),
-        }
+        self.atomically(|ledger| {
+            let held: Option<(String, String, String)> = ledger
+                .db
+                .query_row("DELETE FROM auto_merge_pending_reviews WHERE call=? RETURNING pr, head, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .optional()?;
+            match held {
+                Some((pr, head, reviewer)) if succeeded => ledger.record_agent_review(&pr, &head, &reviewer),
+                _ => Ok(()),
+            }
+        })
     }
     /// The Agents that approved `pr` at exactly commit `head`.
     pub(crate) fn agent_reviewers(&self, pr: &str, head: &str) -> Result<Vec<String>> {

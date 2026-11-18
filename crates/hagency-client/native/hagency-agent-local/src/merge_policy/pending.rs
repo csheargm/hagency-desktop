@@ -36,14 +36,16 @@ impl Ledger {
     /// Tool call `call` finished: a merge claim held under it is kept only if it succeeded.
     pub(crate) fn settle_auto_merge(&mut self, call: &str, succeeded: bool) -> Result<()> {
         use rusqlite::OptionalExtension;
-        let held: Option<(String, String)> = self
-            .db
-            .query_row("DELETE FROM auto_merge_pending_claims WHERE call=? RETURNING pr, head", [call], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?;
-        match held {
-            Some((pr, head)) if !succeeded => self.release_auto_merge(&pr, &head),
-            _ => Ok(()),
-        }
+        self.atomically(|ledger| {
+            let held: Option<(String, String)> = ledger
+                .db
+                .query_row("DELETE FROM auto_merge_pending_claims WHERE call=? RETURNING pr, head", [call], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            match held {
+                Some((pr, head)) if !succeeded => ledger.release_auto_merge(&pr, &head),
+                _ => Ok(()),
+            }
+        })
     }
     /// `reviewer` asks for changes under tool call `call`: its unsettled
     /// approvals of `pr` stop at once, its recorded ones once the call succeeds.
@@ -60,18 +62,25 @@ impl Ledger {
     /// withdraws the reviewer's approvals only if it succeeded.
     pub fn settle_withdrawal(&mut self, call: &str, succeeded: bool) -> Result<()> {
         use rusqlite::OptionalExtension;
-        let held: Option<(String, String)> = self
-            .db
-            .query_row("DELETE FROM auto_merge_pending_withdrawals WHERE call=? RETURNING pr, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?;
-        match held {
-            Some((pr, reviewer)) if succeeded => self.withdraw_agent_review(&pr, &reviewer),
-            _ => Ok(()),
-        }
+        self.atomically(|ledger| {
+            let held: Option<(String, String)> = ledger
+                .db
+                .query_row("DELETE FROM auto_merge_pending_withdrawals WHERE call=? RETURNING pr, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            match held {
+                Some((pr, reviewer)) if succeeded => ledger.withdraw_agent_review(&pr, &reviewer),
+                _ => Ok(()),
+            }
+        })
     }
     /// A Claude tool call finished: everything the gate held under it settles
     /// with its outcome (Claude reports one outcome for every call).
+    /// A Codex key is never a Claude call's (GPT review: a Claude result id
+    /// shaped like one must not settle a Codex command's hold).
     pub fn settle_tool_call(&mut self, call: &str, succeeded: bool) -> Result<()> {
+        if call.starts_with(super::codex_review::KEY_PREFIX) {
+            return Ok(());
+        }
         self.settle_withdrawal(call, succeeded)?;
         self.settle_agent_review(call, succeeded)
     }

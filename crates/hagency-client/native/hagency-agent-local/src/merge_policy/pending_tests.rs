@@ -21,7 +21,7 @@ fn setup(dir: &Path) -> Ledger {
     ledger
 }
 async fn approve(ledger: &mut Ledger, dir: &Path, docs: &Fake, call: &str) {
-    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {}\"", docs.head.borrow()), dir, "reviewer");
+    let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {} - {call}\"", docs.head.borrow()), dir, "reviewer");
     assert_eq!(gate::auto_answer(ledger, OWNER, &review, call, 11, docs).await, Some(true));
     ledger.settle_tool_call(call, true).unwrap();
 }
@@ -101,4 +101,28 @@ async fn a_merge_that_did_not_happen_gives_its_claim_back() {
     approve(&mut ledger, temp.path(), &docs, "rv2").await;
     let merge_new = bash(&merge_line().replace(HEAD, moved), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &merge_new, "m4", 11, &docs).await, Some(true));
+}
+
+/// GPT review: a settlement that fails half way is undone, so it can be
+/// retried; and a Claude result id shaped like a Codex key settles nothing.
+#[tokio::test]
+async fn a_failed_settlement_is_undone_and_codex_keys_are_not_claudes() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = setup(temp.path());
+    let docs = Fake::new(vec![file("README.md", 2)]);
+    approve(&mut ledger, temp.path(), &docs, "rv").await;
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(CHANGES, temp.path(), "reviewer"), "rc", 11, &docs).await, Some(true));
+    ledger.db.execute_batch("ALTER TABLE auto_merge_head_reviews RENAME TO hidden").unwrap();
+    assert!(ledger.settle_tool_call("rc", true).is_err());
+    ledger.db.execute_batch("ALTER TABLE hidden RENAME TO auto_merge_head_reviews").unwrap();
+    assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["reviewer"]);
+    ledger.settle_tool_call("rc", true).unwrap();
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "the retried settlement still withdraws");
+    // A Codex merge's claim is not released by a Claude result carrying its key.
+    approve(&mut ledger, temp.path(), &docs, "rv2").await;
+    let key = call_key("t", "u", "m");
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&merge_line(), temp.path(), "fixer"), &key, 11, &docs).await, Some(true));
+    ledger.settle_tool_call(&key, false).unwrap();
+    let again = ToolProposal { expires: 101, ..bash(&merge_line(), temp.path(), "fixer") };
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &again, "m2", 11, &docs).await, None, "still claimed");
 }

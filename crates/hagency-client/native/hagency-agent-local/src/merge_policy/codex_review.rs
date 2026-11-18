@@ -20,8 +20,10 @@ pub const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
 /// thread and turn, never one of another turn or a Claude tool call. JSON, so
 /// no choice of ids can make two triples share a key (GPT review).
 pub fn call_key(thread: &str, turn: &str, item: &str) -> String {
-    format!("codex:{}", serde_json::json!([thread, turn, item]))
+    format!("{KEY_PREFIX}{}", serde_json::json!([thread, turn, item]))
 }
+/// Every Codex key starts with this; a Claude call id never settles one.
+pub const KEY_PREFIX: &str = "codex:";
 
 /// The gate's answer to a Codex approval request, or `None` when the normal
 /// approval flow (and its card) must run unchanged. `proposal.arguments` are
