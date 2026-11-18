@@ -1909,7 +1909,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     tools.item(item, method == "item/completed");
                     if method == "item/completed" {
                         // A review the gate held under this command counts only now.
-                        crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
+                        let gated = crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
+                        if !gated {
+                            // Ran without asking (full trust): record a qualifying review it posted.
+                            let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+                            crate::merge_policy::codex_review::record_observed(ledger, scope, dispatch, cwd, item, now(), &github).await;
+                        }
                     }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).
                     if event_scope.root
