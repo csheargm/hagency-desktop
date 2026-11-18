@@ -9,7 +9,7 @@
 //! withdrawn, stopped or unsent answer never counts).
 use super::gate;
 use super::github::PrSource;
-use crate::{Ledger, Result, Scope, ToolProposal};
+use crate::{Ledger, Result, ToolProposal};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -61,89 +61,6 @@ pub fn settle(ledger: &mut Ledger, (thread, turn): (&str, &str), item: &Value, s
     Ok(gated)
 }
 
-/// A command Codex ran that the gate did not answer (no approval request
-/// reached it, or the owner's card allowed it): an approving review of the
-/// exact current head is recorded when the gate would have allowed it —
-/// same parse (one `gh pr review <N> --repo <owner/repo>` with the
-/// marker), auto-merge switch, scope and policy checks, and the repository's
-/// owner rules (if any) bound to this room. A blocking review that ran
-/// withdraws this Agent's approvals. Nothing is authorized here: this only
-/// records what demonstrably ran (live PR #50, #55, Nov 17), for any root-turn
-/// command the gate itself did not answer: run without a request under any
-/// approval policy, or allowed by the owner's card. A newline inside the
-/// review body reads as a space: any word it would start outside the body
-/// makes the command unreadable, so nothing is recorded.
-pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str, cwd: &str, item: &Value, now: i64, source: &impl PrSource) -> Option<Observed> {
-    if item["type"] != "commandExecution" || item["status"] != "completed" || item["exitCode"] != 0 {
-        return None;
-    }
-    let raw = item["command"].as_str()?;
-    if !raw.contains("gh pr review") {
-        return None;
-    }
-    let line = raw.replace(['\n', '\r'], " ");
-    let skip = |reason| Some(Err(reason));
-    let Ok(versions) = ledger.policy_snapshot(scope) else { return skip("scope") };
-    // The turn's own workspace, never a directory the item reports (GPT review).
-    let proposal = ToolProposal {
-        scope: scope.clone(),
-        dispatch: dispatch.into(),
-        tool: "codex.command".into(),
-        arguments: serde_json::json!({ "command": line }),
-        canonical_directory: cwd.into(),
-        risk: "high".into(),
-        policy_revision: versions.map(|v| v.revision),
-        expires: now + OBSERVED_LIFETIME_SECS,
-    };
-    let Some(command) = gate::parse_command(&proposal) else { return skip("unreadable_command") };
-    let Some(repo) = command.repo.clone() else { return skip("no_repo") };
-    if !matches!(command.kind, gate::Kind::Review | gate::Kind::RequestChanges) {
-        return skip("not_a_verdict");
-    }
-    if ledger.auto_merge(&scope.agent).ok() != Some(true) {
-        return skip("auto_merge_off");
-    }
-    if matches!(ledger.tool_disposition(&proposal, now), Ok(crate::ToolPolicy::Deny) | Err(_)) {
-        return skip("scope_or_deny");
-    }
-    match ledger.owner_rules(&scope.agent, &repo) {
-        Ok(Some(rules)) if rules.room_id != scope.room => return skip("repo_in_another_room"),
-        Err(_) => return skip("rules_unreadable"),
-        _ => {}
-    }
-    // A room member's review counts only while the owner lets the Agent review there, as in the gate.
-    if scope.requester != ledger.owner && !ledger.room_share(&scope.agent, &scope.room).is_ok_and(|share| share.review) {
-        return skip("member_review_not_shared");
-    }
-    let Some(view) = source.pull_request(&command).await else { return skip("pull_request_unreadable") };
-    if command.kind == gate::Kind::RequestChanges {
-        return Some(ledger.withdraw_agent_review(&view.url, &scope.agent).map(|_| Recorded::Withdrawn).map_err(|_| "ledger"));
-    }
-    // The marker and the head it names must be one unbroken run of the text
-    // that ran: a newline can never make an ordinary comment an approval (GPT review).
-    if !raw.contains(&format!("{} {}", gate::APPROVE_MARKER, view.head_sha)) {
-        return skip("not_the_current_head");
-    }
-    if gate::qualifies(ledger, &command, &view, &scope.agent, source).await != Some(true) {
-        return skip("policy_or_ci");
-    }
-    Some(ledger.record_agent_review(&view.url, &view.head_sha, &scope.agent).map(|_| Recorded::Approval).map_err(|_| "ledger"))
-}
-
-/// What [`record_observed`] did with a `gh pr review` it saw run.
-pub type Observed = std::result::Result<Recorded, &'static str>;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Recorded {
-    Approval,
-    Withdrawn,
-}
-
-/// Seconds the reconstructed proposal of an observed command stays valid.
-const OBSERVED_LIFETIME_SECS: i64 = 300;
-
 #[cfg(test)]
 #[path = "codex_review_tests.rs"]
 mod tests;
-#[cfg(test)]
-#[path = "codex_observed_tests.rs"]
-mod observed_tests;

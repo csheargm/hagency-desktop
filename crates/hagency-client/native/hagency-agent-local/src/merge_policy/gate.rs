@@ -26,8 +26,10 @@ pub const APPROVE_MARKER: &str = "Hagency verdict: APPROVE";
 
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS auto_merge (agent TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1))) STRICT;
 DROP TABLE IF EXISTS auto_merge_reviews;
-CREATE TABLE IF NOT EXISTS auto_merge_head_reviews (pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, PRIMARY KEY(pr,head,reviewer)) STRICT;
-CREATE TABLE IF NOT EXISTS auto_merge_pending_reviews (call TEXT PRIMARY KEY, pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL) STRICT;";
+DROP TABLE IF EXISTS auto_merge_head_reviews;
+DROP TABLE IF EXISTS auto_merge_pending_reviews;
+CREATE TABLE IF NOT EXISTS auto_merge_room_reviews (pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, room TEXT NOT NULL, PRIMARY KEY(pr,head,reviewer,room)) STRICT;
+CREATE TABLE IF NOT EXISTS auto_merge_pending_room_reviews (call TEXT PRIMARY KEY, pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, room TEXT NOT NULL) STRICT;";
 
 impl Ledger {
     /// Switch agent auto-merge on or off for one Agent (off unless set).
@@ -43,19 +45,20 @@ impl Ledger {
     }
     /// `reviewer` asked for changes: none of its approvals of `pr` count any more.
     pub(crate) fn withdraw_agent_review(&mut self, pr: &str, reviewer: &str) -> Result<()> {
-        self.db.execute("DELETE FROM auto_merge_head_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
         // A held approval must not settle afterwards and restore it.
-        self.db.execute("DELETE FROM auto_merge_pending_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
         Ok(())
     }
-    pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str) -> Result<()> {
-        self.db.execute("INSERT OR IGNORE INTO auto_merge_head_reviews VALUES (?,?,?)", (pr, head, reviewer))?;
+    /// `reviewer` approved `pr` at `head` in `room`; it counts only for a merge from that room.
+    pub(crate) fn record_agent_review(&mut self, pr: &str, head: &str, reviewer: &str, room: &str) -> Result<()> {
+        self.db.execute("INSERT OR IGNORE INTO auto_merge_room_reviews VALUES (?,?,?,?)", (pr, head, reviewer, room))?;
         Ok(())
     }
     /// An allowed review not yet run: it counts only once tool call `call`
     /// reports success ([`Ledger::settle_agent_review`]).
-    pub(crate) fn hold_agent_review(&mut self, call: &str, pr: &str, head: &str, reviewer: &str) -> Result<()> {
-        self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_reviews VALUES (?,?,?,?)", (call, pr, head, reviewer))?;
+    pub(crate) fn hold_agent_review(&mut self, call: &str, pr: &str, head: &str, (reviewer, room): (&str, &str)) -> Result<()> {
+        self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_room_reviews VALUES (?,?,?,?,?)", (call, pr, head, reviewer, room))?;
         Ok(())
     }
     /// Tool call `call` finished: a held review counts only if it succeeded.
@@ -64,20 +67,24 @@ impl Ledger {
         use rusqlite::OptionalExtension;
         self.settle_auto_merge(call, succeeded)?;
         self.atomically(|ledger| {
-            let held: Option<(String, String, String)> = ledger
+            let held: Option<(String, String, String, String)> = ledger
                 .db
-                .query_row("DELETE FROM auto_merge_pending_reviews WHERE call=? RETURNING pr, head, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .query_row("DELETE FROM auto_merge_pending_room_reviews WHERE call=? RETURNING pr, head, reviewer, room", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
                 .optional()?;
             match held {
-                Some((pr, head, reviewer)) if succeeded => ledger.record_agent_review(&pr, &head, &reviewer),
+                Some((pr, head, reviewer, room)) if succeeded => ledger.record_agent_review(&pr, &head, &reviewer, &room),
                 _ => Ok(()),
             }
         })
     }
-    /// The Agents that approved `pr` at exactly commit `head`.
+    /// The Agents that approved `pr` at exactly commit `head`, in any room.
     pub(crate) fn agent_reviewers(&self, pr: &str, head: &str) -> Result<Vec<String>> {
-        let mut statement = self.db.prepare("SELECT reviewer FROM auto_merge_head_reviews WHERE pr=? AND head=?")?;
-        let rows = statement.query_map([pr, head], |r| r.get(0))?;
+        self.agent_reviewers_in(pr, head, None)
+    }
+    /// The same, counting only approvals given in `room` when one is named.
+    pub(crate) fn agent_reviewers_in(&self, pr: &str, head: &str, room: Option<&str>) -> Result<Vec<String>> {
+        let mut statement = self.db.prepare("SELECT DISTINCT reviewer FROM auto_merge_room_reviews WHERE pr=?1 AND head=?2 AND (?3 IS NULL OR room=?3)")?;
+        let rows = statement.query_map((pr, head, room), |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
@@ -278,7 +285,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     let view = source.pull_request(&command).await?;
-    if !qualifies(ledger, &command, &view, &agent, source).await? {
+    if !qualifies(ledger, &command, &view, (&agent, &proposal.scope.room), source).await? {
         return None;
     }
     let allowed = match disposition {
@@ -296,7 +303,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     if allowed && command.kind == Kind::Review && !call.is_empty() {
         // Residual race: a push between this read and the review lands an
         // approval on the old head; it then never matches the new one.
-        ledger.hold_agent_review(call, &view.url, &view.head_sha, &agent).ok()?;
+        ledger.hold_agent_review(call, &view.url, &view.head_sha, (&agent, &proposal.scope.room)).ok()?;
     }
     Some(allowed)
 }
@@ -305,7 +312,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
 /// its current head to be a low-risk change under the policy at its base
 /// commit; a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
 /// (and takes the one automatic merge). `None` when facts cannot be read.
-pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, agent: &str, source: &impl PrSource) -> Option<bool> {
+pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, (agent, room): (&str, &str), source: &impl PrSource) -> Option<bool> {
     let repo = super::github::repo_of_url(&view.url, command.number)?;
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);
@@ -333,6 +340,6 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     if command.head.as_deref() != Some(view.head_sha.as_str()) {
         return Some(false);
     }
-    let decision = super::review_loop::judge(ledger, command, repo, view, agent, source).await?;
+    let decision = super::review_loop::judge(ledger, command, repo, view, (agent, Some(room)), source).await?;
     Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
 }

@@ -144,16 +144,22 @@ pub(super) struct Fake {
     files: Vec<ChangedFile>,
     pub(super) head: std::cell::RefCell<String>,
     pub(super) checks: Vec<Check>,
+    /// GitHub's approving reviews: (commit, submitted at); `None` when unreadable.
+    pub(super) posted: std::cell::RefCell<Option<Vec<(String, i64)>>>,
+    pub(super) opened_by: Option<String>,
 }
 impl Fake {
     pub(super) fn new(files: Vec<ChangedFile>) -> Self {
-        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed] }
+        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed], posted: std::cell::RefCell::new(None), opened_by: None }
     }
 }
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = facts(self.files.clone(), self.checks.clone());
-        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), facts })
+        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), facts })
+    }
+    async fn approvals_on(&self, _: &GhPr, _: &str, head: &str) -> Option<Vec<i64>> {
+        self.posted.borrow().as_ref().map(|all| all.iter().filter(|(commit, _)| commit == head).map(|(_, at)| *at).collect())
     }
     async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {
         assert_eq!((repo, base), ("csheargm/hagency-demo-sandbox", BASE), "the policy comes from the base commit");

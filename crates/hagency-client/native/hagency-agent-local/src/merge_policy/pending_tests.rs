@@ -112,9 +112,9 @@ async fn a_failed_settlement_is_undone_and_codex_keys_are_not_claudes() {
     let docs = Fake::new(vec![file("README.md", 2)]);
     approve(&mut ledger, temp.path(), &docs, "rv").await;
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(CHANGES, temp.path(), "reviewer"), "rc", 11, &docs).await, Some(true));
-    ledger.db.execute_batch("ALTER TABLE auto_merge_head_reviews RENAME TO hidden").unwrap();
+    ledger.db.execute_batch("ALTER TABLE auto_merge_room_reviews RENAME TO hidden").unwrap();
     assert!(ledger.settle_tool_call("rc", true).is_err());
-    ledger.db.execute_batch("ALTER TABLE hidden RENAME TO auto_merge_head_reviews").unwrap();
+    ledger.db.execute_batch("ALTER TABLE hidden RENAME TO auto_merge_room_reviews").unwrap();
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["reviewer"]);
     ledger.settle_tool_call("rc", true).unwrap();
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "the retried settlement still withdraws");

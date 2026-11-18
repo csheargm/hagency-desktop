@@ -1550,8 +1550,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut answer: Option<questions::Answer> = None;
         let mut approvals = approvals::Approvals::default();
         let mut approval_answer: Option<approvals::Answer> = None;
-        // Gate-allowed commands whose accept was sent: only these settle a review.
-        let mut gated_sent = std::collections::HashSet::new();
+        // Review evidence of this turn: gate accepts sent, owner/rule decisions, starts, completions.
+        let mut reviews = crate::merge_policy::codex_observed::TurnReviews::default();
         let mut file_calls = host_files::Calls::default();
         let mut file_answer: Option<host_files::Answer> = None;
         let mut controls = controls::Controls::default();
@@ -1690,9 +1690,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                             }
                         } else if let Some(approved) = approval_answer.take() {
                             if approved.active(&tree) {
-                                let gated = approved.gated_call();
-                                self.write(approved.response(ledger, owner)).await?;
-                                gated_sent.extend(gated);
+                                let (gated, decided) = (approved.gated_call(), approved.decided_call());
+                                let response = approved.response(ledger, owner);
+                                let accepted = response["result"]["decision"] == "accept";
+                                self.write(response).await?;
+                                reviews.sent.extend(gated);
+                                if let (true, Some((key, proposal))) = (accepted, decided) {
+                                    reviews.decided(key, proposal);
+                                }
                             }
                         } else if let Some(answer) = answer.take()
                             && tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
@@ -1907,15 +1912,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     self.items.insert(key, item.clone());
                     tools.item(item, method == "item/completed");
-                    if method == "item/completed" {
-                        // A review the gate held under this command counts only now.
-                        let gated = crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
-                        if !gated && event_scope.root {
-                            // Not answered by the gate: record a qualifying review it posted.
-                            let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
-                            if let Some(observed) = crate::merge_policy::codex_review::record_observed(ledger, scope, dispatch, cwd, item, now(), &github).await {
-                                hagency_runtime::codex::approval::review_observed(observed.err());
-                            }
+                    if method == "item/started" {
+                        reviews.started((event_thread, event_turn), item, now());
+                    } else {
+                        // A review the gate held counts only now; one it never answered is recorded from evidence.
+                        let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+                        let by_gate = |key: &str| approvals.answered_by_gate(key);
+                        if let Some(observed) = reviews.completed(ledger, scope, dispatch, (event_thread, event_turn), item, (event_scope.root, &by_gate), now(), &github).await? {
+                            hagency_runtime::codex::approval::review_observed(observed.err());
                         }
                     }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).

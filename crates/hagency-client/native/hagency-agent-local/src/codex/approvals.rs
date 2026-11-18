@@ -36,8 +36,10 @@ struct Pending {
     request: Request,
     wait: Wait,
 }
+/// The pending waits, and the command items the gate answered this turn
+/// (allowed or not): a command the gate decided is never observed again.
 #[derive(Default)]
-pub(super) struct Approvals(BTreeMap<String, Pending>);
+pub(super) struct Approvals(BTreeMap<String, Pending>, std::collections::HashSet<String>);
 pub(super) struct Answer {
     request: Request,
     decision: Decision,
@@ -90,8 +92,13 @@ impl Approvals {
     }
     /// A request the auto-merge gate answered: sent as soon as it is polled.
     pub fn offer_gated(&mut self, request: Request, allowed: bool) {
+        self.1.extend(command_key(&request));
         let wait: Wait = Box::pin(std::future::ready(Decision::Gate(allowed)));
         self.0.insert(request.id.to_string(), Pending { request, wait });
+    }
+    /// Whether the gate answered the command item `key` this turn.
+    pub fn answered_by_gate(&self, key: &str) -> bool {
+        self.1.contains(key)
     }
     pub async fn next(&mut self) -> Answer {
         let (id, decision) = poll_fn(|cx| {
@@ -136,10 +143,14 @@ impl Answer {
     /// The held-review key of a command the gate allowed, to note once its
     /// accept is sent ([`crate::merge_policy::codex_review::settle`]).
     pub fn gated_call(&self) -> Option<String> {
-        let item = self.request.proposal.arguments["itemId"].as_str().filter(|item| !item.is_empty())?;
-        let command = self.request.method == crate::merge_policy::codex_review::COMMAND_APPROVAL;
-        (command && matches!(self.decision, Decision::Gate(true)))
-            .then(|| crate::merge_policy::codex_review::call_key(&self.request.thread, &self.request.turn, item))
+        command_key(&self.request).filter(|_| matches!(self.decision, Decision::Gate(true)))
+    }
+    /// A command a saved rule or the owner's card answered: its key and the
+    /// exact proposal decided (its real directory and risk), noted once the
+    /// accept is sent so a review it posts can be recorded.
+    pub fn decided_call(&self) -> Option<(String, ToolProposal)> {
+        let decided = matches!(self.decision, Decision::Rules | Decision::Owner(true));
+        command_key(&self.request).filter(|_| decided).map(|key| (key, self.request.proposal.clone()))
     }
     pub fn response(self, ledger: &mut Ledger, owner: &str) -> Value {
         let request = self.request;
@@ -168,6 +179,13 @@ impl Answer {
         };
         json!({"id":request.id,"result":result})
     }
+}
+
+/// The review key of a shell-command request (`None` for other requests or without an item id).
+fn command_key(request: &Request) -> Option<String> {
+    let item = request.proposal.arguments["itemId"].as_str().filter(|item| !item.is_empty())?;
+    (request.method == crate::merge_policy::codex_review::COMMAND_APPROVAL)
+        .then(|| crate::merge_policy::codex_review::call_key(&request.thread, &request.turn, item))
 }
 
 #[cfg(test)]

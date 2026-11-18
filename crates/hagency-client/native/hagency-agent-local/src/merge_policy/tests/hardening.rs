@@ -83,7 +83,7 @@ async fn an_unpinned_or_stale_merge_goes_to_the_owner() {
     let pinned_new = bash("gh pr merge 7 --squash --match-head-commit 3333333333333333333333333333333333333333 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, "call", 11, &docs).await, None, "the approval was for the old head");
     // One dispatch authorizes once, so the fresh review is recorded directly.
-    ledger.record_agent_review(URL, "3333333333333333333333333333333333333333", "reviewer").unwrap();
+    ledger.record_agent_review(URL, "3333333333333333333333333333333333333333", "reviewer", "!r:x").unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &pinned_new, "call", 11, &docs).await, Some(true), "a fresh review of the new head counts");
 }
 

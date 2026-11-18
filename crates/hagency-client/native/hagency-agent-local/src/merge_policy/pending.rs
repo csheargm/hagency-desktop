@@ -54,7 +54,7 @@ impl Ledger {
         if call.is_empty() {
             return self.withdraw_agent_review(pr, reviewer);
         }
-        self.db.execute("DELETE FROM auto_merge_pending_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
         self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_withdrawals VALUES (?,?,?)", (call, pr, reviewer))?;
         Ok(())
     }
