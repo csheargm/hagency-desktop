@@ -408,6 +408,8 @@ impl Ledger {
                 now,
             ),
         )?;
+        // TODO(R4): inbox.rs is over budget; split receiving into inbox/receive.rs.
+        crate::activity::remember_handoff(&tx, &event.id, &event.body)?;
         tx.commit()?;
         Ok(Receipt {
             dispatch_id: event.id.clone(),

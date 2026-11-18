@@ -197,9 +197,10 @@ pub struct TrackChange {
     pub pr: Option<u64>,
     #[serde(default)]
     pub notified: Option<bool>,
-    /// The current attempt was handed off again after an interrupted run.
+    /// The current attempt was handed off again after an interrupted run, as
+    /// its free retry number `rehanded`: a replayed save is a no-op (GPT review).
     #[serde(default)]
-    pub rehanded: Option<bool>,
+    pub rehanded: Option<u32>,
 }
 
 impl Ledger {
@@ -260,7 +261,7 @@ pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> R
             track = Track { state: State::HandedOff, attempts: attempt, handed_at: now, pr: None, notified: false, ..track };
         }
     }
-    if change.rehanded == Some(true) && track.state == State::HandedOff && track.free_retries < MAX_FREE_RETRIES {
+    if change.rehanded == Some(track.free_retries + 1) && track.state == State::HandedOff && track.free_retries < MAX_FREE_RETRIES {
         // Same attempt, a new run: its own clock, never a new attempt.
         track = Track { handed_at: now, free_retries: track.free_retries + 1, notified: false, ..track };
     }

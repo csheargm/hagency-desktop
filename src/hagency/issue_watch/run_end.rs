@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 /// A hand-off's request received this long before its attempt was recorded
 /// still counts (the record is written right after the post). Short, so the
 /// previous attempt's request (received a whole check earlier) never does.
-pub const RUN_SLACK_SECS: i64 = 15;
+pub const RUN_SLACK_SECS: i64 = 5;
 
 /// The current hand-off's run, as the Activity record says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +92,7 @@ pub fn issue_branch(branches: &[String], number: i64) -> Option<String> {
 pub const PUSHED_NO_PR: &str = "🔁 #{number}: {agent} pushed {branch} but opened no pull request — retrying (attempt {attempt} of {max})";
 pub const ENDED_NO_PR: &str = "🔁 #{number}: the run ended without a pull request — retrying (attempt {attempt} of {max})";
 pub const RUN_LOST: &str = "🔁 #{number}: the run was lost before it finished — retrying (attempt {attempt} of {max})";
-pub const RESTARTED: &str = "🔁 #{number}: the run stopped when this app or its Agent host restarted — handing it off again (attempt {attempt} of {max}, not counted)";
+pub const RESTARTED: &str = "🔁 #{number}: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt {attempt} of {max}, not counted)";
 
 /// Which hand-off a retry is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

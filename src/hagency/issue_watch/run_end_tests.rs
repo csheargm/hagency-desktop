@@ -133,7 +133,7 @@ fn a_restart_during_attempt_three_hands_it_off_again_without_using_an_attempt() 
     let track = fake.tracks()[0].clone();
     assert_eq!((track.state, track.attempts, track.free_retries, track.handed_at), (State::HandedOff, MAX_ATTEMPTS, 1, T0 + 300), "attempts stays 3");
     assert_eq!(*fake.handed.borrow(), [(62, 3)]);
-    assert_eq!(fake.said.borrow()[0].2, "🔁 #62: the run stopped when this app or its Agent host restarted — handing it off again (attempt 3 of 3, not counted)");
+    assert_eq!(fake.said.borrow()[0].2, "🔁 #62: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt 3 of 3, not counted)");
     assert!(!fake.keys().contains(&"62:failed".to_owned()), "never the give-up on a restart");
     // The new run is still going: it waits, it does not give up.
     fake.run.set(Some(RunEnd::Running));

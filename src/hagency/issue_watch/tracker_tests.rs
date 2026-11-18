@@ -78,7 +78,7 @@ impl TrackIo for Fake {
         }
         self.asked_branch.borrow_mut().push(branch.map(str::to_owned));
         self.handed.borrow_mut().push((issue.number, attempt));
-        self.record(if again > 0 { serde_json::json!({"repo": REPO, "number": issue.number, "rehanded": true}) } else { serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt}) }).await.map(|_| true)
+        self.record(if again > 0 { serde_json::json!({"repo": REPO, "number": issue.number, "rehanded": again}) } else { serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt}) }).await.map(|_| true)
     }
     async fn run_end(&self, _track: &Track) -> Result<RunEnd, String> {
         Ok(self.run.get().unwrap_or(RunEnd::Running))

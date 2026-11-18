@@ -126,14 +126,15 @@ fn a_restart_interrupted_run_is_handed_off_again_without_an_attempt_until_the_ca
     let third = handed(MAX_ATTEMPTS, T0);
     assert_eq!(decide(&third, &interrupted(T0 + 60)), Action::Rehand, "never the final give-up");
     let change = |rehanded| TrackChange { repo: "acme/app".into(), number: 33, handed: None, state: None, pr: None, notified: None, rehanded };
-    let once = apply_change(Some(third.clone()), &change(Some(true)), T0 + 70).unwrap();
+    let once = apply_change(Some(third.clone()), &change(Some(1)), T0 + 70).unwrap();
     assert_eq!((once.attempts, once.free_retries, once.handed_at), (MAX_ATTEMPTS, 1, T0 + 70), "same attempt, its own clock");
-    let capped = (0..5).fold(once, |t, i| apply_change(Some(t), &change(Some(true)), T0 + 80 + i).unwrap());
+    assert_eq!(apply_change(Some(once.clone()), &change(Some(1)), T0 + 75).unwrap(), once, "a replayed save changes nothing");
+    let capped = (2..8).fold(once, |t, n| apply_change(Some(t), &change(Some(n)), T0 + 80 + i64::from(n)).unwrap());
     assert_eq!(capped.free_retries, MAX_FREE_RETRIES);
     assert_eq!(decide(&capped, &interrupted(T0 + 200)), Action::GiveUp, "a crash loop still ends");
     assert_eq!(decide(&handed(1, T0), &Facts { interrupted: true, ..open(T0 + 60) }), Action::Wait, "only an ended run counts");
     let done = Track { state: State::Failed, ..third };
-    assert_eq!(apply_change(Some(done), &change(Some(true)), T0 + 90).unwrap().free_retries, 0, "a terminal record never restarts");
+    assert_eq!(apply_change(Some(done), &change(Some(1)), T0 + 90).unwrap().free_retries, 0, "a terminal record never restarts");
 }
 
 #[test]

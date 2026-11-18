@@ -73,7 +73,7 @@ impl Handoff for Live {
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
         super::still_current(self.epoch)?;
         // One transaction: the issue is seen and its tracked attempt counted (ADR 0020).
-        let track = if self.again > 0 { json!({"repo": self.repo, "number": number, "rehanded": true}) } else { json!({"repo": self.repo, "number": number, "handed": self.attempt}) };
+        let track = if self.again > 0 { json!({"repo": self.repo, "number": number, "rehanded": self.again}) } else { json!({"repo": self.repo, "number": number, "handed": self.attempt}) };
         let input = json!({"issueSeen": {"repo": self.repo, "number": number}, "track": track});
         saved(&self.service, &self.agent_id, Some(input)).await.map(|_| ())
     }

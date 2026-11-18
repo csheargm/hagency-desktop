@@ -396,6 +396,7 @@ impl Ledger {
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;
         issue_track::ensure_schema(&db)?;
+        db.execute_batch(activity::SCHEMA)?;
         db.execute_batch(room_share::SCHEMA)?;
         remembered::ensure_schema(&db)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
