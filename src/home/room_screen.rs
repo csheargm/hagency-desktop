@@ -4272,11 +4272,16 @@ impl RoomScreen {
     /// Opens the information pane on Overview when the Chats menu's Settings asked for this room.
     fn open_requested_room_info(&mut self, cx: &mut Cx) {
         let Some(room) = self.room_name_id.as_ref() else { return };
-        if !matches!(self.timeline_kind, Some(TimelineKind::MainRoom {..}))
-            || !super::chat_menu_routes::take_room_info_request(room.room_id()) { return; }
+        if !matches!(self.timeline_kind, Some(TimelineKind::MainRoom {..})) { return; }
+        // `/status` (ADR 0023) opens the Status tab; Settings opens Overview.
+        let status = super::chat_menu_routes::take_status_request(room.room_id());
+        if !status && !super::chat_menu_routes::take_room_info_request(room.room_id()) { return; }
         self.chat_info_requested = true;
         for info in [ids!(desktop_chat_info), ids!(compact_chat_info)] {
-            self.view.mobile_chat_info(cx, info).show_overview(cx);
+            let pane = self.view.mobile_chat_info(cx, info);
+            // Bind the room first: a first load resets the tab (GPT review).
+            pane.ensure_room(cx, room.clone());
+            if status { pane.show_status(cx) } else { pane.show_overview(cx) }
         }
     }
     fn info_panel_id(&self) -> &'static [LiveId] {

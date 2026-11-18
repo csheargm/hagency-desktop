@@ -1161,6 +1161,10 @@ impl RoomInputBar {
             avatar_state: AvatarState::Unknown,
         };
         match action {
+            SlashCommandAction::ShowRoomStatus => {
+                crate::home::chat_menu_routes::request_status(room_id);
+                cx.redraw_all();
+            }
             SlashCommandAction::InviteAgent => {
                 cx.action(crate::home::invite_modal::InviteModalAction::Open(utils::RoomNameId::empty(room_id.clone())));
             }

@@ -118,7 +118,7 @@ impl RoomTools {
     pub fn with_plans(self) -> Self {
         Self { plans: true, ..self }
     }
-    /// Add the read-only `room_watches` tool (ADR 0019).
+    /// Add the read-only `room_watches` (ADR 0019) and `repo_status` (ADR 0023) tools.
     pub fn with_watches(self) -> Self {
         Self { watches: true, ..self }
     }
@@ -138,6 +138,7 @@ impl RoomTools {
         }
         if self.watches {
             definitions.push(crate::room_watches::definition());
+            definitions.push(crate::repo_status::definition());
         }
         definitions
     }
@@ -160,6 +161,8 @@ impl RoomTools {
             crate::room_plan::parse(arguments).map(RoomOperation::Plan)
         } else if self.watches && name == crate::room_watches::ROOM_WATCHES_TOOL {
             crate::room_watches::parse(arguments).map(|()| RoomOperation::Watches)
+        } else if self.watches && name == crate::repo_status::REPO_STATUS_TOOL {
+            crate::repo_status::parse(arguments).map(|repo| RoomOperation::RepoStatus { repo })
         } else {
             Err(Error::Unsupported)
         }
@@ -173,6 +176,7 @@ pub enum RoomOperation {
     Skill(crate::room_skills::SkillOperation),
     Plan(crate::room_plan::Plan),
     Watches,
+    RepoStatus { repo: Option<String> },
 }
 impl RoomOperation {
     pub fn name(&self) -> &'static str {
@@ -183,6 +187,7 @@ impl RoomOperation {
             Self::Skill(operation) => operation.name(),
             Self::Plan(_) => crate::room_plan::PLAN_PROPOSE_TOOL,
             Self::Watches => crate::room_watches::ROOM_WATCHES_TOOL,
+            Self::RepoStatus { .. } => crate::repo_status::REPO_STATUS_TOOL,
         }
     }
 }

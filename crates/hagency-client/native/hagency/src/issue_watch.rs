@@ -12,6 +12,8 @@ pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, cl
 
 /// The issue loop's follow-through records and state machine (ADR 0020).
 pub use hagency_agent_local::issue_track;
+use hagency_agent_local::issue_watch::recent::{closed_url, open_items, parse_closed};
+pub use hagency_runtime::repo_status::table::GithubItem;
 
 /// The HTTP client `fetch_open_issues` takes.
 pub type Client = reqwest::Client;
@@ -226,10 +228,38 @@ pub async fn post_comment(client: &Client, api: &str, repo: &str, number: i64, t
     Ok(())
 }
 
+/// A repository's open issues and pull requests (first page, newest first)
+/// and those closed since `since`, for the room's status table (ADR 0023).
+/// `token` is `None` for a public read: a repository only another owner
+/// watches is never read with this device's token.
+pub async fn fetch_status_items(client: &Client, api: &str, repo: &str, token: Option<&str>, since: i64) -> Result<Vec<GithubItem>, FetchError> {
+    let open = parse_issues(&get_as(client, &page_url(api, repo, 1)?, token).await?)?;
+    let closed = parse_closed(&get_as(client, &closed_url(api, repo, since)?, token).await?, since)?;
+    Ok(open_items(&open).into_iter().chain(closed).collect())
+}
+
+/// Whether `repo` is public: GitHub shows it to a request with no token
+/// (a private or missing repository answers 404).
+pub async fn fetch_is_public(client: &Client, api: &str, repo: &str) -> Result<bool, FetchError> {
+    pulls_url(api, repo)?; // refuses anything but owner/name
+    match get_as(client, &format!("{api}/repos/{repo}"), None).await {
+        Ok(body) => Ok(serde_json::from_str::<serde_json::Value>(&body).map_err(|e| FetchError::Parse(e.to_string()))?["private"] == false),
+        Err(FetchError::Status { status: 404, .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 async fn get(client: &Client, url: &str, token: &str) -> Result<String, FetchError> {
-    let response = client
-        .get(url)
-        .bearer_auth(token)
+    get_as(client, url, Some(token)).await
+}
+
+async fn get_as(client: &Client, url: &str, token: Option<&str>) -> Result<String, FetchError> {
+    let request = client.get(url);
+    let request = match token {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    };
+    let response = request
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", USER_AGENT)

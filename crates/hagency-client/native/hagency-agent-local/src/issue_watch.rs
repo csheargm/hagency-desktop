@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub mod wire;
+pub mod recent;
 
 /// The label `Labelled` uses when the owner names none.
 pub const DEFAULT_LABEL: &str = "agent-fix";

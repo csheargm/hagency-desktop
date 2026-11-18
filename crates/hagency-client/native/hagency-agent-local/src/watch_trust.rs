@@ -41,6 +41,7 @@ pub mod host_git;
 pub mod host_run;
 pub(crate) mod local_git;
 pub mod read_only;
+pub mod room_scope;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,12 +60,6 @@ pub enum TrustedStep {
 /// freely".
 fn trusted_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
     Ok(room_entries(db, proposal)?.into_iter().filter(|e| e.push_freely).map(|e| e.repo).collect())
-}
-
-/// Every repository `proposal`'s Agent watches with reports to this Room,
-/// push trust or not, active ones only.
-fn watched_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
-    Ok(room_entries(db, proposal)?.into_iter().map(|e| e.repo).collect())
 }
 
 /// The Agent's effective watches (`watch_info::entries`, so a work-list
@@ -94,15 +89,31 @@ fn room_entries(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<c
 
 /// Whether `proposal` is a one-line shell step (a foreground Claude `Bash`
 /// call or a Codex [`codex_step`] call) read-only GitHub query on a
-/// repository its Agent watches from this Room, push trust or not. Any
-/// requester in that Room: what it reads is what the watch already reports
-/// there (ADR 0019 "Anyone in the report Room").
+/// repository of this Room's repository set ([`read_scope`]), push trust or
+/// not. Any requester in that Room: what it reads is what the room already
+/// tracks (ADR 0019 "Anyone in the report Room", widened by ADR 0023).
 pub(crate) fn read_only_query(db: &Connection, proposal: &ToolProposal) -> crate::Result<bool> {
     if proposal.risk == "permission_expansion" || !is_shell_step(proposal) {
         return Ok(false);
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(false) };
-    Ok(watched_repos(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
+    Ok(read_scope(db, proposal)?.iter().any(|repo| read_only::allowed(line, repo)))
+}
+
+/// What a read-only query may name (ADR 0023): the room's repository set,
+/// not only this Agent's own watches. This device's other Agents' active
+/// watches reporting to the Room, and the set the host recorded for this
+/// requester (linked repositories, and published watches from publishers
+/// who could have linked them).
+fn read_scope(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+    let mut repos = Vec::new();
+    let mut agents = db.prepare("SELECT agent FROM issue_watch UNION SELECT agent FROM agent_work ORDER BY 1")?;
+    for agent in agents.query_map([], |r| r.get::<_, String>(0))? {
+        let scope = crate::Scope { agent: agent?, ..proposal.scope.clone() };
+        repos.extend(room_entries(db, &ToolProposal { scope, ..proposal.clone() })?.into_iter().map(|e| e.repo));
+    }
+    repos.extend(room_scope::repos(&proposal.scope.room, &proposal.scope.requester));
+    Ok(repos)
 }
 
 /// A foreground Claude `Bash` call, or a Codex call of the host's
@@ -247,6 +258,8 @@ pub(crate) fn github_repo_of(url: &str) -> Option<&str> {
 mod tests;
 #[cfg(test)]
 mod read_only_flow_tests;
+#[cfg(test)]
+mod room_scope_tests;
 #[cfg(test)]
 pub(crate) mod fix_flow_tests;
 #[cfg(test)]

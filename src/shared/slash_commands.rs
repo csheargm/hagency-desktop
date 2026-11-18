@@ -4,6 +4,8 @@
 //! (e.g., `/me`, `/spoiler`), or a [`SlashCommandAction`] for the message input to run
 //! within the current room (e.g., `/invite`, `/leave`).
 
+// TODO(R4): over budget; split the formatting helpers (rainbow, html, emoticons)
+// out of the command table and parse_input into slash_commands/format.rs.
 use std::fmt::Write;
 use unicode_segmentation::UnicodeSegmentation;
 use ruma::{events::room::message::RoomMessageEventContent, matrix_uri::MatrixId, MatrixToUri, MatrixUri, OwnedUserId, UserId};
@@ -124,6 +126,12 @@ pub static SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/nick <display_name>",
     },
     SlashCommand {
+        name: "status",
+        aliases: &[],
+        description: "Show what this room's Agents are doing",
+        usage: "/status",
+    },
+    SlashCommand {
         name: "leave",
         aliases: &["part"],
         description: "Leave this room",
@@ -185,6 +193,8 @@ pub enum SlashCommandAction {
     },
     /// Set the current user's display name across all rooms.
     SetDisplayName(String),
+    /// Show the room's Status tab (ADR 0023): answered by the app, no message sent.
+    ShowRoomStatus,
 }
 
 /// Returns an iterator over all slash commands matching the given query.
@@ -220,8 +230,11 @@ pub fn parse_input(text: &str) -> SlashCommandOutcome {
 
     // Only the emoticons and /leave still make sense with nothing after them.
     let arg = arg.trim();
-    if command.name == "leave" && !arg.is_empty() {
+    if matches!(command.name, "leave" | "status") && !arg.is_empty() {
         return SlashCommandOutcome::Error(format!("Usage: {}", command.usage));
+    }
+    if command.name == "status" {
+        return SlashCommandOutcome::Action(SlashCommandAction::ShowRoomStatus);
     }
     if arg.is_empty() && !matches!(
         command.name,
@@ -497,6 +510,15 @@ mod tests_slash_commands {
             SlashCommandOutcome::Error(err) => err,
             other => panic!("expected an error for {text:?}, got {other:?}"),
         }
+    }
+
+    /// ADR 0023: `/status` is answered by the app (the Status tab), never sent.
+    #[test]
+    fn status_is_an_app_action_not_a_message() {
+        assert!(matches!(action("/status"), SlashCommandAction::ShowRoomStatus));
+        assert!(matches!(action("/STATUS "), SlashCommandAction::ShowRoomStatus));
+        assert!(error("/status everything").starts_with("Usage"));
+        assert!(matching_commands("sta").any(|c| c.name == "status"));
     }
 
     /// Returns the `formatted_body` of a message, panicking if it has none.

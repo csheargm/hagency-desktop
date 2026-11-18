@@ -16,6 +16,7 @@ mod merge_hold_tests;
 mod review_loop;
 mod tracker;
 mod tracker_live;
+mod status_publish;
 #[cfg(test)]
 mod tracker_tests;
 mod work;

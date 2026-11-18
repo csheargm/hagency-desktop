@@ -60,7 +60,7 @@ script_mod! {
             View {width: Fill height: 36 flow: Right spacing: 6
                 memory_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Memory")) i18n_text: "Memory" icon_walk: Walk{width: 0 height: 0}}
                 skills_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Skills")) i18n_text: "Skills" icon_walk: Walk{width: 0 height: 0}}
-                watches_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Watches")) i18n_text: "Watches" icon_walk: Walk{width: 0 height: 0}}
+                watches_tab := RobrixNeutralIconButton {width: Fill height: 36 text: #(crate::i18n::tr("Status")) i18n_text: "Status" icon_walk: Walk{width: 0 height: 0}}
             }
         }
         status := Label {
@@ -548,6 +548,10 @@ impl MobileChatInfo {
         if let (InfoTab::Watches, Some(room)) = (tab, self.room.as_ref()) {
             self.view.room_watches_panel(cx, ids!(watches_panel)).show(cx, room.room_id());
         }
+        // Agents' activity lines come from the room's status (ADR 0023).
+        if let (InfoTab::Members, Some(room)) = (tab, self.room.as_ref()) && super::room_watches::current(room.room_id()).is_none() {
+            super::room_watches::refresh(room.room_id());
+        }
         // Tabs change layout and controls in draw_walk, outside the cached
         // children that a partial View redraw would update.
         cx.redraw_all();
@@ -964,6 +968,7 @@ impl Widget for MobileChatInfo {
                     }
                 }
             }
+            if self.tab == InfoTab::Members && self.room.as_ref().is_some_and(|room| actions.iter().any(|a| a.downcast_ref::<super::room_watches::WatchesChanged>().is_some_and(|c| &c.room_id == room.room_id()))) {self.view.redraw(cx);}
             if self.view.button(cx, ids!(services_back)).clicked(actions) {self.services_open=false;self.view.redraw(cx);return;}
             if self.view.button(cx, ids!(overview_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Overview);return;}
             if self.view.button(cx, ids!(members_tab)).clicked(actions) {self.select_tab(cx, InfoTab::Members);return;}
@@ -1180,6 +1185,9 @@ impl Widget for MobileChatInfo {
                         // Who may ask one's own Agent (UX A4) leads its second line.
                         let detail = super::agent_ask_badge::policy(self.owner.as_ref(), &profile.user_id).map_or(detail.clone(), |policy| format!("{policy} · {detail}"));
                         let detail = if data.banned_members.contains(&profile.user_id) {crate::i18n::format("Banned · {user}", &[("user", detail)])} else {detail};
+                        let owner = self.member_owners.get(&profile.user_id).map(|o| o.to_string());
+                        let activity = badge.as_ref().and_then(|_| super::room_watches::activity(data.room.room_id(), profile.user_id.as_str(), owner.as_deref()));
+                        let detail = activity.map_or(detail.clone(), |activity| format!("{activity} · {detail}"));
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
                         widget.view(cx, ids!(agent_badge)).set_visible(cx, badge.is_some());
                         if let Some(badge) = badge {widget.label(cx, ids!(badge_text)).set_text(cx, &badge);}
@@ -1297,6 +1305,10 @@ impl MobileChatInfoRef {
     /// Shows the Overview tab (the Chats menu's Settings).
     pub fn show_overview(&self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() { inner.select_tab(cx, InfoTab::Overview); }
+    }
+    /// Shows the Status tab (`/status`, ADR 0023).
+    pub fn show_status(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() { inner.select_tab(cx, InfoTab::Watches); }
     }
     #[cfg(test)]
     pub(crate) fn select_members_for_test(&self, cx: &mut Cx) {
