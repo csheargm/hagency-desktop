@@ -7,8 +7,9 @@ use super::merge_hold::{self, Gate};
 use super::review_loop::{self, LoopCtx, LoopIo};
 use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
+use super::run_end::RunEnd;
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
-use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_reviews, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
+use ::hagency::issue_watch::{GITHUB_API, Issue, IssueWatch, OwnerRules, PullRequest, fetch_comments, fetch_open_issues, fetch_reviews, fetch_branches, fetch_pull_merged, fetch_issue_state, fetch_login, fetch_open_pulls, fetch_permission};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedTransactionId, OwnedUserId};
 use serde_json::{Map, Value, json};
@@ -133,10 +134,19 @@ impl LiveTrack<'_> {
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         let settled = readiness["kind"] == "approvals" && readiness["head"].is_string() && {
             let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
-            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, chrono::Utc::now().timestamp())
+            let now = chrono::Utc::now().timestamp();
+            let seen_at = lock_clock().seen_at(&pr.url, &pr.head_sha, now);
+            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now)
         };
         merge_hold::follow_gate(io, target, &readiness, ctx, settled).await
     }
+}
+
+/// When each pull request's head was first seen, for the per-head review wait.
+fn lock_clock() -> std::sync::MutexGuard<'static, merge_hold::HeadClock> {
+    static CLOCK: std::sync::LazyLock<std::sync::Mutex<merge_hold::HeadClock>> = std::sync::LazyLock::new(Default::default);
+    // Plain timestamps: still usable after a panic elsewhere held the lock.
+    CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The merge step's failure streaks, shared by every check of this process.
@@ -161,7 +171,7 @@ impl TrackIo for LiveTrack<'_> {
         let txn = line_txn_id(self.agent_id(), self.repo, number, key);
         crate::hagency::room_send::send_routed_with(self.room.clone(), RoomMessageEventContent::notice_plain(text), extra, txn).await
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String> {
         if let Some(entry) = self.watched.entry {
             // The claim of the first attempt normally still holds (24 h).
             if super::work::claim(self.worker, entry, issue.number, &self.login, true).await? != Holder::Ours {
@@ -169,9 +179,22 @@ impl TrackIo for LiveTrack<'_> {
             }
         }
         let auto_merge = self.watched.entry.is_some() || super::live::auto_merge(self.agent_id()).await;
-        let live = super::live::Live::new(self.worker.service, self.worker.agent, self.watched.watch, auto_merge, self.worker.epoch)?.with_attempt(attempt);
+        let live = super::live::Live::new(self.worker.service, self.worker.agent, self.watched.watch, auto_merge, self.worker.epoch)?.with_attempt(attempt).with_branch(branch);
         let outcome = super::handoff::hand_off(&live, &[issue]).await;
         outcome.error.map_or(Ok(true), Err)
+    }
+    async fn run_end(&self, track: &Track) -> Result<RunEnd, String> {
+        use crate::hagency::model::{Command, LocalAction};
+        let ask = Command::Local { agent_id: self.agent_id().into(), action: LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
+        let activity = self.worker.service.execute(ask).await?;
+        Ok(super::run_end::run_end_of(&activity["requests"], &self.watched.watch.setting.room_id, track.handed_at))
+    }
+    async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
+        let branches = fetch_branches(self.worker.client, GITHUB_API, self.repo, self.worker.token).await.map_err(|e| e.to_string())?;
+        Ok(super::run_end::issue_branch(&branches, number))
+    }
+    fn agent_label(&self) -> String {
+        self.worker.agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("The Agent").to_owned()
     }
     async fn pr_merged(&self, pr: u64) -> Result<bool, String> {
         fetch_pull_merged(self.worker.client, GITHUB_API, self.repo, pr, self.worker.token).await.map_err(|e| e.to_string())

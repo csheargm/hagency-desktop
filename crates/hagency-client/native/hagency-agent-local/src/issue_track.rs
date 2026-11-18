@@ -87,6 +87,9 @@ pub struct Facts {
     pub open_pr: Option<u64>,
     /// The Agent commented that it cannot fix the issue.
     pub cannot_fix: bool,
+    /// The current hand-off's run already ended (answered, failed or lost)
+    /// with no pull request: retry now instead of at the deadline.
+    pub run_ended: bool,
 }
 
 /// How the Agent tells the loop it cannot fix an issue: an issue comment
@@ -142,7 +145,7 @@ pub fn decide(track: &Track, facts: &Facts) -> Action {
         // was closed unmerged, the record waits for a person (no retry).
         return if facts.open_pr.is_some() { Action::FollowPr { pr } } else { Action::Wait };
     }
-    if facts.now < deadline(track) {
+    if facts.now < deadline(track) && !(facts.run_ended && track.state == State::HandedOff) {
         return Action::Wait;
     }
     if track.attempts >= MAX_ATTEMPTS {

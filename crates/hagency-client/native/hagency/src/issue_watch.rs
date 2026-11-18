@@ -103,6 +103,26 @@ pub async fn fetch_reviews(client: &Client, api: &str, repo: &str, number: u64, 
     Ok(reviews)
 }
 
+/// The names of `repo`'s branches, for a hand-off whose run ended having
+/// pushed a branch but opened no pull request (ADR 0020).
+pub async fn fetch_branches(client: &Client, api: &str, repo: &str, token: &str) -> Result<Vec<String>, FetchError> {
+    pulls_url(api, repo)?; // refuses anything but owner/name
+    let mut names = Vec::new();
+    let mut page = Some(1);
+    while let Some(current) = page {
+        let batch = parse_branches(&get(client, &format!("{api}/repos/{repo}/branches?per_page={PAGE_SIZE}&page={current}"), token).await?)?;
+        page = next_page(current, batch.len());
+        names.extend(batch);
+    }
+    Ok(names)
+}
+
+/// GitHub's branch list: each entry's `name`.
+pub fn parse_branches(body: &str) -> Result<Vec<String>, FetchError> {
+    let wire: Vec<serde_json::Value> = serde_json::from_str(body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    wire.iter().map(|b| b["name"].as_str().map(str::to_owned).ok_or_else(|| FetchError::Parse("a branch without a name".into()))).collect()
+}
+
 /// The GitHub login `token` belongs to.
 pub async fn fetch_login(client: &Client, api: &str, token: &str) -> Result<String, FetchError> {
     parse_login(&get(client, &format!("{api}/user"), token).await?)

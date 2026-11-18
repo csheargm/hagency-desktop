@@ -283,3 +283,15 @@ fn an_unreachable_github_reads_plainly_in_the_status_line() {
     let line = failed_line("9:00", &error.to_string());
     assert_eq!(line, "Last check 9:00 failed: Can't reach GitHub (network/DNS): error sending request: dns error: failed to lookup \u{2014} retrying");
 }
+
+#[test]
+fn a_repository_on_the_work_list_is_not_handed_off_again_by_the_single_watch() {
+    use ::hagency::issue_watch::{IssueWatch, WatchMode, WatchSetting};
+    let watch = |mode| IssueWatch { setting: WatchSetting { mode, label: String::new(), repo: "Acme/App".into(), room_id: "!r:x".into(), push_trusted: false }, enabled_at: 0 };
+    let listed = serde_json::json!({"work": [{"repo": "acme/app"}]});
+    let elsewhere = serde_json::json!({"work": [{"repo": "acme/other"}]});
+    assert!(!super::single_repo_watch_runs(&watch(WatchMode::All), &listed), "the work list's claims and limits decide");
+    assert!(super::single_repo_watch_runs(&watch(WatchMode::All), &elsewhere));
+    assert!(super::single_repo_watch_runs(&watch(WatchMode::All), &serde_json::json!({})));
+    assert!(!super::single_repo_watch_runs(&watch(WatchMode::Off), &elsewhere));
+}

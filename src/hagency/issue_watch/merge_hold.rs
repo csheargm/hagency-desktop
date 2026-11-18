@@ -40,6 +40,18 @@ impl Missing {
             Self::Permission => "permission",
         }
     }
+    /// The gate's reason `kind` (`approvals`, `ci`, else rules) as what is missing.
+    pub fn of_kind(kind: Option<&str>) -> Self {
+        match kind {
+            Some("approvals") => Self::Approval,
+            Some("ci") => Self::Ci,
+            _ => Self::Rules,
+        }
+    }
+    /// The hold step of this one missing thing alone.
+    pub fn step(self) -> String {
+        hold_step(&[(self, String::new())])
+    }
     /// The status line's part (UI text, translated by the caller).
     pub fn label(self) -> &'static str {
         match self {
@@ -83,11 +95,32 @@ pub enum Gate {
 }
 
 /// Whether the reviewer has answered for `head` (any GitHub review of exactly
-/// that commit: every Agent shares one login), or a pull request nobody
-/// ever reviewed has waited [`REVIEW_WAIT_SECS`]. After a push to a reviewed
-/// pull request the loop waits for the verdict on the new head.
-pub fn review_settled(reviews: &[(String, String, String)], head: &str, opened_at: i64, now: i64) -> bool {
-    reviews.iter().any(|(_, _, commit)| commit == head) || (reviews.is_empty() && now - opened_at >= REVIEW_WAIT_SECS)
+/// that commit: every Agent shares one login), or this head has waited
+/// [`REVIEW_WAIT_SECS`] without one. Each head times out on its own: an old
+/// head's review never stops the clock (integration GPT review). The clock
+/// starts when this device first saw the head (`head_seen_at`), or when the
+/// pull request opened if it was never reviewed at all.
+pub fn review_settled(reviews: &[(String, String, String)], head: &str, opened_at: i64, head_seen_at: i64, now: i64) -> bool {
+    if reviews.iter().any(|(_, _, commit)| commit == head) {
+        return true;
+    }
+    let since = if reviews.is_empty() { opened_at.min(head_seen_at) } else { head_seen_at };
+    now - since >= REVIEW_WAIT_SECS
+}
+
+/// When this process first saw each pull request's current head (by URL).
+/// In memory: a restart starts the wait again, which only delays the notice.
+#[derive(Debug, Default)]
+pub struct HeadClock(std::collections::HashMap<String, (String, i64)>);
+impl HeadClock {
+    /// The first time `head` of `pr` was seen; a new head restarts the clock.
+    pub fn seen_at(&mut self, pr: &str, head: &str, now: i64) -> i64 {
+        let entry = self.0.entry(pr.to_owned()).or_insert_with(|| (head.to_owned(), now));
+        if entry.0 != head {
+            *entry = (head.to_owned(), now);
+        }
+        entry.1
+    }
 }
 
 /// The merge step for `target` from the gate's `readiness` answer, this
@@ -105,12 +138,10 @@ pub fn gate_of(target: &Target, readiness: &Value, permission: Option<&str>, set
         Some("merge") => {}
         Some("wait") => return Gate::WaitCi,
         _ => {
-            let kind = match readiness["kind"].as_str() {
-                Some("approvals") if !settled => return Gate::WaitReview,
-                Some("approvals") => Missing::Approval,
-                Some("ci") => Missing::Ci,
-                _ => Missing::Rules,
-            };
+            let kind = Missing::of_kind(readiness["kind"].as_str());
+            if kind == Missing::Approval && !settled {
+                return Gate::WaitReview;
+            }
             missing.push((kind, readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned()));
         }
     }

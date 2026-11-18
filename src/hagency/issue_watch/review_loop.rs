@@ -79,6 +79,8 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     post_then_claim(io, &notice, step(notice.step())).await
 }
 
+use super::merge_hold::Missing;
+
 /// The merge step's notice, or `None` to wait (CI running, no review yet, or the head moved).
 pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>) -> Option<LoopNotice> {
     // Unreadable facts or a moved head: try again next check.
@@ -90,10 +92,10 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
         // The gate never answers a merge with the switch off (or unknown): say so instead (GPT review).
         Some("merge") if readiness["autoMerge"] != true => Some(super::merge_hold::merges_off(&target)),
         Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone() }),
-        Some("merge") => Some(LoopNotice::NeedsMaintainer { target }),
+        Some("merge") => Some(LoopNotice::NeedsMaintainer { target, step: Missing::Permission.step() }),
         Some("wait") => None,
         _ if readiness["approvers"].as_u64() == Some(0) => None,
-        _ => Some(LoopNotice::NeedsOwner { target, reason: readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned() }),
+        _ => Some(LoopNotice::NeedsOwner { target, reason: readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned(), step: Missing::of_kind(readiness["kind"].as_str()).step() }),
     }
 }
 

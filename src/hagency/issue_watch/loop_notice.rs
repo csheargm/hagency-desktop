@@ -30,9 +30,12 @@ pub enum LoopNotice {
     /// An approval qualifies the head: `fixer` runs the pinned merge.
     Approved { target: Target, fixer: OwnedUserId },
     /// Approved and within the rules, but this device's GitHub login cannot merge.
-    NeedsMaintainer { target: Target },
+    /// `step` is a hold step, so the merge step stays free for this head.
+    NeedsMaintainer { target: Target, step: String },
     /// The merge gate says a person must decide; `reason` is the gate's.
-    NeedsOwner { target: Target, reason: String },
+    /// `step` is the hold step of the reason's kind: when the reason clears
+    /// (CI turns green on the same head), the merge is still told (integration GPT review).
+    NeedsOwner { target: Target, reason: String, step: String },
     /// The issue loop's pull request cannot merge yet: each line names one
     /// missing thing and how to fix it; `step` keys the set (one notice each).
     Held { target: Target, step: String, missing: Vec<String> },
@@ -43,14 +46,14 @@ pub enum LoopNotice {
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } => target,
         }
     }
     /// The once-per-head loop step this notice is recorded under.
     pub(crate) fn step(&self) -> &str {
         match self {
             Self::ReviewRequested { .. } => "review",
-            Self::Held { step, .. } | Self::Unreachable { step, .. } => step,
+            Self::Held { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } => step,
             _ => "merge",
         }
     }

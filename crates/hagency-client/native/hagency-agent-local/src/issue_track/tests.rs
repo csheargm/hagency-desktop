@@ -6,7 +6,7 @@ fn handed(attempts: u32, at: i64) -> Track {
     Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false }
 }
 fn open(now: i64) -> Facts {
-    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false }
+    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false }
 }
 fn change(handed: Option<u32>, state: Option<State>, pr: Option<u64>) -> TrackChange {
     TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None }
@@ -108,4 +108,13 @@ fn a_late_retry_never_clears_a_found_pull_request() {
     l.track_issue("a1", &change(Some(2), None, None), T0 + 20).unwrap();
     let track = &l.issue_tracks("a1").unwrap()[0];
     assert_eq!((track.state, track.pr, track.attempts), (State::Reviewed, Some(32), 1));
+}
+
+#[test]
+fn a_run_that_ended_without_a_pull_request_retries_now_and_counts_the_attempt() {
+    let ended = |now| Facts { run_ended: true, ..open(now) };
+    assert_eq!(decide(&handed(1, T0), &ended(T0 + 60)), Action::Retry { attempt: 2 }, "no wait for the deadline");
+    assert_eq!(decide(&handed(MAX_ATTEMPTS, T0), &ended(T0 + 60)), Action::GiveUp, "still at most MAX_ATTEMPTS");
+    assert_eq!(decide(&handed(1, T0), &Facts { open_pr: Some(9), ..ended(T0 + 60) }), Action::FollowPr { pr: 9 }, "a pull request wins");
+    assert_eq!(decide(&handed(1, T0), &open(T0 + 60)), Action::Wait, "a running hand-off waits");
 }

@@ -21,6 +21,8 @@ pub(super) struct Live {
     epoch: u64,
     /// Which hand-off of the issue this is (1: the first; the tracker retries).
     attempt: u32,
+    /// A branch the last run pushed without a pull request (a retry asks for one).
+    branch: Option<String>,
 }
 
 impl Live {
@@ -38,6 +40,7 @@ impl Live {
             auto_merge,
             epoch,
             attempt: 1,
+            branch: None,
         })
     }
     /// The same sender for hand-off `attempt` (its own transaction id).
@@ -45,11 +48,16 @@ impl Live {
         self.attempt = attempt;
         self
     }
+    /// The same sender asking for the pull request from a pushed `branch`.
+    pub(super) fn with_branch(mut self, branch: Option<&str>) -> Self {
+        self.branch = branch.map(str::to_owned);
+        self
+    }
 }
 
 impl Handoff for Live {
     async fn post(&self, issue: &Issue) -> Result<(), String> {
-        let notice = super::notice::Notice::new(&self.repo, issue, &self.label).with_merge_policy(self.auto_merge);
+        let notice = super::notice::Notice::new(&self.repo, issue, &self.label).with_merge_policy(self.auto_merge).with_branch(self.branch.clone());
         super::still_current(self.epoch)?;
         let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number, self.attempt);
         crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(&self.puppet), notice.marker(), txn_id).await
