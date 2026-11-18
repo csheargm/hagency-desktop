@@ -160,7 +160,8 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
         // `<system shell> -c '<line>'` wrapper is read exactly as the argv is.
         // TODO(R4): gate.rs is over budget; split command reading into gate/command.rs.
         ("codex.command", Value::String(line)) => match shell_words(line, cwd)? {
-            (dir, words) if dir == cwd && words.len() == 3 && words[1] == "-c" && is_shell(&words[0]) => shell_words(&words[2], cwd),
+            // One outer segment only: never after a `cd` (GPT review: `cd . &&`).
+            (_, words) if words.len() == 3 && words[1] == "-c" && is_shell(&words[0]) && shell::parse(line)?.segments.len() == 1 => shell_words(&words[2], cwd),
             read => Some(read),
         },
         ("codex.command", Value::Array(argv)) => {

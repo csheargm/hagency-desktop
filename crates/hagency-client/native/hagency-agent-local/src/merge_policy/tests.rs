@@ -301,7 +301,7 @@ fn codex_chained_redirected_or_expanded_commands_still_get_a_card() {
     }
     assert!(parse(json!(["/bin/bash", "-lc", "gh pr merge 7 --squash -R o/r"])).is_none(), "a login shell sources startup files");
     // The app-server's one-line rendering of the same argv is read the same way.
-    for line in ["/bin/zsh -lc 'gh pr merge 7 --squash -R o/r'", "/bin/bash -lc 'gh pr merge 7 --squash -R o/r'", "bash -c 'gh pr merge 7 --squash -R o/r'", "/bin/bash -c 'gh pr merge 7 --squash; rm -rf x'", "cd .. && /bin/bash -c 'gh pr merge 7 --squash -R o/r'"] {
+    for line in ["/bin/zsh -lc 'gh pr merge 7 --squash -R o/r'", "/bin/bash -lc 'gh pr merge 7 --squash -R o/r'", "bash -c 'gh pr merge 7 --squash -R o/r'", "/bin/bash -c 'gh pr merge 7 --squash; rm -rf x'", "cd .. && /bin/bash -c 'gh pr merge 7 --squash -R o/r'", "cd . && /bin/bash -c 'gh pr merge 7 --squash -R o/r'"] {
         assert!(parse(json!(line)).is_none(), "{line}");
     }
     for line in ["gh pr merge 7 --squash", "gh pr ready 7", "gh pr merge 7 --squash -d -R o/r", "gh pr merge 7 --squash --delete-branch -R o/r"] {
