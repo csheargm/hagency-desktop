@@ -4,6 +4,8 @@ pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod encrypted_context;
 mod finish_report;
+mod heartbeat;
+use heartbeat::heartbeat;
 mod run_presence;
 use finish_report::report_finish;
 mod journal_lock;
@@ -1286,108 +1288,6 @@ fn deadline(lease: &Lease) -> Result<Instant, RuntimeError> {
     }
     Ok(Instant::now() + Duration::from_millis(remaining as u64))
 }
-fn heartbeat_next(now: Instant, expiry: Instant) -> Instant {
-    now + Duration::from_secs(5).min(expiry.saturating_duration_since(now) / 2)
-}
-async fn heartbeat(
-    console: Console,
-    mut device: AuthorizedDevice,
-    mut lease: Lease,
-    stop: watch::Sender<bool>,
-    mut receiver: watch::Receiver<bool>,
-    failed: Arc<std::sync::atomic::AtomicU8>,
-) {
-    use std::sync::atomic::Ordering;
-    let first_expiry = deadline(&lease).unwrap_or_else(|_| Instant::now());
-    let mut next = heartbeat_next(Instant::now(), first_expiry.min(device.valid_until()));
-    // Since when the device refresh after a renewal has had no answer.
-    let mut refresh_unanswered: Option<Instant> = None;
-    let reason = loop {
-        let Ok(expiry) = deadline(&lease) else {
-            break "lease_deadline_elapsed";
-        };
-        // The old snapshot pins identity only. The RPC obtains a fresh proof;
-        // expiry of an earlier snapshot must not prevent same-device recovery.
-        if Instant::now() >= next {
-            let pin = DevicePin::from(&device);
-            let renewed = tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(expiry.into())=>break "lease_renewal_deadline", result=console.execution_api_pinned(Op::Renew{lease:lease.reference(),ttl_ms:30_000},&pin)=>result };
-            let value = match renewed {
-                Ok(Response::Lease(value)) => value,
-                Err(error) if !matches!(error.status, 401 | 403 | 409) => {
-                    tracing::warn!(
-                        stage = "lease_renewal",
-                        status = error.status,
-                        remaining_ms =
-                            expiry.saturating_duration_since(Instant::now()).as_millis() as u64,
-                        "Lease renewal transport failure; retrying before deadline"
-                    );
-                    next = Instant::now() + Duration::from_secs(1);
-                    tokio::select! {biased; _=canceled(&mut receiver)=>return,
-                    _=tokio::time::sleep_until(next.min(expiry).into())=>{}}
-                    continue;
-                }
-                _ => break "lease_renewal_rejected",
-            };
-            lease = value;
-            // The successful renewal replaces the lease deadline. Waiting for a
-            // fresh device against the previous deadline would cancel a valid renewal.
-            let Ok(fresh_expiry) = deadline(&lease) else {
-                break "renewed_lease_expired";
-            };
-            let fresh = tokio::select! {biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(fresh_expiry.into())=>break "device_refresh_deadline", result=console.authorized_device()=>result};
-            let fresh = match fresh {
-                Ok(fresh) => fresh,
-                // No answer says nothing about the device, and the lease was
-                // just renewed under the pinned identity. Keep that pin, renew
-                // again on the next pass and ask once more. Only a refresh
-                // that stays unanswered for a lease length stops the runtime;
-                // a refusal still stops it at once.
-                Err(super::Error::Unavailable) => {
-                    let now = Instant::now();
-                    let since = *refresh_unanswered.get_or_insert(now);
-                    if device_refresh_given_up(since, now) {
-                        break "device_refresh_transport";
-                    }
-                    tracing::warn!(
-                        stage = "device_refresh",
-                        unanswered_ms = now.saturating_duration_since(since).as_millis() as u64,
-                        "Device refresh got no answer; retrying with the next renewal"
-                    );
-                    next = heartbeat_next(now, fresh_expiry);
-                    tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(next.min(fresh_expiry).into())=>{} }
-                    continue;
-                }
-                _ => break "device_authorization_required",
-            };
-            refresh_unanswered = None;
-            if fresh.origin() != device.origin()
-                || fresh.issuer() != device.issuer()
-                || fresh.subject() != device.subject()
-                || fresh.user_id() != device.user_id()
-                || fresh.owner_mxid() != device.owner_mxid()
-                || fresh.device_id() != device.device_id()
-                || fresh.generation() != device.generation()
-            {
-                break "device_identity_changed";
-            }
-            device = fresh;
-            next = heartbeat_next(Instant::now(), fresh_expiry.min(device.valid_until()));
-        }
-        tokio::select! { biased; _=canceled(&mut receiver)=>return, _=tokio::time::sleep_until(next.min(expiry).into())=>{} }
-    };
-    tracing::warn!(stage = reason, "Agent heartbeat stopped");
-    let terminal = matches!(
-        reason,
-        "lease_renewal_rejected" | "device_identity_changed" | "device_authorization_required"
-    );
-    failed.store(if terminal { 1 } else { 2 }, Ordering::Release);
-    stop.send_replace(true);
-}
-/// Whether a device refresh that has had no answer since `since` is given up:
-/// after the same grace as an unanswered running check.
-fn device_refresh_given_up(since: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(since) >= RUNNING_CHECK_GRACE
-}
 fn device_error(error: super::Error) -> RuntimeError {
     if matches!(error, super::Error::Unavailable) {
         RuntimeError::Transport
@@ -1563,7 +1463,7 @@ async fn acquire_checked<T: Transport>(
         cancel,
         Op::Acquire {
             agent_id: config.agent_id.clone(),
-            ttl_ms: 30_000,
+            ttl_ms: heartbeat::LEASE_TTL_MS,
             takeover: config.takeover,
             history_snapshot: snapshot.clone(),
         },
@@ -3240,29 +3140,6 @@ mod tests {
         std::fs::rename(&project, temp.path().join("old-project")).unwrap();
         std::fs::create_dir(&project).unwrap();
         assert_ne!(first, shared_workspace_pin(&project).unwrap());
-    }
-    #[test]
-    fn unanswered_device_refresh_is_retried_for_one_lease_length() {
-        let since = Instant::now();
-        assert!(!device_refresh_given_up(since, since));
-        assert!(!device_refresh_given_up(
-            since,
-            since + RUNNING_CHECK_GRACE - Duration::from_millis(1)
-        ));
-        assert!(device_refresh_given_up(since, since + RUNNING_CHECK_GRACE));
-    }
-    #[test]
-    fn heartbeat_schedule_precedes_short_proof_deadline() {
-        let now = std::time::Instant::now();
-        assert_eq!(
-            super::heartbeat_next(now, now + std::time::Duration::from_secs(30)),
-            now + std::time::Duration::from_secs(5)
-        );
-        assert_eq!(
-            super::heartbeat_next(now, now + std::time::Duration::from_secs(4)),
-            now + std::time::Duration::from_secs(2)
-        );
-        assert_eq!(super::heartbeat_next(now, now), now);
     }
     use super::super::device_execution::{ExecutionStart, ReplyReceipt};
     use super::*;
