@@ -1,9 +1,9 @@
 //! The Safeguards card of one issue watch (ADR 0026), without widgets: what
 //! the Agent may do alone, what needs the owner, and the limits, each line
 //! built from the values the code enforces ([`Enforced::current`]) and the
-//! repository's merge policy as the gate parses it. Nothing here is a second
+//! room's merge rules (ADR 0029) as the gate parses them. Nothing here is a second
 //! copy of a number: change a constant and the card changes with it.
-use ::hagency::issue_watch::safeguards::{self as enforced, MergePolicy, PolicyFile};
+use ::hagency::issue_watch::safeguards::{self as enforced, MergePolicy, RoomRulesState};
 use crate::i18n::{format, tr};
 use serde_json::Value;
 
@@ -16,7 +16,8 @@ pub(crate) struct Enforced {
     pub protected_paths: Vec<String>,
     pub codeowners: String,
     pub protected_branches: Vec<String>,
-    pub policy_path: String,
+    /// The low-risk paths the room's rules editor suggests.
+    pub suggested_paths: Vec<String>,
     pub min_approvals: u32,
 }
 
@@ -31,7 +32,7 @@ impl Enforced {
             protected_paths: owned(&enforced::PROTECTED_PREFIXES),
             codeowners: enforced::CODEOWNERS.to_owned(),
             protected_branches: owned(&enforced::PROTECTED_BRANCHES),
-            policy_path: enforced::POLICY_PATH.to_owned(),
+            suggested_paths: owned(&enforced::SUGGESTED_LOW_RISK_PATHS),
             min_approvals: enforced::MIN_AGENT_APPROVALS,
         }
     }
@@ -41,6 +42,8 @@ impl Enforced {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Watch {
     pub repo: String,
+    /// The room the watch reports to: its merge rules judge the merges.
+    pub room_id: String,
     pub push_freely: bool,
     /// The Agent's "Pull request merges: Agents merge low-risk PRs" switch.
     pub auto_merge: bool,
@@ -54,7 +57,8 @@ pub(crate) fn watch_of(saved: &Value, auto_merge: bool) -> Option<Watch> {
     if saved["mode"].as_str().is_none_or(|m| m == "off") {
         return None;
     }
-    Some(Watch { repo: repo.to_owned(), push_freely: saved["pushTrusted"] == true, auto_merge, trial_owner_merges: trial_owner_merges(saved) })
+    let room_id = saved["roomId"].as_str().unwrap_or_default().to_owned();
+    Some(Watch { repo: repo.to_owned(), room_id, push_freely: saved["pushTrusted"] == true, auto_merge, trial_owner_merges: trial_owner_merges(saved) })
 }
 
 /// The trial-mode setting ("first N pull requests need the owner's merge"),
@@ -63,12 +67,12 @@ pub(crate) fn trial_owner_merges(saved: &Value) -> Option<u32> {
     saved["trialOwnerMerges"].as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0)
 }
 
-/// What is known about the repository's default branch.
+/// What is known about the repository's default branch and the room's rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Repo {
     Loading,
     Failed(String),
-    Read { branch: String, protected: Option<bool>, policy: PolicyFile },
+    Read { branch: String, protected: Option<bool>, rules: RoomRulesState },
 }
 
 /// The card's text, already translated.
@@ -83,23 +87,23 @@ pub(crate) struct Card {
 /// The card for `watch`, from `repo` and the enforced values.
 pub(crate) fn card(watch: &Watch, repo: &Repo, enforced: &Enforced) -> Card {
     let policy = match repo {
-        Repo::Read { policy, .. } => Some(policy),
+        Repo::Read { rules, .. } => Some(rules),
         _ => None,
     };
     Card {
         alone: alone(watch, policy, enforced),
-        needs_you: needs_you(watch, policy, enforced),
+        needs_you: needs_you(watch, policy),
         limits: limits(repo, enforced),
         protection: protection(watch, repo),
     }
 }
 
-/// Whether the gate may merge alone: the switch is on and the file is readable.
-fn merges_alone(watch: &Watch, policy: Option<&PolicyFile>) -> bool {
-    watch.auto_merge && matches!(policy, Some(PolicyFile::Read(_)))
+/// Whether the gate may merge alone: the switch is on and the room has valid rules.
+fn merges_alone(watch: &Watch, policy: Option<&RoomRulesState>) -> bool {
+    watch.auto_merge && matches!(policy, Some(RoomRulesState::Read(_)))
 }
 
-fn alone(watch: &Watch, policy: Option<&PolicyFile>, enforced: &Enforced) -> Vec<String> {
+fn alone(watch: &Watch, policy: Option<&RoomRulesState>, enforced: &Enforced) -> Vec<String> {
     let mut lines = Vec::new();
     if watch.push_freely {
         lines.push(format("Branch, edit and commit in its own clone of {repo}", &[("repo", watch.repo.clone())]));
@@ -115,7 +119,7 @@ fn alone(watch: &Watch, policy: Option<&PolicyFile>, enforced: &Enforced) -> Vec
     lines
 }
 
-fn needs_you(watch: &Watch, policy: Option<&PolicyFile>, enforced: &Enforced) -> Vec<String> {
+fn needs_you(watch: &Watch, policy: Option<&RoomRulesState>) -> Vec<String> {
     let mut lines = Vec::new();
     if watch.push_freely {
         lines.push(tr("Build, test and install commands, other websites and anything outside its clone").to_owned());
@@ -123,11 +127,10 @@ fn needs_you(watch: &Watch, policy: Option<&PolicyFile>, enforced: &Enforced) ->
         lines.push(tr("Every push, pull request and command").to_owned());
     }
     lines.push(tr("Deleting or force-pushing branches").to_owned());
-    let path = ("path", enforced.policy_path.clone());
     lines.push(match policy {
         _ if !watch.auto_merge => tr("Every merge (merges are set to People merge)").to_owned(),
-        Some(PolicyFile::Absent) => format("Every merge: the repository has no {path}", &[path]),
-        Some(PolicyFile::Unreadable) => format("Every merge: {path} has a rule Hagency does not accept", &[path]),
+        Some(RoomRulesState::Absent) => tr("Every merge: this room has no merge rules — a room admin can set them in Room info → Status").to_owned(),
+        Some(RoomRulesState::Unreadable) => tr("Every merge: the room's merge rules have a rule Hagency does not accept").to_owned(),
         _ => tr("Merges the merge rule does not allow").to_owned(),
     });
     if let Some(count) = watch.trial_owner_merges.filter(|_| merges_alone(watch, policy)) {
@@ -145,23 +148,24 @@ fn limits(repo: &Repo, enforced: &Enforced) -> Vec<String> {
     ];
     let mut protected = enforced.protected_paths.clone();
     protected.push(enforced.codeowners.clone());
-    if let Repo::Read { policy: PolicyFile::Read(policy), .. } = repo {
+    if let Repo::Read { rules: RoomRulesState::Read(policy), .. } = repo {
         protected.extend(policy.always_human.iter().cloned());
     }
     lines.push(format("Always a person: {paths}", &[("paths", protected.join(", "))]));
     lines
 }
 
-/// "Merge rule (.hagency/merge-policy.yml): docs/**, up to 50 changed lines, CI not required, 1 approval from another Agent".
+/// "Merge rule (room policy): docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent".
 fn merge_rule(repo: &Repo, enforced: &Enforced) -> String {
-    let path = ("path", enforced.policy_path.clone());
     match repo {
-        Repo::Loading => format("Merge rule: reading {path}…", &[path]),
-        Repo::Failed(error) => format("Merge rule: could not read {path}: {error}", &[path, ("error", error.clone())]),
-        Repo::Read { policy: PolicyFile::Absent, .. } => format("Merge rule: none, the repository has no {path}", &[path]),
-        Repo::Read { policy: PolicyFile::Unreadable, .. } => format("Merge rule: {path} is not valid, so the gate merges nothing", &[path]),
-        Repo::Read { policy: PolicyFile::Read(policy), .. } => format("Merge rule ({path}): {scope}, {lines}, {ci}, {approvals} approval(s) from another Agent", &[
-            path,
+        Repo::Loading => tr("Merge rule (room policy): reading the room's rules…").to_owned(),
+        Repo::Failed(error) => format("Merge rule (room policy): could not be read: {error}", &[("error", error.clone())]),
+        Repo::Read { rules: RoomRulesState::Absent, .. } => format(
+            "Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {paths})",
+            &[("paths", enforced.suggested_paths.join(", "))],
+        ),
+        Repo::Read { rules: RoomRulesState::Unreadable, .. } => tr("Merge rule (room policy): not valid, so the gate merges nothing").to_owned(),
+        Repo::Read { rules: RoomRulesState::Read(policy), .. } => format("Merge rule (room policy): {scope}, {lines}, {ci}, {approvals} approval(s) from another Agent", &[
             ("scope", scope(policy)),
             ("lines", line_limit(policy)),
             ("ci", tr(if policy.require_ci { "CI required" } else { "CI not required" }).to_owned()),

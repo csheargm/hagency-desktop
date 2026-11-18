@@ -8,11 +8,11 @@
 //! when the author is trusted, the change is in scope (docs-only under a line
 //! limit by default, or any path), no always-human path is touched, every
 //! reported CI check is green on the exact head and an approval qualifies.
-//! A repository's `.hagency/merge-policy.yml`, when present, is judged as
-//! well, so it can only tighten. Without rules the file alone decides, as
-//! before; with neither, the owner's card does.
+//! The room's merge rules (ADR 0029) are judged as well and are required
+//! for any merge: without them every merge needs a person.
 use super::gate::GhPr;
 use super::github::{PrSource, PrView};
+use super::room_rules::RoomRules;
 use super::{parse_policy, MergePolicy};
 use crate::issue_watch::valid_repo;
 use crate::{key, Error, Ledger, Result};
@@ -106,11 +106,11 @@ pub struct OwnerRules {
 impl Judged {
     /// Every policy that applies to a merge; each must pass.
     pub fn policies(&self) -> impl Iterator<Item = &MergePolicy> {
-        self.file.iter().chain(self.rules.iter())
+        self.room.policy().into_iter().chain(self.rules.iter())
     }
     /// Every policy that applies to readying or reviewing.
     pub fn review_policies(&self) -> impl Iterator<Item = &MergePolicy> {
-        self.file.iter().chain(self.review_rules.iter())
+        self.room.policy().into_iter().chain(self.review_rules.iter())
     }
 }
 
@@ -244,9 +244,9 @@ impl Ledger {
 
 /// What the gate judges a pull request by.
 pub(crate) struct Judged {
-    /// The repository's own file, judged with its own approval rule (an Agent
-    /// other than the merger; GitHub reviews never count for it).
-    pub file: Option<MergePolicy>,
+    /// The room's merge rules (or why there are none), judged with their own
+    /// approval rule: an Agent other than the merger; GitHub reviews never count.
+    pub room: RoomRules,
     /// The owner's rules (or a developer's or reviewer's readying policy).
     pub rules: Option<MergePolicy>,
     pub trusted_reviewers: Vec<String>,
@@ -268,14 +268,12 @@ pub(crate) struct Judged {
 }
 
 /// The policies for `view` and the approval rules. `None` (the owner's card)
-/// when the file or the rules cannot be read, or neither exists.
+/// when the stored rules cannot be read. The room's rules come only from the
+/// owner's recorded snapshot, never from the repository or the Agent.
 pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, repo: &str, view: &PrView, source: &impl PrSource) -> Option<Judged> {
-    let file = match source.policy_file(command, repo, &view.base_sha).await? {
-        Some(text) => Some(parse_policy(&text)?),
-        None => None,
-    };
+    let room = ledger.rules_for_merge(agent, repo).ok()?;
     let rules = ledger.owner_rules(agent, repo).ok()?;
-    let mut judged = Judged { file, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_rules: None, count_local: true };
+    let mut judged = Judged { room, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_rules: None, count_local: true };
     // The stored role is ignored (ADR 0017): GitHub's own permission decides
     // whether the owner's login may merge, and the poller asks for a merge
     // only where it can.
@@ -294,5 +292,5 @@ pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, rep
         judged.rules = Some(rules.policy());
         judged.own_login = own;
     }
-    (judged.file.is_some() || judged.rules.is_some()).then_some(judged)
+    Some(judged)
 }

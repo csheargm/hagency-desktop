@@ -1,25 +1,25 @@
 //! Agent auto-merge policy: humans set the policy, agents review and merge
 //! routine changes, humans handle the exceptions.
 //!
-//! The policy lives in the repository at [`POLICY_PATH`] and is always read
-//! from the pull request's BASE branch, so a pull request cannot loosen the
-//! policy that judges it; the gate reads it at the base COMMIT the pull
-//! request was judged against, not the moving branch name. [`evaluate`] is pure: diff stats, paths, CI checks and
+//! The policy is the project room's ([`room_rules`], ADR 0029): room state a
+//! room admin sets, recorded here by the owner's desktop. It never comes from
+//! the repository, so a pull request cannot loosen the rules that judge it;
+//! a `.hagency/merge-policy.yml` in a repository is ignored. [`evaluate`] is pure: diff stats, paths, CI checks and
 //! the Agents that approved in Hagency go in; [`Decision::Merge`] or
 //! [`Decision::NeedsHuman`] with a reason comes out. Anything it cannot prove
-//! low risk needs a person (an empty diff, a missing policy, pending CI).
+//! low risk needs a person (an empty diff, no room rules, pending CI).
 //!
 //! Separation: an approval only counts when it came from a different Agent
 //! than the one that asks to merge the pull request, and at
-//! least one such approval is always required, whatever the file says.
+//! least one such approval is always required, whatever the rules say.
 //! The per-Agent switch is OFF by default ([`gate`]).
 //!
 //! Tiers (ADR 0016): the default tier is today's low-risk paths under a line
-//! limit. `tier: trusted` is the repository's opt-in for any change
+//! limit. `tier: trusted` is the room's opt-in for any change
 //! (optionally narrowed by `paths:` and `max_lines:`), with CI always
 //! required; protected paths and `always_human:` globs still need a person.
 //! A maintainer's own rules ([`work`]) are judged too; every policy
-//! that applies must pass, so the file can only tighten them.
+//! that applies must pass, so neither can loosen the other.
 pub mod gate;
 pub mod github;
 pub mod work;
@@ -28,10 +28,9 @@ pub mod codex_review;
 pub mod codex_observed;
 pub mod pending;
 pub mod trial;
+pub mod room_rules;
 
-/// Where the policy lives in a repository.
-pub const POLICY_PATH: &str = ".hagency/merge-policy.yml";
-/// Paths that are never low risk: the policy itself and CI/workflow config.
+/// Paths that are never low risk: Hagency's repository config and CI/workflow config.
 pub const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];
 /// A file with this name, in any directory, assigns code owners: always a person.
 pub const CODEOWNERS: &str = "CODEOWNERS";
@@ -68,7 +67,7 @@ pub fn reason_kind(reason: &str) -> &'static str {
 const DEFAULT_MAX_CHANGED_LINES: u64 = 50;
 pub const MIN_AGENT_APPROVALS: u32 = 1;
 
-/// The owner's policy, as read from [`POLICY_PATH`].
+/// Merge rules, as [`parse_policy`] reads them from a room's rules text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MergePolicy {
     pub low_risk_paths: Vec<String>,
@@ -285,4 +284,4 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

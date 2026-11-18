@@ -77,9 +77,12 @@ appears in the status line and does not stop the others.
 the exact head (pending: wait; red: a person decides; no checks at all:
 allowed). These always need a person: `.hagency/**`, `.github/**`, any
 `CODEOWNERS`, and the owner's `human=` globs. Renamed or opaque files also
-need a person. If the base commit has a `.hagency/merge-policy.yml`, it is
+need a person. ~~If the base commit has a `.hagency/merge-policy.yml`, it is
 judged as well, and *both* must pass. Without rules, the file alone decides,
-as before. With neither, the card asks.
+as before. With neither, the card asks.~~ Superseded by ADR 0029: the merge
+rules are the project room's (room state set by a room admin), always
+required and judged together with these owner rules; no repository file is
+read.
 
 Separation and approvals:
 

@@ -1,27 +1,42 @@
 //! What a watch's Safeguards card shows (ADR 0026), as the code enforces it:
 //! the engine's own limits and protected names, re-exported so the card never
 //! repeats a number, and one read-only GitHub read of the watched
-//! repository's default branch (its name, whether GitHub protects it, and the
-//! merge policy file on it, parsed by the gate's own parser).
+//! repository's default branch (its name and whether GitHub protects it).
+//! The merge rules are the room's (ADR 0029), read by the desktop from the
+//! room state; no repository file is read.
 use super::{FetchError, get_as, pulls_url};
-use base64::Engine;
 use serde_json::Value;
 
 /// The issue loop's limits (ADR 0020).
 pub use hagency_agent_local::issue_track::{HANDOFF_TIMEOUT_SECS, MAX_ATTEMPTS, MAX_FREE_RETRIES};
-/// The merge gate's file, its parser and what always needs a person.
-pub use hagency_agent_local::merge_policy::{CODEOWNERS, MIN_AGENT_APPROVALS, MergePolicy, POLICY_PATH, PROTECTED_PREFIXES, parse_policy};
+/// The merge gate's parser and what always needs a person.
+pub use hagency_agent_local::merge_policy::{CODEOWNERS, MIN_AGENT_APPROVALS, MergePolicy, PROTECTED_PREFIXES, parse_policy};
+/// The room's merge rules: their state type, (de)serialization and the suggested defaults.
+pub use hagency_agent_local::merge_policy::room_rules::{
+    MERGE_RULES_STATE_TYPE, NO_ROOM_RULES, ROOM_RULES_TTL_SECS, RoomRulesSnapshot, SUGGESTED_ALWAYS_HUMAN, SUGGESTED_LOW_RISK_PATHS, content_of, policy_text,
+    render_policy, rules_of, suggested_policy,
+};
 /// Branches push-freely never pushes, whatever the remote says (ADR 0022).
 pub use hagency_agent_local::watch_trust::git::PROTECTED as PROTECTED_BRANCHES;
 
-/// The merge policy file on the default branch, as the gate would judge it.
+/// A room's merge rules, as the gate would judge them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PolicyFile {
-    /// No file: the gate leaves every merge to the owner's card.
+pub enum RoomRulesState {
+    /// No (accepted) rules event: the gate leaves every merge to a person.
     Absent,
-    /// A file the gate refuses (an unknown key, a bad value): also the owner's card.
+    /// Rules the gate refuses (an unknown key, a bad value): also a person.
     Unreadable,
     Read(MergePolicy),
+}
+
+impl RoomRulesState {
+    /// The state of a merge-rules event's content (`None`: no event).
+    pub fn of(content: Option<&Value>) -> Self {
+        match content {
+            None => Self::Absent,
+            Some(content) => rules_of(content).map_or(Self::Unreadable, Self::Read),
+        }
+    }
 }
 
 /// The default branch of a watched repository and how it is guarded.
@@ -30,31 +45,16 @@ pub struct RepoGuards {
     pub branch: String,
     /// GitHub's own `protected` flag; `None` when it could not be read.
     pub protected: Option<bool>,
-    pub policy: PolicyFile,
 }
 
-/// The default branch, its protection flag and the policy file of `repo`.
+/// The default branch and its protection flag of `repo`.
 /// A protection read that fails is "unknown", never "off".
 pub async fn fetch_repo_guards(client: &super::Client, api: &str, repo: &str, token: &str) -> Result<RepoGuards, FetchError> {
     pulls_url(api, repo)?; // refuses anything but owner/name
     let info: Value = parse_json(&get_as(client, &format!("{api}/repos/{repo}"), Some(token)).await?)?;
     let branch = info["default_branch"].as_str().ok_or_else(|| FetchError::Parse("a repository without a default branch".into()))?.to_owned();
-    let policy = match get_as(client, &format!("{api}/repos/{repo}/contents/{POLICY_PATH}"), Some(token)).await {
-        Ok(body) => policy_from_contents(&body)?,
-        Err(FetchError::Status { status: 404, .. }) => PolicyFile::Absent,
-        Err(error) => return Err(error),
-    };
     let protected = get_as(client, &format!("{api}/repos/{repo}/branches/{branch}"), Some(token)).await.ok().and_then(|body| protected_flag(&body));
-    Ok(RepoGuards { branch, protected, policy })
-}
-
-/// GitHub's contents reply (base64 `content`) parsed by the gate's parser.
-pub fn policy_from_contents(body: &str) -> Result<PolicyFile, FetchError> {
-    let reply = parse_json(body)?;
-    let encoded: String = reply["content"].as_str().ok_or_else(|| FetchError::Parse("a file without content".into()))?.split_whitespace().collect();
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|e| FetchError::Parse(e.to_string()))?;
-    let text = String::from_utf8(bytes).map_err(|e| FetchError::Parse(e.to_string()))?;
-    Ok(parse_policy(&text).map_or(PolicyFile::Unreadable, PolicyFile::Read))
+    Ok(RepoGuards { branch, protected })
 }
 
 /// The `protected` flag of GitHub's branch reply.
@@ -69,31 +69,16 @@ fn parse_json(body: &str) -> Result<Value, FetchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn contents(text: &str) -> String {
-        serde_json::json!({"content": base64::engine::general_purpose::STANDARD.encode(text)}).to_string()
-    }
+    use serde_json::json;
 
     #[test]
-    fn the_policy_is_parsed_by_the_gates_own_parser() {
-        let file = "low_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequire_ci: false\n";
-        let PolicyFile::Read(policy) = policy_from_contents(&contents(file)).unwrap() else { panic!("expected a policy") };
-        assert_eq!(policy, parse_policy(file).unwrap());
-        assert!(!policy.require_ci);
-    }
-
-    #[test]
-    fn a_policy_the_gate_refuses_reads_as_unreadable() {
-        assert_eq!(policy_from_contents(&contents("auto_merge_everything: true\n")).unwrap(), PolicyFile::Unreadable);
-        assert!(policy_from_contents("{}").is_err(), "no content is a read failure, not an absent file");
-    }
-
-    #[test]
-    fn github_base64_with_line_breaks_decodes() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("require_ci: true\n");
-        let (head, tail) = encoded.split_at(8);
-        let body = serde_json::json!({"content": format!("{head}\n{tail}\n")}).to_string();
-        assert!(matches!(policy_from_contents(&body).unwrap(), PolicyFile::Read(p) if p.require_ci));
+    fn room_rules_are_parsed_by_the_gates_own_parser() {
+        let text = "low_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequire_ci: false\n";
+        let RoomRulesState::Read(policy) = RoomRulesState::of(Some(&content_of(text))) else { panic!("expected rules") };
+        assert_eq!(policy, parse_policy(text).unwrap());
+        assert_eq!(RoomRulesState::of(Some(&content_of("auto_merge_everything: true\n"))), RoomRulesState::Unreadable);
+        assert_eq!(RoomRulesState::of(Some(&json!({"rules": 1}))), RoomRulesState::Unreadable, "no policy text");
+        assert_eq!(RoomRulesState::of(None), RoomRulesState::Absent);
     }
 
     #[test]

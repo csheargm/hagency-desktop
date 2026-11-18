@@ -124,7 +124,7 @@ pub fn valid_repo(repo: &str) -> bool {
 
 /// Matrix spec: `!` + opaque id, optionally `:server` (room v12 IDs have no
 /// server part), at most 255 bytes, no whitespace or control characters.
-fn valid_room_id(room_id: &str) -> bool {
+pub(crate) fn valid_room_id(room_id: &str) -> bool {
     const MAX_ID_BYTES: usize = 255;
     let Some(rest) = room_id.strip_prefix('!') else { return false };
     let (opaque, server) = match rest.split_once(':') {

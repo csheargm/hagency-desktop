@@ -34,6 +34,9 @@ struct Change {
     /// The daily digest of one repository was posted for this local day (ADR 0028).
     #[serde(default)]
     digest_sent: Option<DigestSent>,
+    /// The merge rules the desktop read from each watch room's server state (ADR 0029).
+    #[serde(default)]
+    room_merge_rules: Option<Vec<hagency_agent_local::merge_policy::room_rules::RoomRulesSnapshot>>,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +191,9 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     if let Some(sent) = change.digest_sent {
         ledger.record_digest_sent(agent, &sent.repo, &sent.day)?;
     }
+    for snapshot in change.room_merge_rules.iter().flatten().take(hagency_agent_local::watch_info::MAX_LISTED) {
+        ledger.set_room_merge_rules(owner, snapshot, now())?;
+    }
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
             ledger.record_plan(owner, agent, filed)?;
@@ -255,6 +261,20 @@ mod tests {
         assert!(serde_json::from_value::<Change>(json!({"endTrial": {"repo": "a/b"}})).is_err());
         let merged: Change = serde_json::from_value(json!({"track": {"repo": "a/b", "number": 3, "state": "merged", "ownerMerged": true}})).unwrap();
         assert_eq!(merged.track.unwrap().owner_merged, Some(true));
+    }
+
+    #[test]
+    fn room_merge_rules_snapshots_are_recorded_for_the_owner_only() {
+        let change: Change = serde_json::from_value(json!({"roomMergeRules": [{"repo": "a/b", "roomId": "!r:x", "eventId": "$e", "sender": "@admin:x", "policy": "require_ci: false\n"}]})).unwrap();
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let mut ledger = Ledger::open_scoped(&temp.path().join("l.db"), "@o:x", &"a".repeat(64)).unwrap();
+        apply_change(&mut ledger, "@o:x", "agt", change).unwrap();
+        assert_eq!(ledger.room_merge_rules_record("a/b", "!r:x").unwrap().map(|r| r.0), Some("$e".into()), "the event id is recorded");
+        let change: Change = serde_json::from_value(json!({"roomMergeRules": [{"repo": "a/b", "roomId": "!r:x", "policy": "require_ci: false\n"}]})).unwrap();
+        assert!(apply_change(&mut ledger, "@o:x", "agt", change).is_err(), "rules without their event are refused");
+        let other: Change = serde_json::from_value(json!({"roomMergeRules": [{"repo": "a/b", "roomId": "!r:x"}]})).unwrap();
+        assert!(apply_change(&mut ledger, "@intruder:x", "agt", other).is_err(), "only the owner");
+        assert!(serde_json::from_value::<Change>(json!({"roomMergeRules": [{"repo": "a/b", "roomId": "!r:x", "tier": "trusted"}]})).is_err(), "unknown fields");
     }
 
     #[test]

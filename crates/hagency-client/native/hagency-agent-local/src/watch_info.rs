@@ -59,7 +59,7 @@ fn merge_rule(rules: &OwnerRules) -> String {
         (true, None) => "any path".to_owned(),
         (false, lines) => format!("docs-only, up to {} changed lines", lines.unwrap_or(DOCS_MAX_LINES)),
     };
-    format!("{scope}; green CI; only when the owner's GitHub login can merge there; protected paths always ask a person")
+    format!("{scope}; green CI; only when the owner's GitHub login can merge there and the room's merge rules allow it; protected paths always ask a person")
 }
 
 /// Every watch of one Agent: its legacy single-repository watch (paused when
@@ -75,7 +75,7 @@ pub fn entries(watch: &IssueWatch, work: &[OwnerRules]) -> Vec<WatchEntry> {
         };
         out.push(WatchEntry {
             repo: legacy.repo.clone(), mode, room_id: legacy.room_id.clone(), active: legacy.mode != WatchMode::Off,
-            push_freely: legacy.push_trusted, merge_rule: "the repository's .hagency/merge-policy.yml, else the owner decides on a card".into(),
+            push_freely: legacy.push_trusted, merge_rule: "the room's merge rules (Room info → Status), else the owner decides on a card".into(),
         });
     }
     out.extend(work.iter().map(|w| WatchEntry {

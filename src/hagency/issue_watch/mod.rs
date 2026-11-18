@@ -20,6 +20,7 @@ mod merge_hold_tests;
 mod review_loop;
 pub(crate) mod reviewer_pick;
 pub mod room_review;
+pub mod room_rules;
 mod run_end;
 #[cfg(test)]
 mod run_end_tests;
@@ -209,9 +210,12 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     if watch.setting.mode == WatchMode::Off && !has_work {
         return Ok(None);
     }
+    // The watch rooms' merge rules first, so this check's merges are judged by fresh ones (ADR 0029).
+    let rule_errors = room_rules::sync(service, id, &saved).await;
     let token = github_token(id).await?;
     let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
     let mut worked = work::run(&worker, &saved).await;
+    worked.errors.extend(rule_errors);
     worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
     // The day's digest per watched repository (ADR 0028), from this check's ledger snapshot.
     worked.errors.extend(digest_live::send_due(&digest_live::LiveDigest { service, agent, epoch }, &saved, digest::window_at(&chrono::Local::now())).await);

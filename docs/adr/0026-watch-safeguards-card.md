@@ -8,7 +8,7 @@ single place that says what the Agent may now do without asking. The facts
 are spread over the issue loop (ADR 0020: attempts, free retries, hand-off
 timeout), push freely (ADR 0022: which git and gh steps skip the card, never
 `main`/`master` or the default branch), and the merge gate
-(`.hagency/merge-policy.yml`, protected paths, the per-Agent "Pull request
+(the merge rules, protected paths, the per-Agent "Pull request
 merges" switch). Before the week-long loop measurement the owner needs to
 see them at one glance, the way Buzz shows an agent's identity in one line.
 
@@ -62,3 +62,7 @@ trial-mode change wires its real field into that accessor.
   card change.
 - The work-list repositories (ADR 0016) do not get a card yet; their merge
   rules differ (owner rules) and would need their own lines.
+
+Update (ADR 0029): the "Merge rule" line reads the watch room's merge rules
+("Merge rule (room policy): …"), not a repository file; with none it names
+where a room admin sets them and the suggested low-risk paths.

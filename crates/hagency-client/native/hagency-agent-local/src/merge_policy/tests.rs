@@ -1,3 +1,4 @@
+// TODO(R4): over the 300-line budget; split the Fake source and ledger fixtures into tests/fixtures.rs.
 use super::gate::{self, GhPr, APPROVE_MARKER};
 use super::github::{self, PrSource, PrView};
 use super::*;
@@ -5,7 +6,7 @@ use crate::{Layer, Ledger, Scope, ToolPolicy, ToolProposal};
 use serde_json::{json, Value};
 use std::path::Path;
 
-const POLICY: &str = "# owner's policy\nlow_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: true\n";
+pub(crate) const POLICY: &str = "# owner's policy\nlow_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: true\n";
 pub(super) const URL: &str = "https://github.com/csheargm/hagency-demo-sandbox/pull/7";
 pub(super) const HEAD: &str = "1111111111111111111111111111111111111111";
 pub(super) const BASE: &str = "2222222222222222222222222222222222222222";
@@ -161,10 +162,6 @@ impl PrSource for Fake {
     async fn approvals_on(&self, _: &GhPr, _: &str, head: &str) -> Option<Vec<i64>> {
         self.posted.borrow().as_ref().map(|all| all.iter().filter(|(commit, _)| commit == head).map(|(_, at)| *at).collect())
     }
-    async fn policy(&self, _: &GhPr, repo: &str, base: &str) -> Option<String> {
-        assert_eq!((repo, base), ("csheargm/hagency-demo-sandbox", BASE), "the policy comes from the base commit");
-        Some(POLICY.into())
-    }
 }
 
 pub(super) fn merge_line() -> String {
@@ -183,7 +180,28 @@ pub(super) fn ledger_with(dir: &Path, agents: &[&str]) -> Ledger {
         }
         ledger.reserve(&scope, &format!("call-{agent}"), &format!("d-{agent}"), 10, 10).unwrap();
     }
+    watch_with_room_rules(&mut ledger, SANDBOX, Some(POLICY));
     ledger
+}
+
+pub(crate) const SANDBOX: &str = "csheargm/hagency-demo-sandbox";
+pub(crate) const ROOM: &str = "!r:x";
+
+/// A watch of `repo` reporting to [`ROOM`] (past its trial) and the room's
+/// rules there as the owner's desktop records them; `None`: the room has none.
+pub(crate) fn watch_with_room_rules(ledger: &mut Ledger, repo: &str, rules: Option<&str>) {
+    let owner = "@owner:example.org";
+    let setting = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Trusted, repo: repo.into(), room_id: ROOM.into(), ..Default::default() };
+    let agent = format!("watcher-{}", repo.replace('/', "-"));
+    ledger.set_issue_watch(owner, &agent, setting, 1).unwrap();
+    ledger.end_watch_trial(owner, &agent, repo).unwrap();
+    set_room_rules(ledger, repo, rules);
+}
+
+/// The room's rules for `repo`, read now.
+pub(crate) fn set_room_rules(ledger: &mut Ledger, repo: &str, rules: Option<&str>) {
+    let snapshot = room_rules::RoomRulesSnapshot { repo: repo.into(), room_id: ROOM.into(), event_id: Some("$rules".into()), sender: Some("@admin:example.org".into()), policy: rules.map(str::to_owned) };
+    ledger.set_room_merge_rules("@owner:example.org", &snapshot, room_rules::unix_now()).unwrap();
 }
 
 /// The scene: the fixer asks to merge (a card: no approval yet), a reviewer
