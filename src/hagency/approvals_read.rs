@@ -67,6 +67,7 @@ async fn bounded(
 /// management rows must still show, and the next poll reads the queue again.
 fn merge(room: Option<&str>, answer: Result<Value, String>, local: Result<(Vec<Value>, Vec<Value>), String>) -> Result<Value, String> {
     use super::local_approvals::{MANAGEMENT_ERROR, UNREADABLE};
+    let local_read = local.is_ok();
     let (rows, unreadable) = match local {
         Ok(read) => read,
         Err(code) => {
@@ -78,8 +79,10 @@ fn merge(room: Option<&str>, answer: Result<Value, String>, local: Result<(Vec<V
     let rows: Vec<Value> = rows.into_iter().filter(|r| room.is_none_or(|room| r["approval"]["roomId"] == room)).collect();
     let mut value = match answer {
         Ok(value) => value,
-        Err(code) if rows.is_empty() => return Err(code),
-        // Management is unreachable but this app's own Agent is waiting.
+        // Neither half answered.
+        Err(code) if !local_read => return Err(code),
+        // Management is unreachable but this app's own queues were read (even
+        // empty: that empty answer is news the store must reconcile).
         Err(code) => json!({"approvals": [], MANAGEMENT_ERROR: code}),
     };
     if let Some(list) = value["approvals"].as_array_mut() {
@@ -157,6 +160,11 @@ mod tests {
         let stuck = std::future::pending::<Result<(Vec<Value>, Vec<Value>), String>>();
         let short = Duration::from_millis(20);
         assert_eq!(bounded(never, stuck, None, short, short).await.unwrap_err(), super::super::pending_approvals::READ_TIMEOUT);
+        // Management down, own queues read and empty: still an answer to reconcile.
+        let never = std::future::pending::<Result<Value, String>>();
+        let empty = async { Ok((Vec::new(), Vec::new())) };
+        let value = bounded(never, empty, None, short, short).await.unwrap();
+        assert!(value["approvals"].as_array().unwrap().is_empty() && value[MANAGEMENT_ERROR].is_string());
         let answer = async { Ok(json!({"approvals": [{"approval": {"id": "sap"}}]})) };
         let local = async { Ok((vec![row("!r:x"), row("!other:x")], Vec::new())) };
         let value = bounded(answer, local, Some("!r:x"), short, short).await.unwrap();

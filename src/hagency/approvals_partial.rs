@@ -4,7 +4,6 @@
 //! during the outage, and a request that expired meanwhile left no
 //! "Expired, not answered" record because it was no longer known.
 use super::local_approvals::{MANAGEMENT_ERROR, SOURCE, UNREADABLE};
-use super::approvals_read::STALE_AGENT_LIST;
 use super::pending_approvals::{LocalDecision, PendingApproval};
 use serde_json::Value;
 
@@ -19,8 +18,9 @@ pub fn unseen(value: &Value, row: &PendingApproval) -> bool {
     let agent = local["agent"].as_str().unwrap_or_default();
     value[UNREADABLE].as_array().into_iter().flatten().any(|u| {
         let id = u["agentId"].as_str().unwrap_or_default();
-        // A stale Agent list still read every queue it names.
-        id == agent || (id.is_empty() && u["code"] != STALE_AGENT_LIST)
+        // A stale Agent list does not say which queues it read: keep every
+        // own row it did not list (a newer reading may know an Agent it lacks).
+        id == agent || id.is_empty()
     })
 }
 
@@ -32,7 +32,8 @@ pub fn split(value: &Value, previous: Vec<PendingApproval>) -> (Vec<PendingAppro
 
 /// Keep the unseen rows: still open ones join `rows` (unless the reading
 /// listed them after all); ones past their expiry, unanswered here, are
-/// recorded as expired. Returns how many were recorded.
+/// recorded as expired. Returns how many were recorded. If a later reading
+/// shows someone did answer one, `pending_approvals` retracts the record.
 pub fn keep(unseen: Vec<PendingApproval>, rows: &mut Vec<PendingApproval>, now: u64) -> usize {
     let mut expired = 0;
     for p in unseen {
@@ -71,12 +72,12 @@ mod tests {
         let management_down = json!({"approvals": [], MANAGEMENT_ERROR: "approvals_read_timeout", UNREADABLE: []});
         let one_queue_down = json!({"approvals": [], UNREADABLE: [{"agent": "bird-claude", "agentId": "a1", "code": "approvals_read_timeout"}]});
         let all_queues_down = json!({"approvals": [], UNREADABLE: [{"agent": "", "agentId": "", "code": "approvals_read_timeout"}]});
-        let stale_list = json!({"approvals": [], UNREADABLE: [{"agent": "", "agentId": "", "code": STALE_AGENT_LIST}]});
+        let stale_list = json!({"approvals": [], UNREADABLE: [{"agent": "", "agentId": "", "code": super::super::approvals_read::STALE_AGENT_LIST}]});
         let (sap, a1, a2) = (pending("sap", None, 10_000), pending("local:a1:p", Some("a1"), 10_000), pending("local:a2:p", Some("a2"), 10_000));
         assert!(unseen(&management_down, &sap) && !unseen(&management_down, &a1));
         assert!(unseen(&one_queue_down, &a1) && !unseen(&one_queue_down, &a2) && !unseen(&one_queue_down, &sap));
         assert!(unseen(&all_queues_down, &a1) && unseen(&all_queues_down, &a2) && !unseen(&all_queues_down, &sap));
-        assert!(!unseen(&stale_list, &a1), "a stale list still read its queues");
+        assert!(unseen(&stale_list, &a1), "a stale list may have missed a queue");
 
         // Management times out: its card stays; a local one read fresh is kept as read.
         let (seen, missed) = split(&management_down, vec![sap.clone(), a1.clone()]);

@@ -103,6 +103,16 @@ pub fn take_unannounced() -> Vec<Value> {
     STORE.lock().map_or(Vec::new(), |mut store| std::mem::take(&mut store.unannounced))
 }
 
+/// Drop the record of each id a reading lists as decided: someone answered
+/// it while its source could not be read. Returns true when one was dropped.
+pub fn retract_decided(decided: &std::collections::HashSet<String>) -> bool {
+    let Ok(mut store) = STORE.lock() else { return false };
+    let before = store.kept.len();
+    store.kept.retain(|e| !decided.contains(e.id()));
+    store.unannounced.retain(|row| !row["approval"]["id"].as_str().is_some_and(|id| decided.contains(id)));
+    store.kept.len() != before
+}
+
 /// Hide `id` from the inbox.
 pub fn dismiss(id: &str) {
     if let Ok(mut store) = STORE.lock()

@@ -205,20 +205,21 @@ mod tests {
     /// healthy Agent's request, and the reading takes one queue's limit.
     #[tokio::test]
     async fn queues_are_read_at_once_and_a_slow_one_hides_no_other_card() {
-        let agents: Vec<(String, String)> = ["slow", "ok", "broken", "slow2"].iter().map(|a| (a.to_string(), format!("{a}-name"))).collect();
+        let agents: Vec<(String, String)> = ["slow", "ok", "broken", "slow2", "slow3"].iter().map(|a| (a.to_string(), format!("{a}-name"))).collect();
         let started = std::time::Instant::now();
-        let (rows, unreadable) = read_queues(agents, std::time::Duration::from_millis(100), |id| async move {
+        let (rows, unreadable) = read_queues(agents, std::time::Duration::from_millis(300), |id| async move {
             match id.as_str() {
                 "ok" => Ok(json!({"approvals": [view()]})),
                 "broken" => Err("owner_authorization_required".to_owned()),
                 _ => std::future::pending().await,
             }
         }).await;
-        assert!(started.elapsed() < std::time::Duration::from_millis(1_000), "at once, not one after another");
+        // Three stalled queues one after another would take 900 ms.
+        assert!(started.elapsed() < std::time::Duration::from_millis(700), "at once, not one after another");
         assert_eq!(rows.len(), 1, "the healthy Agent's card stays");
         assert_eq!(rows[0]["approval"]["agentName"], "ok-name");
         let named: Vec<(&str, &str)> = unreadable.iter().map(|u| (u["agentId"].as_str().unwrap(), u["code"].as_str().unwrap())).collect();
-        assert_eq!(named, vec![("slow", "approvals_read_timeout"), ("broken", "owner_authorization_required"), ("slow2", "approvals_read_timeout")]);
+        assert_eq!(named, vec![("slow", "approvals_read_timeout"), ("broken", "owner_authorization_required"), ("slow2", "approvals_read_timeout"), ("slow3", "approvals_read_timeout")]);
     }
 
     #[test]

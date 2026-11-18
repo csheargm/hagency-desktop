@@ -244,6 +244,7 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
         // can tell that a request left the list.
         let (seen, missed) = super::approvals_partial::split(value, std::mem::take(&mut state.rows));
         let expired = newly_expired(&seen, &rows, &decided, now) + super::approvals_partial::keep(missed, &mut rows, now);
+        let retracted = super::expired_approvals::retract_decided(&decided);
         state.rows = rows;
         let after = shape(state.rows.iter());
         let announce: Vec<PendingApproval> = state
@@ -255,7 +256,7 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
         for p in &announce {
             state.announced.insert(p.id().to_owned());
         }
-        (before != after || problems_changed || expired > 0, announce)
+        (before != after || problems_changed || expired > 0 || retracted, announce)
     };
     announce_expired(cx);
     for p in announce {
@@ -711,7 +712,7 @@ mod tests {
         let mut cx = Cx::new(Box::new(|_, _| {}));
         let answer = |value: Value| PendingApprovalsUpdate { identity: "me".into(), result: Ok(value) };
         let mut soon = row("sap_soon", "!a:x", "$e", true);
-        soon["approval"]["expiresAtMs"] = json!(now_ms() + 300);
+        soon["approval"]["expiresAtMs"] = json!(now_ms() + 1_500);
         assert!(apply(&mut cx, &answer(json!({"approvals": [row("sap_a", "!a:x", "$e", true), soon]}))));
         let down = json!({"approvals": [], crate::hagency::local_approvals::MANAGEMENT_ERROR: READ_TIMEOUT});
         apply(&mut cx, &answer(down.clone()));
@@ -720,10 +721,15 @@ mod tests {
         // The room's own reading is partial too: it keeps them as well.
         merge_room("me", "!a:x", &down, true);
         assert_eq!(for_room(&RoomId::parse("!a:x").unwrap()).len(), 2);
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::thread::sleep(std::time::Duration::from_millis(1_600));
         apply(&mut cx, &answer(down));
         assert_eq!(total(), 1, "the expired one leaves the list");
         assert!(super::super::expired_approvals::listed(now_ms()).iter().any(|e| e.id() == "sap_soon"), "and is recorded");
+        // Someone answered it on another device meanwhile: the record goes.
+        let mut answered = row("sap_soon", "!a:x", "$e", true);
+        answered["decision"] = json!("approve_once");
+        apply(&mut cx, &answer(json!({"approvals": [row("sap_a", "!a:x", "$e", true), answered]})));
+        assert!(!super::super::expired_approvals::listed(now_ms()).iter().any(|e| e.id() == "sap_soon"), "retracted");
         // A complete reading that no longer lists the other ends it normally.
         apply(&mut cx, &answer(json!({"approvals": []})));
         assert_eq!(total(), 0);
