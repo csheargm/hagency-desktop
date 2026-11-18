@@ -236,6 +236,10 @@ script_mod! {
                     draw_icon.svg: ICON_COPY
                     text: #(crate::i18n::tr("Copy Link")) i18n_text: "Copy Link"
                 }
+                // TODO(R4): user_profile.rs is over budget; split this DSL into user_profile_view.rs.
+                // The right-hand profile tab shows it (`ProfileSidePanel`).
+                copy_user_id_button := ProfileAction {visible: false draw_icon.svg: ICON_COPY
+                    text: #(crate::i18n::tr("Copy Matrix ID")) i18n_text: "Copy Matrix ID"}
                 jump_to_read_receipt_button := ProfileAction {
                     draw_icon.svg: ICON_JUMP
                     text: #(crate::i18n::tr("Read Receipt")) i18n_text: "Read Receipt"

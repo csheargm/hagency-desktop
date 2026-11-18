@@ -104,6 +104,7 @@ fn my_agents_card_offers_agent_details_and_its_facts() {
         owner: Some(owned_user_id!("@anna:hagency.test")),
         runtime: Some("Claude"),
         status: Some("Running"),
+        activity: None,
         shared: Some(crate::hagency::room_share::DEFAULT),
     });
     card.show_facts(&mut cx);

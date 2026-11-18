@@ -5,9 +5,10 @@
 //!   the listing state plus its local service status (`Call::Status`), and the
 //!   runtime from its saved model when it runs on this computer.
 //! - Another owner's Agent: the Room's Agent roster (`Command::RoomRoster`)
-//!   names its owner and whether it is paused in that Room. The server shares
-//!   neither its runtime nor its live status with other people, so those stay
-//!   unknown, and a Room that is not in a project has no roster at all.
+//!   names its owner and whether it is paused in that Room. Another server's
+//!   Agent has no roster row: its own run cards in the Room name its owner and
+//!   runtime instead ([`super::agent_room_cards`]), and the Room's Status
+//!   list what it does now ("idle", "working on #12").
 //!
 //! Reads never block drawing: a lookup returns what is cached and starts at
 //! most one fetch, whose reply posts [`AgentFactsChanged`].
@@ -18,6 +19,7 @@ use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
 use serde_json::Value;
 use crate::hagency::{agent_panel::mapping, model::{Command, LocalAction}};
 use super::own_agents;
+pub use super::agent_fact_lines::{fact_lines, owner_label, owner_name};
 
 /// How long an own Agent's service status is shown before it is asked again.
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -40,6 +42,9 @@ pub struct AgentFacts {
     pub runtime: Option<&'static str>,
     /// An English status key ("Running", "Paused", …), translated when shown.
     pub status: Option<&'static str>,
+    /// What it does in this Room now ("idle", "working on #12"), already
+    /// translated; shown when there is no `status`.
+    pub activity: Option<String>,
     /// An own Agent in one of its group rooms: what it does there for the
     /// room's members (ADR 0025).
     pub shared: Option<crate::hagency::room_share::RoomShare>,
@@ -133,11 +138,14 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
             cache.local.get(&row.agent_id).cloned()
         };
         if local.as_ref().is_none_or(|l| l.at.elapsed() > STATUS_TTL) { load_local(&account, &row.agent_id); }
+        let cards = super::agent_room_cards::in_room(room, agent);
+        let status = own_status(&row.state, local.as_ref().and_then(|l| l.service.as_deref()));
         return AgentFacts {
             own_agent_id: Some(row.agent_id),
             owner: Some(account),
-            runtime: local.as_ref().and_then(|l| l.runtime),
-            status: own_status(&row.state, local.as_ref().and_then(|l| l.service.as_deref())),
+            runtime: local.as_ref().and_then(|l| l.runtime).or(cards.runtime),
+            status: if cards.working && status == Some("Running") { Some(WORKING) } else { status },
+            activity: None,
             shared: local.as_ref().and_then(|l| l.shares.get(room.as_str()).copied()),
         };
     }
@@ -146,12 +154,31 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         cache.rosters.get(room).map(|(at, rows)| (at.elapsed() > ROSTER_TTL, rows.get(agent).cloned()))
     };
     if roster.as_ref().is_none_or(|(stale, _)| *stale) { load_roster(&account, room.to_owned()); }
-    let row = roster.and_then(|(_, row)| row);
+    let mut facts = others_facts(roster.and_then(|(_, row)| row), super::agent_room_cards::in_room(room, agent));
+    facts.activity = facts.status.is_none().then(|| {
+        crate::home::room_watches::activity(room, agent.as_str(), facts.owner.as_ref().map(|o| o.as_str()))
+    }).flatten();
+    facts
+}
+
+/// The status key of an Agent with a run still going in the Room.
+const WORKING: &str = "Working on a request";
+
+/// Another owner's Agent from its roster row (this server's projects) and
+/// its run cards in the Room (any server): the roster wins where both say.
+pub fn others_facts(row: Option<RosterRow>, cards: super::agent_room_cards::CardFacts) -> AgentFacts {
+    let paused = row.as_ref().is_some_and(|r| r.binding_state == "suspended");
+    let status = match (paused, cards.working) {
+        (true, _) => Some("Paused"),
+        (false, true) => Some(WORKING),
+        (false, false) => row.as_ref().and_then(|r| roster_status(&r.binding_state)),
+    };
     AgentFacts {
         own_agent_id: None,
-        status: row.as_ref().and_then(|r| roster_status(&r.binding_state)),
-        owner: row.map(|r| r.owner),
-        runtime: None,
+        status,
+        runtime: row.as_ref().and_then(|r| r.runtime).map(mapping::harness_label).or(cards.runtime),
+        owner: row.map(|r| r.owner).or(cards.owner),
+        activity: None,
         shared: None,
     }
 }
@@ -230,42 +257,6 @@ pub(crate) async fn room_roster_with(service: &crate::hagency::backend::Service,
     let project = context["projectId"].as_str().filter(|id| !id.is_empty()).ok_or("room_discovery_unavailable")?;
     let roster = service.execute(Command::RoomRoster { project_id: project.into(), room_id: room.into() }).await?;
     Ok(roster_rows(&roster["agents"]))
-}
-
-/// The owner's name as `room` (or their profile) shows it, else their Matrix ID.
-pub fn owner_name(cx: &mut Cx, owner: &UserId, room: Option<&OwnedRoomId>) -> String {
-    super::user_profile_cache::get_user_display_name_for_room(cx, owner.to_owned(), room, true)
-        .into_option().filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| owner.to_string())
-}
-
-/// The fact lines under an Agent's name. `owner` is the owner's shown name.
-/// The profile leads with "Agent of …", the card with "Owner: …"; another
-/// owner's Agent ends with who may see its settings.
-pub fn fact_lines(facts: &AgentFacts, owner: Option<&str>, profile: bool) -> Vec<String> {
-    use crate::i18n::{format, tr};
-    let mut lines = Vec::new();
-    lines.push(match (owner, profile) {
-        (Some(name), true) => format("Agent of {owner}", &[("owner", name.to_owned())]),
-        (Some(name), false) => format("Owner: {owner}", &[("owner", name.to_owned())]),
-        (None, _) => tr("Owner not shared in this room").to_owned(),
-    });
-    if let Some(runtime) = facts.runtime {
-        lines.push(format("Runtime: {runtime}", &[("runtime", runtime.to_owned())]));
-    }
-    if let Some(status) = facts.status {
-        lines.push(format("Status: {status}", &[("status", tr(status).to_owned())]));
-    }
-    if let Some(share) = facts.shared {
-        lines.push(crate::hagency::room_share::summary(share, tr("this room"), owner.unwrap_or(tr("its owner"))));
-    }
-    if facts.own_agent_id.is_none() {
-        lines.push(match owner {
-            Some(name) => format("Settings are visible only to {owner}", &[("owner", name.to_owned())]),
-            None => tr("Settings are visible only to its owner").to_owned(),
-        });
-    }
-    lines
 }
 
 #[cfg(test)]

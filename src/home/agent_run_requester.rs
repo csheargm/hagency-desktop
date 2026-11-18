@@ -9,7 +9,7 @@
 //! while the run waits on its owner (`agent_run_footer::waiting`). Only what
 //! Anna can see is used: her own message's mentions and the room's run card.
 use makepad_widgets::Cx;
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
+use matrix_sdk::ruma::{events::room::message::MessageType, OwnedRoomId, OwnedUserId, UserId};
 use matrix_sdk_ui::timeline::EventTimelineItem;
 use std::time::{Duration, Instant};
 
@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 const PENDING_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// A request this viewer sent to an Agent that has not answered yet: the
-/// Agent's name and when the request was sent.
+/// Agent, its name and when the request was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingRequest {
+    pub agent: OwnedUserId,
     pub name: String,
     pub sent: Instant,
 }
@@ -40,8 +41,53 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
     let message = event.content().as_message()?;
     let agent = first_agent(message.mentions()?.user_ids.iter())?;
     let age = age(now_ms(), u64::from(event.timestamp().0))?;
-    let name = display_name(cx, agent, room);
-    Some(PendingRequest { name, sent: Instant::now().checked_sub(age).unwrap_or_else(Instant::now) })
+    let pill = match message.msgtype() {
+        MessageType::Text(text) => text.formatted.as_ref().and_then(|f| pill_name(&f.body, agent)),
+        _ => None,
+    };
+    let name = agent_name(cx, agent, room, pill.as_deref());
+    Some(PendingRequest { agent: agent.clone(), name, sent: Instant::now().checked_sub(age).unwrap_or_else(Instant::now) })
+}
+
+/// An Agent's name in `room` (asked for when not cached yet), else `hint`
+/// (its mention on the request, its name on its run card), else the agent
+/// registry's, never its raw `_hagency_agt_…` ID: Nov 18, a new reply
+/// showed that ID for a second before the member loaded.
+pub(crate) fn agent_name(cx: &mut Cx, agent: &UserId, room: &OwnedRoomId, hint: Option<&str>) -> String {
+    let cached = crate::profile::user_profile_cache::get_user_display_name_for_room(cx, agent.to_owned(), Some(room), true).into_option();
+    pick_agent_name(&[cached.as_deref(), hint], agent)
+        .or_else(|| pick_agent_name(&[registry_name(agent).as_deref()], agent))
+        .unwrap_or_else(|| crate::i18n::tr("Agent").to_owned())
+}
+
+/// The name the agent registry keeps for `agent`, if any.
+fn registry_name(agent: &UserId) -> Option<String> {
+    crate::agent_access::current().agent_registry.agents()
+        .find(|(id, _)| id.as_str() == agent.as_str())
+        .and_then(|(_, entry)| entry.display_name.clone())
+}
+
+/// The first of `names` that is a real name, not `agent`'s raw ID.
+pub(crate) fn pick_agent_name(names: &[Option<&str>], agent: &UserId) -> Option<String> {
+    let raw = |name: &str| name == agent.as_str() || name == agent.localpart() || name.starts_with("_hagency_");
+    names.iter().flatten()
+        .map(|name| name.trim().trim_start_matches('@'))
+        .find(|name| !name.is_empty() && !raw(name))
+        .map(str::to_owned)
+}
+
+/// The text of the mention pill for `agent` in a message's HTML body.
+fn pill_name(html: &str, agent: &UserId) -> Option<String> {
+    let encoded = agent.as_str().replace('@', "%40").replace(':', "%3A");
+    [agent.as_str(), encoded.as_str()].into_iter().find_map(|target| {
+        let href = format!("matrix.to/#/{target}");
+        let rest = &html[html.find(&href)? + href.len()..];
+        // The exact ID, not one it is a prefix of.
+        if !rest.starts_with(['"', '\'', '?']) { return None; }
+        let text = &rest[rest.find('>')? + 1..];
+        let text = text[..text.find("</a>")?].trim();
+        Some(text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'"))
+    })
 }
 
 /// The first Agent a message mentions.
@@ -88,6 +134,24 @@ mod tests {
         assert_eq!(age(10_000, 8_000), Some(Duration::from_secs(2)));
         assert_eq!(age(10_000, 12_000), Some(Duration::ZERO), "a clock ahead of ours is no age");
         assert_eq!(age(PENDING_WINDOW.as_millis() as u64 + 1, 0), None, "an old request no longer waits");
+    }
+
+    /// Nov 18: a new reply's header showed `_hagency_agt_…` for a second
+    /// before the member list loaded; the mention pill already names it.
+    #[test]
+    fn the_agent_is_named_at_once_and_never_by_its_raw_id() {
+        let agent = matrix_sdk::ruma::user_id!("@_hagency_agt_01k:beta");
+        let html = r#"<a href="https://matrix.to/#/@_hagency_agt_01k:beta">@bird-claude</a> list the open issues"#;
+        let pill = pill_name(html, agent);
+        assert_eq!(pill.as_deref(), Some("@bird-claude"));
+        assert_eq!(pick_agent_name(&[None, pill.as_deref()], agent).as_deref(), Some("bird-claude"), "the pill before the member loads");
+        assert_eq!(pick_agent_name(&[Some("Bird Claude"), pill.as_deref()], agent).as_deref(), Some("Bird Claude"), "the room's name wins");
+        assert_eq!(pick_agent_name(&[None, Some("_hagency_agt_01k")], agent), None, "a raw ID is never shown");
+        assert_eq!(pick_agent_name(&[Some("@_hagency_agt_01k:beta"), Some(" ")], agent), None);
+        let encoded = r#"<a href='https://matrix.to/#/%40_hagency_agt_01k%3Abeta'>bird &amp; co</a>"#;
+        assert_eq!(pill_name(encoded, agent).as_deref(), Some("bird & co"));
+        let other = r#"<a href="https://matrix.to/#/@_hagency_agt_01kx:beta">someone else</a>"#;
+        assert_eq!(pill_name(other, agent), None, "a longer ID is another Agent");
     }
 
     #[test]

@@ -251,6 +251,16 @@ pub fn is_card_event(room: &RoomId, event: &str) -> bool {
     STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
         .any(|e| e.card.room_id == room.as_str() && e.key == event)
 }
+// TODO(R4): run_controls.rs is over budget; split these read-only queries
+// (for_event, is_card_event, cards_of, newest_running_in_thread) into run_queries.rs.
+/// Every admitted run card `agent` posted in `room`, oldest first (what its
+/// profile says about it: `profile::agent_room_cards`).
+pub fn cards_of(room: &RoomId, agent: &str) -> Vec<Card> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .filter(|e| e.card.room_id == room.as_str() && e.agent == agent)
+        .map(|e| e.card.clone())
+        .collect()
+}
 /// The newest running run in a thread, for its collapsed summary.
 pub fn newest_running_in_thread(room: &RoomId, root: &str) -> Option<Entry> {
     let store = STORE.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,8 +1,11 @@
 //! The Agent's answer to a request, drawn as the Agent's own message on the
 //! left (its avatar and name), under the requester's bubble. Before this the
 //! run card sat inside the requester's bubble, so the answer read as if the
-//! asker had written it.
+//! asker had written it. Its name, "agent" tag and clickable avatar match
+//! the Agent's own timeline messages (Nov 18: the row had a bare name, the
+//! raw `_hagency_agt_…` ID at first, and an avatar a click passed through).
 use makepad_widgets::*;
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
 use crate::hagency::run_controls::Entry;
 use crate::shared::avatar::AvatarWidgetRefExt;
 use super::agent_run_card::AgentRunCardWidgetRefExt;
@@ -21,9 +24,13 @@ script_mod! {
         }
         agent_column := View {
             width: Fill height: Fit flow: Down
-            agent_name := Label {
-                width: Fill height: Fit padding: Inset{top: 8 bottom: 4}
-                draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+            agent_name_row := View {
+                width: Fill height: Fit flow: Right spacing: 5 align: Align{y: 0.5} padding: Inset{top: 8 bottom: 4}
+                agent_name := Label {
+                    width: Fit height: Fit
+                    draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: 11}}
+                }
+                agent_badge := mod.widgets.AgentBadge {margin: 0}
             }
             agent_run_card := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
             agent_run_card_1 := mod.widgets.AgentRunCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -43,12 +50,45 @@ pub fn card_paths() -> [&'static [LiveId]; 3] {
 
 /// The name shown over the answer: one Agent's name, or every distinct one.
 pub fn row_name(entries: &[Entry]) -> String {
-    let mut names: Vec<&str> = Vec::new();
+    names(entries, |entry| if entry.name.is_empty() { entry.agent.clone() } else { entry.name.clone() })
+}
+
+/// Every distinct `name_of` the entries, in order, joined.
+fn names(entries: &[Entry], mut name_of: impl FnMut(&Entry) -> String) -> String {
+    let mut names: Vec<String> = Vec::new();
     for entry in entries {
-        let name = if entry.name.is_empty() { entry.agent.as_str() } else { entry.name.as_str() };
+        let name = name_of(entry);
         if !names.contains(&name) { names.push(name); }
     }
     names.join(" · ")
+}
+
+/// An answering Agent's name as the room knows it (see `agent_run_requester::agent_name`).
+fn entry_name(cx: &mut Cx, entry: &Entry, room: &OwnedRoomId) -> String {
+    match OwnedUserId::try_from(entry.agent.as_str()) {
+        Ok(agent) => super::agent_run_requester::agent_name(cx, &agent, room, Some(&entry.name)),
+        Err(_) => entry.name.clone(),
+    }
+}
+
+/// The row's name and "agent" tag, and an avatar that opens the Agent's
+/// profile (or, for one's own Agent, its panel) like its timeline avatar.
+fn show_agent(cx: &mut Cx, item: &WidgetRef, name: &str, agent: Option<OwnedUserId>, room: &OwnedRoomId) {
+    item.label(cx, ids!(agent_runs.agent_name)).set_text(cx, name);
+    let badge = item.widget(cx, ids!(agent_runs.agent_badge));
+    badge.set_visible(cx, true);
+    let label = item.label(cx, ids!(agent_runs.agent_badge.agent_badge_label));
+    label.set_text(cx, crate::i18n::tr("agent"));
+    #[cfg(feature = "agent_chat")]
+    {
+        // A plain Agent's tag in the timeline uses the neutral pair.
+        let (mut badge, mut label) = (badge, label);
+        script_apply_eval!(cx, badge, {draw_bg +: {color: (mod.widgets.RBX_NEUTRAL_BG)}});
+        script_apply_eval!(cx, label, {draw_text +: {color: (mod.widgets.RBX_NEUTRAL_FG)}});
+    }
+    let color = crate::shared::avatar::avatar_color(agent.as_ref().map_or(name, |a| a.as_str()));
+    let info = agent.map(|user_id| crate::shared::avatar::AvatarTextInfo { user_id, username: Some(name.to_owned()), room_id: room.clone() });
+    item.avatar(cx, ids!(agent_runs.agent_avatar)).show_text(cx, Some(color), info, name);
 }
 
 /// Puts the progress thread's reply count on the answer, as "N updates".
@@ -61,7 +101,7 @@ pub fn set_updates(cx: &mut Cx, item: &WidgetRef, count: usize) {
 /// Shows this request's runs as the Agent's message, or hides the row. With
 /// no run yet, a request the viewer sent (`pending`) shows the Agent's row
 /// with its waiting line (`agent_run_requester`).
-pub fn populate(cx: &mut Cx, item: &WidgetRef, entries: &[Entry], pending: Option<super::agent_run_requester::PendingRequest>) {
+pub fn populate(cx: &mut Cx, item: &WidgetRef, room: &OwnedRoomId, entries: &[Entry], pending: Option<super::agent_run_requester::PendingRequest>) {
     let pending = pending.filter(|_| entries.is_empty());
     let row = item.view(cx, ids!(agent_runs));
     row.set_visible(cx, !entries.is_empty() || pending.is_some());
@@ -70,14 +110,12 @@ pub fn populate(cx: &mut Cx, item: &WidgetRef, entries: &[Entry], pending: Optio
         card.set_pending(cx, if index == 0 { pending.clone() } else { None });
         card.set_entries(cx, shown);
     }
-    let (name, color_key) = match (entries.first(), &pending) {
-        (Some(first), _) => (row_name(entries), first.agent.clone()),
-        (None, Some(p)) => (p.name.clone(), p.name.clone()),
+    let (name, agent) = match (entries.first(), &pending) {
+        (Some(first), _) => (names(entries, |e| entry_name(cx, e, room)), OwnedUserId::try_from(first.agent.as_str()).ok()),
+        (None, Some(p)) => (p.name.clone(), Some(p.agent.clone())),
         (None, None) => return,
     };
-    item.label(cx, ids!(agent_runs.agent_name)).set_text(cx, &name);
-    item.avatar(cx, ids!(agent_runs.agent_avatar))
-        .show_text(cx, Some(crate::shared::avatar::avatar_color(&color_key)), None, &name);
+    show_agent(cx, item, &name, agent, room);
 }
 
 #[cfg(test)]
@@ -85,6 +123,39 @@ mod tests {
     use super::*;
     use crate::hagency::run_controls::fixture;
     use ::hagency::agent_run_controls::State;
+
+    fn room() -> OwnedRoomId { OwnedRoomId::try_from("!dev:alpha").unwrap() }
+
+    /// Live finding (Nov 18, Anna's dev room): her own Agent's answer had no
+    /// "agent" tag, its avatar did nothing on click, and a new reply showed
+    /// the raw `_hagency_agt_…` ID first. The row now reads like the Agent's
+    /// own message: its name, the tag, and an avatar that opens its profile.
+    #[cfg(feature = "agent_chat")]
+    #[test]
+    fn the_answer_row_is_tagged_named_and_its_avatar_opens_the_profile() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widget = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.OwnMessage {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let mut entry = fixture("$a", State::Running, "");
+        entry.agent = "@_hagency_agt_a:alpha".into();
+        entry.name = "_hagency_agt_a".into();
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&entry), None);
+        assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), crate::i18n::tr("Agent"), "never the raw ID");
+        assert!(widget.widget(&mut cx, ids!(agent_runs.agent_badge)).visible(), "tagged like every Agent's message");
+        assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_badge.agent_badge_label)).text(), crate::i18n::tr("agent"));
+        entry.name = "anna-claude".into();
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&entry), None);
+        assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "anna-claude");
+        let avatar = widget.avatar(&mut cx, ids!(agent_runs.agent_avatar));
+        let info = avatar.profile_info().expect("a click shows this Agent, not nothing");
+        assert_eq!((info.user_id.as_str(), info.room_id.as_str()), ("@_hagency_agt_a:alpha", "!dev:alpha"));
+    }
 
     #[test]
     fn the_row_names_each_answering_agent_once() {
@@ -117,11 +188,11 @@ mod tests {
         assert!(widget.widget(&mut cx, ids!(bubble.agent_run_card)).is_empty(), "no run card inside the bubble");
         let mut entry = fixture("$a", State::Completed, "42");
         entry.name = "Claude".into();
-        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&entry), None);
         assert!(widget.view(&mut cx, ids!(agent_runs)).visible());
         assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "Claude");
         assert!(widget.widget(&mut cx, ids!(agent_runs.agent_run_card.answer)).visible());
-        populate(&mut cx, &widget, &[], None);
+        populate(&mut cx, &widget, &room(), &[], None);
         assert!(!widget.view(&mut cx, ids!(agent_runs)).visible());
     }
 
@@ -147,7 +218,7 @@ mod tests {
         let mut entry = fixture("$a", State::Completed, "42");
         entry.name = "bird-claude".into();
         entry.card.progress = Some(Progress { step: "running gh pr create".into(), steps: 3, elapsed_secs: Some(4) });
-        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&entry), None);
         assert!(widget.widget(&mut cx, &at(ids!(title))).is_empty(), "no per-reply header");
         assert!(!widget.view(&mut cx, &at(ids!(footer))).visible(), "a successful answer has no status line");
         assert!(widget.button(&mut cx, &at(ids!(links.details))).visible());
@@ -174,11 +245,11 @@ mod tests {
         assert!(!widget.label(&mut cx, &at(ids!(updates_list))).visible(), "closed again");
         assert!(widget.button(&mut cx, &at(ids!(links.updates))).text().contains('5'));
         entry.card.progress = None;
-        populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&entry), None);
         assert!(!widget.button(&mut cx, &at(ids!(links.details))).visible(), "no steps: no What I did");
         let mut running = fixture("$b", State::Running, "");
         running.card.progress = Some(Progress { step: "running ls".into(), steps: 1, elapsed_secs: None });
-        populate(&mut cx, &widget, std::slice::from_ref(&running), None);
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&running), None);
         assert!(widget.view(&mut cx, &at(ids!(footer))).visible());
         assert!(widget.label(&mut cx, &at(ids!(footer.status))).text().contains("running ls"));
         assert!(!widget.button(&mut cx, &at(ids!(footer.open_approval))).visible());
@@ -205,8 +276,8 @@ mod tests {
         let card = ids!(agent_runs.agent_run_card);
         let at = |path: &[LiveId]| [card.as_slice(), path].concat();
         let sent = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3)).unwrap();
-        let pending = super::super::agent_run_requester::PendingRequest { name: "bird-claude".into(), sent };
-        populate(&mut cx, &widget, &[], Some(pending.clone()));
+        let pending = super::super::agent_run_requester::PendingRequest { agent: OwnedUserId::try_from("@_hagency_agt_b:beta").unwrap(), name: "bird-claude".into(), sent };
+        populate(&mut cx, &widget, &room(), &[], Some(pending.clone()));
         assert!(widget.view(&mut cx, ids!(agent_runs)).visible(), "shown at once, before any card");
         assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "bird-claude");
         let status = widget.label(&mut cx, &at(ids!(footer.status))).text();
@@ -216,12 +287,12 @@ mod tests {
         }
         let mut blocked = fixture("$run", State::Running, "");
         blocked.card.progress = Some(Progress { step: APPROVAL_WAIT_STEP.into(), steps: 1, elapsed_secs: None });
-        populate(&mut cx, &widget, std::slice::from_ref(&blocked), Some(pending));
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&blocked), Some(pending));
         let status = widget.label(&mut cx, &at(ids!(footer.status))).text();
         assert!(status.starts_with("⏳") && status.contains("owner"), "the owner's name (here its ID's local part): {status}");
         assert!(!widget.button(&mut cx, &at(ids!(footer.open_approval))).visible(), "the requester cannot decide");
         let done = fixture("$run", State::Completed, "4 open issues");
-        populate(&mut cx, &widget, std::slice::from_ref(&done), None);
+        populate(&mut cx, &widget, &room(), std::slice::from_ref(&done), None);
         assert!(widget.widget(&mut cx, &at(ids!(answer))).visible());
         assert!(!widget.view(&mut cx, &at(ids!(footer))).visible());
     }

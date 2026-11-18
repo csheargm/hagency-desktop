@@ -36,7 +36,7 @@ fn the_roster_names_owners_and_pauses_only() {
 
 #[test]
 fn own_agents_show_config_facts_and_others_say_who_sees_settings() {
-    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, runtime: Some("Claude"), status: Some("Running"), shared: None };
+    let own = AgentFacts { own_agent_id: Some("agt_1".into()), owner: None, runtime: Some("Claude"), status: Some("Running"), activity: None, shared: None };
     assert_eq!(fact_lines(&own, Some("Anna"), false), vec!["Owner: Anna", "Runtime: Claude", "Status: Running"]);
     let theirs = AgentFacts { status: Some("Paused"), ..Default::default() };
     assert_eq!(fact_lines(&theirs, Some("Betty"), true), vec!["Agent of Betty", "Status: Paused", "Settings are visible only to Betty"]);
@@ -57,4 +57,33 @@ fn an_own_agents_group_rooms_carry_its_shared_choices() {
     assert!(share.answer && !share.review && !share.fix);
     let facts = AgentFacts { own_agent_id: Some("agt_1".into()), shared: Some(share), ..Default::default() };
     assert_eq!(fact_lines(&facts, Some("Betty"), false), vec!["Owner: Betty", "Shared in this room: answers questions; reviews, fixes need Betty's OK"]);
+}
+
+/// Live finding (Nov 18, Anna's dev room): Betty's federated bird-claude had
+/// no roster row, so its profile said "Owner not shared in this room" while
+/// its run cards named Betty. A viewer now reads whose it is, by name and
+/// Matrix ID, its runtime and what it does.
+#[test]
+fn a_federated_agents_profile_names_its_owner_from_its_run_cards() {
+    use super::super::agent_room_cards::CardFacts;
+    let cards = CardFacts { owner: Some(user_id!("@bird:beta").to_owned()), runtime: Some("Claude"), working: false };
+    let mut facts = others_facts(None, cards.clone());
+    assert_eq!(facts.owner.as_deref(), Some(user_id!("@bird:beta")));
+    facts.activity = Some("idle".into());
+    assert_eq!(fact_lines(&facts, Some("Betty"), true),
+        vec!["Agent of Betty (@bird:beta)", "Runtime: Claude", "Status: idle", "Settings are visible only to Betty"]);
+    let working = others_facts(None, CardFacts { working: true, ..cards.clone() });
+    assert_eq!(working.status, Some("Working on a request"));
+    let row = RosterRow { owner: user_id!("@betty:alpha").to_owned(), binding_state: "suspended".into(), runtime: Some("codex") };
+    let paused = others_facts(Some(row), CardFacts { working: true, ..cards });
+    assert_eq!((paused.owner.as_deref(), paused.status, paused.runtime), (Some(user_id!("@betty:alpha")), Some("Paused"), Some("Codex")),
+        "the roster wins where both say; a paused binding stays paused");
+}
+
+#[test]
+fn the_owner_shows_with_its_matrix_id_unless_the_name_is_the_id() {
+    let id = user_id!("@bird:beta");
+    assert_eq!(owner_label("Betty", Some(id)), "Betty (@bird:beta)");
+    assert_eq!(owner_label("@bird:beta", Some(id)), "@bird:beta", "no name: the ID once");
+    assert_eq!(owner_label("Anna", None), "Anna");
 }
