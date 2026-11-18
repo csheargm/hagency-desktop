@@ -457,6 +457,35 @@ struct Entry {
     approvals: BTreeMap<String, ApprovalSlot>,
 }
 impl Entry {
+    /// The requests this Agent's runtime waits on, as the owner may read them.
+    ///
+    /// A host that stopped (its task ended, or it was told to stop) waits on
+    /// nothing: no request it held can be decided any more (`take_approval`
+    /// refuses), so it answers an empty queue. It used to answer
+    /// `Authorization`, which the owner API reports as
+    /// `owner_authorization_required`: an Agent whose provider check failed
+    /// at start-up (Nov 17, 17:31, Claude CLI updated two minutes earlier)
+    /// made the approvals inbox say "could not read" on every poll. Only a
+    /// different device is refused.
+    fn waiting(&mut self, pin: &DevicePin, at: i64) -> Result<Vec<ApprovalView>, RuntimeError> {
+        if &self.device != pin {
+            return Err(RuntimeError::Authorization);
+        }
+        if *self.cancel.borrow() || self.task.is_finished() {
+            // Dropping the slots tells any run still unwinding "unanswered".
+            approval_signal::retain(&mut self.approvals, |_, _| false);
+            return Ok(vec![]);
+        }
+        approval_signal::retain(&mut self.approvals, |_, slot| slot.view.proposal.expires > at && !slot.pending.is_closed());
+        let active: BTreeSet<_> = self
+            .bindings
+            .iter()
+            .filter(|(_, b)| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
+            .map(|(id, _)| id.clone())
+            .collect();
+        approval_signal::retain(&mut self.approvals, |_, slot| active.contains(&slot.view.proposal.scope.binding));
+        Ok(self.approvals.values().map(|slot| slot.view.clone()).collect())
+    }
     fn binding_active(&self, binding: &str) -> bool {
         self.bindings
             .get(binding)
@@ -895,25 +924,7 @@ impl OwnedRuntime {
         let Some(entry) = entries.get_mut(&identity(&device, agent)) else {
             return Ok(vec![]);
         };
-        if *entry.cancel.borrow()
-            || entry.task.is_finished()
-            || entry.device != DevicePin::from(&device)
-        {
-            return Err(RuntimeError::Authorization);
-        }
-        approval_signal::retain(&mut entry.approvals, |_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
-        let active: BTreeSet<_> = entry
-            .bindings
-            .iter()
-            .filter(|(_, b)| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
-            .map(|(id, _)| id.clone())
-            .collect();
-        approval_signal::retain(&mut entry.approvals, |_, slot| active.contains(&slot.view.proposal.scope.binding));
-        Ok(entry
-            .approvals
-            .values()
-            .map(|slot| slot.view.clone())
-            .collect())
+        entry.waiting(&DevicePin::from(&device), now())
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn decide(
@@ -4850,6 +4861,57 @@ for raw in sys.stdin:
                 .as_deref(),
             None
         );
+    }
+    #[tokio::test]
+    async fn a_stopped_host_answers_an_empty_queue_and_only_another_device_is_refused() {
+        let pin = DevicePin {
+            origin: "https://server.test".into(), issuer: "https://server.test/auth/".into(), subject: "subject-a".into(),
+            owner: OWNER.into(), user: "subject-a".into(), id: "device-a".into(), generation: 4,
+        };
+        let proposal = |id: &str| hagency_agent_local::ToolProposal {
+            scope: event().scope(), dispatch: id.into(), tool: "claude.Bash".into(),
+            arguments: serde_json::json!({"command": "git fetch origin"}), canonical_directory: "/tmp/room".into(),
+            risk: "high".into(), policy_revision: [1, 1, 1], expires: 1_000,
+        };
+        let entry = |task: tokio::task::JoinHandle<()>, cancelled: bool| {
+            let (pending, decision) = codex::pending_approval(proposal("dispatch-a"));
+            let (_status, status) = watch::channel(RuntimeStatus::new("agent-a", "online", None));
+            let binding = event().scope().binding;
+            let entry = Entry {
+                commands: mpsc::unbounded_channel().0,
+                bindings: BTreeMap::from([(binding, BindingHandle { cancel: watch::channel(false).0, status: status.clone() })]),
+                cancel: watch::channel(cancelled).0,
+                status,
+                task: TaskCustody::default().track(task),
+                device: pin.clone(),
+                approvals: BTreeMap::from([("nonce".into(), ApprovalSlot {
+                    view: ApprovalView { proposal_id: "nonce".into(), args_digest: "d".into(), proposal: proposal("dispatch-a") },
+                    pending, device: pin.clone(),
+                })]),
+            };
+            (entry, decision)
+        };
+        // A live host lists its waiting request.
+        let (mut live, _decision) = entry(tokio::spawn(std::future::pending()), false);
+        assert_eq!(live.waiting(&pin, 10).unwrap().len(), 1);
+        // Another device is still refused.
+        let mut other = pin.clone();
+        other.generation += 1;
+        assert!(matches!(live.waiting(&other, 10), Err(RuntimeError::Authorization)));
+        // Regression (owner_authorization_required on every poll): a host whose
+        // task ended, or that was told to stop, answers an empty queue, and its
+        // held request is ended as unanswered.
+        use tokio::sync::oneshot::error::TryRecvError;
+        let (mut stopped, mut decision) = entry(tokio::spawn(async {}), false);
+        while !stopped.task.is_finished() { tokio::task::yield_now().await; }
+        // Another device learns nothing and changes nothing, even here.
+        assert!(matches!(stopped.waiting(&other, 10), Err(RuntimeError::Authorization)));
+        assert_eq!(stopped.approvals.len(), 1);
+        assert!(stopped.waiting(&pin, 10).unwrap().is_empty());
+        assert_eq!(decision.try_recv(), Err(TryRecvError::Closed), "the waiting run hears the card ended");
+        let (mut cancelled, mut decision) = entry(tokio::spawn(std::future::pending()), true);
+        assert!(cancelled.waiting(&pin, 10).unwrap().is_empty());
+        assert_eq!(decision.try_recv(), Err(TryRecvError::Closed));
     }
     #[tokio::test]
     async fn approval_registry_fences_owner_device_expiry_digest_and_single_consumption() {
