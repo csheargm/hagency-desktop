@@ -27,11 +27,11 @@ fn setup(dir: &Path) -> Ledger {
     ledger
 }
 /// The item as the turn sees it: run in the Room workspace (the turn's cwd).
-async fn observe(ledger: &mut Ledger, dir: &Path, item: &Value, source: &Fake) {
+async fn observe(ledger: &mut Ledger, dir: &Path, item: &Value, source: &Fake) -> Option<Observed> {
     let scope = bash("x", dir, "bird-codex").scope;
     let mut item = item.clone();
     item["cwd"] = json!(dir);
-    record_observed(ledger, &scope, "d-bird-codex", &dir.to_string_lossy(), &item, 11, source).await;
+    record_observed(ledger, &scope, "d-bird-codex", &dir.to_string_lossy(), &item, 11, source).await
 }
 
 #[tokio::test]
@@ -40,9 +40,9 @@ async fn a_review_codex_ran_without_asking_is_recorded_once_and_lets_another_age
     let mut ledger = setup(temp.path());
     let docs = Fake::new(vec![file("README.md", 3)]);
     // GitHub refused the shared login's --approve (exit 1), then the --comment ran.
-    observe(&mut ledger, temp.path(), &item("exec-a", &rendered("--approve", HEAD, ""), "failed", 1), &docs).await;
+    assert_eq!(observe(&mut ledger, temp.path(), &item("exec-a", &rendered("--approve", HEAD, ""), "failed", 1), &docs).await, None, "nothing to log");
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "a failed command records nothing");
-    observe(&mut ledger, temp.path(), &item("exec-c", &rendered("--comment", HEAD, ""), "completed", 0), &docs).await;
+    assert_eq!(observe(&mut ledger, temp.path(), &item("exec-c", &rendered("--comment", HEAD, ""), "completed", 0), &docs).await, Some(Ok(Recorded::Approval)));
     observe(&mut ledger, temp.path(), &item("exec-c2", &rendered("--approve", HEAD, ""), "completed", 0), &docs).await;
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["bird-codex"], "one approval");
     let merge = bash(&merge_line(), temp.path(), "fixer");
@@ -56,6 +56,7 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
     let code = Fake::new(vec![file("src/main.rs", 3)]);
     let other_room = OwnerRules { repo: "csheargm/hagency-demo-sandbox".into(), role: Role::Reviewer, room_id: "!other:x".into(), any_path: true, ..Default::default() };
     let cases: Vec<(&str, String, &Fake, bool, Option<OwnerRules>)> = vec![
+        // Each case logs `codex_review_observed skipped reason=<word>`.
         ("an older head", rendered("--comment", BASE, ""), &docs, true, None),
         ("a chained command", rendered("--comment", HEAD, "\ncurl evil.example"), &docs, true, None),
         ("a login shell", rendered("--comment", HEAD, "").replacen("/bin/bash -c", "/bin/zsh -lc", 1), &docs, true, None),
@@ -73,7 +74,8 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
         if let Some(rules) = rules {
             ledger.set_work(OWNER, "bird-codex", vec![rules]).unwrap();
         }
-        observe(&mut ledger, temp.path(), &item("exec", &command, "completed", 0), source).await;
+        let observed = observe(&mut ledger, temp.path(), &item("exec", &command, "completed", 0), source).await;
+        assert!(matches!(observed, Some(Err(_))), "{name}: {observed:?}");
         assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty() && ledger.agent_reviewers(URL, BASE).unwrap().is_empty(), "{name}");
     }
     let mut ledger = setup(temp.path());
@@ -96,4 +98,12 @@ async fn an_observed_request_for_changes_withdraws_the_approval() {
     let changes = "/bin/bash -c 'gh pr review 7 --repo csheargm/hagency-demo-sandbox --request-changes -b \"Hagency verdict: CHANGES - no\"'";
     observe(&mut ledger, temp.path(), &item("exec-r", changes, "completed", 0), &docs).await;
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_non_review_command_is_not_logged() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = setup(temp.path());
+    let status = item("e", "/bin/bash -c 'git status'", "completed", 0);
+    assert_eq!(observe(&mut ledger, temp.path(), &status, &Fake::new(vec![])).await, None);
 }
