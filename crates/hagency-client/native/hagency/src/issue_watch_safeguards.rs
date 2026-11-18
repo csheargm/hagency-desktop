@@ -13,7 +13,7 @@ pub use hagency_agent_local::issue_track::{HANDOFF_TIMEOUT_SECS, MAX_ATTEMPTS, M
 pub use hagency_agent_local::merge_policy::{CODEOWNERS, MIN_AGENT_APPROVALS, MergePolicy, PROTECTED_PREFIXES, parse_policy};
 /// The room's merge rules: their state type, (de)serialization and the suggested defaults.
 pub use hagency_agent_local::merge_policy::room_rules::{
-    MERGE_RULES_STATE_TYPE, NO_ROOM_RULES, ROOM_RULES_TTL_SECS, RoomRulesSnapshot, SUGGESTED_ALWAYS_HUMAN, SUGGESTED_LOW_RISK_PATHS, content_of, policy_text,
+    MAX_POLICY_BYTES, MERGE_RULES_STATE_TYPE, NO_ROOM_RULES, ROOM_RULES_TTL_SECS, RoomRulesSnapshot, SUGGESTED_ALWAYS_HUMAN, SUGGESTED_LOW_RISK_PATHS, content_of, policy_text,
     render_policy, rules_of, suggested_policy,
 };
 /// Branches push-freely never pushes, whatever the remote says (ADR 0022).

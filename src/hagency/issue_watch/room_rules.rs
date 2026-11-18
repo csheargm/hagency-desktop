@@ -5,7 +5,7 @@
 //! a snapshot per watched repository in this device's ledger through the
 //! owner API, every poll, so the merge gate judges by fresh rules.
 use crate::hagency::backend::Service;
-use ::hagency::issue_watch::safeguards::{MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
+use ::hagency::issue_watch::safeguards::{MAX_POLICY_BYTES, MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, watch_entries};
 use matrix_sdk::Room;
 use matrix_sdk::ruma::events::{StateEventType, room::power_levels::RoomPowerLevels};
@@ -127,9 +127,20 @@ pub fn levels_of(events: &[Value], rules: &AuthorizationRules, creators: Vec<Own
     crate::home::call_power_levels::levels_from(power_levels_event(events)?, rules, creators)
 }
 
+/// `policy` as the rules text the gate stores: refused when a path cannot be
+/// written or the text is over the gate's size limit, which would otherwise
+/// look saved and count as invalid (GPT integration review).
+pub fn rules_text(policy: &MergePolicy) -> Result<String, String> {
+    let text = render_policy(policy).ok_or_else(|| crate::i18n::tr("A path holds a character the merge rules cannot store").to_owned())?;
+    if text.len() > MAX_POLICY_BYTES {
+        return Err(crate::i18n::format("The merge rules are too long to store (at most {n} KiB): remove some paths", &[("n", (MAX_POLICY_BYTES / 1024).to_string())]));
+    }
+    Ok(text)
+}
+
 /// Save `policy` as `room`'s rules; the homeserver refuses a member below the event's level.
 pub async fn save(room: &Room, policy: &MergePolicy) -> Result<(), String> {
-    let text = render_policy(policy).ok_or_else(|| crate::i18n::tr("A path holds a character the merge rules cannot store").to_owned())?;
+    let text = rules_text(policy)?;
     room.send_state_event_raw(MERGE_RULES_STATE_TYPE, "", content_of(&text)).await.map(|_| ())
         .map_err(|e| crate::i18n::format("Could not save the merge rules: {error}", &[("error", e.to_string())]))
 }
@@ -142,21 +153,36 @@ pub(crate) fn watched_rooms(saved: &Value) -> Vec<(String, String)> {
     watch_entries(&watch, &work).into_iter().filter(|e| e.active && !e.room_id.is_empty()).map(|e| (e.repo, e.room_id)).collect()
 }
 
+/// What one room's read records: its snapshot, or when it was not read a
+/// snapshot that withdraws the last rules (fail closed, GPT integration
+/// review: a tightening must not be merged past until the TTL) and the
+/// status line saying so.
+pub(crate) fn recorded(repo: &str, room_id: &str, read: Result<RoomRead, String>) -> (RoomRulesSnapshot, Option<String>) {
+    match read {
+        Ok(read) => (snapshot(repo, room_id, &read), None),
+        Err(error) => {
+            let withdrawn = RoomRulesSnapshot { repo: repo.to_owned(), room_id: room_id.to_owned(), unread: true, ..Default::default() };
+            (withdrawn, Some(crate::i18n::format("Merge rules could not be read, so merges need a person until they are: {error}", &[("error", error)])))
+        }
+    }
+}
+
 /// Records the current rules of every room this Agent's watches report to;
-/// the failures, for the check's status line. A room not read is not
-/// recorded: its old snapshot ages out and merges need a person.
+/// the failures, for the check's status line. A room not read is recorded
+/// as unread, so its last rules stop counting. Only a failed recording
+/// leaves the old snapshot, which then ages out within the TTL.
 pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Vec<String> {
     let Some(client) = crate::sliding_sync::get_client() else { return Vec::new() };
     let (mut snapshots, mut errors) = (Vec::new(), Vec::new());
     for (repo, room_id) in watched_rooms(saved) {
         let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.get_room(&id));
-        match joined {
-            Some(room) => match read(&room).await {
-                Ok(read) => snapshots.push(snapshot(&repo, &room_id, &read)),
-                Err(error) => errors.push(crate::i18n::format("Merge rules could not be read: {error}", &[("error", error)])),
-            },
-            None => errors.push(crate::i18n::tr("Merge rules could not be read: this desktop has not joined the watch's room").to_owned()),
-        }
+        let read = match joined {
+            Some(room) => read(&room).await,
+            None => Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned()),
+        };
+        let (snapshot, error) = recorded(&repo, &room_id, read);
+        snapshots.push(snapshot);
+        errors.extend(error);
     }
     if !snapshots.is_empty()
         && let Err(error) = super::live::saved(service, agent_id, Some(json!({"roomMergeRules": snapshots_json(&snapshots)}))).await
@@ -168,7 +194,7 @@ pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Ve
 
 /// The owner API's `roomMergeRules` list.
 pub(crate) fn snapshots_json(snapshots: &[RoomRulesSnapshot]) -> Value {
-    snapshots.iter().map(|s| json!({"repo": s.repo, "roomId": s.room_id, "eventId": s.event_id, "sender": s.sender, "policy": s.policy})).collect()
+    snapshots.iter().map(|s| json!({"repo": s.repo, "roomId": s.room_id, "eventId": s.event_id, "sender": s.sender, "policy": s.policy, "unread": s.unread})).collect()
 }
 
 #[cfg(test)]

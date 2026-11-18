@@ -159,8 +159,9 @@ async fn tables(out: &mut RoomStatus, repos: &[String], own: &[OwnWatch], seen: 
 }
 
 /// Link (`true`) or unlink `repo` under this account's own power level; the
-/// homeserver refuses a member below the room's level for the event.
-pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool) -> Result<(), String> {
+/// homeserver refuses a member below the room's level for the event. `Some`
+/// note when linked but a room admin still has power levels to set.
+pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool) -> Result<Option<String>, String> {
     // One change at a time per process, each re-reading the list first (GPT review).
     static LINKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _linking = LINKING.lock().await;
@@ -184,14 +185,29 @@ pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool)
             .map_err(|e| crate::i18n::format("Could not change the room's repositories: {error}", &[("error", e.to_string())]))?;
     }
     // Also when the repository was already linked: linking again is how an admin opens an old room.
-    if link { allow_member_status(&room).await } else { Ok(()) }
+    if link { allow_member_status(&room).await.map(|left| link_note(&left)) } else { Ok(None) }
+}
+
+/// What the link says when power-level entries are left for a room admin
+/// (GPT integration review: it looked done while members still could not
+/// share issue status, or moderators could still change the merge rules).
+pub fn link_note(left: &[&str]) -> Option<String> {
+    let status = left.contains(&::hagency::repo_status::ISSUE_STATUS_STATE_TYPE);
+    let rules = left.contains(&::hagency::issue_watch::safeguards::MERGE_RULES_STATE_TYPE);
+    let note = match (status, rules) {
+        (true, true) => "Linked. A room admin still needs to link it too, to let members share issue status and to make the merge rules admin-only.",
+        (true, false) => "Linked. A room admin still needs to link it too, to let members share issue status.",
+        (false, true) => "Linked. A room admin still needs to link it too, to make the merge rules admin-only (until then moderators can change them).",
+        (false, false) => return None,
+    };
+    Some(crate::i18n::tr(note).to_owned())
 }
 
 /// Linking is the admin's go-ahead to let members publish their own issue
 /// status in a room that predates it (ADR 0023), and, for an admin, to make
 /// the merge rules admin-only (ADR 0029), when this account may change power
 /// levels; otherwise nothing is sent. Only missing entries are added.
-async fn allow_member_status(room: &Room) -> Result<(), String> {
-    crate::home::call_power_levels::allow_member_state_in(room).await.map(|_| ())
+async fn allow_member_status(room: &Room) -> Result<Vec<&'static str>, String> {
+    crate::home::call_power_levels::allow_member_state_in(room).await
         .map_err(|e| crate::i18n::format("Members cannot share issue status here yet: {error}", &[("error", format!("{e:#}"))]))
 }

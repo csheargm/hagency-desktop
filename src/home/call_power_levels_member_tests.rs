@@ -108,7 +108,7 @@ async fn an_admin_opens_issue_status_in_an_old_room_and_keeps_the_rest() {
     let server = wiremock::MockServer::start().await;
     let room = synced_as(&server, "@admin:x", &old_room()).await;
     mount_levels(&server, &old_room()).await;
-    assert!(allow_member_state_in(&room).await.unwrap());
+    assert!(allow_member_state_in(&room).await.unwrap().is_empty(), "nothing left for someone else");
     let mut expected = old_room();
     expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
     expected["events"][RULES] = json!(100);
@@ -121,7 +121,7 @@ async fn a_member_without_permission_sends_nothing() {
     let server = wiremock::MockServer::start().await;
     let room = synced_as(&server, "@member:x", &old_room()).await;
     mount_levels(&server, &old_room()).await;
-    assert!(!allow_member_state_in(&room).await.unwrap());
+    assert_eq!(allow_member_state_in(&room).await.unwrap(), [ISSUE_STATUS_STATE_TYPE, RULES], "left for an admin, so the link can say so");
     assert!(puts(&server).await.is_empty());
 }
 
@@ -136,7 +136,7 @@ async fn a_stale_sync_store_does_not_skip_the_rules_entry() {
     cached["events"][RULES] = json!(50);
     let room = synced_as(&server, "@admin:x", &cached).await;
     mount_levels(&server, &now).await;
-    assert!(allow_member_state_in(&room).await.unwrap());
+    assert!(allow_member_state_in(&room).await.unwrap().is_empty());
     let mut expected = now;
     expected["events"][RULES] = json!(100);
     assert_eq!(puts(&server).await, vec![expected]);
@@ -165,7 +165,7 @@ async fn a_room_with_the_entry_is_left_alone() {
     levels["events"][RULES] = json!(50);
     let room = synced_as(&server, "@admin:x", &levels).await;
     mount_levels(&server, &levels).await;
-    assert!(!allow_member_state_in(&room).await.unwrap());
+    assert!(allow_member_state_in(&room).await.unwrap().is_empty(), "nothing missing");
     assert!(puts(&server).await.is_empty());
 }
 
@@ -178,7 +178,7 @@ async fn a_moderator_opens_issue_status_but_never_sets_the_rules_level() {
     levels["events"]["m.room.power_levels"] = json!(50);
     let room = synced_as(&server, "@mod:x", &levels).await;
     mount_levels(&server, &levels).await;
-    assert!(allow_member_state_in(&room).await.unwrap());
+    assert_eq!(allow_member_state_in(&room).await.unwrap(), [RULES], "the admin-only rules entry is left for an admin");
     let mut expected = levels;
     expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
     assert_eq!(puts(&server).await, vec![expected]);

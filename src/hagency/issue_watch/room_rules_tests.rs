@@ -69,6 +69,32 @@ fn every_watch_room_of_the_saved_watch_is_synced() {
     assert!(watched_rooms(&json!({})).is_empty());
 }
 
+/// GPT integration review: a failed read withdraws the room's last rules
+/// (the owner API marks them unread) and the status line says merges need a person.
+#[test]
+fn a_failed_read_records_the_room_as_unread_and_says_so() {
+    let (snap, error) = recorded("a/b", ROOM, Err("timed out".into()));
+    assert!(snap.unread && snap.policy.is_none() && snap.event_id.is_none());
+    assert!(error.as_deref().is_some_and(|e| e.contains("need a person") && e.contains("timed out")), "{error:?}");
+    let sent = snapshots_json(&[snap]);
+    assert_eq!(sent[0]["unread"], true, "the flag reaches the owner API");
+    let parsed: RoomRulesSnapshot = serde_json::from_value(sent[0].clone()).unwrap();
+    assert!(parsed.unread);
+    let (read, none) = recorded("a/b", ROOM, Ok(accept(&with(event("@admin:localhost:8450")), ROOM, admins)));
+    assert!(!read.unread && read.policy.is_some() && none.is_none());
+}
+
+/// GPT integration review: rules over the gate's 8 KiB limit are refused
+/// before saving instead of looking saved and counting as invalid.
+#[test]
+fn rules_over_the_gates_size_limit_are_refused_before_saving() {
+    use ::hagency::issue_watch::safeguards::{MAX_POLICY_BYTES, suggested_policy};
+    assert!(rules_text(&suggested_policy()).is_ok());
+    let mut long = suggested_policy();
+    long.low_risk_paths = (0..MAX_POLICY_BYTES / 8).map(|i| format!("docs/{i}/**")).collect();
+    assert!(rules_text(&long).is_err_and(|e| e.contains("too long")));
+}
+
 const ADMIN: &str = "@admin:localhost:8450";
 const MODERATOR: &str = "@member:localhost:8450";
 

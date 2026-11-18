@@ -92,7 +92,7 @@ impl Widget for RoomMergeRules {
             && let Shown::Ready { read, editable: true } = current(&room)
         {
             match model::policy_of(&self.draft(cx), &read) {
-                Ok(policy) => save(&room, policy),
+                Ok(policy) => save(&room, policy, read),
                 Err(error) => set_error(&room, error),
             }
         }
@@ -165,7 +165,9 @@ async fn read_into(account: String, joined: matrix_sdk::Room) {
 }
 
 /// Save `policy` as `room`'s rules, then read them back from the server.
-fn save(room: &RoomId, policy: ::hagency::issue_watch::safeguards::MergePolicy) {
+/// The rules are read again first: if they are no longer `opened` (the read
+/// the editor was filled from), nothing is saved and the editor shows them.
+fn save(room: &RoomId, policy: ::hagency::issue_watch::safeguards::MergePolicy, opened: room_rules::RoomRead) {
     let account = account();
     let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
         return set_error(room, crate::i18n::tr("Room not found").to_owned());
@@ -173,7 +175,13 @@ fn save(room: &RoomId, policy: ::hagency::issue_watch::safeguards::MergePolicy) 
     ERRORS.lock().unwrap_or_else(|p| p.into_inner()).remove(&(account.clone(), room.to_owned()));
     set(account.clone(), room, Shown::Loading);
     crate::sliding_sync::spawn_async_task(async move {
-        if let Err(error) = room_rules::save(&joined, &policy).await {
+        let checked = match room_rules::read_with_editor(&joined).await {
+            Ok((now, editable)) => model::unchanged_since(&opened, &now, editable),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = checked {
+            set_error(joined.room_id(), error);
+        } else if let Err(error) = room_rules::save(&joined, &policy).await {
             set_error(joined.room_id(), error);
         }
         read_into(account, joined).await;

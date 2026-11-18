@@ -200,7 +200,7 @@ pub(crate) fn watch_with_room_rules(ledger: &mut Ledger, repo: &str, rules: Opti
 
 /// The room's rules for `repo`, read now.
 pub(crate) fn set_room_rules(ledger: &mut Ledger, repo: &str, rules: Option<&str>) {
-    let snapshot = room_rules::RoomRulesSnapshot { repo: repo.into(), room_id: ROOM.into(), event_id: Some("$rules".into()), sender: Some("@admin:example.org".into()), policy: rules.map(str::to_owned) };
+    let snapshot = room_rules::RoomRulesSnapshot { repo: repo.into(), room_id: ROOM.into(), event_id: Some("$rules".into()), sender: Some("@admin:example.org".into()), policy: rules.map(str::to_owned), unread: false };
     ledger.set_room_merge_rules("@owner:example.org", &snapshot, room_rules::unix_now()).unwrap();
 }
 

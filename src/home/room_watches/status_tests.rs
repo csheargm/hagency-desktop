@@ -90,3 +90,15 @@ fn run_cards_become_tasks_with_the_newest_edit_and_only_from_joined_agents() {
     let readable = json!({"type": "m.room.message", "event_id": "$c9", "sender": "@_hagency_csheargm_bird-claude:hs.test", "origin_server_ts": ms, "content": card("run_c9", "running", 1, "")});
     assert_eq!(tasks::tasks(&[readable], |_| true, ms).len(), 1, "readable puppet IDs count");
 }
+
+/// GPT integration review: a link that left power-level entries for an admin
+/// says what is still missing instead of looking done.
+#[test]
+fn a_link_left_for_an_admin_says_what_is_missing() {
+    use super::super::status::link_note;
+    use ::hagency::{issue_watch::safeguards::MERGE_RULES_STATE_TYPE as RULES, repo_status::ISSUE_STATUS_STATE_TYPE as STATUS};
+    assert_eq!(link_note(&[]), None, "nothing left: a plain success");
+    assert!(link_note(&[STATUS, RULES]).is_some_and(|n| n.starts_with("Linked.") && n.contains("issue status") && n.contains("admin-only")));
+    assert!(link_note(&[STATUS]).is_some_and(|n| n.contains("issue status") && !n.contains("merge rules")));
+    assert!(link_note(&[RULES]).is_some_and(|n| n.contains("moderators can change them") && !n.contains("issue status")));
+}
