@@ -116,8 +116,8 @@ async fn a_signed_out_provider_is_retried_with_backoff_until_its_login_is_back()
     assert_eq!(passes.load(Ordering::SeqCst), SIGNED_OUT_PASSES + 2, "no manual Start: the next pass restarts it");
     let delays = SIGNED_OUT_DELAYS.lock().unwrap().clone();
     let expected: Vec<u32> = (0..=SIGNED_OUT_PASSES as u32).chain([0]).collect();
-    assert_eq!(delays, expected, "each signed-out pass backs off further; a restart resets it");
+    assert_eq!(delays, expected, "each signed-out pass counts toward the backoff (capped at MAX_BACKOFF from the second); a restart resets it");
     assert!(delays.iter().all(|&f| next_delay(f) <= MAX_BACKOFF) && next_delay(SIGNED_OUT_PASSES as u32) == MAX_BACKOFF);
     let pass = read_pass(&json!({"recoveries":[{"agentId":"a","restored":false,"error":"claude_login_required"}]}));
-    assert_eq!(pass.failed, vec![("a".into(), "claude_login_required".into())], "the sign-in code survives for the status");
+    assert_eq!(pass.failed, vec![("a".into(), "claude_login_required".into())], "the sign-in code is kept as an engine code, not mapped to unrecognized");
 }

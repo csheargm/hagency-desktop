@@ -138,11 +138,12 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
         "processing"
     } else if any(&["awaiting_approval", "waiting_owner"]) {
         "waiting"
+    } else if let Some(sign_in) = sign_in_state(value, ours) {
+        // Before "restarting": a retry cannot succeed until the owner signs in.
+        sign_in
     } else if host_stopped(value) {
         // The host watchdog (backend/host_watchdog.rs) starts it again.
         "host_restarting"
-    } else if let Some(sign_in) = sign_in_state(value, ours) {
-        sign_in
     } else if attention {
         "attention"
     } else if any(&["online", "online_chat_only"]) {
@@ -419,6 +420,8 @@ mod tests {
         let mut host_gone = retrying.clone();
         host_gone["runtime"] = Value::Null;
         assert_eq!(service_state(&host_gone, agent), "claude_sign_in", "the service's own retry is this Agent's");
+        host_gone["service"]["watcherRunning"] = false.into();
+        assert_eq!(service_state(&host_gone, agent), "claude_sign_in", "a stopped host waiting on a sign-in says so");
         let recovered = json!({"service": {"enabled": true, "watcherRunning": true, "phase": "serving", "problems": []},
             "runtime": {"agentId": agent, "phase": "online", "bindings": [{"phase": "online_chat_only"}]}});
         assert_eq!(service_state(&recovered, agent), "running", "a successful retry clears the hint");
