@@ -151,6 +151,9 @@ fn a_stricter_state_default_is_kept_for_the_rules_entry() {
     assert_eq!(open_call_membership(strict.clone()).unwrap().unwrap()["events"][RULES], 150);
     let levels = typed(strict, &AuthorizationRules::V10, &[]);
     assert_eq!(addable_member_state(&levels, user_id!("@owner:x")).len(), 2);
+    let legacy = json!({"users":{"@owner:x":200},"state_default":"150"});
+    let updated = add_missing_member_state(legacy, &EXISTING_ROOM_EVENTS).unwrap().unwrap();
+    assert_eq!(updated["events"][RULES], 150, "a room v9 string level is kept too");
 }
 
 /// Already present (locally): nothing is read or sent.

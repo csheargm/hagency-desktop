@@ -71,7 +71,9 @@ pub fn add_missing_member_state(levels: Value, keys: &[&'static str]) -> anyhow:
 /// Sets each of `keys` whose current entry `reset` selects to its [`target_level`].
 fn set_where(mut levels: Value, keys: &[&'static str], reset: impl Fn(&str, Option<&Value>) -> bool) -> anyhow::Result<Option<Value>> {
     let object = levels.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels are not an object"))?;
-    let state_default = object.get("state_default").and_then(Value::as_i64).unwrap_or(DEFAULT_STATE_LEVEL);
+    // Room versions before 10 also allow a level as a string ("150"), as Ruma reads it (GPT review).
+    let level = |v: &Value| v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()));
+    let state_default = object.get("state_default").and_then(level).unwrap_or(DEFAULT_STATE_LEVEL);
     let events = object.entry("events").or_insert_with(|| Value::Object(Default::default()));
     let events = events.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels events is not an object"))?;
     let changed: Vec<&str> = keys.iter().copied().filter(|key| reset(key, events.get(*key))).collect();
@@ -159,7 +161,9 @@ pub async fn allow_call_membership(room: &Room, open_calls: bool) -> anyhow::Res
 }
 
 /// Creation flows call this once a (non-space) room exists. A failure is
-/// deliberately not a creation failure: the room is already made, so
+/// deliberately not a creation failure (GPT review, not adopted): the room
+/// has only its creator, so no moderator exists until that admin promotes
+/// one, and reporting an error would invite a duplicate room; so
 /// reporting an error would invite a duplicate; the room then behaves as
 /// before this fix (calls need a moderator, merge rules follow
 /// `state_default`) until an admin links a repository, which retries the
