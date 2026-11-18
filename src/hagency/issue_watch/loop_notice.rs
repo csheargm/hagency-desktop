@@ -41,23 +41,27 @@ pub enum LoopNotice {
     Held { target: Target, step: String, missing: Vec<String> },
     /// The merge step could not reach GitHub several checks in a row.
     Unreachable { target: Target, step: String },
+    /// A `review` or `merge` step's dispatch ended without the Agent running
+    /// (`why` is the ledger's word); `step` keys the round's one line.
+    NotStarted { target: Target, what: String, why: String, gave_up: bool, step: String },
 }
 
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } => target,
         }
     }
     /// The once-per-head loop step this notice is recorded under.
     pub(crate) fn step(&self) -> &str {
         match self {
             Self::ReviewRequested { .. } => "review",
-            Self::Held { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } => step,
+            Self::Held { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } => step,
             _ => "merge",
         }
     }
-    fn mention(&self) -> Option<&OwnedUserId> {
+    /// The Agent the notice addresses (and dispatches), if any.
+    pub(crate) fn mention(&self) -> Option<&OwnedUserId> {
         match self {
             Self::ReviewRequested { reviewer, .. } => Some(reviewer),
             Self::Approved { fixer, .. } => Some(fixer),
@@ -72,11 +76,12 @@ impl LoopNotice {
         match self {
             Self::ReviewRequested { reviewer, .. } => {
                 let steps = ::hagency::REVIEW_STEPS.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo);
-                format!("🔎 Review requested — {reviewer} please review PR #{} in {} at head commit {}: {}\nTo review: {steps}", t.number, t.repo, t.head, t.url)
+                format!("{}{reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
             }
             Self::Approved { fixer, .. } => format!(
-                "✅ Approved at {short} — merging under the repo rules: {fixer} run exactly `gh pr merge {n} --squash --match-head-commit {head} --repo {repo}` as its own command. If GitHub refuses the merge, report why and do not retry.",
-                n = t.number, head = t.head, repo = t.repo,
+                "{lead}{short} — merging under the repo rules: {fixer} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
+                lead = ::hagency::issue_watch::MERGE_NOTICE_LEAD,
+                command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
             ),
             Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs a maintainer: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
             Self::NeedsOwner { reason, .. } => format!("⚠️ PR #{} in {} at {short} needs the owner: {}. {}", t.number, t.repo, quoted_title(reason), t.url),
@@ -85,6 +90,7 @@ impl LoopNotice {
                 format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
             }
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
+            Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
         }
     }
 
@@ -105,8 +111,14 @@ impl LoopNotice {
 
     /// Fixed by Agent, step, pull request and head: one notice per head.
     pub fn txn_id(&self, agent_id: &str) -> OwnedTransactionId {
+        self.txn_id_again(agent_id, 0)
+    }
+
+    /// The `again`-th re-send of this notice is a new message (0: the first post).
+    pub fn txn_id_again(&self, agent_id: &str, again: u32) -> OwnedTransactionId {
         let t = self.target();
-        let key = blake3::hash(format!("{agent_id}\n{}\n{}\n{}", self.step(), t.url, t.head).as_bytes());
+        let again = if again == 0 { String::new() } else { format!("\nagain-{again}") };
+        let key = blake3::hash(format!("{agent_id}\n{}\n{}\n{}{again}", self.step(), t.url, t.head).as_bytes());
         OwnedTransactionId::from(format!("hagency-loop-{}", key.to_hex()))
     }
 }

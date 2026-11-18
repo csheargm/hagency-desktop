@@ -14,10 +14,13 @@ use serde_json::{Value, json};
 
 /// Posts notices and talks to this device's owner API (`review` part).
 pub(crate) trait LoopIo {
-    async fn post(&self, notice: &LoopNotice) -> Result<(), String>;
+    /// Post `notice`; `again` > 0 is its `again`-th re-send, a new message.
+    async fn post(&self, notice: &LoopNotice, again: u32) -> Result<(), String>;
     /// One `review` change; answers the reply's `review` part.
     async fn review(&self, change: Value) -> Result<Value, String>;
     fn paused(&self) -> bool;
+    /// The account that posts the loop's notices (only its notices' runs count).
+    fn requester(&self) -> String;
 }
 
 /// Who acts on one pull request and what this owner's GitHub allows.
@@ -48,11 +51,11 @@ pub(crate) fn target_of(repo: &str, pr: &PullRequest) -> Target {
 
 /// Advance one pull request head by at most one step.
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, ctx: &LoopCtx<'_>) -> Result<(), String> {
-    let step = |name: &str| json!({"step": name, "pr": target.url, "head": target.head});
-    let taken = |reply: Value| reply["taken"] == true;
+    let step = json!({"step": "review", "pr": target.url, "head": target.head});
     fence(io)?;
-    if !taken(io.review(json!({"stepTaken": step("review")})).await?) {
-        return post_then_claim(io, &LoopNotice::ReviewRequested { target: target.clone(), reviewer: ctx.agent.clone() }, step("review")).await;
+    let review = super::step_resend::due(io, target, "review", Some(ctx.agent)).await?;
+    if !review.taken {
+        return post_then_claim(io, &LoopNotice::ReviewRequested { target: target.clone(), reviewer: ctx.agent.clone() }, step, review.again).await;
     }
     if !ctx.maintainer {
         return Ok(());
@@ -66,7 +69,8 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     let step = |name: &str| json!({"step": name, "pr": target.url, "head": target.head});
     let taken = |reply: Value| reply["taken"] == true;
     fence(io)?;
-    if taken(io.review(json!({"stepTaken": step("merge")})).await?) {
+    let merge = super::step_resend::due(io, target, "merge", Some(ctx.agent)).await?;
+    if merge.taken {
         return Ok(());
     }
     let readiness = io.review(json!({"readiness": {"repo": target.repo, "number": target.number}})).await?["readiness"].clone();
@@ -76,7 +80,8 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     if notice.step() != "merge" && taken(io.review(json!({"stepTaken": step(notice.step())})).await?) {
         return Ok(());
     }
-    post_then_claim(io, &notice, step(notice.step())).await
+    let again = if notice.step() == "merge" { merge.again } else { 0 };
+    post_then_claim(io, &notice, step(notice.step()), again).await
 }
 
 use super::merge_hold::Missing;
@@ -101,8 +106,9 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
 
 /// Post first (a fixed transaction id makes a retry a duplicate the server
 /// drops), then record the step so it is not posted again for this head.
-pub(crate) async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value) -> Result<(), String> {
-    io.post(notice).await?;
+/// `again` > 0: a re-send of a step whose dispatch never ran (`step_resend`).
+pub(crate) async fn post_then_claim(io: &impl LoopIo, notice: &LoopNotice, step: Value, again: u32) -> Result<(), String> {
+    io.post(notice, again).await?;
     fence(io)?;
     io.review(json!({"claimStep": step})).await.map(|_| ())
 }

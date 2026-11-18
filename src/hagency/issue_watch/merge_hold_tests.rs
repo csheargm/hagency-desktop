@@ -27,7 +27,7 @@ impl Fake {
     }
 }
 impl LoopIo for Fake {
-    async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
+    async fn post(&self, notice: &LoopNotice, _again: u32) -> Result<(), String> {
         self.posted.borrow_mut().push(notice.clone());
         Ok(())
     }
@@ -36,6 +36,9 @@ impl LoopIo for Fake {
         if let Some(step) = change.get("stepTaken") {
             return Ok(json!({"taken": self.steps.borrow().contains(&key(step))}));
         }
+        if let Some(step) = change.get("stepDue") {
+            return Ok(json!({"due": {"taken": self.steps.borrow().contains(&key(step)), "again": 0}}));
+        }
         if let Some(step) = change.get("claimStep") {
             return Ok(json!({"claimed": self.steps.borrow_mut().insert(key(step))}));
         }
@@ -43,6 +46,9 @@ impl LoopIo for Fake {
     }
     fn paused(&self) -> bool {
         false
+    }
+    fn requester(&self) -> String {
+        "@owner:alpha".into()
     }
 }
 
@@ -208,8 +214,8 @@ fn the_merge_is_told_from_the_same_answer_that_judged_it() {
     // read would post NeedsOwner and burn the merge step (GPT review).
     struct Flip(Fake);
     impl LoopIo for Flip {
-        async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
-            self.0.post(notice).await
+        async fn post(&self, notice: &LoopNotice, again: u32) -> Result<(), String> {
+            self.0.post(notice, again).await
         }
         async fn review(&self, change: Value) -> Result<Value, String> {
             if change.get("readiness").is_some() {
@@ -219,6 +225,9 @@ fn the_merge_is_told_from_the_same_answer_that_judged_it() {
         }
         fn paused(&self) -> bool {
             false
+        }
+        fn requester(&self) -> String {
+            self.0.requester()
         }
     }
     let flip = Flip(Fake::new(merge(true)));

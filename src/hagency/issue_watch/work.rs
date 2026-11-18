@@ -244,13 +244,13 @@ impl<'a> LiveLoop<'a> {
     }
 }
 impl LoopIo for LiveLoop<'_> {
-    async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
+    async fn post(&self, notice: &LoopNotice, again: u32) -> Result<(), String> {
         super::still_current(self.worker.epoch)?;
         // Checked right before the send, after every await that led here.
         if self.paused() {
             return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
         }
-        crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(), notice.marker(), notice.txn_id(&self.agent_id)).await
+        crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(), notice.marker(), notice.txn_id_again(&self.agent_id, again)).await
     }
     async fn review(&self, change: Value) -> Result<Value, String> {
         super::still_current(self.worker.epoch)?;
@@ -258,5 +258,9 @@ impl LoopIo for LiveLoop<'_> {
     }
     fn paused(&self) -> bool {
         crate::hagency::kill_switch::paused_here(&self.agent_id)
+    }
+    fn requester(&self) -> String {
+        // Signed out: an empty requester, which the owner API refuses.
+        crate::sliding_sync::current_user_id().map(|u| u.to_string()).unwrap_or_default()
     }
 }

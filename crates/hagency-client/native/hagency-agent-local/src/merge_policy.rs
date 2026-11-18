@@ -29,6 +29,7 @@ pub mod codex_observed;
 pub mod pending;
 pub mod trial;
 pub mod room_rules;
+pub mod step_resend;
 
 /// Paths that are never low risk: Hagency's repository config and CI/workflow config.
 pub const PROTECTED_PREFIXES: [&str; 2] = [".hagency/", ".github/"];

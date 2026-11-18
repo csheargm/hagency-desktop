@@ -11,7 +11,13 @@ use super::github::{repo_of_url, PrSource, PrView};
 use super::{evaluate, Decision};
 use crate::{Ledger, Result};
 
-pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_loop_sent (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT;";
+/// `loop_step_dispatches`: the step each received loop notice dispatches and the Agent it addresses;
+/// `review_loop_resends`: per dispatched step claimed, how often it was given
+/// back (`again`), when (`released_at`), to which Agent (`runner`), and the
+/// rounds whose room line was said (`said`), see [`super::step_resend`].
+pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_loop_sent (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT; \
+CREATE TABLE IF NOT EXISTS loop_step_dispatches (dispatch TEXT PRIMARY KEY, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, addressee TEXT NOT NULL) STRICT; \
+CREATE TABLE IF NOT EXISTS review_loop_resends (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, again INTEGER NOT NULL, released_at INTEGER NOT NULL, said INTEGER NOT NULL, runner TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT;";
 
 /// A review-loop step that posts one "can't merge yet" notice per head and
 /// set of missing things: this prefix, then lowercase words joined by `-`.

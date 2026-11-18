@@ -187,10 +187,12 @@ pub fn merges_off(target: &Target) -> LoopNotice {
 /// Post `notice` unless step `step` was taken for this head, then take it.
 async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice) -> Result<(), String> {
     let key = json!({"step": step, "pr": target.url, "head": target.head});
-    if io.review(json!({"stepTaken": key})).await?["taken"] == true {
+    // The merge step is given back when its dispatch never ran (PR #94).
+    let due = super::step_resend::due(io, target, step, notice.mention()).await?;
+    if due.taken {
         return Ok(());
     }
-    review_loop::post_then_claim(io, &notice, key).await
+    review_loop::post_then_claim(io, &notice, key, due.again).await
 }
 
 /// Act on the merge step for `target`: the pinned merge for `ctx.agent`

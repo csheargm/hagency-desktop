@@ -18,6 +18,7 @@ mod merge_hold;
 #[cfg(test)]
 mod merge_hold_tests;
 mod review_loop;
+mod step_resend;
 pub(crate) mod reviewer_pick;
 pub mod room_review;
 pub mod room_rules;
@@ -49,6 +50,8 @@ mod tests;
 mod notice_tests;
 #[cfg(test)]
 mod review_loop_tests;
+#[cfg(test)]
+mod step_resend_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};
