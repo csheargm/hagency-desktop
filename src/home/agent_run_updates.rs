@@ -106,28 +106,43 @@ pub fn text(updates: &Updates) -> String {
     }
 }
 
-/// One line per text message `agent` posted, oldest first, from a backward
-/// page of thread relations (newest first, as the server returns them).
-/// People's replies and other Agents' messages are not this run's progress.
-pub fn lines(events: &[Value], agent: &str) -> Vec<String> {
+/// One line per text message, oldest first, from a backward page of thread
+/// relations (newest first, as the server returns them): the run Agent's own
+/// progress as "• step", and what people wrote in that thread as
+/// "• name: text", since the room shows no other way into the thread
+/// (integration review). Other Agents' messages are not this run's.
+pub fn lines(events: &[Value], agent: &str, is_agent: impl Fn(&str) -> bool) -> Vec<String> {
     let mut out: Vec<String> = events
         .iter()
-        .filter(|e| e["type"] == "m.room.message" && e["sender"] == agent
+        .filter(|e| e["type"] == "m.room.message"
             && e["content"]["m.relates_to"]["rel_type"] != "m.replace"
             && e["content"]["msgtype"].as_str().is_some_and(|t| t == "m.text" || t == "m.notice"))
-        .filter_map(|e| e["content"]["body"].as_str())
-        .filter_map(|body| body.lines().map(str::trim).find(|l| !l.is_empty()))
-        .map(|line| {
+        .filter_map(|e| {
+            let sender = e["sender"].as_str()?;
+            let person = sender != agent && !is_agent(sender);
+            if sender != agent && !person {
+                return None;
+            }
+            let line = e["content"]["body"].as_str()?.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("> "))?;
             let mut short: String = line.chars().take(LINE_CHARS).collect();
             if line.chars().count() > LINE_CHARS {
                 short.push('…');
             }
-            format!("• {short}")
+            Some(if person { format!("• {}: {short}", person_name(sender)) } else { format!("• {short}") })
         })
         .take(MAX_UPDATES)
         .collect();
     out.reverse();
     out
+}
+
+/// A person's label: the Matrix ID's localpart.
+fn person_name(sender: &str) -> &str {
+    sender.strip_prefix('@').and_then(|s| s.split(':').next()).unwrap_or(sender)
+}
+
+fn is_agent_id(sender: &str) -> bool {
+    matrix_sdk::ruma::UserId::parse(sender).is_ok_and(|u| crate::profile::profile_route::is_agent(&u))
 }
 
 fn load(key: Key, count: usize) {
@@ -154,7 +169,7 @@ fn load(key: Key, count: usize) {
             let page = room.relations(root, options).await.ok()?;
             // Decrypted events carry their clear content; undecryptable ones are left out.
             let events: Vec<Value> = page.chunk.iter().filter_map(|e| serde_json::from_str(e.kind.raw().json().get()).ok()).collect();
-            Some(lines(&events, &key.3))
+            Some(lines(&events, &key.3, is_agent_id))
         };
         let updates = read.await.map_or(Updates::Failed, Updates::Loaded);
         finish(&key, ticket, count, updates);
@@ -194,14 +209,17 @@ mod tests {
             json!({"type":"m.reaction","content":{}}),
             message(&"x".repeat(LINE_CHARS + 3)),
             message("reading the issue list"),
-            json!({"type":"m.room.message","sender":"@betty:test","content":{"msgtype":"m.text","body":"thanks"}}),
+            json!({"type":"m.room.message","sender":"@betty:test","content":{"msgtype":"m.text","body":"> <@anna-claude:test> q\n\nuse the staging repo"}}),
+            json!({"type":"m.room.message","sender":"@other-codex:test","content":{"msgtype":"m.text","body":"my own run"}}),
             json!({"type":"m.room.message","sender":AGENT,"content":{"msgtype":"im.hagency.agent_run","body":"⏳"}}),
         ];
-        let shown = lines(&newest_first, AGENT);
-        assert_eq!(shown.len(), 3);
-        assert_eq!(shown[0], "• reading the issue list");
-        assert!(shown[1].ends_with('…') && shown[1].chars().count() == LINE_CHARS + 3);
-        assert_eq!(shown[2], "• running cargo test");
+        let agents = |s: &str| s.ends_with("-codex:test") || s == AGENT;
+        let shown = lines(&newest_first, AGENT, agents);
+        assert_eq!(shown.len(), 4);
+        assert_eq!(shown[0], "• betty: use the staging repo", "a teammate's reply in the thread stays reachable");
+        assert_eq!(shown[1], "• reading the issue list");
+        assert!(shown[2].ends_with('…') && shown[2].chars().count() == LINE_CHARS + 3);
+        assert_eq!(shown[3], "• running cargo test");
     }
 
     #[test]

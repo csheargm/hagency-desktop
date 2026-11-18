@@ -163,9 +163,12 @@ pub(super) fn select(scope: &'static str, w: &Window<'_>) -> RecentContext {
             undecryptable += 1;
             continue;
         }
-        let Some(mut message) = quotable(record, &redacted) else { continue };
-        if let Some(body) = edits.get(&(message.event_id.clone(), message.sender.clone())) {
-            (message.body, message.edited) = (clip(body), true);
+        let edit = edits.get(&(id.to_owned(), record["sender"].as_str().unwrap_or_default().to_owned()));
+        // A run card is quoted only as its completed answer (its final edit).
+        let card = record["messageType"] == crate::agent_run_controls::MSGTYPE;
+        let Some(mut message) = (if card { edit.and_then(|_| quotable_card(record, &redacted)) } else { quotable(record, &redacted) }) else { continue };
+        if let Some(body) = edit {
+            (message.body, message.edited) = (clip(body), !card);
         }
         let size = message.body.len() + message.sender.len();
         if messages.len() == MAX_ENCRYPTED_CONTEXT_MESSAGES || bytes + size > MAX_ENCRYPTED_CONTEXT_BYTES {
@@ -217,6 +220,13 @@ fn quotable(record: &Value, redacted: &Keyed) -> Option<RecentMessage> {
         origin_server_ts: record["timestamp"].as_u64()?,
         edited: false,
     })
+}
+/// A run card's own record, quotable once its answer edit replaces the body.
+fn quotable_card(record: &Value, redacted: &Keyed) -> Option<RecentMessage> {
+    let mut text = record.clone();
+    text["messageType"] = "m.text".into();
+    text["body"] = "…".into();
+    quotable(&text, redacted)
 }
 fn clip(body: &str) -> String {
     if body.len() <= MAX_MESSAGE_BYTES {

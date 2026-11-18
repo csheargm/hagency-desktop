@@ -187,3 +187,28 @@ fn select_is_bounded_by_count_and_bytes_and_honours_threads() {
     let bodies: Vec<_> = context.messages.iter().map(|m| m.body.as_str()).collect();
     assert_eq!(bodies, ["root", "in thread"]);
 }
+
+/// Integration review: in a flat room the Agent's answer may exist only as the
+/// run card's final edit. A follow-up's encrypted context quotes that answer,
+/// never the card's status lines.
+#[test]
+fn a_run_cards_final_answer_is_in_the_follow_ups_context() {
+    let card = crate::agent_run_controls::tests::card();
+    let posted = json!({"type":"m.room.message","event_id":"$card","sender":"@ann1-claude:localhost:8450","origin_server_ts":2_000,"content":card.content()});
+    let mut working = card.clone();
+    working.progress = Some(crate::agent_run_controls::Progress { step: "running gh issue list".into(), steps: 1, elapsed_secs: None });
+    let step = json!({"type":"m.room.message","event_id":"$e1","sender":"@ann1-claude:localhost:8450","origin_server_ts":2_500,"content":working.edit_content("$card").unwrap()});
+    assert!(history_record(&step, false).is_none(), "a running card's status edit is not a message");
+    let only_running = vec![record(msg("$ask", "@ann1:localhost:8450", 5_000, "and the oldest?")), record(posted.clone())];
+    assert!(select("room", &window(&only_running, None)).messages.is_empty(), "a running card is not quoted");
+    let mut done = card.clone();
+    done.state = crate::agent_run_controls::State::Completed;
+    assert!(done.set_answer("Three open issues: #1, #2, #3."));
+    let fin = json!({"type":"m.room.message","event_id":"$e2","sender":"@ann1-claude:localhost:8450","origin_server_ts":3_000,"content":done.edit_content("$card").unwrap()});
+    let records = vec![record(msg("$ask", "@ann1:localhost:8450", 5_000, "and the oldest?")), record(fin), record(posted),
+        record(msg("$q", "@ann1:localhost:8450", 1_000, "@ann1-claude what are the issues?"))];
+    let context = select("room", &window(&records, None));
+    let bodies: Vec<_> = context.messages.iter().map(|m| m.body.as_str()).collect();
+    assert_eq!(bodies, vec!["@ann1-claude what are the issues?", "Three open issues: #1, #2, #3."]);
+    assert_eq!(context.messages[1].event_id, "$card");
+}
