@@ -158,13 +158,11 @@ async fn another_agent_past_its_trial_cannot_merge_a_trial_watchs_pull_request()
     ledger.set_auto_merge(OWNER, "anna", true).unwrap();
     ledger.set_work(OWNER, "anna", vec![rules()]).unwrap();
     ledger.end_watch_trial(OWNER, "anna", A).unwrap();
-    // Bob's new watch of the same repository wrote PR 7 (tracked for issue 5).
+    // Bob's new watch of the same repository may have written PR 7: the tracker
+    // has not linked it yet and the body names no Agent (shared login).
     ledger.set_work(OWNER, "bob", vec![rules()]).unwrap();
-    let change = |handed, state, pr| TrackChange { repo: A.into(), number: 5, handed, state, pr, notified: None, rehanded: None, owner_merged: None };
-    ledger.track_issue("bob", &change(Some(1), None, None), 1).unwrap();
-    ledger.track_issue("bob", &change(None, Some(State::PrOpened), Some(7)), 2).unwrap();
     let src = Src::new(vec![file("src/a.rs", 3)]);
-    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "Bob's trial holds Anna's merge");
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "a trial of this repository holds every Agent's merge");
     ledger.end_watch_trial(OWNER, "bob", A).unwrap();
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg2").await, Some(true));
 }

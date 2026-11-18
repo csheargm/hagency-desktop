@@ -41,11 +41,17 @@ pub fn trial_counts(reason: &str) -> Option<(u32, u32)> {
     Some((digits(next)?, digits(required)?))
 }
 
-/// The trial's hold on a merge in `repo` when one is running for any of
-/// `agents`: the merger, and the Agents that wrote the pull request, so
-/// another Agent past its trial cannot merge a trial watch's work (GPT review).
-pub(crate) fn hold(ledger: &Ledger, agents: &[String], repo: &str) -> Result<Option<Decision>> {
-    for agent in agents {
+/// The trial's hold on any Agent's merge in `repo` while a watch of `repo`
+/// on this device is in its trial: every Agent shares one GitHub login, so
+/// who wrote a pull request is not known reliably before the tracker sees it,
+/// and another Agent past its trial must not merge a trial watch's work (GPT reviews).
+pub(crate) fn hold(ledger: &Ledger, repo: &str) -> Result<Option<Decision>> {
+    let agents: Vec<String> = {
+        let mut statement = ledger.db.prepare("SELECT agent FROM watch_trial WHERE repo=? ORDER BY agent")?;
+        let rows = statement.query_map([repo.to_ascii_lowercase()], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for agent in &agents {
         if let Some((merged, required)) = ledger.trial_status(agent, repo)? {
             return Ok(Some(Decision::NeedsHuman(trial_reason(merged + 1, required))));
         }

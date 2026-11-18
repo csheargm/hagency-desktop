@@ -16,9 +16,11 @@ repository, so the first merges should be theirs.
 - Where: the merge gate's `review_loop::judge`, after every other rule
   passed, so both the gate's own answer (`qualifies`, the card stays the
   owner's) and the loop's dry run (`merge_readiness`) say the same. The
-  hold applies while the merger's watch OR the watch of any Agent that wrote
-  the pull request (tracked author, "Opened by agent") is in its trial, so
-  another Agent past its trial cannot merge a trial watch's work (GPT review). The
+  hold applies to every Agent's merge in the repository while any watch of
+  it on this device is in its trial: every Agent shares one GitHub login, so
+  who wrote a pull request is not reliably known before the tracker links
+  it, and another Agent past its trial must not merge a trial watch's work
+  (GPT reviews). The
   reason is `trial: pull request k of N needs the owner to merge`
   (`reason_kind` "trial"); the desktop's merge step posts it once per head
   through the existing hold notice: "Trial: PR k of N needs you to merge —
@@ -58,3 +60,8 @@ repository, so the first merges should be theirs.
   TODO(trial): count an owner-approved merge card for untracked PRs.
 - TODO(trial-ui): an "End trial" button in the watch settings (Safeguards
   card) posting `{endTrial}`; the API and ledger are in place.
+- Accepted residuals (GPT review 3): the owner API trusts the poller's
+  `ownerMerged` evidence (an owner-scoped caller could already end the trial
+  outright); an owner merge seen while an older automatic-merge claim on the
+  same pull request is still unsettled is not counted (fails closed: the
+  trial lasts one PR longer).
