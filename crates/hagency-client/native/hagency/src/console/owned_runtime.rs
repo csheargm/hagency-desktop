@@ -4901,12 +4901,17 @@ for raw in sys.stdin:
         // Regression (owner_authorization_required on every poll): a host whose
         // task ended, or that was told to stop, answers an empty queue, and its
         // held request is ended as unanswered.
-        let (mut stopped, decision) = entry(tokio::spawn(async {}), false);
+        use tokio::sync::oneshot::error::TryRecvError;
+        let (mut stopped, mut decision) = entry(tokio::spawn(async {}), false);
         while !stopped.task.is_finished() { tokio::task::yield_now().await; }
+        // Another device learns nothing and changes nothing, even here.
+        assert!(matches!(stopped.waiting(&other, 10), Err(RuntimeError::Authorization)));
+        assert_eq!(stopped.approvals.len(), 1);
         assert!(stopped.waiting(&pin, 10).unwrap().is_empty());
-        assert!(decision.await.is_err(), "the waiting run hears the card ended");
-        let (mut cancelled, _decision) = entry(tokio::spawn(std::future::pending()), true);
+        assert_eq!(decision.try_recv(), Err(TryRecvError::Closed), "the waiting run hears the card ended");
+        let (mut cancelled, mut decision) = entry(tokio::spawn(std::future::pending()), true);
         assert!(cancelled.waiting(&pin, 10).unwrap().is_empty());
+        assert_eq!(decision.try_recv(), Err(TryRecvError::Closed));
     }
     #[tokio::test]
     async fn approval_registry_fences_owner_device_expiry_digest_and_single_consumption() {
