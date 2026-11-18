@@ -122,14 +122,17 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
     let Some(proposal) = proposal(ledger, turn, &call.command) else { return refuse(call, "this run cannot be checked") };
     let key = running.key(turn.dispatch);
     let step = match gated_review(ledger, turn, &proposal, &call.command, &key, source).await {
-        Some(Some(step)) => step,
-        Some(None) => return refuse(call, "the merge gate refused this review"),
+        Some(step) => step,
         None => match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
             Ok(Some(step)) if step != TrustedStep::Allow => step,
             // Not a card-free step, or the ledger could not say: nothing runs.
             _ => return refuse(call, "outside what push freely covers here"),
         },
     };
+    // Given up while the gate read GitHub: nothing starts (what it held never settles).
+    if call.reply.is_closed() {
+        return;
+    }
     let outcomes = running.outcomes.clone();
     let repo = match &step { TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
     let mut ctx = HostCtx::new(turn.token.clone(), std::sync::Arc::default(), ledger.push_trust_recheck(&proposal, &repo));
@@ -147,7 +150,11 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
             // expired): the step is stopped, its slot freed once it is.
             () = reply.closed() => {
                 cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = job.await;
+                // Stopped or not, what it held settles with what actually happened (GPT review).
+                let ran = job.await.is_ok_and(|result| result.is_ok());
+                if let Ok(mut finished) = outcomes.lock() {
+                    finished.push((key, ran));
+                }
                 return;
             }
         };
@@ -164,23 +171,20 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
     });
 }
 
-/// The merge gate's answer to a review verdict sent as this step: `None`
-/// when the gate leaves it to push trust (and the normal rules), `Some(None)`
-/// when it refuses, else the pinned review to run, held under `key`. A gate
-/// allow for a command this tool does not run (a merge) is given back.
-async fn gated_review(ledger: &mut Ledger, turn: &Turn<'_>, proposal: &ToolProposal, command: &str, key: &str, source: &impl crate::merge_policy::github::PrSource) -> Option<Option<TrustedStep>> {
-    match crate::merge_policy::gate::auto_answer(ledger, turn.owner, proposal, key, super::now(), source).await? {
-        false => Some(None),
-        true => match crate::watch_trust::review_post::ReviewPost::parse(command) {
-            Some(post) => Some(Some(TrustedStep::Command(post.command()))),
-            None => {
-                // Not run here: the hold and claim go back. If the ledger cannot
-                // say so, the claim stays taken, which only asks the owner later.
-                let _ = ledger.settle_agent_review(key, false);
-                None
-            }
-        },
+/// The merge gate's answer to a review verdict sent as this step: the
+/// pinned review to run, held under `key`, or `None` to leave the step to
+/// push trust and the normal rules (GPT review of 2a7b1ed9): only a verdict
+/// `ReviewPost` reads ever reaches the gate here (never a merge or ready),
+/// a room member's needs the room's own review grant (its repository set
+/// included) as well, and a gate refusal falls back to push trust.
+async fn gated_review(ledger: &mut Ledger, turn: &Turn<'_>, proposal: &ToolProposal, command: &str, key: &str, source: &impl crate::merge_policy::github::PrSource) -> Option<TrustedStep> {
+    let post = crate::watch_trust::review_post::ReviewPost::parse(command)?;
+    if turn.scope.requester != turn.owner && !matches!(ledger.trusted_publish(turn.owner, proposal, super::now()), Ok(Some(TrustedStep::Command(_)))) {
+        return None;
     }
+    crate::merge_policy::gate::auto_answer(ledger, turn.owner, proposal, key, super::now(), source)
+        .await?
+        .then(|| TrustedStep::Command(post.command()))
 }
 
 /// The proposal push trust checks: the call as `codex_step::TOOL`, rooted

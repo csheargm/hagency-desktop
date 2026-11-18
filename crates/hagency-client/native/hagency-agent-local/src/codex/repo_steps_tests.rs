@@ -101,7 +101,7 @@ async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate()
         let step_proposal = super::proposal(&r.ledger, &turn, &command).unwrap();
         let key = running.key(turn.dispatch);
         let step = gated_review(&mut r.ledger, &turn, &step_proposal, &command, &key, &source).await;
-        let Some(Some(TrustedStep::Command(pinned))) = step else { panic!("{mode}: {step:?}") };
+        let Some(TrustedStep::Command(pinned)) = step else { panic!("{mode}: {step:?}") };
         assert!(pinned.contains(&format!("gh pr review 50 {mode} -R")), "the pinned verdict runs: {pinned}");
         assert!(r.ledger.agent_reviewers(&url, H50).unwrap().is_empty(), "nothing counts before it ran");
         running.outcomes.lock().unwrap().push((key, ran));
@@ -129,5 +129,30 @@ async fn a_repo_step_review_of_a_stale_head_is_never_recorded() {
     running.outcomes.lock().unwrap().push((key, true));
     running.settle(&mut r.ledger).unwrap();
     assert!(r.ledger.agent_reviewers(&url, H50).unwrap().is_empty());
+}
+
+/// GPT review of 2a7b1ed9: a merge or ready sent here never reaches the gate
+/// (no claim taken), and a room member's verdict needs the room's own review
+/// grant before the gate may run it.
+#[tokio::test]
+async fn only_a_verdict_reaches_the_gate_and_a_members_needs_the_rooms_review_grant() {
+    let mut r = run_under(ToolPolicy::AskOwner);
+    r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
+    let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
+    let workspace = r.root.to_string_lossy().into_owned();
+    let mut running = Running::default();
+    let source = Pr50 { opened_by: None };
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let merge = format!("gh pr merge 50 --squash --match-head-commit {H50} --repo {REPO}");
+    let p = super::proposal(&r.ledger, &turn, &merge).unwrap();
+    let key = running.key(turn.dispatch);
+    assert!(gated_review(&mut r.ledger, &turn, &p, &merge, &key, &source).await.is_none());
+    assert!(r.ledger.claim_auto_merge(&format!("https://github.com/{REPO}/pull/50"), H50, "bird").unwrap(), "no claim was taken");
+    let member = crate::Scope { requester: "@carl:example.org".into(), ..scope.clone() };
+    let as_member = Turn { scope: &member, ..turn };
+    let comment = review("--comment", H50);
+    let p = super::proposal(&r.ledger, &as_member, &comment).unwrap();
+    let key = running.key(as_member.dispatch);
+    assert!(gated_review(&mut r.ledger, &as_member, &p, &comment, &key, &source).await.is_none(), "no review grant for this room");
 }
 
