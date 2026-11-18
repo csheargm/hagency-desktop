@@ -270,6 +270,11 @@ impl Widget for SharedPermissionNotice {
                             if self.selected>=self.rows.len(){self.selected=0;}
                             // The cards on the messages read the same requests.
                             if crate::hagency::pending_approvals::merge_room(&self.identity,&self.room,value,self.active){cx.action(PendingApprovalsChanged);}
+                            // A partial reading kept some requests in the store: show them too.
+                            let room_id=matrix_sdk::ruma::RoomId::parse(&self.room).ok();
+                            for kept in room_id.map(|r|crate::hagency::pending_approvals::for_room(&r)).unwrap_or_default() {
+                                if (self.thread.is_empty() || kept.thread_root()==self.thread) && !self.rows.iter().any(|r|r["approval"]["id"]==kept.id()) && self.rows.len()<16 {self.rows.push(kept.row);}
+                            }
                             self.render(cx);
                         },
                         Err(_)=>{self.error=STATUS_UNCONFIRMED.into();self.render(cx);},
