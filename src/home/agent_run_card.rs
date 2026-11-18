@@ -209,9 +209,8 @@ impl AgentRunCard {
     // TODO(R4): with the file split, move this status line next to agent_run_footer.
     fn show_status(&mut self, cx: &mut Cx) {
         use super::agent_run_footer::{Footer, Waiting, footer, waiting};
-        let viewer = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
         let shown = self.run.as_ref().map(|(card, started)| {
-            let waiting = waiting(card, &viewer);
+            let waiting = waiting(card);
             let owner = match (waiting, matrix_sdk::ruma::OwnedUserId::try_from(card.owner.as_str()), matrix_sdk::ruma::OwnedRoomId::try_from(card.room_id.as_str())) {
                 (Waiting::ForOwner, Ok(owner), Ok(room)) => super::agent_run_requester::display_name(cx, &owner, &room),
                 _ => String::new(),

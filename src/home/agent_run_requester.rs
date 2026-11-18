@@ -26,10 +26,15 @@ pub struct PendingRequest {
 }
 
 /// The pending request behind this timeline message, if it is one: the
-/// viewer's own message naming an Agent, recent, with no reply in its thread.
+/// viewer's own message naming an Agent, recent, not failed to send, with no
+/// reply in its thread.
 /// Callers ask only when the message has no run card yet.
 pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &OwnedRoomId) -> Option<PendingRequest> {
-    if !event.is_own() || event.content().thread_summary().is_some_and(|s| s.num_replies > 0) {
+    use matrix_sdk_ui::timeline::EventSendState;
+    if !event.is_own()
+        || matches!(event.send_state(), Some(EventSendState::SendingFailed { .. }))
+        || event.content().thread_summary().is_some_and(|s| s.num_replies > 0)
+    {
         return None;
     }
     let message = event.content().as_message()?;

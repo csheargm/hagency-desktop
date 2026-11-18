@@ -64,18 +64,18 @@ pub(crate) fn footer(card: &Card, elapsed_secs: u64, waiting: Waiting, owner: &s
 /// Whom this run waits for, as `viewer` sees it: a pending request on its
 /// message that this viewer can still decide, or the run's own step saying
 /// it waits for its owner (every viewer sees that step, so the requester
-/// learns why it paused, and the owner is told even when the approvals
-/// reading failed).
-pub(crate) fn waiting(card: &Card, viewer: &str) -> Waiting {
-    waiting_with(card, viewer, card.state.active() && viewer_decides(card))
+/// learns why it paused). The step alone never asks THIS viewer to act: an
+/// Agent writes its own card, so only a real request gives "your approval"
+/// and the button (GPT review).
+pub(crate) fn waiting(card: &Card) -> Waiting {
+    waiting_with(card, card.state.active() && viewer_decides(card))
 }
 
-fn waiting_with(card: &Card, viewer: &str, decides: bool) -> Waiting {
+fn waiting_with(card: &Card, decides: bool) -> Waiting {
     let blocked = card.progress.as_ref().is_some_and(|p| p.step == ::hagency::agent_run_controls::APPROVAL_WAIT_STEP);
     match (card.state.active(), decides, blocked) {
         (false, _, _) => Waiting::No,
         (true, true, _) => Waiting::ForYou,
-        (true, false, true) if viewer == card.owner => Waiting::ForYou,
         (true, false, true) => Waiting::ForOwner,
         (true, false, false) => Waiting::No,
     }
@@ -165,22 +165,21 @@ mod tests {
     }
     /// Chris's test: Anna asked Betty's Agent, whose run waits for Betty's
     /// card. Anna reads "⏳ Waiting for Betty's approval (12 s)"; Betty reads
-    /// "Waiting for your approval" with "Open approval", even when her
-    /// approvals reading failed; once answered, the run's own step returns.
+    /// "Waiting for your approval" with "Open approval" once her app holds the
+    /// request; the step alone (a card any Agent writes) never asks her to act.
     #[test]
     fn the_requester_sees_whom_a_run_waits_for() {
         let step = ::hagency::agent_run_controls::APPROVAL_WAIT_STEP;
         let blocked = card(State::Running, "", steps(step, 1, None));
-        assert_eq!(waiting_with(&blocked, "@a", false), Waiting::ForOwner, "the requester (@a)");
-        assert_eq!(waiting_with(&blocked, "@b", false), Waiting::ForYou, "the owner (@b)");
-        assert_eq!(waiting_with(&blocked, "@a", true), Waiting::ForYou, "a viewer who can decide");
+        assert_eq!(waiting_with(&blocked, false), Waiting::ForOwner, "the requester, or an owner without the request");
+        assert_eq!(waiting_with(&blocked, true), Waiting::ForYou, "a viewer who can decide");
         let shown = footer(&blocked, 12, Waiting::ForOwner, "Betty");
         assert!(matches!(&shown, Footer::Working(t) if t.starts_with("⏳") && t.contains("Betty") && t.contains(&format_elapsed(12))), "{shown:?}");
         let working = card(State::Running, "", steps("running gh issue list", 1, None));
-        assert_eq!(waiting_with(&working, "@a", false), Waiting::No);
+        assert_eq!(waiting_with(&working, false), Waiting::No);
         let mut done = blocked.clone();
         done.state = State::Completed;
-        assert_eq!(waiting_with(&done, "@b", true), Waiting::No, "a finished run waits for nobody");
+        assert_eq!(waiting_with(&done, true), Waiting::No, "a finished run waits for nobody");
     }
     #[test]
     fn what_i_did_lists_the_record_and_is_hidden_without_steps() {

@@ -27,9 +27,9 @@ struct State {
     /// The current step in plain words and how many were shown (presentation only).
     step: String,
     steps: u32,
-    /// Approval waits now open, and the step shown before the first one.
+    /// Approval waits now open. While any is, the shown step is
+    /// [`APPROVAL_WAIT_STEP`]; `step` keeps the ordinary step underneath.
     waits: u32,
-    before_wait: String,
 }
 fn bounded(value: &str) -> String {
     let cut = value.len() > MAX_PREVIEW_BYTES;
@@ -102,11 +102,11 @@ impl LiveText {
     }
     /// Show [`APPROVAL_WAIT_STEP`] until the returned guard drops (the owner
     /// answered, the request expired or was withdrawn); then the step shown
-    /// before comes back unless a newer step replaced it. Not counted as a step.
+    /// before (or a newer one) comes back. Steps recorded meanwhile never hide
+    /// a wait still open (GPT review). Not counted as a step.
     pub fn wait_for_approval(&self) -> ApprovalWait {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.waits == 0 {
-            state.before_wait = std::mem::replace(&mut state.step, APPROVAL_WAIT_STEP.into());
             state.revision = state.revision.saturating_add(1);
         }
         state.waits = state.waits.saturating_add(1);
@@ -115,7 +115,8 @@ impl LiveText {
     /// The current step and the number of steps so far.
     pub fn current_step(&self) -> (String, u32) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        (state.step.clone(), state.steps)
+        let step = if state.waits > 0 { APPROVAL_WAIT_STEP.to_owned() } else { state.step.clone() };
+        (step, state.steps)
     }
     pub fn since(&self, previous: u64) -> Option<(u64, String)> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -130,8 +131,7 @@ impl Drop for ApprovalWait {
     fn drop(&mut self) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         state.waits = state.waits.saturating_sub(1);
-        if state.waits == 0 && state.step == APPROVAL_WAIT_STEP {
-            state.step = std::mem::take(&mut state.before_wait);
+        if state.waits == 0 {
             state.revision = state.revision.saturating_add(1);
         }
     }
@@ -186,8 +186,16 @@ mod tests {
         assert_eq!(output.current_step(), ("running gh issue close 1".into(), 1));
         let wait = output.wait_for_approval();
         output.step("reading README.md");
+        assert_eq!(output.current_step().0, APPROVAL_WAIT_STEP, "a step meanwhile never hides an open wait");
+        let other = output.wait_for_approval();
         drop(wait);
-        assert_eq!(output.current_step(), ("reading README.md".into(), 2), "a newer step stays");
+        assert_eq!(output.current_step().0, APPROVAL_WAIT_STEP);
+        drop(other);
+        assert_eq!(output.current_step(), ("reading README.md".into(), 2), "the newer step shows after");
+        // A wait before any step: afterwards, no step at all.
+        let fresh = LiveText::default();
+        drop(fresh.wait_for_approval());
+        assert_eq!(fresh.current_step(), (String::new(), 0));
     }
 
     #[test]

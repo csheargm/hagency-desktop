@@ -75,18 +75,20 @@ with the owner API's Agent list (`GET owned-agents`). Nothing was hidden that
 time (the request was refused by policy, ADR 0019), but a waiting card could
 have been.
 
-Decision (`approvals_read`): the management list (20 s) and this app's own
-queues (10 s) are read at once, each with its own bound, for the app-wide poll
-and the open room's notice alike. The own queue uses the Agent list when it
-answers within 5 s, else the last list that answered for this identity. A
-slow server now costs only the management rows, and the inbox names it
-(`managementError`).
+Decision (`approvals_read`): the management list (8 s) and this app's own
+queues (10 s in all, 2 s per Agent) are read at once, each with its own bound,
+for the app-wide poll and the open room's notice alike. The own queue uses the
+Agent list when it answers within 5 s, else the last list that answered for
+this identity, and then names `agent_list_unavailable` (an Agent started
+since may be missing). A slow server now costs only the management rows, and
+the inbox names it (`managementError`).
 
 The requester's view: a run that waits for its owner's approval shows the
 step `APPROVAL_WAIT_STEP` on its run card (a room message every member reads;
 it names no tool or argument) until the owner answers, the request expires or
-is withdrawn. The owner reads "Waiting for your approval" with "Open approval"
-even when the reading failed. Any other viewer reads "Waiting for <owner>'s
-approval (N s)". Before a card exists, the requester's own message naming an
+is withdrawn. Any viewer reads "Waiting for <owner>'s approval (N s)"; only a
+viewer whose app holds the actual request reads "Waiting for your approval"
+with "Open approval" (an Agent writes its own card, so the step alone never
+asks anyone to act, GPT review). Before a card exists, the requester's own message naming an
 Agent shows "Waiting for <Agent> to start… (N s)" for up to 10 minutes or until
 the thread has a reply. That line comes only from the requester's own message.

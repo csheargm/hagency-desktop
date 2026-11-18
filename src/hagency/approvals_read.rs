@@ -15,12 +15,19 @@ use std::future::Future;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-/// The server's part. Requests wait about four minutes; 20 s (the earlier
-/// bound of the whole reading) still leaves the owner well over three.
-const MANAGEMENT_READ: Duration = Duration::from_secs(20);
-/// This app's own queues are read in-process; 10 s covers a runtime that is
-/// busy starting or stopping an Agent while the reading waits for it.
+/// The server's part. Both halves are shown together, so this also bounds
+/// how late this device's own cards can show; a healthy server answers in
+/// well under a second, and the next poll follows within 10 s (GPT review).
+const MANAGEMENT_READ: Duration = Duration::from_secs(8);
+/// This app's own queues are read in-process: the Agent list (`AGENT_LIST_WAIT`)
+/// plus each Agent's queue (`QUEUE_WAIT`), at most this long in all.
 const LOCAL_READ: Duration = Duration::from_secs(10);
+/// One Agent's queue: a slow one is named unreadable, the others still show.
+pub(crate) const QUEUE_WAIT: Duration = Duration::from_secs(2);
+/// Named in `unreadableAgents` when the queues were read from the last
+/// Agent list because the owner API did not answer: an Agent started since
+/// may be missing, and the inbox says so (GPT review).
+pub(crate) const STALE_AGENT_LIST: &str = "agent_list_unavailable";
 /// How long the owner API's Agent list may take before the last one is used.
 const AGENT_LIST_WAIT: Duration = Duration::from_secs(5);
 
@@ -81,24 +88,24 @@ fn merge(room: Option<&str>, answer: Result<Value, String>, local: Result<(Vec<V
 }
 
 /// This device's active Agents: the owner API's list, or, while it is slow or
-/// failing, the last list it gave this identity.
-pub(crate) async fn own_agents(service: &crate::hagency::backend::Service) -> Result<Vec<(String, String)>, String> {
+/// failing, the last list it gave this identity (`true`: the fallback).
+pub(crate) async fn own_agents(service: &crate::hagency::backend::Service) -> Result<(Vec<(String, String)>, bool), String> {
     let listed = tokio::time::timeout(AGENT_LIST_WAIT, service.execute(Command::Agents)).await;
     let listed = listed.unwrap_or_else(|_| Err(super::pending_approvals::READ_TIMEOUT.into()));
     remembered(&service.identity(), listed.map(|value| active_agents(&value)))
 }
 
 /// Keep a listing that answered; fall back to the kept one when it did not.
-fn remembered(identity: &str, listed: Result<Vec<(String, String)>, String>) -> Result<Vec<(String, String)>, String> {
+fn remembered(identity: &str, listed: Result<Vec<(String, String)>, String>) -> Result<(Vec<(String, String)>, bool), String> {
     let mut kept = LISTED.lock().unwrap_or_else(|e| e.into_inner());
     match listed {
         Ok(agents) => {
             *kept = (identity.to_owned(), agents.clone());
-            Ok(agents)
+            Ok((agents, false))
         }
         Err(code) if kept.0 == identity && !kept.1.is_empty() => {
             makepad_widgets::log!("Agent list unavailable ({code}); reading the last known Agents' approvals");
-            Ok(kept.1.clone())
+            Ok((kept.1.clone(), true))
         }
         Err(code) => Err(code),
     }
@@ -158,8 +165,8 @@ mod tests {
             {"id": "a2", "state": "stopped"}, {"id": "a3", "state": "active"}]});
         let agents = active_agents(&listed);
         assert_eq!(agents, vec![("a1".into(), "bird-claude".into()), ("a3".into(), "Agent".into())]);
-        assert_eq!(remembered("me", Ok(agents.clone())).unwrap(), agents);
-        assert_eq!(remembered("me", Err("approvals_read_timeout".into())).unwrap(), agents);
+        assert_eq!(remembered("me", Ok(agents.clone())).unwrap(), (agents.clone(), false));
+        assert_eq!(remembered("me", Err("approvals_read_timeout".into())).unwrap(), (agents, true), "named as the fallback");
         assert!(remembered("someone else", Err("down".into())).is_err(), "never another identity's list");
     }
 }

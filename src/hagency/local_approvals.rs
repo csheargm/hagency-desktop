@@ -102,11 +102,19 @@ pub fn ensure_watching() {
 /// The waiting requests of this app's Agents, and the Agents whose queue
 /// could not be read (`{agent, code}`), which are logged, never skipped silently.
 pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(Vec<Value>, Vec<Value>), String> {
+    use super::approvals_read::{QUEUE_WAIT, STALE_AGENT_LIST, own_agents};
     let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
-    for (id, name) in super::approvals_read::own_agents(service).await? {
+    let (agents, stale) = own_agents(service).await?;
+    if stale {
+        // An Agent started since the last list may be missing: say so.
+        unreadable.push(json!({"agent": "", "code": STALE_AGENT_LIST}));
+    }
+    for (id, name) in agents {
         let local = Command::Local { agent_id: id.clone(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
         // An Agent that does not run on this device answers an empty queue.
-        let answer = match service.execute(local).await {
+        let answer = tokio::time::timeout(QUEUE_WAIT, service.execute(local)).await
+            .unwrap_or_else(|_| Err(super::pending_approvals::READ_TIMEOUT.into()));
+        let answer = match answer {
             Ok(answer) => answer,
             Err(code) => {
                 makepad_widgets::log!("Approvals of Agent {id} unreadable: {code}");
