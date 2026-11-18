@@ -156,3 +156,77 @@ async fn only_a_verdict_reaches_the_gate_and_a_members_needs_the_rooms_review_gr
     assert!(gated_review(&mut r.ledger, &as_member, &p, &comment, &key, &source).await.is_none(), "no review grant for this room");
 }
 
+/// e2e scenario 8 (2026-11-17): bird-codex, which watches NOTHING, is asked
+/// in a room to review a PR on a repository linked to that room (bird-claude
+/// watches it). Its read-only `gh pr view|diff` sent as a `watched_repo_step`
+/// runs without a card, exactly as Claude's `Bash` read does (ADR 0023); an
+/// unlinked repository (e2e 5b) and any write are refused here.
+mod room_repo_reads {
+    use super::*;
+    const LINKED_ROOM: &str = "!codex-room-reads:example.org";
+    const ANNA: &str = "@anna:example.org";
+
+    /// A Deny ledger (a hosted Agent's default) for bird-codex, which watches
+    /// nothing; the host recorded `REPO` as linked to the room for Anna.
+    fn watcherless(dir: &std::path::Path) -> (Ledger, Scope) {
+        let mut ledger = Ledger::open(dir.join("local.db"), OWNER).unwrap();
+        let scope = Scope { agent: "bird-codex".into(), binding: "b".into(), room: LINKED_ROOM.into(), requester: ANNA.into(), thread: "t".into() };
+        ledger.register_binding(OWNER, &scope).unwrap();
+        let deny = crate::Policy {
+            budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime },
+            requests: crate::RequestPolicy::Allow,
+            high_risk: ToolPolicy::Deny,
+        };
+        for layer in [crate::Layer::Agent, crate::Layer::Room, crate::Layer::Requester] {
+            ledger.set_policy(OWNER, &scope, layer, 0, &deny).unwrap();
+        }
+        ledger.reserve(&scope, "call", "d", 10, 10).unwrap();
+        crate::watch_trust::room_scope::record(LINKED_ROOM, ANNA, vec![REPO.into()]);
+        (ledger, scope)
+    }
+
+    #[test]
+    fn a_watcherless_codex_reads_a_room_linked_repo_card_free() {
+        let db = tempfile::tempdir().unwrap();
+        let (mut ledger, scope) = watcherless(db.path());
+        let workspace = db.path().to_string_lossy().into_owned();
+        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+        for read in [format!("gh pr view 70 --repo {REPO} --json title,body,files"), format!("gh pr diff 70 --repo {REPO}"), format!("gh issue list --repo {REPO}")] {
+            let p = super::super::proposal(&ledger, &turn, &read).unwrap();
+            let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
+            let Some(TrustedStep::Command(pinned)) = step else { panic!("{read}: {step:?}") };
+            assert!(pinned.contains("GH_HOST='github.com'") && pinned.contains(&read), "{pinned}");
+        }
+        // Its verdict on that PR is the room's review grant (ADR 0025), watch or not.
+        let verdict = format!("gh pr review 70 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - ok\"");
+        let p = super::super::proposal(&ledger, &turn, &verdict).unwrap();
+        let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
+        let Some(TrustedStep::Command(pinned)) = step else { panic!("{verdict}: {step:?}") };
+        assert!(pinned.contains("gh pr review 70 --comment -R"), "{pinned}");
+    }
+
+    #[tokio::test]
+    async fn an_unlinked_repo_or_a_write_on_the_room_repo_is_refused() {
+        let db = tempfile::tempdir().unwrap();
+        let (mut ledger, scope) = watcherless(db.path());
+        let workspace = db.path().to_string_lossy().into_owned();
+        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+        let mut running = Running::default();
+        let marker = db.path().join("ran");
+        // (A review verdict on a room repository is ADR 0025's own grant,
+        // judged by the merge gate: see the review tests above.)
+        for refused in [
+            "gh pr view 70 --repo other/unlinked --json title".to_owned(),
+            format!("gh pr comment 70 --repo {REPO} -b hi"),
+            format!("gh pr create --repo {REPO} --head fix --title t --body b"),
+            format!("gh repo clone {REPO} ./app"),
+            "git -C app push -u origin fix".to_owned(),
+            format!("gh pr view 70 --repo {REPO}; touch {}", marker.display()),
+        ] {
+            let (out, failed) = ask(&mut ledger, &turn, &refused, &mut running).await;
+            assert!(failed && out.contains("not_card_free"), "{refused}: {out}");
+        }
+        assert!(!marker.exists(), "a refused call runs nothing");
+    }
+}
+
