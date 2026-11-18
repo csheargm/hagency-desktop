@@ -118,7 +118,7 @@ fn charged(call_state: Option<&str>, usage: Option<&str>) -> Option<u64> {
 const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number,u.dispatch IS NOT NULL,\
 coalesce(c.state='settled' AND c.reserved=0 AND c.snapshots='[]' AND json_extract(c.usage,'$.accounting_version')=?3,0) FROM local_inbox i \
 JOIN bindings b ON b.id=i.binding LEFT JOIN calls c ON c.id=i.execution_id LEFT JOIN handoff_issues h ON h.dispatch=i.id \
-LEFT JOIN handoff_unanswered u ON u.dispatch=i.id WHERE b.agent=?1 ORDER BY i.received_at DESC,i.id DESC LIMIT ?2";
+LEFT JOIN handoff_unanswered u ON u.dispatch=i.id WHERE b.agent=?1 AND (?4 IS NULL OR i.id=?4) ORDER BY i.received_at DESC,i.id DESC LIMIT ?2";
 
 impl Ledger {
     /// The run of `dispatch` asked its owner to approve a tool call and the
@@ -146,8 +146,18 @@ impl Ledger {
         if !(1..=MAX_RECENT).contains(&limit) {
             return Err(Error::Invalid("activity query limit"));
         }
+        self.activity_rows(agent, limit, None)
+    }
+
+    /// One request of `agent` by its dispatch id, however old (the review
+    /// loop's re-send reads a refused dispatch, GPT review).
+    pub(crate) fn dispatch_activity(&self, agent: &str, dispatch: &str) -> Result<Option<Activity>> {
+        Ok(self.activity_rows(agent, 1, Some(dispatch))?.pop())
+    }
+
+    fn activity_rows(&self, agent: &str, limit: usize, only: Option<&str>) -> Result<Vec<Activity>> {
         let mut stmt = self.db.prepare(RECENT)?;
-        let rows = stmt.query_map((agent, limit, crate::inbox::NO_PROVIDER_CALL), |r| {
+        let rows = stmt.query_map((agent, limit, crate::inbox::NO_PROVIDER_CALL, only), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

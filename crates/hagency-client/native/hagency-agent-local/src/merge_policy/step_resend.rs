@@ -8,8 +8,10 @@
 //! posts the step again: never while the Agent's budget is used up, at
 //! least [`RESEND_AFTER_SECS`] after the refused dispatch, and at most
 //! [`MAX_RESENDS`] times per head. A step that ran is never sent again, and
-//! a merge whose one automatic merge was taken never is either.
-use crate::activity::{MAX_RECENT, Outcome};
+//! a merge whose one automatic merge was taken never is either. A review is
+//! sent again only after the zero-call proof (a lost review may have posted
+//! its verdict); only the notice addressed to the step's Agent counts.
+use crate::activity::Outcome;
 use crate::merge_policy::github::commit_sha;
 use crate::{Ledger, Result};
 use rusqlite::OptionalExtension;
@@ -30,9 +32,14 @@ pub fn review_ask(number: u64, repo: &str, head: &str) -> String {
     format!("please review PR #{number} in {repo} at head commit {head}")
 }
 
-/// The step, pull request URL and head a loop notice's `body` dispatches;
-/// only an exact [`merge_command`] or [`review_ask`] counts.
-pub fn loop_step_of(body: &str) -> Option<(&'static str, String, String)> {
+/// What one loop notice dispatches: step, pull request URL, head, and the
+/// Matrix ID it addresses.
+pub type LoopStep = (&'static str, String, String, String);
+
+/// The step a loop notice's `body` dispatches: only an exact
+/// [`merge_command`] or [`review_ask`], addressed to the Matrix ID just before it.
+pub fn loop_step_of(body: &str) -> Option<LoopStep> {
+    let addressee = |lead: &str| body[..body.find(lead)?].split_whitespace().rev().find(|w| w.starts_with('@')).map(str::to_owned);
     let parse = |lead: &str, words: &[&str]| -> Option<(u64, String, String)> {
         let rest = &body[body.find(lead)? + lead.len()..];
         let mut it = rest.split_whitespace();
@@ -47,7 +54,8 @@ pub fn loop_step_of(body: &str) -> Option<(&'static str, String, String)> {
     };
     let pick = |step: &'static str, (n, repo, head): (u64, String, String)| {
         let exact = if step == "merge" { merge_command(n, &head, &repo) } else { review_ask(n, &repo, &head) };
-        body.contains(&exact).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head))
+        let to = addressee(if step == "merge" { "gh pr merge " } else { "please review PR " })?;
+        body.contains(&exact).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head, to))
     };
     if let Some(found) = parse("gh pr merge ", &["--squash", "--match-head-commit", "", "--repo", ""]) {
         return pick("merge", found);
@@ -58,8 +66,8 @@ pub fn loop_step_of(body: &str) -> Option<(&'static str, String, String)> {
 /// Tag a just-received request `dispatch` with the loop step its `body`
 /// dispatches, if any; tags of requests no longer in the inbox are dropped.
 pub(crate) fn remember_loop_step(db: &rusqlite::Connection, dispatch: &str, body: &str) -> Result<()> {
-    if let Some((step, pr, head)) = loop_step_of(body) {
-        db.execute("INSERT OR IGNORE INTO loop_step_dispatches VALUES (?,?,?,?)", (dispatch, step, pr, head))?;
+    if let Some((step, pr, head, to)) = loop_step_of(body) {
+        db.execute("INSERT OR IGNORE INTO loop_step_dispatches VALUES (?,?,?,?,?)", (dispatch, step, pr, head, to))?;
     }
     db.execute("DELETE FROM loop_step_dispatches WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
     Ok(())
@@ -129,9 +137,10 @@ impl Ledger {
     }
 
     /// Whether `agent`'s `step` of `pr` at `head` stays taken at `now`, giving
-    /// the claim back when the newest notice `requester` sent for it never
-    /// ran (see the module documentation).
-    pub fn step_due(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), requester: &str, now: i64) -> Result<StepDue> {
+    /// the claim back when the newest notice `requester` sent `to` the step's
+    /// Agent never ran (see the module documentation). A line said while the
+    /// step is held is offered every check until [`Ledger::step_line_said`].
+    pub fn step_due(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), now: i64) -> Result<StepDue> {
         let round = self.round(agent, step, pr, head)?;
         let kept = StepDue { taken: true, again: round.again, say: None };
         if !self.loop_step_taken(agent, step, pr, head)? {
@@ -140,46 +149,50 @@ impl Ledger {
         if !DISPATCHED_STEPS.contains(&step) || (step == "merge" && self.head_used(pr, head)?) {
             return Ok(kept);
         }
-        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), requester, round)? else { return Ok(kept) };
+        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to), round)? else { return Ok(kept) };
         let why = if self.agent_budget_used_up(&self.owner, &runner, now)? { Why::Budget } else { why };
-        // One room line per round, said now or earlier in it.
         let say = (round.said <= round.again).then_some(Say { why, gave_up: round.again >= MAX_RESENDS, round: round.again });
-        let said = round.again + 1;
         if round.again >= MAX_RESENDS || why == Why::Budget || now - at < RESEND_AFTER_SECS {
-            if say.is_some() {
-                self.set_round(agent, (step, pr, head), Round { known: true, said, ..round })?;
-            }
             return Ok(StepDue { say, ..kept });
         }
+        // Given back: the re-post itself shows the retry, so its line counts as said.
+        let said = round.again + 1;
         self.atomically(|ledger| {
             ledger.db.execute("DELETE FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
             ledger.set_round(agent, (step, pr, head), Round { known: true, again: said, released_at: now, said })
         })?;
-        Ok(StepDue { taken: false, again: round.again + 1, say })
+        Ok(StepDue { taken: false, again: said, say })
+    }
+
+    /// The room accepted the line of `round` for this step: it is not offered again.
+    pub fn step_line_said(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), round: u32) -> Result<()> {
+        let current = self.round(agent, step, pr, head)?;
+        let said = current.said.max(round.saturating_add(1));
+        self.set_round(agent, (step, pr, head), Round { known: true, said, ..current })
     }
 
     /// Why the step's newest dispatch did not run, the Agent it went to and
     /// when; `None` while it runs, after it ran, or when nothing is known.
-    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), requester: &str, round: Round) -> Result<Option<(Why, String, i64)>> {
-        let Some((dispatch, runner, at)) = self.newest_sent(step, pr, head, requester, round.released_at)? else {
+    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), round: Round) -> Result<Option<(Why, String, i64)>> {
+        let Some((dispatch, runner, at)) = self.newest_sent((step, pr, head), (requester, to), round.released_at)? else {
             // Claimed before tagging (no round row): only a merge that never happened.
             return Ok((!round.known && step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
         };
-        let activity = self.recent_activity(&self.owner, &runner, MAX_RECENT)?;
-        let Some(row) = activity.iter().find(|r| r.dispatch_id == dispatch) else { return Ok(None) };
+        let Some(row) = self.dispatch_activity(&runner, &dispatch)? else { return Ok(None) };
         let why = match row.outcome {
             Outcome::Answered if row.no_run => Why::NoRun,
-            Outcome::Failed => Why::Lost,
+            // A lost review may have posted its verdict; a lost merge is guarded by the one automatic merge.
+            Outcome::Failed if step == "merge" => Why::Lost,
             _ => return Ok(None),
         };
         Ok(Some((why, runner, at)))
     }
 
-    fn newest_sent(&self, step: &str, pr: &str, head: &str, requester: &str, since: i64) -> Result<Option<Sent>> {
+    fn newest_sent(&self, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), since: i64) -> Result<Option<Sent>> {
         const NEWEST: &str = "SELECT t.dispatch,b.agent,i.received_at FROM loop_step_dispatches t JOIN local_inbox i ON i.id=t.dispatch \
 JOIN bindings b ON b.id=i.binding WHERE t.step=? AND lower(t.pr)=lower(?) AND t.head=? AND json_extract(i.envelope,'$.requesterMxid')=? \
-AND i.received_at>=? ORDER BY i.received_at DESC,i.id DESC LIMIT 1";
-        Ok(self.db.query_row(NEWEST, (step, pr, head, requester, since), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?)
+AND t.addressee=? AND i.received_at>=? ORDER BY i.received_at DESC,i.id DESC LIMIT 1";
+        Ok(self.db.query_row(NEWEST, (step, pr, head, requester, to, since), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?)
     }
 
     fn head_used(&self, pr: &str, head: &str) -> Result<bool> {

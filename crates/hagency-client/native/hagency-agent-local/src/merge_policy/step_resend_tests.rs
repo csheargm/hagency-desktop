@@ -14,6 +14,9 @@ const HEAD: &str = "0aed2bbbefa935ed6b91ed2a657b60776c57e107";
 /// 08:19:16 PST, Nov 18: the refused merge dispatch.
 const T0: i64 = 1_795_019_956;
 const MERGE: (&str, &str, &str) = ("merge", PR, HEAD);
+/// The merging Agent's Matrix ID, which the merge notice addresses.
+const BIRD: &str = "@bird:test";
+const CODEX: &str = "@codex:test";
 
 fn merge_body() -> String {
     format!("✅ Approved at {} — merging under the repo rules: @bird:test run exactly `{}` as its own command.", &HEAD[..12], merge_command(94, HEAD, REPO))
@@ -61,7 +64,10 @@ fn say(why: Why, gave_up: bool, round: u32) -> Option<Say> {
     Some(Say { why, gave_up, round })
 }
 fn due(l: &mut Ledger, now: i64) -> StepDue {
-    l.step_due(AGENT, MERGE, ME, now).unwrap()
+    l.step_due(AGENT, MERGE, (ME, BIRD), now).unwrap()
+}
+fn said(l: &mut Ledger, round: u32) {
+    l.step_line_said(AGENT, MERGE, round).unwrap();
 }
 fn sent_and_claimed(l: &mut Ledger, id: &str, at: i64, end: Option<(&str, &str)>) {
     receive(l, id, &merge_body(), ME, at, end);
@@ -70,8 +76,8 @@ fn sent_and_claimed(l: &mut Ledger, id: &str, at: i64, end: Option<(&str, &str)>
 
 #[test]
 fn loop_notices_name_their_step_pull_request_and_head_exactly() {
-    assert_eq!(loop_step_of(&merge_body()), Some(("merge", PR.to_owned(), HEAD.to_owned())));
-    assert_eq!(loop_step_of(&review_body()), Some(("review", PR.to_owned(), HEAD.to_owned())));
+    assert_eq!(loop_step_of(&merge_body()), Some(("merge", PR.to_owned(), HEAD.to_owned(), BIRD.to_owned())));
+    assert_eq!(loop_step_of(&review_body()), Some(("review", PR.to_owned(), HEAD.to_owned(), CODEX.to_owned())));
     for body in [
         "🔔 New GitHub issue #93 in csheargm/hagency-demo-sandbox".to_owned(),
         format!("run `gh pr merge 94 --squash --match-head-commit {} --repo {REPO}`", &HEAD[..12]),
@@ -90,6 +96,8 @@ fn pr_94_a_merge_refused_by_the_budget_is_held_then_sent_again_once_and_then_run
     sent_and_claimed(&mut l, "merge-1", T0, NO_RUN);
     let held = due(&mut l, T0 + 120);
     assert_eq!(held, StepDue { taken: true, again: 0, say: say(Why::Budget, false, 0) }, "no re-send while the budget is used up; one line");
+    assert_eq!(due(&mut l, T0 + 300).say, held.say, "offered again until the room accepted it");
+    said(&mut l, 0);
     assert_eq!(due(&mut l, T0 + 600), StepDue { taken: true, again: 0, say: None }, "the line is said once");
     // The next UTC day: the budget allows again.
     let next_day = T0 + 86_400;
@@ -123,6 +131,7 @@ fn a_no_run_or_lost_run_is_sent_again_after_the_back_off_and_gives_up_after_the_
     let (_temp, mut l) = ledger();
     sent_and_claimed(&mut l, "merge-0", T0, LOST);
     assert_eq!(due(&mut l, T0 + 30), StepDue { taken: true, again: 0, say: say(Why::Lost, false, 0) }, "the line at once, the re-send after the back-off");
+    said(&mut l, 0);
     assert_eq!(due(&mut l, T0 + RESEND_AFTER_SECS), StepDue { taken: false, again: 1, say: None });
     let mut at = T0 + RESEND_AFTER_SECS;
     for round in 1..=MAX_RESENDS {
@@ -134,6 +143,7 @@ fn a_no_run_or_lost_run_is_sent_again_after_the_back_off_and_gives_up_after_the_
         assert_eq!(answer.say, say(Why::NoRun, last, round), "round {round}");
         assert_eq!((answer.taken, answer.again), if last { (true, round) } else { (false, round + 1) }, "round {round}");
     }
+    said(&mut l, MAX_RESENDS);
     assert_eq!(due(&mut l, at + 3_600), StepDue { taken: true, again: MAX_RESENDS, say: None }, "gave up: one line, no more re-sends");
 }
 
@@ -145,6 +155,31 @@ fn only_this_owners_own_notice_counts_and_unclaimed_steps_are_free() {
     // A room member's look-alike notice that was refused does not release ours.
     receive(&mut l, "fake", &merge_body(), "@mallory:test", T0 + 10, NO_RUN);
     assert_eq!(due(&mut l, T0 + 600), StepDue { taken: true, again: 0, say: None });
+    // Our own notice of the same step to another Agent never stands in for this one's.
+    receive(&mut l, "other", &merge_body().replace(BIRD, "@wren:test"), ME, T0 + 20, NO_RUN);
+    assert_eq!(due(&mut l, T0 + 600), StepDue { taken: true, again: 0, say: None });
+}
+
+#[test]
+fn a_review_is_asked_again_only_after_the_zero_call_proof() {
+    let (_temp, mut l) = ledger();
+    let review = ("review", PR, HEAD);
+    receive(&mut l, "review-1", &review_body(), ME, T0, LOST);
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert!(l.step_due(AGENT, review, (ME, CODEX), T0 + 600).unwrap().taken, "a lost review may have posted its verdict");
+    receive(&mut l, "review-2", &review_body(), ME, T0 + 700, NO_RUN);
+    let again = l.step_due(AGENT, review, (ME, CODEX), T0 + 900).unwrap();
+    assert_eq!((again.taken, again.again), (false, 1));
+}
+
+#[test]
+fn a_refused_dispatch_is_found_however_many_requests_came_after_it() {
+    let (_temp, mut l) = ledger();
+    sent_and_claimed(&mut l, "merge-1", T0, NO_RUN);
+    for i in 0..(crate::activity::MAX_RECENT + 5) {
+        receive(&mut l, &format!("chat-{i}"), "hello", "@bob:test", T0 + 1 + i as i64, RAN);
+    }
+    assert_eq!(due(&mut l, T0 + 600).taken, false);
 }
 
 #[test]
@@ -154,7 +189,7 @@ fn a_merge_claimed_before_steps_were_tagged_is_sent_again_once_unless_it_merged(
     assert!(l.claim_loop_step(AGENT, "merge", PR, HEAD).unwrap());
     assert!(l.claim_loop_step(AGENT, "review", PR, HEAD).unwrap());
     assert_eq!(due(&mut l, T0), StepDue { taken: false, again: 1, say: say(Why::Unrecorded, false, 0) });
-    assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), ME, T0).unwrap(), StepDue { taken: true, again: 0, say: None }, "an old review is never asked again");
+    assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), (ME, CODEX), T0).unwrap(), StepDue { taken: true, again: 0, say: None }, "an old review is never asked again");
     l.claim_dispatched_step(AGENT, "merge", PR, HEAD).unwrap();
     assert_eq!(due(&mut l, T0 + 3_600), StepDue { taken: true, again: 1, say: None }, "once: the re-post is tagged from now on");
     let (_temp, mut l) = ledger();

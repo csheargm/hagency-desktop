@@ -60,7 +60,8 @@ impl LoopNotice {
             _ => "merge",
         }
     }
-    fn mention(&self) -> Option<&OwnedUserId> {
+    /// The Agent the notice addresses (and dispatches), if any.
+    pub(crate) fn mention(&self) -> Option<&OwnedUserId> {
         match self {
             Self::ReviewRequested { reviewer, .. } => Some(reviewer),
             Self::Approved { fixer, .. } => Some(fixer),

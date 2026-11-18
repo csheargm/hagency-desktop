@@ -9,6 +9,7 @@
 use super::loop_notice::{LoopNotice, Target};
 use super::review_loop::LoopIo;
 use ::hagency::issue_watch::{DISPATCHED_STEPS, MAX_RESENDS};
+use matrix_sdk::ruma::OwnedUserId;
 use serde_json::{Value, json};
 
 /// Whether a step is taken this check, and the re-send its next post is.
@@ -18,28 +19,35 @@ pub(crate) struct Due {
     pub again: u32,
 }
 
-/// The step `step` of `target` this check. A hold step is only looked up;
-/// a dispatched step may be given back, and the round's line is said here.
-pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str) -> Result<Due, String> {
-    let mut key = json!({"step": step, "pr": target.url, "head": target.head});
-    if !DISPATCHED_STEPS.contains(&step) {
+/// The step `step` of `target` this check, whose notice addresses `to`. A
+/// hold step is only looked up; a dispatched step may be given back, and the
+/// round's line is said here (acknowledged once the room accepted it).
+pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str, to: Option<&OwnedUserId>) -> Result<Due, String> {
+    let key = json!({"step": step, "pr": target.url, "head": target.head});
+    let (true, Some(to)) = (DISPATCHED_STEPS.contains(&step), to) else {
         return Ok(Due { taken: io.review(json!({"stepTaken": key})).await?["taken"] == true, again: 0 });
-    }
-    key["requester"] = io.requester().into();
-    let due = io.review(json!({"stepDue": key})).await?["due"].clone();
+    };
+    let mut ask = key.clone();
+    ask["requester"] = io.requester().into();
+    ask["to"] = to.as_str().into();
+    let due = io.review(json!({"stepDue": ask})).await?["due"].clone();
     let again = due["again"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-    if let Some(notice) = line_of(target, step, &due["say"]) {
+    if let Some((notice, round)) = line_of(target, step, &due["say"]) {
+        // A fixed id per round: a line re-offered after a lost ack is dropped as a duplicate.
         io.post(&notice, 0).await?;
+        let mut said = key;
+        said["round"] = round.into();
+        io.review(json!({"stepSaid": said})).await?;
     }
     Ok(Due { taken: due["taken"] == true, again })
 }
 
 /// The round's line from the ledger's `say`, keyed by its round.
-fn line_of(target: &Target, step: &str, say: &Value) -> Option<LoopNotice> {
+fn line_of(target: &Target, step: &str, say: &Value) -> Option<(LoopNotice, u64)> {
     let why = say["why"].as_str()?.to_owned();
     let round = say["round"].as_u64().unwrap_or(0);
     let step_key = format!("not-started-{step}-{round}");
-    Some(LoopNotice::NotStarted { target: target.clone(), what: step.to_owned(), why, gave_up: say["gaveUp"] == true, step: step_key })
+    Some((LoopNotice::NotStarted { target: target.clone(), what: step.to_owned(), why, gave_up: say["gaveUp"] == true, step: step_key }, round))
 }
 
 /// The plain room line (English, room content): what could not start, why,

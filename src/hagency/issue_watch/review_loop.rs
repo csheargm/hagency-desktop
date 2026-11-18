@@ -53,7 +53,7 @@ pub(crate) fn target_of(repo: &str, pr: &PullRequest) -> Target {
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, ctx: &LoopCtx<'_>) -> Result<(), String> {
     let step = json!({"step": "review", "pr": target.url, "head": target.head});
     fence(io)?;
-    let review = super::step_resend::due(io, target, "review").await?;
+    let review = super::step_resend::due(io, target, "review", Some(ctx.agent)).await?;
     if !review.taken {
         return post_then_claim(io, &LoopNotice::ReviewRequested { target: target.clone(), reviewer: ctx.agent.clone() }, step, review.again).await;
     }
@@ -69,7 +69,7 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
     let step = |name: &str| json!({"step": name, "pr": target.url, "head": target.head});
     let taken = |reply: Value| reply["taken"] == true;
     fence(io)?;
-    let merge = super::step_resend::due(io, target, "merge").await?;
+    let merge = super::step_resend::due(io, target, "merge", Some(ctx.agent)).await?;
     if merge.taken {
         return Ok(());
     }

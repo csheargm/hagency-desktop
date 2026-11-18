@@ -69,8 +69,9 @@ fn pr_94_the_refused_merge_is_held_on_the_budget_then_posted_again_once() {
     assert_eq!(line.body(), "⏸️ Merge of PR #94 in csheargm/hagency-demo-sandbox could not start — the Agent's token budget for this period is used up; it will retry when the budget allows. https://github.com/csheargm/hagency-demo-sandbox/pull/94");
     assert!(matches!(&posted[1], (LoopNotice::Approved { .. }, 1)), "re-sent once, as a new message: {posted:?}");
     let asked = fake.asked.borrow();
-    assert_eq!(asked[0]["stepDue"], json!({"step": "merge", "pr": target().url, "head": HEAD, "requester": "@owner:alpha"}));
+    assert_eq!(asked[0]["stepDue"], json!({"step": "merge", "pr": target().url, "head": HEAD, "requester": "@owner:alpha", "to": "@_hagency_agt_bird_claude:alpha"}));
     assert_eq!(asked.iter().filter(|c| c.get("claimStep").is_some()).count(), 1, "claimed again after the re-post");
+    assert_eq!(asked[1]["stepSaid"]["round"], 0, "the line is acknowledged once posted");
 }
 
 #[test]
