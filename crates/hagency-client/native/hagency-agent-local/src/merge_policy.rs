@@ -24,6 +24,7 @@ pub mod gate;
 pub mod github;
 pub mod work;
 pub mod review_loop;
+pub mod codex_review;
 
 /// Where the policy lives in a repository.
 pub const POLICY_PATH: &str = ".hagency/merge-policy.yml";

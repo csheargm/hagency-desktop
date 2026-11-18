@@ -155,7 +155,15 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
     let cwd = Path::new(&proposal.canonical_directory);
     let command = &proposal.arguments["command"];
     match (proposal.tool.as_str(), command) {
-        ("claude.Bash" | "codex.command", Value::String(line)) => shell_words(line, cwd),
+        ("claude.Bash", Value::String(line)) => shell_words(line, cwd),
+        // The app-server renders Codex's argv as one shell-quoted line: a
+        // `<system shell> -c '<line>'` wrapper is read exactly as the argv is.
+        // TODO(R4): gate.rs is over budget; split command reading into gate/command.rs.
+        ("codex.command", Value::String(line)) => match shell_words(line, cwd)? {
+            // One outer segment only: never after a `cd` (GPT review: `cd . &&`).
+            (_, words) if words.len() == 3 && words[1] == "-c" && is_shell(&words[0]) && shell::parse(line)?.segments.len() == 1 => shell_words(&words[2], cwd),
+            read => Some(read),
+        },
         ("codex.command", Value::Array(argv)) => {
             let argv: Vec<&str> = argv.iter().map(Value::as_str).collect::<Option<_>>()?;
             match argv.as_slice() {
