@@ -6,7 +6,7 @@ use super::run_end::{RunEnd, branch_names_issue, issue_branch, run_end_of};
 use super::tracker::{Inputs, follow};
 use super::tracker_tests::{Fake, REPO, T0, check, first_hand_off, issue};
 use std::collections::HashSet;
-use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, MAX_ATTEMPTS, State};
+use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, MAX_ATTEMPTS, MAX_FREE_RETRIES, State};
 use ::hagency::issue_watch::parse_branches;
 use serde_json::json;
 
@@ -110,4 +110,64 @@ fn a_record_is_changed_under_its_own_repository_spelling() {
     let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     assert_eq!(fake.tracks()[0].attempts, 2);
+}
+
+/// Hands #62 off up to attempt 3, as on Nov 17 (22:30:47).
+fn at_attempt_three(fake: &Fake) {
+    first_hand_off(fake, 62);
+    fake.run.set(Some(RunEnd::Ended));
+    check(fake, T0 + 60, &[issue(62)], &[]);
+    check(fake, T0 + 120, &[issue(62)], &[]);
+    assert_eq!(fake.tracks()[0].attempts, MAX_ATTEMPTS);
+    fake.handed.borrow_mut().clear();
+    fake.said.borrow_mut().clear();
+}
+
+#[test]
+fn a_restart_during_attempt_three_hands_it_off_again_without_using_an_attempt() {
+    // Nov 17 22:35: a deploy restarted the app mid-run; the issue was marked failed.
+    let fake = Fake::default();
+    at_attempt_three(&fake);
+    fake.run.set(Some(RunEnd::Interrupted));
+    assert_eq!(check(&fake, T0 + 300, &[issue(62)], &[]), ["#62 retrying (3/3)"]);
+    let track = fake.tracks()[0].clone();
+    assert_eq!((track.state, track.attempts, track.free_retries, track.handed_at), (State::HandedOff, MAX_ATTEMPTS, 1, T0 + 300), "attempts stays 3");
+    assert_eq!(*fake.handed.borrow(), [(62, 3)]);
+    assert_eq!(fake.said.borrow()[0].2, "🔁 #62: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt 3 of 3, not counted)");
+    assert!(!fake.keys().contains(&"62:failed".to_owned()), "never the give-up on a restart");
+    // The new run is still going: it waits, it does not give up.
+    fake.run.set(Some(RunEnd::Running));
+    assert_eq!(check(&fake, T0 + 360, &[issue(62)], &[]), ["#62 retrying (3/3)"]);
+    assert_eq!(fake.handed.borrow().len(), 1);
+}
+
+#[test]
+fn repeated_restarts_stop_after_the_free_retry_cap_and_then_give_up_once() {
+    let fake = Fake::default();
+    at_attempt_three(&fake);
+    fake.run.set(Some(RunEnd::Interrupted));
+    for minute in 5..12 {
+        check(&fake, T0 + minute * 60, &[issue(62)], &[]);
+    }
+    assert_eq!(fake.handed.borrow().len(), MAX_FREE_RETRIES as usize, "a crash loop still ends");
+    assert_eq!(fake.keys(), ["62:rehand-3-1", "62:rehand-3-2", "62:failed"]);
+    let track = fake.tracks()[0].clone();
+    assert_eq!((track.state, track.attempts, track.free_retries), (State::Failed, MAX_ATTEMPTS, MAX_FREE_RETRIES));
+}
+
+#[test]
+fn a_restart_on_an_earlier_attempt_keeps_the_attempt_too() {
+    let fake = Fake::default();
+    first_hand_off(&fake, 63);
+    fake.run.set(Some(RunEnd::Interrupted));
+    check(&fake, T0 + 60, &[issue(63)], &[]);
+    assert_eq!((fake.tracks()[0].attempts, fake.tracks()[0].free_retries), (1, 1));
+    assert_eq!(*fake.handed.borrow(), [(63, 1)]);
+}
+
+#[test]
+fn an_interrupted_run_reads_from_its_activity_record() {
+    let req = |interrupted: bool| json!([{"receivedAt": 1_000, "outcome": "failed", "interrupted": interrupted, "issue": {"repo": "acme/app", "number": 62}}]);
+    assert_eq!(run_end_of(&req(true), "acme/app", 62, 1_000), RunEnd::Interrupted);
+    assert_eq!(run_end_of(&req(false), "acme/app", 62, 1_000), RunEnd::Lost);
 }

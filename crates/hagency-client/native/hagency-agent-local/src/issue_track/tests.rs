@@ -3,13 +3,13 @@ use super::*;
 const T0: i64 = 1_000_000;
 
 fn handed(attempts: u32, at: i64) -> Track {
-    Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false }
+    Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false, free_retries: 0 }
 }
 fn open(now: i64) -> Facts {
-    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false }
+    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false }
 }
 fn change(handed: Option<u32>, state: Option<State>, pr: Option<u64>) -> TrackChange {
-    TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None }
+    TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None, rehanded: None }
 }
 fn ledger() -> (tempfile::TempDir, Ledger) {
     let tmp = tempfile::tempdir().unwrap();
@@ -117,4 +117,33 @@ fn a_run_that_ended_without_a_pull_request_retries_now_and_counts_the_attempt() 
     assert_eq!(decide(&handed(MAX_ATTEMPTS, T0), &ended(T0 + 60)), Action::GiveUp, "still at most MAX_ATTEMPTS");
     assert_eq!(decide(&handed(1, T0), &Facts { open_pr: Some(9), ..ended(T0 + 60) }), Action::FollowPr { pr: 9 }, "a pull request wins");
     assert_eq!(decide(&handed(1, T0), &open(T0 + 60)), Action::Wait, "a running hand-off waits");
+}
+
+#[test]
+fn a_restart_interrupted_run_is_handed_off_again_without_an_attempt_until_the_cap() {
+    // Nov 17 22:35: a deploy restarted the app during attempt 3; the record was marked failed.
+    let interrupted = |now| Facts { run_ended: true, interrupted: true, ..open(now) };
+    let third = handed(MAX_ATTEMPTS, T0);
+    assert_eq!(decide(&third, &interrupted(T0 + 60)), Action::Rehand, "never the final give-up");
+    let change = |rehanded| TrackChange { repo: "acme/app".into(), number: 33, handed: None, state: None, pr: None, notified: None, rehanded };
+    let once = apply_change(Some(third.clone()), &change(Some(1)), T0 + 70).unwrap();
+    assert_eq!((once.attempts, once.free_retries, once.handed_at), (MAX_ATTEMPTS, 1, T0 + 70), "same attempt, its own clock");
+    assert_eq!(apply_change(Some(once.clone()), &change(Some(1)), T0 + 75).unwrap(), once, "a replayed save changes nothing");
+    let capped = (2..8).fold(once, |t, n| apply_change(Some(t), &change(Some(n)), T0 + 80 + i64::from(n)).unwrap());
+    assert_eq!(capped.free_retries, MAX_FREE_RETRIES);
+    assert_eq!(decide(&capped, &interrupted(T0 + 200)), Action::GiveUp, "a crash loop still ends");
+    assert_eq!(decide(&handed(1, T0), &Facts { interrupted: true, ..open(T0 + 60) }), Action::Wait, "only an ended run counts");
+    let done = Track { state: State::Failed, ..third };
+    assert_eq!(apply_change(Some(done), &change(Some(1)), T0 + 90).unwrap().free_retries, 0, "a terminal record never restarts");
+}
+
+#[test]
+fn an_older_ledger_gains_the_free_retry_count() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    db.execute("INSERT INTO issue_track VALUES ('a','acme/app',1,'handed_off',1,0,NULL,0)", []).unwrap();
+    super::ensure_schema(&db).unwrap();
+    super::ensure_schema(&db).unwrap();
+    let free: i64 = db.query_row("SELECT free_retries FROM issue_track", [], |r| r.get(0)).unwrap();
+    assert_eq!(free, 0);
 }

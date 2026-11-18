@@ -15,6 +15,20 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS issue_track (agent T
 pub const HANDOFF_TIMEOUT_SECS: i64 = 30 * 60;
 /// Hand-offs per issue, the first one included; then the issue is `failed`.
 pub const MAX_ATTEMPTS: u32 = 3;
+/// Re-hand-offs per issue after a run a restart interrupted (the owner's app
+/// or Agent host stopped): they never count as attempts, and the cap ends a
+/// crash loop, after which an interrupted run counts like any ended one.
+pub const MAX_FREE_RETRIES: u32 = 2;
+
+/// Adds the free-retry count to a ledger created before it existed.
+pub(crate) fn ensure_schema(db: &rusqlite::Connection) -> Result<()> {
+    db.execute_batch(SCHEMA)?;
+    let has: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('issue_track') WHERE name='free_retries')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE issue_track ADD COLUMN free_retries INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +81,9 @@ pub struct Track {
     pub pr: Option<u64>,
     /// The one room notice of the current state was posted.
     pub notified: bool,
+    /// Re-hand-offs after restart-interrupted runs (not attempts).
+    #[serde(default)]
+    pub free_retries: u32,
 }
 
 /// What GitHub says about one tracked issue right now.
@@ -90,6 +107,9 @@ pub struct Facts {
     /// The current hand-off's run already ended (answered, failed or lost)
     /// with no pull request: retry now instead of at the deadline.
     pub run_ended: bool,
+    /// That run was interrupted by a restart of the owner's app or Agent
+    /// host (the ledger marked it unknown on recovery), not ended by the Agent.
+    pub interrupted: bool,
 }
 
 /// How the Agent tells the loop it cannot fix an issue: an issue comment
@@ -108,6 +128,8 @@ pub enum Action {
     Wait,
     /// Hand the issue off again as attempt `attempt`.
     Retry { attempt: u32 },
+    /// A restart interrupted the run: hand it off again, same attempt.
+    Rehand,
     /// Out of attempts: record `failed` and say so once.
     GiveUp,
     /// A linked pull request is open: request its review, or carry it to the merge gate.
@@ -145,7 +167,12 @@ pub fn decide(track: &Track, facts: &Facts) -> Action {
         // was closed unmerged, the record waits for a person (no retry).
         return if facts.open_pr.is_some() { Action::FollowPr { pr } } else { Action::Wait };
     }
-    if facts.now < deadline(track) && !(facts.run_ended && track.state == State::HandedOff) {
+    let ended = facts.run_ended && track.state == State::HandedOff;
+    // Never charged to the Agent, and never the final give-up (Nov 17 22:35).
+    if ended && facts.interrupted && track.free_retries < MAX_FREE_RETRIES {
+        return Action::Rehand;
+    }
+    if facts.now < deadline(track) && !ended {
         return Action::Wait;
     }
     if track.attempts >= MAX_ATTEMPTS {
@@ -170,16 +197,20 @@ pub struct TrackChange {
     pub pr: Option<u64>,
     #[serde(default)]
     pub notified: Option<bool>,
+    /// The current attempt was handed off again after an interrupted run, as
+    /// its free retry number `rehanded`: a replayed save is a no-op (GPT review).
+    #[serde(default)]
+    pub rehanded: Option<u32>,
 }
 
 impl Ledger {
     /// Every record of `agent`, oldest issue first.
     pub fn issue_tracks(&self, agent: &str) -> Result<Vec<Track>> {
-        let mut statement = self.db.prepare("SELECT repo, number, state, attempts, handed_at, pr, notified FROM issue_track WHERE agent=? ORDER BY repo, number")?;
-        let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, i64>(6)?)))?;
+        let mut statement = self.db.prepare("SELECT repo, number, state, attempts, handed_at, pr, notified, free_retries FROM issue_track WHERE agent=? ORDER BY repo, number")?;
+        let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?)))?;
         rows.map(|row| {
-            let (repo, number, state, attempts, handed_at, pr, notified) = row?;
-            Ok(Track { repo, number, state: State::parse(&state)?, attempts: attempts as u32, handed_at, pr: pr.map(|p| p as u64), notified: notified != 0 })
+            let (repo, number, state, attempts, handed_at, pr, notified, free) = row?;
+            Ok(Track { repo, number, state: State::parse(&state)?, attempts: attempts as u32, handed_at, pr: pr.map(|p| p as u64), notified: notified != 0, free_retries: free as u32 })
         })
         .collect()
     }
@@ -198,8 +229,8 @@ impl Ledger {
 
     fn save_track(&mut self, agent: &str, track: &Track) -> Result<()> {
         self.db.execute(
-            "INSERT INTO issue_track VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(agent,repo,number) DO UPDATE SET state=excluded.state, attempts=excluded.attempts, handed_at=excluded.handed_at, pr=excluded.pr, notified=excluded.notified",
-            (agent, &track.repo, track.number, track.state.wire(), track.attempts as i64, track.handed_at, track.pr.map(|p| p as i64), track.notified as i64),
+            "INSERT INTO issue_track (agent, repo, number, state, attempts, handed_at, pr, notified, free_retries) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(agent,repo,number) DO UPDATE SET state=excluded.state, attempts=excluded.attempts, handed_at=excluded.handed_at, pr=excluded.pr, notified=excluded.notified, free_retries=excluded.free_retries",
+            (agent, &track.repo, track.number, track.state.wire(), track.attempts as i64, track.handed_at, track.pr.map(|p| p as i64), track.notified as i64, track.free_retries as i64),
         )?;
         Ok(())
     }
@@ -214,7 +245,7 @@ pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> R
         return Err(Error::Invalid("an issue track needs owner/name and an issue number"));
     }
     let mut track = match (current, change.handed) {
-        (None, Some(1)) => Track { repo: change.repo.clone(), number: change.number, state: State::HandedOff, attempts: 0, handed_at: now, pr: None, notified: false },
+        (None, Some(1)) => Track { repo: change.repo.clone(), number: change.number, state: State::HandedOff, attempts: 0, handed_at: now, pr: None, notified: false, free_retries: 0 },
         (None, _) => return Err(Error::Invalid("an issue is tracked from its first hand-off")),
         (Some(track), _) => track,
     };
@@ -229,6 +260,10 @@ pub fn apply_change(current: Option<Track>, change: &TrackChange, now: i64) -> R
         if track.state == State::HandedOff && attempt == track.attempts + 1 && attempt <= MAX_ATTEMPTS {
             track = Track { state: State::HandedOff, attempts: attempt, handed_at: now, pr: None, notified: false, ..track };
         }
+    }
+    if change.rehanded == Some(track.free_retries + 1) && track.state == State::HandedOff && track.free_retries < MAX_FREE_RETRIES {
+        // Same attempt, a new run: its own clock, never a new attempt.
+        track = Track { handed_at: now, free_retries: track.free_retries + 1, notified: false, ..track };
     }
     if let Some(state) = change.state {
         if state != track.state {

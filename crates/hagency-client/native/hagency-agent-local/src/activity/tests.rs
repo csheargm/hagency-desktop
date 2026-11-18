@@ -98,3 +98,29 @@ fn a_hand_off_names_its_issue_and_other_requests_name_none() {
     assert_eq!(json[0]["issue"], serde_json::json!({"repo": "a/b", "number": 46}));
     assert!(!json.to_string().contains("please fix"), "no request text");
 }
+
+#[test]
+fn a_run_a_restart_left_unknown_is_marked_interrupted() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    record(&mut l, &dispatch("lost", "agent", "bind"), 10, "running", None);
+    l.recover_local_executions(OWNER).unwrap();
+    record(&mut l, &dispatch("bad", "agent", "bind2"), 20, "failed", None);
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    assert_eq!((json[0]["dispatchId"].as_str(), json[0].get("interrupted")), (Some("bad"), None), "a real failure is not");
+    assert_eq!((json[1]["dispatchId"].as_str(), json[1]["interrupted"].as_bool(), json[1]["outcome"].as_str()), (Some("lost"), Some(true), Some("failed")));
+}
+
+#[test]
+fn a_hand_offs_issue_survives_the_body_compaction() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let mut d = dispatch("h", "agent", "bind");
+    d.body = "🔔 New GitHub issue #62 in a/b — @bird please fix it".into();
+    record(&mut l, &d, 10, "running", None);
+    l.recover_local_executions(OWNER).unwrap(); // unknown, then terminal compaction
+    let body: String = l.db.query_row("SELECT json_extract(envelope,'$.body') FROM local_inbox WHERE id='h'", [], |r| r.get(0)).unwrap();
+    assert!(body.is_empty(), "the precondition: compaction cleared the body");
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    assert_eq!((json[0]["issue"]["number"].as_i64(), json[0]["interrupted"].as_bool()), (Some(62), Some(true)));
+}

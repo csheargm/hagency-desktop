@@ -113,7 +113,7 @@ mod tests {
     use ::hagency::issue_watch::issue_track::State;
 
     fn track(number: i64, state: State) -> Track {
-        Track { repo: "o/r".into(), number, state, attempts: 1, handed_at: 5, pr: Some(9), notified: false }
+        Track { repo: "o/r".into(), number, state, attempts: 1, handed_at: 5, pr: Some(9), notified: false, free_retries: 0 }
     }
 
     #[test]

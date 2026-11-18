@@ -51,6 +51,24 @@ pub struct Activity {
     /// leave this module, never the request text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue: Option<IssueRef>,
+    /// Interrupted, not finished: the ledger marked the run unknown when this
+    /// device's app or Agent host restarted (or could not tell its result).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+}
+
+/// Which issue each received hand-off names, kept apart from the request
+/// body (compaction clears that body, GPT review): only repo and number.
+pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS handoff_issues (dispatch TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL) STRICT;";
+
+/// Remember the issue a just-received request `dispatch` hands off, if any;
+/// rows of requests no longer in the inbox are dropped.
+pub(crate) fn remember_handoff(db: &rusqlite::Connection, dispatch: &str, body: &str) -> Result<()> {
+    if let Some(issue) = handoff_issue(body) {
+        db.execute("INSERT OR IGNORE INTO handoff_issues VALUES (?,?,?)", (dispatch, &issue.repo, issue.number))?;
+    }
+    db.execute("DELETE FROM handoff_issues WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
+    Ok(())
 }
 
 /// The repository and number a hand-off names.
@@ -81,8 +99,8 @@ fn charged(call_state: Option<&str>, usage: Option<&str>) -> Option<u64> {
     Some(usage.input.saturating_add(usage.output))
 }
 
-const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage FROM local_inbox i \
-JOIN bindings b ON b.id=i.binding LEFT JOIN calls c ON c.id=i.execution_id \
+const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number FROM local_inbox i \
+JOIN bindings b ON b.id=i.binding LEFT JOIN calls c ON c.id=i.execution_id LEFT JOIN handoff_issues h ON h.dispatch=i.id \
 WHERE b.agent=? ORDER BY i.received_at DESC,i.id DESC LIMIT ?";
 
 impl Ledger {
@@ -101,11 +119,13 @@ impl Ledger {
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (envelope, state, received_at, call_state, usage) = row?;
+            let (envelope, state, received_at, call_state, usage, repo, number) = row?;
             let dispatch: Dispatch = serde_json::from_str(&envelope)?;
             out.push(Activity {
                 dispatch_id: dispatch.id,
@@ -115,7 +135,8 @@ impl Ledger {
                 received_at,
                 outcome: Outcome::of_state(&state),
                 tokens: charged(call_state.as_deref(), usage.as_deref()),
-                issue: handoff_issue(&dispatch.body),
+                issue: repo.zip(number).map(|(repo, number)| IssueRef { repo, number }).or_else(|| handoff_issue(&dispatch.body)),
+                interrupted: state == "unknown",
             });
         }
         Ok(out)
