@@ -212,9 +212,10 @@ mod permission_tests {
         let agent = ruma::user_id!("@_hagency_agt_01m7:test").to_owned();
         let label = person_label(&agent, Some("yue-claude"));
         assert_eq!(label, "yue-claude");
-        let text = found_text(&agent, &label);
+        let own = vec![agent.clone()];
+        let text = found_text(&agent, &label, &own);
         assert!(text.contains("yue-claude (your agent)") && !text.contains("_hagency_agt_"), "{text}");
-        assert!(!person_detail(&agent).contains("_hagency_agt_"));
+        assert!(!person_detail(&agent, &own).contains("_hagency_agt_"));
         let picked = (label.clone(), agent.clone());
         assert_eq!(typed_user(" yue-claude ", Some(&picked)), Some(agent.clone()));
         assert_eq!(typed_user("yue-claud", Some(&picked)), None, "an edited name is a new search");
@@ -224,6 +225,27 @@ mod permission_tests {
         let spoof = ("@alice:test".to_owned(), ruma::user_id!("@attacker:test").to_owned());
         assert_eq!(typed_user("@alice:test", Some(&spoof)).as_deref(), Some(ruma::user_id!("@alice:test")));
     }
+
+    /// E2E finding: Anna's picker labelled Betty's bird-claude "Your agent"
+    /// and could scroll Anna's own agent out of view.
+    #[test]
+    fn only_the_owners_listed_agents_are_your_agent_and_come_first() {
+        let mine = ruma::user_id!("@_hagency_agt_anna1:test").to_owned();
+        let betty = ruma::user_id!("@_hagency_agt_bird1:test").to_owned();
+        let person = ruma::user_id!("@alex:test").to_owned();
+        let own = vec![mine.clone()];
+        assert_eq!(person_detail(&mine, &own), "Your agent");
+        assert_eq!(person_detail(&betty, &own), "Agent", "another owner's agent is never yours");
+        assert_eq!(person_detail(&person, &own), "@alex:test");
+        assert!(!found_text(&betty, "bird-claude", &own).contains("your agent"));
+        let mut people: Vec<Person> = vec![
+            (person.clone(), Some("Alex".into())), (betty.clone(), Some("bird-claude".into())), (mine.clone(), Some("zz-anna-claude".into())),
+        ];
+        sort_people(&mut people, &own);
+        assert_eq!(people[0].0, mine, "own agents sort first");
+        assert_eq!(people[1].0, person);
+        assert_eq!(person_detail(&mine, &[]), "Agent", "before the listing arrives nothing claims ownership");
+    }
 }
 
 /// Results of the dialog's background lookups, matched to the request that
@@ -231,7 +253,7 @@ mod permission_tests {
 #[derive(Debug)]
 enum InvitePeopleAction {
     /// Everyone who shares a joined room with the user.
-    Known { request: u64, people: Vec<Person> },
+    Known { request: u64, people: Vec<Person>, own: Vec<OwnedUserId> },
     /// The homeserver directory's answer for a typed name.
     Searched { request: u64, query: String, people: Vec<Person> },
 }
@@ -246,6 +268,8 @@ pub struct InviteModal {
     #[rust] rendered_people: HashMap<WidgetUid, OwnedUserId>,
     /// Registered agents and people who share a room with the user.
     #[rust] known: Vec<Person>,
+    /// This owner's own Agents, from their Agents listing (never a name pattern).
+    #[rust] own_agents: Vec<OwnedUserId>,
     #[rust] request: u64,
     #[rust] epoch: u64,
     #[rust] can_invite: bool,
@@ -280,7 +304,7 @@ impl Widget for InviteModal {
                     let Some((id, name)) = self.offered.get(index) else {continue;};
                     let row = list.item(cx, index, id!(Person));
                     row.label(cx, ids!(person_name)).set_text(cx, &person_label(id, name.as_deref()));
-                    row.label(cx, ids!(person_id)).set_text(cx, &person_detail(id));
+                    row.label(cx, ids!(person_id)).set_text(cx, &person_detail(id, &self.own_agents));
                     row.as_navigation_bar_button().set_selected(cx, selected.as_ref() == Some(id));
                     self.rendered_people.insert(row.widget_uid(), id.clone());
                     row.draw_all(cx, scope);
@@ -301,13 +325,14 @@ impl WidgetMatchEvent for InviteModal {
                 self.can_invite = update.power_levels.can_invite();
             }
             match action.downcast_ref() {
-                Some(InvitePeopleAction::Known { request, people }) if *request == self.request => {
+                Some(InvitePeopleAction::Known { request, people, own }) if *request == self.request => {
+                    self.own_agents = own.clone();
                     for person in people {
                         if !self.known.iter().any(|(id, _)| id == &person.0) {
                             self.known.push(person.clone());
                         }
                     }
-                    self.known.sort_by_key(|(id, name)| (name.as_deref().unwrap_or(id.as_str()).to_lowercase(), id.clone()));
+                    sort_people(&mut self.known, &self.own_agents);
                     let query = self.view.text_input(cx, ids!(user_id_input)).text();
                     let matches = self.local_matches(query.trim());
                     self.offer(cx, &matches);
@@ -529,7 +554,7 @@ impl InviteModal {
                 // Matrix ID is hidden-style and means nothing to the owner.
                 self.offer(cx, &matches);
                 let label = self.pick(cx, id, name.as_deref());
-                self.status(cx, &found_text(id, &label), false);
+                self.status(cx, &found_text(id, &label, &self.own_agents), false);
             }
             [] => self.status(
                 cx,
@@ -572,8 +597,9 @@ impl InviteModal {
             };
             // The Agents listing is authoritative: the local registry misses
             // Agents created since it was last saved (live finding).
-            let mut people: Vec<Person> = owner_agents(me.as_deref()).await.into_iter()
-                .filter(|(id, _)| !present.contains(id)).collect();
+            let mine = owner_agents(me.as_deref()).await;
+            let own: Vec<OwnedUserId> = mine.iter().map(|(id, _)| id.clone()).collect();
+            let mut people: Vec<Person> = mine.into_iter().filter(|(id, _)| !present.contains(id)).collect();
             for joined in client.joined_rooms() {
                 if crate::moments::is_moments(&joined) {
                     continue;
@@ -592,7 +618,7 @@ impl InviteModal {
                     }
                 }
             }
-            Cx::post_action(InvitePeopleAction::Known { request, people });
+            Cx::post_action(InvitePeopleAction::Known { request, people, own });
             SignalToUI::set_ui_signal();
         });
     }
@@ -614,6 +640,7 @@ impl InviteModal {
             .collect();
         let known = self.known.clone();
         self.offer(cx, &known);
+        self.own_agents.clear();
         self.load_known(room_name_id.room_id().clone());
         self.state = InviteModalState::WaitingForUserInput;
         private_consent::mark_picker_bind(None);
@@ -718,15 +745,26 @@ fn person_label(id: &ruma::UserId, name: Option<&str>) -> String {
     name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(id.localpart()).to_owned()
 }
 
-/// The second line of a row: "Your agent" for an Agent, else the Matrix ID.
-fn person_detail(id: &ruma::UserId) -> String {
-    if crate::hagency::backend::is_agent_invitation(id) { crate::i18n::tr("Your agent").to_owned() } else { id.to_string() }
+/// The second line of a row: "Your agent" only for an Agent in this owner's
+/// own listing, "Agent" for anyone else's (the hidden ID pattern says only
+/// that it is an Agent, not whose), else the Matrix ID.
+fn person_detail(id: &ruma::UserId, own: &[OwnedUserId]) -> String {
+    if own.iter().any(|o| o == id) { crate::i18n::tr("Your agent").to_owned() }
+    else if crate::hagency::backend::is_agent_invitation(id) { crate::i18n::tr("Agent").to_owned() }
+    else { id.to_string() }
+}
+
+/// This owner's Agents first, then everyone else, each by name.
+fn sort_people(people: &mut [Person], own: &[OwnedUserId]) {
+    people.sort_by_cached_key(|(id, name)| (!own.contains(id), name.as_deref().unwrap_or(id.as_str()).to_lowercase(), id.clone()));
 }
 
 /// "Found yue-claude (your agent)…", never the hidden Agent ID.
-fn found_text(id: &ruma::UserId, label: &str) -> String {
-    let who = if crate::hagency::backend::is_agent_invitation(id) {
+fn found_text(id: &ruma::UserId, label: &str, own: &[OwnedUserId]) -> String {
+    let who = if own.iter().any(|o| o == id) {
         crate::i18n::format("{0} (your agent)", &[("0", label.to_owned())])
+    } else if crate::hagency::backend::is_agent_invitation(id) {
+        crate::i18n::format("{0} (agent)", &[("0", label.to_owned())])
     } else { label.to_owned() };
     crate::i18n::format("Found {0}. Press Invite to send.", &[("0", who)])
 }
