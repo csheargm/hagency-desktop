@@ -1073,6 +1073,7 @@ async fn permission(
                 // No card could be shown: the owner is not there, nobody refused.
                 return ToolAnswer::Unanswered;
             }
+            let _waiting = queue.show_approval_wait();
             match tokio::time::timeout(Duration::from_secs(280), decision).await {
                 // The owner never answered: nobody refused.
                 Err(_) => ToolAnswer::Unanswered,

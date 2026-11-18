@@ -63,7 +63,10 @@ impl Approvals {
                     })
                     .is_ok();
                 let until = tokio::time::Instant::now() + Duration::from_secs(300);
+                // Dropped with the wait: answered, expired or withdrawn.
+                let waiting = if sent { queue.show_approval_wait() } else { None };
                 Box::pin(async move {
+                    let _waiting = waiting;
                     Decision::Owner(
                         sent && matches!(
                             tokio::time::timeout_at(until, receiver).await,
@@ -147,5 +150,42 @@ impl Answer {
             json!({"decision":if allow {"accept"} else {"decline"}})
         };
         json!({"id":request.id,"result":result})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Scope;
+    use hagency_runtime::live_text::{APPROVAL_WAIT_STEP, LiveText};
+
+    fn request() -> Request {
+        let proposal = ToolProposal {
+            scope: Scope { agent: "bird".into(), binding: "b".into(), room: "!dev:x".into(), requester: "@anna:x".into(), thread: "t".into() },
+            dispatch: "d".into(), tool: "codex.commandExecution".into(), arguments: json!({"command": "gh issue close 1"}),
+            canonical_directory: "/tmp".into(), risk: "high".into(), policy_revision: [1, 1, 1], expires: 100,
+        };
+        Request { id: json!(7), method: "item/commandExecution/requestApproval".into(), thread: "th".into(), turn: "tu".into(), native: None, proposal }
+    }
+
+    /// The requester's flow: Anna's request needs Betty's card; while it
+    /// waits, the run card's step says so, and it goes back once Betty answers.
+    #[tokio::test]
+    async fn a_run_waiting_for_its_owner_says_so_on_its_card() {
+        let text = LiveText::default();
+        text.step("running gh issue close 1");
+        let (queue, mut cards) = crate::codex::approval_queue(1).unwrap();
+        let queue = queue.with_live_text(text.clone());
+        let mut approvals = Approvals::default();
+        approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
+        assert_eq!(text.current_step().0, APPROVAL_WAIT_STEP);
+        cards.recv().await.unwrap().decide(true);
+        let answer = approvals.next().await;
+        assert!(matches!(answer.decision, Decision::Owner(true)));
+        assert_eq!(text.current_step(), ("running gh issue close 1".into(), 1));
+        // A withdrawn request ends the wait too.
+        approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
+        approvals.clear();
+        assert_eq!(text.current_step().0, "running gh issue close 1");
     }
 }

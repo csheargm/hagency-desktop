@@ -1,7 +1,7 @@
 //! The localized words for an Agent run: "Working… running gh pr create" while
 //! it runs, "Done in 41 s · 9 steps" once it completes. The run card, thread
 //! summaries and the rooms list all show these, never the event's stored body.
-use ::hagency::agent_run_controls::{Card, MSGTYPE, Progress, State};
+use ::hagency::agent_run_controls::{APPROVAL_WAIT_STEP, Card, MSGTYPE, Progress, State};
 
 /// One Agent run state, localized.
 pub(crate) fn status_label(state: State) -> &'static str {
@@ -10,6 +10,7 @@ pub(crate) fn status_label(state: State) -> &'static str {
 /// The state with the live step or the finished summary, when the Agent sent one.
 pub(crate) fn status_text(state: State, progress: Option<&Progress>) -> String {
     match (state, progress) {
+        (State::Running, Some(p)) if p.step == APPROVAL_WAIT_STEP => crate::i18n::tr("Waiting for the owner's approval").to_owned(),
         (State::Running, Some(p)) if !p.step.is_empty() => {
             crate::i18n::tr("Working… {step}").replace("{step}", &p.step)
         }
@@ -42,6 +43,7 @@ pub(crate) fn live_status(card: &Card, elapsed_secs: u64) -> String {
     }
     let elapsed = format_elapsed(elapsed_secs);
     match card.progress.as_ref().filter(|p| !p.step.is_empty()) {
+        Some(p) if p.step == APPROVAL_WAIT_STEP => crate::i18n::tr("Waiting for the owner's approval · {t}").replace("{t}", &elapsed),
         Some(p) => crate::i18n::tr("Working… {step} · {t}").replace("{step}", &p.step).replace("{t}", &elapsed),
         None => crate::i18n::tr("Thinking… {t}").replace("{t}", &elapsed),
     }
@@ -126,6 +128,14 @@ mod tests {
             assert_eq!(live_status(&card(state, "x"), 9), card_status(&card(state, "x")));
         }
     }
+    /// Thread summaries and previews put the owner's approval wait in words.
+    #[test]
+    fn an_approval_wait_reads_as_words_not_the_wire_step() {
+        let waiting = card(State::Running, APPROVAL_WAIT_STEP);
+        assert_eq!(card_status(&waiting), crate::i18n::tr("Waiting for the owner's approval"));
+        let live = live_status(&waiting, 7);
+        assert_eq!(live, crate::i18n::tr("Waiting for the owner's approval · {t}").replace("{t}", &format_elapsed(7)));
+    }
     #[test]
     fn thread_summary_shows_the_live_step_and_falls_back() {
         let live = live_status(&card(State::Running, "reading src/main.rs"), 5);
@@ -135,7 +145,8 @@ mod tests {
     #[test]
     fn progress_words_are_english_keys_with_a_chinese_translation() {
         for key in ["Working… {step}", "Done in {s} s · {n} steps", "Done in {s} s · 1 step",
-            "Working… {step} · {t}", "Thinking… {t}", "{s} s", "{m} m {s} s"] {
+            "Working… {step} · {t}", "Thinking… {t}", "{s} s", "{m} m {s} s",
+            "Waiting for the owner's approval", "Waiting for the owner's approval · {t}"] {
             assert_eq!(text_for(Language::English, key), key);
             let zh = text_for(Language::Chinese, key);
             assert_ne!(zh, key, "{key} has no Chinese text");

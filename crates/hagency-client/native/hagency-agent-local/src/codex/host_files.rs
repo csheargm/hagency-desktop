@@ -52,7 +52,9 @@ impl Calls {
         let dispatch = dispatch.to_owned();
         let execution = execution.to_owned();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let waiting = if offered { queue.show_approval_wait() } else { None };
         let decision = Box::pin(async move {
+            let _waiting = waiting;
             offered
                 && matches!(
                     tokio::time::timeout_at(deadline, receiver).await,

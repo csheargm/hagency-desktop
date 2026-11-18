@@ -1192,42 +1192,35 @@ impl Ledger {
     /// what runs is what was checked). `None`: ask as usual.
     // TODO(R4): lib.rs is over budget; move approval shortcuts with the tool methods.
     pub fn trusted_publish(&mut self, owner: &str, proposal: &ToolProposal, now: i64) -> Result<Option<watch_trust::TrustedStep>> {
-        // Read-only GitHub queries on a watched repository need no card either (ADR 0019).
-        let (command, overrides) = match watch_trust::pinned(&self.db, proposal, owner)? {
-            Some(step) => (step, true),
-            None if watch_trust::read_only_query(&self.db, proposal, false)? => {
+        // Read-only GitHub queries on a repository watched from this Room
+        // need no card either, for ANY requester there (ADR 0019): the watch
+        // already reports that repository's issues and pull requests to this
+        // Room, so reading them is the owner's decision too.
+        let command = match watch_trust::pinned(&self.db, proposal, owner)? {
+            Some(step) => step,
+            None if watch_trust::read_only_query(&self.db, proposal)? => {
                 let line = proposal.arguments["command"].as_str().unwrap_or_default();
-                let overrides = proposal.scope.requester == owner && watch_trust::read_only_query(&self.db, proposal, true)?;
-                (watch_trust::TrustedStep::Command(watch_trust::read_only::command(line)), overrides)
+                watch_trust::TrustedStep::Command(watch_trust::read_only::command(line))
             }
             None => return Ok(None),
         };
-        // Inside the exact push-freely scope (the owner's run in the watch's
-        // Room, every step `pinned` answers, and the owner's read-only queries
-        // on a push-freely repository) the switch is the owner's decision, so
-        // it overrides the high-risk tool rule, Deny included (Chris, Nov 17;
-        // ADR 0022 "Deny"). The dispatch itself must still check out. Any
-        // other read-only query keeps the tool rule: a Deny still refuses it.
-        if overrides {
-            self.owner(owner)?;
-            let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            return match admitted_policies(&tx, proposal, now) {
-                // No policy saved since the run was admitted (GPT review):
-                // a new rule, Deny or not, ends the override for this run.
-                Ok((original, current)) if original.iter().zip(&current).all(|(o, c)| o.0 == c.0) => Ok(Some(command)),
-                Ok(_) => Ok(None),
-                Err(Error::Denied) => Ok(None),
-                Err(other) => Err(other),
-            };
+        // Inside the exact scope (the owner's run in the watch's Room for every
+        // step `pinned` answers; anyone's read-only query on a repository
+        // watched from this Room) the watch is the owner's decision, so it
+        // overrides the high-risk tool rule, Deny included (Chris, Nov 17;
+        // ADR 0022 "Deny", ADR 0019 "Anyone in the report Room"). The dispatch
+        // itself must still check out: a Requests Deny for this requester
+        // still refuses.
+        self.owner(owner)?;
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        match admitted_policies(&tx, proposal, now) {
+            // No policy saved since the run was admitted (GPT review):
+            // a new rule, Deny or not, ends the override for this run.
+            Ok((original, current)) if original.iter().zip(&current).all(|(o, c)| o.0 == c.0) => Ok(Some(command)),
+            Ok(_) => Ok(None),
+            Err(Error::Denied) => Ok(None),
+            Err(other) => Err(other),
         }
-        match self.tool_disposition(proposal, now) {
-            Ok(ToolPolicy::AskOwner) => { self.approve_tool(owner, proposal, now)?; }
-            Ok(ToolPolicy::Deny) | Err(Error::Denied) => return Ok(None),
-            Ok(_) => {}
-            Err(other) => return Err(other),
-        }
-        self.authorize_tool(proposal, now)?;
-        Ok(Some(command))
     }
 
     /// Whether push trust still answers `proposal` for `repo`, read afresh from this

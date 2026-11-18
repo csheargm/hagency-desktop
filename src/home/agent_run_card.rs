@@ -93,6 +93,9 @@ pub struct AgentRunCard {
     /// The shown run and when it started, for its ticking elapsed time.
     #[rust]
     run: Option<(::hagency::agent_run_controls::Card, std::time::Instant)>,
+    /// The viewer's own request no card answers yet (shown while no run is).
+    #[rust]
+    pending: Option<super::agent_run_requester::PendingRequest>,
     /// Ticks once a second while the shown run is running.
     #[rust]
     clock: Timer,
@@ -203,14 +206,25 @@ impl Widget for AgentRunCard {
 }
 impl AgentRunCard {
     /// Shows the run's live status; keeps the clock ticking only while it runs.
+    // TODO(R4): with the file split, move this status line next to agent_run_footer.
     fn show_status(&mut self, cx: &mut Cx) {
-        use super::agent_run_footer::{Footer, footer};
-        let shown = self.run.as_ref().map(|(card, started)| footer(card, started.elapsed().as_secs(), super::agent_run_footer::waits_for_approval(card)));
-        let shown = shown.unwrap_or(Footer::Quiet);
+        use super::agent_run_footer::{Footer, Waiting, footer, waiting};
+        let shown = self.run.as_ref().map(|(card, started)| {
+            let waiting = waiting(card);
+            let owner = match (waiting, matrix_sdk::ruma::OwnedUserId::try_from(card.owner.as_str()), matrix_sdk::ruma::OwnedRoomId::try_from(card.room_id.as_str())) {
+                (Waiting::ForOwner, Ok(owner), Ok(room)) => super::agent_run_requester::display_name(cx, &owner, &room),
+                _ => String::new(),
+            };
+            footer(card, started.elapsed().as_secs(), waiting, &owner)
+        });
+        let pending = self.pending.as_ref().filter(|_| self.run.is_none());
+        let shown = shown
+            .or_else(|| pending.map(|p| Footer::Working(super::agent_run_requester::pending_text(&p.name, p.sent.elapsed().as_secs()))))
+            .unwrap_or(Footer::Quiet);
         self.view.view(cx, ids!(footer)).set_visible(cx, shown != Footer::Quiet);
         self.view.label(cx, ids!(footer.status)).set_text(cx, shown.text());
         self.view.button(cx, ids!(footer.open_approval)).set_visible(cx, matches!(shown, Footer::Approval(_)));
-        let ticking = self.run.as_ref().is_some_and(|(card, _)| super::agent_run_status::needs_tick(card));
+        let ticking = self.run.as_ref().map_or(pending.is_some(), |(card, _)| super::agent_run_status::needs_tick(card));
         if !ticking {
             cx.stop_timer(self.clock);
             self.clock = Timer::default();
@@ -227,6 +241,17 @@ impl AgentRunCardRef {
         let text = super::agent_run_footer::updates_text(count);
         link.set_visible(cx, text.is_some());
         link.set_text(cx, text.as_deref().unwrap_or_default());
+    }
+    /// The viewer's own request no run card answers yet: its waiting line,
+    /// shown while this card has no run.
+    pub fn set_pending(&self, cx: &mut Cx, pending: Option<super::agent_run_requester::PendingRequest>) {
+        let Some(mut inner) = self.borrow_mut() else { return };
+        inner.pending = pending;
+        if inner.run.is_none() {
+            let shown = inner.pending.is_some();
+            inner.view.set_visible(cx, shown);
+            inner.show_status(cx);
+        }
     }
     pub fn set_entry(&self, cx: &mut Cx, entry: Option<&Entry>) {
         self.set_entries(cx, entry.map(std::slice::from_ref).unwrap_or_default());
@@ -267,7 +292,11 @@ impl AgentRunCard {
             inner.run = None;
             inner.show_status(cx);
             show_answer(cx, &inner.view, None);
-            inner.view.set_visible(cx, false);
+            // Only the waiting line of a pending request, if any.
+            for part in [ids!(preview), ids!(links), ids!(what_i_did), ids!(input), ids!(buttons), ids!(hint), ids!(unconfirmed_notice), ids!(unconfirmed)] {
+                inner.view.widget(cx, part).set_visible(cx, false);
+            }
+            inner.view.set_visible(cx, inner.pending.is_some());
             return;
         };
         let changed = inner.key.as_deref() != Some(entry.key.as_str());
@@ -276,6 +305,7 @@ impl AgentRunCard {
         }
         inner.key = Some(entry.key.clone());
         inner.view.set_visible(cx, true);
+        inner.view.view(cx, ids!(links)).set_visible(cx, true);
         // The row above already names the Agent; the runtime sits in "What I did".
         let did = super::agent_run_footer::what_i_did(&entry.card);
         inner.view.button(cx, ids!(links.details)).set_visible(cx, did.is_some());
@@ -383,12 +413,12 @@ mod tests {
             "id":"c","dispatchId":"d","executionId":"e","roomId":"!r","eventId":"$e","threadRoot":"!r",
             "requester":"@a","owner":"@b","runtime":"codex","state":"running","revision":0,"preview":"live"})).unwrap();
         assert_eq!(shown_text(&card), "live");
-        assert!(matches!(super::super::agent_run_footer::footer(&card, 2, false), super::super::agent_run_footer::Footer::Working(_)));
+        assert!(matches!(super::super::agent_run_footer::footer(&card, 2, super::super::agent_run_footer::Waiting::No, ""), super::super::agent_run_footer::Footer::Working(_)));
         card.state = ::hagency::agent_run_controls::State::Completed;
         card.preview.clear();
         card.answer = "42".into();
         assert_eq!(shown_text(&card), "42");
-        assert_eq!(super::super::agent_run_footer::footer(&card, 2, false), super::super::agent_run_footer::Footer::Quiet);
+        assert_eq!(super::super::agent_run_footer::footer(&card, 2, super::super::agent_run_footer::Waiting::No, ""), super::super::agent_run_footer::Footer::Quiet);
     }
     /// Review fix: with more runs than slots, the last card pages through
     /// them, and an answer shows in the reply component with its actions.

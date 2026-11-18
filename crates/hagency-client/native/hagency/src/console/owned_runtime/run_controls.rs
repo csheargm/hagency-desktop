@@ -158,8 +158,11 @@ fn live_progress(
     shown: Option<&crate::agent_run_controls::Progress>,
 ) -> Option<crate::agent_run_controls::Progress> {
     let (step, steps) = text.current_step();
-    if steps == 0 {
-        return shown.cloned();
+    // An approval wait shows even before the run's first counted step, and
+    // an ended one is never kept from the card already shown (GPT review).
+    let wait = hagency_runtime::live_text::APPROVAL_WAIT_STEP;
+    if steps == 0 && step != wait {
+        return shown.filter(|p| p.step != wait).cloned();
     }
     let mut end = step.len().min(crate::agent_run_controls::MAX_STEP_BYTES);
     while !step.is_char_boundary(end) {
@@ -1079,6 +1082,18 @@ mod tests {
         let content = card.content();
         let back = Card::from_content(&content).unwrap();
         assert_eq!(back.progress, Some(progress));
+    }
+    /// GPT review: an approval wait before the first step shows on the card,
+    /// and the card drops it once the owner answers.
+    #[test]
+    fn an_approval_wait_before_any_step_shows_then_clears() {
+        use hagency_runtime::live_text::APPROVAL_WAIT_STEP;
+        let text = hagency_runtime::live_text::LiveText::default();
+        let wait = text.wait_for_approval();
+        let shown = live_progress(&text, None);
+        assert_eq!(shown.as_ref().map(|p| p.step.as_str()), Some(APPROVAL_WAIT_STEP));
+        drop(wait);
+        assert_eq!(live_progress(&text, shown.as_ref()), None);
     }
     #[test]
     fn ending_during_authority_recheck_settles_every_staged_unwritten_action() {

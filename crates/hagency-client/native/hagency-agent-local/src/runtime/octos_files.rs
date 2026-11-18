@@ -137,6 +137,7 @@ pub(super) async fn handle(
     if !queue.offer(pending) {
         return reply(wire, &call.call_id, Err("host_file_denied".into())).await;
     }
+    let _waiting = queue.show_approval_wait();
     // Octos's host-tool timeout is 60 seconds. Leave time to recheck the
     // server and return the result before Octos cancels the call.
     let decision = tokio::time::timeout(Duration::from_secs(45), decision);

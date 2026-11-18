@@ -22,7 +22,7 @@ pub(crate) const MANAGEMENT_ERROR: &str = "managementError";
 /// The decision that approves and remembers exactly this request.
 pub const ALWAYS: &str = "approve_always";
 /// At most this many Agents are read per poll (the listing is bounded too).
-const MAX_AGENTS: usize = 128;
+pub(crate) const MAX_AGENTS: usize = 128;
 
 /// A runtime `ApprovalView` (`proposalId`, `argsDigest`, `proposal`) as a
 /// `pending_approvals` row. None when it lacks what a card needs.
@@ -68,34 +68,6 @@ pub fn decision_command(row: &Value, decision: &str) -> Option<Command> {
     })
 }
 
-/// Append this app's own Agents' waiting requests (in `room`, if given) to a
-/// management answer. A failed listing leaves the answer as it was: the
-/// management rows must still show, and the next poll reads the queue again.
-pub async fn with_local(service: &crate::hagency::backend::Service, room: Option<&str>, answer: Result<Value, String>) -> Result<Value, String> {
-    let (rows, unreadable) = match read(service).await {
-        Ok(read) => read,
-        Err(code) => {
-            // The inbox says so too (`UNREADABLE`); the poll repeats within seconds.
-            makepad_widgets::log!("Local Agent approvals unreadable: {code}");
-            (Vec::new(), vec![json!({"agent": "", "code": code})])
-        }
-    };
-    let rows: Vec<Value> = rows.into_iter().filter(|r| room.is_none_or(|room| r["approval"]["roomId"] == room)).collect();
-    let mut value = match answer {
-        Ok(value) => value,
-        Err(code) if rows.is_empty() => return Err(code),
-        // Management is unreachable but this app's own Agent is waiting.
-        Err(code) => json!({"approvals": [], MANAGEMENT_ERROR: code}),
-    };
-    if let Some(list) = value["approvals"].as_array_mut() {
-        list.extend(rows);
-    } else {
-        value["approvals"] = Value::Array(rows);
-    }
-    value[UNREADABLE] = Value::Array(unreadable);
-    Ok(value)
-}
-
 /// Posted when this app's own Agent runtime queued, decided or dropped a
 /// request, so cards refresh within a second instead of at the next poll.
 #[derive(Debug, Clone, Copy)]
@@ -130,17 +102,19 @@ pub fn ensure_watching() {
 /// The waiting requests of this app's Agents, and the Agents whose queue
 /// could not be read (`{agent, code}`), which are logged, never skipped silently.
 pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(Vec<Value>, Vec<Value>), String> {
-    let listed = service.execute(Command::Agents).await?;
+    use super::approvals_read::{QUEUE_WAIT, STALE_AGENT_LIST, own_agents};
     let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
-    for agent in listed["agents"].as_array().into_iter().flatten().take(MAX_AGENTS) {
-        let Some(id) = agent["id"].as_str() else { continue };
-        if agent["state"] != "active" {
-            continue;
-        }
-        let local = Command::Local { agent_id: id.into(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
-        let name = agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent");
+    let (agents, stale) = own_agents(service).await?;
+    if stale {
+        // An Agent started since the last list may be missing: say so.
+        unreadable.push(json!({"agent": "", "code": STALE_AGENT_LIST}));
+    }
+    for (id, name) in agents {
+        let local = Command::Local { agent_id: id.clone(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
         // An Agent that does not run on this device answers an empty queue.
-        let answer = match service.execute(local).await {
+        let answer = tokio::time::timeout(QUEUE_WAIT, service.execute(local)).await
+            .unwrap_or_else(|_| Err(super::pending_approvals::READ_TIMEOUT.into()));
+        let answer = match answer {
             Ok(answer) => answer,
             Err(code) => {
                 makepad_widgets::log!("Approvals of Agent {id} unreadable: {code}");
@@ -148,7 +122,7 @@ pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(
                 continue;
             }
         };
-        rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, name)));
+        rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, &name)));
     }
     Ok((rows, unreadable))
 }

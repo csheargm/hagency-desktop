@@ -644,6 +644,11 @@ impl ApprovalQueue {
     pub fn offer(&self, pending: PendingApproval) -> bool {
         self.sender.try_send(pending).is_ok()
     }
+    /// While the returned guard lives, the run card's step says the run waits
+    /// for its owner's approval, so the requester sees why it paused.
+    pub(crate) fn show_approval_wait(&self) -> Option<hagency_runtime::live_text::ApprovalWait> {
+        self.live_text.as_ref().map(hagency_runtime::live_text::LiveText::wait_for_approval)
+    }
 }
 pub fn approval_queue(capacity: usize) -> Result<(ApprovalQueue, mpsc::Receiver<PendingApproval>)> {
     if !(1..=128).contains(&capacity) {
