@@ -87,9 +87,18 @@ async fn without_an_owner_decision_or_allow_rule_nothing_is_recorded_and_a_card_
     let comment = item("exec-c", &rendered("--comment", HEAD, ""), "completed", 0, dir);
     assert_eq!(run(&mut ledger, &mut reviews, dir, &comment, &docs).await, Some(Err("not_allowed_by_owner")), "AskOwner without an answer");
     // The owner's card allowed this exact command (its real directory and risk).
-    let mut decided = bash(&rendered("--comment", HEAD, ""), dir, "bird-codex");
-    decided.tool = "codex.command".into();
-    reviews.decided(call_key(T.0, T.1, "exec-d"), decided);
+    let decide = |reviews: &mut TurnReviews, id: &str, command: String, approval: Option<&str>| {
+        let mut decided = bash(&command, dir, "bird-codex");
+        decided.tool = "codex.command".into();
+        decided.expires = STARTED + 300;
+        decided.arguments = json!({"itemId": id, "command": command, "cwd": dir, "approvalId": approval});
+        reviews.decided(call_key(T.0, T.1, id), decided);
+    };
+    // A decision for another command than the one that completed does not count.
+    decide(&mut reviews, "exec-x", rendered("--comment", BASE, ""), None);
+    let other = item("exec-x", &rendered("--comment", HEAD, ""), "completed", 0, dir);
+    assert_eq!(run(&mut ledger, &mut reviews, dir, &other, &docs).await, Some(Err("not_allowed_by_owner")));
+    decide(&mut reviews, "exec-d", rendered("--comment", HEAD, ""), None);
     let card = item("exec-d", &rendered("--comment", HEAD, ""), "completed", 0, dir);
     assert_eq!(run(&mut ledger, &mut reviews, dir, &card, &docs).await, Some(Ok(Recorded::Approval)));
 }

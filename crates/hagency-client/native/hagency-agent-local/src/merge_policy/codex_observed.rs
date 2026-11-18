@@ -131,7 +131,12 @@ pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str,
 /// in its own directory if a saved allow rule covers exactly that.
 fn allowed_proposal(ledger: &mut Ledger, scope: &Scope, dispatch: &str, item: &Value, decided: Option<&ToolProposal>, now: i64) -> Option<ToolProposal> {
     if let Some(proposal) = decided {
-        return Some(proposal.clone());
+        // The decision was for this very command in this very directory, and
+        // the scope and policy still stand now (GPT review).
+        let same_command = proposal.arguments["command"] == item["command"];
+        let same_directory = item["cwd"].as_str().is_none_or(|cwd| cwd == proposal.canonical_directory);
+        let standing = !matches!(ledger.tool_disposition(proposal, now), Ok(ToolPolicy::Deny) | Err(_));
+        return (same_command && same_directory && standing).then(|| proposal.clone());
     }
     let directory = item["cwd"].as_str().filter(|path| std::path::Path::new(path).is_absolute())?;
     let versions = ledger.policy_snapshot(scope).ok()?;

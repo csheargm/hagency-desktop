@@ -149,7 +149,8 @@ impl Answer {
     /// exact proposal decided (its real directory and risk), noted once the
     /// accept is sent so a review it posts can be recorded.
     pub fn decided_call(&self) -> Option<(String, ToolProposal)> {
-        let decided = matches!(self.decision, Decision::Rules | Decision::Owner(true));
+        // A nested execve approval is not the enclosing command's (GPT review).
+        let decided = matches!(self.decision, Decision::Rules | Decision::Owner(true)) && self.request.proposal.arguments["approvalId"].is_null();
         command_key(&self.request).filter(|_| decided).map(|key| (key, self.request.proposal.clone()))
     }
     pub fn response(self, ledger: &mut Ledger, owner: &str) -> Value {
@@ -222,5 +223,26 @@ mod tests {
         approvals.offer(request(), Some(ToolPolicy::AskOwner), &queue);
         approvals.clear();
         assert_eq!(text.current_step().0, "running gh issue close 1");
+    }
+
+    /// GPT review: a rule's or the owner's accept is noted for observation only
+    /// for the command itself, never for a nested execve approval; every gate
+    /// answer (allowed or not) marks its item as the gate's.
+    #[tokio::test]
+    async fn only_a_top_level_decision_is_noted_and_any_gate_answer_marks_its_item() {
+        let (queue, _cards) = crate::codex::approval_queue(1).unwrap();
+        let mut approvals = Approvals::default();
+        let mut top = request();
+        top.proposal.arguments["itemId"] = json!("exec-1");
+        let mut nested = Request { id: json!(8), native: None, method: top.method.clone(), thread: top.thread.clone(), turn: top.turn.clone(), proposal: top.proposal.clone() };
+        nested.proposal.arguments["approvalId"] = json!("execve-1");
+        approvals.offer(top, Some(ToolPolicy::AllowWithRules { tools: vec![], directories: vec![] }), &queue);
+        assert!(approvals.next().await.decided_call().is_some());
+        approvals.offer(nested, Some(ToolPolicy::AllowWithRules { tools: vec![], directories: vec![] }), &queue);
+        assert!(approvals.next().await.decided_call().is_none());
+        let mut refused = request();
+        refused.proposal.arguments["itemId"] = json!("exec-2");
+        approvals.offer_gated(refused, false);
+        assert!(approvals.answered_by_gate(&crate::merge_policy::codex_review::call_key("th", "tu", "exec-2")));
     }
 }
