@@ -141,15 +141,15 @@ impl UserRoomsInCommonRef {
 }
 
 /// The line above the list: loading, or empty. An empty list says so; when
-/// some member lists are not loaded yet it says nothing is found *yet*,
-/// since the user may be in one of those rooms. A list with rooms needs no
-/// note.
+/// some rooms' member lists are not on this device it says the list covers
+/// only the loaded ones, since the user may be in one of the others. A list
+/// with rooms needs no note.
 pub(super) fn status_text(found: Option<&RoomsInCommon>) -> String {
     let Some(found) = found else { return crate::i18n::tr("Loading…").to_owned() };
     let key = match (found.rooms.is_empty(), found.incomplete > 0) {
         (false, _) => return String::new(),
         (true, false) => "No rooms in common",
-        (true, true) => "No rooms in common found yet: some rooms' members are still loading",
+        (true, true) => "No rooms in common in the member lists loaded on this device",
     };
     crate::i18n::tr(key).to_owned()
 }
@@ -207,6 +207,6 @@ mod tests {
         assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![room], incomplete: 2 })), "",
             "Nov 18: a found list carried a filler note about unloaded member lists");
         assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![], incomplete: 2 })),
-            "No rooms in common found yet: some rooms' members are still loading");
+            "No rooms in common in the member lists loaded on this device");
     }
 }

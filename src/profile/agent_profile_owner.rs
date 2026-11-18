@@ -15,9 +15,11 @@ use matrix_sdk::{Client, RoomMemberships, ruma::{OwnedUserId, RoomId, UserId, ap
 use hagency_core::agent_owner::{OWNER_FIELD, RUNTIME_FIELD, verified_owner, verified_runtime};
 use super::agent_facts::AgentFactsChanged;
 
-/// How long a published owner is reused; an owner is set once per Agent.
+/// How long a published profile is reused; it changes only when the Agent
+/// restarts on another runtime or owner.
 const FOUND_TTL: Duration = Duration::from_secs(300);
-/// How long "not published" is reused: an Agent that starts soon publishes.
+/// How long a profile without a runtime is reused (even with an owner): an
+/// Agent that starts soon publishes it.
 const MISSING_TTL: Duration = Duration::from_secs(30);
 /// A read still marked loading after this is taken as lost (cancelled task).
 const LOADING_TTL: Duration = Duration::from_secs(20);
@@ -53,7 +55,7 @@ fn cache_for(account: &OwnedUserId) -> std::sync::MutexGuard<'static, Cache> {
 }
 
 fn fresh(entry: &(Instant, Published)) -> bool {
-    entry.0.elapsed() < if entry.1 == Published::default() { MISSING_TTL } else { FOUND_TTL }
+    entry.0.elapsed() < if entry.1.runtime.is_some() { FOUND_TTL } else { MISSING_TTL }
 }
 
 /// Only another server's Agent is read: this server's Agents are in its own
@@ -211,8 +213,10 @@ mod tests {
     #[test]
     fn a_missing_owner_is_asked_again_sooner_than_a_found_one() {
         let old = Instant::now() - Duration::from_secs(60);
-        assert!(!fresh(&(old, None)), "an Agent may have started since");
-        assert!(fresh(&(old, Some(owned_user_id!("@bird:beta")))));
+        assert!(!fresh(&(old, Published::default())), "an Agent may have started since");
+        let owner_only = Published { owner: Some(owned_user_id!("@bird:beta")), runtime: None };
+        assert!(!fresh(&(old, owner_only.clone())), "GPT review: a known owner must not hold back a runtime published since");
+        assert!(fresh(&(old, Published { runtime: Some("Claude"), ..owner_only })));
     }
 
     async fn signed_in(origin: &str) -> Client {

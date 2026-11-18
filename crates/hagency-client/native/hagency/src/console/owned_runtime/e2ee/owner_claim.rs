@@ -14,6 +14,9 @@ use std::collections::HashMap;
 /// publishing). Only the last value counts: after A → B, naming A again must
 /// write A.
 static CLAIMED: LazyLock<std::sync::Mutex<HashMap<(String, &'static str), String>>> = LazyLock::new(Default::default);
+/// Profile writes go out one at a time, so an older write still in flight
+/// can never land after a newer one (GPT review); they are rare.
+static WRITES: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
 
 impl AgentDevice {
     /// Publishes `owner` as this Agent's owner unless it already did, in the
@@ -33,6 +36,9 @@ impl AgentDevice {
         if !start_claim(&agent, field, value) { return; }
         let (client, value) = (self.client.clone(), value.to_owned());
         tokio::spawn(async move {
+            let _turn = WRITES.lock().await;
+            // A newer value started meanwhile: its own write is the one that counts.
+            if !is_latest(&agent, field, &value) { return; }
             if let Err(error) = publish(&client, field, &value).await {
                 // Retried on the next use; until then readers fall back to
                 // the room roster and the Agent's run cards.
@@ -70,6 +76,12 @@ fn start_claim(agent: &str, field: &'static str, value: &str) -> bool {
     if claimed.get(&key).is_some_and(|last| last == value) { return false; }
     claimed.insert(key, value.to_owned());
     true
+}
+
+/// Whether `value` is still the last one started for `agent`'s `field`.
+fn is_latest(agent: &str, field: &'static str, value: &str) -> bool {
+    let claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    claimed.get(&(agent.to_owned(), field)).is_some_and(|last| last == value)
 }
 
 /// A failed write of `value`: forgotten so the next use retries, unless a
@@ -130,6 +142,19 @@ mod tests {
         assert!(!start_claim(agent, RUNTIME_FIELD, "claude"));
         assert!(start_claim(agent, RUNTIME_FIELD, "codex"), "a new runtime is published");
         assert!(!start_claim(agent, OWNER_FIELD, "@bird:beta"), "the owner is untouched");
+    }
+
+    /// GPT review: a delayed Claude write landing after a newer Codex write
+    /// left the profile saying Claude. Writes are serialized, and a write
+    /// whose value was superseded before its turn is skipped.
+    #[test]
+    fn a_superseded_value_is_not_written() {
+        let agent = "@_hagency_agt_claim6:beta";
+        assert!(start_claim(agent, RUNTIME_FIELD, "claude"));
+        assert!(is_latest(agent, RUNTIME_FIELD, "claude"));
+        assert!(start_claim(agent, RUNTIME_FIELD, "codex"));
+        assert!(!is_latest(agent, RUNTIME_FIELD, "claude"), "the older write is skipped");
+        assert!(is_latest(agent, RUNTIME_FIELD, "codex"));
     }
 
     /// User flow: the Agent's device is signed in and the claim reaches
