@@ -207,8 +207,10 @@ async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), St
     // "merged" only for a pull request GitHub reports merged; an issue closed
     // as completed without it is "closed" (integration GPT review).
     let state = if merged.is_some() { "merged" } else { "closed" };
-    // The owner's own merge is what a new watch's trial counts (ADR 0028).
-    io.record(change_of(repo, n, json!({"state": state, "notified": true, "ownerMerged": by_owner}))).await
+    // The owner's own merge of exactly this pull request is what a new
+    // watch's trial counts (ADR 0028, GPT review).
+    let pr = merged.map_or(Value::Null, Value::from);
+    io.record(change_of(repo, n, json!({"state": state, "notified": true, "pr": pr, "ownerMerged": by_owner}))).await
 }
 /// Whether pull request `pr` is linked to issue `number`: a closing keyword
 /// in its description, or a head branch naming the issue ("issue-33",

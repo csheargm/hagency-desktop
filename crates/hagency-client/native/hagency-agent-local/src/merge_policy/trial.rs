@@ -41,9 +41,16 @@ pub fn trial_counts(reason: &str) -> Option<(u32, u32)> {
     Some((digits(next)?, digits(required)?))
 }
 
-/// The trial's hold on a merge by `agent` in `repo`, when one is running.
-pub(crate) fn hold(ledger: &Ledger, agent: &str, repo: &str) -> Result<Option<Decision>> {
-    Ok(ledger.trial_status(agent, repo)?.map(|(merged, required)| Decision::NeedsHuman(trial_reason(merged + 1, required))))
+/// The trial's hold on a merge in `repo` when one is running for any of
+/// `agents`: the merger, and the Agents that wrote the pull request, so
+/// another Agent past its trial cannot merge a trial watch's work (GPT review).
+pub(crate) fn hold(ledger: &Ledger, agents: &[String], repo: &str) -> Result<Option<Decision>> {
+    for agent in agents {
+        if let Some((merged, required)) = ledger.trial_status(agent, repo)? {
+            return Ok(Some(Decision::NeedsHuman(trial_reason(merged + 1, required))));
+        }
+    }
+    Ok(None)
 }
 
 impl Ledger {
@@ -77,12 +84,13 @@ impl Ledger {
     /// unless the gate merged it itself. True when it counted.
     pub fn count_trial_merge(&mut self, owner: &str, agent: &str, change: &TrackChange) -> Result<bool> {
         self.owner(owner)?;
-        if change.state != Some(State::Merged) || change.owner_merged != Some(true) {
+        // The evidence names the pull request GitHub was asked about (GPT review).
+        if change.state != Some(State::Merged) || change.owner_merged != Some(true) || change.pr.is_none() {
             return Ok(false);
         }
         let (repo, issue) = (change.repo.as_str(), change.number);
         let track = self.issue_tracks(agent)?.into_iter().find(|t| t.repo.eq_ignore_ascii_case(repo) && t.number == issue);
-        let Some(pr) = track.filter(|t| t.state == State::Merged).and_then(|t| t.pr) else { return Ok(false) };
+        let Some(pr) = track.filter(|t| t.state == State::Merged).and_then(|t| t.pr).filter(|pr| change.pr == Some(*pr)) else { return Ok(false) };
         if self.trial_status(agent, repo)?.is_none() || self.auto_merged(repo, pr)? {
             return Ok(false);
         }

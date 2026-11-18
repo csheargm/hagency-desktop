@@ -16,6 +16,9 @@ repository, so the first merges should be theirs.
 - Where: the merge gate's `review_loop::judge`, after every other rule
   passed, so both the gate's own answer (`qualifies`, the card stays the
   owner's) and the loop's dry run (`merge_readiness`) say the same. The
+  hold applies while the merger's watch OR the watch of any Agent that wrote
+  the pull request (tracked author, "Opened by agent") is in its trial, so
+  another Agent past its trial cannot merge a trial watch's work (GPT review). The
   reason is `trial: pull request k of N needs the owner to merge`
   (`reason_kind` "trial"); the desktop's merge step posts it once per head
   through the existing hold notice: "Trial: PR k of N needs you to merge —
@@ -24,7 +27,8 @@ repository, so the first merges should be theirs.
   `watch_trial_merges`). A pull request counts when the issue tracker records
   its issue `merged`, which it does only after GitHub reports the pull
   request merged (ADR 0020), AND GitHub's `merged_by` is this owner's own
-  login (the tracker sends `ownerMerged` with the track change; the owner
+  login (the tracker sends `ownerMerged` and the verified `pr` with the
+  track change, and the ledger counts only that stored pull request; the owner
   API calls `Ledger::count_trial_merge`, owner-checked). Every Agent shares
   that login, but during the trial the gate never merges, so such a merge is
   the owner's: on GitHub, or by approving the Agent's merge card. Another

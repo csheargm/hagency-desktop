@@ -39,7 +39,7 @@ fn merged_by(ledger: &mut Ledger, issue: i64, pr: u64, by_owner: bool) -> TrackC
     let change = |handed, state, pr| TrackChange { repo: A.into(), number: issue, handed, state, pr, notified: None, rehanded: None, owner_merged: Some(by_owner) };
     ledger.track_issue("anna", &change(Some(1), None, None), 1).unwrap();
     ledger.track_issue("anna", &change(None, Some(State::PrOpened), Some(pr)), 2).unwrap();
-    let done = change(None, Some(State::Merged), None);
+    let done = change(None, Some(State::Merged), Some(pr));
     ledger.track_issue("anna", &done, 3).unwrap();
     done
 }
@@ -130,6 +130,7 @@ async fn agents_and_room_members_cannot_end_or_count_the_trial_and_the_owner_can
     assert!(matches!(ledger.end_watch_trial(MEMBER, "anna", A), Err(Error::Unauthorized)));
     assert!(matches!(ledger.end_watch_trial("anna", "anna", A), Err(Error::Unauthorized)));
     let done = merged(&mut ledger, 1, 11);
+    assert!(!ledger.count_trial_merge(OWNER, "anna", &TrackChange { pr: Some(99), ..done.clone() }).unwrap(), "evidence about another pull request");
     assert!(matches!(ledger.count_trial_merge(MEMBER, "anna", &done), Err(Error::Unauthorized)));
     // Another maintainer's merge on GitHub is no owner merge (GPT review).
     let other = merged_by(&mut ledger, 4, 14, false);
@@ -141,11 +142,29 @@ async fn agents_and_room_members_cannot_end_or_count_the_trial_and_the_owner_can
     // An issue that closed without a merged pull request never counts.
     let handed = TrackChange { repo: A.into(), number: 3, handed: Some(1), state: None, pr: None, notified: None, rehanded: None, owner_merged: None };
     ledger.track_issue("anna", &handed, 1).unwrap();
-    let unmerged = TrackChange { state: Some(State::Merged), owner_merged: Some(true), ..handed };
+    let unmerged = TrackChange { state: Some(State::Merged), owner_merged: Some(true), pr: Some(15), ..handed };
     assert!(!ledger.count_trial_merge(OWNER, "anna", &unmerged).unwrap(), "the stored record is not merged");
     assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((0, TRIAL_PRS)));
     ledger.end_watch_trial(OWNER, "anna", A).unwrap();
     assert_eq!(ledger.trial_status("anna", A).unwrap(), None);
     let src = Src::new(vec![file("src/a.rs", 3)]);
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, Some(true), "ended by the owner");
+}
+
+#[tokio::test]
+async fn another_agent_past_its_trial_cannot_merge_a_trial_watchs_pull_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna", "bob"]);
+    ledger.set_auto_merge(OWNER, "anna", true).unwrap();
+    ledger.set_work(OWNER, "anna", vec![rules()]).unwrap();
+    ledger.end_watch_trial(OWNER, "anna", A).unwrap();
+    // Bob's new watch of the same repository wrote PR 7 (tracked for issue 5).
+    ledger.set_work(OWNER, "bob", vec![rules()]).unwrap();
+    let change = |handed, state, pr| TrackChange { repo: A.into(), number: 5, handed, state, pr, notified: None, rehanded: None, owner_merged: None };
+    ledger.track_issue("bob", &change(Some(1), None, None), 1).unwrap();
+    ledger.track_issue("bob", &change(None, Some(State::PrOpened), Some(7)), 2).unwrap();
+    let src = Src::new(vec![file("src/a.rs", 3)]);
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "Bob's trial holds Anna's merge");
+    ledger.end_watch_trial(OWNER, "bob", A).unwrap();
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg2").await, Some(true));
 }

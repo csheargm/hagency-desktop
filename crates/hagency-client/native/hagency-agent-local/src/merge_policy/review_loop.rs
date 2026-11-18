@@ -109,7 +109,9 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
         }
     }
     // A new watch's trial (ADR 0028): the owner merges its first pull requests.
-    super::trial::hold(ledger, merger, repo).ok()?.or(Some(Decision::Merge))
+    let mut agents = ledger.pr_author_agents(repo, command.number).ok()?;
+    agents.extend(view.opened_by.iter().cloned().chain([merger.to_owned()]));
+    super::trial::hold(ledger, &agents, repo).ok()?.or(Some(Decision::Merge))
 }
 
 #[cfg(test)]
