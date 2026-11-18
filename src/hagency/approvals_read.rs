@@ -38,8 +38,12 @@ static LISTED: LazyLock<Mutex<(String, Vec<(String, String)>)>> = LazyLock::new(
 /// Every request this account may read (in `room`, if given), management
 /// rows first, then this app's own Agents' rows.
 pub async fn read_all(service: &crate::hagency::backend::Service, room: Option<&str>) -> Result<Value, String> {
-    let management = service.shared_permissions(ManagementCommand::SharedApprovals { room_id: room.map(str::to_owned) });
-    bounded(management, super::local_approvals::read(service), room, MANAGEMENT_READ, LOCAL_READ).await
+    // Boxed: both halves inline made every spawning caller's future (and
+    // the frame that moves it onto the runtime) overflow a test thread's
+    // stack (matrix_links native_root_delivery test, Nov 17).
+    let management = Box::pin(service.shared_permissions(ManagementCommand::SharedApprovals { room_id: room.map(str::to_owned) }));
+    let local = Box::pin(super::local_approvals::read(service));
+    Box::pin(bounded(management, local, room, MANAGEMENT_READ, LOCAL_READ)).await
 }
 
 /// Reads both halves at once, each within its own limit.
