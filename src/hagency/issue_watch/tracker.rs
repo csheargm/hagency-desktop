@@ -7,6 +7,8 @@
 //! and attempt, so a check that dies in between repeats a duplicate the
 //! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
 use super::merge_hold::Missing;
+use super::notice::quoted_title;
+use super::run_end::{ENDED_NO_PR, PUSHED_NO_PR, RUN_LOST, RunEnd, branch_names_issue};
 use super::work_slots::closes_issue;
 use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -37,9 +39,16 @@ pub(crate) trait TrackIo {
     async fn record(&self, change: Value) -> Result<(), String>;
     /// One room line about issue `number`, keyed so the same `key` is never posted twice.
     async fn say(&self, number: i64, key: &str, text: String) -> Result<(), String>;
-    /// Hand `issue` off again as `attempt` (claim, post, record `handed`);
+    /// Hand `issue` off again as `attempt` (claim, post, record `handed`),
+    /// asking to open the pull request from `branch` when one was pushed;
     /// `Ok(false)` when another Agent now holds the issue's claim.
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String>;
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String>;
+    /// Whether the current hand-off's run is over (its Activity record).
+    async fn run_end(&self, track: &Track) -> Result<RunEnd, String>;
+    /// The one branch the Agent pushed for issue `number`, if any.
+    async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String>;
+    /// The Agent's name for room lines.
+    fn agent_label(&self) -> String;
     /// Whether pull request `pr` was merged (GitHub's own answer).
     async fn pr_merged(&self, pr: u64) -> Result<bool, String>;
     /// A tracked issue missing from the open list: GitHub's own answer.
@@ -107,24 +116,44 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     };
     let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
-    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix };
+    // A run that already ended without a pull request is retried now (e2e, Nov 17).
+    // An unreadable run only falls back to the deadline (GPT review): never stuck.
+    let run = if fact == IssueFact::Open && open_pr.is_none() && !cannot_fix && track.state == State::HandedOff {
+        io.run_end(track).await.unwrap_or_else(|e| {
+            makepad_widgets::log!("WARN issue_track_run_unreadable #{}: {e}", track.number);
+            RunEnd::Running
+        })
+    } else {
+        RunEnd::Running
+    };
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended() };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
     let n = track.number;
-    let change = |extra: Value| change_of(inputs.repo, n, extra);
+    // The record's own spelling: the ledger keys it exactly (GPT review).
+    let change = |extra: Value| change_of(&track.repo, n, extra);
     match decide(track, &facts) {
         Action::Wait => Ok(Some(waiting_line(track))),
         Action::Retry { attempt } => {
             let issue = issue.ok_or("the issue is not open")?;
             // Handed off first: a claim lost to another Agent ends the record
             // instead of repeating this attempt every check (GPT review).
-            if !io.hand_off(issue, attempt).await? {
+            // No branch list: a plain retry still goes out (GPT review).
+            let branch = if run.ended() {
+                io.pushed_branch(n).await.unwrap_or_else(|e| {
+                    makepad_widgets::log!("WARN issue_track_branches_unreadable #{n}: {e}");
+                    None
+                })
+            } else {
+                None
+            };
+            if !io.hand_off(issue, attempt, branch.as_deref()).await? {
                 io.record(change(json!({"state": "closed"}))).await?;
                 return Ok(Some(crate::i18n::format("#{number} taken by another Agent", &[("number", n.to_string())])));
             }
             let args = [("number", n.to_string()), ("attempt", attempt.to_string()), ("max", MAX_ATTEMPTS.to_string())];
-            io.say(n, &format!("retry-{attempt}"), crate::i18n::format(RETRYING, &args)).await?;
+            io.say(n, &format!("retry-{attempt}"), retry_text(run, branch.as_deref(), &io.agent_label(), &args)).await?;
             Ok(Some(crate::i18n::format("#{number} retrying ({attempt}/{max})", &args)))
         }
         Action::GiveUp => {
@@ -138,10 +167,25 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
             io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
             Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
         }
-        Action::FollowPr { pr } => follow_one(io, inputs.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
-        Action::AnnounceFixed => announce(io, inputs.repo, track).await.map(|_| None),
+        Action::FollowPr { pr } => follow_one(io, &track.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
+        Action::AnnounceFixed => announce(io, &track.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
+}
+
+/// Why attempt `args.attempt` was handed off: the deadline passed, or the run ended without a pull request.
+fn retry_text(run: RunEnd, branch: Option<&str>, agent: &str, args: &[(&str, String); 3]) -> String {
+    let mut args = args.to_vec();
+    let template = match (run, branch) {
+        (RunEnd::Running, _) => RETRYING,
+        (_, Some(branch)) => {
+            args.extend([("agent", agent.to_owned()), ("branch", quoted_title(branch))]);
+            PUSHED_NO_PR
+        }
+        (RunEnd::Lost, None) => RUN_LOST,
+        (RunEnd::Ended, None) => ENDED_NO_PR,
+    };
+    crate::i18n::format(template, &args)
 }
 
 fn change_of(repo: &str, number: i64, extra: Value) -> Value {
@@ -192,7 +236,10 @@ async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), St
         None => crate::i18n::format("✅ #{number} closed as completed", &[("number", n.to_string())]),
     };
     io.say(n, "fixed", text).await?;
-    io.record(change_of(repo, n, json!({"state": "merged", "notified": true}))).await
+    // "merged" only for a pull request GitHub reports merged; an issue closed
+    // as completed without it is "closed" (integration GPT review).
+    let state = if merged.is_some() { "merged" } else { "closed" };
+    io.record(change_of(repo, n, json!({"state": state, "notified": true}))).await
 }
 /// Whether pull request `pr` is linked to issue `number`: a closing keyword
 /// in its description, or a head branch naming the issue ("issue-33",
@@ -201,13 +248,7 @@ pub(crate) fn links_issue(pr: &PullRequest, repo: &str, number: i64) -> bool {
     if closes_issue(&pr.body, repo, number) {
         return true;
     }
-    let n = number.to_string();
-    let branch = pr.head_ref.to_ascii_lowercase();
-    let tokens: Vec<&str> = branch.split(|c: char| !c.is_ascii_alphanumeric()).filter(|t| !t.is_empty()).collect();
-    let last = branch.rsplit('/').next().unwrap_or_default();
-    tokens.windows(2).any(|w| matches!(w[0], "issue" | "issues" | "gh") && w[1] == n)
-        || tokens.iter().any(|t| *t == format!("issue{n}"))
-        || last.strip_prefix(&n).is_some_and(|rest| rest.starts_with('-'))
+    branch_names_issue(&pr.head_ref, number)
 }
 
 pub const RETRYING: &str = "🔁 Retrying #{number} (attempt {attempt} of {max}): no pull request from the last hand-off";

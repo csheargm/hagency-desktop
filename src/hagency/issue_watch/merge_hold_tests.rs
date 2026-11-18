@@ -3,7 +3,7 @@
 //! room notice per head and set, a fixed blocker lets the next one through,
 //! and a pull request that passes is carried on to the pinned merge.
 use super::loop_notice::{LoopNotice, Target};
-use super::merge_hold::{Gate, Missing, REVIEW_WAIT_SECS, Streaks, UNREACHABLE_AFTER, after_failure, follow_gate, review_settled};
+use super::merge_hold::{Gate, HeadClock, Missing, REVIEW_WAIT_SECS, Streaks, UNREACHABLE_AFTER, after_failure, follow_gate, review_settled};
 use super::review_loop::{LoopCtx, LoopIo};
 use matrix_sdk::ruma::{OwnedUserId, owned_user_id};
 use serde_json::{Value, json};
@@ -89,14 +89,41 @@ fn a_missing_approval_waits_while_the_reviewer_has_not_answered() {
 }
 
 #[test]
-fn the_review_settles_on_a_verdict_for_this_head_or_after_the_wait_when_never_reviewed() {
+fn the_review_settles_on_a_verdict_for_this_head_or_after_each_heads_own_wait() {
     let review = |commit: &str| vec![("csheargm".to_owned(), "COMMENTED".to_owned(), commit.to_owned())];
     let opened = 1_000;
-    assert!(review_settled(&review(HEAD), HEAD, opened, opened + 1));
-    assert!(!review_settled(&[], HEAD, opened, opened + REVIEW_WAIT_SECS - 1));
-    assert!(review_settled(&[], HEAD, opened, opened + REVIEW_WAIT_SECS));
+    assert!(review_settled(&review(HEAD), HEAD, opened, opened, opened + 1));
+    assert!(!review_settled(&[], HEAD, opened, opened, opened + REVIEW_WAIT_SECS - 1));
+    assert!(review_settled(&[], HEAD, opened, opened + 5_000, opened + REVIEW_WAIT_SECS), "never reviewed: the PR's age counts");
+    // A push after a review of the old head: the new head gets its own wait.
     let old = "1".repeat(40);
-    assert!(!review_settled(&review(&old), HEAD, opened, opened + 10 * REVIEW_WAIT_SECS), "after a push, wait for the new head's verdict");
+    let pushed = opened + 10 * REVIEW_WAIT_SECS;
+    assert!(!review_settled(&review(&old), HEAD, opened, pushed, pushed + REVIEW_WAIT_SECS - 1));
+    assert!(review_settled(&review(&old), HEAD, opened, pushed, pushed + REVIEW_WAIT_SECS), "an old head's review never stops the clock");
+}
+
+#[test]
+fn the_head_clock_restarts_on_a_push_only() {
+    let mut clock = HeadClock::default();
+    assert_eq!(clock.seen_at("pr", "a", 10), 10);
+    assert_eq!(clock.seen_at("pr", "a", 99), 10, "same head: the first sighting stands");
+    assert_eq!(clock.seen_at("pr", "b", 120), 120, "new head: a new wait");
+    assert_eq!(clock.seen_at("other", "a", 130), 130);
+}
+
+#[test]
+fn an_old_head_reviewed_then_a_silent_new_head_is_told_once_after_its_wait() {
+    let old = "1".repeat(40);
+    let reviews = vec![("csheargm".to_owned(), "COMMENTED".to_owned(), old)];
+    let mut clock = HeadClock::default();
+    let pushed = 50_000;
+    let fake = Fake::new(human("approvals", NO_APPROVAL, true));
+    for now in [pushed, pushed + REVIEW_WAIT_SECS - 1, pushed + REVIEW_WAIT_SECS, pushed + 2 * REVIEW_WAIT_SECS] {
+        let settled = review_settled(&reviews, HEAD, 1_000, clock.seen_at("pr36", HEAD, now), now);
+        let gate = check(&fake, Some("admin"), settled);
+        assert_eq!(gate == Gate::WaitReview, now < pushed + REVIEW_WAIT_SECS, "at {now}: {gate:?}");
+    }
+    assert_eq!(fake.bodies().len(), 1, "one notice for the silent head");
 }
 
 #[test]

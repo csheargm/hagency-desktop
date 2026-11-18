@@ -23,6 +23,10 @@ pub struct Notice {
     /// The watching Agent's auto-merge switch is on: the hand-off also tells it
     /// to carry the pull request on to review (the merge itself stays gated).
     pub merge_policy: bool,
+    /// A retry after a run that pushed this branch but opened no pull
+    /// request: the request asks for the pull request from it (ADR 0020).
+    /// Not carried in the marker; the timeline view stays the same.
+    pub branch: Option<String>,
 }
 
 /// What the hand-off adds when the watching Agent's auto-merge is on, so the
@@ -61,11 +65,15 @@ pub fn track_step(number: i64) -> String {
 impl Notice {
     pub fn new(repo: &str, issue: &Issue, agent_label: &str) -> Self {
         let title = issue.title.split_whitespace().collect::<Vec<_>>().join(" ");
-        Self { repo: repo.to_owned(), number: issue.number, url: issue.url.clone(), title, agent: agent_label.trim_start_matches('@').to_owned(), merge_policy: false }
+        Self { repo: repo.to_owned(), number: issue.number, url: issue.url.clone(), title, agent: agent_label.trim_start_matches('@').to_owned(), merge_policy: false, branch: None }
     }
 
     /// The same notice for an Agent whose auto-merge switch is `on`.
     pub fn with_merge_policy(mut self, on: bool) -> Self { self.merge_policy = on; self }
+    /// The same notice for a retry whose earlier run pushed `branch`.
+    pub fn with_branch(mut self, branch: Option<String>) -> Self { self.branch = branch; self }
+    /// The data line naming the pushed branch, quoted like the title.
+    fn branch_step(&self) -> String { self.branch.as_deref().map(|b| format!(" Branch {b} names this issue but has no pull request: if it holds your fix, open the draft pull request from it.")).unwrap_or_default() }
     fn merge_step(&self) -> String { if self.merge_policy { format!(" {MERGE_POLICY_STEP}") } else { String::new() } }
     /// The data line after the request; empty for an untitled issue.
     fn title_line(&self) -> String { if self.title.is_empty() { String::new() } else { format!("\n{}: {}", ::hagency::ISSUE_TITLE_LABEL, quoted_title(&self.title)) } }
@@ -74,7 +82,7 @@ impl Notice {
     /// instruction; people see the localized `view` instead. The fixed request
     /// comes first; the issue's own title only follows as quoted data.
     pub fn body(&self) -> String {
-        format!("{}#{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}{}", ::hagency::ISSUE_NOTICE_LEAD, self.number, self.repo, self.agent, self.url, track_step(self.number), self.merge_step(), self.title_line())
+        format!("{}#{} in {} — @{} please fix it on a branch and open a draft pull request: {}{}{}{}{}", ::hagency::ISSUE_NOTICE_LEAD, self.number, self.repo, self.agent, self.url, track_step(self.number), self.branch_step(), self.merge_step(), self.title_line())
     }
 
     /// The message: text (dispatch wakes on text from the owner), the Agent
@@ -83,8 +91,8 @@ impl Notice {
         let esc = |s: &str| htmlize::escape_text(s).into_owned();
         let title = esc(&self.title_line()).replace('\n', "<br>");
         let html = format!(
-            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{track}{step}{title}",
-            track = esc(&track_step(self.number)), step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
+            "🔔 New GitHub issue <a href=\"{url}\">#{n}</a> in {repo} — <a href=\"{pill}\">@{agent}</a> please fix it on a branch and open a draft pull request{track}{branch}{step}{title}",
+            track = esc(&track_step(self.number)), branch = esc(&self.branch_step()), step = esc(&self.merge_step()), url = htmlize::escape_attribute(&self.url), n = self.number, repo = esc(&self.repo), pill = puppet.matrix_to_uri(), agent = esc(&self.agent),
         );
         RoomMessageEventContent::text_html(self.body(), html).add_mentions(Mentions::with_user_ids([puppet.to_owned()]))
     }
@@ -102,7 +110,7 @@ impl Notice {
         let text = |k: &str| m.get(k)?.as_str().map(str::to_owned);
         let url = text("url").filter(|u| u.starts_with("https://"))?;
         Some(Self { repo: text("repo")?, number: m.get("number")?.as_i64()?, url, title: text("title").unwrap_or_default(), agent: text("agent").unwrap_or_default(),
-            merge_policy: m.get("mergePolicy").and_then(Value::as_bool).unwrap_or(false) })
+            merge_policy: m.get("mergePolicy").and_then(Value::as_bool).unwrap_or(false), branch: None })
     }
 
     /// The compact notice the timeline shows: a "From issue watching" label,

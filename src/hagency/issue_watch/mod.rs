@@ -16,6 +16,9 @@ mod merge_hold_tests;
 mod review_loop;
 pub(crate) mod reviewer_pick;
 pub mod room_review;
+mod run_end;
+#[cfg(test)]
+mod run_end_tests;
 mod tracker;
 mod tracker_live;
 mod status_publish;
@@ -179,6 +182,14 @@ fn report(epoch: u64, agent_id: &str, line: Option<String>) {
     Cx::post_action(IssueWatchChecked);
 }
 
+/// Whether the single-repository watch hands off and follows on its own:
+/// it is on, and its repository is not on the work list, whose pass already
+/// applied the claims and limits (integration GPT review: an overlapping
+/// watch handed off issues the work list had declined).
+pub(crate) fn single_repo_watch_runs(watch: &IssueWatch, saved: &Value) -> bool {
+    watch.setting.mode != WatchMode::Off && !tracker_live::on_work_list(saved, &watch.setting.repo)
+}
+
 /// One Agent's check and the tracker's status parts; `Ok(None)` while its watch is Off.
 async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Value, peers: &[Value]) -> Result<Option<(Outcome, Vec<String>)>, String> {
     let id = agent["id"].as_str().unwrap_or_default();
@@ -192,7 +203,7 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
     let mut worked = work::run(&worker, &saved).await;
     worked.errors.extend(plans::report_done(service, client, id, &token, epoch, &saved).await);
-    if watch.setting.mode == WatchMode::Off {
+    if !single_repo_watch_runs(&watch, &saved) {
         return Ok(Some((Outcome { handed: worked.handed, error: (!worked.errors.is_empty()).then(|| worked.errors.join(" · ")) }, worked.tracked)));
     }
     let issues = fetch_open_issues(client, GITHUB_API, &watch.setting.repo, &token).await.map_err(|e| e.to_string())?;
@@ -203,11 +214,7 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let mut outcome = handoff::hand_off(&live, &picks).await;
     outcome.handed += worked.handed;
     // Follow-through on earlier hand-offs (ADR 0020), from this check's snapshot.
-    let followed = if tracker_live::on_work_list(&saved, &watch.setting.repo) {
-        tracker::Followups::default() // the work list follows it, with its claims
-    } else {
-        tracker_live::follow_repo(&worker, &tracker_live::Watched { watch: &watch, entry: None, open_issues: &issues, seen: &seen }, &saved).await
-    };
+    let followed = tracker_live::follow_repo(&worker, &tracker_live::Watched { watch: &watch, entry: None, open_issues: &issues, seen: &seen }, &saved).await;
     let errors: Vec<String> = outcome.error.take().into_iter().chain(worked.errors).chain(followed.errors).collect();
     outcome.error = (!errors.is_empty()).then(|| errors.join(" · "));
     Ok(Some((outcome, worked.tracked.into_iter().chain(followed.lines).collect())))

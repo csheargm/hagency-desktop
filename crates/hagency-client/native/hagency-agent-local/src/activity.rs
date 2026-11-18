@@ -46,6 +46,29 @@ pub struct Activity {
     pub outcome: Outcome,
     /// Input plus output tokens of the settled call; `None` when unknown.
     pub tokens: Option<u64>,
+    /// The issue an issue-watch hand-off asks about (ADR 0020), so the loop
+    /// can tell which run is which issue's. Only the repository and number
+    /// leave this module, never the request text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueRef>,
+}
+
+/// The repository and number a hand-off names.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct IssueRef {
+    pub repo: String,
+    pub number: i64,
+}
+
+/// `🔔 New GitHub issue #N in owner/name …` on any line of `body`.
+pub fn handoff_issue(body: &str) -> Option<IssueRef> {
+    body.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix(hagency_runtime::attribution::ISSUE_NOTICE_LEAD)?.strip_prefix('#')?;
+        let (number, rest) = rest.split_once(" in ")?;
+        let repo = rest.split_whitespace().next()?;
+        let number: i64 = number.parse().ok().filter(|n| *n > 0)?;
+        crate::issue_watch::valid_repo(repo).then(|| IssueRef { repo: repo.to_owned(), number })
+    })
 }
 
 /// Tokens a settled call charged; unreported or unsettled usage is unknown.
@@ -92,6 +115,7 @@ impl Ledger {
                 received_at,
                 outcome: Outcome::of_state(&state),
                 tokens: charged(call_state.as_deref(), usage.as_deref()),
+                issue: handoff_issue(&dispatch.body),
             });
         }
         Ok(out)

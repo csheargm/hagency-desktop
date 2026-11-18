@@ -4,6 +4,7 @@
 //! The fake store applies changes with the ledger's own rule (`apply_change`),
 //! and a "restart" is a fresh fake built from the stored records alone.
 use super::merge_hold::Missing;
+use super::run_end::RunEnd;
 use super::tracker::{Followed, Inputs, TrackIo, follow, links_issue};
 use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, IssueFact, MAX_ATTEMPTS, State, Track, TrackChange, apply_change};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -11,38 +12,45 @@ use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-const REPO: &str = "acme/app";
-const T0: i64 = 1_700_000_000;
+pub(super) const REPO: &str = "acme/app";
+pub(super) const T0: i64 = 1_700_000_000;
 
+/// The tracker's I/O on fakes; shared with `run_end_tests`.
 #[derive(Default)]
-struct Fake {
-    now: Cell<i64>,
-    store: RefCell<HashMap<i64, Track>>,
+pub(super) struct Fake {
+    pub(super) now: Cell<i64>,
+    pub(super) store: RefCell<HashMap<i64, Track>>,
     /// Every room line, keyed as posted; a repeated key is what the homeserver drops.
-    said: RefCell<Vec<(i64, String, String)>>,
-    handed: RefCell<Vec<(i64, u32)>>,
-    followed: RefCell<Vec<u64>>,
-    closed: RefCell<HashMap<i64, IssueFact>>,
-    cannot_fix: RefCell<HashSet<i64>>,
-    peer: bool,
-    merged: RefCell<HashSet<u64>>,
-    claimed_by_other: Cell<bool>,
+    pub(super) said: RefCell<Vec<(i64, String, String)>>,
+    pub(super) handed: RefCell<Vec<(i64, u32)>>,
+    pub(super) followed: RefCell<Vec<u64>>,
+    pub(super) closed: RefCell<HashMap<i64, IssueFact>>,
+    pub(super) cannot_fix: RefCell<HashSet<i64>>,
+    pub(super) peer: bool,
+    pub(super) merged: RefCell<HashSet<u64>>,
+    pub(super) claimed_by_other: Cell<bool>,
     /// What the merge step finds, when set (else the review is just requested).
-    outcome: RefCell<Option<Followed>>,
+    pub(super) outcome: RefCell<Option<Followed>>,
+    /// The current hand-off's run, as its Activity record would say.
+    pub(super) run: Cell<Option<RunEnd>>,
+    /// The branch the Agent pushed for an issue.
+    pub(super) branches: RefCell<HashMap<i64, String>>,
+    /// The branch each tracker hand-off asked for a pull request from.
+    pub(super) asked_branch: RefCell<Vec<Option<String>>>,
     /// The reviewer pick's fallback line, when the reviewer is a fallback.
     reviewer_notice: Option<String>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
-    fn restarted(&self) -> Self {
+    pub(super) fn restarted(&self) -> Self {
         Fake { store: RefCell::new(self.store.borrow().clone()), peer: self.peer, ..Fake::default() }
     }
-    fn tracks(&self) -> Vec<Track> {
+    pub(super) fn tracks(&self) -> Vec<Track> {
         let mut all: Vec<Track> = self.store.borrow().values().cloned().collect();
         all.sort_by_key(|t| t.number);
         all
     }
-    fn keys(&self) -> Vec<String> {
+    pub(super) fn keys(&self) -> Vec<String> {
         self.said.borrow().iter().map(|(n, k, _)| format!("{n}:{k}")).collect()
     }
 }
@@ -50,6 +58,10 @@ impl TrackIo for Fake {
     async fn record(&self, change: Value) -> Result<(), String> {
         let change: TrackChange = serde_json::from_value(change).map_err(|e| e.to_string())?;
         let current = self.store.borrow().get(&change.number).cloned();
+        // The ledger keys a record by its exact repository spelling.
+        if current.as_ref().is_some_and(|t| t.repo != change.repo) {
+            return Err(format!("no record of {}#{}", change.repo, change.number));
+        }
         let next = apply_change(current, &change, self.now.get()).map_err(|e| e.to_string())?;
         self.store.borrow_mut().insert(change.number, next);
         Ok(())
@@ -60,12 +72,22 @@ impl TrackIo for Fake {
         }
         Ok(())
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32) -> Result<bool, String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String> {
         if self.claimed_by_other.get() {
             return Ok(false);
         }
+        self.asked_branch.borrow_mut().push(branch.map(str::to_owned));
         self.handed.borrow_mut().push((issue.number, attempt));
         self.record(serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt})).await.map(|_| true)
+    }
+    async fn run_end(&self, _track: &Track) -> Result<RunEnd, String> {
+        Ok(self.run.get().unwrap_or(RunEnd::Running))
+    }
+    async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
+        Ok(self.branches.borrow().get(&number).cloned())
+    }
+    fn agent_label(&self) -> String {
+        "bird-claude".into()
     }
     async fn pr_merged(&self, pr: u64) -> Result<bool, String> {
         Ok(self.merged.borrow().contains(&pr))
@@ -91,13 +113,13 @@ impl TrackIo for Fake {
     }
 }
 
-fn issue(number: i64) -> Issue {
+pub(super) fn issue(number: i64) -> Issue {
     Issue { number, url: format!("https://github.com/{REPO}/issues/{number}"), title: String::new(), labels: vec![], is_pr: false, author_association: "OWNER".into(), created_at: T0 }
 }
 fn pull(number: u64, body: &str) -> PullRequest {
     PullRequest { number, url: format!("https://github.com/{REPO}/pull/{number}"), draft: false, head_sha: "1".repeat(40), author: "anna".into(), created_at: T0, body: body.into(), head_ref: "docs/x".into() }
 }
-fn check(fake: &Fake, now: i64, open: &[Issue], pulls: &[PullRequest]) -> Vec<String> {
+pub(super) fn check(fake: &Fake, now: i64, open: &[Issue], pulls: &[PullRequest]) -> Vec<String> {
     fake.now.set(now);
     let tracks = fake.tracks();
     let seen: HashSet<i64> = tracks.iter().map(|t| t.number).collect();
@@ -106,10 +128,11 @@ fn check(fake: &Fake, now: i64, open: &[Issue], pulls: &[PullRequest]) -> Vec<St
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     out.lines
 }
-fn first_hand_off(fake: &Fake, number: i64) {
+pub(super) fn first_hand_off(fake: &Fake, number: i64) {
     fake.now.set(T0);
-    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(fake.hand_off(&issue(number), 1)).unwrap();
-    fake.handed.borrow_mut().clear(); // only the tracker's own hand-offs are counted below
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(fake.hand_off(&issue(number), 1, None)).unwrap();
+    fake.handed.borrow_mut().clear();
+    fake.asked_branch.borrow_mut().clear(); // only the tracker's own hand-offs are counted below
 }
 
 #[test]
@@ -219,6 +242,9 @@ fn an_issue_closed_without_the_pr_merging_is_not_announced_as_its_fix() {
     fake.closed.borrow_mut().insert(31, IssueFact::Done);
     check(&fake, T0 + 120, &[], &[]);
     assert_eq!(fake.said.borrow().last().unwrap().2, "✅ #31 closed as completed");
+    assert_eq!(fake.tracks()[0].state, State::Closed, "never recorded as merged without a merged pull request");
+    check(&fake, T0 + 180, &[], &[]);
+    assert_eq!(fake.keys().iter().filter(|k| *k == "31:fixed").count(), 1, "announced once");
 }
 
 #[test]

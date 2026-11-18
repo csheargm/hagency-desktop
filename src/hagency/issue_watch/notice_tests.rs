@@ -105,3 +105,12 @@ fn auto_merge_on_adds_the_merge_policy_step_and_survives_the_marker() {
     assert_eq!(Notice::from_content(&content), Some(on));
     assert_eq!(Notice::from_content(&sent_content(&off)), Some(off), "older notices read as off");
 }
+
+#[test]
+fn a_retry_after_a_pushed_branch_asks_for_its_pull_request() {
+    let retry = Notice::new("a/b", &issue(), "fixer").with_branch(Some("fix/issue-6-doc".into()));
+    let body = retry.body();
+    assert!(body.contains("Branch fix/issue-6-doc names this issue but has no pull request: if it holds your fix, open the draft pull request from it."), "{body}");
+    assert!(body.find("Branch fix/").unwrap() < body.find(::hagency::ISSUE_TITLE_LABEL).unwrap_or(usize::MAX), "the fixed request comes before the quoted title");
+    assert!(!Notice::new("a/b", &issue(), "fixer").body().contains("names this issue"));
+}
