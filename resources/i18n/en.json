@@ -3290,6 +3290,7 @@
   "Stopping; waiting for the runtime to finish and settle.": "Stopping; waiting for the runtime to finish and settle.",
   "Stopped": "Stopped",
   "Failed": "Failed",
+  "Failed. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again.": "Failed. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again.",
   "The run went offline; check its result.": "The run went offline; check its result.",
   "Working… {step}": "Working… {step}",
   "Done in {s} s · {n} steps": "Done in {s} s · {n} steps",

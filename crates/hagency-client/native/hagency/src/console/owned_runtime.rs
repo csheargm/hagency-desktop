@@ -3,6 +3,9 @@ mod drain;
 pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod encrypted_context;
+mod finish_report;
+mod run_presence;
+use finish_report::report_finish;
 mod journal_lock;
 mod provider_custody;
 mod provider_login;
@@ -1221,6 +1224,7 @@ impl Transport for PinnedConsole {
                 | Op::EncryptedReply { .. }
                 | Op::CardReply { .. }
                 | Op::Finish { .. }
+                | Op::FinishOnCard { .. }
         );
         self.console
             .execution_api_pinned(op, &self.pin)
@@ -2099,6 +2103,7 @@ async fn execution_loop_with_gate<T: Transport>(
             )
             .await;
             let mut login_needed = None;
+            let mut failure_on_card = false;
             let result = match start {
                 Ok(Response::Started(start)) => {
                     let response = inbox::ServerStart {
@@ -2124,6 +2129,7 @@ async fn execution_loop_with_gate<T: Transport>(
                             status,
                             &mut sessions,
                             &mut login_needed,
+                            &mut failure_on_card,
                     )
                     .await
                 }
@@ -2158,17 +2164,10 @@ async fn execution_loop_with_gate<T: Transport>(
                     Finish::Unknown => Outcome::Unknown,
                 };
                 let record = local(ledger.inbox_record(owner, &prepared.dispatch.id))?;
-                let reported_outcome = if flush_record_messages(console, lease, cancel, config, &record).await? { operation(
-                    console,
-                    cancel,
-                    Op::Finish {
-                        lease: lease.clone(),
-                        dispatch_id: prepared.dispatch.id.clone(),
-                        execution_id: prepared.execution_id.clone(),
-                        outcome,
-                    },
-                )
-                .await } else { Err(RuntimeError::Transport) };
+                let shown = failure_on_card && matches!(finish, Finish::Failed);
+                let reported_outcome = if flush_record_messages(console, lease, cancel, config, &record).await? {
+                    report_finish(console, cancel, lease, &prepared, outcome, shown).await
+                } else { Err(RuntimeError::Transport) };
                 if matches!(reported_outcome, Err(RuntimeError::Stopped)) {
                     return Err(RuntimeError::Stopped);
                 }
@@ -2495,6 +2494,8 @@ async fn run_turn<T: Transport>(
     status: &watch::Sender<RuntimeStatus>,
     sessions: &mut provider_custody::Sessions,
     login_needed: &mut Option<provider_login::LoginNeeded>,
+    // Set when the run card already shows this run's failure: the server then owes no notice.
+    failure_on_card: &mut bool,
 ) -> Result<Option<Finish>, RuntimeError> {
     let scope = prepared.dispatch.scope();
     if config.shared_workspace && config.shared_workspace_pin.as_deref() != Some(shared_workspace_pin(&config.profile.cwd)?.as_str()) {
@@ -2532,9 +2533,11 @@ async fn run_turn<T: Transport>(
     let (queue, mut receiver) = codex::approval_queue(1).map_err(|_| RuntimeError::Profile)?;
     let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
     let mut queue = queue.with_questions(question_queue);
+    // TODO(R4): owned_runtime.rs is over budget; run_turn's room presence (card, controls, notices) belongs in owned_runtime/run_presence.rs.
+    let presence = run_presence::RunPresence::new(owner, &scope.requester, &input);
     let host = transport.approval_host();
     let controls =
-        if host.is_some() {
+        if presence.run_card(host.is_some()) {
             let kind = runtime::kind(&config.credential_ref).name();
             let card = run_controls::optional_card(
                 &prepared.dispatch,
@@ -2810,7 +2813,7 @@ async fn run_turn<T: Transport>(
                 // The run card already shows "⏳ Thinking…": one signal, not two.
                 let carded = controls.as_ref().is_some_and(|c| c.has_card());
                 match &device {
-                    _ if carded => {}
+                    _ if !presence.processing_signal(carded) => {}
                     Some(device) => device.mark_processing(&prepared.dispatch).await,
                     None => {
                         let (send, receive) = tokio::sync::oneshot::channel();
@@ -2829,7 +2832,7 @@ async fn run_turn<T: Transport>(
         Ok(completed)=>Ok(Ok(completed)),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。".to_owned())),
         Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。".to_owned())),
-        Err(codex::Error::Failed | codex::Error::Unavailable(_))=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
+        Err(codex::Error::Failed | codex::Error::Unavailable(_))=>{if let Some(controls) = &controls { *failure_on_card = controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
         Err(error)=>match provider_login::LoginNeeded::of(&error) {
             // Signed out before any model input: the request did not start,
             // so the room is told why instead of "outcome unknown".
@@ -3935,7 +3938,7 @@ mod tests {
             let mut sessions = provider_custody::Sessions::default();
             // This executable does not exist. A launch attempt would fail;
             // denial must instead persist a reply without touching a provider.
-            assert!(run_turn(&fake, &lease(), &mut ledger, OWNER, &config(&root), permit.into_prepared(), None, &mut cancel, &status, &mut sessions, &mut None).await.unwrap().is_none());
+            assert!(run_turn(&fake, &lease(), &mut ledger, OWNER, &config(&root), permit.into_prepared(), None, &mut cancel, &status, &mut sessions, &mut None, &mut false).await.unwrap().is_none());
             let saved = ledger.inbox_record(OWNER, "dispatch-a").unwrap();
             assert_eq!(saved.state, State::ReplyReady);
             assert!(saved.reply.unwrap().contains("未获 Agent 主人"));

@@ -4,6 +4,7 @@
 //! a retry which can charge again requires a fresh call ID under the original requester.
 pub mod activity;
 pub mod attribution;
+pub mod automated_requests;
 pub mod agent_env;
 pub mod codex;
 pub mod issue_track;

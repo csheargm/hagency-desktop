@@ -328,6 +328,14 @@ pub enum DeviceOperation {
         execution_id: String,
         outcome: Outcome,
     },
+    // TODO(R4): device_execution.rs is over budget; split the wire request/response codec (request, decode) from the operation types.
+    /// A failed run whose run card already says so: the server records the
+    /// failure and posts no notice of its own (one failure line per run).
+    FinishOnCard {
+        lease: LeaseRef,
+        dispatch_id: String,
+        execution_id: String,
+    },
     ReconcileKnownReply {
         lease: LeaseRef,
         known: KnownReply,
@@ -387,6 +395,7 @@ impl DeviceOperation {
             | Self::Processing { lease, .. }
             | Self::AuthorizeTool { lease, .. }
             | Self::Finish { lease, .. }
+            | Self::FinishOnCard { lease, .. }
             | Self::Reply { lease, .. }
             | Self::E2eeCandidates { lease, .. }
             | Self::E2eeConfirm { lease, .. }
@@ -518,6 +527,14 @@ impl DeviceOperation {
                 (
                     "events/finish",
                     json!({"lease":lease,"dispatchId":dispatch_id,"executionId":execution_id,"outcome":outcome.wire()}),
+                )
+            }
+            Self::FinishOnCard { lease, dispatch_id, execution_id } => {
+                id(dispatch_id)?;
+                id(execution_id)?;
+                (
+                    "events/finish-on-card",
+                    json!({"lease":lease,"dispatchId":dispatch_id,"executionId":execution_id}),
                 )
             }
             Self::ReconcileKnownReply { lease, known } => {
@@ -945,7 +962,9 @@ fn parse_response(
         DeviceOperation::Ack { .. } if value["acknowledged"] == true => {
             Ok(DeviceResponse::Acknowledged)
         }
-        DeviceOperation::Finish { .. } if value["finished"] == true => Ok(DeviceResponse::Finished),
+        DeviceOperation::Finish { .. } | DeviceOperation::FinishOnCard { .. } if value["finished"] == true => {
+            Ok(DeviceResponse::Finished)
+        }
         DeviceOperation::CardReply { lease, dispatch_id, execution_id, body, matrix_event_id } => {
             let reply: ReplyReceipt = decode(&value, "reply")?;
             check_recorded_reply(&reply, lease, device, dispatch_id, execution_id, Some(body), matrix_event_id)?;
