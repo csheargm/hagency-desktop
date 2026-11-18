@@ -1013,7 +1013,8 @@ impl RoomInputBar {
                         Reply {
                             event_id: event_id.to_owned(),
                             enforce_thread,
-                            add_mentions: AddMentions::Yes,
+                            add_mentions: crate::room::thread_followup::reply_mentions(event_tl_item.sender(),
+                                cx.get_global::<RoomsListRef>().is_direct_room(timeline_kind.room_id()).unwrap_or(false), crate::profile::profile_route::is_agent),
                         }
                     })
                 ).or_else(||
@@ -1055,11 +1056,16 @@ impl RoomInputBar {
             if !entered_text.is_empty() {
                 match mentionable_text_input.parse_input(&entered_text) {
                     SlashCommandOutcome::Message(mut message) => {
-                        if let Some(agent) = self.view.thread_followup_hint(cx, ids!(thread_followup_hint)).active() {
-                            crate::room::thread_followup::address_followup(&mut message, &agent, self.replying_to.as_ref().map(|(event, _)| event.sender()));
+                        let hinted = self.view.thread_followup_hint(cx, ids!(thread_followup_hint)).active();
+                        if let Some(agent) = &hinted {
+                            crate::room::thread_followup::address_followup(&mut message, agent, self.replying_to.as_ref().map(|(event, _)| event.sender()));
                         }
                         let settings = crate::agent_access::current();
-                        let routing = match crate::agent_access::routing::directives(&settings, crate::sliding_sync::current_user_id().as_deref(), timeline_kind.room_id(), cx.get_global::<RoomsListRef>().is_direct_room(timeline_kind.room_id()).unwrap_or(false), &message, self.replying_to.as_ref().map(|(event, _)|event.sender())) {
+                        let direct_room = cx.get_global::<RoomsListRef>().is_direct_room(timeline_kind.room_id()).unwrap_or(false);
+                        // GPT review: quoting an Agent routes to it only as the hint allows (ADR 0023).
+                        let quoted = self.replying_to.as_ref().map(|(event, _)| event.sender())
+                            .filter(|sender| crate::room::thread_followup::quote_routes(sender, direct_room, hinted.as_deref(), crate::profile::profile_route::is_agent));
+                        let routing = match crate::agent_access::routing::directives(&settings, crate::sliding_sync::current_user_id().as_deref(), timeline_kind.room_id(), direct_room, &message, quoted) {
                             Ok(routing) => routing,
                             Err(error) => {enqueue_popup_notification(error, PopupKind::Error, Some(5.0)); return;}
                         };
@@ -1786,9 +1792,11 @@ impl RoomInputBarRef {
     /// Agent), is dropped.
     pub fn set_thread_followup(&self, cx: &mut Cx, kind: &TimelineKind, target: Option<crate::room::thread_followup::FollowupTarget>) {
         let Some(inner) = self.borrow() else { return };
-        if inner.timeline_kind.as_ref() != Some(kind) { return; }
+        // The room's hint belongs to the reply being written (ADR 0023): a
+        // timeline refresh there must not clear it.
+        if inner.timeline_kind.as_ref() != Some(kind) || !inner.in_thread() { return; }
         let direct = cx.has_global::<RoomsListRef>() && cx.get_global::<RoomsListRef>().is_direct_room(kind.room_id()).unwrap_or(false);
-        let target = target.filter(|_| inner.in_thread() && !direct);
+        let target = target.filter(|_| !direct);
         let hint = inner.view.thread_followup_hint(cx, ids!(thread_followup_hint));
         hint.set_target(cx, target);
         hint.set_quoting(cx, inner.replying_to.as_ref().map(|(event, _)| event.sender()));

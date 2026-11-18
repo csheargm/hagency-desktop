@@ -37,7 +37,8 @@ the room, all conversations can be seen."
    `> <@requester> first line of the request` (80 characters at most) and a
    blank line; `formatted_body` carries no quote, so Element renders the quote
    once from the relation and plain-text clients still see it. Run-card edits
-   carry no fallback (an edit's `m.new_content` has no relation). matrix-sdk-ui
+   carry no fallback; the edit's `m.new_content` repeats the card's relation
+   as before, which clients ignore for a replacement. matrix-sdk-ui
    strips the fallback for the desktop, and the server's room context already
    strips reply fallbacks.
 5. **Progress stays collapsed.** The run's progress messages stay in a thread
@@ -45,6 +46,8 @@ the room, all conversations can be seen."
    answer card's "N updates" now opens them **in place** inside the card in
    the main timeline ("Hide updates" closes them); it no longer navigates to
    the thread. `ShowRunUpdates` and the room screen's thread jump are removed.
+   The list shows only the run Agent's own text messages in the thread, is
+   keyed by account, room, root and Agent, and drops superseded or closed loads.
 6. **Continuing the conversation.** An Agent answer has a Reply action (run
    cards included). A reply to an Agent's message in a group room no longer
    auto-mentions the Agent (`AddMentions::No`): quoting an answer must not
@@ -53,6 +56,8 @@ the room, all conversations can be seen."
    composer shows "Replying to <agent>" (removable) and mentions the Agent:
    the same rule and widget as the thread follow-up
    (`thread_followup::followup_agent`, branch feat/thread-followup-mention).
+   Quoting an Agent also routes to it (Octos `target_user_id`) only while
+   that hint addresses it; a room timeline refresh keeps the reply's hint.
    The follow-up is an ordinary top-level mention, so the server's
    who-can-ask, consent and private-Agent rules apply unchanged, and its
    answer is again a flat reply to it. Its context is the room's recent

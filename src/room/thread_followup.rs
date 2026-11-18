@@ -177,6 +177,12 @@ pub fn reply_mentions(replied_sender: &UserId, direct: bool, is_agent: impl Fn(&
     if !direct && is_agent(replied_sender) { AddMentions::No } else { AddMentions::Yes }
 }
 
+/// Whether quoting `quoted` may route the message to it as an Agent target:
+/// a person, a direct room, or the Agent the hint addresses (not removed).
+pub fn quote_routes(quoted: &UserId, direct: bool, hinted: Option<&UserId>, is_agent: impl Fn(&UserId) -> bool) -> bool {
+    direct || !is_agent(quoted) || hinted == Some(quoted)
+}
+
 #[derive(Script, ScriptHook, Widget)]
 pub struct ThreadFollowupHint {
     #[deref] view: View,

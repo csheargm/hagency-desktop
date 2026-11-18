@@ -188,6 +188,10 @@ fn replying_to_an_agents_answer_continues_for_the_requester_only() {
     assert_eq!(answer_followup(&anna, &claude, &anna, Some(&mentions(&[&claude, &codex])), agent), None, "two Agents asked");
     assert_eq!(reply_mentions(&betty, false, agent), AddMentions::Yes, "a reply to a person mentions them");
     assert_eq!(reply_mentions(&claude, true, agent), AddMentions::Yes, "a direct chat reaches the Agent anyway");
+    // GPT review: the quote routes to the Agent only while the hint addresses it.
+    assert!(quote_routes(&claude, false, Some(&claude), agent));
+    assert!(!quote_routes(&claude, false, None, agent), "Betty, or Anna after Remove");
+    assert!(quote_routes(&betty, false, None, agent) && quote_routes(&claude, true, None, agent));
 }
 
 /// The room's composer takes a reply's target; a thread keeps its own rule.
@@ -215,6 +219,9 @@ fn the_room_composer_shows_the_reply_target() {
     input.set_reply_followup(&mut cx, &main, target());
     assert_eq!(active(&mut cx), Some(id(CLAUDE)), "Replying to anna-claude");
     assert_eq!(bar.label(&mut cx, ids!(thread_followup_hint.followup_text)).text(), "Replying to anna-claude");
+    // GPT review: a timeline refresh in the room keeps the reply's hint.
+    input.set_thread_followup(&mut cx, &main, None);
+    assert_eq!(active(&mut cx), Some(id(CLAUDE)), "an incoming message does not drop it");
     input.set_reply_followup(&mut cx, &main, None);
     assert_eq!(active(&mut cx), None);
     input.set_room_context(&mut cx, WidgetUid(1), thread.clone(), None);

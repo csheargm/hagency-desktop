@@ -116,6 +116,9 @@ pub struct AgentRunCard {
     /// The progress thread's reply count, for "N updates".
     #[rust]
     updates_count: usize,
+    /// The shown run's Agent: its own messages are the updates.
+    #[rust]
+    agent: String,
 }
 /// How often a running card's elapsed time ticks.
 const CLOCK_TICK_SECS: f64 = 1.0;
@@ -193,7 +196,7 @@ impl Widget for AgentRunCard {
                 cx.action(crate::agent_chat::approval_inbox::ApprovalInboxAction::Open { project: Some(project) });
             }
             if self.view.button(cx, ids!(links.updates)).clicked(actions) {
-                super::agent_run_updates::toggle(&card.room_id, &card.thread_root, self.updates_count);
+                super::agent_run_updates::toggle(&card.room_id, &card.thread_root, &self.agent, self.updates_count);
             }
         }
         if let Some(text) = self.view.text_input(cx, ids!(input)).changed(actions) {
@@ -250,7 +253,7 @@ impl AgentRunCard {
     /// "N updates", or "Hide updates" over the list it opened in place.
     // TODO(R4): over budget; move the links row (details, updates) out with the file split.
     fn show_updates(&mut self, cx: &mut Cx) {
-        let open = self.run.as_ref().and_then(|(card, _)| super::agent_run_updates::shown(&card.room_id, &card.thread_root));
+        let open = self.run.as_ref().and_then(|(card, _)| super::agent_run_updates::shown(&card.room_id, &card.thread_root, &self.agent));
         let link = self.view.button(cx, ids!(links.updates));
         let text = match &open {
             Some(_) => Some(crate::i18n::tr("Hide updates").to_owned()),
@@ -270,7 +273,7 @@ impl AgentRunCardRef {
         let Some(mut inner) = self.borrow_mut() else { return };
         inner.updates_count = count;
         if let Some((card, _)) = inner.run.as_ref() {
-            super::agent_run_updates::follow(&card.room_id, &card.thread_root, count);
+            super::agent_run_updates::follow(&card.room_id, &card.thread_root, &inner.agent, count);
         }
         inner.show_updates(cx);
     }
@@ -336,6 +339,7 @@ impl AgentRunCard {
             inner.details_open = false;
         }
         inner.key = Some(entry.key.clone());
+        inner.agent = entry.agent.clone();
         inner.view.set_visible(cx, true);
         inner.view.view(cx, ids!(links)).set_visible(cx, true);
         // The row above already names the Agent; the runtime sits in "What I did".

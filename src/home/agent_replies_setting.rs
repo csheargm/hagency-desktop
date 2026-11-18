@@ -55,11 +55,24 @@ pub fn mode_at(index: usize) -> Mode {
     if index == 1 { Mode::Thread } else { Mode::Room }
 }
 
-/// A room's choice has been read or written.
+/// A room's choice has been read, or a write settled (`Some(saved)`:
+/// whether the server accepted it).
 #[derive(Clone, Debug)]
 pub struct AgentRepliesLoaded {
     pub room_id: OwnedRoomId,
     pub mode: Mode,
+    /// The request this answers; only the newest one is shown (GPT review).
+    pub ticket: u64,
+    pub account: String,
+}
+
+static TICKETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn next_ticket() -> u64 {
+    TICKETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+fn account() -> String {
+    let user = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
+    format!("{user}#{}", crate::account_session::epoch())
 }
 
 #[derive(Script, ScriptHook, Widget)]
@@ -67,6 +80,9 @@ pub struct AgentRepliesSetting {
     #[deref] view: View,
     #[rust] room: Option<OwnedRoomId>,
     #[rust] mode: Mode,
+    /// The room's choice as the server last confirmed it; a refusal returns here.
+    #[rust] confirmed: Mode,
+    #[rust] ticket: u64,
 }
 
 impl Widget for AgentRepliesSetting {
@@ -76,7 +92,10 @@ impl Widget for AgentRepliesSetting {
         for action in actions {
             if let Some(loaded) = action.downcast_ref::<AgentRepliesLoaded>()
                 && self.room.as_ref() == Some(&loaded.room_id)
+                && loaded.ticket == self.ticket
+                && loaded.account == account()
             {
+                self.confirmed = loaded.mode;
                 self.show_mode(cx, loaded.mode);
             }
         }
@@ -85,10 +104,13 @@ impl Widget for AgentRepliesSetting {
         {
             let wanted = mode_at(index);
             if wanted != self.mode {
-                // Shown at once; a refused write puts the room's real choice back.
-                let previous = self.mode;
+                // Shown at once; a refused write puts the confirmed choice back.
+                self.ticket = next_ticket();
                 self.show_mode(cx, wanted);
-                save(room, wanted, previous);
+                if !save(room, wanted, self.confirmed, self.ticket) {
+                    let confirmed = self.confirmed;
+                    self.show_mode(cx, confirmed);
+                }
             }
         }
     }
@@ -113,16 +135,19 @@ impl AgentRepliesSettingRef {
         let Some(mut inner) = self.borrow_mut() else { return };
         if inner.room.as_deref() != Some(room) {
             inner.room = Some(room.to_owned());
+            inner.confirmed = Mode::default();
             inner.show_mode(cx, Mode::default());
         }
-        load(room.to_owned());
+        inner.ticket = next_ticket();
+        load(room.to_owned(), inner.ticket);
     }
 }
 
 /// Reads the room's state event from the server: the sliding-sync store does
 /// not hold custom state types. A room without one gets the default.
-fn load(room_id: OwnedRoomId) {
+fn load(room_id: OwnedRoomId, ticket: u64) {
     let Some(client) = crate::sliding_sync::get_client() else { return };
+    let account = account();
     crate::sliding_sync::spawn_async_task(async move {
         let request = get_state::Request::new(room_id.clone(), StateEventType::from(STATE_EVENT), String::new());
         let mode = match client.send(request).await {
@@ -133,14 +158,16 @@ fn load(room_id: OwnedRoomId) {
             // failure also shows the default, which is what Agents then use.
             Err(_) => Mode::default(),
         };
-        Cx::post_action(AgentRepliesLoaded { room_id, mode });
+        Cx::post_action(AgentRepliesLoaded { room_id, mode, ticket, account });
     });
 }
 
 /// Writes the room's choice; a refusal (most often: only moderators may
 /// change room settings) is shown and the previous choice comes back.
-fn save(room_id: OwnedRoomId, mode: Mode, previous: Mode) {
-    let Some(client) = crate::sliding_sync::get_client() else { return };
+/// False when there is no signed-in client to write with.
+fn save(room_id: OwnedRoomId, mode: Mode, previous: Mode, ticket: u64) -> bool {
+    let Some(client) = crate::sliding_sync::get_client() else { return false };
+    let account = account();
     crate::sliding_sync::spawn_async_task(async move {
         let sent = match client.get_room(&room_id) {
             Some(room) => room.send_state_event_raw(STATE_EVENT, "", mode.content()).await.map(|_| ()).map_err(|e| e.to_string()),
@@ -157,8 +184,9 @@ fn save(room_id: OwnedRoomId, mode: Mode, previous: Mode) {
                 previous
             }
         };
-        Cx::post_action(AgentRepliesLoaded { room_id, mode: shown });
+        Cx::post_action(AgentRepliesLoaded { room_id, mode: shown, ticket, account });
     });
+    true
 }
 
 #[cfg(test)]
@@ -174,6 +202,33 @@ mod tests {
         }
         assert_eq!(mode_at(7), Mode::Room, "an unknown row is the default");
         assert_eq!(index_of(Mode::default()), 0, "a room that never chose shows In the room");
+    }
+
+    /// GPT review: only the newest read or write for this account shows.
+    #[test]
+    fn a_stale_answer_never_overwrites_the_shown_choice() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widget = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.AgentRepliesSetting {}});
+            let widget = WidgetRef::script_from_value(vm, value);
+            widget.register_as_ui_root(vm);
+            widget
+        });
+        let room: OwnedRoomId = "!dev:test".try_into().unwrap();
+        widget.as_agent_replies_setting().show(&mut cx, &room);
+        let ticket = widget.as_agent_replies_setting().borrow().unwrap().ticket;
+        let deliver = |cx: &mut Cx, mode: Mode, ticket: u64| {
+            let loaded = AgentRepliesLoaded { room_id: room.clone(), mode, ticket, account: account() };
+            let actions = cx.capture_actions(|cx| cx.action(loaded));
+            widget.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+        };
+        deliver(&mut cx, Mode::Thread, ticket - 1);
+        assert_eq!(widget.drop_down(&mut cx, ids!(agent_replies_mode)).selected_item(), 0, "an older read is dropped");
+        deliver(&mut cx, Mode::Thread, ticket);
+        assert_eq!(widget.drop_down(&mut cx, ids!(agent_replies_mode)).selected_item(), 1, "the room chose threads");
+        assert_eq!(widget.label(&mut cx, ids!(agent_replies_hint)).text(), crate::i18n::tr(hint(Mode::Thread)));
     }
 
     #[test]
