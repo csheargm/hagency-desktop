@@ -3857,5 +3857,8 @@
   "Could not change the role: {error}": "Could not change the role: {error}",
   "a person (room setting)": "a person (room setting)",
   "someone with GitHub write access to merge": "someone with GitHub write access to merge",
-  "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo."
+  "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.",
+  "The room's power levels are unreadable.": "The room's power levels are unreadable.",
+  "Only the room's owner can make or remove maintainers.": "Only the room's owner can make or remove maintainers.",
+  "Could not record the move: {error}": "Could not record the move: {error}"
 }

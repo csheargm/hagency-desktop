@@ -7,7 +7,7 @@ use serde_json::json;
 
 fn state(level: Level, paused: bool, linked: &[&str]) -> Result<RoomState, String> {
     Ok(RoomState {
-        level: Ok(level), level_by: "@mo:x".into(), resumed_at: 0, pause: paused.then(|| Pause { by: "@m:x".into(), at_ms: 1 }),
+        level: Ok(level), level_by: "@mo:x".into(), cleared: vec![], pause: paused.then(|| Pause { by: "@m:x".into(), at_ms: 1 }),
         linked: linked.iter().map(|r| (*r).to_owned()).collect(), can_change: false, can_pause: true, can_link: false, maintainer: true,
     })
 }

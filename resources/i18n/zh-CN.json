@@ -3857,5 +3857,8 @@
   "Could not change the role: {error}": "无法更改角色：{error}",
   "a person (room setting)": "由人处理（房间设置）",
   "someone with GitHub write access to merge": "由有 GitHub 写权限的人合并",
-  "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "智能体已创建，但它的仓库没有保存：{0}。请在房间的“房间信息 → 状态 → 让智能体处理一个仓库”中添加。"
+  "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "智能体已创建，但它的仓库没有保存：{0}。请在房间的“房间信息 → 状态 → 让智能体处理一个仓库”中添加。",
+  "The room's power levels are unreadable.": "无法读取房间的权限等级。",
+  "Only the room's owner can make or remove maintainers.": "只有房间所有者可以设置或取消维护者。",
+  "Could not record the move: {error}": "无法记录迁移：{error}"
 }

@@ -85,31 +85,33 @@ fn may_work_is_per_agent_and_room_and_needs_a_running_level() {
     assert!(ledger.set_may_work("@intruder:x", "anna", ROOM, true).is_err(), "only the owner");
 }
 
-fn pause(sender: &str, key: &str, ts: i64, content: serde_json::Value) -> serde_json::Value {
-    json!({"type": ROOM_PAUSE_STATE_TYPE, "state_key": key, "sender": sender, "origin_server_ts": ts, "content": content})
+fn pause(sender: &str, key: &str, id: &str, ts: i64, content: serde_json::Value) -> serde_json::Value {
+    json!({"type": ROOM_PAUSE_STATE_TYPE, "state_key": key, "sender": sender, "event_id": id, "origin_server_ts": ts, "content": content})
 }
 
-/// A member's edit or redaction of their own pause is a newer event, so it
-/// still pauses: only an admin's Resume (a later `resumedAt`) ends it.
+/// A member's edit or redaction of their own pause is a new event, so it
+/// still pauses: only a maintainer's Resume (clearing that event) ends it.
+/// No clock decides (GPT review): an unseen pause with an old timestamp counts.
 #[test]
 fn a_member_can_pause_but_not_resume() {
-    let paused = vec![pause("@m:x", "@m:x", 100, pause_content(100))];
-    assert_eq!(pause_in(&paused, 0), Some(Pause { by: "@m:x".into(), at_ms: 100 }));
-    let edited = vec![pause("@m:x", "@m:x", 200, json!({}))];
-    assert!(pause_in(&edited, 0).is_some(), "an emptied pause still counts");
-    assert!(pause_in(&edited, resume_point(&edited, 0)).is_none(), "the admin's Resume clears what it saw");
-    let later = vec![edited[0].clone(), pause("@n:x", "@n:x", 300, json!({}))];
-    assert_eq!(pause_in(&later, 200).map(|p| p.by), Some("@n:x".into()), "a pause after the Resume counts");
-    assert!(pause_in(&[pause("@m:x", "@other:x", 500, json!({}))], 0).is_none(), "a key not its sender's is ignored");
-    assert!(pause_in(&[pause("@m:x", "", 500, json!({}))], 0).is_none());
+    let none: Vec<String> = Vec::new();
+    let paused = vec![pause("@m:x", "@m:x", "$p1", 100, pause_content(100))];
+    assert_eq!(pause_in(&paused, &none), Some(Pause { by: "@m:x".into(), at_ms: 100 }));
+    let edited = vec![pause("@m:x", "@m:x", "$p2", 200, json!({}))];
+    assert!(pause_in(&edited, &resume_clears(&paused)).is_some(), "an edited pause is a new event: it still counts");
+    assert!(pause_in(&edited, &resume_clears(&edited)).is_none(), "the Resume clears what it saw");
+    let unseen = vec![edited[0].clone(), pause("@n:x", "@n:x", "$p3", 1, json!({}))];
+    assert_eq!(pause_in(&unseen, &resume_clears(&edited)).map(|p| p.by), Some("@n:x".into()), "an unseen pause counts whatever its timestamp");
+    assert!(pause_in(&[pause("@m:x", "@other:x", "$p4", 500, json!({}))], &none).is_none(), "a key not its sender's is ignored");
+    assert!(pause_in(&[pause("@m:x", "", "$p5", 500, json!({}))], &none).is_none());
 }
 
 #[test]
-fn level_content_round_trips_and_keeps_the_resume_point() {
-    let content = level_content(Level::Assist, 42);
-    assert_eq!((level_of(&content), resumed_at(&content)), (Some(Level::Assist), 42));
+fn level_content_round_trips_and_keeps_what_resume_cleared() {
+    let content = level_content(Level::Assist, &["$p1".to_owned()]);
+    assert_eq!((level_of(&content), cleared(&content)), (Some(Level::Assist), vec!["$p1".to_owned()]));
     assert_eq!(level_of(&json!({"level": "yolo"})), None);
-    assert_eq!(resumed_at(&json!({})), 0);
+    assert!(cleared(&json!({})).is_empty());
     for level in Level::ALL {
         assert_eq!(Level::from_wire(level.wire()), Some(level));
     }
@@ -131,4 +133,10 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     assert_eq!(ledger.loop_may_work("anna", ROOM), Ok(()), "a member's agent still works");
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now() - ROOM_RULES_TTL_SECS - 1).unwrap();
     assert_eq!(ledger.owner_maintainer_at(ROOM, unix_now()).unwrap(), None, "a stale role counts for nothing");
+    assert!(ledger.merge_refused(ROOM, unix_now()).unwrap(), "a stale role refuses the merge (GPT review)");
+    assert!(!ledger.merge_refused("!dm:x", unix_now()).unwrap(), "a room the loop never read leaves it to the card");
+    ledger.set_room_autonomy(OWNER, &snapshot(false), unix_now()).unwrap();
+    assert!(ledger.merge_refused(ROOM, unix_now()).unwrap());
+    ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now()).unwrap();
+    assert!(!ledger.merge_refused(ROOM, unix_now()).unwrap());
 }

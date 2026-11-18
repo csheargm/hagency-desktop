@@ -98,9 +98,23 @@ pub async fn set_maintainer(room: &Room, target: &UserId, make: bool) -> Result<
     if !is_person(target) {
         return Err(crate::i18n::tr("Agents and service accounts cannot be maintainers.").to_owned());
     }
+    // One change at a time from this desktop; a change from another client between
+    // this read and the write can still be lost (Matrix has no conditional state write).
+    static CHANGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _changing = CHANGING.lock().await;
     let request = get_state::Request::new(room.room_id().to_owned(), StateEventType::RoomPowerLevels, String::new());
     let reply = room.client().send(request).await.map_err(|e| e.to_string())?;
     let current: Value = serde_json::from_str(reply.event_or_content.get()).map_err(|e| e.to_string())?;
+    // Rechecked on the server's levels, not the list's (GPT review): this account is
+    // the room's owner, and the target's effective level is below the owner's.
+    let levels = crate::home::call_power_levels::typed_levels(room, current.clone()).ok_or_else(|| crate::i18n::tr("The room's power levels are unreadable.").to_owned())?;
+    let me = room.own_user_id();
+    if role_of(&levels, me) != Some(Role::Owner) || !levels.user_can_send_state(me, StateEventType::RoomPowerLevels) {
+        return Err(crate::i18n::tr("Only the room's owner can make or remove maintainers.").to_owned());
+    }
+    if role_of(&levels, target) == Some(Role::Owner) {
+        return Err(crate::i18n::tr("The room's owner keeps their role.").to_owned());
+    }
     let updated = with_role(current, target, make)?;
     room.send_state_event_raw("m.room.power_levels", "", updated).await.map(|_| ())
         .map_err(|e| crate::i18n::format("Could not change the role: {error}", &[("error", e.to_string())]))

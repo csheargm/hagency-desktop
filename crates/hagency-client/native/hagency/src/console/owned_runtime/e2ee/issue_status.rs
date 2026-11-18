@@ -73,7 +73,13 @@ impl AgentDevice {
         let published = seen.iter().filter(|s| may_link(&s.publisher)).map(|s| s.issue.repo.as_str());
         // Card-free issue filing (ADR 0030) only for the room's owner or a maintainer,
         // by the server's power levels read now, never the sync store's.
-        let maintainer = server_levels(&joined).await.is_some_and(|l| may_file_issues(&l, &asker, &status.linked_by));
+        // The list's sender must be a person still joined, as the desktop accepts room state (GPT review).
+        let sender = OwnedUserId::try_from(status.linked_by.as_str()).ok();
+        let sender_joined = match &sender {
+            Some(user) => joined.get_member_no_sync(user).await.map_err(|_| RuntimeError::Transport)?.is_some_and(|m| *m.membership() == MembershipState::Join),
+            None => false,
+        };
+        let maintainer = sender_joined && server_levels(&joined).await.is_some_and(|l| may_file_issues(&l, &asker, &status.linked_by));
         let linked = if maintainer { status.linked.clone() } else { Vec::new() };
         Ok((room_repos(published, &status.linked), linked))
     }
@@ -94,7 +100,9 @@ async fn server_levels(room: &matrix_sdk::Room) -> Option<matrix_sdk::ruma::even
 /// repositories (ADR 0030): the asker is the room's owner or a maintainer and
 /// the list's sender may still link them, both under `levels`.
 pub(in crate::console) fn may_file_issues(levels: &matrix_sdk::ruma::events::room::power_levels::RoomPowerLevels, asker: &matrix_sdk::ruma::UserId, linked_by: &str) -> bool {
-    let may_still_link = OwnedUserId::try_from(linked_by).is_ok_and(|u| levels.user_can_send_state(&u, StateEventType::from(ROOM_REPOS_STATE_TYPE)));
+    // Never a list an Agent puppet or Hagency service account sent.
+    let person = |u: &matrix_sdk::ruma::UserId| !u.localpart().starts_with(hagency_core::puppet::RESERVED_LOCALPART_PREFIX);
+    let may_still_link = OwnedUserId::try_from(linked_by).is_ok_and(|u| person(&u) && levels.user_can_send_state(&u, StateEventType::from(ROOM_REPOS_STATE_TYPE)));
     may_still_link && levels.for_user(asker) >= matrix_sdk::ruma::Int::new_saturating(hagency_agent_local::room_autonomy::MAINTAINER_LEVEL)
 }
 
@@ -104,7 +112,7 @@ mod tests {
     use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource};
 
     fn levels() -> RoomPowerLevels {
-        let content: RoomPowerLevelsEventContent = serde_json::from_value(serde_json::json!({"users": {"@own:x": 100, "@mo:x": 50}, "state_default": 50})).unwrap();
+        let content: RoomPowerLevelsEventContent = serde_json::from_value(serde_json::json!({"users": {"@own:x": 100, "@mo:x": 50, "@_hagency_agt_bird:x": 100}, "state_default": 50})).unwrap();
         RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), &matrix_sdk::ruma::room_version_rules::AuthorizationRules::V1, Vec::new())
     }
 
@@ -117,5 +125,6 @@ mod tests {
         assert!(!may_file_issues(&levels(), &user("@anna:x"), "@own:x"), "a plain member asks the card");
         assert!(!may_file_issues(&levels(), &user("@mo:x"), "@anna:x"), "a list a member could not have linked counts for nothing");
         assert!(!may_file_issues(&levels(), &user("@mo:x"), ""), "no list");
+        assert!(!may_file_issues(&levels(), &user("@mo:x"), "@_hagency_agt_bird:x"), "never a list an Agent sent");
     }
 }

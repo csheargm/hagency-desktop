@@ -4,7 +4,7 @@ use super::state::RoomState;
 use ::hagency::issue_watch::safeguards::room_autonomy::{Level, Pause};
 
 fn state(level: Result<Level, String>, pause: Option<Pause>) -> RoomState {
-    RoomState { level, level_by: String::new(), resumed_at: 0, pause, linked: vec![], can_change: false, can_pause: true, can_link: false, maintainer: false }
+    RoomState { level, level_by: String::new(), cleared: vec![], pause, linked: vec![], can_change: false, can_pause: true, can_link: false, maintainer: false }
 }
 
 #[test]

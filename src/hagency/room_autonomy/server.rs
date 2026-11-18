@@ -7,7 +7,7 @@ use super::lines;
 use super::state::{Rights, RoomState, state_of};
 use crate::hagency::issue_watch::room_rules::{MEMBER_EVENT, POWER_LEVELS_EVENT, joined, power_levels_event};
 use ::hagency::issue_watch::safeguards::room_autonomy::{
-    Level, MAINTAINER_LEVEL, ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, level_content, pause_content, resume_point,
+    Level, MAINTAINER_LEVEL, ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, level_content, pause_content, resume_clears,
 };
 use ::hagency::repo_status::linked::ROOM_REPOS_STATE_TYPE;
 use matrix_sdk::Room;
@@ -28,6 +28,14 @@ pub fn rights_of(levels: &RoomPowerLevels, me: &UserId) -> Rights {
     }
 }
 
+/// Whether `user` may send state `kind` under `levels` now; the level also
+/// needs the room's owner or a maintainer (GPT review: a permissive room's
+/// event level alone is not the role).
+pub fn may_send_now(levels: &RoomPowerLevels, user: &UserId, kind: &str) -> bool {
+    let role = kind != ROOM_AUTONOMY_STATE_TYPE || levels.for_user(user) >= Int::new_saturating(MAINTAINER_LEVEL);
+    role && levels.user_can_send_state(user, StateEventType::from(kind))
+}
+
 /// `room`'s loop state and the raw events it came from, read from the
 /// homeserver now. This account must be joined; unreadable power levels
 /// make nothing count (fail closed: the level is refused, so paused).
@@ -40,7 +48,7 @@ pub async fn read_events(room: &Room) -> Result<(RoomState, Vec<Value>), String>
     let levels = power_levels_event(&events).and_then(|content| crate::home::call_power_levels::typed_levels(room, content));
     let may_send = |sender: &str, kind: &str| {
         let user = UserId::parse(sender).ok();
-        levels.as_ref().zip(user).is_some_and(|(l, u)| l.user_can_send_state(&u, StateEventType::from(kind)))
+        levels.as_ref().zip(user).is_some_and(|(l, u)| may_send_now(l, &u, kind))
     };
     let rights = levels.as_ref().map(|l| rights_of(l, &me)).unwrap_or_default();
     Ok((state_of(&events, room.room_id().as_str(), may_send, rights), events))
@@ -68,7 +76,7 @@ pub async fn set_level(room: &Room, level: Level) -> Result<(), String> {
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can change agent work here.").to_owned());
     }
-    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, state.resumed_at)).await
+    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await
         .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))?;
     let (name, _) = who_and_when(room).await;
     post(room, lines::level_line(&name, level)).await
@@ -84,17 +92,47 @@ pub async fn pause(room: &Room) -> Result<(), String> {
     post(room, lines::paused_line(&name, &time)).await
 }
 
-/// Resume (owner and maintainers): the level event's Resume point moves to
-/// the newest pause read now, so a pause sent after it still counts.
+/// Resume (owner and maintainers): the level event clears exactly the pause
+/// events read now, so a pause sent after the read still counts.
 pub async fn resume(room: &Room) -> Result<(), String> {
     let (state, events) = read_events(room).await?;
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can resume agent work here.").to_owned());
     }
     let level = state.level.clone().unwrap_or(Level::Off);
-    let point = resume_point(&events, state.resumed_at);
-    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, point)).await
+    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await
         .map_err(|e| crate::i18n::format("Could not resume the room: {error}", &[("error", e.to_string())]))?;
     let (name, time) = who_and_when(room).await;
     post(room, lines::resumed_line(&name, &time)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevelsEventContent, RoomPowerLevelsSource};
+    use matrix_sdk::ruma::user_id;
+
+    fn levels(content: serde_json::Value) -> RoomPowerLevels {
+        let content: RoomPowerLevelsEventContent = serde_json::from_value(content).unwrap();
+        RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), &matrix_sdk::ruma::room_version_rules::AuthorizationRules::V10, Vec::new())
+    }
+
+    /// Owner decision (Nov 18): the owner does everything, a maintainer changes the
+    /// level and resumes, a member only pauses; a permissive room changes none of that.
+    #[test]
+    fn roles_decide_who_changes_the_level_and_who_only_pauses() {
+        let room = levels(serde_json::json!({"users": {"@own:x": 100, "@mo:x": 50}, "state_default": 50,
+            "events": {ROOM_AUTONOMY_STATE_TYPE: 50, ROOM_PAUSE_STATE_TYPE: 0, "io.hagency.merge_rules": 100, "m.room.power_levels": 100}}));
+        let (own, mo, member) = (rights_of(&room, user_id!("@own:x")), rights_of(&room, user_id!("@mo:x")), rights_of(&room, user_id!("@me:x")));
+        assert!(own.change_level && own.pause && own.maintainer);
+        assert!(mo.change_level && mo.pause && mo.maintainer, "a maintainer changes the level and resumes");
+        assert!(!room.user_can_send_state(user_id!("@mo:x"), StateEventType::from("io.hagency.merge_rules")), "but not the merge rules");
+        assert!(!room.user_can_send_state(user_id!("@mo:x"), StateEventType::RoomPowerLevels), "nor maintainers");
+        assert!(!member.change_level && member.pause && !member.maintainer, "a member only pauses");
+        let permissive = levels(serde_json::json!({"users": {"@own:x": 100}, "state_default": 0}));
+        assert!(!may_send_now(&permissive, user_id!("@me:x"), ROOM_AUTONOMY_STATE_TYPE), "a permissive room does not make a member a maintainer");
+        assert!(may_send_now(&permissive, user_id!("@me:x"), ROOM_PAUSE_STATE_TYPE));
+        let r = rights_of(&permissive, user_id!("@me:x"));
+        assert!(r.change_level && !r.maintainer, "so the Status tab's can_change (both) stays off");
+    }
 }

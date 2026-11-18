@@ -6,7 +6,7 @@
 //! paused (fail closed); a pause never needs to be accepted to count.
 use crate::hagency::issue_watch::room_rules::{RoomRead, accept_of};
 use ::hagency::issue_watch::safeguards::room_autonomy::{
-    AutonomySnapshot, Level, Pause, ROOM_AUTONOMY_STATE_TYPE, UNREAD_REASON, level_of, pause_in, resumed_at,
+    AutonomySnapshot, Level, Pause, ROOM_AUTONOMY_STATE_TYPE, UNREAD_REASON, cleared, level_of, pause_in,
 };
 use ::hagency::repo_status::linked::{ROOM_REPOS_STATE_TYPE, linked};
 use serde_json::Value;
@@ -18,8 +18,8 @@ pub struct RoomState {
     pub level: Result<Level, String>,
     /// Who set the level (empty: never set).
     pub level_by: String,
-    /// The Resume point of the accepted level event (server ms).
-    pub resumed_at: i64,
+    /// The pause event IDs the accepted level event's last Resume cleared.
+    pub cleared: Vec<String>,
     pub pause: Option<Pause>,
     /// The room's linked repositories, from a sender who may still link them.
     pub linked: Vec<String>,
@@ -61,13 +61,14 @@ impl RoomState {
 
 /// The room state among the server's state `events` of `room_id`.
 /// `may_send(sender, type)`: whether the room's power levels let that
-/// person send that state type now; `me`'s rights come from the same levels.
+/// person send that state type now (for the level: and they are the room's
+/// owner or a maintainer); `me`'s rights come from the same levels.
 pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -> bool, rights: Rights) -> RoomState {
     let read = accept_of(events, room_id, ROOM_AUTONOMY_STATE_TYPE, |sender| may_send(sender, ROOM_AUTONOMY_STATE_TYPE));
     let (level, level_by, resumed) = match &read {
-        RoomRead::None => (Ok(Level::Off), String::new(), 0),
-        RoomRead::Refused(why) => (Err(format!("{UNREAD_REASON} (the level was {why})")), String::new(), 0),
-        RoomRead::Rules { sender, content, .. } => (level_of(content).ok_or_else(|| UNREAD_REASON.to_owned()), sender.clone(), resumed_at(content)),
+        RoomRead::None => (Ok(Level::Off), String::new(), Vec::new()),
+        RoomRead::Refused(why) => (Err(format!("{UNREAD_REASON} (the level was {why})")), String::new(), Vec::new()),
+        RoomRead::Rules { sender, content, .. } => (level_of(content).ok_or_else(|| UNREAD_REASON.to_owned()), sender.clone(), cleared(content)),
     };
     let linked = match accept_of(events, room_id, ROOM_REPOS_STATE_TYPE, |sender| may_send(sender, ROOM_REPOS_STATE_TYPE)) {
         RoomRead::Rules { content, .. } => linked(&content),
@@ -76,10 +77,12 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
     RoomState {
         level,
         level_by,
-        resumed_at: resumed,
-        pause: pause_in(events, resumed),
+        pause: pause_in(events, &resumed),
+        cleared: resumed,
         linked,
-        can_change: rights.change_level,
+        // The event permission alone is not the role (GPT review: a permissive
+        // room could let a plain member send it): owner or maintainer too.
+        can_change: rights.change_level && rights.maintainer,
         can_pause: rights.pause,
         can_link: rights.link,
         maintainer: rights.maintainer,

@@ -2,14 +2,15 @@
 //! room (`Off`, `Assist`, `Autonomous`) and Pause / Resume.
 //!
 //! - The level is room state [`ROOM_AUTONOMY_STATE_TYPE`] (state key ""),
-//!   admin-only by power level; its content also holds `resumedAt`, the
-//!   server time (ms) up to which an admin's Resume cleared the pauses.
+//!   for the room's owner and maintainers; its content also holds `cleared`,
+//!   the event IDs of the pauses the last Resume saw and cleared.
 //! - A pause is room state [`ROOM_PAUSE_STATE_TYPE`] keyed by the pausing
 //!   member's own Matrix ID (the homeserver lets nobody write another
 //!   member's key), open to every member (power level 0). A pause event
-//!   counts while its server timestamp is after `resumedAt`, whatever its
-//!   content: a member who edits or redacts their own pause event only sends
-//!   a newer one, so a member can pause but never resume.
+//!   counts unless its event ID is among the level event's `cleared`, whatever
+//!   its content or timestamp: a member who edits or redacts their own pause
+//!   event only sends a new event, so a member can pause but never resume,
+//!   and no clock (a server's or a sender's) can hide a pause (GPT review).
 //!
 //! The gate never reads Matrix. The owner's desktop reads both from the
 //! homeserver and records a snapshot per room through the owner API
@@ -29,7 +30,9 @@ pub const ROOM_AUTONOMY_STATE_TYPE: &str = "io.hagency.room_autonomy";
 /// The room state event type of one member's pause (state key: their Matrix ID).
 pub const ROOM_PAUSE_STATE_TYPE: &str = "io.hagency.room_autonomy_pause";
 const LEVEL_FIELD: &str = "level";
-const RESUMED_AT_FIELD: &str = "resumedAt";
+const CLEARED_FIELD: &str = "cleared";
+/// The most pause event IDs one Resume records (one current pause per member).
+pub const MAX_CLEARED: usize = 1000;
 
 /// How far a room's agents go on their own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,13 +65,13 @@ impl Level {
 pub fn level_of(content: &Value) -> Option<Level> {
     Level::from_wire(content[LEVEL_FIELD].as_str()?)
 }
-/// The server time (ms) up to which the last Resume cleared pauses (0: never).
-pub fn resumed_at(content: &Value) -> i64 {
-    content[RESUMED_AT_FIELD].as_i64().unwrap_or(0)
+/// The pause event IDs the last Resume cleared (none: never resumed).
+pub fn cleared(content: &Value) -> Vec<String> {
+    content[CLEARED_FIELD].as_array().into_iter().flatten().filter_map(Value::as_str).take(MAX_CLEARED).map(str::to_owned).collect()
 }
-/// The level event content for `level`, keeping `resumed_at`.
-pub fn level_content(level: Level, resumed_at: i64) -> Value {
-    json!({ LEVEL_FIELD: level.wire(), RESUMED_AT_FIELD: resumed_at })
+/// The level event content for `level`, keeping `cleared`.
+pub fn level_content(level: Level, cleared: &[String]) -> Value {
+    json!({ LEVEL_FIELD: level.wire(), CLEARED_FIELD: cleared.iter().take(MAX_CLEARED).collect::<Vec<_>>() })
 }
 /// The pause event content (informative only: its timestamp is what counts).
 pub fn pause_content(now_ms: i64) -> Value {
@@ -82,21 +85,24 @@ pub struct Pause {
     pub at_ms: i64,
 }
 
-/// The newest counting pause among the server's state `events`: a pause
-/// event keyed by its own sender whose server timestamp is after `resumed_at`.
-/// Content is ignored, so an edited or redacted pause still counts.
-pub fn pause_in(events: &[Value], resumed_at: i64) -> Option<Pause> {
+/// The room's pause events: keyed by their own sender, with an event ID.
+fn pauses(events: &[Value]) -> impl Iterator<Item = (&str, &str, i64)> {
     events
         .iter()
         .filter(|e| e["type"] == ROOM_PAUSE_STATE_TYPE && e["state_key"].as_str().is_some_and(|k| k.starts_with('@') && e["sender"] == k))
-        .filter_map(|e| Some(Pause { by: e["sender"].as_str()?.to_owned(), at_ms: e["origin_server_ts"].as_i64()? }))
-        .filter(|p| p.at_ms > resumed_at)
-        .max_by_key(|p| p.at_ms)
+        .filter_map(|e| Some((e["event_id"].as_str().filter(|id| id.starts_with('$'))?, e["sender"].as_str()?, e["origin_server_ts"].as_i64().unwrap_or(0))))
 }
-/// The `resumedAt` a Resume writes: the newest pause it saw, so a pause sent
-/// after it still counts (never the admin's own clock).
-pub fn resume_point(events: &[Value], resumed_at: i64) -> i64 {
-    pause_in(events, resumed_at).map_or(resumed_at, |p| p.at_ms)
+
+/// The newest counting pause among the server's state `events`: a pause
+/// event keyed by its own sender that the last Resume did not clear. Content
+/// and timestamps never decide, so an edited or redacted pause still counts.
+pub fn pause_in(events: &[Value], cleared: &[String]) -> Option<Pause> {
+    pauses(events).filter(|(id, _, _)| !cleared.iter().any(|c| c == id)).map(|(_, by, at_ms)| Pause { by: by.to_owned(), at_ms }).max_by_key(|p| p.at_ms)
+}
+/// What a Resume clears: exactly the pause events it read now, so any pause
+/// sent after the read still counts.
+pub fn resume_clears(events: &[Value]) -> Vec<String> {
+    pauses(events).map(|(id, _, _)| id.to_owned()).take(MAX_CLEARED).collect()
 }
 
 /// Why the loop does not do something in a room.
@@ -229,6 +235,14 @@ impl Ledger {
             Ok(Some(false)) => Err(NOT_MAINTAINER_REASON),
             _ => Err(UNREAD_REASON),
         }
+    }
+    /// Whether a merge from `room` is refused outright: the room is a loop
+    /// room (it has a snapshot) and its fresh, readable snapshot does not say
+    /// this owner is its owner or a maintainer (fail closed, GPT review). A
+    /// room with no snapshot at all (a private chat) leaves it to the card.
+    pub fn merge_refused(&self, room: &str, now: i64) -> Result<bool> {
+        let known: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM room_autonomy WHERE room=?)", [room], |r| r.get(0))?;
+        Ok(known && self.owner_maintainer_at(room, now)? != Some(true))
     }
     /// Whether this device's owner is the room's owner or a maintainer, by
     /// the fresh, readable snapshot of `room` (`None`: none to go by).

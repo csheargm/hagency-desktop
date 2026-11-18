@@ -138,25 +138,26 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
         return Ok(None);
     }
     let mut rooms = read(&saved).await;
-    let moving = !super::migrate::planned(&saved, false).is_empty();
-    let mut held = super::migrate::run(service, agent, &saved, &rooms).await;
+    let moving = !super::migrate::planned(&saved, false, super::migrate::moved(id)).is_empty();
+    let held = super::migrate::run(service, agent, &saved, &rooms).await;
     if moving {
         // The move linked repositories: read the rooms again so the work list keeps them.
         rooms = read(&saved).await;
     }
-    let record = serde_json::json!({"roomAutonomy": rooms.snapshots()});
-    if let Err(error) = super::live::saved(service, id, Some(record)).await {
-        // Not recorded: the old snapshot ages out within its TTL (then: paused).
-        held.push(crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]));
-    }
     saved = super::live::saved(service, id, None).await?;
-    // The work list follows "may work" only once the old settings moved (never drops a watch).
+    // The work list follows "may work" only once the old settings moved (never drops a
+    // watch), and before the rooms are recorded running, so an unlinked repository's
+    // push grant is gone first (GPT review).
     if held.is_empty() {
         let derived = derived_work(&saved, &rooms, chrono::Utc::now().timestamp());
         if !same_work(&saved, &derived) {
             saved = super::live::saved(service, id, Some(serde_json::json!({"work": derived}))).await?;
         }
     }
+    // Not recorded: nothing runs this check (GPT review: the last positive snapshot
+    // would otherwise keep counting for up to its TTL while this check dispatched).
+    super::live::saved(service, id, Some(serde_json::json!({"roomAutonomy": rooms.snapshots()}))).await
+        .map_err(|error| crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]))?;
     stop_paused(&rooms).await;
     Ok(Some((saved, rooms, held)))
 }

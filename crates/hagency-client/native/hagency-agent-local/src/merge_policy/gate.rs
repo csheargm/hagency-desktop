@@ -268,10 +268,10 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         let url = source.pull_request(&command).await?.url;
         ledger.hold_withdrawal(call, &url, &agent).ok()?;
     }
-    // Only Agents of the room's owner or a maintainer merge (ADR 0030): a
-    // fresh read saying this owner is neither refuses the merge outright,
-    // card or not; an unreadable role leaves it to the card.
-    if command.kind == Kind::Merge && ledger.owner_maintainer_at(&proposal.scope.room, super::room_rules::unix_now()).ok()? == Some(false) {
+    // Only Agents of the room's owner or a maintainer merge (ADR 0030): in a
+    // loop room, anything but a fresh read saying this owner is one refuses the
+    // merge outright, card or not (fail closed, GPT review).
+    if command.kind == Kind::Merge && ledger.merge_refused(&proposal.scope.room, super::room_rules::unix_now()).unwrap_or(true) {
         return Some(false);
     }
     // The Agent works in this room's loop and the room runs (ADR 0030; it
