@@ -212,7 +212,7 @@ impl Ledger {
             if !round.known {
                 return Ok((step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
             }
-            return self.unseen(agent, (step, pr, head), now);
+            return self.unseen(agent, (step, pr, head), sender.2, now);
         };
         // Seen once: a dispatch pruned from the inbox later never reads as unseen.
         self.db.execute("INSERT OR REPLACE INTO review_loop_unseen VALUES (?,?,?,?,-1)", (agent, step, pr, head))?;
@@ -229,14 +229,14 @@ impl Ledger {
     /// The claimed round shows no dispatch here: [`Why::Unseen`] once
     /// [`UNSEEN_AFTER_SECS`] passed since that was first found. A review is
     /// never asked again once it is known done here (an approval of the head
-    /// recorded, or its merge step taken).
-    fn unseen(&self, agent: &str, (step, pr, head): (&str, &str, &str), now: i64) -> Result<Option<(Why, String, i64)>> {
+    /// recorded in `room`, or its merge step taken).
+    fn unseen(&self, agent: &str, (step, pr, head): (&str, &str, &str), room: &str, now: i64) -> Result<Option<(Why, String, i64)>> {
         self.db.execute("INSERT OR IGNORE INTO review_loop_unseen VALUES (?,?,?,?,?)", (agent, step, pr, head, now))?;
         let first: i64 = self.db.query_row("SELECT first_at FROM review_loop_unseen WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head), |r| r.get(0))?;
         if first < 0 || now - first < UNSEEN_AFTER_SECS {
             return Ok(None);
         }
-        if step == "review" && (!self.agent_reviewers(pr, head)?.is_empty() || self.loop_step_taken(agent, "merge", pr, head)?) {
+        if step == "review" && (!self.agent_reviewers_in(pr, head, Some(room))?.is_empty() || self.loop_step_taken(agent, "merge", pr, head)?) {
             return Ok(None);
         }
         // No runner is known: the re-post is never held for a budget.

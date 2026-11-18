@@ -230,8 +230,8 @@ impl TrackIo for LiveTrack<'_> {
     async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String> {
         Ok(fetch_pull_merged(self.worker.client, GITHUB_API, self.repo, pr, self.worker.token).await.map_err(|e| e.to_string())?.map(|by| by.eq_ignore_ascii_case(&self.login)))
     }
-    async fn merged_linking_pr(&self, number: i64) -> Result<Option<u64>, String> {
-        super::merged_link::find(self.worker, (self.repo, &self.login), number).await
+    async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
+        super::merged_link::find(self.worker, (self.repo, &self.login), track).await
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         let (state, reason) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;

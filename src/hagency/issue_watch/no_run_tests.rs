@@ -64,7 +64,7 @@ fn the_activity_view_names_a_no_run_and_whether_the_budget_is_used_up() {
     first_hand_off(&fake, 92);
     let track = &fake.tracks()[0];
     let req = |extra: serde_json::Value| {
-        let mut r = json!({"requester": ME, "receivedAt": T0 + 1, "outcome": "answered", "issue": {"repo": "acme/app", "number": 92}});
+        let mut r = json!({"requester": ME, "roomId": ROOM, "receivedAt": T0 + 1, "outcome": "answered", "issue": {"repo": "acme/app", "number": 92}});
         r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         r
     };
@@ -78,6 +78,7 @@ fn the_activity_view_names_a_no_run_and_whether_the_budget_is_used_up() {
     let rooms = |list: serde_json::Value| json!({"requests": [req(json!({"noRun": true}))], "budgetUsedUp": false, "budgetUsedUpRooms": list});
     assert_eq!(run_end_in(&rooms(json!([ROOM])), (ME, ROOM), track), seen(RunEnd::NoRun, true));
     assert_eq!(run_end_in(&rooms(json!(["!elsewhere:x"])), (ME, ROOM), track), seen(RunEnd::NoRun, false));
+    assert_eq!(run_end_in(&rooms(json!([])), (ME, "!elsewhere:x"), track).run, RunEnd::Running, "a run in another room never ends this hand-off");
 }
 
 #[test]

@@ -77,3 +77,19 @@ fn a_seen_dispatch_or_a_done_review_never_reads_as_unseen() {
     review(&mut l, T0 + UNSEEN_AFTER_SECS + 1);
     assert_eq!(review(&mut l, T0 + 3 * UNSEEN_AFTER_SECS), StepDue { taken: true, again: 1, say: None }, "its merge step was taken: never asked again");
 }
+
+#[test]
+fn another_rooms_approval_never_stands_in_for_this_rooms_review() {
+    // GPT review: an approval of the head given in room B kept room A's
+    // never-delivered review claimed, though A's merge needs its own.
+    let (_temp, mut l) = ledger();
+    l.record_agent_review(PR, HEAD, "wren", ELSEWHERE).unwrap();
+    claim(&mut l, "review");
+    let review = |l: &mut Ledger, now| l.step_due(AGENT, ("review", PR, HEAD), (ME, CODEX, ROOM), now).unwrap();
+    review(&mut l, T0);
+    assert_eq!(review(&mut l, T0 + UNSEEN_AFTER_SECS).again, 1, "asked again in its own room");
+    claim(&mut l, "review");
+    l.record_agent_review(PR, HEAD, "wren", ROOM).unwrap();
+    review(&mut l, T0 + UNSEEN_AFTER_SECS + 1);
+    assert!(review(&mut l, T0 + 3 * UNSEEN_AFTER_SECS).taken, "approved in this room: done");
+}
