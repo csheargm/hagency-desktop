@@ -37,6 +37,8 @@ mod resume_kept;
 mod owner_command;
 #[path = "runtime/messages.rs"]
 mod messages;
+#[path = "runtime/signed_out.rs"]
+mod signed_out;
 
 struct Fixture {
     root: tempfile::TempDir,

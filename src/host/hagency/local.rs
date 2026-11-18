@@ -141,6 +141,8 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     } else if host_stopped(value) {
         // The host watchdog (backend/host_watchdog.rs) starts it again.
         "host_restarting"
+    } else if let Some(sign_in) = ours.then(|| sign_in_state(value)).flatten() {
+        sign_in
     } else if attention {
         "attention"
     } else if any(&["online", "online_chat_only"]) {
@@ -152,6 +154,17 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     } else {
         "stopped"
     }
+}
+/// The owner's Claude Code or Codex is signed out on this computer: the
+/// runtime's or a Room worker's last error names which one.
+fn sign_in_state(value: &Value) -> Option<&'static str> {
+    let runtime = &value["runtime"];
+    let bindings = runtime["bindings"].as_array().into_iter().flatten();
+    std::iter::once(runtime).chain(bindings).find_map(|r| match text(r, "lastError") {
+        "claude_login_required" => Some("claude_sign_in"),
+        "codex_login_required" => Some("codex_sign_in"),
+        _ => None,
+    })
 }
 pub(crate) fn room_name(room: &matrix_sdk::Room) -> String {
     room.cached_display_name()
@@ -375,6 +388,21 @@ mod tests {
         // Another Agent's runtime never reports this Agent as running.
         let other = json!({"service": {"enabled": false}, "runtime": {"agentId": "agt_2", "phase": "online"}});
         assert_eq!(service_state(&other, agent), "stopped");
+    }
+    #[test]
+    fn a_signed_out_provider_names_its_sign_in_not_a_vague_attention() {
+        let agent = "agt_1";
+        let failed = |error: &str| json!({"service": {"enabled": true, "watcherRunning": true},
+            "runtime": {"agentId": agent, "phase": "online", "bindings": [{"phase": "online_chat_only", "lastError": error}]}});
+        assert_eq!(service_state(&failed("claude_login_required"), agent), "claude_sign_in");
+        assert_eq!(service_state(&failed("codex_login_required"), agent), "codex_sign_in");
+        assert_eq!(service_state(&failed("provider_authorization_lost"), agent), "running", "other provider errors keep their old state");
+        let stopped = json!({"service": {"enabled": true, "watcherRunning": true},
+            "runtime": {"agentId": agent, "phase": "stopped", "lastError": "claude_login_required"}});
+        assert_eq!(service_state(&stopped, agent), "claude_sign_in");
+        let other = json!({"service": {"enabled": true, "watcherRunning": true},
+            "runtime": {"agentId": "agt_2", "phase": "online", "lastError": "claude_login_required"}});
+        assert_ne!(service_state(&other, agent), "claude_sign_in", "another Agent's sign-in is not this one's");
     }
     #[test]
     fn session_names_what_a_local_agent_needs_here() {

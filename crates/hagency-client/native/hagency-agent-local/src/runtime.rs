@@ -583,7 +583,7 @@ impl Session {
             Self::Codex(session) => session.require_local_account().await?,
             Self::Claude { profile, .. } => {
                 if !claude_account(&profile.executable, &profile.home, &profile.codex_home).await? {
-                    return Err(Error::Profile("dedicated owner provider login required"));
+                    return Err(Error::Profile(CLAUDE_LOGIN_REQUIRED));
                 }
             }
             Self::Octos { .. } => {}
@@ -983,6 +983,9 @@ fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
 /// The protocol error of a Claude Code installation below the floor. The host
 /// matches it to tell the owner to update the CLI.
 pub const CLAUDE_VERSION_REQUIRED: &str = "Claude Code 2.1.322 or newer is required";
+/// The profile error when the owner's Claude Code is signed out. Checked
+/// before any model input, so the host answers that the request never ran.
+pub const CLAUDE_LOGIN_REQUIRED: &str = "dedicated owner Claude login required";
 fn claude_initialize_error(error: claude::session::Error) -> Error {
     match error {
         claude::session::Error::UnsupportedVersion => Error::Protocol(CLAUDE_VERSION_REQUIRED),

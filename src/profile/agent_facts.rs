@@ -50,6 +50,8 @@ pub fn own_status(state: &str, service: Option<&str>) -> Option<&'static str> {
         "running" | "processing" | "waiting" | "starting" | "attention" => "Running",
         "stopped" | "paused" => "Paused",
         "elsewhere" => "On another device",
+        "claude_sign_in" => crate::hagency::agent_panel::mapping::CLAUDE_SIGN_IN,
+        "codex_sign_in" => crate::hagency::agent_panel::mapping::CODEX_SIGN_IN,
         // The host could not read the service: claim nothing.
         "unknown" => return None,
         _ => "Offline",

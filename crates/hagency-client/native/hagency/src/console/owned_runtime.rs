@@ -5,6 +5,7 @@ pub(in crate::console) mod e2ee;
 mod encrypted_context;
 mod journal_lock;
 mod provider_custody;
+mod provider_login;
 pub(in crate::console) mod questions;
 mod room_tools;
 pub(in crate::console) mod run_controls;
@@ -1414,7 +1415,9 @@ fn startup_check_failure(error: &codex::Error) -> RuntimeError {
     );
     // An installation below the floor is not an account problem: the owner
     // is told to update the CLI, as on the pooled path.
-    version_failure(error).unwrap_or(RuntimeError::Provider)
+    version_failure(error)
+        .or_else(|| provider_login::LoginNeeded::of(error).map(|login| RuntimeError::Execution(login.code())))
+        .unwrap_or(RuntimeError::Provider)
 }
 /// The owner-facing code of a CLI below the minimum version, if that is what
 /// failed.
@@ -1441,8 +1444,10 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         event = error.diagnostic_event(),
         "Local provider operation failed"
     );
+    if let Some(login) = provider_login::LoginNeeded::of(error) {
+        return RuntimeError::Execution(login.code());
+    }
     match error {
-        codex::Error::Profile("dedicated owner provider login required") => RuntimeError::Provider,
         codex::Error::Profile(_) | codex::Error::Ledger(_) => RuntimeError::Profile,
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
         codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {
@@ -2090,6 +2095,7 @@ async fn execution_loop_with_gate<T: Transport>(
                 },
             )
             .await;
+            let mut login_needed = None;
             let result = match start {
                 Ok(Response::Started(start)) => {
                     let response = inbox::ServerStart {
@@ -2114,6 +2120,7 @@ async fn execution_loop_with_gate<T: Transport>(
                             cancel,
                             status,
                             &mut sessions,
+                            &mut login_needed,
                     )
                     .await
                 }
@@ -2199,7 +2206,10 @@ async fn execution_loop_with_gate<T: Transport>(
                 let record = local(ledger.inbox_record(owner, &prepared.dispatch.id))?;
                 retry_reply(console, owner, ledger, lease, cancel, config, &record).await?;
             }
-            let mut ready = RuntimeStatus::new(&config.agent_id, if config.shared_workspace {"online"} else {"online_chat_only"}, turn_error)
+            // A signed-out provider is not an unknown outcome, but the owner
+            // still sees which sign-in to fix.
+            let status_error = turn_error.or(login_needed.map(provider_login::LoginNeeded::code));
+            let mut ready = RuntimeStatus::new(&config.agent_id, if config.shared_workspace {"online"} else {"online_chat_only"}, status_error)
                 .with_capabilities(config);
             ready.binding_id = Some(config.binding_id.clone());
             status.send_replace(ready);
@@ -2481,6 +2491,7 @@ async fn run_turn<T: Transport>(
     cancel: &mut watch::Receiver<bool>,
     status: &watch::Sender<RuntimeStatus>,
     sessions: &mut provider_custody::Sessions,
+    login_needed: &mut Option<provider_login::LoginNeeded>,
 ) -> Result<Option<Finish>, RuntimeError> {
     let scope = prepared.dispatch.scope();
     if config.shared_workspace && config.shared_workspace_pin.as_deref() != Some(shared_workspace_pin(&config.profile.cwd)?.as_str()) {
@@ -2813,10 +2824,24 @@ async fn run_turn<T: Transport>(
         }
     }=>match r {
         Ok(completed)=>Ok(Ok(completed)),
-        Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。")),
-        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。")),
+        Err(codex::Error::Ledger(hagency_agent_local::Error::Denied))=>Ok(Err("⏸️ 本次请求未获 Agent 主人的处理授权，未调用模型。".to_owned())),
+        Err(codex::Error::Ledger(hagency_agent_local::Error::Budget))=>Ok(Err("⏸️ 已结算用量达到本期额度，暂不启动新任务。请联系 Agent 主人调整配额。本次未调用模型。".to_owned())),
         Err(codex::Error::Failed | codex::Error::Unavailable(_))=>{if let Some(controls) = &controls { controls.finish(crate::agent_run_controls::State::Failed); } provider.stop().await.map_err(|_|RuntimeError::Provider)?;return Ok(Some(Finish::Failed));},
-        Err(error)=>Err(provider_failure("agent_turn_result", &error)),
+        Err(error)=>match provider_login::LoginNeeded::of(&error) {
+            // Signed out before any model input: the request did not start,
+            // so the room is told why instead of "outcome unknown".
+            Some(login)=>{
+                tracing::warn!(code = login.code(), "Provider signed out; the request was answered without starting");
+                *login_needed = Some(login);
+                let display = match &device {
+                    Some(device) => encrypted_context::RecentSource::display_name(&**device, &prepared.dispatch.room_id, owner).await,
+                    None => None,
+                };
+                let agent = hagency_agent_local::attribution::agent_label(&config.agent_id);
+                Ok(Err(login.room_reply(agent.as_deref(), &provider_login::owner_label(display, owner))))
+            }
+            None=>Err(provider_failure("agent_turn_result", &error)),
+        },
     }};
     if let Some(controls) = &controls {
         if !matches!(tokio::time::timeout(Duration::from_secs(30),
@@ -2852,7 +2877,7 @@ async fn run_turn<T: Transport>(
                 owner,
                 &prepared.dispatch.id,
                 &prepared.execution_id,
-                reason,
+                &reason,
             ))?;
             return Ok(None);
         }
@@ -3907,7 +3932,7 @@ mod tests {
             let mut sessions = provider_custody::Sessions::default();
             // This executable does not exist. A launch attempt would fail;
             // denial must instead persist a reply without touching a provider.
-            assert!(run_turn(&fake, &lease(), &mut ledger, OWNER, &config(&root), permit.into_prepared(), None, &mut cancel, &status, &mut sessions).await.unwrap().is_none());
+            assert!(run_turn(&fake, &lease(), &mut ledger, OWNER, &config(&root), permit.into_prepared(), None, &mut cancel, &status, &mut sessions, &mut None).await.unwrap().is_none());
             let saved = ledger.inbox_record(OWNER, "dispatch-a").unwrap();
             assert_eq!(saved.state, State::ReplyReady);
             assert!(saved.reply.unwrap().contains("未获 Agent 主人"));
