@@ -58,6 +58,8 @@ fn timeless(fresh: &[Published]) -> Vec<Published> {
 /// this process last published them to (GPT integration review); readers
 /// also drop not-finished issues nobody refreshed.
 pub(crate) async fn publish(room_id: &OwnedRoomId, agent_mxid: &str, repo: &str, fresh: Vec<Published>, now: i64) -> Result<(), String> {
+    // The digest's "needs you" is this follow's holds, whether or not the room takes them.
+    super::digest_gate::note(agent_mxid, repo, &fresh);
     let key = (room_id.to_string(), agent_mxid.to_owned(), repo.to_ascii_lowercase());
     let (unchanged, moved) = {
         // A poisoned lock still holds a whole map: inserts are single operations.

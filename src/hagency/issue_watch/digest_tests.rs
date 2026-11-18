@@ -2,25 +2,27 @@
 //! (recorded with the ledger's own rule, `apply_change`) becomes one notice
 //! with the right counts and links; it is sent once per day even across a
 //! restart; a quiet day says nothing; only the owner's own window sends.
-use super::digest::{self, MAX_ITEMS, SEND_HOUR, Window, summarize, window_at};
+use super::digest::{self, Inputs, MAX_ITEMS, SEND_HOUR, Window, summarize, window_at};
 use super::digest_live::{DigestIo, own_window, send_due};
+use ::hagency::issue_watch::issue_track::digest::{DigestLog, UnansweredCard};
 use ::hagency::issue_watch::issue_track::{Track, TrackChange, apply_change};
 use chrono::{DateTime, FixedOffset, TimeZone};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
-const REPO: &str = "acme/app";
+pub(super) const REPO: &str = "acme/app";
 const ROOM: &str = "!report:example.org";
+pub(super) const ME: &str = "@chris:example.org";
 
-fn at(day: u32, hour: u32, minute: u32) -> DateTime<FixedOffset> {
+pub(super) fn at(day: u32, hour: u32, minute: u32) -> DateTime<FixedOffset> {
     FixedOffset::east_opt(8 * 3600).unwrap().with_ymd_and_hms(2026, 11, day, hour, minute, 0).unwrap()
 }
-fn today() -> Window {
+pub(super) fn today() -> Window {
     window_at(&at(18, SEND_HOUR, 5)).unwrap()
 }
 /// One record moved through `steps` (`(at, change)`) with the ledger's rule.
-fn track(number: i64, steps: &[(i64, Value)]) -> Track {
+pub(super) fn track(number: i64, steps: &[(i64, Value)]) -> Track {
     let mut current = None;
     for (now, extra) in steps {
         let change: TrackChange = serde_json::from_value(super::tracker::change_of(REPO, number, extra.clone())).unwrap();
@@ -45,8 +47,8 @@ fn day_of_moves(w: &Window) -> Vec<Track> {
         other,
     ]
 }
-fn unanswered_request(number: i64, received: i64) -> Value {
-    json!({"issue": {"repo": REPO, "number": number}, "receivedAt": received, "outcome": "answered", "unanswered": true})
+pub(super) fn card(number: i64, at: i64) -> UnansweredCard {
+    UnansweredCard { repo: REPO.into(), number, requester: ME.into(), at }
 }
 
 #[test]
@@ -61,10 +63,11 @@ fn the_window_opens_at_the_send_hour_and_covers_the_day_since_yesterdays() {
 #[test]
 fn counts_fixed_merged_and_need_you_from_the_ledger() {
     let w = today();
-    let requests = json!([unanswered_request(38, w.start + 10), unanswered_request(36, w.start + 20), unanswered_request(39, w.start - 1)]);
-    let unanswered = digest::unanswered_issues(&requests, REPO, &w);
+    let cards = [card(38, w.start + 10), card(36, w.start + 20), card(39, w.start - 1)];
+    let unanswered = digest::unanswered_issues(&cards, ME, REPO, &w);
     assert_eq!(unanswered, vec![36, 38], "outside the window does not count");
-    let day = summarize(REPO, &day_of_moves(&w), &unanswered, &w).unwrap();
+    // The merge gate holds #36 for its owner now.
+    let day = summarize(REPO, &Inputs { tracks: &day_of_moves(&w), needs_owner: &[36], unanswered: &unanswered, ..Inputs::default() }, &w).unwrap();
     // Fixed: three issues; merged: two pull requests (#41 closed two issues).
     assert_eq!((day.fixed, day.merged), (3, 2));
     // Need you: #36 held, #37 given up, #38's card (#36's card is the held PR, counted once).
@@ -81,15 +84,15 @@ fn counts_fixed_merged_and_need_you_from_the_ledger() {
 fn a_quiet_day_says_nothing_but_a_held_pr_alone_is_not_activity() {
     let w = today();
     let old_hold = track(36, &[(w.start - 99, json!({"handed": 1})), (w.start - 90, json!({"state": "reviewed", "pr": 43, "notified": true}))]);
-    assert_eq!(summarize(REPO, &[old_hold], &[], &w), None);
-    assert_eq!(summarize(REPO, &[], &[], &w), None);
+    assert_eq!(summarize(REPO, &Inputs { tracks: &[old_hold], needs_owner: &[36], ..Inputs::default() }, &w), None);
+    assert_eq!(summarize(REPO, &Inputs::default(), &w), None);
 }
 
 #[test]
 fn a_long_day_is_cut_to_the_item_limit() {
     let w = today();
     let many: Vec<Track> = (1..=(MAX_ITEMS as i64 + 3)).map(|n| track(n, &[(w.start + n, json!({"handed": 1}))])).collect();
-    let text = digest::text(REPO, &summarize(REPO, &many, &[], &w).unwrap());
+    let text = digest::text(REPO, &summarize(REPO, &Inputs { tracks: &many, ..Inputs::default() }, &w).unwrap());
     assert_eq!(text.lines().count(), 1 + MAX_ITEMS + 1, "{text}");
     assert!(text.ends_with("And 3 more"), "{text}");
 }
@@ -107,17 +110,21 @@ fn every_watch_has_its_report_room_once() {
 
 /// The digest's I/O on fakes; `sent` is the ledger's once-a-day record.
 #[derive(Default)]
-struct Fake {
-    not_own: bool,
-    requests: Value,
-    posts: RefCell<Vec<(String, String, String)>>,
-    sent: RefCell<BTreeMap<String, String>>,
-    fail_post: Cell<bool>,
+pub(super) struct Fake {
+    pub not_own: bool,
+    /// The ledger's digest log the owner API answers.
+    pub log: DigestLog,
+    /// The gate's holds for the owner; `gate_unknown`: no follow since start.
+    pub holds: Vec<i64>,
+    pub gate_unknown: bool,
+    pub posts: RefCell<Vec<(String, String, String)>>,
+    pub sent: RefCell<BTreeMap<String, String>>,
+    pub fail_post: Cell<bool>,
     /// The records the owner API answers now (`fresh`).
-    tracks: RefCell<Vec<Track>>,
+    pub tracks: RefCell<Vec<Track>>,
     /// Stop All, and whether it is pressed while the Activity view is read.
-    paused: Cell<bool>,
-    pause_while_reading: bool,
+    pub paused: Cell<bool>,
+    pub pause_while_reading: bool,
 }
 impl DigestIo for Fake {
     async fn own_window(&self) -> Result<bool, String> {
@@ -126,11 +133,14 @@ impl DigestIo for Fake {
     async fn fresh(&self) -> Result<Value, String> {
         Ok(saved(self, &self.tracks.borrow()))
     }
-    async fn own_requests(&self) -> Result<Value, String> {
+    fn me(&self) -> Option<String> {
         if self.pause_while_reading {
             self.paused.set(true);
         }
-        Ok(self.requests.clone())
+        Some(ME.into())
+    }
+    fn needs_owner(&self, _repo: &str) -> Option<Vec<i64>> {
+        (!self.gate_unknown).then(|| self.holds.clone())
     }
     async fn post(&self, room: &str, repo: &str, day: &str, text: String) -> Result<(), String> {
         if self.fail_post.get() {
@@ -152,10 +162,10 @@ impl DigestIo for Fake {
     }
 }
 /// What one check reads from the owner API: the watch, the records, the sent days.
-fn saved(fake: &Fake, tracks: &[Track]) -> Value {
-    json!({"work": [{"repo": REPO, "roomId": ROOM}], "track": tracks, "digestSent": fake.sent.borrow().clone()})
+pub(super) fn saved(fake: &Fake, tracks: &[Track]) -> Value {
+    json!({"work": [{"repo": REPO, "roomId": ROOM}], "track": tracks, "digestLog": fake.log, "digestSent": fake.sent.borrow().clone()})
 }
-fn run<F: std::future::Future>(future: F) -> F::Output {
+pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(future)
 }
 
@@ -163,7 +173,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 fn the_digest_is_sent_once_a_day_even_across_a_restart() {
     let w = today();
     let tracks = day_of_moves(&w);
-    let fake = Fake { requests: json!([]), tracks: RefCell::new(tracks.clone()), ..Fake::default() };
+    let fake = Fake { tracks: RefCell::new(tracks.clone()), ..Fake::default() };
     assert!(run(send_due(&fake, &saved(&fake, &tracks), window_at(&at(18, 17, 59)))).is_empty());
     assert!(fake.posts.borrow().is_empty(), "nothing before the send hour");
     // A failed post is not recorded, so the next check tries again.
@@ -176,7 +186,7 @@ fn the_digest_is_sent_once_a_day_even_across_a_restart() {
     }
     assert_eq!(fake.posts.borrow().len(), 1);
     // A restart keeps only the ledger's record: still nothing more today.
-    let restarted = Fake { requests: json!([]), sent: RefCell::new(fake.sent.borrow().clone()), tracks: RefCell::new(tracks.clone()), ..Fake::default() };
+    let restarted = Fake { sent: RefCell::new(fake.sent.borrow().clone()), tracks: RefCell::new(tracks.clone()), ..Fake::default() };
     run(send_due(&restarted, &saved(&restarted, &tracks), window_at(&at(18, 22, 0))));
     assert!(restarted.posts.borrow().is_empty());
     // The next day is a new digest.
@@ -190,7 +200,7 @@ fn the_digest_is_sent_once_a_day_even_across_a_restart() {
 
 #[test]
 fn a_quiet_day_posts_nothing_and_is_not_asked_again() {
-    let fake = Fake { requests: json!([]), ..Fake::default() };
+    let fake = Fake { ..Fake::default() };
     assert!(run(send_due(&fake, &saved(&fake, &[]), Some(today()))).is_empty());
     assert!(fake.posts.borrow().is_empty());
     assert_eq!(fake.sent.borrow().get(REPO).map(String::as_str), Some("2026-11-18"));
@@ -199,7 +209,7 @@ fn a_quiet_day_posts_nothing_and_is_not_asked_again() {
 #[test]
 fn only_the_owners_own_window_sends() {
     let w = today();
-    let fake = Fake { not_own: true, requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
+    let fake = Fake { not_own: true, tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
     run(send_due(&fake, &saved(&fake, &day_of_moves(&w)), Some(w)));
     assert!(fake.posts.borrow().is_empty() && fake.sent.borrow().is_empty());
     let devices = json!({"currentDeviceId": "d1", "devices": [{"id": "d1", "revoked": false}, {"id": "d2", "revoked": false}]});
@@ -217,7 +227,7 @@ fn a_move_recorded_just_before_the_send_hour_is_in_the_digest() {
     // The check's snapshot was read at 17:59, before its own merge was recorded (GPT review).
     let w = today();
     let merged = track(33, &[(w.end - 120, json!({"handed": 1})), (w.end - 60, json!({"state": "pr_opened", "pr": 41})), (w.end - 1, json!({"state": "merged", "notified": true}))]);
-    let fake = Fake { requests: json!([]), tracks: RefCell::new(vec![merged]), ..Fake::default() };
+    let fake = Fake { tracks: RefCell::new(vec![merged]), ..Fake::default() };
     let stale = saved(&fake, &[]);
     assert!(run(send_due(&fake, &stale, Some(w))).is_empty());
     assert!(fake.posts.borrow()[0].1.contains("Today: 1 fixed, 1 merged, 0 need you"), "{:?}", fake.posts.borrow());
@@ -226,10 +236,10 @@ fn a_move_recorded_just_before_the_send_hour_is_in_the_digest() {
 #[test]
 fn stop_all_pressed_during_the_reads_holds_the_day() {
     let w = today();
-    let fake = Fake { requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), pause_while_reading: true, ..Fake::default() };
+    let fake = Fake { tracks: RefCell::new(day_of_moves(&w)), pause_while_reading: true, ..Fake::default() };
     run(send_due(&fake, &saved(&fake, &day_of_moves(&w)), Some(w.clone())));
     assert!(fake.posts.borrow().is_empty() && fake.sent.borrow().is_empty(), "nothing posted, the day not used up");
-    let resumed = Fake { requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
+    let resumed = Fake { tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
     run(send_due(&resumed, &saved(&resumed, &day_of_moves(&w)), Some(w)));
     assert_eq!(resumed.posts.borrow().len(), 1, "sent once resumed the same day");
 }

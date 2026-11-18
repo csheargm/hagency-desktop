@@ -4,7 +4,9 @@
 //! link for each that needs the owner. Each moment belongs to exactly one
 //! day's window (yesterday's send hour up to today's), so nothing is counted
 //! twice or missed while the app runs every day. A day without moves says
-//! nothing. Sending and the once-a-day record are in `digest_live`.
+//! nothing. Sending and the once-a-day record are in `digest_live`; the
+//! gate's current holds are in `digest_gate`.
+use ::hagency::issue_watch::issue_track::digest::{TrackStep, UnansweredCard};
 use ::hagency::issue_watch::issue_track::{State, Track};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, WatchMode};
 use chrono::{DateTime, Days, NaiveDate, TimeZone};
@@ -58,12 +60,8 @@ pub struct Digest {
     pub items: Vec<String>,
 }
 
-fn in_window(track: &Track, window: &Window) -> bool {
-    (window.start..window.end).contains(&track.changed_at)
-}
-/// A pull request whose hold (or "needs your review") notice was posted and that has not moved since.
-fn held(track: &Track) -> bool {
-    track.state == State::Reviewed && track.notified && track.pr.is_some()
+fn in_window(at: i64, window: &Window) -> bool {
+    (window.start..window.end).contains(&at)
 }
 fn issue_url(repo: &str, number: i64) -> String {
     format!("https://github.com/{repo}/issues/{number}")
@@ -72,31 +70,65 @@ fn pull_url(repo: &str, pr: u64) -> String {
     format!("https://github.com/{repo}/pull/{pr}")
 }
 
-/// `repo`'s digest for `window`, from the ledger's records and the issues
-/// whose approval card went unanswered in it; `None` when nothing moved.
-pub fn summarize(repo: &str, tracks: &[Track], unanswered: &[i64], window: &Window) -> Option<Digest> {
-    let ours: Vec<&Track> = tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(repo)).collect();
-    let moved: Vec<&Track> = ours.iter().copied().filter(|t| in_window(t, window)).collect();
+/// What one repository's digest reads besides the window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Inputs<'a> {
+    /// The ledger's records, as they are now.
+    pub tracks: &'a [Track],
+    /// Every move of those records (the ledger's digest log), oldest first.
+    pub steps: &'a [TrackStep],
+    /// Issues whose pull request the merge gate holds for the owner right
+    /// now (`digest_gate`): not the record's sticky notice flag, which stays
+    /// set while a held pull request goes on to merge (integration GPT review).
+    pub needs_owner: &'a [i64],
+    /// Issues whose approval card went unanswered within the window.
+    pub unanswered: &'a [i64],
+}
+
+/// `track` as it stood at the window's end, when it moved within it: its
+/// last step before the end, so a later move (merged at 18:02 before an
+/// 18:05 digest) never hides one before the cutoff (integration GPT review).
+/// A record the log has no step of (moved before the log was kept) is
+/// judged by its own last move.
+fn as_of(track: &Track, steps: &[TrackStep], window: &Window) -> Option<Track> {
+    let mine: Vec<&TrackStep> = steps.iter().filter(|s| s.number == track.number && s.repo == track.repo).collect();
+    if mine.is_empty() {
+        return in_window(track.changed_at, window).then(|| track.clone());
+    }
+    if !mine.iter().any(|s| in_window(s.at, window)) {
+        return None;
+    }
+    let last = mine.iter().rev().find(|s| s.at < window.end)?;
+    Some(Track { state: last.state, pr: last.pr, notified: last.notified, changed_at: last.at, ..track.clone() })
+}
+
+/// `repo`'s digest for `window`; `None` when nothing moved.
+pub fn summarize(repo: &str, inputs: &Inputs, window: &Window) -> Option<Digest> {
+    let ours: Vec<&Track> = inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(repo)).collect();
+    let held = |t: &Track| !t.state.is_terminal() && t.pr.is_some() && inputs.needs_owner.contains(&t.number);
+    let moved: Vec<Track> = ours.iter().filter_map(|t| as_of(t, inputs.steps, window)).collect();
     // Counted once: an issue already held or failed is not also an unanswered card.
-    let cards: Vec<i64> = unanswered.iter().copied().filter(|n| !ours.iter().any(|t| t.number == *n && (held(t) || t.state.is_terminal()))).collect();
+    let cards: Vec<i64> = inputs.unanswered.iter().copied().filter(|n| !ours.iter().any(|t| t.number == *n && (held(t) || t.state.is_terminal()))).collect();
     if moved.is_empty() && cards.is_empty() {
         return None;
     }
-    let fixed: Vec<&Track> = moved.iter().copied().filter(|t| t.state == State::Merged).collect();
+    let fixed: Vec<&Track> = moved.iter().filter(|t| t.state == State::Merged).collect();
     let mut prs: Vec<u64> = fixed.iter().filter_map(|t| t.pr).collect();
     prs.sort_unstable();
     prs.dedup();
     let failed = moved.iter().filter(|t| matches!(t.state, State::Failed | State::NeedsHuman)).count();
-    let waiting = ours.iter().filter(|t| held(t)).count();
-    let mut shown: Vec<&Track> = ours.iter().copied().filter(|t| in_window(t, window) || held(t)).collect();
-    shown.sort_by_key(|t| t.number);
-    let mut items: Vec<String> = shown.iter().map(|t| item(repo, t)).collect();
+    let waiting: Vec<&Track> = ours.iter().copied().filter(|t| held(t)).collect();
+    // A held one shows as it is now; any other moved one as it stood at the cutoff.
+    let mut shown: Vec<(i64, String)> = waiting.iter().map(|t| (t.number, item(repo, t, true))).collect();
+    shown.extend(moved.iter().filter(|t| !waiting.iter().any(|w| w.number == t.number)).map(|t| (t.number, item(repo, t, false))));
+    shown.sort_by_key(|(number, _)| *number);
+    let mut items: Vec<String> = shown.into_iter().map(|(_, line)| line).collect();
     items.extend(cards.iter().map(|n| crate::i18n::format("#{number} approval card unanswered: {url}", &[("number", n.to_string()), ("url", issue_url(repo, *n))])));
-    Some(Digest { fixed: fixed.len(), merged: prs.len(), need: waiting + failed + cards.len(), items })
+    Some(Digest { fixed: fixed.len(), merged: prs.len(), need: waiting.len() + failed + cards.len(), items })
 }
 
 /// One issue's line: "#33 → PR #41 merged", with the link a person needs.
-fn item(repo: &str, track: &Track) -> String {
+fn item(repo: &str, track: &Track, held: bool) -> String {
     let number = ("number", track.number.to_string());
     let issue = ("url", issue_url(repo, track.number));
     let Some(pr) = track.pr else {
@@ -109,7 +141,7 @@ fn item(repo: &str, track: &Track) -> String {
     };
     let args = [number, ("pr", pr.to_string()), ("url", pull_url(repo, pr))];
     let template = match track.state {
-        _ if held(track) => "#{number} → PR #{pr} needs you: {url}",
+        _ if held => "#{number} → PR #{pr} needs you: {url}",
         State::Merged => "#{number} → PR #{pr} merged",
         State::Closed => "#{number} → PR #{pr} closed",
         State::Failed | State::NeedsHuman => "#{number} → PR #{pr} needs a person: {url}",
@@ -129,16 +161,14 @@ pub fn text(repo: &str, digest: &Digest) -> String {
     lines.join("\n")
 }
 
-// TODO(ADR 0028): a digest-specific ledger query: the Activity view holds the newest
-// 20 requests only, and a card counts by its request's receipt, not when it went unanswered.
-/// The issues of `repo` whose hand-off run stopped at an approval card
-/// nobody answered within `window` (the Activity view's `requests`, already
-/// narrowed to this account's own hand-offs).
-pub fn unanswered_issues(requests: &Value, repo: &str, window: &Window) -> Vec<i64> {
-    let mut numbers: Vec<i64> = requests.as_array().into_iter().flatten()
-        .filter(|r| r["unanswered"] == true && r["issue"]["repo"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(repo)))
-        .filter(|r| r["receivedAt"].as_i64().is_some_and(|at| (window.start..window.end).contains(&at)))
-        .filter_map(|r| r["issue"]["number"].as_i64())
+/// The issues of `repo` whose approval card, on a hand-off `me` sent, went
+/// unanswered within `window`: timed by the card, from the ledger's own
+/// log, so heavy traffic hides none and a card that expires after the
+/// cutoff counts in the next day's digest (integration GPT review).
+pub fn unanswered_issues(cards: &[UnansweredCard], me: &str, repo: &str, window: &Window) -> Vec<i64> {
+    let mut numbers: Vec<i64> = cards.iter()
+        .filter(|c| c.requester == me && c.repo.eq_ignore_ascii_case(repo) && in_window(c.at, window))
+        .map(|c| c.number)
         .collect();
     numbers.sort_unstable();
     numbers.dedup();

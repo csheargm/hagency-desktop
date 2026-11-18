@@ -5,12 +5,15 @@
 //! day is recorded in this device's ledger. Post first, then claim: a check
 //! that dies in between repeats a duplicate the homeserver drops, and the
 //! recorded day stops every later check and restart. A day without moves is
-//! recorded without a post, so it stays silent.
-use super::digest::{self, Window};
+//! recorded without a post, so it stays silent. A repository this process
+//! has not followed since it started waits for the next check, so "needs
+//! you" is the merge gate's current word (`digest_gate`).
+use super::digest::{self, Inputs, Window};
 use super::tracker_live::{MARKER, line_txn_id};
 use crate::hagency::backend::Service;
-use crate::hagency::model::{Command, LocalAction};
+use crate::hagency::model::Command;
 use ::hagency::issue_watch::issue_track::Track;
+use ::hagency::issue_watch::issue_track::digest::DigestLog;
 use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use serde_json::{Map, Value, json};
@@ -18,10 +21,13 @@ use serde_json::{Map, Value, json};
 pub(crate) trait DigestIo {
     /// Whether this window may send for the Agent (see [`own_window`]).
     async fn own_window(&self) -> Result<bool, String>;
-    /// The Agent's owner-API record (tracks, sent days) read now.
+    /// The Agent's owner-API record (tracks, digest log, sent days) read now.
     async fn fresh(&self) -> Result<Value, String>;
-    /// The Activity view's requests that this account sent (its own hand-offs).
-    async fn own_requests(&self) -> Result<Value, String>;
+    /// The signed-in account, whose own hand-offs' cards count.
+    fn me(&self) -> Option<String>;
+    /// The issues of `repo` the merge gate holds for the owner now; `None`
+    /// until this process followed it (see `digest_gate`).
+    fn needs_owner(&self, repo: &str) -> Option<Vec<i64>>;
     /// One room notice, deduplicated by repository and day.
     async fn post(&self, room: &str, repo: &str, day: &str, text: String) -> Result<(), String>;
     /// Record `day`'s digest for `repo` as sent.
@@ -59,19 +65,14 @@ pub(crate) async fn send_due(io: &impl DigestIo, saved: &Value, window: Option<W
         Ok(fresh) => fresh,
         Err(error) => return fail(error),
     };
-    let tracks: Vec<Track> = if fresh["track"].is_null() { Vec::new() } else {
-        match serde_json::from_value(fresh["track"].clone()) {
-            Ok(tracks) => tracks,
-            Err(error) => return vec![format!("Unreadable issue tracks: {error}")],
-        }
+    let (tracks, log) = match ledger_of(&fresh) {
+        Ok(read) => read,
+        Err(error) => return vec![error],
     };
-    let requests = match io.own_requests().await {
-        Ok(requests) => requests,
-        Err(error) => return fail(error),
-    };
+    let Some(me) = io.me() else { return fail(crate::i18n::tr("Signed out").to_owned()) };
     let mut errors = Vec::new();
     for (repo, room) in due(&fresh, &window) {
-        if let Err(error) = send_one(io, (&repo, &room), &tracks, &requests, &window).await {
+        if let Err(error) = send_one(io, (&repo, &room), (&tracks, &log, &me), &window).await {
             errors.push(format!("{repo}: {error}"));
         }
     }
@@ -83,14 +84,28 @@ fn due(saved: &Value, window: &Window) -> Vec<(String, String)> {
     digest::report_rooms(saved).into_iter().filter(|(repo, _)| !digest::sent(saved, repo, &window.day)).collect()
 }
 
+/// The records and the digest log of an owner-API read (an older ledger has no log).
+fn ledger_of(fresh: &Value) -> Result<(Vec<Track>, DigestLog), String> {
+    let tracks = if fresh["track"].is_null() { Vec::new() } else {
+        serde_json::from_value(fresh["track"].clone()).map_err(|e| format!("Unreadable issue tracks: {e}"))?
+    };
+    let log = if fresh["digestLog"].is_null() { DigestLog::default() } else {
+        serde_json::from_value(fresh["digestLog"].clone()).map_err(|e| format!("Unreadable digest log: {e}"))?
+    };
+    Ok((tracks, log))
+}
+
 /// One repository: post its digest (none on a quiet day), then record the day.
-async fn send_one(io: &impl DigestIo, (repo, room): (&str, &str), tracks: &[Track], requests: &Value, window: &Window) -> Result<(), String> {
+async fn send_one(io: &impl DigestIo, (repo, room): (&str, &str), (tracks, log, me): (&[Track], &DigestLog, &str), window: &Window) -> Result<(), String> {
     // Checked again right before each post or record: a pause during the reads holds the day (GPT review).
     if io.paused() {
         return Ok(());
     }
-    let unanswered = digest::unanswered_issues(requests, repo, window);
-    if let Some(day) = digest::summarize(repo, tracks, &unanswered, window) {
+    // Not followed since this process started: the next check, just after its follow, sends it.
+    let Some(needs_owner) = io.needs_owner(repo) else { return Ok(()) };
+    let unanswered = digest::unanswered_issues(&log.cards, me, repo, window);
+    let inputs = Inputs { tracks, steps: &log.steps, needs_owner: &needs_owner, unanswered: &unanswered };
+    if let Some(day) = digest::summarize(repo, &inputs, window) {
         // Recorded only after the post went through: a failed post is tried again next check.
         io.post(room, repo, &window.day, digest::text(repo, &day)).await?;
     }
@@ -119,11 +134,11 @@ impl DigestIo for LiveDigest<'_> {
     async fn fresh(&self) -> Result<Value, String> {
         super::live::saved(self.service, self.agent_id(), None).await
     }
-    async fn own_requests(&self) -> Result<Value, String> {
-        let ask = Command::Local { agent_id: self.agent_id().into(), action: LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
-        let activity = self.service.execute(ask).await?;
-        let me = crate::sliding_sync::current_user_id().ok_or("Signed out")?;
-        Ok(super::run_end::requested_by(&activity["requests"], me.as_str()))
+    fn me(&self) -> Option<String> {
+        crate::sliding_sync::current_user_id().map(|id| id.to_string())
+    }
+    fn needs_owner(&self, repo: &str) -> Option<Vec<i64>> {
+        super::digest_gate::needs_owner(self.agent["puppetMxid"].as_str()?, repo)
     }
     async fn post(&self, room: &str, repo: &str, day: &str, text: String) -> Result<(), String> {
         super::still_current(self.epoch)?;

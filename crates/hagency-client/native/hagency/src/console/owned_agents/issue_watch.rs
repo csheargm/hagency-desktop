@@ -143,9 +143,10 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
     let track = ledger.issue_tracks(agent).map_err(local_error)?;
     let trials = trials(&ledger, agent).map_err(local_error)?;
     let digest_sent = ledger.digest_days(agent).map_err(local_error)?;
+    let digest_log = ledger.digest_log(agent).map_err(local_error)?;
     let watch = with_trial(serde_json::to_value(&watch).map_err(|_| error(500, "local_state_unavailable"))?, &trials);
     let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
-    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials, "digestSent": digest_sent}))
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials, "digestSent": digest_sent, "digestLog": digest_log}))
 }
 
 /// The saved watch with `trialOwnerMerges` (the trial's N) while its
