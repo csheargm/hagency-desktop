@@ -5,7 +5,13 @@
 //! asks the Agent's server over federation), and only the Agent's account (or
 //! its server's Appservice) can write it. A server that holds the Agent's
 //! account also holds its owner's (the claim counts only when both are on one
-//! server), so the claim is as strong as the room roster that server keeps.
+//! server), so the claim is only as strong as that server.
+//!
+//! It is the Agent's self-claim, shown as who it belongs to; it grants no
+//! authority (the Status tab and approvals read the server listings). The
+//! Agent's credential sits with its owner's device, so an owner could name
+//! another person on the same server, exactly as its run cards could; the
+//! field is public wherever that server answers profile queries.
 //!
 //! A profile field, not room state: it needs no power level in any room, adds
 //! no timeline event, and does not move the Agent's join event (where its
