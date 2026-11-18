@@ -36,7 +36,7 @@ fn an_entry_an_admin_set_is_never_changed_even_a_raised_one() {
     let updated = add_missing_member_state(levels).unwrap().unwrap();
     assert_eq!((updated["events"][CALL_MEMBER_EVENT].as_i64(), updated["events"][ISSUE_STATUS_STATE_TYPE].as_i64()), (Some(100), Some(0)));
     let bare = add_missing_member_state(json!({"users_default":0})).unwrap().unwrap();
-    assert_eq!(bare, json!({"users_default":0,"events":{CALL_MEMBER_EVENT:0,ISSUE_STATUS_STATE_TYPE:0}}));
+    assert_eq!(bare, json!({"users_default":0,"events":{ISSUE_STATUS_STATE_TYPE:0}}), "call membership is not opened in an existing room");
     assert!(add_missing_member_state(json!({"events":[]})).is_err(), "malformed is an error, not 'present'");
 }
 
@@ -92,7 +92,7 @@ async fn puts(server: &wiremock::MockServer) -> Vec<Value> {
         .map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
 }
 
-/// User flow: an admin opens (or links a repository in) a room made before
+/// User flow: an admin links a repository in a room made before
 /// the issue status existed; the server gets the old levels plus one entry.
 #[tokio::test]
 async fn an_admin_opens_issue_status_in_an_old_room_and_keeps_the_rest() {
