@@ -1730,13 +1730,17 @@ impl Widget for RoomScreen {
                         self.view.redraw(cx);
                     }
                 }
-                // A run card's "N updates" opens its progress thread.
-                if let Some(show) = action.downcast_ref::<super::agent_run_footer::ShowRunUpdates>()
-                    && self.room_id().is_some_and(|r| r.as_str() == show.room)
-                    && let Some(room_name_id) = self.room_name_id.clone()
-                    && let Ok(thread_root_event_id) = OwnedEventId::try_from(show.thread_root.as_str())
+                // Reply to a run card's answer: the run's own event, which the card draws.
+                if let Some(reply) = action.downcast_ref::<super::agent_run_answer::ReplyToRunAnswer>()
+                    && let Some(tl) = self.tl_state.as_ref()
+                    && tl.kind.room_id().as_str() == reply.room
                 {
-                    cx.widget_action(room_screen_widget_uid, RoomsListAction::Selected(SelectedRoom::Thread { room_name_id, thread_root_event_id }));
+                    let item = tl.items.iter().filter_map(|i| i.as_event())
+                        .find(|e| e.event_id().is_some_and(|id| id.as_str() == reply.run_event)).cloned();
+                    match item {
+                        Some(item) => Self::reply_to(cx, &self.view, tl, item),
+                        None => enqueue_popup_notification(crate::i18n::tr("Could not find message in timeline to reply to. Please try again."), PopupKind::Error, Some(5.0)),
+                    }
                 }
                 // Forward a run card's answer (the run's status event carries it).
                 // TODO(R4): room_screen.rs should split its action handling per card kind.
@@ -3256,6 +3260,17 @@ impl RoomScreen {
     ///
     /// We search in reverse because it is far more likely that the user is interacting
     /// with an event that is close to the end of the timeline.
+
+    /// Opens the composer on a reply to `item`; replying to an Agent's
+    /// answer to the viewer's own request continues with that Agent (ADR 0024).
+    // TODO(R4): room_screen.rs is over budget; move composer-reply wiring out with the action split.
+    fn reply_to(cx: &mut Cx, view: &View, tl: &TimelineUiState, item: EventTimelineItem) {
+        let followup = crate::room::thread_followup::reply_target(&item, &tl.items);
+        let info = EmbeddedEvent::from_timeline_item(&item);
+        let input = view.room_input_bar(cx, ids!(room_input_bar));
+        input.show_replying_to(cx, (item, info), &tl.kind);
+        input.set_reply_followup(cx, &tl.kind, followup);
+    }
     fn find_event_in_timeline<'a>(
         items: &'a Vector<Arc<TimelineItem>>,
         details: &MessageDetails,
@@ -3342,9 +3357,7 @@ impl RoomScreen {
                 MessageAction::Reply(details) => {
                     let Some(tl) = self.tl_state.as_ref() else { return };
                     if let Some(event_tl_item) = Self::find_event_in_timeline(&tl.items, details).cloned() {
-                        let replied_to_info = EmbeddedEvent::from_timeline_item(&event_tl_item);
-                        self.view.room_input_bar(cx, ids!(room_input_bar))
-                            .show_replying_to(cx, (event_tl_item, replied_to_info), &tl.kind);
+                        Self::reply_to(cx, &self.view, tl, event_tl_item);
                     }
                     else {
                         enqueue_popup_notification(
@@ -8179,6 +8192,7 @@ impl Widget for Message {
                 use crate::agent_chat::reply::AnswerAction;
                 let details = self.details.clone().unwrap();
                 let action = match action {
+                    AnswerAction::Reply => MessageAction::Reply(details),
                     AnswerAction::Copy => MessageAction::CopyText(details),
                     AnswerAction::Forward => MessageAction::SelectForward(details),
                     AnswerAction::Markdown => MessageAction::ExportAnswer { details, pdf: false },

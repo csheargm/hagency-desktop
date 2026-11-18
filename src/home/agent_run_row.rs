@@ -127,8 +127,8 @@ mod tests {
 
     /// Quiet replies on the request's real row: the answer shows with no
     /// per-reply "Agent · runtime" header and no "Done" footer; "What I did"
-    /// lists the steps; the progress thread is an "N updates" link that asks
-    /// the room to open it; a working run keeps one compact status line.
+    /// lists the steps; the progress thread is an "N updates" link that opens
+    /// the updates inside the card; a working run keeps one compact status line.
     #[cfg(feature = "agent_chat")]
     #[test]
     fn an_answered_run_is_quiet_with_what_i_did_and_an_updates_link() {
@@ -156,12 +156,23 @@ mod tests {
         set_updates(&mut cx, &widget, 5);
         let updates = widget.button(&mut cx, &at(ids!(links.updates)));
         assert!(updates.visible() && updates.text().contains('5'), "{}", updates.text());
-        let uid = updates.widget_uid();
-        let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(Default::default())));
-        let card_ref = widget.widget(&mut cx, card);
-        let sent = cx.capture_actions(|cx| card_ref.handle_event(cx, &Event::Actions(actions), &mut Scope::empty()));
-        let show = sent.iter().find_map(|a| a.downcast_ref::<crate::home::agent_run_footer::ShowRunUpdates>()).expect("the link opens the thread");
-        assert_eq!(show.thread_root, entry.card.thread_root);
+        // ADR 0024: the link opens the updates in place, no thread to open.
+        let click = |cx: &mut Cx| {
+            let uid = widget.button(cx, &at(ids!(links.updates))).widget_uid();
+            let actions = cx.capture_actions(|cx| cx.widget_action(uid, ButtonAction::Clicked(Default::default())));
+            let card_ref = widget.widget(cx, card);
+            cx.capture_actions(|cx| card_ref.handle_event(cx, &Event::Actions(actions), &mut Scope::empty()))
+        };
+        let sent = click(&mut cx);
+        assert!(!sent.iter().any(|a| a.downcast_ref::<crate::app::AppStateAction>().is_some()), "the room does not navigate");
+        set_updates(&mut cx, &widget, 5);
+        assert_eq!(widget.button(&mut cx, &at(ids!(links.updates))).text(), crate::i18n::tr("Hide updates"));
+        let list = widget.label(&mut cx, &at(ids!(updates_list)));
+        assert!(list.visible() && !list.text().is_empty(), "the updates show inside the card");
+        click(&mut cx);
+        set_updates(&mut cx, &widget, 5);
+        assert!(!widget.label(&mut cx, &at(ids!(updates_list))).visible(), "closed again");
+        assert!(widget.button(&mut cx, &at(ids!(links.updates))).text().contains('5'));
         entry.card.progress = None;
         populate(&mut cx, &widget, std::slice::from_ref(&entry), None);
         assert!(!widget.button(&mut cx, &at(ids!(links.details))).visible(), "no steps: no What I did");

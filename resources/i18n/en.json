@@ -3696,5 +3696,17 @@
   "Enter a repository as owner/name": "Enter a repository as owner/name",
   "This room links as many repositories as it can": "This room links as many repositories as it can",
   "Show what this room's Agents are doing": "Show what this room's Agents are doing",
-  "{n} more repositories not shown": "{n} more repositories not shown"
+  "{n} more repositories not shown": "{n} more repositories not shown",
+  "Agent replies": "Agent replies",
+  "In the room": "In the room",
+  "In threads": "In threads",
+  "Agent answers appear in the room for everyone, quoting the question.": "Agent answers appear in the room for everyone, quoting the question.",
+  "Agent answers open a thread under each question.": "Agent answers open a thread under each question.",
+  "Could not change where Agents reply: {reason}": "Could not change where Agents reply: {reason}",
+  "Room not found": "Room not found",
+  "Loading updates…": "Loading updates…",
+  "Could not load the updates. Close and open them to try again.": "Could not load the updates. Close and open them to try again.",
+  "No updates yet.": "No updates yet.",
+  "Hide updates": "Hide updates",
+  "Could not find message in timeline to reply to. Please try again.": "Could not find message in timeline to reply to. Please try again."
 }

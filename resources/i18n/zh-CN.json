@@ -3696,5 +3696,17 @@
   "Enter a repository as owner/name": "请以 owner/name 格式输入仓库",
   "This room links as many repositories as it can": "本房间关联的仓库已达上限",
   "Show what this room's Agents are doing": "显示本房间 Agent 正在做什么",
-  "{n} more repositories not shown": "还有 {n} 个仓库未显示"
+  "{n} more repositories not shown": "还有 {n} 个仓库未显示",
+  "Agent replies": "Agent 回复",
+  "In the room": "在群聊中",
+  "In threads": "在话题中",
+  "Agent answers appear in the room for everyone, quoting the question.": "Agent 的回答直接显示在群聊中，所有成员可见，并引用原问题。",
+  "Agent answers open a thread under each question.": "Agent 的回答会在每个问题下开一个话题。",
+  "Could not change where Agents reply: {reason}": "无法更改 Agent 的回复位置：{reason}",
+  "Room not found": "找不到该聊天室",
+  "Loading updates…": "正在加载进度…",
+  "Could not load the updates. Close and open them to try again.": "无法加载进度。请收起后重新展开再试。",
+  "No updates yet.": "暂无进度。",
+  "Hide updates": "收起进度",
+  "Could not find message in timeline to reply to. Please try again.": "在时间线中找不到要回复的消息，请重试。"
 }

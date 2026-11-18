@@ -56,6 +56,8 @@ pub mod search_messages;
 pub mod space_lobby;
 pub mod space_management;
 pub mod call_power_levels;
+pub mod agent_replies_setting;
+pub mod agent_run_updates;
 pub mod room_registration;
 pub mod new_room_dialog;
 pub mod spaces_bar;
@@ -81,6 +83,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     room_memory::script_mod(vm);
     room_skills::script_mod(vm);
     room_watches::script_mod(vm);
+    agent_replies_setting::script_mod(vm);
     room_plan::script_mod(vm);
     agent_ask_badge::script_mod(vm);
     mobile_chat_info::script_mod(vm);
