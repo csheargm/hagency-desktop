@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 const PROOF_BYTES: usize = 208;
 const ACTIVE_RECORDS: &str = "state NOT IN ('replied','unknown') AND NOT (state IN ('rejected','failed') AND json_extract(envelope,'$.body')='')";
 const RETAINED_BYTES: &str = "SELECT coalesce(sum(length(CAST(envelope AS BLOB))+coalesce(length(CAST(reply AS BLOB)),0)+208),0) FROM local_inbox";
+/// The accounting version of a call settled with no provider call.
+pub(crate) const NO_PROVIDER_CALL: &str = "no-provider-call-v1";
 fn no_provider_usage() -> crate::Usage {
     crate::Usage {
         input: 0,
@@ -18,7 +20,7 @@ fn no_provider_usage() -> crate::Usage {
         cached_input: 0,
         cache_write_input: None,
         reasoning_output: 0,
-        accounting_version: "no-provider-call-v1".into(),
+        accounting_version: NO_PROVIDER_CALL.into(),
     }
 }
 fn retained_bytes(db: &rusqlite::Connection) -> Result<u64> {
@@ -259,7 +261,7 @@ fn compact_known_terminals(db: &rusqlite::Connection) -> Result<()> {
             && reserved == 0
             && snapshots.is_empty()
             && total == 0
-            && usage.accounting_version == "no-provider-call-v1"
+            && usage.accounting_version == NO_PROVIDER_CALL
             && digest == hash(&("no-provider-call", &id, &execution, &d.scope()))?;
         let settled_proof = snapshots.len() == 3
             && digest == call_digest(&d.scope(), &id, reserved)?
@@ -873,7 +875,7 @@ impl Ledger {
                     ))?
                 && usage.as_deref().is_some_and(|u| {
                     serde_json::from_str::<crate::Usage>(u).is_ok_and(|u| {
-                        u.accounting_version == "no-provider-call-v1"
+                        u.accounting_version == NO_PROVIDER_CALL
                             && u.total().is_ok_and(|v| v == 0)
                     })
                 })

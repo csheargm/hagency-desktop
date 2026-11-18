@@ -6,7 +6,7 @@ use super::*;
 /// How many recent requests the Activity tab shows.
 const RECENT_LIMIT: usize = 20;
 
-/// GET returns `{agentId, requests: [Activity…]}`, newest first.
+/// GET returns `{agentId, requests: [Activity…], budgetUsedUp}`, newest first.
 pub(super) async fn handle(req: &mut Request, depot: &Depot, agent: String) -> Result<Value, OwnerError> {
     if req.uri().query().is_some() {
         return Err(error(400, "invalid_arguments"));
@@ -39,7 +39,9 @@ fn read(root: &Path, reply: &OwnerReply, agent: &str) -> Result<Value, OwnerErro
         .map_err(|_| error(403, "owner_scope_required"))?;
     let ledger = Ledger::open_scoped(&path, &reply.owner, &identity).map_err(local_error)?;
     let requests = ledger.recent_activity(&reply.owner, agent, RECENT_LIMIT).map_err(local_error)?;
-    Ok(json!({"agentId": agent, "requests": requests}))
+    // The issue loop holds re-hand-offs while every run would be refused (Nov 18).
+    let used_up = ledger.agent_budget_used_up(&reply.owner, agent, now()).map_err(local_error)?;
+    Ok(json!({"agentId": agent, "requests": requests, "budgetUsedUp": used_up}))
 }
 
 #[cfg(test)]
@@ -76,6 +78,7 @@ mod tests {
         drop(ledger);
         let value = read(&root, &reply("subject-a"), "agent").unwrap();
         assert_eq!(value["agentId"], "agent");
+        assert_eq!(value["budgetUsedUp"], false, "no budget set: never used up");
         let request = &value["requests"][0];
         assert_eq!((request["dispatchId"].as_str(), request["outcome"].as_str()), (Some("dispatch-a"), Some("running")));
         assert_eq!((request["requester"].as_str(), request["receivedAt"].as_i64()), (Some("@bob:example"), Some(1_700_000_000)));

@@ -6,7 +6,7 @@ fn handed(attempts: u32, at: i64) -> Track {
     Track { repo: "acme/app".into(), number: 33, state: State::HandedOff, attempts, handed_at: at, pr: None, notified: false, free_retries: 0, changed_at: at }
 }
 fn open(now: i64) -> Facts {
-    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false, unanswered: false }
+    Facts { now, issue: IssueFact::Open, open_pr: None, cannot_fix: false, run_ended: false, interrupted: false, unanswered: false, no_run: false, budget_out: false }
 }
 fn change(handed: Option<u32>, state: Option<State>, pr: Option<u64>) -> TrackChange {
     TrackChange { repo: "acme/app".into(), number: 33, handed, state, pr, notified: None, rehanded: None, owner_merged: None }
@@ -177,4 +177,44 @@ fn a_move_stamps_changed_at_and_a_replay_does_not() {
     assert_eq!((merged.state, merged.changed_at), (State::Merged, T0 + 9));
     l.track_issue("a", &change(None, Some(State::HandedOff), None), T0 + 20).unwrap();
     assert_eq!(l.issue_tracks("a").unwrap()[0].changed_at, T0 + 9, "a terminal record does not move");
+}
+
+#[test]
+fn a_run_refused_before_the_model_started_is_handed_off_again_without_an_attempt() {
+    // Nov 18 08:16-08:19: #90-#92 each got three hand-offs; every run was
+    // answered by an owner-policy notice with no model call, and each was
+    // counted, so all three issues failed in three minutes.
+    let refused = |now| Facts { run_ended: true, no_run: true, ..open(now) };
+    assert_eq!(decide(&handed(1, T0), &refused(T0 + REHAND_BACKOFF_SECS)), Action::Rehand, "not an attempt");
+    assert_eq!(decide(&handed(MAX_ATTEMPTS, T0), &refused(T0 + REHAND_BACKOFF_SECS)), Action::Rehand, "never the give-up");
+    let capped = Track { free_retries: MAX_FREE_RETRIES, ..handed(1, T0) };
+    assert_eq!(decide(&capped, &refused(T0 + REHAND_BACKOFF_SECS)), Action::Retry { attempt: 2 }, "a refusal loop still ends");
+}
+
+#[test]
+fn an_ended_run_is_never_handed_off_again_within_the_backoff() {
+    let soon = T0 + REHAND_BACKOFF_SECS - 1;
+    for facts in [
+        Facts { run_ended: true, ..open(soon) },
+        Facts { run_ended: true, no_run: true, ..open(soon) },
+        Facts { run_ended: true, interrupted: true, ..open(soon) },
+        Facts { run_ended: true, unanswered: true, ..open(soon) },
+    ] {
+        assert_eq!(decide(&handed(1, T0), &facts), Action::Wait, "{facts:?}");
+    }
+    assert_eq!(decide(&handed(1, T0), &Facts { run_ended: true, ..open(T0 + REHAND_BACKOFF_SECS) }), Action::Retry { attempt: 2 });
+}
+
+#[test]
+fn a_used_up_budget_holds_every_hand_off_until_it_allows_again() {
+    let later = T0 + 99 * HANDOFF_TIMEOUT_SECS;
+    let out = |facts: Facts| Facts { budget_out: true, ..facts };
+    assert_eq!(decide(&handed(1, T0), &out(Facts { run_ended: true, no_run: true, ..open(later) })), Action::HoldBudget);
+    assert_eq!(decide(&handed(1, T0), &out(open(later))), Action::HoldBudget, "a timed-out attempt is not re-posted either");
+    let last = Track { free_retries: MAX_FREE_RETRIES, ..handed(MAX_ATTEMPTS, T0) };
+    assert_eq!(decide(&last, &out(Facts { run_ended: true, no_run: true, ..open(later) })), Action::HoldBudget, "a refusal at the caps is still held, never failed");
+    assert_eq!(decide(&last, &out(Facts { run_ended: true, ..open(later) })), Action::GiveUp, "a last attempt that ran still ends");
+    assert_eq!(decide(&handed(1, T0), &out(Facts { run_ended: true, ..open(later) })), Action::HoldBudget, "a real run that used the budget up: the retry waits");
+    assert_eq!(decide(&handed(1, T0), &out(open(T0 + 1))), Action::Wait, "a running hand-off just waits");
+    assert_eq!(decide(&handed(1, T0), &out(Facts { open_pr: Some(9), ..open(later) })), Action::FollowPr { pr: 9 }, "a pull request is still followed");
 }

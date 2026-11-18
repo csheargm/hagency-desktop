@@ -4,7 +4,7 @@
 //! The fake store applies changes with the ledger's own rule (`apply_change`),
 //! and a "restart" is a fresh fake built from the stored records alone.
 use super::merge_hold::Missing;
-use super::run_end::RunEnd;
+use super::run_end::{RunEnd, RunView};
 use super::tracker::{Followed, Inputs, TrackIo, follow, links_issue};
 use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, IssueFact, MAX_ATTEMPTS, State, Track, TrackChange, apply_change};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -33,6 +33,8 @@ pub(super) struct Fake {
     pub(super) outcome: RefCell<Option<Followed>>,
     /// The current hand-off's run, as its Activity record would say.
     pub(super) run: Cell<Option<RunEnd>>,
+    /// The Activity view's `budgetUsedUp`. TODO(split): `Fake` belongs in its own tracker_fake.rs.
+    pub(super) budget_out: Cell<bool>,
     /// The branch the Agent pushed for an issue.
     pub(super) branches: RefCell<HashMap<i64, String>>,
     /// The branch each tracker hand-off asked for a pull request from.
@@ -80,8 +82,8 @@ impl TrackIo for Fake {
         self.handed.borrow_mut().push((issue.number, attempt));
         self.record(if again > 0 { serde_json::json!({"repo": REPO, "number": issue.number, "rehanded": again}) } else { serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt}) }).await.map(|_| true)
     }
-    async fn run_end(&self, _track: &Track) -> Result<RunEnd, String> {
-        Ok(self.run.get().unwrap_or(RunEnd::Running))
+    async fn run_end(&self, _track: &Track) -> Result<RunView, String> {
+        Ok(RunView { run: self.run.get().unwrap_or(RunEnd::Running), budget_out: self.budget_out.get() })
     }
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
         Ok(self.branches.borrow().get(&number).cloned())

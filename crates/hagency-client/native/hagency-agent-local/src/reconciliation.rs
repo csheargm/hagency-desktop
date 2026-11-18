@@ -433,8 +433,8 @@ fn calls(db: &Connection, a: &PersonalAuditAuthority, h: &mut PersonalLedgerHist
             match usage.accounting_version.as_str() {
                 UNREPORTED_ZERO => h.unreported_zero_usage += 1,
                 UNREPORTED_USAGE => h.missing_or_invalid_usage += 1,
-                "no-provider-call-v1" if usage.total()? == 0 => h.no_provider_usage_records += 1,
-                "no-provider-call-v1" => h.missing_or_invalid_usage += 1,
+                crate::inbox::NO_PROVIDER_CALL if usage.total()? == 0 => h.no_provider_usage_records += 1,
+                crate::inbox::NO_PROVIDER_CALL => h.missing_or_invalid_usage += 1,
                 "codex-app-server-0.160/cumulative-input-output-v1"
                 | "claude-reported-v1"
                 | "octos-reported-v1" => h.reported_usage_records += 1,
