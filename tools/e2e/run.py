@@ -23,7 +23,7 @@ def scenario_table(args):
     inject = args.inject == "pause-betty"
     return [
         ("1", chat.s1_mention_answer), ("2", chat.s2_cross_server), ("3", chat.s3_thread_followup),
-        ("4", chat.s4_room_mention), ("5", approvals.s5_readonly_query),
+        ("4", chat.s4_room_mention), ("5", approvals.s5_readonly_query), ("5b", approvals.s5b_no_repo_asks),
         ("6", approvals.s6_write_needs_approval), ("7", issues.s7_issue_loop),
         ("8", issues.s8_cross_model_review), ("9", lambda c: manual.s9_failure_injection(c, inject)),
         ("10", manual.s10_agent_lifecycle),

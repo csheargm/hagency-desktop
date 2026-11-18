@@ -51,6 +51,36 @@ class Waiting(unittest.TestCase):
         self.assertEqual(scenario.substantive(evs), [evs[3]])
 
 
+class RoomRepos(unittest.TestCase):
+    def _client(self, repos):
+        c = mock.Mock()
+        c.state.return_value = {"repos": repos}
+        return c
+
+    def test_link_appends_once_and_keeps_others(self):
+        from hx import room
+        c = self._client(["h/other"])
+        with mock.patch.object(room.personas, "persona", return_value=c):
+            self.assertTrue(room.set_repo_linked("!r", True))
+        path, content = c.call.call_args.args[1], c.call.call_args.args[2]
+        self.assertIn("io.hagency.room_repos", path)
+        self.assertEqual(content, {"repos": ["h/other", config.SANDBOX_REPO]})
+
+    def test_link_is_idempotent_case_insensitively(self):
+        from hx import room
+        c = self._client([config.SANDBOX_REPO.upper()])
+        with mock.patch.object(room.personas, "persona", return_value=c):
+            self.assertFalse(room.set_repo_linked("!r", True))
+        c.call.assert_not_called()
+
+    def test_unlink_keeps_other_repos(self):
+        from hx import room
+        c = self._client(["h/other", config.SANDBOX_REPO])
+        with mock.patch.object(room.personas, "persona", return_value=c):
+            self.assertTrue(room.set_repo_linked("!r", False))
+        self.assertEqual(c.call.call_args.args[2], {"repos": ["h/other"]})
+
+
 class Paging(unittest.TestCase):
     def test_follows_end_tokens_until_older_than_since(self):
         from hx import matrix
