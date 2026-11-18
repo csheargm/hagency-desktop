@@ -7,8 +7,7 @@
 //! and attempt, so a check that dies in between repeats a duplicate the
 //! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
 use super::merge_hold::Missing;
-use super::notice::quoted_title;
-use super::run_end::{ENDED_NO_PR, PUSHED_NO_PR, RUN_LOST, RunEnd, branch_names_issue};
+use super::run_end::{Again, RunEnd, branch_names_issue, hand_again};
 use super::work_slots::closes_issue;
 use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -41,8 +40,10 @@ pub(crate) trait TrackIo {
     async fn say(&self, number: i64, key: &str, text: String) -> Result<(), String>;
     /// Hand `issue` off again as `attempt` (claim, post, record `handed`),
     /// asking to open the pull request from `branch` when one was pushed;
-    /// `Ok(false)` when another Agent now holds the issue's claim.
-    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String>;
+    /// `again` > 0 re-posts the same attempt after an interrupted run (its
+    /// own message, recorded `rehanded`). `Ok(false)` when another Agent now
+    /// holds the issue's claim.
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>, again: u32) -> Result<bool, String>;
     /// Whether the current hand-off's run is over (its Activity record).
     async fn run_end(&self, track: &Track) -> Result<RunEnd, String>;
     /// The one branch the Agent pushed for issue `number`, if any.
@@ -126,7 +127,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     } else {
         RunEnd::Running
     };
-    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended() };
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
@@ -135,27 +136,8 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     let change = |extra: Value| change_of(&track.repo, n, extra);
     match decide(track, &facts) {
         Action::Wait => Ok(Some(waiting_line(track))),
-        Action::Retry { attempt } => {
-            let issue = issue.ok_or("the issue is not open")?;
-            // Handed off first: a claim lost to another Agent ends the record
-            // instead of repeating this attempt every check (GPT review).
-            // No branch list: a plain retry still goes out (GPT review).
-            let branch = if run.ended() {
-                io.pushed_branch(n).await.unwrap_or_else(|e| {
-                    makepad_widgets::log!("WARN issue_track_branches_unreadable #{n}: {e}");
-                    None
-                })
-            } else {
-                None
-            };
-            if !io.hand_off(issue, attempt, branch.as_deref()).await? {
-                io.record(change(json!({"state": "closed"}))).await?;
-                return Ok(Some(crate::i18n::format("#{number} taken by another Agent", &[("number", n.to_string())])));
-            }
-            let args = [("number", n.to_string()), ("attempt", attempt.to_string()), ("max", MAX_ATTEMPTS.to_string())];
-            io.say(n, &format!("retry-{attempt}"), retry_text(run, branch.as_deref(), &io.agent_label(), &args)).await?;
-            Ok(Some(crate::i18n::format("#{number} retrying ({attempt}/{max})", &args)))
-        }
+        Action::Retry { attempt } => hand_again(io, issue.ok_or("the issue is not open")?, track, run, Again::Attempt(attempt)).await,
+        Action::Rehand => hand_again(io, issue.ok_or("the issue is not open")?, track, run, Again::Rehand).await,
         Action::GiveUp => {
             io.say(n, "failed", crate::i18n::format(GAVE_UP, &[("number", n.to_string()), ("max", MAX_ATTEMPTS.to_string())])).await?;
             io.record(change(json!({"state": "failed", "notified": true}))).await?;
@@ -173,22 +155,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     }
 }
 
-/// Why attempt `args.attempt` was handed off: the deadline passed, or the run ended without a pull request.
-fn retry_text(run: RunEnd, branch: Option<&str>, agent: &str, args: &[(&str, String); 3]) -> String {
-    let mut args = args.to_vec();
-    let template = match (run, branch) {
-        (RunEnd::Running, _) => RETRYING,
-        (_, Some(branch)) => {
-            args.extend([("agent", agent.to_owned()), ("branch", quoted_title(branch))]);
-            PUSHED_NO_PR
-        }
-        (RunEnd::Lost, None) => RUN_LOST,
-        (RunEnd::Ended, None) => ENDED_NO_PR,
-    };
-    crate::i18n::format(template, &args)
-}
-
-fn change_of(repo: &str, number: i64, extra: Value) -> Value {
+pub(super) fn change_of(repo: &str, number: i64, extra: Value) -> Value {
     let mut change = json!({"repo": repo, "number": number});
     if let (Some(c), Some(extra)) = (change.as_object_mut(), extra.as_object()) {
         c.extend(extra.clone());

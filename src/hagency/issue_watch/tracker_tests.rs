@@ -72,13 +72,13 @@ impl TrackIo for Fake {
         }
         Ok(())
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>, again: u32) -> Result<bool, String> {
         if self.claimed_by_other.get() {
             return Ok(false);
         }
         self.asked_branch.borrow_mut().push(branch.map(str::to_owned));
         self.handed.borrow_mut().push((issue.number, attempt));
-        self.record(serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt})).await.map(|_| true)
+        self.record(if again > 0 { serde_json::json!({"repo": REPO, "number": issue.number, "rehanded": true}) } else { serde_json::json!({"repo": REPO, "number": issue.number, "handed": attempt}) }).await.map(|_| true)
     }
     async fn run_end(&self, _track: &Track) -> Result<RunEnd, String> {
         Ok(self.run.get().unwrap_or(RunEnd::Running))
@@ -130,7 +130,7 @@ pub(super) fn check(fake: &Fake, now: i64, open: &[Issue], pulls: &[PullRequest]
 }
 pub(super) fn first_hand_off(fake: &Fake, number: i64) {
     fake.now.set(T0);
-    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(fake.hand_off(&issue(number), 1, None)).unwrap();
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(fake.hand_off(&issue(number), 1, None, 0)).unwrap();
     fake.handed.borrow_mut().clear();
     fake.asked_branch.borrow_mut().clear(); // only the tracker's own hand-offs are counted below
 }

@@ -206,7 +206,7 @@ impl TrackIo for LiveTrack<'_> {
         let txn = line_txn_id(self.agent_id(), self.repo, number, key);
         crate::hagency::room_send::send_routed_with(self.room.clone(), RoomMessageEventContent::notice_plain(text), extra, txn).await
     }
-    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>) -> Result<bool, String> {
+    async fn hand_off(&self, issue: &Issue, attempt: u32, branch: Option<&str>, again: u32) -> Result<bool, String> {
         if let Some(entry) = self.watched.entry {
             // The claim of the first attempt normally still holds (24 h).
             if super::work::claim(self.worker, entry, issue.number, &self.login, true).await? != Holder::Ours {
@@ -214,7 +214,7 @@ impl TrackIo for LiveTrack<'_> {
             }
         }
         let auto_merge = self.watched.entry.is_some() || super::live::auto_merge(self.agent_id()).await;
-        let live = super::live::Live::new(self.worker.service, self.worker.agent, self.watched.watch, auto_merge, self.worker.epoch)?.with_attempt(attempt).with_branch(branch);
+        let live = super::live::Live::new(self.worker.service, self.worker.agent, self.watched.watch, auto_merge, self.worker.epoch)?.with_attempt(attempt).with_branch(branch).with_again(again);
         let outcome = super::handoff::hand_off(&live, &[issue]).await;
         outcome.error.map_or(Ok(true), Err)
     }

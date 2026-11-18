@@ -98,3 +98,15 @@ fn a_hand_off_names_its_issue_and_other_requests_name_none() {
     assert_eq!(json[0]["issue"], serde_json::json!({"repo": "a/b", "number": 46}));
     assert!(!json.to_string().contains("please fix"), "no request text");
 }
+
+#[test]
+fn a_run_a_restart_left_unknown_is_marked_interrupted() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    record(&mut l, &dispatch("lost", "agent", "bind"), 10, "running", None);
+    l.recover_local_executions(OWNER).unwrap();
+    record(&mut l, &dispatch("bad", "agent", "bind2"), 20, "failed", None);
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    assert_eq!((json[0]["dispatchId"].as_str(), json[0].get("interrupted")), (Some("bad"), None), "a real failure is not");
+    assert_eq!((json[1]["dispatchId"].as_str(), json[1]["interrupted"].as_bool(), json[1]["outcome"].as_str()), (Some("lost"), Some(true), Some("failed")));
+}

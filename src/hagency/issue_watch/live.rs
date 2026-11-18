@@ -23,6 +23,8 @@ pub(super) struct Live {
     attempt: u32,
     /// A branch the last run pushed without a pull request (a retry asks for one).
     branch: Option<String>,
+    /// > 0: the same attempt handed off again after an interrupted run.
+    again: u32,
 }
 
 impl Live {
@@ -41,11 +43,17 @@ impl Live {
             epoch,
             attempt: 1,
             branch: None,
+            again: 0,
         })
     }
     /// The same sender for hand-off `attempt` (its own transaction id).
     pub(super) fn with_attempt(mut self, attempt: u32) -> Self {
         self.attempt = attempt;
+        self
+    }
+    /// The same sender re-posting its attempt after an interrupted run (`again` > 0).
+    pub(super) fn with_again(mut self, again: u32) -> Self {
+        self.again = again;
         self
     }
     /// The same sender asking for the pull request from a pushed `branch`.
@@ -59,13 +67,14 @@ impl Handoff for Live {
     async fn post(&self, issue: &Issue) -> Result<(), String> {
         let notice = super::notice::Notice::new(&self.repo, issue, &self.label).with_merge_policy(self.auto_merge).with_branch(self.branch.clone());
         super::still_current(self.epoch)?;
-        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number, self.attempt);
+        let txn_id = handoff_txn_id(&self.agent_id, &self.repo, issue.number, self.attempt, self.again);
         crate::hagency::room_send::send_routed_with(self.room_id.clone(), notice.content(&self.puppet), notice.marker(), txn_id).await
     }
     async fn mark_seen(&self, number: i64) -> Result<(), String> {
         super::still_current(self.epoch)?;
         // One transaction: the issue is seen and its tracked attempt counted (ADR 0020).
-        let input = json!({"issueSeen": {"repo": self.repo, "number": number}, "track": {"repo": self.repo, "number": number, "handed": self.attempt}});
+        let track = if self.again > 0 { json!({"repo": self.repo, "number": number, "rehanded": true}) } else { json!({"repo": self.repo, "number": number, "handed": self.attempt}) };
+        let input = json!({"issueSeen": {"repo": self.repo, "number": number}, "track": track});
         saved(&self.service, &self.agent_id, Some(input)).await.map(|_| ())
     }
     fn paused(&self) -> bool {
@@ -94,9 +103,11 @@ pub(super) async fn auto_merge(agent_id: &str) -> bool {
 /// The same id for the same Agent, repository and issue on every retry, so a
 /// post whose `issueSeen` save failed is deduplicated by the homeserver
 /// (Matrix transaction ids are scoped to this device's access token).
-/// A retry (`attempt` > 1) gets its own id, or the homeserver would drop it.
-pub(super) fn handoff_txn_id(agent_id: &str, repo: &str, number: i64, attempt: u32) -> OwnedTransactionId {
+/// A retry (`attempt` > 1) or a re-post after an interrupted run (`again`
+/// > 0) gets its own id, or the homeserver would drop it.
+pub(super) fn handoff_txn_id(agent_id: &str, repo: &str, number: i64, attempt: u32, again: u32) -> OwnedTransactionId {
     let base = format!("{agent_id}\n{repo}\n{number}");
-    let key = blake3::hash(if attempt <= 1 { base } else { format!("{base}\n{attempt}") }.as_bytes());
+    let base = if attempt <= 1 { base } else { format!("{base}\n{attempt}") };
+    let key = blake3::hash(if again == 0 { base } else { format!("{base}\nagain {again}") }.as_bytes());
     OwnedTransactionId::from(format!("hagency-issue-{}", key.to_hex()))
 }

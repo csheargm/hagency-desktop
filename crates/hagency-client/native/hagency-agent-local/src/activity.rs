@@ -51,6 +51,10 @@ pub struct Activity {
     /// leave this module, never the request text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue: Option<IssueRef>,
+    /// Interrupted, not finished: the ledger marked the run unknown when this
+    /// device's app or Agent host restarted (or could not tell its result).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
 }
 
 /// The repository and number a hand-off names.
@@ -116,6 +120,7 @@ impl Ledger {
                 outcome: Outcome::of_state(&state),
                 tokens: charged(call_state.as_deref(), usage.as_deref()),
                 issue: handoff_issue(&dispatch.body),
+                interrupted: state == "unknown",
             });
         }
         Ok(out)
