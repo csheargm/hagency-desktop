@@ -1,8 +1,9 @@
 //! The milestone (ADR 0016): Betty's Agent opens a pull request; Anna's Agent,
 //! maintainer of the repository under Anna's own rules, reviews and merges it
 //! without a card. Every rule is checked on the exact head.
+// TODO(R4): over the 300-line budget; split the Src fixture and anna() into review_loop/fixtures.rs.
 use super::*;
-use crate::merge_policy::tests::{bash, file, ledger_with, BASE, HEAD};
+use crate::merge_policy::tests::{bash, file, ledger_with, set_room_rules, BASE, HEAD};
 use crate::merge_policy::work::{OwnerRules, Role, MAX_WORK_LIMIT};
 use crate::merge_policy::{gate, ChangedFile, Check, PrFacts};
 use std::path::Path;
@@ -16,27 +17,19 @@ pub(crate) struct Src {
     pub repo: &'static str,
     pub files: Vec<ChangedFile>,
     pub checks: Vec<Check>,
-    pub policy: Option<Option<String>>,
     pub reviews: Option<Vec<(String, String, String)>>,
     pub author: &'static str,
     pub viewer: Option<&'static str>,
 }
 impl Src {
     pub fn new(files: Vec<ChangedFile>) -> Self {
-        Self { repo: A, files, checks: vec![Check::Passed], policy: Some(None), reviews: Some(vec![]), author: "betty", viewer: Some("anna") }
+        Self { repo: A, files, checks: vec![Check::Passed], reviews: Some(vec![]), author: "betty", viewer: Some("anna") }
     }
 }
 impl PrSource for Src {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = PrFacts { open: true, files: self.files.clone(), checks: self.checks.clone() };
         Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, facts })
-    }
-    async fn policy(&self, _: &GhPr, _: &str, _: &str) -> Option<String> {
-        self.policy.clone().flatten()
-    }
-    async fn policy_file(&self, _: &GhPr, _: &str, base: &str) -> Option<Option<String>> {
-        assert_eq!(base, BASE, "the policy file comes from the base commit");
-        self.policy.clone()
     }
     async fn viewer_login(&self, _: &GhPr) -> Option<String> {
         self.viewer.map(str::to_owned)
@@ -53,12 +46,17 @@ fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
     ledger.set_auto_merge(OWNER, "anna", true).unwrap();
     ledger.set_work(OWNER, "anna", work.clone()).unwrap();
-    // These watches are past their trial (ADR 0027, see `trial_tests`).
+    // These watches are past their trial (ADR 0027, see `trial_tests`),
+    // and their room's rules allow any path (ADR 0029).
     for rules in &work {
         ledger.end_watch_trial(OWNER, "anna", &rules.repo).unwrap();
+        set_room_rules(&mut ledger, &rules.repo, Some(ANY_PATH));
     }
     ledger
 }
+/// Room rules that let any path merge, without a CI requirement.
+pub(crate) const ANY_PATH: &str = "low_risk_paths: [\"**\"]\nmax_changed_lines: 100000\nrequire_ci: false\n";
+
 fn line(verb: &str, repo: &str) -> String {
     match verb {
         "merge" => format!("gh pr merge 7 --squash --match-head-commit {HEAD} --repo {repo}"),
@@ -91,13 +89,18 @@ async fn untrusted_authors_red_or_pending_ci_and_protected_paths_need_the_owner(
         ("workflow", Src::new(vec![file(".github/workflows/ci.yml", 1)])),
         ("policy file", Src::new(vec![file(".hagency/merge-policy.yml", 1)])),
         ("CODEOWNERS", Src::new(vec![file("CODEOWNERS", 1)])),
-        ("file tightens", Src { policy: Some(Some("low_risk_paths: [\"**/*.md\"]\n".into())), ..Src::new(vec![file("src/a.rs", 1)]) }),
-        ("unreadable file", Src { policy: None, ..Src::new(vec![file("src/a.rs", 1)]) }),
     ];
     for (name, src) in cases {
         let temp = tempfile::tempdir().unwrap();
         let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
         assert_eq!(review_then_merge(&mut ledger, temp.path(), &src).await.1, None, "{name}");
+    }
+    // The room's rules tighten the owner's; none, or invalid ones, ask a person (ADR 0029).
+    for (name, room) in [("room rules tighten", Some("low_risk_paths: [\"**/*.md\"]\n")), ("no room rules", None), ("invalid room rules", Some("merge_everything: true\n"))] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+        set_room_rules(&mut ledger, A, room);
+        assert_eq!(review_then_merge(&mut ledger, temp.path(), &Src::new(vec![file("src/a.rs", 1)])).await.1, None, "{name}");
     }
     let temp = tempfile::tempdir().unwrap();
     let human = OwnerRules { always_human: vec!["secrets/**".into()], ..rules(A, Role::Maintainer) };
@@ -232,16 +235,17 @@ async fn gpt_review_fixes_hold() {
 }
 
 #[tokio::test]
-async fn the_file_keeps_its_own_approval_rule_and_one_review_counts_once() {
-    // A repository file requiring another Agent still does under owner rules.
+async fn the_room_rules_count_the_owner_rules_approvals_and_one_review_counts_once() {
+    // Under owner rules an outside author's pull request may be approved by the merging maintainer.
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
-    let filed = Src { policy: Some(Some("low_risk_paths: [\"**\"]\n".into())), ..Src::new(vec![file("src/a.rs", 1)]) };
-    assert_eq!(review_then_merge(&mut ledger, temp.path(), &filed).await.1, None, "the maintainer alone does not satisfy the file");
+    let src = Src::new(vec![file("src/a.rs", 1)]);
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src).await.1, Some(true));
     // Two approvals required: the device's own login in reviewers= does not count twice.
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![OwnerRules { trusted_reviewers: vec!["anna".into()], ..rules(A, Role::Maintainer) }]);
-    let two = Src { policy: Some(Some("tier: trusted\nrequired_agent_approvals: 2\n".into())), reviews: Some(vec![("anna".into(), "APPROVED".into(), HEAD.into())]), ..Src::new(vec![file("src/a.rs", 1)]) };
+    set_room_rules(&mut ledger, A, Some("tier: trusted\nrequired_agent_approvals: 2\n"));
+    let two = Src { reviews: Some(vec![("anna".into(), "APPROVED".into(), HEAD.into())]), ..Src::new(vec![file("src/a.rs", 1)]) };
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &two).await.1, None);
 }
 

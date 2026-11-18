@@ -2,10 +2,10 @@
 //!
 //! The pull request view gives the head and base commit SHAs; the changed
 //! files then come from `compare/<base>...<head>`, so the files judged belong
-//! to the head the merge is pinned to (`--match-head-commit`), and the policy
-//! is read at the base commit, not the moving branch name.
+//! to the head the merge is pinned to (`--match-head-commit`). The merge rules
+//! are never read from GitHub: they are the room's (ADR 0029).
 use super::gate::{repo_name, GhPr};
-use super::{ChangedFile, Check, PrFacts, POLICY_PATH};
+use super::{ChangedFile, Check, PrFacts};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -103,16 +103,9 @@ async fn gh(dir: &Path, args: &[&str], token: Option<&str>) -> Option<String> {
     output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
 }
 
-/// Where the gate reads pull requests and policies (`gh` here; fakes in tests).
+/// Where the gate reads pull requests (`gh` here; fakes in tests).
 pub trait PrSource {
     fn pull_request(&self, command: &GhPr) -> impl std::future::Future<Output = Option<PrView>>;
-    /// The policy file at `base_sha`, the base commit the pull request was judged on.
-    fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<String>>;
-    /// The policy file at `base_sha`: `Some(None)` when the repository has
-    /// none (GitHub answered 404), `None` when it cannot be read.
-    fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> impl std::future::Future<Output = Option<Option<String>>> {
-        async move { self.policy(command, repo, base_sha).await.map(Some) }
-    }
     /// The GitHub login this device's `gh` uses; `None` (the default) when unknown.
     fn viewer_login(&self, _command: &GhPr) -> impl std::future::Future<Output = Option<String>> {
         async { None }
@@ -164,20 +157,6 @@ impl GhCli {
 impl PrSource for GhCli {
     async fn pull_request(&self, command: &GhPr) -> Option<PrView> {
         pull_request(command, self.token()).await
-    }
-    async fn policy(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<String> {
-        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
-        gh(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token()).await
-    }
-    async fn policy_file(&self, command: &GhPr, repo: &str, base_sha: &str) -> Option<Option<String>> {
-        let path = format!("repos/{repo}/contents/{POLICY_PATH}?ref={base_sha}");
-        let run = gh_command(&command.dir, &["api", &path, "-H", "Accept: application/vnd.github.raw"], self.token())?.output();
-        let output = tokio::time::timeout(GH_TIMEOUT, run).await.ok()?.ok()?;
-        if output.status.success() {
-            return String::from_utf8(output.stdout).ok().map(Some);
-        }
-        // Only GitHub's own "no such file" means absent; anything else is unknown.
-        String::from_utf8_lossy(&output.stderr).contains("(HTTP 404)").then_some(None)
     }
     async fn viewer_login(&self, command: &GhPr) -> Option<String> {
         let login = gh(&command.dir, &["api", "user", "--jq", ".login"], self.token()).await?;

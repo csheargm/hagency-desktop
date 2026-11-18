@@ -63,7 +63,7 @@ async fn forward_hands_the_call_to_its_turn_and_stops_with_it() {
 }
 
 /// GitHub as the gate reads it for PR #50: a README change on head [`H50`],
-/// CI green, the repository's policy asking one other Agent's approval.
+/// CI green, the room's rules asking one other Agent's approval.
 struct Pr50 {
     opened_by: Option<String>,
 }
@@ -72,9 +72,6 @@ impl crate::merge_policy::github::PrSource for Pr50 {
     async fn pull_request(&self, _: &crate::merge_policy::gate::GhPr) -> Option<crate::merge_policy::github::PrView> {
         let facts = crate::merge_policy::PrFacts { open: true, files: vec![crate::merge_policy::ChangedFile { path: "README.md".into(), previous_path: None, additions: 4, deletions: 0, opaque: false }], checks: vec![crate::merge_policy::Check::Passed] };
         Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/50"), base_sha: "2".repeat(40), head_sha: H50.into(), author: "csheargm".into(), opened_by: self.opened_by.clone(), facts })
-    }
-    async fn policy(&self, _: &crate::merge_policy::gate::GhPr, _: &str, _: &str) -> Option<String> {
-        Some("low_risk_paths: [\"**/*.md\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: true\n".into())
     }
 }
 fn review(mode: &str, head: &str) -> String {
@@ -89,6 +86,9 @@ fn review(mode: &str, head: &str) -> String {
 async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate() {
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
+    // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
     let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
@@ -116,6 +116,9 @@ async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate()
 async fn a_repo_step_review_of_a_stale_head_is_never_recorded() {
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
+    // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
     let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
@@ -138,6 +141,9 @@ async fn a_repo_step_review_of_a_stale_head_is_never_recorded() {
 async fn only_a_verdict_reaches_the_gate_and_a_members_needs_the_rooms_review_grant() {
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
+    // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
     let mut running = Running::default();

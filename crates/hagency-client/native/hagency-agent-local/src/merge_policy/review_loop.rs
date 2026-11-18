@@ -87,7 +87,7 @@ impl Ledger {
 }
 
 /// The merge decision for `view` under every policy that applies (the
-/// owner's rules and the repository's file; each can only tighten).
+/// room's rules, required, and the owner's; each can only tighten).
 /// `room` is the merge's room: only approvals given there count.
 pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, Option<&str>), source: &impl PrSource) -> Option<Decision> {
     let judged = super::work::judged(ledger, merger, command, repo, view, source).await?;
@@ -95,16 +95,24 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
         return Some(Decision::NeedsHuman(reason));
     }
     let local = local_approvers(ledger, repo, command.number, view, room).ok()?;
-    // The file keeps its own rule: another Agent than the merger, local only.
-    if let Some(file) = &judged.file
-        && let decision @ Decision::NeedsHuman(_) = evaluate(file, &view.facts, &local, merger)
-    {
-        return Some(decision);
-    }
-    if let Some(rules) = &judged.rules {
-        let counted = judged.count_local.then(|| local.clone());
-        let approvers = approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?;
-        if let decision @ Decision::NeedsHuman(_) = evaluate(rules, &view.facts, &approvers, &judged.excluded) {
+    // The room's rules are required (ADR 0029).
+    let room_rules = match &judged.room {
+        super::room_rules::RoomRules::Rules(policy) => policy,
+        super::room_rules::RoomRules::Missing(reason) => return Some(Decision::NeedsHuman((*reason).to_owned())),
+    };
+    // Without the owner's rules: another of this device's Agents than the
+    // merger, local only. With them, the approvals the owner's rules count
+    // (an outside author's pull request may be approved by the maintainer
+    // that merges it; trusted GitHub reviewers count), so both judge alike.
+    let (approvers, excluded) = match &judged.rules {
+        None => (local, merger.to_owned()),
+        Some(_) => {
+            let counted = judged.count_local.then(|| local.clone());
+            (approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?, judged.excluded.clone())
+        }
+    };
+    for policy in std::iter::once(room_rules).chain(judged.rules.iter()) {
+        if let decision @ Decision::NeedsHuman(_) = evaluate(policy, &view.facts, &approvers, &excluded) {
             return Some(decision);
         }
     }

@@ -315,8 +315,8 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
 }
 
 /// Whether `command` may skip the card. Every kind needs the pull request at
-/// its current head to be a low-risk change under the policy at its base
-/// commit; a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
+/// its current head to be a low-risk change under the room's rules (and the
+/// owner's, when set); a review also needs the policy's CI; a merge also needs the head it names and the policy's approvals
 /// (and takes the one automatic merge). `None` when facts cannot be read.
 pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::PrView, (agent, room): (&str, &str), source: &impl PrSource) -> Option<bool> {
     let repo = super::github::repo_of_url(&view.url, command.number)?;
@@ -326,7 +326,8 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
     let merge = command.kind == Kind::Merge;
     let scoped: Vec<&super::MergePolicy> = if merge { judged.policies().collect() } else { judged.review_policies().collect() };
-    if scoped.iter().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
+    // No rules at all (no room rules, no owner rules): the card asks.
+    if scoped.is_empty() || scoped.iter().any(|policy| super::file_reason(policy, &view.facts).is_some()) {
         return Some(false);
     }
     // An approval is public and counts toward a merge, so CI must pass for

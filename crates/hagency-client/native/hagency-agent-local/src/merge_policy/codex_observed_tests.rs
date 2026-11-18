@@ -48,6 +48,7 @@ fn allowing(dir: &Path) -> Ledger {
         ledger.reserve(&scope, &format!("call-{agent}"), &format!("d-{agent}"), 10, 10).unwrap();
         ledger.set_auto_merge(OWNER, agent, true).unwrap();
     }
+    crate::merge_policy::tests::watch_with_room_rules(&mut ledger, crate::merge_policy::tests::SANDBOX, Some(crate::merge_policy::tests::POLICY));
     ledger
 }
 /// GitHub holds the --comment review on `head`, received after the command started.

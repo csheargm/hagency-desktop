@@ -23,6 +23,7 @@ fn anna(dir: &Path) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
     ledger.set_auto_merge(OWNER, "anna", true).unwrap();
     ledger.set_work(OWNER, "anna", vec![rules()]).unwrap();
+    crate::merge_policy::tests::set_room_rules(&mut ledger, A, Some(crate::merge_policy::review_loop::tests::ANY_PATH));
     ledger
 }
 /// Anna's Agent reviews (settled), then asks to merge PR 7: the gate's answer.
@@ -161,6 +162,7 @@ async fn another_agent_past_its_trial_cannot_merge_a_trial_watchs_pull_request()
     // Bob's new watch of the same repository may have written PR 7: the tracker
     // has not linked it yet and the body names no Agent (shared login).
     ledger.set_work(OWNER, "bob", vec![rules()]).unwrap();
+    crate::merge_policy::tests::set_room_rules(&mut ledger, A, Some(crate::merge_policy::review_loop::tests::ANY_PATH));
     let src = Src::new(vec![file("src/a.rs", 3)]);
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "a trial of this repository holds every Agent's merge");
     ledger.end_watch_trial(OWNER, "bob", A).unwrap();
