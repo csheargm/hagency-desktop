@@ -32,6 +32,10 @@ pub mod notice;
 pub(crate) mod plans;
 pub mod section;
 mod section_state;
+pub(crate) mod safeguards;
+pub mod safeguards_card;
+#[cfg(test)]
+mod safeguards_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
