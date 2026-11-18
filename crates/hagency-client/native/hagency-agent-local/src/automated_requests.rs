@@ -11,7 +11,11 @@
 
 /// Whether `text` (the request as the Agent reads it) from `requester` is
 /// one of `owner`'s automations. Only the owner's own account counts: a
-/// room member's look-alike message keeps its card.
+/// room member's look-alike message keeps its card. Two known limits of
+/// reading the body (GPT review): the owner who pastes a hand-off line into
+/// a typed request gets no card for it, and a review step another owner's
+/// loop addresses to this Agent keeps its card (the server does not count
+/// it as this owner's automation either, so its reply still posts).
 pub fn is_automated(owner: &str, requester: &str, text: &str) -> bool {
     requester == owner
         && (crate::activity::handoff_issue(text).is_some()
