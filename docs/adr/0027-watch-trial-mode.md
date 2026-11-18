@@ -2,6 +2,10 @@
 
 Status: accepted (Chris, 2026-11-17, "Loop safeguards queue")
 
+Superseded by ADR 0030: trial mode is removed (its rows are ignored); a room
+starts at Assist, where a person delivers every merge, until its owner or a
+maintainer chooses Autonomous.
+
 ## Context
 A new issue watch can merge low-risk pull requests by itself as soon as the
 owner turns on "Pull request merges" and the merge rules pass. An owner who

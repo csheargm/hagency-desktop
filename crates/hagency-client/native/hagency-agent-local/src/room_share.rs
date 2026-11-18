@@ -28,6 +28,8 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS room_share (agent TE
 pub struct RoomShare {
     pub answer: bool,
     pub review: bool,
+    /// Retired (ADR 0030): "May work in this room" decides fix steps now; kept
+    /// only so saved choices still read. Nothing enforces it.
     pub fix: bool,
 }
 

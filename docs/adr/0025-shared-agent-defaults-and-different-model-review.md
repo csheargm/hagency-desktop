@@ -2,6 +2,9 @@
 
 Status: accepted (Chris, 2026-11-17)
 
+Superseded in part by ADR 0030: "Fix issues without asking" is gone; a room
+member's fix steps follow "May work in this room" and the room's level.
+
 ## Context
 An owner who adds their Agent to a project or group room (the "Allow in
 group rooms" consent and bind path) wants it to act as a team member there:

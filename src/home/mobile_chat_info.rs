@@ -29,6 +29,8 @@ use crate::{
 // the agent_picker_modal) belongs in add_agent_picker, split along that seam.
 pub(super) mod add_agent_picker;
 mod member_remove;
+// TODO(R4): mobile_chat_info.rs is over budget; the member row's menu (remove, role) belongs in member_menu.rs.
+mod member_role;
 mod member_rows;
 use member_rows::{MemberRow, MemberRows};
 pub(crate) use member_rows::is_departure;
@@ -150,7 +152,10 @@ script_mod! {
                         tooltip_text: #(crate::i18n::tr("Member actions"))
                         Icon {icon_walk: Walk{width: 14 height: 14} draw_icon +: {svg: ICON_MORE_VERT color: mod.widgets.RINX_MUTED}}}
                     }
-                    member_menu := View {visible: false width: Fill height: Fit flow: Right align: Align{x: 1.0} padding: Inset{left: 56 right: 12 bottom: 8}
+                    member_menu := View {visible: false width: Fill height: Fit flow: Right spacing: 8 align: Align{x: 1.0} padding: Inset{left: 56 right: 12 bottom: 8}
+                        // member_role.rs: the room's owner makes or removes maintainers.
+                        maintainer_member := RobrixNeutralIconButton {visible: false height: 28 padding: Inset{left: 10 right: 10 top: 0 bottom: 0} icon_walk: Walk{width: 0 height: 0}
+                            text: #(crate::i18n::tr("Make maintainer")) i18n_text: "Make maintainer"}
                         remove_member := RobrixNegativeIconButton {height: 28 padding: Inset{left: 10 right: 10 top: 0 bottom: 0} icon_walk: Walk{width: 0 height: 0}
                             text: #(crate::i18n::tr("Remove from room")) i18n_text: "Remove from room"}
                     }
@@ -266,6 +271,8 @@ struct ChatInfoData {
     /// Members this account may remove (kick) under the room's power levels.
     removable: HashSet<OwnedUserId>,
     mode: Option<RoomNotificationMode>,
+    /// Owner and maintainers (ADR 0030), and whether this account may assign maintainers.
+    roles: member_role::Roles,
 }
 
 
@@ -612,6 +619,8 @@ impl MobileChatInfo {
                 let banned_members = members.iter().filter(|m| *m.membership() == ruma::events::room::member::MembershipState::Ban)
                     .map(|m| m.user_id().to_owned()).collect();
                 let removable = member_remove::removable(&room, &members).await;
+                let ids: Vec<OwnedUserId> = members.iter().map(|m| m.user_id().to_owned()).collect();
+                let roles = member_role::roles(&room, &ids).await;
                 let mut members: Vec<_> = members
                     .into_iter()
                     .map(|member| UserProfile {
@@ -632,6 +641,7 @@ impl MobileChatInfo {
                     banned_members,
                     removable,
                     mode: room.user_defined_notification_mode().await,
+                    roles,
                 })
             }
             .await;
@@ -910,6 +920,11 @@ impl Widget for MobileChatInfo {
                     self.drop_departed(cx, &departed);
                     if self.pin_is_current() && let Some(room) = self.room.clone() { self.fetch_info(cx, room); }
                 }
+                if let Some(changed) = action.downcast_ref::<member_role::RoleChanged>()
+                    && self.pin_is_current() && let Some(room) = self.room.clone().filter(|r| r.room_id() == &changed.room_id)
+                {
+                    self.fetch_info(cx, room);
+                }
                 if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
                     && left.epoch == self.epoch && self.owner.as_ref() == Some(&left.owner)
                     && self.room.as_ref().is_some_and(|room| room.room_id() == &left.room_id)
@@ -1038,7 +1053,16 @@ impl Widget for MobileChatInfo {
             for (_index, widget) in list.items_with_actions(actions) {
                 if let (Some(data), Some(profile)) = (self.data.as_ref().filter(|_| self.pin_is_current()), self.rendered_members.get(&widget.widget_uid())) {
                     let removal = member_removal(self.owner.as_ref(), &data.removable, &profile.user_id);
-                    if removal.is_some() && member_remove::more_clicked(cx, &widget, actions) {
+                    let role_change = member_role::change_for(&data.roles, self.owner.as_deref(), &profile.user_id);
+                    if let Some(make) = role_change.filter(|_| widget.button(cx, ids!(maintainer_member)).clicked(actions))
+                        && let Some(room) = crate::sliding_sync::get_client().and_then(|c| c.get_room(data.room.room_id()))
+                    {
+                        member_role::spawn_change(room, profile.user_id.clone(), make, profile.displayable_name().to_owned());
+                        self.menu_member = None;
+                        self.view.redraw(cx);
+                        return;
+                    }
+                    if (removal.is_some() || role_change.is_some()) && member_remove::more_clicked(cx, &widget, actions) {
                         self.menu_member = if self.menu_member.as_ref() == Some(&profile.user_id) {None} else {Some(profile.user_id.clone())};
                         self.view.redraw(cx);
                         return;
@@ -1173,6 +1197,8 @@ impl Widget for MobileChatInfo {
                             let Some(user_id)=data.members.get(member).map(|p|p.user_id.clone()) else {continue;};
                             let badge = agent_badge_text(&data.members, &self.member_owners, &user_id);
                             let can_remove = member_removal(self.owner.as_ref(), &data.removable, &user_id).is_some();
+                            let role_change = member_role::change_for(&data.roles, self.owner.as_deref(), &user_id);
+                            let role_tag = data.roles.of.get(&user_id).map(|r| crate::i18n::tr(r.tag()));
                             let Some(profile)=data.members.get_mut(member) else {continue;};
                         let widget = list.item(cx, index, id!(Member));
                         self.rendered_members.insert(widget.widget_uid(), profile.clone());
@@ -1196,10 +1222,15 @@ impl Widget for MobileChatInfo {
                         let owner = self.member_owners.get(&profile.user_id).map(|o| o.to_string());
                         let activity = badge.as_ref().and_then(|_| super::room_watches::activity(data.room.room_id(), profile.user_id.as_str(), owner.as_deref()));
                         let detail = activity.map_or(detail.clone(), |activity| format!("{activity} · {detail}"));
+                        let detail = role_tag.map_or(detail.clone(), |tag| format!("{tag} · {detail}"));
                         widget.label(cx, ids!(user_id)).set_text(cx, &detail);
                         widget.view(cx, ids!(agent_badge)).set_visible(cx, badge.is_some());
                         if let Some(badge) = badge {widget.label(cx, ids!(badge_text)).set_text(cx, &badge);}
-                        member_remove::show(cx, &widget, can_remove, self.menu_member.as_ref() == Some(&profile.user_id));
+                        member_remove::show(cx, &widget, can_remove || role_change.is_some(), self.menu_member.as_ref() == Some(&profile.user_id));
+                        widget.button(cx, ids!(remove_member)).set_visible(cx, can_remove);
+                        let maintainer = widget.button(cx, ids!(maintainer_member));
+                        maintainer.set_visible(cx, role_change.is_some());
+                        if let Some(make) = role_change { maintainer.set_text(cx, crate::i18n::tr(member_role::button_text(make))); }
                         let avatar = widget.avatar(cx, ids!(avatar));
                         let loaded =
                             profile
@@ -1266,7 +1297,7 @@ impl MobileChatInfoRef {
         panel.room=Some(RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Team room".into()),room.clone()));
         panel.tab=InfoTab::Members;
         if scenario=="members" {
-            panel.data=Some(ChatInfoData {can_invite:true,room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
+            panel.data=Some(ChatInfoData {can_invite:true,room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),banned_members:HashSet::new(),removable:HashSet::new(),mode:None,roles:Default::default()});
             panel.select_tab(cx,InfoTab::Members);
             panel.view.redraw(cx);
             return;
@@ -1376,7 +1407,7 @@ mod information_target_tests {
             let value=script_eval!(vm,{mod.widgets.MobileChatInfo {}});
             MobileChatInfo::script_from_value(vm,value)
         });
-        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
+        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(OwnedRoomId::try_from("!r:s").unwrap()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None,roles:Default::default()});
         info.indented_members=indented;
         info.select_tab(&mut cx,InfoTab::Members);draw_information(&mut info,&mut cx);
         let list=info.view.portal_list(&mut cx,ids!(list));
@@ -1415,7 +1446,7 @@ mod information_target_tests {
         let mut owners=HashMap::new();owners.insert(agent.clone(),OwnedUserId::try_from("@anna:s").unwrap());
         info.indented_members=group_members(&mut members,&owners);info.member_owners=owners;
         info.room=Some(RoomNameId::empty(room.clone()));info.epoch=crate::account_session::epoch();
-        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(room.clone()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None});
+        info.data=Some(ChatInfoData {can_invite:true,room:RoomNameId::empty(room.clone()),topic:String::new(),members,banned_members:HashSet::new(),removable:HashSet::new(),mode:None,roles:Default::default()});
         info.select_tab(&mut cx,InfoTab::Members);draw_information(&mut info,&mut cx);
         let list=info.view.portal_list(&mut cx,ids!(list));
         let agent_row=list.item(&mut cx,1,id!(Member));
@@ -1549,7 +1580,7 @@ mod information_target_tests {
             let info=MobileChatInfo::script_from_value(vm,value);assert!(vm.take_errors().is_empty());info
         });
         let room=RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Room A".into()),matrix_sdk::ruma::room_id!("!a:server").to_owned());
-        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],banned_members:HashSet::new(),removable:HashSet::new(),mode:None,can_invite:true});
+        info.room=Some(room.clone());info.data=Some(ChatInfoData{room,topic:"A topic".into(),members:vec![],banned_members:HashSet::new(),removable:HashSet::new(),mode:None,roles:Default::default(),can_invite:true});
         info.agent_command=Some(("exact-original-input".into(),"original-key".into()));
         draw_information(&mut info,&mut cx);
         assert_eq!(info.view.label(&mut cx,ids!(summary_name)).text(),"Room A");
@@ -1662,7 +1693,7 @@ mod information_target_tests {
                 can_invite: true,
                 room: RoomNameId::empty(room_a),
                 topic: String::new(),
-                members: vec![], banned_members: HashSet::new(), removable: HashSet::new(),
+                members: vec![], banned_members: HashSet::new(), removable: HashSet::new(), roles: Default::default(),
                 mode: None,
             }),
         };

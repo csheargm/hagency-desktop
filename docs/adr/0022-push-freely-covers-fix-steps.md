@@ -2,6 +2,10 @@
 
 Status: accepted (Chris, 2026-11-17)
 
+Superseded in part by ADR 0030: there is no "push freely" switch any more;
+the same pinned steps run for an Agent that may work in the room, for that
+room's linked repositories, while the room is Assist or Autonomous and not paused.
+
 ## Context
 With issue watching on and "Push and open PRs freely" on, Hagency answered
 the push, `gh pr create|ready|edit`, `fetch`, `checkout -b <new>

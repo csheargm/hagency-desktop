@@ -16,7 +16,7 @@
 use super::github::PrSource;
 use super::Decision;
 use crate::outside::{resolves_inside, shell};
-use crate::{key, Ledger, Result, ToolPolicy, ToolProposal};
+use crate::{Ledger, Result, ToolPolicy, ToolProposal};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -32,13 +32,8 @@ CREATE TABLE IF NOT EXISTS auto_merge_room_reviews (pr TEXT NOT NULL, head TEXT 
 CREATE TABLE IF NOT EXISTS auto_merge_pending_room_reviews (call TEXT PRIMARY KEY, pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, room TEXT NOT NULL) STRICT;";
 
 impl Ledger {
-    /// Switch agent auto-merge on or off for one Agent (off unless set).
-    pub fn set_auto_merge(&mut self, owner: &str, agent: &str, enabled: bool) -> Result<()> {
-        self.owner(owner)?;
-        key(agent)?;
-        self.db.execute("INSERT INTO auto_merge VALUES (?,?) ON CONFLICT(agent) DO UPDATE SET enabled=excluded.enabled", (agent, enabled as i64))?;
-        Ok(())
-    }
+    /// The retired per-Agent merge switch (ADR 0030), read once by the
+    /// desktop's migration to choose the room's level; nothing writes it.
     pub fn auto_merge(&self, agent: &str) -> Result<bool> {
         use rusqlite::OptionalExtension;
         Ok(self.db.query_row("SELECT enabled FROM auto_merge WHERE agent=?", [agent], |r| r.get::<_, i64>(0)).optional()? == Some(1))
@@ -78,6 +73,7 @@ impl Ledger {
         })
     }
     /// The Agents that approved `pr` at exactly commit `head`, in any room.
+    #[cfg(test)]
     pub(crate) fn agent_reviewers(&self, pr: &str, head: &str) -> Result<Vec<String>> {
         self.agent_reviewers_in(pr, head, None)
     }
@@ -272,7 +268,15 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         let url = source.pull_request(&command).await?.url;
         ledger.hold_withdrawal(call, &url, &agent).ok()?;
     }
-    if !ledger.auto_merge(&agent).ok()? {
+    // Only Agents of the room's owner or a maintainer merge (ADR 0030): in a
+    // loop room, anything but a fresh read saying this owner is one refuses the
+    // merge outright, card or not (fail closed, GPT review).
+    if command.kind == Kind::Merge && ledger.merge_refused(&proposal.scope.room, super::room_rules::unix_now()).unwrap_or(true) {
+        return Some(false);
+    }
+    // The Agent works in this room's loop and the room runs (ADR 0030; it
+    // replaces the per-Agent merge switch): else the card asks.
+    if ledger.loop_may_work(&agent, &proposal.scope.room).is_err() {
         return None;
     }
     // A member's request under a layer the owner never saved is the owner's

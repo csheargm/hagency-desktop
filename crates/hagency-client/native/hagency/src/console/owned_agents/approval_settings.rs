@@ -2,10 +2,12 @@
 //! the original demo's `owned_agents/remembered.rs`), kept in the same profile
 //! ledger as the Agent policy, so the owner check and ledger opening match it.
 //! GET returns `{mode, rules}`; POST applies `{forget}` (revoke one rule)
-//! and/or `{mode}` (`ask`, `remember` or `outside`) and/or `{autoMerge}` (the
-//! opt-in agent auto-merge switch, off by default) and/or `{roomShare: {room,
+//! and/or `{mode}` (`ask`, `remember` or `outside`) and/or `{roomShare: {room,
 //! answer, review, fix}}` (what the Agent does for members of one group room,
-//! ADR 0025; GET lists the saved rooms as `roomShares`) in one transaction, then
+//! ADR 0025; `fix` is retired by ADR 0030; GET lists the saved rooms as
+//! `roomShares`) in one transaction, then
+//! answers like GET. GET's `autoMerge` is the retired merge switch, read only by
+//! the desktop's one-time migration to "may work in this room" (ADR 0030).
 //! answers like GET. Writes need this device to be the Agent's execution device.
 //! Rules are only ever created by the owner's "Always allow this" on a card.
 use super::*;
@@ -19,8 +21,6 @@ struct Change {
     forget: Option<RememberedRequest>,
     #[serde(default)]
     mode: Option<String>,
-    #[serde(default)]
-    auto_merge: Option<bool>,
     #[serde(default)]
     room_share: Option<SavedRoomShare>,
 }
@@ -100,9 +100,6 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     if let Some(mode) = change.mode {
         ledger.set_approval_mode(owner, agent, &mode)?;
     }
-    if let Some(enabled) = change.auto_merge {
-        ledger.set_auto_merge(owner, agent, enabled)?;
-    }
     if let Some(saved) = change.room_share {
         ledger.set_room_share(owner, agent, &saved.room, saved.share())?;
     }
@@ -117,8 +114,7 @@ mod tests {
     fn a_change_is_a_forget_and_or_a_mode_and_nothing_else() {
         let change: Change = serde_json::from_value(json!({"mode": "remember"})).unwrap();
         assert_eq!(change.mode.as_deref(), Some("remember"));
-        let change: Change = serde_json::from_value(json!({"autoMerge": true})).unwrap();
-        assert_eq!(change.auto_merge, Some(true));
+        assert!(serde_json::from_value::<Change>(json!({"autoMerge": true})).is_err(), "the merge switch is retired (ADR 0030)");
         let change: Change = serde_json::from_value(json!({"roomShare": {"room": "!dev:s", "answer": true, "review": false, "fix": false}})).unwrap();
         assert!(!change.room_share.unwrap().review);
         // Every choice is explicit; nothing else (a merge rule) can ride along.

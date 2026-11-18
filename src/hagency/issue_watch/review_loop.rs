@@ -102,8 +102,6 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
     }
     let target = target.clone();
     match readiness["decision"].as_str() {
-        // The gate never answers a merge with the switch off (or unknown): say so instead (GPT review).
-        Some("merge") if readiness["autoMerge"] != true => Some(super::merge_hold::merges_off(&target)),
         Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone() }),
         Some("merge") => Some(LoopNotice::NeedsMaintainer { target, step: Missing::Permission.step() }),
         Some("wait") => None,

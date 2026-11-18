@@ -127,8 +127,10 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
             return Some(decision);
         }
     }
-    // A new watch's trial (ADR 0027): the owner merges its first pull requests.
-    super::trial::hold(ledger, repo).ok()?.or(Some(Decision::Merge))
+    // The room's autonomy level (ADR 0030): only an Autonomous, running room
+    // delivers without a person, and only by an Agent that may work there.
+    let delivered = room.map_or(Err(crate::room_autonomy::NOT_READ_REASON), |room| ledger.loop_may_deliver(merger, room));
+    Some(delivered.map_or_else(|reason| Decision::NeedsHuman(reason.to_owned()), |()| Decision::Merge))
 }
 
 #[cfg(test)]

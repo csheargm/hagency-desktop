@@ -7,7 +7,7 @@
 use super::loop_notice::{LoopNotice, Target};
 use super::notice::quoted_title;
 use super::review_loop::{self, LoopCtx, LoopIo, can_merge};
-use ::hagency::issue_watch::{HOLD_STEP, TRIAL_PRS, trial_counts};
+use ::hagency::issue_watch::HOLD_STEP;
 use serde_json::{Value, json};
 
 /// How long after the pull request opened the loop waits for a verdict
@@ -23,10 +23,9 @@ pub enum Missing {
     Ci,
     /// The repository rules (paths, size, author) need a person.
     Rules,
-    /// The watch is in its trial (ADR 0027): the owner merges its first pull requests.
-    Trial,
-    /// The merging Agent's "Pull request merges" switch is off.
-    MergesOff,
+    /// The room's autonomy (ADR 0030): Assist, Off, paused, or an Agent of
+    /// someone who is not the room's owner or a maintainer.
+    Autonomy,
     /// This owner's GitHub account cannot merge the repository.
     Permission,
 }
@@ -38,8 +37,7 @@ impl Missing {
             Self::Approval => "approvals",
             Self::Ci => "ci",
             Self::Rules => "rules",
-            Self::Trial => "trial",
-            Self::MergesOff => "merges-off",
+            Self::Autonomy => "autonomy",
             Self::Permission => "permission",
         }
     }
@@ -48,7 +46,7 @@ impl Missing {
         match kind {
             Some("approvals") => Self::Approval,
             Some("ci") => Self::Ci,
-            Some("trial") => Self::Trial,
+            Some("autonomy") => Self::Autonomy,
             _ => Self::Rules,
         }
     }
@@ -62,9 +60,8 @@ impl Missing {
             Self::Approval => "an Agent approval",
             Self::Ci => "green CI",
             Self::Rules => "a person (repo rules)",
-            Self::Trial => "your merge (trial)",
-            Self::MergesOff => "Pull request merges switched on",
-            Self::Permission => "a maintainer to merge",
+            Self::Autonomy => "a person (room setting)",
+            Self::Permission => "someone with GitHub write access to merge",
         }
     }
     /// The notice's line: what is missing and how to fix it. English on
@@ -75,19 +72,11 @@ impl Missing {
             Self::Approval => format!("an Agent approval of this head (the merge gate says {said}). Only an approval another Agent posts through Hagency's approval gate counts; a Codex Agent's review or a plain GitHub comment is not recorded. Ask another (Claude) Agent in this room to review it again, or review and merge it yourself."),
             Self::Ci => format!("green CI (the merge gate says {said}). Fix or re-run the checks, or merge it yourself."),
             Self::Rules => format!("a person: the repo rules say {said}. Review and merge it yourself."),
-            Self::Trial => {
-                // The gate's own numbers; an unreadable reason still names the trial.
-                let (next, required) = trial_counts(reason).unwrap_or((1, TRIAL_PRS));
-                crate::i18n::format(TRIAL_LINE, &[("next", next.to_string()), ("required", required.to_string())])
-            }
-            Self::MergesOff => "Pull request merges switched on for this Agent: it is off, so no Agent may merge. Turn it on in the Agent's settings, or merge it yourself.".to_owned(),
-            Self::Permission => format!("a maintainer: this owner's GitHub account cannot merge {repo}. Someone with write access must merge it."),
+            Self::Autonomy => format!("a person: the room's setting says {said}. Merge it yourself, or the room's owner or a maintainer can change the level in Room info → Status."),
+            Self::Permission => format!("someone with GitHub write access: this owner's GitHub account cannot merge {repo}, so a person or Agent whose GitHub account can must merge it."),
         }
     }
 }
-
-/// The trial's notice line (ADR 0027).
-pub const TRIAL_LINE: &str = "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.";
 
 /// What the merge step does for one head this check.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,11 +147,6 @@ pub fn gate_of(target: &Target, readiness: &Value, permission: Option<&str>, set
             missing.push((kind, readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned()));
         }
     }
-    // Only an explicit "on" lets an Agent merge (GPT review: a missing
-    // field from an older owner API must not count as permission).
-    if readiness["autoMerge"] != true {
-        missing.push((Missing::MergesOff, String::new()));
-    }
     if !can_merge(permission) {
         missing.push((Missing::Permission, String::new()));
     }
@@ -175,13 +159,6 @@ fn hold_step(missing: &[(Missing, String)]) -> String {
     words.sort();
     words.dedup();
     format!("{HOLD_STEP}{}", words.iter().map(|m| m.word()).collect::<Vec<_>>().join("-"))
-}
-
-/// The "Pull request merges is off" hold alone, under the same step the
-/// tracker's own merges-off hold uses (the review pass's merge step).
-pub fn merges_off(target: &Target) -> LoopNotice {
-    let missing = [(Missing::MergesOff, String::new())];
-    LoopNotice::Held { target: target.clone(), step: hold_step(&missing), missing: vec![Missing::MergesOff.line("", &target.repo)] }
 }
 
 /// Post `notice` unless step `step` was taken for this head, then take it.

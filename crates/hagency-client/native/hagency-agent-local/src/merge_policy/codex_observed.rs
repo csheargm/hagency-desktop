@@ -156,11 +156,12 @@ fn allowed_proposal(ledger: &mut Ledger, scope: &Scope, dispatch: &str, item: &V
     }
 }
 
-/// The gate's per-Agent checks: switch on, owner rules (if any) bound to
-/// this room, and a room member's review only where the owner shares review.
+/// The gate's per-Agent checks: it may work in this running room (ADR 0030),
+/// owner rules (if any) bound to this room, and a room member's review only
+/// where the owner shares review.
 fn reviewer_may_review(ledger: &Ledger, scope: &Scope, repo: &str) -> std::result::Result<(), &'static str> {
-    if ledger.auto_merge(&scope.agent).ok() != Some(true) {
-        return Err("auto_merge_off");
+    if ledger.loop_may_work(&scope.agent, &scope.room).is_err() {
+        return Err("room_loop_not_running");
     }
     match ledger.owner_rules(&scope.agent, repo) {
         Ok(Some(rules)) if rules.room_id != scope.room => return Err("repo_in_another_room"),

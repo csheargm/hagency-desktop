@@ -1051,6 +1051,11 @@ script_mod! {
                     }
                     text: ""
                 }
+                // ADR 0030: "Assist", "Autonomous" or "Paused" while the room runs agent work.
+                desktop_autonomy_badge := Label {
+                    visible: false width: Fit height: Fit margin: Inset{left: 8 right: 8}
+                    draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_bold {font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
+                }
                 // Shown only in one of this account's Agents' private chats.
                 desktop_agent_settings := mod.widgets.AgentChatSettingsButton {}
                 // Hidden unless HAGENCY_CALL_URL names an Element Call app.
@@ -1434,6 +1439,12 @@ impl Widget for RoomScreen {
         // Skip event handling if this RoomScreen is uninitialized (a background dock tab after dock restore).
         if self.tl_state.is_none() && self.room_name_id.is_none() {
             return;
+        }
+        // The header's agent work badge follows a fresh read of this room (ADR 0030).
+        if let Event::Actions(actions) = event
+            && actions.iter().filter_map(|a| a.downcast_ref::<crate::home::room_watches::autonomy::AutonomyChanged>()).any(|c| self.room_name_id.as_ref().is_some_and(|r| r.room_id() == &c.room_id))
+        {
+            self.view.view(cx, ids!(desktop_chat_header)).redraw(cx);
         }
         let had_agent_status = self.has_agent_status(cx);
         let notice=self.agent_status.agent_runtime_notice(cx,ids!(agent_runtime_notice));
@@ -4370,6 +4381,11 @@ impl RoomScreen {
         if label.text() != title {
             label.set_text(cx, &title);
         }
+        // TODO(R4): room_screen.rs is over budget; move the header's parts into room_screen/header.rs.
+        let badge = crate::home::room_watches::autonomy::badge_of(room_name_id.room_id());
+        let shown = header.label(cx, ids!(desktop_autonomy_badge));
+        shown.set_visible(cx, badge.is_some());
+        shown.set_text(cx, badge.map(crate::i18n::tr).unwrap_or_default());
     }
 
     pub fn set_displayed_room(
@@ -4401,6 +4417,8 @@ impl RoomScreen {
             return;
         }
 
+        // The header's agent work badge (ADR 0030), read from the server once per opened room.
+        crate::home::room_watches::autonomy::refresh(room_name_id.room_id());
         self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.view.identity_reset_banner(cx, ids!(identity_reset_banner)).show_or_hide(cx, None);
         crate::memory_budget::release_tree(cx, &self.child_by_path(ids!(timeline.list)));

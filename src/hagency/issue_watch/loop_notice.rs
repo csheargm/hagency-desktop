@@ -83,7 +83,7 @@ impl LoopNotice {
                 lead = ::hagency::issue_watch::MERGE_NOTICE_LEAD,
                 command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
             ),
-            Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs a maintainer: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
+            Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs someone with GitHub write access: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
             Self::NeedsOwner { reason, .. } => format!("⚠️ PR #{} in {} at {short} needs the owner: {}. {}", t.number, t.repo, quoted_title(reason), t.url),
             Self::Held { missing, .. } => {
                 let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();

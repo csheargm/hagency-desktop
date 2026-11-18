@@ -1,6 +1,10 @@
 # ADR 0016: Distributed GitHub loop (work list, claims, maintainer merges)
 
 Status: proposed; first milestone implemented on `feat/auto-loop-review`.
+
+Superseded in part by ADR 0030: the per-Agent issue-watch modes and the
+per-repository work list are no longer owner settings; an Agent's work comes
+from the rooms it "may work in" and their linked repositories (claims stay).
 Amended by ADR 0017: there are no roles any more (every Agent fixes and
 reviews; merging follows the owner's GitHub permission), and capability
 cards are dropped. The role text below is kept as history.

@@ -39,6 +39,7 @@ pub mod codex_step;
 pub(crate) mod gh;
 pub mod git;
 pub(crate) mod host_clone;
+pub(crate) mod issue_create;
 pub mod host_git;
 pub mod host_run;
 pub(crate) mod local_git;
@@ -142,10 +143,12 @@ pub(crate) fn review_step(db: &Connection, proposal: &ToolProposal) -> crate::Re
     Ok(Some(TrustedStep::Command(post.command())))
 }
 
-/// Whether `proposal`'s requester gets the owner's push trust: the owner, or
-/// a member of a Room where the owner let the Agent fix issues without asking.
-fn fixes_for(db: &Connection, proposal: &ToolProposal, owner: &str) -> crate::Result<bool> {
-    Ok(proposal.scope.requester == owner || crate::room_share::read(db, &proposal.scope.agent, &proposal.scope.room)?.fix)
+/// Whether `proposal` gets the owner's push trust (ADR 0030): the Agent may
+/// work in this Room and the Room runs (Assist or Autonomous, not paused,
+/// freshly read), for the owner and the Room's members alike. It replaces
+/// the per-room "fix issues without asking" choice.
+fn fixes_for(db: &Connection, proposal: &ToolProposal, _owner: &str) -> crate::Result<bool> {
+    Ok(crate::room_autonomy::loop_may_work_in(db, &proposal.scope.agent, &proposal.scope.room).is_ok())
 }
 
 /// A foreground Claude `Bash` call, or a Codex call of the host's

@@ -160,9 +160,6 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         if let Some((view, _)) = &judged {
             // Unverified: only tells "no review yet" (wait) from "a person must decide".
             reply["readiness"]["approvers"] = ledger.agent_reviewers_count(&view.url, &view.head_sha, &ask.room)?.into();
-            // The merger's own "Pull request merges" switch: without it the
-            // gate never answers the merge, so the loop says so instead.
-            reply["readiness"]["autoMerge"] = ledger.auto_merge(agent)?.into();
         }
     }
     Ok(reply)

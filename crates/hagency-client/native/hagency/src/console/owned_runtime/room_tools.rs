@@ -201,6 +201,7 @@ impl Host {
         // times out never keeps an earlier turn's (an unlink, a departure) (GPT review).
         let dispatch = &self.gate.expected;
         hagency_agent_local::watch_trust::room_scope::record(&dispatch.room_id, &dispatch.requester_mxid, Vec::new());
+        hagency_agent_local::watch_trust::room_scope::record_linked(&dispatch.room_id, &dispatch.requester_mxid, Vec::new());
         // Losing the device preview does not discard a new plaintext request.
         // Tools retry device acquisition under their own bounded operation.
         let prepared = tokio::time::timeout(Duration::from_secs(20), async {

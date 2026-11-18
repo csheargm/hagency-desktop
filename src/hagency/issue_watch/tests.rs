@@ -134,43 +134,6 @@ fn a_check_from_an_ended_session_records_nothing_and_stale_agents_are_pruned() {
 }
 
 #[test]
-fn issue_watch_modes_map_to_saved_modes() {
-    use super::choices::{MODE_LABELS, hint, index};
-    assert_eq!(MODE_LABELS[index("all")], "Fully automatic: every new issue");
-    assert_eq!(index(""), 0, "never set means Off");
-    assert_eq!(index("labelled"), 1);
-    assert_eq!(index("trusted"), 2);
-    let hints: std::collections::HashSet<_> = (0..4).map(hint).collect();
-    assert_eq!(hints.len(), 4, "every mode explains itself");
-}
-
-#[test]
-fn issue_watch_change_needs_a_repo_and_room_unless_off() {
-    use super::choices::change;
-    use serde_json::json;
-    let saved = change(2, " acme/app ", Some("!r:s"), 0).unwrap();
-    assert_eq!(saved, json!({"issueWatch": {"mode": "trusted", "label": "agent-fix", "repo": "acme/app", "roomId": "!r:s", "pushTrusted": false}}));
-    assert_eq!(change(2, "acme/app", Some("!r:s"), 1).unwrap()["issueWatch"]["pushTrusted"], true);
-    assert_eq!(change(0, "", None, 1).unwrap()["issueWatch"]["pushTrusted"], false, "no trust without a watch");
-    assert_eq!(change(0, "", None, 0).unwrap()["issueWatch"]["mode"], "off");
-    assert!(change(3, "acme", Some("!r:s"), 0).is_err());
-    assert!(change(3, "acme/app/x", Some("!r:s"), 0).is_err());
-    assert!(change(1, "acme/app", None, 0).is_err());
-}
-
-#[test]
-fn only_active_room_bindings_are_offered() {
-    use serde_json::json;
-    let bindings = [
-        json!({"roomId": "!a:s", "state": "active"}),
-        json!({"roomId": "!b:s", "state": "paused"}),
-        json!({"roomId": "#alias:s", "state": "active"}),
-    ];
-    let rooms = super::choices::rooms(&bindings, |b| format!("name {}", b["roomId"].as_str().unwrap()));
-    assert_eq!(rooms, vec![("!a:s".to_owned(), "name !a:s".to_owned())]);
-}
-
-#[test]
 fn the_agents_token_wins_then_the_environment_then_the_error_says_where() {
     use super::{NO_TOKEN, choose_token};
     use ::hagency::github_access::Token;
@@ -186,72 +149,6 @@ fn the_agents_token_wins_then_the_environment_then_the_error_says_where() {
     assert_eq!(choose_token(Err("store locked".into()), none).unwrap_err(), "store locked");
 }
 
-fn section(cx: &mut makepad_widgets::Cx) -> super::section::IssueWatchSection {
-    use makepad_widgets::*;
-    cx.with_vm(|vm| {
-        makepad_widgets::script_mod(vm);
-        crate::app::register_widgets(vm);
-        vm.bx.captured_errors = Some(Vec::new());
-        let value = script_eval!(vm, {mod.widgets.IssueWatchSection {}});
-        let section = super::section::IssueWatchSection::script_from_value(vm, value);
-        assert!(vm.take_errors().is_empty());
-        section
-    })
-}
-
-#[test]
-fn saving_issue_watching_says_saved() {
-    use super::section::test_support::{answer, stale_answer};
-    use makepad_widgets::*;
-    use serde_json::json;
-    let mut cx = Cx::new(Box::new(|_, _| {}));
-    let mut panel = section(&mut cx);
-    let rooms = vec![("!r:s".to_owned(), "Project".to_owned())];
-    panel.set_context(&mut cx, "agt_1", Some(true), rooms);
-    let saved = json!({"issueWatch": {"mode": "trusted", "label": "agent-fix", "repo": "acme/app", "roomId": "!r:s", "enabledAt": 5}, "issueSeen": []});
-    answer(&mut panel, &mut cx, false, Ok(saved.clone()));
-    assert_eq!(panel.label(&mut cx, ids!(watch_note)).text(), "", "a read is not a save");
-    assert_eq!(panel.text_input(&mut cx, ids!(watch_repo)).text(), "acme/app");
-    assert!(panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
-    stale_answer(&mut panel, &mut cx, Ok(saved.clone()));
-    assert_eq!(panel.label(&mut cx, ids!(watch_note)).text(), "", "a stale reply shows nothing");
-    answer(&mut panel, &mut cx, true, Ok(saved));
-    assert_eq!(panel.label(&mut cx, ids!(watch_note)).text(), "Saved");
-    answer(&mut panel, &mut cx, true, Err("ledger locked".into()));
-    assert_eq!(panel.label(&mut cx, ids!(watch_note)).text(), "Could not save issue watching: ledger locked");
-}
-
-#[test]
-fn another_device_cannot_edit_the_watch() {
-    use makepad_widgets::*;
-    let mut cx = Cx::new(Box::new(|_, _| {}));
-    let mut panel = section(&mut cx);
-    panel.set_context(&mut cx, "agt_1", Some(false), Vec::new());
-    assert!(!panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
-    assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("runs on the device"));
-}
-
-/// Regression (live 2026-11-16, fresh Agent anna-fixer): a new Agent with no
-/// saved watch (`issueWatch: null`) gets editable controls at Off, and before
-/// its status arrives the block says it is waiting instead of greying out silently.
-#[test]
-fn a_new_agent_without_a_saved_watch_can_choose_and_save() {
-    use super::section::test_support::answer;
-    use makepad_widgets::*;
-    use serde_json::json;
-    let mut cx = Cx::new(Box::new(|_, _| {}));
-    let mut panel = section(&mut cx);
-    panel.set_context(&mut cx, "agt_new", None, Vec::new());
-    assert!(!panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
-    assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("Waiting for this Agent's status"));
-    panel.set_context(&mut cx, "agt_new", Some(true), Vec::new());
-    answer(&mut panel, &mut cx, false, Ok(json!({"issueWatch": null, "issueSeen": []})));
-    assert!(panel.button(&mut cx, ids!(save_watch)).borrow().unwrap().enabled());
-    assert!(!panel.widget(&mut cx, ids!(watch_mode)).disabled(&cx), "mode is choosable");
-    assert!(panel.label(&mut cx, ids!(watch_status)).text().contains("Add this Agent to a Room first"));
-}
-
-/// GPT integration review: Stop All during a check must fence the hand-off.
 #[test]
 fn a_paused_agent_gets_no_post_and_nothing_is_marked_seen() {
     let fake = Fake { paused: true.into(), ..Default::default() };

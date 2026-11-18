@@ -21,6 +21,7 @@ pub mod demo_env;
 pub mod inbox;
 pub mod questions;
 pub mod room_share;
+pub mod room_autonomy;
 pub mod member_inspection;
 pub mod room_tools;
 pub mod run_controls;
@@ -395,7 +396,7 @@ impl Ledger {
         db.execute_batch(merge_policy::pending::SCHEMA)?;
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
-        db.execute_batch(merge_policy::trial::SCHEMA)?;
+        db.execute_batch(room_autonomy::SCHEMA)?;
         db.execute_batch(merge_policy::room_rules::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;
         issue_track::ensure_schema(&db)?;
@@ -1225,7 +1226,11 @@ impl Ledger {
             // A shared Agent's PR review verdict on a room repository (ADR 0025).
             None => match watch_trust::review_step(&self.db, proposal)? {
                 Some(step) => step,
-                None => return Ok(None),
+                // An issue on the room's own linked repository (ADR 0030).
+                None => match watch_trust::issue_create::step(&self.db, proposal)? {
+                    Some(step) => step,
+                    None => return Ok(None),
+                },
             },
         };
         // Inside the exact scope (the owner's run in the watch's Room for every

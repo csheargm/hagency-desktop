@@ -16,6 +16,8 @@ pub use hagency_agent_local::merge_policy::room_rules::{
     MAX_POLICY_BYTES, MERGE_RULES_STATE_TYPE, NO_ROOM_RULES, ROOM_RULES_TTL_SECS, RoomRulesSnapshot, SUGGESTED_ALWAYS_HUMAN, SUGGESTED_LOW_RISK_PATHS, content_of, policy_text,
     render_policy, rules_of, suggested_policy,
 };
+/// The room's autonomy level and Pause (ADR 0030): state types, content and reasons.
+pub use hagency_agent_local::room_autonomy;
 /// Branches push-freely never pushes, whatever the remote says (ADR 0022).
 pub use hagency_agent_local::watch_trust::git::PROTECTED as PROTECTED_BRANCHES;
 

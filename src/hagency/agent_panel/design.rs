@@ -115,9 +115,6 @@ script_mod! {
                     rules := Select {labels: [#(crate::i18n::tr("No remembered approvals"))]}
                     revoke := Action {text: #(crate::i18n::tr("Revoke")) i18n_text: "Revoke"}
                 }
-                Text {text: #(crate::i18n::tr("Pull request merges")) i18n_text: "Pull request merges"}
-                auto_merge := Select {labels: [#(crate::i18n::tr("People merge")) #(crate::i18n::tr("Agents merge low-risk PRs"))]}
-                Hint {text: #(crate::i18n::tr(super::mapping::AUTO_MERGE_HINT))}
             }
             // What the Agent does for a group room's members (ADR 0025).
             Card {
@@ -125,14 +122,12 @@ script_mod! {
                 share_room := Select {labels: [#(crate::i18n::tr("Not in a group room yet"))]}
                 share_answer := CheckBox {text: #(crate::i18n::tr("Answer questions")) i18n_text: "Answer questions"}
                 share_review := CheckBox {text: #(crate::i18n::tr("Review PRs")) i18n_text: "Review PRs"}
-                share_fix := CheckBox {text: #(crate::i18n::tr("Fix issues without asking")) i18n_text: "Fix issues without asking"}
                 share_hint := Hint {}
                 Hint {text: #(crate::i18n::tr(super::mapping::SHARE_HINT))}
             }
-            // The int build's own blocks: issue watching (incl. Trusted mode and
-            // Room choice) and the per-Agent GitHub access token with Check.
-            Card {issue_watch := mod.widgets.IssueWatchSection {} safeguards := mod.widgets.SafeguardsCard {}}
-            Card {work := mod.widgets.WorkSection {}}
+            // ADR 0030: per Agent only "May work in <room>" (the room sets how far
+            // it goes), its Safeguards, and the per-Agent GitHub access token with Check.
+            Card {may_work := mod.widgets.MayWorkSection {} safeguards := mod.widgets.SafeguardsCard {}}
             Card {github_access := mod.widgets.GithubAccessSection {}}
             Card {
                 Title {text: #(crate::i18n::tr("Budget")) i18n_text: "Budget"}
