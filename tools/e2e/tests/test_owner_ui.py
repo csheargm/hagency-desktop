@@ -52,6 +52,32 @@ class Matching(unittest.TestCase):
         self.assertEqual([d["id"] for d in owner_ui.card_deny(ours + other + chat, "e2e-1-s6")], ["d1"])
         self.assertEqual(owner_ui.card_deny(other + chat, "e2e-1-s6"), [])
 
+    def test_inbox_row_must_be_in_the_e2e_room(self):
+        inbox = "overlay.owner_approvals_inbox.card.list"
+        dev = [n("t1", f"{inbox}.row0.details_scroll.details", "gh issue view 62 -R x/y"),
+               n("p1", f"{inbox}.row0.place", "In dev room · bird-claude"),
+               n("d1", f"{inbox}.row0.buttons.deny", "Deny", "press")]
+        e2e = [n("t2", f"{inbox}.row1.details_scroll.details", "gh issue view 62 -R x/y"),
+               n("p2", f"{inbox}.row1.place", "In e2e room · bird-claude"),
+               n("d2", f"{inbox}.row1.buttons.deny", "Deny", "press")]
+        self.assertEqual([d["id"] for d in owner_ui.card_deny(dev + e2e, "issue view 62")], ["d2"])
+
+    def test_same_card_in_notice_and_inbox_counts_once(self):
+        inbox = "overlay.owner_approvals_inbox.card.list"
+        both = [n("t", f"{NOTICE}.request_details.details", "gh api -X POST ... e2e-1-s6"),
+                n("d", f"{NOTICE}.actions.deny", "Deny", "press"),
+                n("t2", f"{inbox}.row0.details_scroll.details", "gh api -X POST ... e2e-1-s6"),
+                n("p2", f"{inbox}.row0.place", "In e2e room · bird-claude"),
+                n("d2", f"{inbox}.row0.buttons.deny", "Deny", "press")]
+        self.assertEqual([d["id"] for d in owner_ui.one_card(owner_ui.card_deny(both, "e2e-1-s6"))], ["d"])
+
+    def test_expired_card_has_no_deny_so_it_is_not_pending(self):
+        inbox = "overlay.owner_approvals_inbox.card.list"
+        expired = [n("t", f"{inbox}.row0.details_scroll.details", "gh repo clone e2e-1-s6"),
+                   n("p", f"{inbox}.row0.place", "In e2e room · bird-claude"),
+                   n("x", f"{inbox}.row0.buttons.dismiss", "Dismiss", "press")]
+        self.assertEqual(owner_ui.card_deny(expired, "e2e-1-s6"), [])
+
     def test_prompt_button_needs_the_e2e_room_in_its_own_prompt(self):
         mine = [n("p", "prompt.body.text", "Bring bird-codex into e2e room?"),
                 n("b", "prompt.buttons.bring", "Bring", "press")]
@@ -162,9 +188,22 @@ class Flows(unittest.TestCase):
         fake = FakeBridge([ROOM_ROW, n("t", f"{NOTICE}.request_details.details", "git push e2e-1-s6"),
                            n("d", f"{NOTICE}.actions.deny", "Deny", "press"),
                            n("o", f"{NOTICE}.actions.once", "Approve once", "press")])
+        orig = fake.press
+
+        def press(node, settle=1.0):
+            orig(node, settle)
+            fake.screen = [ROOM_ROW]  # the card goes away once answered
+        fake.press = press
         with mock.patch.object(owner_ui, "Bridge", return_value=fake):
             owner_ui.deny_card("betty", "e2e-1-s6")
         self.assertEqual(fake.done, [("click", "r1"), ("press", "d")])
+
+    def test_deny_that_leaves_the_card_pending_is_an_error(self):
+        fake = FakeBridge([ROOM_ROW, n("t", f"{NOTICE}.request_details.details", "git push e2e-1-s6"),
+                           n("d", f"{NOTICE}.actions.deny", "Deny", "press")])
+        with mock.patch.object(owner_ui, "Bridge", return_value=fake), mock.patch.object(owner_ui, "GONE_WAIT_S", 0), \
+                self.assertRaisesRegex(bridge.StepNotFound, "still pending"):
+            owner_ui.deny_card("betty", "e2e-1-s6")
 
 
 if __name__ == "__main__":
