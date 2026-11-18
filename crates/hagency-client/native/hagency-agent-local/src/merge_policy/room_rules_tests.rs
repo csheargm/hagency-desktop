@@ -15,7 +15,7 @@ fn snapshot(policy: Option<&str>) -> RoomRulesSnapshot {
 /// The fixer asks to merge after the reviewer Agent approved: the gate's answer.
 async fn approved_merge(ledger: &mut Ledger, dir: &std::path::Path, src: &Fake) -> Option<bool> {
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(OWNER, agent, true).unwrap();
+        ledger.allow_loop(OWNER, agent, true);
     }
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), dir, "reviewer");
     let reviewed = gate::auto_answer(ledger, OWNER, &review, "rv", 11, src).await;
@@ -78,7 +78,7 @@ async fn a_paused_watch_supplies_no_rules() {
     // The fixer's own watch of the sandbox is paused and points at a generous room.
     let paused = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Trusted, repo: SANDBOX.into(), room_id: "!paused:x".into(), ..Default::default() };
     ledger.set_issue_watch(OWNER, "fixer", paused, 1).unwrap();
-    ledger.end_watch_trial(OWNER, "fixer", SANDBOX).unwrap();
+    
     ledger.set_room_merge_rules(OWNER, &RoomRulesSnapshot { room_id: "!paused:x".into(), ..snapshot(Some("low_risk_paths: [\"**\"]\nrequire_ci: false\n")) }, unix_now()).unwrap();
     let off = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Off, repo: SANDBOX.into(), room_id: "!paused:x".into(), ..Default::default() };
     ledger.set_issue_watch(OWNER, "fixer", off, 2).unwrap();

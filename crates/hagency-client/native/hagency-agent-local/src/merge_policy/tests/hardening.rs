@@ -61,7 +61,7 @@ fn a_merge_must_pin_the_head_commit() {
 async fn approved(ledger: &mut Ledger, dir: &Path, source: &Fake) {
     let owner = "@owner:example.org";
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(owner, agent, true).unwrap();
+        ledger.allow_loop(owner, agent, true);
     }
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), dir, "reviewer");
     assert_eq!(gate::auto_answer(ledger, owner, &review, "call", 11, source).await, Some(true));
@@ -94,7 +94,7 @@ async fn a_review_command_that_failed_does_not_qualify_a_merge() {
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     let docs = Fake::new(vec![file("README.md", 5)]);
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(owner, agent, true).unwrap();
+        ledger.allow_loop(owner, agent, true);
     }
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "toolu_review", 11, &docs).await, Some(true));

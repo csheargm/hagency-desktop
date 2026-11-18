@@ -79,21 +79,6 @@ pub fn backend_for(compiled: bool, data_dir: Option<PathBuf>) -> Backend {
     }
 }
 
-/// The store a demo file backend falls back to: none, so a demo run never
-/// asks for the Keychain.
-struct NoEarlierStore;
-impl SecretStore for NoEarlierStore {
-    fn get(&self, _: &SecretRef) -> Result<hagency_store::Zeroizing<Vec<u8>>, StoreError> {
-        Err(StoreError::Missing)
-    }
-    fn put(&self, _: &SecretRef, _: &[u8]) -> Result<(), StoreError> {
-        Err(StoreError::Unsupported)
-    }
-    fn remove(&self, _: &SecretRef) -> Result<(), StoreError> {
-        Err(StoreError::Missing)
-    }
-}
-
 /// The Agents' GitHub tokens on this device.
 #[derive(Clone)]
 pub struct TokenStore {
@@ -106,10 +91,8 @@ impl TokenStore {
     pub fn for_backend(backend: &Backend) -> Self {
         match backend {
             Backend::Keychain => Self::with_store(Arc::new(NativeStore::new())),
-            Backend::DemoFile(dir) => Self::with_store(Arc::new(development::DevelopmentFileStore::new(
-                dir.clone(),
-                Arc::new(NoEarlierStore),
-            ))),
+            // Files only, so a demo run never asks for the Keychain.
+            Backend::DemoFile(dir) => Self::with_store(Arc::new(development::DevelopmentFileStore::files_only(dir.clone()))),
         }
     }
     pub fn with_store(store: Arc<dyn SecretStore>) -> Self {

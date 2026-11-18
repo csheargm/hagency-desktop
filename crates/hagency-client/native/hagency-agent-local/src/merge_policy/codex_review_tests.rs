@@ -39,7 +39,7 @@ async fn ask(ledger: &mut Ledger, proposal: &ToolProposal, source: &Fake) -> Opt
 fn setup(dir: &Path) -> Ledger {
     let mut ledger = ledger_with(dir, &["fixer", "bird-codex"]);
     for agent in ["fixer", "bird-codex"] {
-        ledger.set_auto_merge(OWNER, agent, true).unwrap();
+        ledger.allow_loop(OWNER, agent, true);
     }
     ledger
 }

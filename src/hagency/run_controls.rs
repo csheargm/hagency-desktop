@@ -340,6 +340,22 @@ pub fn stop_all_running() -> usize {
         .collect();
     keys.iter().filter_map(|key| request(key, true)).map(send).count()
 }
+/// Running cards in `room` the signed-in owner may stop: `(key, request event)`,
+/// for Pause (ADR 0030), which stops only the loop's own requests.
+pub fn stoppable_in(room: &str) -> Vec<(String, String)> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .filter(|e| e.may_stop && e.card.state == RunState::Running && e.card.room_id == room)
+        .map(|e| (e.key.clone(), e.card.event_id.clone()))
+        .collect()
+}
+/// How many runs this app sees running in `room` (the Status line's "agents working").
+pub fn running_in(room: &str) -> usize {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter().filter(|e| e.card.state == RunState::Running && e.card.room_id == room).count()
+}
+/// Send "Stop this run" for one card, as its button does; whether it was sent.
+pub fn stop_one(key: &str) -> bool {
+    request(key, true).map(send).is_some()
+}
 pub fn sent(value: &Sent) -> bool {
     let mut store = STORE.lock().unwrap_or_else(|e| e.into_inner());
     if store.generation != value.request.generation {

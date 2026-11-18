@@ -194,7 +194,7 @@ pub(crate) fn watch_with_room_rules(ledger: &mut Ledger, repo: &str, rules: Opti
     let setting = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Trusted, repo: repo.into(), room_id: ROOM.into(), ..Default::default() };
     let agent = format!("watcher-{}", repo.replace('/', "-"));
     ledger.set_issue_watch(owner, &agent, setting, 1).unwrap();
-    ledger.end_watch_trial(owner, &agent, repo).unwrap();
+    
     set_room_rules(ledger, repo, rules);
 }
 
@@ -215,7 +215,7 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     let merge = bash(&merge_line(), temp.path(), "fixer");
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "off by default: the card asks");
-    ledger.set_auto_merge(owner, "fixer", true).unwrap();
+    ledger.allow_loop(owner, "fixer", true);
     assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no other Agent approved yet");
     let self_review = bash(&format!("gh pr review 7 --approve -b {HEAD}"), temp.path(), "fixer");
@@ -223,7 +223,7 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "its own approval does not count");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, None, "the reviewer's switch is off");
-    ledger.set_auto_merge(owner, "reviewer", true).unwrap();
+    ledger.allow_loop(owner, "reviewer", true);
     assert_eq!(gate::auto_answer(&mut ledger, owner, &review, "call", 11, &docs).await, Some(true));
     ledger.settle_agent_review("call", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(true));
@@ -239,7 +239,7 @@ async fn a_code_change_still_needs_the_owner_after_an_agent_approval() {
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     let code = Fake::new(vec![file("src/main.rs", 2)]);
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(owner, agent, true).unwrap();
+        ledger.allow_loop(owner, agent, true);
     }
     let review: Value = json!(format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""));
     let mut approve = bash("", temp.path(), "reviewer");
@@ -270,7 +270,7 @@ async fn the_handoff_flow_still_needs_a_recorded_non_author_approval() {
     let owner = "@owner:example.org";
     let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
     for agent in ["fixer", "reviewer"] {
-        ledger.set_auto_merge(owner, agent, true).unwrap();
+        ledger.allow_loop(owner, agent, true);
     }
     let docs = Fake::new(vec![file("README.md", 5)]);
     let merge = bash(&merge_line(), temp.path(), "fixer");

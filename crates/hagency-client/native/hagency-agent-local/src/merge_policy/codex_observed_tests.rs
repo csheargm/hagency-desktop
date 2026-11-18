@@ -28,7 +28,7 @@ fn item(id: &str, command: &str, status: &str, exit: i64, dir: &Path) -> Value {
 fn setup(dir: &Path) -> Ledger {
     let mut ledger = ledger_with(dir, &["fixer", "bird-codex"]);
     for agent in ["fixer", "bird-codex"] {
-        ledger.set_auto_merge(OWNER, agent, true).unwrap();
+        ledger.allow_loop(OWNER, agent, true);
     }
     ledger
 }
@@ -46,7 +46,7 @@ fn allowing(dir: &Path) -> Ledger {
             ledger.set_policy(OWNER, &scope, layer, 0, &policy).unwrap();
         }
         ledger.reserve(&scope, &format!("call-{agent}"), &format!("d-{agent}"), 10, 10).unwrap();
-        ledger.set_auto_merge(OWNER, agent, true).unwrap();
+        ledger.allow_loop(OWNER, agent, true);
     }
     crate::merge_policy::tests::watch_with_room_rules(&mut ledger, crate::merge_policy::tests::SANDBOX, Some(crate::merge_policy::tests::POLICY));
     ledger
@@ -165,7 +165,7 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
         ("a login shell", rendered("--comment", HEAD, "").replacen("/bin/bash -c", "/bin/zsh -lc", 1), docs_only(), true, None, "unreadable_command"),
         ("no --repo", rendered("--comment", HEAD, "").replacen(" --repo csheargm/hagency-demo-sandbox", "", 1), docs_only(), true, None, "no_repo"),
         ("not low risk", rendered("--comment", HEAD, ""), vec![("src/main.rs", 3)], true, None, "policy_or_ci"),
-        ("switch off", rendered("--comment", HEAD, ""), docs_only(), false, None, "auto_merge_off"),
+        ("may not work here", rendered("--comment", HEAD, ""), docs_only(), false, None, "room_loop_not_running"),
         ("rules of another room", rendered("--comment", HEAD, ""), docs_only(), true, Some(other_room), "repo_in_another_room"),
         ("a marker a newline made", rendered("--comment", HEAD, "").replacen("Hagency verdict:", "Hagency\nverdict:", 1), docs_only(), true, None, "not_the_current_head"),
         ("a marker split from its head", rendered("--comment", HEAD, "").replacen(&format!("APPROVE {HEAD}"), &format!("APPROVE\n{HEAD}"), 1), docs_only(), true, None, "not_the_current_head"),
@@ -173,7 +173,7 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
     for (name, command, files, on, rules, reason) in cases {
         let temp = tempfile::tempdir().unwrap();
         let (dir, mut ledger, mut reviews) = (temp.path(), allowing(temp.path()), TurnReviews::default());
-        ledger.set_auto_merge(OWNER, "bird-codex", on).unwrap();
+        ledger.allow_loop(OWNER, "bird-codex", on);
         if let Some(rules) = rules {
             ledger.set_work(OWNER, "bird-codex", vec![rules]).unwrap();
         }

@@ -24,7 +24,7 @@ impl StatusIo for Fake {
         for (id, name) in [(BIRD, "bird-claude"), (BETTY, "Betty"), (MALLORY, "Mallory")] {
             members.insert(id.to_owned(), Member { joined: true, name: Some(name.into()) });
         }
-        Ok(StatusRoom { events: self.events.clone(), members, linked: self.linked.clone() })
+        Ok(StatusRoom { events: self.events.clone(), members, linked: self.linked.clone(), linked_by: String::new() })
     }
     async fn own_watches(&self) -> Result<Vec<OwnWatch>, &'static str> {
         Ok(self.own.clone())

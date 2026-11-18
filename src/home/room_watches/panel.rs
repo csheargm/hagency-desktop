@@ -17,6 +17,7 @@ script_mod! {
     mod.widgets.RoomWatchesPanel = #(RoomWatchesPanel::register_widget(vm)) {
         ..mod.widgets.View
         visible: false width: Fill height: Fill flow: Down
+        autonomy := mod.widgets.RoomAutonomy {padding: Inset{left: 16 right: 16 top: 8 bottom: 10}}
         watches_intro := WatchText {
             margin: Inset{left: 16 right: 16 top: 4 bottom: 8}
             text: #(crate::i18n::tr("What this room's Agents are doing, and the status of its GitHub repositories."))
@@ -184,6 +185,8 @@ impl RoomWatchesPanelRef {
         super::refresh(room);
         use super::review_setting::RoomReviewSettingWidgetExt;
         panel.view.room_review_setting(cx, ids!(review_setting)).show(cx, room);
+        use super::autonomy::RoomAutonomyWidgetExt;
+        panel.view.room_autonomy(cx, ids!(autonomy)).show(cx, room);
         use super::merge_rules::RoomMergeRulesWidgetExt;
         panel.view.room_merge_rules(cx, ids!(merge_rules)).show(cx, room);
         panel.view.redraw(cx);

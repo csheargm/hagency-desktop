@@ -33,3 +33,27 @@ pub fn repos(room: &str, requester: &str) -> Vec<String> {
     let Some((at, repos)) = scopes.as_ref().and_then(|m| m.get(&(room.to_owned(), requester.to_owned()))) else { return Vec::new() };
     if at.elapsed() < SCOPE_TTL { repos.clone() } else { Vec::new() }
 }
+
+/// The repositories `room` itself links (`io.hagency.room_repos`, from a
+/// sender the room's power levels still let link them), recorded per turn only
+/// for a requester who is the room's owner or a maintainer: the only ones a
+/// card-free issue may be filed on
+/// (ADR 0030, [`super::issue_create`]). Same lifetime as [`repos`].
+static LINKED: RwLock<Option<HashMap<Key, (Instant, Vec<String>)>>> = RwLock::new(None);
+
+/// Replace `room`'s linked set for `requester` (empty: none).
+pub fn record_linked(room: &str, requester: &str, mut repos: Vec<String>) {
+    repos.truncate(MAX_REPOS);
+    // A poisoned lock still holds a whole map: inserts are single operations.
+    let mut linked = LINKED.write().unwrap_or_else(|p| p.into_inner());
+    let map = linked.get_or_insert_with(HashMap::new);
+    map.retain(|_, (at, _)| at.elapsed() < SCOPE_TTL);
+    map.insert((room.to_owned(), requester.to_owned()), (Instant::now(), repos));
+}
+
+/// The recorded linked set of `room` for `requester`, if still fresh.
+pub fn linked(room: &str, requester: &str) -> Vec<String> {
+    let linked = LINKED.read().unwrap_or_else(|p| p.into_inner());
+    let Some((at, repos)) = linked.as_ref().and_then(|m| m.get(&(room.to_owned(), requester.to_owned()))) else { return Vec::new() };
+    if at.elapsed() < SCOPE_TTL { repos.clone() } else { Vec::new() }
+}

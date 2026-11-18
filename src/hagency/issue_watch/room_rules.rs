@@ -44,7 +44,13 @@ const REFUSED_SHAPE: &str = "not a rules event of this room";
 /// joined (GPT review: a kick or ban can leave a power level behind); an
 /// Agent puppet or Hagency service account never counts.
 pub fn accept(events: &[Value], room_id: &str, may_send: impl Fn(&str) -> bool) -> RoomRead {
-    let Some(event) = events.iter().find(|e| e["type"] == MERGE_RULES_STATE_TYPE && e["state_key"] == "") else { return RoomRead::None };
+    accept_of(events, room_id, MERGE_RULES_STATE_TYPE, may_send)
+}
+
+/// [`accept`] for any admin-set room state `event_type` with state key ""
+/// (the merge rules, the autonomy level and the linked repositories, ADR 0030).
+pub fn accept_of(events: &[Value], room_id: &str, event_type: &str, may_send: impl Fn(&str) -> bool) -> RoomRead {
+    let Some(event) = events.iter().find(|e| e["type"] == event_type && e["state_key"] == "") else { return RoomRead::None };
     let (Some(event_id), Some(sender)) = (event["event_id"].as_str(), event["sender"].as_str()) else { return RoomRead::Refused(REFUSED_SHAPE) };
     let other_room = event["room_id"].as_str().is_some_and(|r| r != room_id);
     if other_room || !event_id.starts_with('$') || !event["content"].is_object() {
@@ -67,7 +73,7 @@ pub fn accept(events: &[Value], room_id: &str, may_send: impl Fn(&str) -> bool) 
 pub fn joined(events: &[Value], user: &str) -> bool {
     events.iter().any(|e| e["type"] == MEMBER_EVENT && e["state_key"] == user && e["content"]["membership"] == "join")
 }
-const MEMBER_EVENT: &str = "m.room.member";
+pub(crate) const MEMBER_EVENT: &str = "m.room.member";
 
 /// The owner-API snapshot of `read` for `repo` in `room_id`; rules without
 /// a text count as none.
@@ -114,10 +120,10 @@ pub async fn read_with_editor(room: &Room) -> Result<(RoomRead, bool), String> {
     Ok((accept(&events, room.room_id().as_str(), may_send), editable))
 }
 
-const POWER_LEVELS_EVENT: &str = "m.room.power_levels";
+pub(crate) const POWER_LEVELS_EVENT: &str = "m.room.power_levels";
 
 /// The power-level content among the server's state `events`.
-fn power_levels_event(events: &[Value]) -> Option<Value> {
+pub(crate) fn power_levels_event(events: &[Value]) -> Option<Value> {
     events.iter().find(|e| e["type"] == POWER_LEVELS_EVENT && e["state_key"] == "").map(|e| e["content"].clone())
 }
 

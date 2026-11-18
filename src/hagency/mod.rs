@@ -26,5 +26,6 @@ pub mod owner_inbox_model;
 pub mod pending_questions;
 pub mod run_controls;
 pub mod kill_switch;
+pub mod room_autonomy;
 
 mod approvals;

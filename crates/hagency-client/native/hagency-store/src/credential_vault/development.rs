@@ -11,6 +11,7 @@
 use super::{Error, MAX_NATIVE_BYTES, SecretRef, SecretStore};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -34,16 +35,28 @@ pub fn selected() -> bool {
 pub struct DevelopmentFileStore {
     directory: PathBuf,
     /// Where a secret is looked up once when no file holds it yet: the OS
-    /// store an earlier build of this profile wrote it to.
-    earlier: Arc<dyn SecretStore>,
-    serial: Mutex<()>,
+    /// store an earlier build of this profile wrote it to. `None` for a store
+    /// that never had an earlier home (the Agents' GitHub tokens).
+    earlier: Option<Arc<dyn SecretStore>>,
+    /// Serializes every call. Holds the files the earlier store already
+    /// answered "missing" for, so a secret that does not exist (an Agent
+    /// with no token, polled every few seconds) is asked of the OS store once
+    /// per run, not on every read.
+    absent_earlier: Mutex<HashSet<PathBuf>>,
 }
 impl DevelopmentFileStore {
     pub fn new(directory: PathBuf, earlier: Arc<dyn SecretStore>) -> Self {
+        Self::with_earlier(directory, Some(earlier))
+    }
+    /// Private files only: a missing file is simply missing.
+    pub fn files_only(directory: PathBuf) -> Self {
+        Self::with_earlier(directory, None)
+    }
+    fn with_earlier(directory: PathBuf, earlier: Option<Arc<dyn SecretStore>>) -> Self {
         Self {
             directory,
             earlier,
-            serial: Mutex::new(()),
+            absent_earlier: Mutex::new(HashSet::new()),
         }
     }
     fn path(&self, reference: &SecretRef) -> Result<PathBuf, Error> {
@@ -77,33 +90,52 @@ impl DevelopmentFileStore {
 }
 impl SecretStore for DevelopmentFileStore {
     fn get(&self, reference: &SecretRef) -> Result<Zeroizing<Vec<u8>>, Error> {
-        let _guard = self.serial.lock().map_err(|_| Error::Unavailable)?;
+        let mut absent = self.absent_earlier.lock().map_err(|_| Error::Unavailable)?;
         let path = self.path(reference)?;
         if let Some(bytes) = Self::read(&path)? {
             return Ok(bytes);
         }
+        let Some(earlier) = self.earlier.as_ref() else {
+            return Err(Error::Missing);
+        };
+        if absent.contains(&path) {
+            return Err(Error::Missing);
+        }
         // A profile that an earlier build moved to the OS store: read the
         // secret there once (the OS may ask) and keep it here from now on.
-        // A refusal is reported as it is and nothing is written.
-        // Logged so a run can be checked: after the first launch this line never appears again.
+        // A refusal is reported as it is and nothing is written; an answer of
+        // "missing" is remembered for this run.
+        // Logged so a run can be checked: at most once per secret per run.
         tracing::warn!(code = "credential_file_migration", "Reading one saved secret from the OS store once to keep it in a private file");
-        let bytes = self.earlier.get(reference)?;
-        self.write(&path, &bytes)?;
-        Ok(bytes)
+        match earlier.get(reference) {
+            Err(Error::Missing) => {
+                absent.insert(path);
+                Err(Error::Missing)
+            }
+            Err(error) => Err(error),
+            Ok(bytes) => {
+                self.write(&path, &bytes)?;
+                Ok(bytes)
+            }
+        }
     }
     fn put(&self, reference: &SecretRef, bytes: &[u8]) -> Result<(), Error> {
-        let _guard = self.serial.lock().map_err(|_| Error::Unavailable)?;
+        let _guard = self.absent_earlier.lock().map_err(|_| Error::Unavailable)?;
         self.write(&self.path(reference)?, bytes)
     }
     fn remove(&self, reference: &SecretRef) -> Result<(), Error> {
-        let _guard = self.serial.lock().map_err(|_| Error::Unavailable)?;
+        let mut absent = self.absent_earlier.lock().map_err(|_| Error::Unavailable)?;
+        let path = self.path(reference)?;
         // The copy in the OS store, if any, is left alone: removing it could
         // ask for the login password again, which is what this store avoids.
-        match std::fs::remove_file(self.path(reference)?) {
+        // It is not read back either: the removed secret stays missing.
+        let removed = match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(Error::Missing),
-            Err(_) => Err(Error::Storage),
-        }
+            Err(_) => return Err(Error::Storage),
+        };
+        absent.insert(path);
+        removed
     }
 }
 
@@ -117,3 +149,7 @@ mod compiled_out_tests {
         assert!(!super::selected());
     }
 }
+
+#[cfg(test)]
+#[path = "development_tests.rs"]
+mod tests;

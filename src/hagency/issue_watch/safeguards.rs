@@ -3,7 +3,7 @@
 //! built from the values the code enforces ([`Enforced::current`]) and the
 //! room's merge rules (ADR 0029) as the gate parses them. Nothing here is a second
 //! copy of a number: change a constant and the card changes with it.
-use ::hagency::issue_watch::safeguards::{self as enforced, MergePolicy, RoomRulesState};
+use ::hagency::issue_watch::safeguards::{self as enforced, MergePolicy, RoomRulesState, room_autonomy::Level};
 use crate::i18n::{format, tr};
 use serde_json::Value;
 
@@ -38,39 +38,48 @@ impl Enforced {
     }
 }
 
-/// The owner's switches for one watch.
+/// One repository the Agent works on, and its room's setting (ADR 0030).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Watch {
     pub repo: String,
-    /// The room the watch reports to: its merge rules judge the merges.
+    /// The room it works in: its level, Pause and merge rules apply.
     pub room_id: String,
     pub push_freely: bool,
-    /// The Agent's "Pull request merges: Agents merge low-risk PRs" switch.
-    pub auto_merge: bool,
-    /// Trial mode: the first N pull requests need the owner's merge.
-    pub trial_owner_merges: Option<u32>,
+    /// The room's level (`Off` until read), whether it is paused, and
+    /// whether this owner is the room's owner or a maintainer (whose Agents merge).
+    pub level: Level,
+    pub paused: bool,
+    pub maintainer: bool,
 }
 
-/// The saved `issueWatch` as the card's watch; `None` while it is Off.
-pub(crate) fn watch_of(saved: &Value, auto_merge: bool) -> Option<Watch> {
-    let repo = saved["repo"].as_str().filter(|r| !r.is_empty())?;
-    if saved["mode"].as_str().is_none_or(|m| m == "off") {
+/// The Agent's first work-list entry (the room loop's), else its old
+/// single watch while it is on; `None` when it works nowhere.
+pub(crate) fn watch_of(saved: &Value) -> Option<Watch> {
+    if let Some(entry) = saved["work"].as_array().and_then(|w| w.first()) {
+        let repo = entry["repo"].as_str().filter(|r| !r.is_empty())?;
+        return Some(Watch { repo: repo.to_owned(), room_id: entry["roomId"].as_str().unwrap_or_default().to_owned(), push_freely: entry["pushFreely"] == true, ..Default::default() });
+    }
+    let watch = &saved["issueWatch"];
+    let repo = watch["repo"].as_str().filter(|r| !r.is_empty())?;
+    if watch["mode"].as_str().is_none_or(|m| m == "off") {
         return None;
     }
-    let room_id = saved["roomId"].as_str().unwrap_or_default().to_owned();
-    Some(Watch { repo: repo.to_owned(), room_id, push_freely: saved["pushTrusted"] == true, auto_merge, trial_owner_merges: trial_owner_merges(saved) })
+    let room_id = watch["roomId"].as_str().unwrap_or_default().to_owned();
+    Some(Watch { repo: repo.to_owned(), room_id, push_freely: watch["pushTrusted"] == true, ..Default::default() })
 }
 
-/// The trial-mode setting ("first N pull requests need the owner's merge"),
-/// when the saved watch carries one; absent until that setting exists.
-pub(crate) fn trial_owner_merges(saved: &Value) -> Option<u32> {
-    saved["trialOwnerMerges"].as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0)
+/// The room's setting line: "Agent work in this room: Assist — agents work, a person merges".
+pub(crate) fn level_line(watch: &Watch) -> String {
+    if watch.paused {
+        return tr("Agent work in this room: paused — nothing new starts until the owner or a maintainer resumes it").to_owned();
+    }
+    let label = crate::hagency::room_autonomy::lines::LEVEL_LABELS[crate::hagency::room_autonomy::lines::level_index(watch.level)];
+    format("Agent work in this room: {level}", &[("level", tr(label).to_owned())])
 }
 
 /// What is known about the repository's default branch and the room's rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Repo {
-    Loading,
     Failed(String),
     Read { branch: String, protected: Option<bool>, rules: RoomRulesState },
 }
@@ -93,19 +102,21 @@ pub(crate) fn card(watch: &Watch, repo: &Repo, enforced: &Enforced) -> Card {
     Card {
         alone: alone(watch, policy, enforced),
         needs_you: needs_you(watch, policy),
-        limits: limits(repo, enforced),
+        limits: std::iter::once(level_line(watch)).chain(limits(repo, enforced)).collect(),
         protection: protection(watch, repo),
     }
 }
 
-/// Whether the gate may merge alone: the switch is on and the room has valid rules.
+/// Whether the gate may merge alone: an Autonomous, running room with valid
+/// rules, and this owner is its owner or a maintainer.
 fn merges_alone(watch: &Watch, policy: Option<&RoomRulesState>) -> bool {
-    watch.auto_merge && matches!(policy, Some(RoomRulesState::Read(_)))
+    watch.level == Level::Autonomous && !watch.paused && watch.maintainer && matches!(policy, Some(RoomRulesState::Read(_)))
 }
 
 fn alone(watch: &Watch, policy: Option<&RoomRulesState>, enforced: &Enforced) -> Vec<String> {
     let mut lines = Vec::new();
-    if watch.push_freely {
+    let works = matches!(watch.level, Level::Assist | Level::Autonomous) && !watch.paused;
+    if watch.push_freely && works {
         lines.push(format("Branch, edit and commit in its own clone of {repo}", &[("repo", watch.repo.clone())]));
         let branches = enforced.protected_branches.join(", ");
         lines.push(format("Push its own branches (never the default branch or {branches}) and open pull requests", &[("branches", branches)]));
@@ -121,21 +132,19 @@ fn alone(watch: &Watch, policy: Option<&RoomRulesState>, enforced: &Enforced) ->
 
 fn needs_you(watch: &Watch, policy: Option<&RoomRulesState>) -> Vec<String> {
     let mut lines = Vec::new();
-    if watch.push_freely {
+    if watch.push_freely && matches!(watch.level, Level::Assist | Level::Autonomous) && !watch.paused {
         lines.push(tr("Build, test and install commands, other websites and anything outside its clone").to_owned());
     } else {
         lines.push(tr("Every push, pull request and command").to_owned());
     }
     lines.push(tr("Deleting or force-pushing branches").to_owned());
     lines.push(match policy {
-        _ if !watch.auto_merge => tr("Every merge (merges are set to People merge)").to_owned(),
+        _ if watch.level != Level::Autonomous || watch.paused => tr("Every merge (a person merges unless the room is Autonomous)").to_owned(),
+        _ if !watch.maintainer => tr("Every merge (only agents of the room owner or maintainers merge)").to_owned(),
         Some(RoomRulesState::Absent) => tr("Every merge: this room has no merge rules — a room admin can set them in Room info → Status").to_owned(),
         Some(RoomRulesState::Unreadable) => tr("Every merge: the room's merge rules have a rule Hagency does not accept").to_owned(),
         _ => tr("Merges the merge rule does not allow").to_owned(),
     });
-    if let Some(count) = watch.trial_owner_merges.filter(|_| merges_alone(watch, policy)) {
-        lines.push(format("Merging its first {count} pull requests (trial)", &[("count", count.to_string())]));
-    }
     lines
 }
 
@@ -158,7 +167,6 @@ fn limits(repo: &Repo, enforced: &Enforced) -> Vec<String> {
 /// "Merge rule (room policy): docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent".
 fn merge_rule(repo: &Repo, enforced: &Enforced) -> String {
     match repo {
-        Repo::Loading => tr("Merge rule (room policy): reading the room's rules…").to_owned(),
         Repo::Failed(error) => format("Merge rule (room policy): could not be read: {error}", &[("error", error.clone())]),
         Repo::Read { rules: RoomRulesState::Absent, .. } => format(
             "Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {paths})",

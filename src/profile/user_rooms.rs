@@ -140,19 +140,18 @@ impl UserRoomsInCommonRef {
     }
 }
 
-/// The line above the list: loading, empty, or a note that some member lists
-/// are not loaded on this device yet.
+/// The line above the list: loading, or empty. An empty list says so; when
+/// some rooms' member lists are not on this device it says the list covers
+/// only the loaded ones, since the user may be in one of the others. A list
+/// with rooms needs no note.
 pub(super) fn status_text(found: Option<&RoomsInCommon>) -> String {
     let Some(found) = found else { return crate::i18n::tr("Loading…").to_owned() };
-    let mut text = String::new();
-    if found.rooms.is_empty() {
-        text.push_str(crate::i18n::tr("No rooms in common"));
-    }
-    if found.incomplete > 0 {
-        if !text.is_empty() { text.push(' '); }
-        text.push_str(crate::i18n::tr("Some rooms' member lists are not loaded yet, so this list may be incomplete."));
-    }
-    text
+    let key = match (found.rooms.is_empty(), found.incomplete > 0) {
+        (false, _) => return String::new(),
+        (true, false) => "No rooms in common",
+        (true, true) => "No rooms in common in the member lists loaded on this device",
+    };
+    crate::i18n::tr(key).to_owned()
 }
 
 fn open_room(cx: &mut Cx, room: &RoomInCommon) {
@@ -179,7 +178,7 @@ async fn known_rooms(client: &matrix_sdk::Client, user: &OwnedUserId) -> Vec<Kno
     let mut out = Vec::new();
     for room in client.joined_rooms() {
         // A failed store read leaves this room unknown: it is counted as
-        // incomplete below, which the tab tells the user, instead of failing the list.
+        // incomplete below (noted when the list comes up empty) instead of failing it.
         let lookup = room.get_member_no_sync(user).await;
         let joined = matches!(&lookup, Ok(Some(member)) if *member.membership() == MembershipState::Join);
         out.push(KnownRoom {
@@ -200,12 +199,14 @@ mod tests {
     use matrix_sdk::ruma::OwnedRoomId;
 
     #[test]
-    fn status_line_says_loading_empty_or_incomplete() {
+    fn status_line_says_loading_or_empty_and_notes_unloaded_rooms_only_when_empty() {
         assert_eq!(status_text(None), "Loading…");
         assert_eq!(status_text(Some(&RoomsInCommon::default())), "No rooms in common");
         let room = RoomInCommon { room_id: OwnedRoomId::try_from("!a:s").unwrap(), name: "Ops".into() };
-        assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![room], incomplete: 0 })), "");
-        let partial = status_text(Some(&RoomsInCommon { rooms: vec![], incomplete: 2 }));
-        assert!(partial.starts_with("No rooms in common ") && partial.contains("may be incomplete"));
+        assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![room.clone()], incomplete: 0 })), "");
+        assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![room], incomplete: 2 })), "",
+            "Nov 18: a found list carried a filler note about unloaded member lists");
+        assert_eq!(status_text(Some(&RoomsInCommon { rooms: vec![], incomplete: 2 })),
+            "No rooms in common in the member lists loaded on this device");
     }
 }

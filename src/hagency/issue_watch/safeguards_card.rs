@@ -70,8 +70,6 @@ pub struct SafeguardsCard {
     #[rust]
     agent_id: String,
     #[rust]
-    auto_merge: bool,
-    #[rust]
     request: u64,
     #[rust]
     shown: Shown,
@@ -88,7 +86,7 @@ impl Widget for SafeguardsCard {
         }
         // A saved (or re-read) watch may have changed the repository or push-freely;
         // an admin's edit of the watch room's merge rules changes its lines (GPT integration review).
-        let watch_changed = actions.iter().any(|a| a.downcast_ref::<super::section::IssueWatchReplyReady>().is_some());
+        let watch_changed = actions.iter().any(|a| a.downcast_ref::<super::IssueWatchChecked>().is_some());
         let rules_changed = actions.iter().filter_map(|a| a.downcast_ref::<MergeRulesChanged>()).any(|c| shows_rules_of(&self.shown, &c.room_id));
         if !self.agent_id.is_empty() && (watch_changed || rules_changed) {
             self.load();
@@ -102,26 +100,25 @@ impl Widget for SafeguardsCard {
 
 impl SafeguardsCard {
     /// Shows `agent_id`'s card while this device runs it (`editable`); reads
-    /// again only when the Agent or its merge switch changed.
-    pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: Option<bool>, auto_merge: bool) {
+    /// again only when the Agent changed (or a check finished).
+    pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: Option<bool>) {
         if editable != Some(true) {
             self.agent_id.clear();
             self.shown = Shown::Hidden;
             return self.render(cx);
         }
-        if self.agent_id != agent_id || self.auto_merge != auto_merge {
+        if self.agent_id != agent_id {
             self.agent_id = agent_id.to_owned();
-            self.auto_merge = auto_merge;
             self.load();
         }
     }
     fn load(&mut self) {
         self.request += 1;
-        let (request, agent_id, auto_merge) = (self.request, self.agent_id.clone(), self.auto_merge);
+        let (request, agent_id) = (self.request, self.agent_id.clone());
         let service = Service::for_current();
         crate::sliding_sync::spawn_async_task(async move {
             let shown = match service {
-                Ok(service) => read(&service, &agent_id, auto_merge).await,
+                Ok(service) => read(&service, &agent_id).await,
                 Err(error) => Err(error),
             };
             let shown = shown.unwrap_or_else(|error| {
@@ -179,10 +176,20 @@ fn finish(loaded: Loaded) {
 
 /// The saved watch, then the repository's guards with the Agent's token.
 /// `Hidden` for an Off watch; `Err` when the saved watch cannot be read.
-async fn read(service: &Service, agent_id: &str, auto_merge: bool) -> Result<Shown, String> {
+async fn read(service: &Service, agent_id: &str) -> Result<Shown, String> {
     let saved = tokio::time::timeout(READ_TIMEOUT, live::saved(service, agent_id, None)).await
         .map_err(|_| "no answer from this device's Agent host within 10 s".to_owned())??;
-    let Some(watch) = safeguards::watch_of(&saved["issueWatch"], auto_merge) else { return Ok(Shown::Hidden) };
+    let Some(mut watch) = safeguards::watch_of(&saved) else { return Ok(Shown::Hidden) };
+    // The room's level and Pause (ADR 0030); unreadable shows as paused, as the loop treats it.
+    let room = matrix_sdk::ruma::RoomId::parse(&watch.room_id).ok().and_then(|id| crate::sliding_sync::get_client()?.get_room(&id));
+    let state = match room {
+        Some(room) => crate::hagency::room_autonomy::server::read(&room).await.ok(),
+        None => None,
+    };
+    match state {
+        Some(state) => (watch.level, watch.paused, watch.maintainer) = (state.level.clone().unwrap_or_default(), state.pause.is_some() || state.level.is_err(), state.maintainer),
+        None => watch.paused = true,
+    }
     let repo = match super::github_token(agent_id).await {
         Ok(token) => {
             let client = ::hagency::issue_watch::new_client();
@@ -213,9 +220,9 @@ pub(crate) fn bullets(lines: &[String]) -> String {
 
 impl SafeguardsCardRef {
     /// See [`SafeguardsCard::set_context`].
-    pub fn set_context(&self, cx: &mut Cx, agent_id: &str, editable: Option<bool>, auto_merge: bool) {
+    pub fn set_context(&self, cx: &mut Cx, agent_id: &str, editable: Option<bool>) {
         if let Some(mut inner) = self.borrow_mut() {
-            inner.set_context(cx, agent_id, editable, auto_merge);
+            inner.set_context(cx, agent_id, editable);
         }
     }
 }

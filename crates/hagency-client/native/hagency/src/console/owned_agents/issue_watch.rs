@@ -28,15 +28,25 @@ struct Change {
     /// The issue loop's follow-through record of one issue (ADR 0020).
     #[serde(default)]
     track: Option<hagency_agent_local::issue_track::TrackChange>,
-    /// The owner ends the trial of the watch of this repository early (ADR 0027).
-    #[serde(default)]
-    end_trial: Option<String>,
     /// The daily digest of one repository was posted for this local day (ADR 0028).
     #[serde(default)]
     digest_sent: Option<DigestSent>,
     /// The merge rules the desktop read from each watch room's server state (ADR 0029).
     #[serde(default)]
     room_merge_rules: Option<Vec<hagency_agent_local::merge_policy::room_rules::RoomRulesSnapshot>>,
+    /// Each loop room's autonomy level and Pause the desktop read from its server state (ADR 0030).
+    #[serde(default)]
+    room_autonomy: Option<Vec<hagency_agent_local::room_autonomy::AutonomySnapshot>>,
+    /// "May work in this room" for one room (ADR 0030).
+    #[serde(default)]
+    may_work: Option<MayWork>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MayWork {
+    room_id: String,
+    on: bool,
 }
 
 #[derive(Deserialize)]
@@ -141,34 +151,11 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
     }
     let plans = ledger.open_plans(agent).map_err(local_error)?;
     let track = ledger.issue_tracks(agent).map_err(local_error)?;
-    let trials = trials(&ledger, agent).map_err(local_error)?;
+    let may_work = ledger.may_work_rooms(agent).map_err(local_error)?;
     let digest_sent = ledger.digest_days(agent).map_err(local_error)?;
     let digest_log = ledger.digest_log(agent).map_err(local_error)?;
-    let watch = with_trial(serde_json::to_value(&watch).map_err(|_| error(500, "local_state_unavailable"))?, &trials);
     let plan = match &plan_query { Some(id) => ledger.plan(agent, id).map_err(local_error)?.map(|(p, done)| json!({"plan": p, "done": done})).unwrap_or(Value::Null), None => Value::Null };
-    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials, "digestSent": digest_sent, "digestLog": digest_log}))
-}
-
-/// The saved watch with `trialOwnerMerges` (the trial's N) while its
-/// repository is in its trial: what the Safeguards card reads (ADR 0026, 0027).
-fn with_trial(mut watch: Value, trials: &Value) -> Value {
-    let repo = watch["repo"].as_str().unwrap_or_default().to_owned();
-    let trial = trials.as_array().into_iter().flatten().find(|t| !repo.is_empty() && t["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(&repo)));
-    if let Some(trial) = trial {
-        watch["trialOwnerMerges"] = trial["required"].clone();
-    }
-    watch
-}
-
-/// The watches still in their trial: `[{repo, merged, required}]` (ADR 0027).
-fn trials(ledger: &Ledger, agent: &str) -> hagency_agent_local::Result<Value> {
-    let mut out = Vec::new();
-    for entry in ledger.watch_entries(agent)? {
-        if let Some((merged, required)) = ledger.trial_status(agent, &entry.repo)? {
-            out.push(json!({"repo": entry.repo, "merged": merged, "required": required}));
-        }
-    }
-    Ok(out.into())
+    Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "mayWork": may_work, "digestSent": digest_sent, "digestLog": digest_log}))
 }
 
 fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -> hagency_agent_local::Result<()> {
@@ -183,17 +170,18 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     }
     if let Some(track) = change.track {
         ledger.track_issue(agent, &track, now())?;
-        // A pull request GitHub reported merged by the owner's own login counts toward the watch's trial (ADR 0027).
-        ledger.count_trial_merge(owner, agent, &track)?;
-    }
-    if let Some(repo) = change.end_trial {
-        ledger.end_watch_trial(owner, agent, &repo)?;
     }
     if let Some(sent) = change.digest_sent {
         ledger.record_digest_sent(agent, &sent.repo, &sent.day)?;
     }
     for snapshot in change.room_merge_rules.iter().flatten().take(hagency_agent_local::watch_info::MAX_LISTED) {
         ledger.set_room_merge_rules(owner, snapshot, now())?;
+    }
+    for snapshot in change.room_autonomy.iter().flatten().take(hagency_agent_local::watch_info::MAX_LISTED) {
+        ledger.set_room_autonomy(owner, snapshot, now())?;
+    }
+    if let Some(may) = change.may_work {
+        ledger.set_may_work(owner, agent, &may.room_id, may.on)?;
     }
     if let Some(plan) = change.plan {
         if let Some(filed) = plan.filed {
@@ -248,20 +236,23 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_watch_carries_its_running_trial_for_the_safeguards_card() {
-        let trials = json!([{"repo": "acme/app", "merged": 1, "required": 3}]);
-        assert_eq!(with_trial(json!({"repo": "Acme/App"}), &trials)["trialOwnerMerges"], 3);
-        assert!(with_trial(json!({"repo": "acme/other"}), &trials).get("trialOwnerMerges").is_none(), "no trial: no line");
-        assert!(with_trial(json!({"repo": ""}), &json!([{"repo": "", "required": 3}])).get("trialOwnerMerges").is_none());
+    fn the_retired_trial_is_refused_and_merged_tracks_still_parse() {
+        assert!(serde_json::from_value::<Change>(json!({"endTrial": "a/b"})).is_err(), "trial mode is retired (ADR 0030)");
+        let merged: Change = serde_json::from_value(json!({"track": {"repo": "a/b", "number": 3, "state": "merged", "ownerMerged": true}})).unwrap();
+        assert_eq!(merged.track.unwrap().owner_merged, Some(true));
     }
 
     #[test]
-    fn end_trial_names_a_repository_and_nothing_else() {
-        let change: Change = serde_json::from_value(json!({"endTrial": "a/b"})).unwrap();
-        assert_eq!(change.end_trial.as_deref(), Some("a/b"));
-        assert!(serde_json::from_value::<Change>(json!({"endTrial": {"repo": "a/b"}})).is_err());
-        let merged: Change = serde_json::from_value(json!({"track": {"repo": "a/b", "number": 3, "state": "merged", "ownerMerged": true}})).unwrap();
-        assert_eq!(merged.track.unwrap().owner_merged, Some(true));
+    fn room_autonomy_and_may_work_are_recorded_for_the_owner_only() {
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let mut ledger = Ledger::open_scoped(&temp.path().join("l.db"), "@o:x", &"a".repeat(64)).unwrap();
+        let change: Change = serde_json::from_value(json!({"roomAutonomy": [{"roomId": "!r:x", "level": "assist", "paused": false, "ownerMaintainer": true}], "mayWork": {"roomId": "!r:x", "on": true}})).unwrap();
+        apply_change(&mut ledger, "@o:x", "agt", change).unwrap();
+        assert_eq!(ledger.loop_may_work("agt", "!r:x"), Ok(()));
+        let other: Change = serde_json::from_value(json!({"mayWork": {"roomId": "!r:x", "on": false}})).unwrap();
+        assert!(apply_change(&mut ledger, "@intruder:x", "agt", other).is_err(), "only the owner");
+        assert!(serde_json::from_value::<Change>(json!({"roomAutonomy": [{"roomId": "!r:x", "level": "yolo"}]})).is_err());
+        assert!(serde_json::from_value::<Change>(json!({"mayWork": {"roomId": "!r:x", "on": true, "merge": true}})).is_err(), "unknown fields");
     }
 
     #[test]

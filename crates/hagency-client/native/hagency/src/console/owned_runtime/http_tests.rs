@@ -38,6 +38,10 @@ struct WireState {
     device_generation: i64,
     restart_busy_remaining: usize,
     renewal_failures: usize,
+    /// Delay of the answer to the next lease renewal (already processed).
+    renewal_stall_once: Option<Duration>,
+    /// The server has ended the lease: renewals are refused.
+    lease_ended: bool,
     events: Vec<Value>,
     paths: Vec<String>,
     replies: usize,
@@ -154,7 +158,9 @@ impl WireState {
                 (200, lease(self.epoch))
             }
             "/hagency/api/v1/execution/leases/renew" => {
-                if self.renewal_failures > 0 {
+                if self.lease_ended {
+                    (401, json!({"code":"transport_scope_not_authorized"}))
+                } else if self.renewal_failures > 0 {
                     self.renewal_failures -= 1;
                     (503, json!({"code":"server_unavailable"}))
                 } else {
@@ -341,6 +347,13 @@ async fn server(
                 }
                 let (mut code, mut value) =
                     state.lock().unwrap().respond(path, &body, &origin, unknown);
+                let stall = path
+                    .ends_with("/leases/renew")
+                    .then(|| state.lock().unwrap().renewal_stall_once.take())
+                    .flatten();
+                if let Some(stall) = stall {
+                    tokio::time::sleep(stall).await;
+                }
                 if path.ends_with("/events/processing") {
                     if processing_failure == 1 {
                         code = 404;
@@ -1436,7 +1449,8 @@ async fn heartbeat_retries_transport_failure_but_never_extends_unconfirmed_lease
             task.await.unwrap();
             assert_eq!(failed.load(std::sync::atomic::Ordering::Acquire), 0);
         } else {
-            tokio::time::timeout(Duration::from_secs(7), task)
+            // The local deadline (6 s) plus the grace for a late answer.
+            tokio::time::timeout(Duration::from_secs(23), task)
                 .await
                 .expect("unconfirmed lease must expire")
                 .unwrap();
@@ -1450,4 +1464,117 @@ async fn heartbeat_retries_transport_failure_but_never_extends_unconfirmed_lease
         native.shutdown().await;
         server.abort();
     }
+}
+
+// TODO(R4): http_tests.rs is over budget; move the heartbeat tests below (and
+// the fixture server they share) into their own module.
+/// A heartbeat on a lease that ends locally in `lease_ms`, against the fixture
+/// server prepared by `prepare`.
+struct HeartbeatRun {
+    state: Arc<StdMutex<WireState>>,
+    stop: watch::Sender<bool>,
+    failed: Arc<std::sync::atomic::AtomicU8>,
+    task: tokio::task::JoinHandle<()>,
+    native: NativeOwner,
+    server: tokio::task::JoinHandle<()>,
+    _root: tempfile::TempDir,
+}
+async fn heartbeat_run(lease_ms: i64, prepare: impl FnOnce(&mut WireState)) -> HeartbeatRun {
+    let (origin, state, server) = server(false, 0).await;
+    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+    let native =
+        NativeOwner::open_with_matrix(&root.path().join("state"), &origin, OWNER, Arc::new(Source))
+            .await
+            .unwrap();
+    let console = native.test_console().clone();
+    let device = console.authorized_device().await.unwrap();
+    {
+        let mut wire = state.lock().unwrap();
+        wire.epoch = 1;
+        prepare(&mut wire);
+    }
+    let lease = Lease {
+        agent_id: "agent-a".into(),
+        owner_user_id: "uid".into(),
+        device_id: "device-a".into(),
+        device_generation: 1,
+        epoch: 1,
+        expires_at_ms: wall_ms() + lease_ms,
+    };
+    let (stop, receiver) = watch::channel(false);
+    let failed = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let task = tokio::spawn(heartbeat(console, device, lease, stop.clone(), receiver, failed.clone()));
+    HeartbeatRun { state, stop, failed, task, native, server, _root: root }
+}
+impl HeartbeatRun {
+    fn renewals(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.paths.iter().filter(|p| p.ends_with("/leases/renew")).count()
+    }
+    fn failed(&self) -> u8 {
+        self.failed.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Nov 18 (Betty, load ~46): a renewal the server took but answered 20 s
+/// late, past the local lease deadline, dropped the running turn. The server
+/// still held the lease, so the heartbeat keeps it and goes on renewing.
+#[tokio::test]
+async fn heartbeat_keeps_a_lease_through_a_twenty_second_renewal_stall() {
+    let run = heartbeat_run(6_000, |wire| {
+        wire.renewal_stall_once = Some(Duration::from_secs(20));
+    })
+    .await;
+    // Asked at 3 s, timed out by the client at 18 s (the server took it),
+    // asked again within the grace and answered, then renewed as usual.
+    tokio::time::timeout(Duration::from_secs(32), async {
+        while run.renewals() < 3 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the heartbeat must keep renewing after the stall");
+    assert!(!*run.stop.borrow(), "the turn must not be stopped");
+    assert_eq!(run.failed(), 0);
+    run.stop.send_replace(true);
+    let HeartbeatRun { task, native, server, _root, .. } = run;
+    task.await.unwrap();
+    native.shutdown().await;
+    server.abort();
+}
+
+/// The server, not the local clock, ends the lease: a refusal that arrives
+/// after the local deadline stops the heartbeat (never extended), as a
+/// recoverable expiry rather than a revocation.
+#[tokio::test]
+async fn heartbeat_stops_when_the_server_ended_the_lease_during_a_stall() {
+    let run = heartbeat_run(3_000, |wire| {
+        wire.lease_ended = true;
+        wire.renewal_stall_once = Some(Duration::from_secs(5));
+    })
+    .await;
+    let HeartbeatRun { stop, failed, task, native, server, _root, .. } = run;
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("a lease the server ended must stop the heartbeat")
+        .unwrap();
+    assert!(*stop.borrow());
+    assert_eq!(failed.load(std::sync::atomic::Ordering::Acquire), 2);
+    native.shutdown().await;
+    server.abort();
+}
+
+/// A refusal while the lease is still live locally is a revocation: terminal.
+#[tokio::test]
+async fn heartbeat_stops_at_once_when_the_server_refuses_a_live_lease() {
+    let run = heartbeat_run(6_000, |wire| wire.lease_ended = true).await;
+    let HeartbeatRun { stop, failed, task, native, server, _root, .. } = run;
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("a refused renewal must stop the heartbeat")
+        .unwrap();
+    assert!(*stop.borrow());
+    assert_eq!(failed.load(std::sync::atomic::Ordering::Acquire), 1);
+    native.shutdown().await;
+    server.abort();
 }

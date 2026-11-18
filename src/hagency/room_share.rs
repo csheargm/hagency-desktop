@@ -32,10 +32,11 @@ pub(crate) fn change(room: &str, share: RoomShare) -> Value {
     json!({"roomShare": {"room": room, "answer": share.answer, "review": share.review, "fix": share.fix}})
 }
 
-/// "Shared in dev room: answers questions, reviews PRs; fixes need Betty's OK".
+/// "Shared in dev room: answers questions; reviews need Betty's OK".
 pub(crate) fn summary(share: RoomShare, room: &str, owner: &str) -> String {
     use crate::i18n::{format, tr};
-    let parts = [(share.answer, "answers questions", "questions"), (share.review, "reviews PRs", "reviews"), (share.fix, "fixes issues", "fixes")];
+    // Fixing is "May work in this room" (ADR 0030), not a sharing choice.
+    let parts = [(share.answer, "answers questions", "questions"), (share.review, "reviews PRs", "reviews")];
     let does: Vec<&str> = parts.iter().filter(|p| p.0).map(|p| tr(p.1)).collect();
     let needs: Vec<&str> = parts.iter().filter(|p| !p.0).map(|p| tr(p.2)).collect();
     let separator = tr(", ");
@@ -68,11 +69,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_answer_and_review_but_fixes_need_the_owner() {
+    fn the_defaults_answer_and_review() {
         let approvals = json!({"roomShares": []});
         let share = for_room(&approvals, "!dev:s").unwrap();
         assert_eq!(share, DEFAULT);
-        assert_eq!(summary(share, "dev room", "Betty"), "Shared in dev room: answers questions, reviews PRs; fixes need Betty's OK");
+        assert_eq!(summary(share, "dev room", "Betty"), "Shared in dev room: answers questions, reviews PRs");
         assert_eq!(for_room(&Value::Null, "!dev:s"), None, "unknown until loaded");
     }
 
@@ -81,10 +82,10 @@ mod tests {
         let approvals = json!({"roomShares": [{"room": "!dev:s", "answer": true, "review": false, "fix": true}]});
         let share = for_room(&approvals, "!dev:s").unwrap();
         assert_eq!(share, RoomShare { answer: true, review: false, fix: true });
-        assert_eq!(summary(share, "dev", "Betty"), "Shared in dev: answers questions, fixes issues; reviews need Betty's OK");
+        assert_eq!(summary(share, "dev", "Betty"), "Shared in dev: answers questions; reviews need Betty's OK", "an old fix choice is not shown");
         assert_eq!(for_room(&approvals, "!other:s"), Some(DEFAULT), "other rooms keep the defaults");
         let all = RoomShare { answer: true, review: true, fix: true };
-        assert_eq!(summary(all, "dev", "Betty"), "Shared in dev: answers questions, reviews PRs, fixes issues");
+        assert_eq!(summary(all, "dev", "Betty"), "Shared in dev: answers questions, reviews PRs");
         let none = RoomShare { answer: false, review: false, fix: false };
         assert_eq!(summary(none, "dev", "Betty"), "Shared in dev: everything needs Betty's OK");
     }
@@ -104,7 +105,7 @@ mod tests {
             ],
             "approvals": {"roomShares": []}
         });
-        assert_eq!(summaries(&status, "Betty"), vec!["Shared in dev room: answers questions, reviews PRs; fixes need Betty's OK".to_owned()]);
+        assert_eq!(summaries(&status, "Betty"), vec!["Shared in dev room: answers questions, reviews PRs".to_owned()]);
         assert!(summaries(&json!({"rooms": status["rooms"]}), "Betty").is_empty(), "elsewhere: approvals unknown");
     }
 }

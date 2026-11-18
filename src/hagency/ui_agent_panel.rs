@@ -6,12 +6,8 @@ use super::*;
 use crate::hagency::agent_panel::{AgentPanelAction, AgentPanelWidgetRefExt};
 
 impl HagencyPanel {
-    /// The detail page's own issue-watch block. A bare `ids!(issue_watch)`
+    /// The detail page's own GitHub access block. A bare `ids!(github_access)`
     /// finds the native panel's block first and overwrote its context.
-    pub(super) fn detail_issue_watch(&self, cx: &mut Cx) -> WidgetRef {
-        self.view.widget(cx, ids!(model_section)).widget(cx, ids!(issue_watch))
-    }
-    /// The detail page's own GitHub access block (same collision).
     pub(super) fn detail_github_access(&self, cx: &mut Cx) -> WidgetRef {
         self.view.widget(cx, ids!(model_section)).widget(cx, ids!(github_access))
     }
@@ -183,12 +179,7 @@ mod tests {
         panel.open_agent_panel(&mut cx, 0);
         let inner = panel.view.widget(&mut cx, ids!(agent_panel));
         // The collision itself: a bare id resolves into the native panel.
-        assert_eq!(panel.view.widget(&mut cx, ids!(issue_watch)).widget_uid(), inner.widget(&mut cx, ids!(issue_watch)).widget_uid());
-        for id in [ids!(issue_watch), ids!(github_access)] {
-            let theirs = inner.widget(&mut cx, id).widget_uid();
-            assert_ne!(panel.view.widget(&mut cx, ids!(model_section)).widget(&mut cx, id).widget_uid(), theirs);
-        }
-        assert_ne!(panel.detail_issue_watch(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(issue_watch)).widget_uid());
+        assert_eq!(panel.view.widget(&mut cx, ids!(github_access)).widget_uid(), inner.widget(&mut cx, ids!(github_access)).widget_uid());
         assert_ne!(panel.detail_github_access(&mut cx).widget_uid(), inner.widget(&mut cx, ids!(github_access)).widget_uid());
     }
 

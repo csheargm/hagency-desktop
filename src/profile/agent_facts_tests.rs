@@ -103,6 +103,22 @@ fn an_agents_self_claimed_owner_is_worded_as_its_claim_and_conflicts_show_none()
     assert_eq!(others_facts(None, agreeing).owner_basis, OwnerBasis::StatedByAgent, "agreeing claims are still claims");
 }
 
+/// Nov 18: Anna's profile of bird-claude showed owner and status but no
+/// runtime once issue hand-offs stopped posting run cards; the Agent's own
+/// profile now names it, ahead of an older card's.
+#[test]
+fn an_agents_profile_names_its_runtime_without_any_run_card() {
+    use super::super::{agent_profile_owner::Published, agent_room_cards::CardFacts};
+    let bird = user_id!("@bird:beta").to_owned();
+    let published = Published { owner: Some(bird), runtime: Some("Claude") };
+    let facts = others_facts(None, with_profile(CardFacts::default(), published.clone()));
+    assert_eq!(facts.runtime, Some("Claude"));
+    assert_eq!(fact_lines(&facts, Some("Betty"), true)[1], "Runtime: Claude", "shown on the profile and the hover card");
+    let old_card = CardFacts { runtime: Some("Codex"), ..Default::default() };
+    assert_eq!(with_profile(old_card.clone(), published).runtime, Some("Claude"), "the latest start wins over an old card");
+    assert_eq!(with_profile(old_card, Published::default()).runtime, Some("Codex"), "no profile runtime: the cards still say");
+}
+
 #[test]
 fn the_owner_shows_with_its_matrix_id_unless_the_name_is_the_id() {
     let id = user_id!("@bird:beta");

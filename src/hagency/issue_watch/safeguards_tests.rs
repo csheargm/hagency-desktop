@@ -1,7 +1,8 @@
 //! The Safeguards card states what the code enforces: every number and
 //! protected name comes from `Enforced` and the gate's parsed room rules, so a
 //! changed constant (here: a changed fixture) changes the line.
-use super::safeguards::{Card, Enforced, Repo, Watch, card, trial_owner_merges, watch_of};
+use super::safeguards::{Card, Enforced, Repo, Watch, card, watch_of};
+use ::hagency::issue_watch::safeguards::room_autonomy::Level;
 use ::hagency::issue_watch::safeguards::{self as engine, RoomRulesState, parse_policy};
 use serde_json::json;
 
@@ -12,7 +13,7 @@ const SANDBOX_POLICY: &str = "low_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_ch
 const DEV_ROOM: &str = "!a3cQXHR8GZ4RP5n71s:localhost:8450";
 
 fn sandbox_watch() -> Watch {
-    Watch { repo: "csheargm/hagency-demo-sandbox".into(), room_id: DEV_ROOM.into(), push_freely: true, auto_merge: true, trial_owner_merges: None }
+    Watch { repo: "csheargm/hagency-demo-sandbox".into(), room_id: DEV_ROOM.into(), push_freely: true, level: Level::Autonomous, paused: false, maintainer: true }
 }
 fn read(policy: &str, protected: Option<bool>) -> Repo {
     let rules = parse_policy(policy).map_or(RoomRulesState::Unreadable, RoomRulesState::Read);
@@ -58,41 +59,45 @@ fn changing_an_enforced_value_changes_its_line() {
 #[test]
 fn the_merge_rule_line_follows_the_room_rules() {
     let enforced = Enforced::current();
-    let rule = |policy: &str| card(&sandbox_watch(), &read(policy, None), &enforced).limits[3].clone();
+    let rule = |policy: &str| card(&sandbox_watch(), &read(policy, None), &enforced).limits[4].clone();
     assert_eq!(rule(SANDBOX_POLICY), "Merge rule (room policy): **/*.md, docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent");
     let stricter = "low_risk_paths: [\"docs/**\"]\nmax_changed_lines: 10\nrequired_agent_approvals: 2\nrequire_ci: true\nalways_human: [\"docs/legal/**\"]\n";
     assert_eq!(rule(stricter), "Merge rule (room policy): docs/**, up to 10 changed lines, CI required, 2 approval(s) from another Agent");
     assert_eq!(rule("tier: trusted\n"), "Merge rule (room policy): any path, no line limit, CI required, 1 approval(s) from another Agent");
-    assert!(card(&sandbox_watch(), &read(stricter, None), &enforced).limits[4].ends_with(", docs/legal/**"));
+    assert!(card(&sandbox_watch(), &read(stricter, None), &enforced).limits[5].ends_with(", docs/legal/**"));
     let zero = "low_risk_paths: [\"docs/**\"]\nrequired_agent_approvals: 0\n";
     assert!(rule(zero).ends_with(&format!("{} approval(s) from another Agent", engine::MIN_AGENT_APPROVALS)), "the gate's floor, not the room's 0");
 }
 
 #[test]
-fn merges_need_the_owner_without_the_switch_or_valid_room_rules() {
+fn merges_need_a_person_unless_autonomous_with_valid_room_rules() {
     let enforced = Enforced::current();
-    let manual = Watch { auto_merge: false, ..sandbox_watch() };
-    let off = card(&manual, &read(SANDBOX_POLICY, None), &enforced);
-    assert!(off.needs_you.contains(&"Every merge (merges are set to People merge)".to_owned()));
+    let assist = Watch { level: Level::Assist, ..sandbox_watch() };
+    let off = card(&assist, &read(SANDBOX_POLICY, None), &enforced);
+    assert!(off.needs_you.contains(&"Every merge (a person merges unless the room is Autonomous)".to_owned()));
     assert!(!all_lines(&off).contains("Approve and merge"));
+    assert_eq!(off.limits[0], "Agent work in this room: Assist — agents work, a person merges", "the card shows the room's level");
+    let member = card(&Watch { maintainer: false, ..sandbox_watch() }, &read(SANDBOX_POLICY, None), &enforced);
+    assert!(member.needs_you.contains(&"Every merge (only agents of the room owner or maintainers merge)".to_owned()));
+    let paused = card(&Watch { paused: true, ..sandbox_watch() }, &read(SANDBOX_POLICY, None), &enforced);
+    assert!(paused.limits[0].contains("paused") && paused.alone == vec!["Nothing yet: every step asks you".to_owned()]);
     let absent = card(&sandbox_watch(), &Repo::Read { branch: "main".into(), protected: None, rules: RoomRulesState::Absent }, &enforced);
     assert!(absent.needs_you.contains(&"Every merge: this room has no merge rules — a room admin can set them in Room info → Status".to_owned()));
     let suggested = engine::SUGGESTED_LOW_RISK_PATHS.join(", ");
-    assert_eq!(absent.limits[3], format!("Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {suggested})"));
+    assert_eq!(absent.limits[4], format!("Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {suggested})"));
     assert!(suggested.contains("AUTHORS") && !suggested.contains("LICENSE"), "the owner's Nov 18 list");
     let bad = card(&sandbox_watch(), &read("merge_everything: yes\n", None), &enforced);
     assert!(bad.needs_you.iter().any(|l| l.contains("does not accept")));
     let failed = card(&sandbox_watch(), &Repo::Failed("HTTP 403".into()), &enforced);
-    assert!(failed.limits[3].ends_with(": HTTP 403") && !all_lines(&failed).contains("Approve and merge"));
+    assert!(failed.limits[4].ends_with(": HTTP 403") && !all_lines(&failed).contains("Approve and merge"));
 }
 
 #[test]
 fn without_push_freely_nothing_runs_alone() {
-    let ask = Watch { push_freely: false, auto_merge: false, ..sandbox_watch() };
-    let shown = card(&ask, &Repo::Loading, &Enforced::current());
+    let ask = Watch { push_freely: false, level: Level::Assist, ..sandbox_watch() };
+    let shown = card(&ask, &Repo::Failed("HTTP 403".into()), &Enforced::current());
     assert_eq!(shown.alone, vec!["Nothing yet: every step asks you".to_owned()]);
     assert_eq!(shown.needs_you[0], "Every push, pull request and command");
-    assert_eq!(shown.limits[3], "Merge rule (room policy): reading the room's rules…");
 }
 
 #[test]
@@ -105,15 +110,12 @@ fn branch_protection_is_recommended_with_its_state_when_known() {
 }
 
 #[test]
-fn the_saved_watch_maps_to_the_cards_watch_and_the_trial_setting_is_optional() {
-    let saved = json!({"mode": "trusted", "repo": "acme/app", "pushTrusted": true});
-    assert_eq!(watch_of(&saved, true), Some(Watch { repo: "acme/app".into(), room_id: String::new(), push_freely: true, auto_merge: true, trial_owner_merges: None }));
-    assert_eq!(watch_of(&json!({"mode": "off", "repo": "acme/app"}), true), None, "Off shows no card");
-    assert_eq!(watch_of(&json!({"mode": "all", "repo": ""}), true), None);
-    assert_eq!(trial_owner_merges(&json!({"trialOwnerMerges": 3})), Some(3));
-    let trial = Watch { trial_owner_merges: Some(3), ..sandbox_watch() };
-    let shown = card(&trial, &read(SANDBOX_POLICY, None), &Enforced::current());
-    assert!(shown.needs_you.contains(&"Merging its first 3 pull requests (trial)".to_owned()));
+fn the_saved_work_maps_to_the_cards_watch() {
+    let saved = json!({"work": [{"repo": "acme/app", "roomId": "!r:x", "pushFreely": true}], "issueWatch": {"mode": "off"}});
+    assert_eq!(watch_of(&saved), Some(Watch { repo: "acme/app".into(), room_id: "!r:x".into(), push_freely: true, ..Default::default() }));
+    let legacy = json!({"issueWatch": {"mode": "trusted", "repo": "acme/app", "pushTrusted": true}});
+    assert_eq!(watch_of(&legacy).map(|w| w.repo), Some("acme/app".into()), "an old watch not moved yet");
+    assert_eq!(watch_of(&json!({"issueWatch": {"mode": "off", "repo": "acme/app"}})), None, "no work: no card");
 }
 
 fn card_widget(cx: &mut makepad_widgets::Cx) -> super::safeguards_card::SafeguardsCard {
@@ -190,7 +192,7 @@ fn an_unreadable_watch_shows_the_reason() {
 fn the_owner_apis_fully_automatic_watch_maps_to_a_card() {
     let reply = json!({"agentId": "agt_1", "issueWatch": {"mode": "all", "label": "agent-fix", "repo": "csheargm/hagency-demo-sandbox",
         "roomId": DEV_ROOM, "pushTrusted": true, "enabledAt": 1794869107}, "issueSeen": [], "trials": []});
-    assert_eq!(watch_of(&reply["issueWatch"], true), Some(sandbox_watch()));
+    assert_eq!(watch_of(&reply), Some(Watch { level: Level::Off, maintainer: false, ..sandbox_watch() }));
 }
 
 /// Prints the card for the sandbox watch (`--nocapture`), for the report.

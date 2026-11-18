@@ -200,11 +200,6 @@ impl Ledger {
         let old = self.issue_watch(agent)?;
         let restart = old.setting.mode == WatchMode::Off || old.setting.repo != setting.repo;
         let enabled_at = if setting.mode == WatchMode::Off { old.enabled_at } else if restart { now } else { old.enabled_at };
-        // A watch of a repository it did not watch before starts its trial
-        // (ADR 0027), even saved Off: switching it on later is no edit (GPT review).
-        if !setting.repo.is_empty() && !old.setting.repo.eq_ignore_ascii_case(&setting.repo) {
-            self.start_watch_trial(agent, &setting.repo)?;
-        }
         self.db.execute(
             "INSERT INTO issue_watch (agent,mode,label,repo,room_id,enabled_at,push_trusted) VALUES (?,?,?,?,?,?,?) ON CONFLICT(agent) DO UPDATE SET mode=excluded.mode,label=excluded.label,repo=excluded.repo,room_id=excluded.room_id,enabled_at=excluded.enabled_at,push_trusted=excluded.push_trusted",
             (agent, setting.mode.stored(), &setting.label, &setting.repo, &setting.room_id, enabled_at, setting.push_trusted as i64),
