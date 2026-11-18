@@ -129,8 +129,11 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
             _ => return refuse(call, "outside what push freely covers here"),
         },
     };
-    // Given up while the gate read GitHub: nothing starts (what it held never settles).
+    // Given up while the gate read GitHub: nothing starts, and what the gate held goes back.
     if call.reply.is_closed() {
+        if let Ok(mut finished) = running.outcomes.lock() {
+            finished.push((key, false));
+        }
         return;
     }
     let outcomes = running.outcomes.clone();
@@ -179,12 +182,13 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
 /// included) as well, and a gate refusal falls back to push trust.
 async fn gated_review(ledger: &mut Ledger, turn: &Turn<'_>, proposal: &ToolProposal, command: &str, key: &str, source: &impl crate::merge_policy::github::PrSource) -> Option<TrustedStep> {
     let post = crate::watch_trust::review_post::ReviewPost::parse(command)?;
-    if turn.scope.requester != turn.owner && !matches!(ledger.trusted_publish(turn.owner, proposal, super::now()), Ok(Some(TrustedStep::Command(_)))) {
+    let granted = |ledger: &mut Ledger| turn.scope.requester == turn.owner || matches!(ledger.trusted_publish(turn.owner, proposal, super::now()), Ok(Some(TrustedStep::Command(_))));
+    if !granted(ledger) {
         return None;
     }
-    crate::merge_policy::gate::auto_answer(ledger, turn.owner, proposal, key, super::now(), source)
-        .await?
-        .then(|| TrustedStep::Command(post.command()))
+    let allowed = crate::merge_policy::gate::auto_answer(ledger, turn.owner, proposal, key, super::now(), source).await?;
+    // The grant is read again after the GitHub reads (GPT review): a revoked one runs nothing here.
+    (allowed && granted(ledger)).then(|| TrustedStep::Command(post.command()))
 }
 
 /// The proposal push trust checks: the call as `codex_step::TOOL`, rooted
