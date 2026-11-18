@@ -1515,6 +1515,7 @@ mod rejections;
 mod attachments;
 mod provisioning;
 mod receive;
+mod thread_followup;
 
 #[tokio::test]
 #[should_panic(expected = "collector completed before its HTTP script: Err(Identity)")]
