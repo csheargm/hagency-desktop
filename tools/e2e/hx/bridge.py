@@ -38,14 +38,21 @@ class Bridge:
     def get(self, path: str) -> dict:
         if path.split("?")[0] in FORBIDDEN_ROUTES:
             raise ValueError(f"{path} would close a demo window")
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=TIMEOUT_S) as r:
-            return json.loads(r.read().decode() or "{}")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=TIMEOUT_S) as r:
+                return json.loads(r.read().decode() or "{}")
+        except (OSError, ValueError) as e:  # URLError, timeouts, bad JSON: all mean "no usable bridge"
+            raise BridgeDown(f"{self.owner}'s bridge stopped answering on {path.split('?')[0]}: {e}") from e
 
     def snap(self, query: str = "", every: bool = False) -> list:
         params = {k: v for k, v in (("q", query), ("all", "1" if every else "")) if v}
         return self.get("/snap?" + urllib.parse.urlencode(params)).get("s", [])
 
     def click(self, widget: dict, settle: float = 1.0):
+        """Click `widget` only if a fresh snapshot still shows the same id and
+        text at the same place (guards against layout changes and overlays)."""
+        if not still_there(self.snap(every=True), widget):
+            raise StepNotFound(f"{widget.get('i')} {text(widget)!r} moved or vanished before the click")
         x, y = center(widget)
         self.get(f"/click?x={x:.0f}&y={y:.0f}&wait=1")
         time.sleep(settle)
@@ -58,6 +65,17 @@ class Bridge:
 def center(w: dict) -> tuple:
     x, y, width, height = w["r"]
     return x + width / 2.0, y + height / 2.0
+
+
+def still_there(widgets: list, widget: dict, slack: float = 2.0) -> bool:
+    same = [w for w in widgets if w.get("i") == widget.get("i") and text(w) == text(widget)]
+    return any(all(abs(a - b) <= slack for a, b in zip(w["r"], widget["r"])) for w in same)
+
+
+def exact(widgets: list, label: str) -> list:
+    """Widgets whose whole text is `label` (case-insensitive), largest first."""
+    hits = [w for w in widgets if text(w).lower() == label.lower()]
+    return sorted(hits, key=lambda w: -w["r"][2] * w["r"][3])
 
 
 def text(w: dict) -> str:
@@ -76,11 +94,15 @@ def with_text(widgets: list, needle: str) -> list:
     return sorted(hits, key=lambda w: -w["r"][2] * w["r"][3])
 
 
-def nearest_below(anchor: dict, candidates: list) -> dict | None:
-    """The candidate closest under (or level with) `anchor`: the button that
-    belongs to the same card as the text that identified it."""
+MAX_CARD_SPAN = 320  # px from a card's text to its own buttons
+
+
+def nearest_below(anchor: dict, candidates: list, fences: tuple = ()) -> dict | None:
+    """The candidate closest under (or level with) `anchor`, within one card:
+    at most MAX_CARD_SPAN below, and no fence (another card's text) between."""
     ax, ay = center(anchor)
-    below = [c for c in candidates if center(c)[1] >= ay - 4]
+    below = [c for c in candidates if ay - 4 <= center(c)[1] <= ay + MAX_CARD_SPAN
+             and not any(ay < center(f)[1] < center(c)[1] for f in fences if f is not anchor)]
     return min(below, key=lambda c: abs(center(c)[1] - ay) + abs(center(c)[0] - ax) / 4, default=None)
 
 

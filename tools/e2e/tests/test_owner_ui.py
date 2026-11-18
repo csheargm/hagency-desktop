@@ -57,9 +57,35 @@ class Anchors(unittest.TestCase):
         ws = [w("room_name", "e2e room"), w("text", "Bring bird-claude into e2e room?")]
         self.assertEqual([a["i"] for a in owner_ui.prompt_anchors(ws)], ["text"])
 
-    def test_decision_must_be_once_or_deny(self):
-        with self.assertRaises(ValueError):
-            owner_ui.decide_card("betty", "tok", "always")
+    def test_there_is_no_approve_path(self):
+        self.assertFalse(hasattr(owner_ui, "decide_card"))
+        self.assertNotIn('"once"', Path(owner_ui.__file__).read_text())
+
+    def test_room_row_must_match_exactly(self):
+        ws = [w("row", "old e2e room"), w("msg", "see e2e room later"), w("row2", "e2e room")]
+        self.assertEqual([x["i"] for x in bridge.exact(ws, "e2e room")], ["row2"])
+
+    def test_deny_never_crosses_into_the_next_card(self):
+        anchor = w("details", "git push e2e-1-s6", (0, 100, 300, 20))
+        next_title = w("title", "bird-claude wants to use Bash", (0, 140, 300, 20))
+        next_deny = w("deny", "Deny", (0, 200, 100, 20))
+        self.assertIsNone(bridge.nearest_below(anchor, [next_deny], (next_title,)))
+
+    def test_moved_widget_is_not_clicked(self):
+        with mock.patch.object(bridge, "port_open", return_value=True):
+            b = bridge.Bridge("betty")
+        target = w("deny", "Deny", (0, 100, 100, 20))
+        with mock.patch.object(b, "snap", return_value=[w("deny", "Deny", (0, 300, 100, 20))]), \
+                mock.patch.object(b, "get") as get, self.assertRaises(bridge.StepNotFound):
+            b.click(target)
+        get.assert_not_called()
+
+    def test_bridge_errors_become_bridge_down(self):
+        with mock.patch.object(bridge, "port_open", return_value=True):
+            b = bridge.Bridge("betty")
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("reset")), \
+                self.assertRaises(bridge.BridgeDown):
+            b.snap()
 
 
 class Flows(unittest.TestCase):
@@ -119,7 +145,7 @@ class Flows(unittest.TestCase):
                   w("deny", "Deny", (0, 360, 100, 20))]
         fake = FakeBridge([screen])
         with mock.patch.object(owner_ui, "Bridge", return_value=fake):
-            owner_ui.decide_card("betty", "e2e-1-s6", "deny")
+            owner_ui.deny_card("betty", "e2e-1-s6")
         self.assertEqual(len(fake.clicks), 2)  # room row, then the card's own Deny
         self.assertEqual(fake.clicks[-1], "deny")
         self.assertEqual(fake.clicked[-1]["r"][1], 360, "the Deny under the card, not under the chat message")

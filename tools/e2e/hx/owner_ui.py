@@ -7,7 +7,7 @@ caused; anything unexpected stops the flow with StepNotFound."""
 import time
 
 from . import config, room
-from .bridge import Bridge, StepNotFound, by_id, nearest_below, wait_widget, with_text
+from .bridge import Bridge, StepNotFound, by_id, exact, nearest_below, wait_widget, with_text
 
 JOIN_WAIT_S = 60
 FOLLOW_WAIT_S = 30
@@ -29,7 +29,7 @@ def _wait_status(room_id: str, key: str, want: str, timeout_s: float) -> bool:
 
 
 def open_room(bridge: Bridge, room_name: str):
-    rows = wait_widget(bridge, lambda ws: [w for w in with_text(ws, room_name) if w.get("i") != "details"], 20)
+    rows = wait_widget(bridge, lambda ws: exact(ws, room_name), 20)
     if not rows:
         raise StepNotFound(f"{bridge.owner}: no '{room_name}' in the room list")
     bridge.click(rows[0], settle=2.0)
@@ -53,11 +53,13 @@ def join_room(bridge: Bridge, room_id: str, log: list):
 def answer_follow_prompts(bridge: Bridge, log: list, timeout_s: float = FOLLOW_WAIT_S):
     """After the join: click "Bring" / "Allow in group rooms" only on prompts
     that name the e2e room."""
-    deadline = time.monotonic() + timeout_s
+    deadline, clicked = time.monotonic() + timeout_s, set()
     while time.monotonic() < deadline:
         ws = bridge.snap(every=True)
         target = _prompt_button(prompt_anchors(ws), ws)
-        if target:
+        key = (target.get("i"), tuple(target["r"])) if target else None
+        if target and key not in clicked:  # each prompt is answered once
+            clicked.add(key)
             bridge.click(target, settle=2.0)
             log.append(f"{bridge.owner}: clicked {target.get('i') or target.get('t')} on an e2e room prompt")
             continue
@@ -75,7 +77,7 @@ def _prompt_button(named: list, widgets: list):
     buttons = by_id(widgets, "bring") + [w for w in with_text(widgets, "Allow in group rooms")
                                          if "button" in (w.get("ty") or "").lower() or w.get("i") == "allow_group_rooms"]
     for anchor in named:
-        hit = nearest_below(anchor, buttons)
+        hit = nearest_below(anchor, buttons, fences=tuple(named))
         if hit:
             return hit
     return None
@@ -92,7 +94,7 @@ def add_agent(bridge: Bridge, room_id: str, agent: str, log: list):
         if not hit:
             raise StepNotFound(f"{bridge.owner}: no '{wid}' while adding {agent}")
         bridge.click(hit[0], settle=1.5)
-    person = wait_widget(bridge, lambda ws: [w for w in with_text(ws, agent) if w.get("i") in ("person_name", "Person")], 15)
+    person = wait_widget(bridge, lambda ws: [w for w in exact(ws, agent) if w.get("i") in ("person_name", "Person")], 15)
     if not person:
         raise StepNotFound(f"{bridge.owner}: {agent} not listed in the invite picker")
     bridge.click(person[0])
@@ -109,7 +111,8 @@ def add_agent(bridge: Bridge, room_id: str, agent: str, log: list):
 def _allow_if_private(bridge: Bridge, agent: str, log: list):
     """The picker asks "Allow in group rooms?" for a private Agent."""
     def find(ws):
-        named = [w for w in with_text(ws, agent) if "private" in (w.get("t") or "").lower()]
+        named = [w for w in with_text(ws, agent) if "private" in (w.get("t") or "").lower()
+                 and config.E2E_ROOM_NAME in (w.get("t") or "")]
         allow = [w for w in with_text(ws, "Allow in group rooms") if w not in named]
         return [nearest_below(named[0], allow)] if named and allow and nearest_below(named[0], allow) else None
     hit = wait_widget(bridge, find, 8)
@@ -149,17 +152,17 @@ def visible_texts(owner: str, room_name: str, needles: tuple) -> list:
             if any(n in text_of for n in needles)]
 
 
-def decide_card(owner: str, token: str, decision: str) -> str:
-    """Approve once or deny the permission card whose text carries `token`
-    (a string only the runner's own request contains) in the e2e room."""
-    if decision not in ("once", "deny"):
-        raise ValueError(decision)
+def deny_card(owner: str, token: str) -> str:
+    """Deny the permission card whose own text carries `token` (a string only
+    the runner's own request contains) in the e2e room. Never approves."""
+    decision = "deny"
     bridge = Bridge(owner)
     open_room(bridge, config.E2E_ROOM_NAME)
 
     def find(ws):
         anchors = card_anchors(ws, token)
-        btn = nearest_below(anchors[0], by_id(ws, decision)) if anchors else None
+        fences = tuple(w for w in ws if w.get("i") == "title")  # each card starts with its title
+        btn = nearest_below(anchors[0], by_id(ws, decision), fences) if anchors else None
         return [btn] if btn else None
     hit = wait_widget(bridge, find, CARD_WAIT_S)
     if not hit:

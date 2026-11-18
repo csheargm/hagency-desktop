@@ -98,10 +98,13 @@ def main() -> int:
     ap.add_argument("--inject", default="", choices=["", "pause-betty"])
     ap.add_argument("--no-cleanup", action="store_true")
     ap.add_argument("--no-ui-setup", action="store_true", help="do not drive the owners' windows")
+    ap.add_argument("--read-dev-room", action="store_true",
+                    help="on an issue-loop failure, open the dev room in Betty's window and copy what the agent said")
     args = ap.parse_args()
     started = datetime.now()
     e2e_room, setup, wrong, setup_log = preflight(not args.no_ui_setup)
-    ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"), setup_log=setup_log)
+    ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"), setup_log=setup_log,
+              read_dev_room=args.read_dev_room)
     for line in setup_log:
         print(f"setup: {line}", flush=True)
     results, cleanup = [], []

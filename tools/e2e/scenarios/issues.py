@@ -99,7 +99,7 @@ def s7_issue_loop(ctx) -> Result:
     wait_for(probe, LOOP_TIMEOUT_S, LOOP_POLL_S)
     r.evidence = [_describe(n, states[n]) for n in numbers]
     ok = all(_complete(states[n]) for n in numbers)
-    if not ok:
+    if not ok and ctx.read_dev_room:
         r.evidence.append(_agent_said(numbers))
         r.note = f"not every stage reached in order within {LOOP_TIMEOUT_S // 60} min"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"

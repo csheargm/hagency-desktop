@@ -38,8 +38,9 @@ scenarios stay BLOCKED. A missing button stops that owner's setup with a named
 Other bridge uses, all scoped to what the runner caused:
 - scenario 6 **denies** (never approves) the permission card whose own text
   (`title`/`context`/`details`) names the runner's unique branch;
-- scenario 7, on failure, opens the dev room in Betty's window and copies the
-  visible lines that mention the test issues (read only, sends nothing).
+- scenario 7, on failure and only with `--read-dev-room`, opens the dev room
+  in Betty's window and copies the visible lines that mention the test issues
+  (sends nothing, but it changes which room that window shows).
 
 The bridge's `/gq`, `/quit` and `/close` routes are refused by the client.
 

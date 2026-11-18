@@ -31,6 +31,7 @@ class Ctx:
     created_branches: list = field(default_factory=list)
     loop_states: dict = field(default_factory=dict)
     setup_log: list = field(default_factory=list)
+    read_dev_room: bool = False  # opt-in: navigates Betty's window to the dev room
 
     def agent_in_room(self, name: str) -> bool:
         return self.setup.get(f"agent:{name}") == "join"
