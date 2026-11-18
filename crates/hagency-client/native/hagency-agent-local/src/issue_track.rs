@@ -137,17 +137,21 @@ pub fn cannot_fix_step(number: &str, repo: &str) -> String {
     format!("gh issue comment {number} --repo {repo} --body '{CANNOT_FIX_MARKER} - <the reason on one line, without quotes, $, backticks or backslashes>'")
 }
 
-/// Whether `agent` was handed issue `number` of `repo` (any letter case)
-/// and that record is still open (not merged, closed, failed or given up).
+/// Whether `agent` was handed issue `number` of `repo` and that record is
+/// still open (not merged, closed, failed or given up). Records are keyed by
+/// exact spelling: when spellings differ only in case, any finished one wins
+/// (GPT review, Nov 18).
 pub(crate) fn is_handed(db: &rusqlite::Connection, agent: &str, repo: &str, number: u64) -> Result<bool> {
     let mut statement = db.prepare("SELECT state FROM issue_track WHERE agent=? AND repo=? COLLATE NOCASE AND number=?")?;
     let states = statement.query_map((agent, repo, number as i64), |r| r.get::<_, String>(0))?;
+    let mut open = false;
     for state in states {
-        if !State::parse(&state?)?.is_terminal() {
-            return Ok(true);
+        if State::parse(&state?)?.is_terminal() {
+            return Ok(false);
         }
+        open = true;
     }
-    Ok(false)
+    Ok(open)
 }
 
 /// Whether `login` (the Agent's GitHub identity) posted the cannot-fix

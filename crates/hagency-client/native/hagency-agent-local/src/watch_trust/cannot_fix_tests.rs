@@ -141,3 +141,17 @@ fn without_push_freely_or_a_hand_off_it_asks() {
     r.ledger.set_issue_watch(OWNER, "bird", setting, 1).unwrap();
     assert_eq!(answer(&mut r, "claude.Bash", LIVE), None, "push freely off");
 }
+
+/// GPT review (Nov 18): a finished record under another letter case of the
+/// repository still ends the card-free give-up.
+#[test]
+fn a_finished_case_variant_record_wins() {
+    let mut r = handed(&[96], ToolPolicy::AskOwner);
+    let variant = "CSheargm/Hagency-Demo-Sandbox";
+    let handed: TrackChange = serde_json::from_value(json!({"repo": variant, "number": 96, "handed": 1})).unwrap();
+    r.ledger.track_issue("bird", &handed, 1).unwrap();
+    assert!(answer(&mut r, "claude.Bash", LIVE).is_some(), "both records open");
+    let closed: TrackChange = serde_json::from_value(json!({"repo": variant, "number": 96, "state": "closed"})).unwrap();
+    r.ledger.track_issue("bird", &closed, 2).unwrap();
+    assert_eq!(answer(&mut r, "claude.Bash", LIVE), None);
+}

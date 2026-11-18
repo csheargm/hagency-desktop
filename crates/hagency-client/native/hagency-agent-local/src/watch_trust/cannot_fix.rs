@@ -7,7 +7,9 @@
 //!
 //! `<N>` an issue the Agent was handed on that watched repository whose
 //! track is still open ([`crate::issue_track::is_handed`]); `-R`/`-b` are
-//! the same options. The body is one single-quoted line opening with the
+//! the same options. The binding is to the issue, not to the hand-off's
+//! run: any run push trust already lets publish (open a PR closing the
+//! issue) may give it up (GPT review, Nov 18). The body is one single-quoted line opening with the
 //! marker, capped in length, with no quote, `$`, backtick or control
 //! character. No other option, no chaining, redirect or heredoc. What runs
 //! is rebuilt from the checked words (each single-quoted, pinned to
