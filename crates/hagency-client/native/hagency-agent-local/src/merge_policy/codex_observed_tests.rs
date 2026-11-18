@@ -150,7 +150,7 @@ async fn the_agent_that_wrote_the_pull_request_never_counts_as_its_reviewer() {
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&merge_line(), dir, "fixer"), "mg", 11, &docs).await, None);
     // The issue tracker's hand-off names the author as well.
     let docs = Fake::new(vec![file("README.md", 3)]);
-    ledger.db.execute("INSERT INTO issue_track VALUES ('bird-codex','csheargm/hagency-demo-sandbox',3,'pr_open',1,0,7,0)", []).unwrap();
+    ledger.db.execute("INSERT INTO issue_track (agent,repo,number,state,attempts,handed_at,pr,notified) VALUES ('bird-codex','csheargm/hagency-demo-sandbox',3,'pr_open',1,0,7,0)", []).unwrap();
     assert_eq!(ledger.pr_author_agents("CSheargm/hagency-demo-sandbox", 7).unwrap(), ["bird-codex"]);
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&merge_line(), dir, "fixer"), "mg2", 11, &docs).await, None);
 }
