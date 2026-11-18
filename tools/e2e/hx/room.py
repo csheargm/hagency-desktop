@@ -3,7 +3,7 @@ owners invited. Agents join only when their owner binds them (desktop)."""
 import json
 
 from . import config, personas
-from .matrix import MatrixError
+from .matrix import MatrixError, q
 
 ROOM_FILE = config.STATE_DIR / "room.json"
 
@@ -38,7 +38,31 @@ def ensure_room() -> str:
         user = config.mxid(lp, srv)
         if members.get(user) not in ("join", "invite"):
             creator.invite(room, user)
+    set_repo_linked(room, True)
     return room
+
+
+def linked_repos(room: str) -> list:
+    """The room's hand-linked repositories (empty when the event is absent)."""
+    try:
+        return list(personas.persona("zz-anna").state(room, config.ROOM_REPOS_STATE).get("repos", []))
+    except MatrixError as e:
+        if e.status == 404:
+            return []
+        raise
+
+
+def set_repo_linked(room: str, on: bool) -> bool:
+    """Link (or unlink) the sandbox repo in the room's repo set as zz-anna,
+    the room's creator. Returns whether anything changed; idempotent."""
+    repos = linked_repos(room)
+    present = any(r.lower() == config.SANDBOX_REPO.lower() for r in repos)
+    if present == on:
+        return False
+    kept = [r for r in repos if r.lower() != config.SANDBOX_REPO.lower()]
+    content = {"repos": kept + [config.SANDBOX_REPO] if on else kept}
+    personas.persona("zz-anna").call("PUT", f"/rooms/{q(room)}/state/{q(config.ROOM_REPOS_STATE)}/", content)
+    return True
 
 
 def _join_persona(creator, room, name, members):

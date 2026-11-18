@@ -33,6 +33,7 @@ AGENTS = {
 DEV_ROOM = "!a3cQXHR8GZ4RP5n71s:localhost:8450"  # Chris's room: read only, never written
 E2E_ROOM_NAME = "e2e room"
 SANDBOX_REPO = "csheargm/hagency-demo-sandbox"
+ROOM_REPOS_STATE = "io.hagency.room_repos"  # ADR 0023: {"repos": [...]}, state key ""
 TEST_MARK = "[e2e]"  # every issue/PR/branch the runner creates carries this
 
 DESKTOP_LOGS = {"anna": RUN / "fresh-anna" / "desktop.log", "betty": RUN / "fresh-betty" / "desktop.log"}
