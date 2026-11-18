@@ -67,7 +67,7 @@ pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_gith
 /// The owner's work list types (ADR 0016) and a new watch's trial (ADR 0027), for the desktop's Work block and poller.
 pub use hagency_agent_local::merge_policy::review_loop::HOLD_STEP;
 /// The loop notices' exact merge command and review ask, which the ledger reads back to tag their dispatches.
-pub use hagency_agent_local::merge_policy::step_resend::{DISPATCHED_STEPS, MAX_RESENDS, merge_command, review_ask};
+pub use hagency_agent_local::merge_policy::step_resend::{DISPATCHED_STEPS, MAX_RESENDS, MERGE_NOTICE_LEAD, REVIEW_NOTICE_LEAD, merge_command, review_ask};
 pub use hagency_agent_local::merge_policy::trial::{TRIAL_PRS, trial_counts, trial_reason};
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};
 

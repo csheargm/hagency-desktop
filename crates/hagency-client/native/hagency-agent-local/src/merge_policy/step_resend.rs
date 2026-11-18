@@ -23,6 +23,11 @@ pub const RESEND_AFTER_SECS: i64 = 60;
 /// Re-sends of one step per head before the loop gives up and says so.
 pub const MAX_RESENDS: u32 = 3;
 
+/// How a merge notice starts; only a message that starts so is a loop notice.
+pub const MERGE_NOTICE_LEAD: &str = "✅ Approved at ";
+/// How a review request notice starts.
+pub const REVIEW_NOTICE_LEAD: &str = "🔎 Review requested — ";
+
 /// The exact merge command a "✅ Approved" notice tells the merger to run.
 pub fn merge_command(number: u64, head: &str, repo: &str) -> String {
     format!("gh pr merge {number} --squash --match-head-commit {head} --repo {repo}")
@@ -55,7 +60,11 @@ pub fn loop_step_of(body: &str) -> Option<LoopStep> {
     let pick = |step: &'static str, (n, repo, head): (u64, String, String)| {
         let exact = if step == "merge" { merge_command(n, &head, &repo) } else { review_ask(n, &repo, &head) };
         let to = addressee(if step == "merge" { "gh pr merge " } else { "please review PR " })?;
-        body.contains(&exact).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head, to))
+        // A message quoting a notice is no notice (GPT review): a line must start as one,
+        // as a hand-off's lead may (`activity::handoff_issue`).
+        let lead = if step == "merge" { MERGE_NOTICE_LEAD } else { REVIEW_NOTICE_LEAD };
+        let notice = body.lines().any(|line| line.trim_start().starts_with(lead));
+        (notice && body.contains(&exact)).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head, to))
     };
     if let Some(found) = parse("gh pr merge ", &["--squash", "--match-head-commit", "", "--repo", ""]) {
         return pick("merge", found);
@@ -117,12 +126,14 @@ pub struct StepDue {
 /// The newest dispatch of one step's notice: id, the Agent it went to, receipt time.
 type Sent = (String, String, i64);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Round {
     known: bool,
     again: u32,
     released_at: i64,
     said: u32,
+    /// The Agent the given-back step goes to again (its budget holds the re-post).
+    runner: String,
 }
 
 impl Ledger {
@@ -131,7 +142,7 @@ impl Ledger {
     pub fn claim_dispatched_step(&mut self, agent: &str, step: &str, pr: &str, head: &str) -> Result<bool> {
         let claimed = self.claim_loop_step(agent, step, pr, head)?;
         if DISPATCHED_STEPS.contains(&step) {
-            self.db.execute("INSERT OR IGNORE INTO review_loop_resends VALUES (?,?,?,?,0,0,0)", (agent, step, pr, head))?;
+            self.db.execute("INSERT OR IGNORE INTO review_loop_resends VALUES (?,?,?,?,0,0,0,'')", (agent, step, pr, head))?;
         }
         Ok(claimed)
     }
@@ -144,12 +155,15 @@ impl Ledger {
         let round = self.round(agent, step, pr, head)?;
         let kept = StepDue { taken: true, again: round.again, say: None };
         if !self.loop_step_taken(agent, step, pr, head)? {
-            return Ok(StepDue { taken: false, ..kept });
+            // A given-back step not re-posted yet waits while its Agent's budget is used up (GPT review).
+            let pending = round.again > 0 && !round.runner.is_empty();
+            let held = pending && self.agent_budget_used_up(&self.owner, &round.runner, now)?;
+            return Ok(StepDue { taken: held, ..kept });
         }
         if !DISPATCHED_STEPS.contains(&step) || (step == "merge" && self.head_used(pr, head)?) {
             return Ok(kept);
         }
-        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to), round)? else { return Ok(kept) };
+        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to), &round)? else { return Ok(kept) };
         let why = if self.agent_budget_used_up(&self.owner, &runner, now)? { Why::Budget } else { why };
         let say = (round.said <= round.again).then_some(Say { why, gave_up: round.again >= MAX_RESENDS, round: round.again });
         if round.again >= MAX_RESENDS || why == Why::Budget || now - at < RESEND_AFTER_SECS {
@@ -159,7 +173,7 @@ impl Ledger {
         let said = round.again + 1;
         self.atomically(|ledger| {
             ledger.db.execute("DELETE FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
-            ledger.set_round(agent, (step, pr, head), Round { known: true, again: said, released_at: now, said })
+            ledger.set_round(agent, (step, pr, head), &Round { known: true, again: said, released_at: now, said, runner })
         })?;
         Ok(StepDue { taken: false, again: said, say })
     }
@@ -168,12 +182,12 @@ impl Ledger {
     pub fn step_line_said(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), round: u32) -> Result<()> {
         let current = self.round(agent, step, pr, head)?;
         let said = current.said.max(round.saturating_add(1));
-        self.set_round(agent, (step, pr, head), Round { known: true, said, ..current })
+        self.set_round(agent, (step, pr, head), &Round { known: true, said, ..current })
     }
 
     /// Why the step's newest dispatch did not run, the Agent it went to and
     /// when; `None` while it runs, after it ran, or when nothing is known.
-    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), round: Round) -> Result<Option<(Why, String, i64)>> {
+    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), round: &Round) -> Result<Option<(Why, String, i64)>> {
         let Some((dispatch, runner, at)) = self.newest_sent((step, pr, head), (requester, to), round.released_at)? else {
             // Claimed before tagging (no round row): only a merge that never happened.
             return Ok((!round.known && step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
@@ -200,13 +214,13 @@ AND t.addressee=? AND i.received_at>=? ORDER BY i.received_at DESC,i.id DESC LIM
     }
 
     fn round(&self, agent: &str, step: &str, pr: &str, head: &str) -> Result<Round> {
-        const ROUND: &str = "SELECT again,released_at,said FROM review_loop_resends WHERE agent=? AND step=? AND pr=? AND head=?";
-        let row = self.db.query_row(ROUND, (agent, step, pr, head), |r| Ok(Round { known: true, again: r.get(0)?, released_at: r.get(1)?, said: r.get(2)? })).optional()?;
+        const ROUND: &str = "SELECT again,released_at,said,runner FROM review_loop_resends WHERE agent=? AND step=? AND pr=? AND head=?";
+        let row = self.db.query_row(ROUND, (agent, step, pr, head), |r| Ok(Round { known: true, again: r.get(0)?, released_at: r.get(1)?, said: r.get(2)?, runner: r.get(3)? })).optional()?;
         Ok(row.unwrap_or_default())
     }
 
-    fn set_round(&self, agent: &str, (step, pr, head): (&str, &str, &str), round: Round) -> Result<()> {
-        self.db.execute("INSERT OR REPLACE INTO review_loop_resends VALUES (?,?,?,?,?,?,?)", (agent, step, pr, head, round.again, round.released_at, round.said))?;
+    fn set_round(&self, agent: &str, (step, pr, head): (&str, &str, &str), round: &Round) -> Result<()> {
+        self.db.execute("INSERT OR REPLACE INTO review_loop_resends VALUES (?,?,?,?,?,?,?,?)", (agent, step, pr, head, round.again, round.released_at, round.said, &round.runner))?;
         Ok(())
     }
 }

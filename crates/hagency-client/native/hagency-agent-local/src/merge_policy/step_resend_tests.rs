@@ -84,6 +84,8 @@ fn loop_notices_name_their_step_pull_request_and_head_exactly() {
         format!("run `gh pr merge 94 --squash --match-head-commit {HEAD} --repo not/a/repo`"),
         format!("gh pr merge 94 --rebase --match-head-commit {HEAD} --repo {REPO}"),
         format!("please review PR #94 in {REPO} at commit {HEAD}"),
+        format!("> quoting: {}", merge_body()),
+        format!("> quoting: {}", review_body()),
     ] {
         assert_eq!(loop_step_of(&body), None, "{body}");
     }
@@ -196,4 +198,14 @@ fn a_merge_claimed_before_steps_were_tagged_is_sent_again_once_unless_it_merged(
     l.claim_loop_step(AGENT, "merge", PR, HEAD).unwrap();
     l.claim_auto_merge(PR, HEAD, AGENT).unwrap();
     assert_eq!(due(&mut l, T0).taken, true, "it merged: done");
+}
+
+#[test]
+fn a_given_back_step_not_re_posted_yet_waits_while_the_budget_is_used_up_again() {
+    let (_temp, mut l) = ledger();
+    sent_and_claimed(&mut l, "merge-1", T0, NO_RUN);
+    assert_eq!(due(&mut l, T0 + 120).taken, false, "given back; the re-post then failed to send");
+    use_up_budget(&l, T0 + 200);
+    assert_eq!(due(&mut l, T0 + 300), StepDue { taken: true, again: 1, say: None }, "no re-post into a used-up budget");
+    assert_eq!(due(&mut l, T0 + 86_400).taken, false, "the next day it goes out");
 }

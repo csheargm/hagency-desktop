@@ -76,10 +76,11 @@ impl LoopNotice {
         match self {
             Self::ReviewRequested { reviewer, .. } => {
                 let steps = ::hagency::REVIEW_STEPS.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo);
-                format!("🔎 Review requested — {reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
+                format!("{}{reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
             }
             Self::Approved { fixer, .. } => format!(
-                "✅ Approved at {short} — merging under the repo rules: {fixer} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
+                "{lead}{short} — merging under the repo rules: {fixer} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
+                lead = ::hagency::issue_watch::MERGE_NOTICE_LEAD,
                 command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
             ),
             Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs a maintainer: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
