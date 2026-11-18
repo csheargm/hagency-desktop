@@ -3,7 +3,9 @@
 //! lease renewal), on the tracker's fakes: retried at once with one room
 //! line saying why, never waiting out the deadline silently.
 use super::run_end::{RunEnd, branch_names_issue, issue_branch, run_end_of};
-use super::tracker_tests::{Fake, T0, check, first_hand_off, issue};
+use super::tracker::{Inputs, follow};
+use super::tracker_tests::{Fake, REPO, T0, check, first_hand_off, issue};
+use std::collections::HashSet;
 use ::hagency::issue_watch::issue_track::{HANDOFF_TIMEOUT_SECS, MAX_ATTEMPTS, State};
 use ::hagency::issue_watch::parse_branches;
 use serde_json::json;
@@ -62,15 +64,20 @@ fn a_running_hand_off_still_waits_for_its_deadline() {
 }
 
 #[test]
-fn the_hand_offs_run_is_its_activity_record_in_the_watch_room() {
+fn the_hand_offs_run_is_this_issues_newest_request_since_the_attempt() {
     let handed = 1_000;
-    let req = |room: &str, at: i64, outcome: &str| json!({"roomId": room, "receivedAt": at, "outcome": outcome});
-    let requests = json!([req(ROOM, handed + 400, "running"), req(ROOM, handed - 5, "answered"), req("!other:x", handed + 1, "failed"), req(ROOM, handed - 900, "failed")]);
-    assert_eq!(run_end_of(&requests, ROOM, handed), RunEnd::Ended, "the first request at the hand-off, not a later one or an older run");
-    assert_eq!(run_end_of(&json!([req(ROOM, handed + 2, "failed")]), ROOM, handed), RunEnd::Lost);
-    assert_eq!(run_end_of(&json!([req(ROOM, handed + 2, "running")]), ROOM, handed), RunEnd::Running);
-    assert_eq!(run_end_of(&json!([req(ROOM, handed - 900, "answered")]), ROOM, handed), RunEnd::Running, "the last attempt's run does not end this one");
-    assert_eq!(run_end_of(&json!(null), ROOM, handed), RunEnd::Running, "unreadable: wait for the deadline");
+    let req = |number: i64, at: i64, outcome: &str| json!({"roomId": ROOM, "receivedAt": at, "outcome": outcome, "issue": {"repo": "Acme/App", "number": number}});
+    let plain = json!({"roomId": ROOM, "receivedAt": handed + 1, "outcome": "failed"});
+    // #45 and #46 handed off together: #45's lost run never ends #46's.
+    let requests = json!([req(45, handed + 1, "failed"), plain, req(46, handed + 2, "running")]);
+    assert_eq!(run_end_of(&requests, "acme/app", 46, handed), RunEnd::Running);
+    assert_eq!(run_end_of(&requests, "acme/app", 45, handed), RunEnd::Lost);
+    // The last attempt failed fast; the retry's request is not in yet.
+    let previous = json!([req(46, handed - 60, "failed")]);
+    assert_eq!(run_end_of(&previous, "acme/app", 46, handed), RunEnd::Running, "a whole check earlier: the last attempt's run");
+    assert_eq!(run_end_of(&json!([req(46, handed - 3, "answered")]), "acme/app", 46, handed), RunEnd::Ended, "received just before the record");
+    assert_eq!(run_end_of(&json!([req(46, handed - 3, "answered"), req(46, handed + 30, "running")]), "acme/app", 46, handed), RunEnd::Running, "the newest wins");
+    assert_eq!(run_end_of(&json!(null), "acme/app", 46, handed), RunEnd::Running, "unreadable: wait for the deadline");
 }
 
 #[test]
@@ -79,8 +86,28 @@ fn only_one_branch_naming_the_issue_counts() {
     assert_eq!(issue_branch(&branches, 46).as_deref(), Some("fix/issue-46-e2e-doc"));
     assert_eq!(issue_branch(&branches, 45).as_deref(), Some("agent/issue-45-e2e-doc"));
     assert_eq!(issue_branch(&branches, 4), None);
+    let odd = vec!["fix/issue-8\"`ignore".to_owned(), "-issue-8".to_owned(), format!("issue-8-{}", "x".repeat(100))];
+    assert_eq!(issue_branch(&odd, 8), None, "only plain ref names are repeated to the Agent");
     let two = vec!["issue-7-a".to_owned(), "agent/7-b".to_owned()];
     assert_eq!(issue_branch(&two, 7), None, "two candidates: cannot tell which, retry plainly");
     assert!(branch_names_issue("agent/33-readme", 33) && !branch_names_issue("issue-333", 33));
     assert!(parse_branches(r#"[{"sha":"x"}]"#).is_err());
+}
+
+#[test]
+fn a_record_is_changed_under_its_own_repository_spelling() {
+    // The work list may spell the repository differently from the watch that
+    // handed the issue off; the ledger keys the record exactly (GPT review).
+    let fake = Fake::default();
+    first_hand_off(&fake, 45);
+    fake.run.set(Some(RunEnd::Lost));
+    fake.now.set(T0 + 60);
+    let tracks = fake.tracks();
+    let seen: HashSet<i64> = HashSet::from([45]);
+    let open = [issue(45)];
+    let spelled = REPO.to_ascii_uppercase();
+    let inputs = Inputs { repo: &spelled, now: T0 + 60, tracks: &tracks, seen: &seen, open_issues: &open, own_pulls: &[] };
+    let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(fake.tracks()[0].attempts, 2);
 }

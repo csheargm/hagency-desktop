@@ -114,20 +114,37 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
     // A run that already ended without a pull request is retried now (e2e, Nov 17).
-    let run = if fact == IssueFact::Open && open_pr.is_none() && !cannot_fix && track.state == State::HandedOff { io.run_end(track).await? } else { RunEnd::Running };
+    // An unreadable run only falls back to the deadline (GPT review): never stuck.
+    let run = if fact == IssueFact::Open && open_pr.is_none() && !cannot_fix && track.state == State::HandedOff {
+        io.run_end(track).await.unwrap_or_else(|e| {
+            makepad_widgets::log!("WARN issue_track_run_unreadable #{}: {e}", track.number);
+            RunEnd::Running
+        })
+    } else {
+        RunEnd::Running
+    };
     let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended() };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
     let n = track.number;
-    let change = |extra: Value| change_of(inputs.repo, n, extra);
+    // The record's own spelling: the ledger keys it exactly (GPT review).
+    let change = |extra: Value| change_of(&track.repo, n, extra);
     match decide(track, &facts) {
         Action::Wait => Ok(Some(waiting_line(track))),
         Action::Retry { attempt } => {
             let issue = issue.ok_or("the issue is not open")?;
             // Handed off first: a claim lost to another Agent ends the record
             // instead of repeating this attempt every check (GPT review).
-            let branch = if run.ended() { io.pushed_branch(n).await? } else { None };
+            // No branch list: a plain retry still goes out (GPT review).
+            let branch = if run.ended() {
+                io.pushed_branch(n).await.unwrap_or_else(|e| {
+                    makepad_widgets::log!("WARN issue_track_branches_unreadable #{n}: {e}");
+                    None
+                })
+            } else {
+                None
+            };
             if !io.hand_off(issue, attempt, branch.as_deref()).await? {
                 io.record(change(json!({"state": "closed"}))).await?;
                 return Ok(Some(crate::i18n::format("#{number} taken by another Agent", &[("number", n.to_string())])));
@@ -147,8 +164,8 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
             io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
             Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
         }
-        Action::FollowPr { pr } => follow_one(io, inputs.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
-        Action::AnnounceFixed => announce(io, inputs.repo, track).await.map(|_| None),
+        Action::FollowPr { pr } => follow_one(io, &track.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
+        Action::AnnounceFixed => announce(io, &track.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
 }

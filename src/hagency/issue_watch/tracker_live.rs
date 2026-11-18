@@ -187,7 +187,7 @@ impl TrackIo for LiveTrack<'_> {
         use crate::hagency::model::{Command, LocalAction};
         let ask = Command::Local { agent_id: self.agent_id().into(), action: LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
         let activity = self.worker.service.execute(ask).await?;
-        Ok(super::run_end::run_end_of(&activity["requests"], &self.watched.watch.setting.room_id, track.handed_at))
+        Ok(super::run_end::run_end_of(&activity["requests"], &track.repo, track.number, track.handed_at))
     }
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
         let branches = fetch_branches(self.worker.client, GITHUB_API, self.repo, self.worker.token).await.map_err(|e| e.to_string())?;

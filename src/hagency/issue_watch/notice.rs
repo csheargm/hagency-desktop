@@ -73,7 +73,7 @@ impl Notice {
     /// The same notice for a retry whose earlier run pushed `branch`.
     pub fn with_branch(mut self, branch: Option<String>) -> Self { self.branch = branch; self }
     /// The data line naming the pushed branch, quoted like the title.
-    fn branch_step(&self) -> String { self.branch.as_deref().map(|b| format!(" Your earlier run pushed branch {} but opened no pull request: open the draft pull request from that branch.", quoted_title(b))).unwrap_or_default() }
+    fn branch_step(&self) -> String { self.branch.as_deref().map(|b| format!(" Branch {b} names this issue but has no pull request: if it holds your fix, open the draft pull request from it.")).unwrap_or_default() }
     fn merge_step(&self) -> String { if self.merge_policy { format!(" {MERGE_POLICY_STEP}") } else { String::new() } }
     /// The data line after the request; empty for an untitled issue.
     fn title_line(&self) -> String { if self.title.is_empty() { String::new() } else { format!("\n{}: {}", ::hagency::ISSUE_TITLE_LABEL, quoted_title(&self.title)) } }

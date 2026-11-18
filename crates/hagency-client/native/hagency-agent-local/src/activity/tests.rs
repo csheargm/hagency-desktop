@@ -81,3 +81,20 @@ fn every_inbox_state_maps_to_an_outcome() {
         assert_eq!(Outcome::of_state(state), outcome, "{state}");
     }
 }
+
+#[test]
+fn a_hand_off_names_its_issue_and_other_requests_name_none() {
+    assert_eq!(handoff_issue("🔔 New GitHub issue #46 in csheargm/hagency-demo-sandbox — @bird please fix it"), Some(IssueRef { repo: "csheargm/hagency-demo-sandbox".into(), number: 46 }));
+    assert_eq!(handoff_issue("context\n  🔔 New GitHub issue #7 in a/b — x"), Some(IssueRef { repo: "a/b".into(), number: 7 }));
+    for other in ["secret request text", "🔔 New GitHub issue #x in a/b", "🔔 New GitHub issue #0 in a/b", "🔔 New GitHub issue #3 in not-a-repo", ""] {
+        assert_eq!(handoff_issue(other), None, "{other}");
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let mut d = dispatch("h", "agent", "bind");
+    d.body = "🔔 New GitHub issue #46 in a/b — @bird please fix it".into();
+    record(&mut l, &d, 10, "failed", None);
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    assert_eq!(json[0]["issue"], serde_json::json!({"repo": "a/b", "number": 46}));
+    assert!(!json.to_string().contains("please fix"), "no request text");
+}

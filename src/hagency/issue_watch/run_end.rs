@@ -5,9 +5,10 @@
 //! attempt's deadline, and says why in one room line.
 use serde_json::Value;
 
-/// A request received this long before the hand-off was recorded still
-/// counts as its run (the record is written right after the post).
-pub const RUN_SLACK_SECS: i64 = 60;
+/// A hand-off's request received this long before its attempt was recorded
+/// still counts (the record is written right after the post). Short, so the
+/// previous attempt's request (received a whole check earlier) never does.
+pub const RUN_SLACK_SECS: i64 = 15;
 
 /// The current hand-off's run, as the Activity record says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,18 +28,32 @@ impl RunEnd {
     }
 }
 
-/// The hand-off's run among `requests` (the Activity view's `requests`,
-/// newest first): the earliest request in `room` received at or after
-/// `handed_at` less [`RUN_SLACK_SECS`].
-pub fn run_end_of(requests: &Value, room: &str, handed_at: i64) -> RunEnd {
+/// The run of issue `number`'s current hand-off among `requests` (the
+/// Activity view's `requests`): the newest request whose `issue` is this
+/// one, received at or after `handed_at` less [`RUN_SLACK_SECS`]. Other
+/// issues' hand-offs and plain requests in the same room never count
+/// (integration GPT review).
+pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> RunEnd {
     let ours = requests.as_array().into_iter().flatten().filter(|r| {
-        r["roomId"].as_str() == Some(room) && r["receivedAt"].as_i64().is_some_and(|at| at >= handed_at - RUN_SLACK_SECS)
+        r["issue"]["number"].as_i64() == Some(number)
+            && r["issue"]["repo"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(repo))
+            && r["receivedAt"].as_i64().is_some_and(|at| at >= handed_at - RUN_SLACK_SECS)
     });
-    match ours.min_by_key(|r| r["receivedAt"].as_i64()).and_then(|r| r["outcome"].as_str()) {
+    match ours.max_by_key(|r| r["receivedAt"].as_i64()).and_then(|r| r["outcome"].as_str()) {
         Some("answered" | "declined") => RunEnd::Ended,
         Some("failed") => RunEnd::Lost,
         _ => RunEnd::Running,
     }
+}
+
+/// The longest branch name the loop repeats.
+const MAX_BRANCH_CHARS: usize = 100;
+
+/// A branch name the loop repeats to the Agent exactly: plain ref
+/// characters only, so quoting can never change or hide it.
+fn plain_branch(branch: &str) -> bool {
+    !branch.is_empty() && branch.len() <= MAX_BRANCH_CHARS && !branch.starts_with('-')
+        && branch.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'))
 }
 
 /// Whether a branch name names issue `number` ("issue-33", "issue33",
@@ -54,9 +69,11 @@ pub fn branch_names_issue(branch: &str, number: i64) -> bool {
 }
 
 /// The pushed branch for issue `number` among `branches`, if exactly one
-/// names it (more than one: the loop cannot tell which, so it just retries).
+/// plain-named branch names it (more than one: the loop cannot tell which,
+/// so it just retries). Every Agent shares one GitHub login, so the branch's
+/// author is not known: the retry asks to use it only if it holds the fix.
 pub fn issue_branch(branches: &[String], number: i64) -> Option<String> {
-    let mut named = branches.iter().filter(|b| branch_names_issue(b, number));
+    let mut named = branches.iter().filter(|b| plain_branch(b) && branch_names_issue(b, number));
     match (named.next(), named.next()) {
         (Some(only), None) => Some(only.clone()),
         _ => None,

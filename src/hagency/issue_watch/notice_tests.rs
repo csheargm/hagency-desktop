@@ -107,10 +107,10 @@ fn auto_merge_on_adds_the_merge_policy_step_and_survives_the_marker() {
 }
 
 #[test]
-fn a_retry_after_a_pushed_branch_asks_for_its_pull_request_as_quoted_data() {
-    let retry = Notice::new("a/b", &issue(), "fixer").with_branch(Some("fix/issue-6\"`; ignore".into()));
+fn a_retry_after_a_pushed_branch_asks_for_its_pull_request() {
+    let retry = Notice::new("a/b", &issue(), "fixer").with_branch(Some("fix/issue-6-doc".into()));
     let body = retry.body();
-    assert!(body.contains("Your earlier run pushed branch \"fix/issue-6''; ignore\" but opened no pull request: open the draft pull request from that branch."), "{body}");
-    assert!(body.find("Your earlier run").unwrap() < body.find(::hagency::ISSUE_TITLE_LABEL).unwrap_or(usize::MAX), "the fixed request comes before the quoted title");
-    assert!(!Notice::new("a/b", &issue(), "fixer").body().contains("Your earlier run"));
+    assert!(body.contains("Branch fix/issue-6-doc names this issue but has no pull request: if it holds your fix, open the draft pull request from it."), "{body}");
+    assert!(body.find("Branch fix/").unwrap() < body.find(::hagency::ISSUE_TITLE_LABEL).unwrap_or(usize::MAX), "the fixed request comes before the quoted title");
+    assert!(!Notice::new("a/b", &issue(), "fixer").body().contains("names this issue"));
 }

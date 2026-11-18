@@ -56,6 +56,10 @@ impl TrackIo for Fake {
     async fn record(&self, change: Value) -> Result<(), String> {
         let change: TrackChange = serde_json::from_value(change).map_err(|e| e.to_string())?;
         let current = self.store.borrow().get(&change.number).cloned();
+        // The ledger keys a record by its exact repository spelling.
+        if current.as_ref().is_some_and(|t| t.repo != change.repo) {
+            return Err(format!("no record of {}#{}", change.repo, change.number));
+        }
         let next = apply_change(current, &change, self.now.get()).map_err(|e| e.to_string())?;
         self.store.borrow_mut().insert(change.number, next);
         Ok(())
