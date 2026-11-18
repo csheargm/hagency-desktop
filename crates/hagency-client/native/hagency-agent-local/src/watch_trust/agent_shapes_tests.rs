@@ -3,7 +3,7 @@
 //! The pull request steps must run without a card; the chained reads keep
 //! asking (one command per call is the posture, the prompt says so).
 use crate::outside::shell;
-use crate::watch_trust::{TrustedStep, pin_env, pinned_line};
+use crate::watch_trust::{TrustedStep, pinned_line};
 use std::process::Command;
 
 const REPO: &str = "csheargm/hagency-demo-sandbox";
@@ -17,7 +17,30 @@ const PR_CREATE_3: &str = "gh pr create --repo csheargm/hagency-demo-sandbox --d
 fn the_nov17_pull_request_creates_run_pinned_without_a_card() {
     let temp = tempfile::tempdir().unwrap();
     for line in [PR_CREATE_1, PR_CREATE_3] {
-        assert_eq!(pinned_line(line, temp.path(), REPO), Some(TrustedStep::Command(pin_env(line))), "{line}");
+        let words: Vec<String> = shell::parse(line).unwrap().segments.remove(0);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        assert_eq!(pinned_line(line, temp.path(), REPO), Some(TrustedStep::Command(super::pinned_command(&words))), "{line}");
+    }
+}
+
+/// What runs is rebuilt from the checked words: the body gh receives is the
+/// body that was checked, whatever the shell would have expanded.
+#[test]
+fn the_pinned_pr_command_passes_the_checked_words_verbatim() {
+    let temp = tempfile::tempdir().unwrap();
+    let line = format!("gh pr create --repo {REPO} --head fix/x-69 --title =ls --body \"ok $? \\`x\\`\"");
+    let Some(TrustedStep::Command(pinned)) = pinned_line(&line, temp.path(), REPO) else { panic!("pinned") };
+    assert!(pinned.ends_with("gh 'pr' 'create' '--repo' 'csheargm/hagency-demo-sandbox' '--head' 'fix/x-69' '--title' '=ls' '--body' 'ok $? `x`'"), "{pinned}");
+    assert!(crate::watch_trust::step_env::runs_gh(&pinned));
+}
+
+/// An empty or malformed `--head` is no head: gh would push the branch itself.
+#[test]
+fn a_pr_create_without_a_real_head_asks() {
+    let temp = tempfile::tempdir().unwrap();
+    for head in ["--head ''", "--head=", "-H ''", "--head =git", "--head 'a b'", "--head ../x", "--head o:x"] {
+        let line = format!("gh pr create --repo {REPO} {head} --title t --body b");
+        assert_eq!(pinned_line(&line, temp.path(), REPO), None, "{line}");
     }
 }
 

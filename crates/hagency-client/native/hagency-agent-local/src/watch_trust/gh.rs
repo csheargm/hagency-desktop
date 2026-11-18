@@ -82,7 +82,8 @@ impl<'a> PrCommand<'a> {
         if matches!(name, "-R" | "--repo") {
             self.repo = Some(crate::merge_policy::gate::repo_name(value)?);
         } else if matches!(name, "-H" | "--head") {
-            self.head = !value.contains(':') && !value.starts_with('-');
+            // Empty is "not given" to gh, which then pushes (GPT review, Nov 18).
+            self.head = super::git::branch_name(value);
         } else if FILE_OPTIONS.contains(&name) {
             self.files.push(value);
         }
@@ -99,6 +100,15 @@ impl<'a> PrCommand<'a> {
         let aimed = named.is_some_and(|named| named.eq_ignore_ascii_case(repo)) && self.repo.is_none_or(|r| r.eq_ignore_ascii_case(repo));
         aimed && self.files.iter().all(|file| *file == "-" || body_file_ok(file, root, repo))
     }
+}
+
+/// The pinned line for checked `words` (`gh pr <verb> ...`): rebuilt from
+/// them, each quoted, so the shell cannot expand anything the check did not
+/// see (`"$?"`, zsh's `=cmd`; GPT review, Nov 18). `gh` stays bare for
+/// [`super::step_env::runs_gh`].
+pub(crate) fn pinned_command(words: &[&str]) -> String {
+    let rest: Vec<String> = words.iter().skip(1).map(|w| super::quote(w)).collect();
+    super::pin_env(&format!("gh {}", rest.join(" ")))
 }
 
 /// A body file push trust may publish: see [`PrCommand::allowed`].
