@@ -19,6 +19,14 @@ pub enum OwnerBasis {
     Conflicting,
 }
 
+/// What the Agent's profile publishes merged into its run cards: the owner
+/// as [`with_profile_owner`], and the profile's runtime (set at each start)
+/// before the newest card's. The runtime is display-only.
+pub fn with_profile(mut cards: CardFacts, profile: super::agent_profile_owner::Published) -> CardFacts {
+    cards.runtime = profile.runtime.or(cards.runtime);
+    with_profile_owner(cards, profile.owner)
+}
+
 /// The Agent's two self-claims of its owner merged: its profile field and its
 /// run cards. Where they name different people, neither is shown.
 pub fn with_profile_owner(mut cards: CardFacts, profile: Option<OwnedUserId>) -> CardFacts {

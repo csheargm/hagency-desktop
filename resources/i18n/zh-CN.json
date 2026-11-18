@@ -3387,7 +3387,7 @@
   "Inviting {user} to this room…": "正在邀请 {user} 加入这个房间…",
   "Rooms in common": "共同的房间",
   "No rooms in common": "没有共同的房间",
-  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "部分房间的成员列表尚未加载，此列表可能不完整。",
+  "No rooms in common in the member lists loaded on this device": "在此设备已加载的成员列表中没有共同房间",
   "Activity": "动态",
   "Activity is kept on the device that runs this agent.": "动态保存在运行此智能体的设备上。",
   "Agent settings": "智能体设置",

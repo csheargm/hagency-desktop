@@ -9,8 +9,8 @@
 //!   Agent has no roster row: its own profile ([`super::agent_profile_owner`])
 //!   and its run cards in the Room ([`super::agent_room_cards`]) say whose it
 //!   is, which is only the Agent's word ([`OwnerBasis::StatedByAgent`]), and
-//!   no owner at all when they disagree; the cards name its runtime, and the
-//!   Room's Status lists what it does now ("idle", "working on #12").
+//!   no owner at all when they disagree; its profile and cards name its
+//!   runtime, and the Room's Status lists what it does now ("idle", "working on #12").
 //!
 //! Reads never block drawing: a lookup returns what is cached and starts at
 //! most one fetch, whose reply posts [`AgentFactsChanged`].
@@ -22,7 +22,7 @@ use serde_json::Value;
 use crate::hagency::{agent_panel::mapping, model::{Command, LocalAction}};
 use super::own_agents;
 pub use super::agent_fact_lines::{fact_lines, owner_label, owner_name};
-pub use super::agent_owner_claims::{OwnerBasis, owner_basis, with_profile_owner};
+pub use super::agent_owner_claims::{OwnerBasis, owner_basis, with_profile, with_profile_owner};
 
 /// How long an own Agent's service status is shown before it is asked again.
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -170,7 +170,7 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         cache.rosters.get(room).map(|(at, rows)| (at.elapsed() > ROSTER_TTL, rows.get(agent).cloned()))
     };
     if roster.as_ref().is_none_or(|(stale, _)| *stale) { load_roster(&account, room.to_owned()); }
-    let cards = with_profile_owner(super::agent_room_cards::in_room(room, agent), super::agent_profile_owner::owner_of(agent));
+    let cards = with_profile(super::agent_room_cards::in_room(room, agent), super::agent_profile_owner::published_by(agent));
     let mut facts = others_facts(roster.and_then(|(_, row)| row), cards);
     facts.activity = facts.status.is_none().then(|| {
         crate::home::room_watches::activity(room, agent.as_str(), facts.owner.as_ref().map(|o| o.as_str()))

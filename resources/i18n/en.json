@@ -3382,7 +3382,7 @@
   "Inviting {user} to this room…": "Inviting {user} to this room…",
   "Rooms in common": "Rooms in common",
   "No rooms in common": "No rooms in common",
-  "Some rooms' member lists are not loaded yet, so this list may be incomplete.": "Some rooms' member lists are not loaded yet, so this list may be incomplete.",
+  "No rooms in common in the member lists loaded on this device": "No rooms in common in the member lists loaded on this device",
   "Activity": "Activity",
   "Activity is kept on the device that runs this agent.": "Activity is kept on the device that runs this agent.",
   "Agent settings": "Agent settings",

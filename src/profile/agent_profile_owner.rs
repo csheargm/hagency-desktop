@@ -1,21 +1,25 @@
-//! Whose Agent another server's Agent is, from its own Matrix profile
-//! ([`hagency_core::agent_owner`]): the Agent publishes its owner when it
-//! starts, so a member on another server knows it before the Agent has
-//! posted a run card. Accepted only when the owner is a person on the
-//! Agent's own server; this server's roster still wins where it has a row.
+//! Whose Agent another owner's Agent is and what it runs on, from its own
+//! Matrix profile ([`hagency_core::agent_owner`]): the Agent publishes both
+//! when it starts, so a member on another server knows them before the
+//! Agent has posted a run card. The owner is read only for another server's
+//! Agent and accepted only when it is a person on the Agent's own server;
+//! this server's roster still wins where it has a row. The runtime is
+//! display-only, read for any Agent that is not this account's.
 //!
-//! Reads never block drawing: [`owner_of`] returns what is cached and starts
-//! at most one read per Agent, whose reply posts [`AgentFactsChanged`].
+//! Reads never block drawing: [`published_by`] returns what is cached and
+//! starts at most one read per Agent, whose reply posts [`AgentFactsChanged`].
 
 use std::{collections::HashMap, sync::{LazyLock, Mutex}, time::{Duration, Instant}};
 use makepad_widgets::Cx;
 use matrix_sdk::{Client, RoomMemberships, ruma::{OwnedUserId, RoomId, UserId, api::client::profile::ProfileFieldName}};
-use hagency_core::agent_owner::{OWNER_FIELD, verified_owner};
+use hagency_core::agent_owner::{OWNER_FIELD, RUNTIME_FIELD, verified_owner, verified_runtime};
 use super::agent_facts::AgentFactsChanged;
 
-/// How long a published owner is reused; an owner is set once per Agent.
+/// How long a published profile is reused; it changes only when the Agent
+/// restarts on another runtime or owner.
 const FOUND_TTL: Duration = Duration::from_secs(300);
-/// How long "not published" is reused: an Agent that starts soon publishes.
+/// How long a profile without a runtime is reused (even with an owner): an
+/// Agent that starts soon publishes it.
 const MISSING_TTL: Duration = Duration::from_secs(30);
 /// A read still marked loading after this is taken as lost (cancelled task).
 const LOADING_TTL: Duration = Duration::from_secs(20);
@@ -25,10 +29,19 @@ const MAX_AGENTS: usize = 32;
 /// server listings alone.
 const ENRICH_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// What an Agent's profile says about it; `None` when it names nothing
+/// acceptable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Published {
+    pub owner: Option<OwnedUserId>,
+    /// "Claude", "Codex" or "Octos".
+    pub runtime: Option<&'static str>,
+}
+
 #[derive(Default)]
 struct Cache {
     account: Option<OwnedUserId>,
-    owners: HashMap<OwnedUserId, (Instant, Option<OwnedUserId>)>,
+    owners: HashMap<OwnedUserId, (Instant, Published)>,
     loading: HashMap<OwnedUserId, Instant>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
@@ -41,8 +54,8 @@ fn cache_for(account: &OwnedUserId) -> std::sync::MutexGuard<'static, Cache> {
     cache
 }
 
-fn fresh(entry: &(Instant, Option<OwnedUserId>)) -> bool {
-    entry.0.elapsed() < if entry.1.is_some() { FOUND_TTL } else { MISSING_TTL }
+fn fresh(entry: &(Instant, Published)) -> bool {
+    entry.0.elapsed() < if entry.1.runtime.is_some() { FOUND_TTL } else { MISSING_TTL }
 }
 
 /// Only another server's Agent is read: this server's Agents are in its own
@@ -58,46 +71,67 @@ fn start_loading(cache: &mut Cache, agent: &UserId) -> bool {
     true
 }
 
-/// The owner another server's `agent` publishes, as last read; starts a read
-/// when unknown or stale. `None` for a person, a local Agent, or until read.
-pub fn owner_of(agent: &UserId) -> Option<OwnedUserId> {
-    let account = crate::sliding_sync::current_user_id()?;
-    if !is_federated_agent(agent, &account) { return None; }
+/// What another owner's `agent` publishes, as last read; starts a read when
+/// unknown or stale. Nothing for a person or until read; no owner for this
+/// server's Agent (its listings settle that).
+pub fn published_by(agent: &UserId) -> Published {
+    let Some(account) = crate::sliding_sync::current_user_id() else { return Published::default() };
+    if !crate::hagency::backend::is_agent_invitation(agent) { return Published::default(); }
     let mut cache = cache_for(&account);
     let cached = cache.owners.get(agent).cloned();
     if cached.as_ref().is_none_or(|entry| !fresh(entry)) && start_loading(&mut cache, agent) {
         let agent = agent.to_owned();
         crate::sliding_sync::spawn_async_task(async move {
-            let owner = match crate::sliding_sync::get_client() {
-                Some(client) => read(&client, &agent).await.ok().flatten(),
-                None => None,
+            let published = match crate::sliding_sync::get_client() {
+                Some(client) => read_published(&client, &agent, &account).await,
+                None => Published::default(),
             };
-            remember(&account, &agent, owner);
+            remember(&account, &agent, published);
             Cx::post_action(AgentFactsChanged);
         });
     }
-    cached.and_then(|(_, owner)| owner)
+    cached.map(|(_, published)| published).unwrap_or_default()
 }
 
-fn remember(account: &OwnedUserId, agent: &OwnedUserId, owner: Option<OwnedUserId>) {
+/// Both fields of `agent`'s profile as `account` may use them: an owner only
+/// from another server's Agent (an unreadable owner counts as none here).
+async fn read_published(client: &Client, agent: &UserId, account: &UserId) -> Published {
+    let federated = is_federated_agent(agent, account);
+    let owner = async { if federated { read(client, agent).await.ok().flatten() } else { None } };
+    let (owner, runtime) = futures_util::join!(owner, read_runtime(client, agent));
+    Published { owner, runtime }
+}
+
+fn remember(account: &OwnedUserId, agent: &OwnedUserId, published: Published) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     // A reply for a signed-out account is dropped, never mixed into the next.
     if cache.account.as_ref() != Some(account) { return; }
     cache.loading.remove(agent);
-    cache.owners.insert(agent.clone(), (Instant::now(), owner));
+    cache.owners.insert(agent.clone(), (Instant::now(), published));
+}
+
+/// One field of `agent`'s profile: `Ok(None)` when it publishes none.
+async fn read_field(client: &Client, agent: &UserId, field: &str) -> Result<Option<serde_json::Value>, String> {
+    match client.account().fetch_profile_field_of(agent.to_owned(), ProfileFieldName::from(field)).await {
+        Ok(value) => Ok(value.map(|value| value.value().into_owned())),
+        Err(error) if matches!(error.client_api_error_kind(), Some(matrix_sdk::ruma::api::error::ErrorKind::NotFound)) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The runtime label `agent`'s profile names; `None` when it names none,
+/// an unknown one, or could not be read (display-only).
+pub async fn read_runtime(client: &Client, agent: &UserId) -> Option<&'static str> {
+    let value = read_field(client, agent, RUNTIME_FIELD).await.ok()??;
+    verified_runtime(agent.as_str(), &value).map(crate::hagency::agent_panel::mapping::harness_label)
 }
 
 /// The verified owner `agent`'s profile names, read from its server now:
 /// `Ok(None)` when it publishes none (or an unverifiable one), `Err` when
 /// its profile could not be read.
 pub async fn read(client: &Client, agent: &UserId) -> Result<Option<OwnedUserId>, String> {
-    let field = ProfileFieldName::from(OWNER_FIELD);
-    let value = match client.account().fetch_profile_field_of(agent.to_owned(), field).await {
-        Ok(value) => value,
-        Err(error) if matches!(error.client_api_error_kind(), Some(matrix_sdk::ruma::api::error::ErrorKind::NotFound)) => None,
-        Err(error) => return Err(error.to_string()),
-    };
-    Ok(value.and_then(|value| verified_owner(agent.as_str(), &value.value())).and_then(|owner| OwnedUserId::try_from(owner).ok()))
+    let value = read_field(client, agent, OWNER_FIELD).await?;
+    Ok(value.and_then(|value| verified_owner(agent.as_str(), &value)).and_then(|owner| OwnedUserId::try_from(owner).ok()))
 }
 
 /// Adds to the Members list's `owners` each joined federated Agent's
@@ -112,9 +146,11 @@ pub async fn add_profile_owners(room: &RoomId, owners: &mut HashMap<OwnedUserId,
         let (client, account) = (&client, &account);
         async move {
             let cached = cache_for(account).owners.get(&agent).filter(|entry| fresh(entry)).cloned();
+            // Not cached from here: a read of the owner alone would hide
+            // the runtime the profile publishes until the entry went stale.
             let owner = match cached {
-                Some((_, owner)) => Ok(owner),
-                None => read(client, &agent).await.inspect(|owner| remember(account, &agent, owner.clone())),
+                Some((_, published)) => Ok(published.owner),
+                None => read(client, &agent).await,
             };
             (agent, owner)
         }
@@ -177,8 +213,10 @@ mod tests {
     #[test]
     fn a_missing_owner_is_asked_again_sooner_than_a_found_one() {
         let old = Instant::now() - Duration::from_secs(60);
-        assert!(!fresh(&(old, None)), "an Agent may have started since");
-        assert!(fresh(&(old, Some(owned_user_id!("@bird:beta")))));
+        assert!(!fresh(&(old, Published::default())), "an Agent may have started since");
+        let owner_only = Published { owner: Some(owned_user_id!("@bird:beta")), runtime: None };
+        assert!(!fresh(&(old, owner_only.clone())), "GPT review: a known owner must not hold back a runtime published since");
+        assert!(fresh(&(old, Published { runtime: Some("Claude"), ..owner_only })));
     }
 
     async fn signed_in(origin: &str) -> Client {
@@ -209,10 +247,24 @@ mod tests {
         Mock::given(method("GET")).and(path_regex(r"/profile/(@|%40)_hagency_agt_down(:|%3A)beta/io\.hagency\.owner$"))
             .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({"errcode": "M_FORBIDDEN", "error": "profile lookup disabled"})))
             .mount(&server).await;
+        Mock::given(method("GET")).and(path_regex(r"/profile/(@|%40)_hagency_agt_b(:|%3A)beta/io\.hagency\.runtime$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"io.hagency.runtime": "claude"})))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path_regex(r"/profile/(@|%40)_hagency_agt_x(:|%3A)beta/io\.hagency\.runtime$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"io.hagency.runtime": "gpt-9"})))
+            .mount(&server).await;
         let client = signed_in(&server.uri()).await;
         assert_eq!(read(&client, user_id!("@_hagency_agt_b:beta")).await, Ok(Some(owned_user_id!("@bird:beta"))));
         assert_eq!(read(&client, user_id!("@_hagency_agt_x:beta")).await, Ok(None), "an owner off the Agent's server");
         assert_eq!(read(&client, user_id!("@_hagency_agt_n:beta")).await, Ok(None), "not published yet");
         assert!(read(&client, user_id!("@_hagency_agt_down:beta")).await.is_err(), "an unreadable profile is not 'none'");
+        let anna = user_id!("@anna:alpha");
+        assert_eq!(read_published(&client, user_id!("@_hagency_agt_b:beta"), anna).await,
+            Published { owner: Some(owned_user_id!("@bird:beta")), runtime: Some("Claude") }, "owner and runtime from one profile");
+        assert_eq!(read_runtime(&client, user_id!("@_hagency_agt_x:beta")).await, None, "an unknown runtime");
+        assert_eq!(read_runtime(&client, user_id!("@_hagency_agt_n:beta")).await, None, "not published yet");
+        assert_eq!(read_runtime(&client, user_id!("@_hagency_agt_down:beta")).await, None, "unreadable: nothing shown");
+        let local = read_published(&client, user_id!("@_hagency_agt_b:beta"), user_id!("@bird:beta")).await;
+        assert_eq!((local.owner, local.runtime), (None, Some("Claude")), "this server's Agent: runtime only, its listings settle the owner");
     }
 }

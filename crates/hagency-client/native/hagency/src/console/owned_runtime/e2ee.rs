@@ -129,7 +129,7 @@ pub(super) async fn device<T: Transport>(
     if let Some(device) = devices.get(&key)
         && !device.revoked.load(Ordering::Acquire)
     {
-        claim_owner(transport, device);
+        owner_claim::claim_profile(transport, device, config);
         super::run_controls::device_ready(device.clone());
         return Ok(device.clone());
     }
@@ -145,18 +145,11 @@ pub(super) async fn device<T: Transport>(
         return Err(RuntimeError::Transport);
     };
     let device = Arc::new(AgentDevice::open(grant, &directory, &config.agent_id).await?);
-    claim_owner(transport, &device);
+    owner_claim::claim_profile(transport, &device, config);
     super::questions::device_ready(device.clone());
     super::run_controls::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
-}
-
-/// The signed-in owner's console runs this Agent: it publishes that owner.
-fn claim_owner<T: Transport>(transport: &T, device: &AgentDevice) {
-    if let Some(host) = transport.approval_host() {
-        device.claim_owner(&host.pin.owner);
-    }
 }
 
 fn namespace<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
