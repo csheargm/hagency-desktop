@@ -141,7 +141,7 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     } else if host_stopped(value) {
         // The host watchdog (backend/host_watchdog.rs) starts it again.
         "host_restarting"
-    } else if let Some(sign_in) = ours.then(|| sign_in_state(value)).flatten() {
+    } else if let Some(sign_in) = sign_in_state(value, ours) {
         sign_in
     } else if attention {
         "attention"
@@ -156,11 +156,17 @@ fn service_state(value: &Value, agent: &str) -> &'static str {
     }
 }
 /// The owner's Claude Code or Codex is signed out on this computer: the
-/// runtime's or a Room worker's last error names which one.
-fn sign_in_state(value: &Value) -> Option<&'static str> {
-    let runtime = &value["runtime"];
+/// runtime's or a Room worker's last error names which one, and so does the
+/// service's pending retry while a restart is checking the login again, so
+/// the hint stays until a retry succeeds.
+fn sign_in_state(value: &Value, ours: bool) -> Option<&'static str> {
+    let runtime = if ours { &value["runtime"] } else { &Value::Null };
     let bindings = runtime["bindings"].as_array().into_iter().flatten();
-    std::iter::once(runtime).chain(bindings).find_map(|r| match text(r, "lastError") {
+    let problems = value["service"]["problems"].as_array().into_iter().flatten();
+    let errors = std::iter::once(text(runtime, "lastError"))
+        .chain(bindings.map(|b| text(b, "lastError")))
+        .chain(problems.map(|p| text(p, "error")));
+    errors.into_iter().find_map(|error| match error {
         "claude_login_required" => Some("claude_sign_in"),
         "codex_login_required" => Some("codex_sign_in"),
         _ => None,
@@ -403,6 +409,19 @@ mod tests {
         let other = json!({"service": {"enabled": true, "watcherRunning": true},
             "runtime": {"agentId": "agt_2", "phase": "online", "lastError": "claude_login_required"}});
         assert_ne!(service_state(&other, agent), "claude_sign_in", "another Agent's sign-in is not this one's");
+        // Regression (2026-11-17, Claude CLI auto-update): while the service
+        // retries the Room worker, the worker reads "checking" with no error;
+        // the pending retry still names the sign-in until one succeeds.
+        let retrying = json!({"service": {"enabled": true, "watcherRunning": true, "phase": "retrying",
+                "problems": [{"bindingId": "b", "error": "claude_login_required", "retryInSeconds": 60}]},
+            "runtime": {"agentId": agent, "phase": "checking_provider", "bindings": [{"phase": "checking_provider"}]}});
+        assert_eq!(service_state(&retrying, agent), "claude_sign_in");
+        let mut host_gone = retrying.clone();
+        host_gone["runtime"] = Value::Null;
+        assert_eq!(service_state(&host_gone, agent), "claude_sign_in", "the service's own retry is this Agent's");
+        let recovered = json!({"service": {"enabled": true, "watcherRunning": true, "phase": "serving", "problems": []},
+            "runtime": {"agentId": agent, "phase": "online", "bindings": [{"phase": "online_chat_only"}]}});
+        assert_eq!(service_state(&recovered, agent), "running", "a successful retry clears the hint");
     }
     #[test]
     fn session_names_what_a_local_agent_needs_here() {
