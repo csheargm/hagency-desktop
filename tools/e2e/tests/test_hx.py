@@ -82,6 +82,11 @@ class GitHubGuards(unittest.TestCase):
         with mock.patch.object(github, "gh", return_value=rows):
             self.assertEqual([p["number"] for p in github.prs_closing(12)], [5])
 
+    def test_branch_naming_issue_is_exact(self):
+        names = ["main", "agent/issue-45-e2e-doc", "fix/issue-450-x", "issue45"]
+        with mock.patch.object(github, "gh", return_value=names):
+            self.assertEqual(github.branches_naming_issue(45), ["agent/issue-45-e2e-doc", "issue45"])
+
     def test_never_deletes_default_branch(self):
         with mock.patch.object(github, "gh") as gh, self.assertRaises(github.GitHubError):
             github.delete_branch("main")

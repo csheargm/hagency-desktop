@@ -93,6 +93,13 @@ def close_pr_if_unmerged(number: int, comment: str) -> str:
     return "closed"
 
 
+def branches_naming_issue(number: int) -> list:
+    """Non-default branches whose name carries "issue-N" / "issueN"."""
+    names = gh("api", f"repos/{config.SANDBOX_REPO}/branches?per_page=100", "--jq", "[.[].name]")
+    pattern = re.compile(rf"issue-?{number}(\b|[^0-9])")
+    return [n for n in names if n not in ("main", "master") and pattern.search(n)]
+
+
 def branch_exists(name: str) -> bool:
     try:
         gh("api", f"repos/{config.SANDBOX_REPO}/branches/{name}")

@@ -44,6 +44,8 @@ def _stages(number: int) -> dict:
                   merged=_ts(p.get("mergedAt")), branch=p["headRefName"], pr_body=p.get("body") or "")
         reviews = [x for x in p.get("reviews", []) if x.get("submittedAt")]
         st["reviewed"] = min((_ts(x["submittedAt"]) for x in reviews), default=None)
+    else:
+        st["pushed_no_pr"] = github.branches_naming_issue(number)
     return st
 
 
@@ -77,6 +79,8 @@ def _describe(number: int, st: dict) -> str:
     if missing:
         parts.append(f"missing: {', '.join(missing)} (ledger state {st.get('ledger_state')})")
     parts += [f"order: {p}" for p in _order_problems(st)]
+    if st.get("pushed_no_pr"):
+        parts.append(f"branch pushed but no PR: {', '.join(st['pushed_no_pr'])}")
     return " ".join(parts)
 
 
@@ -145,6 +149,10 @@ def cleanup(ctx) -> list:
     for issue, st in ctx.loop_states.items():
         if st.get("pr") and _is_test_pr(st, issue):
             done.append(_try(f"PR #{st['pr']}", lambda s=st: _settle_pr(s)))
+    for issue, st in ctx.loop_states.items():
+        if not st.get("pr"):
+            for b in github.branches_naming_issue(issue):
+                done.append(_try(f"branch {b} (no PR)", lambda b=b: github.delete_branch(b) or "deleted"))
     for n in ctx.created_issues:
         done.append(_try(f"issue #{n}", lambda n=n: github.close_issue(n, "e2e cleanup: closed by the test runner")
                          or "closed (or already closed)"))
