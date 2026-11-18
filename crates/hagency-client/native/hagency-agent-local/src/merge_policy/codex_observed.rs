@@ -62,7 +62,7 @@ impl TurnReviews {
     /// An item completed: settle what the gate held, then (root turn, not
     /// gate-answered, first completion only) record a review it demonstrably posted.
     #[allow(clippy::too_many_arguments)]
-    pub async fn completed(&mut self, ledger: &mut Ledger, scope: &Scope, dispatch: &str, (thread, turn): (&str, &str), item: &Value, (root, by_gate): (bool, &dyn Fn(&str) -> bool), now: i64, source: &impl PrSource) -> Result<Option<Observed>> {
+    pub async fn completed(&mut self, ledger: &mut Ledger, scope: &Scope, dispatch: &str, (thread, turn): (&str, &str), item: &Value, (root, by_gate): (bool, bool), now: i64, source: &impl PrSource) -> Result<Option<Observed>> {
         let Some(id) = item["id"].as_str().filter(|id| item["type"] == "commandExecution" && !id.is_empty()) else {
             return Ok(None);
         };
@@ -70,7 +70,7 @@ impl TurnReviews {
         if !self.done.insert(key.clone()) {
             return Ok(None);
         }
-        if settle(ledger, (thread, turn), item, &mut self.sent)? || !root || by_gate(&key) {
+        if settle(ledger, (thread, turn), item, &mut self.sent)? || !root || by_gate {
             return Ok(None);
         }
         let seen = Seen { started: self.started.get(&key).copied(), decided: self.decided.get(&key) };

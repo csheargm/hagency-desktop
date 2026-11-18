@@ -58,7 +58,7 @@ fn posted(source: &Fake, head: &str, at: i64) {
 async fn run(ledger: &mut Ledger, reviews: &mut TurnReviews, dir: &Path, item: &Value, source: &Fake) -> Option<Observed> {
     let scope = bash("x", dir, "bird-codex").scope;
     reviews.started(T, item, STARTED);
-    reviews.completed(ledger, &scope, "d-bird-codex", T, item, (true, &|_: &str| false), STARTED + 5, source).await.unwrap()
+    reviews.completed(ledger, &scope, "d-bird-codex", T, item, (true, false), STARTED + 5, source).await.unwrap()
 }
 
 #[tokio::test]
@@ -120,10 +120,10 @@ async fn a_command_the_gate_answered_or_a_child_turn_ran_is_not_observed() {
     posted(&docs, HEAD, STARTED + 2);
     let scope = bash("x", dir, "bird-codex").scope;
     let comment = item("exec-g", &rendered("--comment", HEAD, ""), "completed", 0, dir);
-    let gate_said_no = |key: &str| key == call_key(T.0, T.1, "exec-g");
-    assert_eq!(reviews.completed(&mut ledger, &scope, "d-bird-codex", T, &comment, (true, &gate_said_no), STARTED, &docs).await.unwrap(), None);
+    // The gate answered this item (here: refused it): never observed.
+    assert_eq!(reviews.completed(&mut ledger, &scope, "d-bird-codex", T, &comment, (true, true), STARTED, &docs).await.unwrap(), None);
     let child = item("exec-k", &rendered("--comment", HEAD, ""), "completed", 0, dir);
-    assert_eq!(reviews.completed(&mut ledger, &scope, "d-bird-codex", T, &child, (false, &|_: &str| false), STARTED, &docs).await.unwrap(), None);
+    assert_eq!(reviews.completed(&mut ledger, &scope, "d-bird-codex", T, &child, (false, false), STARTED, &docs).await.unwrap(), None);
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
 }
 

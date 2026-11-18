@@ -1917,8 +1917,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     } else {
                         // A review the gate held counts only now; one it never answered is recorded from evidence.
                         let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
-                        let by_gate = |key: &str| approvals.answered_by_gate(key);
-                        if let Some(observed) = reviews.completed(ledger, scope, dispatch, (event_thread, event_turn), item, (event_scope.root, &by_gate), now(), &github).await? {
+                        // Read before the await: the approvals are not shared across threads.
+                        let by_gate = item["id"].as_str().is_some_and(|id| approvals.answered_by_gate(&crate::merge_policy::codex_review::call_key(event_thread, event_turn, id)));
+                        if let Some(observed) = reviews.completed(ledger, scope, dispatch, (event_thread, event_turn), item, (event_scope.root, by_gate), now(), &github).await? {
                             hagency_runtime::codex::approval::review_observed(observed.err());
                         }
                     }
