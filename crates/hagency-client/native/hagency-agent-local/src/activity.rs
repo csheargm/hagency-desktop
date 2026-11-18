@@ -82,7 +82,7 @@ pub(crate) fn remember_handoff(db: &rusqlite::Connection, dispatch: &str, body: 
     }
     db.execute("DELETE FROM handoff_issues WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
     db.execute("DELETE FROM handoff_unanswered WHERE dispatch NOT IN (SELECT dispatch FROM handoff_issues)", [])?;
-    Ok(())
+    crate::merge_policy::step_resend::remember_loop_step(db, dispatch, body)
 }
 
 /// The repository and number a hand-off names.

@@ -6,6 +6,7 @@
 use hagency_agent_local::merge_policy::github::{commit_sha, GhCli};
 use hagency_agent_local::merge_policy::gate::{GhPr, Kind};
 use hagency_agent_local::merge_policy::review_loop::{merge_readiness, HOLD_STEP};
+use hagency_agent_local::merge_policy::step_resend::StepDue;
 use hagency_agent_local::merge_policy::{reason_kind, Decision, CI_PENDING};
 use hagency_agent_local::{Error, Ledger, Result};
 use serde::Deserialize;
@@ -28,6 +29,9 @@ pub(super) struct ReviewChange {
     claim_step: Option<Step>,
     #[serde(default)]
     step_taken: Option<Step>,
+    /// Taken, or given back because its dispatch never ran (Nov 18, PR #94).
+    #[serde(default)]
+    step_due: Option<DueStep>,
     #[serde(default)]
     work_claim: Option<Claim>,
     #[serde(default)]
@@ -40,6 +44,15 @@ struct Step {
     step: String,
     pr: String,
     head: String,
+}
+/// A step and the account that posts its notices (only theirs count).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DueStep {
+    step: String,
+    pr: String,
+    head: String,
+    requester: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -78,9 +91,17 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         pr_head(&step)?;
         reply["taken"] = ledger.loop_step_taken(agent, &step.step, &step.pr, &step.head)?.into();
     }
+    if let Some(DueStep { step, pr, head, requester }) = change.step_due {
+        let step = Step { step, pr, head };
+        pr_head(&step)?;
+        if !requester.starts_with('@') {
+            return Err(Error::Invalid("requester must be a Matrix user ID"));
+        }
+        reply["due"] = due_json(ledger.step_due(agent, (&step.step, &step.pr, &step.head), &requester, now)?);
+    }
     if let Some(step) = change.claim_step {
         pr_head(&step)?;
-        reply["claimed"] = ledger.claim_loop_step(agent, &step.step, &step.pr, &step.head)?.into();
+        reply["claimed"] = ledger.claim_dispatched_step(agent, &step.step, &step.pr, &step.head)?.into();
     }
     if let Some(claim) = change.work_claim {
         if !assigned(ledger, agent, &claim.repo)? {
@@ -109,6 +130,15 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
     Ok(reply)
 }
 
+/// `{taken, again, say?: {why, gaveUp, round}}`: `again` keys a re-post's message.
+fn due_json(due: StepDue) -> Value {
+    let mut reply = json!({"taken": due.taken, "again": due.again});
+    if let Some(say) = due.say {
+        reply["say"] = json!({"why": say.why.word(), "gaveUp": say.gave_up, "round": say.round});
+    }
+    reply
+}
+
 /// `{decision: merge|wait|human, head, reason, kind}`; unreadable facts ask a
 /// person. `kind` (`approvals`, `ci`, `rules`) says what a person's decision is about.
 pub(super) fn readiness_json(judged: Option<(&str, &Decision)>) -> Value {
@@ -130,6 +160,8 @@ mod tests {
         let ok: ReviewChange = serde_json::from_value(json!({"claimStep": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha}, "workClaim": {"repo": "a/b", "number": 3}, "readiness": {"repo": "a/b", "number": 1}})).unwrap();
         assert!(ok.claim_step.is_some() && ok.work_claim.is_some() && ok.readiness.is_some());
         assert!(serde_json::from_value::<ReviewChange>(json!({"merge": true})).is_err());
+        let due: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x"}})).unwrap();
+        assert!(due.step_due.is_some());
         let step = |s: &str, pr: &str, head: &str| Step { step: s.into(), pr: pr.into(), head: head.into() };
         assert!(pr_head(&step("merge", "https://github.com/a/b/pull/1", &sha)).is_ok());
         assert!(pr_head(&step("merge", "http://evil/a", &sha)).is_err());

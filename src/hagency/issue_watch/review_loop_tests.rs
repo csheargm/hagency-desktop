@@ -18,13 +18,16 @@ impl Fake {
     }
 }
 impl LoopIo for Fake {
-    async fn post(&self, notice: &LoopNotice) -> Result<(), String> {
+    async fn post(&self, notice: &LoopNotice, _again: u32) -> Result<(), String> {
         self.posted.borrow_mut().push(notice.clone());
         Ok(())
     }
     async fn review(&self, change: Value) -> Result<Value, String> {
         if let Some(step) = change.get("stepTaken") {
             return Ok(json!({"taken": self.steps.borrow().contains(step["step"].as_str().unwrap())}));
+        }
+        if let Some(step) = change.get("stepDue") {
+            return Ok(json!({"due": {"taken": self.steps.borrow().contains(step["step"].as_str().unwrap()), "again": 0}}));
         }
         if let Some(step) = change.get("claimStep") {
             return Ok(json!({"claimed": self.steps.borrow_mut().insert(step["step"].as_str().unwrap().to_owned())}));
@@ -33,6 +36,9 @@ impl LoopIo for Fake {
     }
     fn paused(&self) -> bool {
         self.paused
+    }
+    fn requester(&self) -> String {
+        "@owner:alpha".into()
     }
 }
 
