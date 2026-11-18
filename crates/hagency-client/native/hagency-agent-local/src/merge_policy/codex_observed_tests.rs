@@ -62,6 +62,8 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
         ("no --repo", rendered("--comment", HEAD, "").replacen(" --repo csheargm/hagency-demo-sandbox", "", 1), &docs, true, None),
         ("not low risk", rendered("--comment", HEAD, ""), &code, true, None),
         ("switch off", rendered("--comment", HEAD, ""), &docs, false, None),
+        ("a marker a newline made", rendered("--comment", HEAD, "").replacen("Hagency verdict:", "Hagency\nverdict:", 1), &docs, true, None),
+        ("a marker split from its head", rendered("--comment", HEAD, "").replacen(&format!("APPROVE {HEAD}"), &format!("APPROVE\n{HEAD}"), 1), &docs, true, None),
         ("rules of another room", rendered("--comment", HEAD, ""), &docs, true, Some(other_room)),
     ];
     for (name, command, source, on, rules) in cases {
@@ -79,6 +81,10 @@ async fn an_observed_review_the_gate_would_refuse_is_not_recorded() {
     stranger.room = "!elsewhere:x".into();
     record_observed(&mut ledger, &stranger, "d-bird-codex", "/tmp", &item("exec", &rendered("--comment", HEAD, ""), "completed", 0), 11, &docs).await;
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "another room's scope");
+    let mut member = bash("x", temp.path(), "bird-codex").scope;
+    member.requester = "@mallory:example.org".into();
+    record_observed(&mut ledger, &member, "d-bird-codex", &temp.path().to_string_lossy(), &item("exec", &rendered("--comment", HEAD, ""), "completed", 0), 11, &docs).await;
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "a room member without review sharing");
 }
 
 #[tokio::test]

@@ -68,15 +68,18 @@ pub fn settle(ledger: &mut Ledger, (thread, turn): (&str, &str), item: &Value, s
 /// marker), auto-merge switch, scope and policy checks, and the repository's
 /// owner rules (if any) bound to this room. A blocking review that ran
 /// withdraws this Agent's approvals. Nothing is authorized here: this only
-/// records what demonstrably ran (live PR #50, Nov 17). A newline inside the
+/// records what demonstrably ran (live PR #50, Nov 17), and only for a root
+/// turn that asked no approvals at all (the caller's `unasked`). A newline inside the
 /// review body reads as a space: any word it would start outside the body
 /// makes the command unreadable, so nothing is recorded.
 pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str, cwd: &str, item: &Value, now: i64, source: &impl PrSource) -> Option<()> {
     if item["type"] != "commandExecution" || item["status"] != "completed" || item["exitCode"] != 0 {
         return None;
     }
-    let line = item["command"].as_str()?.replace(['\n', '\r'], " ");
-    let directory = item["cwd"].as_str().filter(|path| std::path::Path::new(path).is_absolute()).unwrap_or(cwd);
+    let raw = item["command"].as_str()?;
+    let line = raw.replace(['\n', '\r'], " ");
+    // The turn's own workspace, never a directory the item reports (GPT review).
+    let directory = cwd;
     let versions = ledger.policy_snapshot(scope).ok()?;
     let proposal = ToolProposal {
         scope: scope.clone(),
@@ -99,11 +102,17 @@ pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str,
     if ledger.owner_rules(&scope.agent, &repo).ok()?.is_some_and(|rules| rules.room_id != scope.room) {
         return None;
     }
+    // A room member's review counts only while the owner lets the Agent review there, as in the gate.
+    if scope.requester != ledger.owner && !ledger.room_share(&scope.agent, &scope.room).ok()?.review {
+        return None;
+    }
     let view = source.pull_request(&command).await?;
     if command.kind == gate::Kind::RequestChanges {
         return ledger.withdraw_agent_review(&view.url, &scope.agent).ok();
     }
-    if !gate::qualifies(ledger, &command, &view, &scope.agent, source).await? {
+    // The marker and the head it names must be one unbroken run of the text
+    // that ran: a newline can never make an ordinary comment an approval (GPT review).
+    if !raw.contains(&format!("{} {}", gate::APPROVE_MARKER, view.head_sha)) || !gate::qualifies(ledger, &command, &view, &scope.agent, source).await? {
         return None;
     }
     ledger.record_agent_review(&view.url, &view.head_sha, &scope.agent).ok()
