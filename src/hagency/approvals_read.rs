@@ -72,7 +72,7 @@ fn merge(room: Option<&str>, answer: Result<Value, String>, local: Result<(Vec<V
         Err(code) => {
             // The inbox says so too (`UNREADABLE`); the poll repeats within seconds.
             makepad_widgets::log!("Local Agent approvals unreadable: {code}");
-            (Vec::new(), vec![json!({"agent": "", "code": code})])
+            (Vec::new(), vec![json!({"agent": "", "agentId": "", "code": code})])
         }
     };
     let rows: Vec<Value> = rows.into_iter().filter(|r| room.is_none_or(|room| r["approval"]["roomId"] == room)).collect();

@@ -234,15 +234,16 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
         state.for_identity(&update.identity);
         state.forget_old_decisions(now);
         let before = shape(state.rows.iter());
-        let rows: Vec<PendingApproval> = fresh.into_iter().map(|row| state.pending(row)).collect();
+        let mut rows: Vec<PendingApproval> = fresh.into_iter().map(|row| state.pending(row)).collect();
         // Management failed but this app's own Agent was read: say so.
         let error = value[super::local_approvals::MANAGEMENT_ERROR].as_str().map(str::to_owned);
         let unreadable = unreadable_agents(value);
-        let complete = error.is_none() && unreadable.is_empty();
         let problems_changed = state.read_error != error || unreadable != state.unreadable;
         (state.read_error, state.unreadable) = (error, unreadable);
-        // Only a complete reading can tell that a request ended.
-        let expired = if complete { newly_expired(&state.rows, &rows, &decided, now) } else { 0 };
+        // A source this reading missed keeps its rows; only a source it read
+        // can tell that a request left the list.
+        let (seen, missed) = super::approvals_partial::split(value, std::mem::take(&mut state.rows));
+        let expired = newly_expired(&seen, &rows, &decided, now) + super::approvals_partial::keep(missed, &mut rows, now);
         state.rows = rows;
         let after = shape(state.rows.iter());
         let announce: Vec<PendingApproval> = state
@@ -326,15 +327,17 @@ pub fn merge_room(identity: &str, room: &str, value: &Value, on_screen: bool) ->
     state.forget_old_decisions(now);
     let before = shape(state.rows.iter().filter(|p| p.room_id() == room));
     let fresh: Vec<PendingApproval> = fresh.into_iter().map(|row| state.pending(row)).collect();
-    let after = shape(fresh.iter());
     if on_screen {
         for p in &fresh {
             state.announced.insert(p.id().to_owned());
         }
     }
     let previous: Vec<PendingApproval> = state.rows.iter().filter(|p| p.room_id() == room).cloned().collect();
-    let complete = value[super::local_approvals::MANAGEMENT_ERROR].is_null() && unreadable_agents(value).is_empty();
-    let expired = if complete { newly_expired(&previous, &fresh, &decided_ids(value), now) } else { 0 };
+    // As in `apply`: a source the room's reading missed keeps its rows.
+    let (seen, missed) = super::approvals_partial::split(value, previous);
+    let mut fresh = fresh;
+    let expired = newly_expired(&seen, &fresh, &decided_ids(value), now) + super::approvals_partial::keep(missed, &mut fresh, now);
+    let after = shape(fresh.iter());
     state.rows.retain(|p| p.room_id() != room);
     state.rows.extend(fresh);
     // Announced by the next `announce_expired` (the inbox calls it on every change).
@@ -696,6 +699,34 @@ mod tests {
         // A failed send makes the request answerable again.
         apply_decided(&PendingApprovalDecided { id: "sap_next".into(), decision: "deny".into(), result: Err("approval_expired".into()) });
         assert!(matches!(local_decision("sap_next"), LocalDecision::Failed(..)));
+        forget_identity();
+    }
+
+    /// Integration review: management times out for a poll; its card stays,
+    /// and when it expires during the outage the owner still gets the record.
+    #[test]
+    fn a_partial_reading_keeps_what_it_could_not_see_and_still_records_expiry() {
+        let _turn = TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        forget_identity();
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let answer = |value: Value| PendingApprovalsUpdate { identity: "me".into(), result: Ok(value) };
+        let mut soon = row("sap_soon", "!a:x", "$e", true);
+        soon["approval"]["expiresAtMs"] = json!(now_ms() + 300);
+        assert!(apply(&mut cx, &answer(json!({"approvals": [row("sap_a", "!a:x", "$e", true), soon]}))));
+        let down = json!({"approvals": [], crate::hagency::local_approvals::MANAGEMENT_ERROR: READ_TIMEOUT});
+        apply(&mut cx, &answer(down.clone()));
+        assert_eq!(total(), 2, "the management cards stay while management is down");
+        assert_eq!(read_problems().0.as_deref(), Some(READ_TIMEOUT));
+        // The room's own reading is partial too: it keeps them as well.
+        merge_room("me", "!a:x", &down, true);
+        assert_eq!(for_room(&RoomId::parse("!a:x").unwrap()).len(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        apply(&mut cx, &answer(down));
+        assert_eq!(total(), 1, "the expired one leaves the list");
+        assert!(super::super::expired_approvals::listed(now_ms()).iter().any(|e| e.id() == "sap_soon"), "and is recorded");
+        // A complete reading that no longer lists the other ends it normally.
+        apply(&mut cx, &answer(json!({"approvals": []})));
+        assert_eq!(total(), 0);
         forget_identity();
     }
 

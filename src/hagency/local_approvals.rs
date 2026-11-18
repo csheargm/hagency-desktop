@@ -100,31 +100,47 @@ pub fn ensure_watching() {
 }
 
 /// The waiting requests of this app's Agents, and the Agents whose queue
-/// could not be read (`{agent, code}`), which are logged, never skipped silently.
+/// could not be read (`{agent, agentId, code}`), which are logged, never
+/// skipped silently.
 pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(Vec<Value>, Vec<Value>), String> {
     use super::approvals_read::{QUEUE_WAIT, STALE_AGENT_LIST, own_agents};
-    let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
     let (agents, stale) = own_agents(service).await?;
+    let (rows, mut unreadable) = read_queues(agents, QUEUE_WAIT, |id| {
+        let local = Command::Local { agent_id: id, action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
+        service.execute(local)
+    }).await;
     if stale {
         // An Agent started since the last list may be missing: say so.
-        unreadable.push(json!({"agent": "", "code": STALE_AGENT_LIST}));
-    }
-    for (id, name) in agents {
-        let local = Command::Local { agent_id: id.clone(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
-        // An Agent that does not run on this device answers an empty queue.
-        let answer = tokio::time::timeout(QUEUE_WAIT, service.execute(local)).await
-            .unwrap_or_else(|_| Err(super::pending_approvals::READ_TIMEOUT.into()));
-        let answer = match answer {
-            Ok(answer) => answer,
-            Err(code) => {
-                makepad_widgets::log!("Approvals of Agent {id} unreadable: {code}");
-                unreadable.push(json!({"agent": name, "code": code}));
-                continue;
-            }
-        };
-        rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, &name)));
+        unreadable.insert(0, json!({"agent": "", "agentId": "", "code": STALE_AGENT_LIST}));
     }
     Ok((rows, unreadable))
+}
+
+/// Read every Agent's queue at once, each within `wait`: a slow or failing
+/// queue is named in the second list and never delays or hides the others'
+/// requests (integration review: read one after another, three slow queues
+/// used up the whole reading's limit and every card was dropped).
+pub(crate) async fn read_queues<F, Fut>(agents: Vec<(String, String)>, wait: std::time::Duration, read: F) -> (Vec<Value>, Vec<Value>)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let answers = futures_util::future::join_all(agents.iter().map(|(id, _)| {
+        let queue = read(id.clone());
+        async move { tokio::time::timeout(wait, queue).await.unwrap_or_else(|_| Err(super::pending_approvals::READ_TIMEOUT.into())) }
+    })).await;
+    let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
+    for ((id, name), answer) in agents.iter().zip(answers) {
+        match answer {
+            // An Agent that does not run on this device answers an empty queue.
+            Ok(answer) => rows.extend(answer["approvals"].as_array().into_iter().flatten().filter_map(|v| to_row(v, name))),
+            Err(code) => {
+                makepad_widgets::log!("Approvals of Agent {id} unreadable: {code}");
+                unreadable.push(json!({"agent": name, "agentId": id, "code": code}));
+            }
+        }
+    }
+    (rows, unreadable)
 }
 
 #[cfg(test)]
@@ -183,6 +199,26 @@ mod tests {
         let row = to_row(&v, "x").unwrap();
         assert_eq!((row["alwaysAllowed"].clone(), row["networkStep"].clone()), (json!(false), json!(true)));
         assert_eq!(to_row(&view(), "x").unwrap()["networkStep"], false);
+    }
+
+    /// Integration review: one stalled and one failing queue never hide a
+    /// healthy Agent's request, and the reading takes one queue's limit.
+    #[tokio::test]
+    async fn queues_are_read_at_once_and_a_slow_one_hides_no_other_card() {
+        let agents: Vec<(String, String)> = ["slow", "ok", "broken", "slow2"].iter().map(|a| (a.to_string(), format!("{a}-name"))).collect();
+        let started = std::time::Instant::now();
+        let (rows, unreadable) = read_queues(agents, std::time::Duration::from_millis(100), |id| async move {
+            match id.as_str() {
+                "ok" => Ok(json!({"approvals": [view()]})),
+                "broken" => Err("owner_authorization_required".to_owned()),
+                _ => std::future::pending().await,
+            }
+        }).await;
+        assert!(started.elapsed() < std::time::Duration::from_millis(1_000), "at once, not one after another");
+        assert_eq!(rows.len(), 1, "the healthy Agent's card stays");
+        assert_eq!(rows[0]["approval"]["agentName"], "ok-name");
+        let named: Vec<(&str, &str)> = unreadable.iter().map(|u| (u["agentId"].as_str().unwrap(), u["code"].as_str().unwrap())).collect();
+        assert_eq!(named, vec![("slow", "approvals_read_timeout"), ("broken", "owner_authorization_required"), ("slow2", "approvals_read_timeout")]);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod local_approvals;
 pub mod mcp_card;
 pub mod approval_text;
 pub mod pending_approvals;
+pub mod approvals_partial;
 pub mod expired_approvals;
 pub mod owner_inbox;
 pub mod owner_inbox_model;
