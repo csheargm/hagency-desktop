@@ -1,0 +1,7 @@
+# Loop measurement (evaluation/loop-measurement-plan.md, scope: docs/tests-only, 2026-11-18).
+# Agents may merge only docs changes; anything else (tests included) waits for a person,
+# because this fork's CI runs do not complete and agents cannot run builds/tests without a card.
+low_risk_paths: ["**/*.md", "docs/**"]
+max_changed_lines: 50
+required_agent_approvals: 1
+require_ci: false
