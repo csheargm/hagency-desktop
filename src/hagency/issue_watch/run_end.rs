@@ -77,7 +77,8 @@ fn plain_branch(branch: &str) -> bool {
 }
 
 /// Whether a branch name names issue `number` ("issue-33", "issue33",
-/// "33-fix-typo" as its last part); a bare number elsewhere is not enough.
+/// "33-fix-typo" or "fix-typo-33" as its last part, so `<agent>/<slug>-33`
+/// too); a bare number elsewhere is not enough.
 pub fn branch_names_issue(branch: &str, number: i64) -> bool {
     let n = number.to_string();
     let branch = branch.to_ascii_lowercase();
@@ -86,6 +87,7 @@ pub fn branch_names_issue(branch: &str, number: i64) -> bool {
     tokens.windows(2).any(|w| matches!(w[0], "issue" | "issues" | "gh") && w[1] == n)
         || tokens.iter().any(|t| *t == format!("issue{n}"))
         || last.strip_prefix(&n).is_some_and(|rest| rest.starts_with('-'))
+        || last.strip_suffix(&n).is_some_and(|rest| rest.ends_with('-'))
 }
 
 /// The pushed branch for issue `number` among `branches`, if exactly one

@@ -210,7 +210,7 @@ async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), St
 }
 /// Whether pull request `pr` is linked to issue `number`: a closing keyword
 /// in its description, or a head branch naming the issue ("issue-33",
-/// "issue33", "33-fix-typo"); a bare number elsewhere in a branch is not enough.
+/// "issue33", "33-fix-typo", "fix-typo-33"); a bare number elsewhere in a branch is not enough.
 pub(crate) fn links_issue(pr: &PullRequest, repo: &str, number: i64) -> bool {
     if closes_issue(&pr.body, repo, number) {
         return true;

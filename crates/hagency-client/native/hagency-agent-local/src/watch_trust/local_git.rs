@@ -114,7 +114,7 @@ pub(crate) fn step(dir: &Path, rest: &[&str], heredoc: Option<&str>, repo: &str)
         "diff" => words_ok(dir, args, &DIFF_FLAGS),
         "log" => log_ok(dir, args),
         "show" => words_ok(dir, args, &SHOW_FLAGS),
-        "branch" => args.iter().all(|w| BRANCH_FLAGS.contains(w)),
+        "branch" => branch_ok(args),
         "add" => !args.is_empty() && words_ok(dir, args, &ADD_FLAGS),
         "restore" => args.iter().any(|w| !w.starts_with('-')) && words_ok(dir, args, &RESTORE_FLAGS),
         "commit" => commit_ok(args, heredoc.is_some()),
@@ -153,6 +153,15 @@ fn words_ok(dir: &Path, args: &[&str], flags: &[&str]) -> bool {
         }
         !word.is_empty() && crate::outside::resolves_inside(word, dir)
     })
+}
+
+/// `branch` listing: flags from [`BRANCH_FLAGS`], and with `--list` (git
+/// then reads every other word as a pattern, never a branch to create) plain
+/// ref patterns, `*` allowed.
+fn branch_ok(args: &[&str]) -> bool {
+    let listing = args.contains(&"--list");
+    let pattern = |w: &str| !w.is_empty() && !w.starts_with('-') && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'*'));
+    args.iter().all(|w| BRANCH_FLAGS.contains(w) || (listing && pattern(w)))
 }
 
 /// `log` with its count forms (`-5`, `-n 5`, `-n5`, `--max-count=5`).

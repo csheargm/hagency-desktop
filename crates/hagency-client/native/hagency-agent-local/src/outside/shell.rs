@@ -4,7 +4,8 @@
 //! `&&`, `||`, `;` or `|`, plain or quoted, a `2>&1` redirect, the `$?` status
 //! inside double quotes, and one quoted heredoc feeding `git commit -F -`.
 //! Anything else (backticks, `$(...)`, variables, globs, braces, `~`, other
-//! redirects, backslashes, background `&`) makes the whole line ask.
+//! redirects, backslashes (but an escaped `` ` `` `$` `"` `\` inside double
+//! quotes), background `&`) makes the whole line ask.
 use std::path::{Path, PathBuf};
 
 /// The words of each segment, and the segment a quoted heredoc feeds.
@@ -100,14 +101,17 @@ fn segments(line: &str) -> Option<Vec<Vec<String>>> {
     (!out.iter().any(Vec::is_empty)).then_some(out)
 }
 
-/// A double-quoted run: literal except `$?`; any other `$`, a backtick, a
-/// backslash or `!` makes the line ask.
+/// A double-quoted run: literal except `$?` and a backslash before one of
+/// `` ` `` `$` `"` `\` (the shell drops it and keeps the next character
+/// literal, so an Agent's ``"exactly \`x\`"`` reads as it runs); any other
+/// `$`, a backtick, any other backslash or `!` makes the line ask.
 fn quoted_double(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, word: &mut String) -> Option<()> {
     while let Some(q) = chars.next() {
         match q {
             '"' => return Some(()),
             '$' if chars.next_if_eq(&'?').is_some() => word.push_str("$?"),
-            '$' | '`' | '\\' | '!' => return None,
+            '\\' => word.push(chars.next_if(|c| matches!(c, '`' | '$' | '"' | '\\'))?),
+            '$' | '`' | '!' => return None,
             other => word.push(other),
         }
     }
