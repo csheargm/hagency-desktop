@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 const ENCRYPTED_CONTEXT_INPUT_LIMIT: usize = 40 * 1024;
 mod memory;
 mod plans;
+mod owners;
 mod repo_status;
 mod skills;
 mod watches;
@@ -196,6 +197,10 @@ impl Host {
         self.state.as_mut().ok_or("room_device_unavailable")
     }
     pub(super) async fn prompt(&mut self, text: String) -> String {
+        // The room's read scope is narrowed first: a turn whose preparation
+        // times out never keeps an earlier turn's (an unlink, a departure) (GPT review).
+        let dispatch = &self.gate.expected;
+        hagency_agent_local::watch_trust::room_scope::record(&dispatch.room_id, &dispatch.requester_mxid, Vec::new());
         // Losing the device preview does not discard a new plaintext request.
         // Tools retry device acquisition under their own bounded operation.
         let prepared = tokio::time::timeout(Duration::from_secs(20), async {

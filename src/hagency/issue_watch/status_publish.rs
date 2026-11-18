@@ -4,7 +4,7 @@
 //! write). Only room-shareable fields leave the ledger; an end-to-end
 //! encrypted room gets nothing, since room state is plaintext to the server.
 use ::hagency::issue_watch::issue_track::Track;
-use ::hagency::repo_status::{ISSUE_STATUS_STATE_TYPE, Published, TrackState, publish_content};
+use ::hagency::repo_status::{ISSUE_STATUS_STATE_TYPE, Published, REFRESH_SECS, TrackState, publish_content};
 use matrix_sdk::ruma::{OwnedRoomId, api::client::state::get_state_event_for_key::v3 as get_state, events::StateEventType};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -24,7 +24,9 @@ pub(crate) fn entries(agent_mxid: &str, repo: &str, tracks: &[Track], titles: &H
 }
 
 /// Keeps titles and `updatedAt` of issues whose published state did not change,
-/// so a check that changes nothing writes nothing.
+/// so a check that changes nothing writes nothing; a not-finished issue's
+/// time is refreshed every [`REFRESH_SECS`] so readers can tell it from an
+/// abandoned one (they drop it after `STALE_SECS`).
 pub(crate) fn carry_over(current: &Value, fresh: &mut [Published]) {
     let before: Vec<Published> = current["issues"].as_array().into_iter().flatten().filter_map(|i| serde_json::from_value(i.clone()).ok()).collect();
     for issue in fresh.iter_mut() {
@@ -32,7 +34,8 @@ pub(crate) fn carry_over(current: &Value, fresh: &mut [Published]) {
         if issue.title.is_empty() {
             issue.title = old.title.clone();
         }
-        if (old.state, old.attempts, old.pr, &old.hold) == (issue.state, issue.attempts, issue.pr, &issue.hold) {
+        let due = !issue.state.is_terminal() && issue.updated_at.saturating_sub(old.updated_at) >= REFRESH_SECS;
+        if (old.state, old.attempts, old.pr, &old.hold) == (issue.state, issue.attempts, issue.pr, &issue.hold) && !due {
             issue.updated_at = old.updated_at;
         }
     }
@@ -41,24 +44,39 @@ pub(crate) fn carry_over(current: &Value, fresh: &mut [Published]) {
 /// Serializes read-modify-write of this owner's one event per room.
 static WRITING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// What was last published per (room, Agent, repository), times left out:
-/// an unchanged check needs no server read at all.
-static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<(String, String, String), Vec<Published>>>> = std::sync::LazyLock::new(Default::default);
+/// What was last published per (room, Agent, repository), times left out,
+/// and when: an unchanged check needs no server read until a refresh is due.
+type Last = HashMap<(String, String, String), (Vec<Published>, i64)>;
+static LAST: std::sync::LazyLock<std::sync::Mutex<Last>> = std::sync::LazyLock::new(Default::default);
 
 fn timeless(fresh: &[Published]) -> Vec<Published> {
     fresh.iter().map(|p| Published { updated_at: 0, ..p.clone() }).collect()
 }
 
-/// Publish `fresh` (one Agent's issues on one repository) into `room`.
+/// Publish `fresh` (one Agent's issues on one repository) into `room`. A
+/// watch that moved to another room has its issues withdrawn from the room
+/// this process last published them to (GPT integration review); readers
+/// also drop not-finished issues nobody refreshed.
 pub(crate) async fn publish(room_id: &OwnedRoomId, agent_mxid: &str, repo: &str, fresh: Vec<Published>, now: i64) -> Result<(), String> {
     let key = (room_id.to_string(), agent_mxid.to_owned(), repo.to_ascii_lowercase());
-    // A poisoned lock still holds a whole map: inserts are single operations.
-    if LAST.lock().unwrap_or_else(|p| p.into_inner()).get(&key) == Some(&timeless(&fresh)) {
+    let (unchanged, moved) = {
+        // A poisoned lock still holds a whole map: inserts are single operations.
+        let last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        let unchanged = last.get(&key).is_some_and(|(sent, at)| *sent == timeless(&fresh) && now.saturating_sub(*at) < REFRESH_SECS);
+        let moved: Vec<String> = last.keys().filter(|(room, agent, r)| *agent == key.1 && *r == key.2 && *room != key.0).map(|(room, _, _)| room.clone()).collect();
+        (unchanged, moved)
+    };
+    for old in moved {
+        let Ok(old_room) = OwnedRoomId::try_from(old.as_str()) else { continue };
+        write(&old_room, agent_mxid, repo, Vec::new(), now).await?;
+        LAST.lock().unwrap_or_else(|p| p.into_inner()).remove(&(old, key.1.clone(), key.2.clone()));
+    }
+    if unchanged {
         return Ok(());
     }
     let written = timeless(&fresh);
     write(room_id, agent_mxid, repo, fresh, now).await?;
-    LAST.lock().unwrap_or_else(|p| p.into_inner()).insert(key, written);
+    LAST.lock().unwrap_or_else(|p| p.into_inner()).insert(key, (written, now));
     Ok(())
 }
 
@@ -124,5 +142,22 @@ mod tests {
         carry_over(&current, &mut moved);
         let next = publish_content(&current, "@_hagency_agt_b:x", "o/r", &moved, 300).unwrap();
         assert_eq!((next["issues"][0]["state"].as_str(), next["issues"][0]["updatedAt"].as_i64(), next["issues"][0]["title"].as_str()), (Some("merged"), Some(300), Some("T")));
+    }
+
+    /// A long wait in one state is refreshed, so readers never take it for an abandoned watch.
+    #[test]
+    fn an_unchanged_open_issue_is_refreshed_before_readers_call_it_stale() {
+        let first = entries("@_hagency_agt_b:x", "o/r", &[track(1, State::Reviewed)], &HashMap::new(), &[], 100).unwrap();
+        let current = publish_content(&Value::Null, "@_hagency_agt_b:x", "o/r", &first, 100).unwrap();
+        let later = 100 + REFRESH_SECS;
+        let mut again = entries("@_hagency_agt_b:x", "o/r", &[track(1, State::Reviewed)], &HashMap::new(), &[], later).unwrap();
+        carry_over(&current, &mut again);
+        assert_eq!(again[0].updated_at, later);
+        assert!(REFRESH_SECS < ::hagency::repo_status::STALE_SECS);
+        let mut done = entries("@_hagency_agt_b:x", "o/r", &[track(1, State::Merged)], &HashMap::new(), &[], 100).unwrap();
+        let merged = publish_content(&Value::Null, "@_hagency_agt_b:x", "o/r", &done, 100).unwrap();
+        done[0].updated_at = later;
+        carry_over(&merged, &mut done);
+        assert_eq!(done[0].updated_at, 100, "a finished issue keeps its time and ages out");
     }
 }

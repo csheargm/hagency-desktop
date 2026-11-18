@@ -298,7 +298,9 @@ fn group_members(members: &mut Vec<UserProfile>, owners: &HashMap<OwnedUserId, O
     member_rows::services_last(members);
     grouped
 }
-async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap<OwnedUserId, OwnedUserId>, bool), String> {
+/// Agent puppet → owner from the server's listings; also the Status tab's
+/// authority for whose published states and run cards count (ADR 0023).
+pub(crate) async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap<OwnedUserId, OwnedUserId>, bool), String> {
     use crate::hagency::{backend::Service,model::Command};
     let service = Service::for_current()?;
     let roster = service.execute(Command::Agents).await?;

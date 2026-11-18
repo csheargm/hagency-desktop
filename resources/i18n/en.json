@@ -3659,7 +3659,6 @@
   "{busy} in progress across {count} repos": "{busy} in progress across {count} repos",
   "Room history is unavailable: {error}": "Room history is unavailable: {error}",
   "Room status is unavailable: {error}": "Room status is unavailable: {error}",
-  "Some Agents were claimed by more than one owner; their published states are hidden.": "Some Agents were claimed by more than one owner; their published states are hidden.",
   "The room's encryption is not known yet": "The room's encryption is not known yet",
   "This desktop has not joined the room": "This desktop has not joined the room",
   "Unlink": "Unlink",
@@ -3708,5 +3707,8 @@
   "Could not load the updates. Close and open them to try again.": "Could not load the updates. Close and open them to try again.",
   "No updates yet.": "No updates yet.",
   "Hide updates": "Hide updates",
-  "Could not find message in timeline to reply to. Please try again.": "Could not find message in timeline to reply to. Please try again."
+  "Could not find message in timeline to reply to. Please try again.": "Could not find message in timeline to reply to. Please try again.",
+  "Agent owners are unavailable: {error}": "Agent owners are unavailable: {error}",
+  "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "Some published states were not from the Agent's own owner, or were stale, and are hidden.",
+  "The signed-in account changed; nothing was changed": "The signed-in account changed; nothing was changed"
 }

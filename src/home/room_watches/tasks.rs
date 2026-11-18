@@ -3,7 +3,7 @@
 //! with who asked, which Agent, working / waiting for approval / done, and
 //! age. Read by this app from the timeline it already receives; no Agent runs.
 use ::hagency::agent_run_controls::{APPROVAL_WAIT_STEP, Card, State};
-use ::hagency::repo_status::AGENT_PUPPET_PREFIX;
+use ::hagency::repo_status::is_puppet;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -65,13 +65,13 @@ fn card_of(event: &Value) -> Option<(String, bool, Card)> {
     Some((event["event_id"].as_str()?.to_owned(), false, Card::from_content(content)?))
 }
 
-/// Tasks from authentic room-message events (any order). Only a joined
-/// Hagency Agent's cards count, and an edit only from its original's sender;
+/// Tasks from authentic room-message events (any order). Only cards from a
+/// puppet `agent` accepts (joined, and an Agent the server's roster names), and an edit only from its original's sender;
 /// an edit whose original is not in the scanned history is dropped.
-pub fn tasks(events: &[Value], joined: impl Fn(&str) -> bool, now_ms: i64) -> Vec<Task> {
+pub fn tasks(events: &[Value], agent: impl Fn(&str) -> bool, now_ms: i64) -> Vec<Task> {
     let cards: Vec<(String, String, i64, bool, Card)> = events.iter().filter(|e| e["type"] == "m.room.message").filter_map(|event| {
         let sender = event["sender"].as_str().unwrap_or_default();
-        if !sender.starts_with(AGENT_PUPPET_PREFIX) || !joined(sender) {
+        if !is_puppet(sender) || !agent(sender) {
             return None;
         }
         let (target, edit, card) = card_of(event)?;

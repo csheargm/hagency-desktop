@@ -3659,7 +3659,6 @@
   "{busy} in progress across {count} repos": "{count} 个仓库中有 {busy} 项进行中",
   "Room history is unavailable: {error}": "房间历史暂不可用：{error}",
   "Room status is unavailable: {error}": "房间状态暂不可用：{error}",
-  "Some Agents were claimed by more than one owner; their published states are hidden.": "部分 Agent 被多个所有者认领，已隐藏其发布的状态。",
   "The room's encryption is not known yet": "尚不清楚房间的加密状态",
   "This desktop has not joined the room": "此桌面端尚未加入该房间",
   "Unlink": "取消关联",
@@ -3708,5 +3707,8 @@
   "Could not load the updates. Close and open them to try again.": "无法加载进度。请收起后重新展开再试。",
   "No updates yet.": "暂无进度。",
   "Hide updates": "收起进度",
-  "Could not find message in timeline to reply to. Please try again.": "在时间线中找不到要回复的消息，请重试。"
+  "Could not find message in timeline to reply to. Please try again.": "在时间线中找不到要回复的消息，请重试。",
+  "Agent owners are unavailable: {error}": "无法获取 Agent 的所有者：{error}",
+  "Some published states were not from the Agent's own owner, or were stale, and are hidden.": "部分发布的状态并非来自 Agent 的所有者，或已过期，已隐藏。",
+  "The signed-in account changed; nothing was changed": "登录的账号已变更，未做任何修改"
 }

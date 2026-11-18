@@ -33,6 +33,10 @@ impl StatusIo for Fake {
         self.reads.lock().unwrap().push((repo.to_owned(), agent.map(str::to_owned)));
         Ok(vec![GithubItem { number: 37, title: "Crash on start".into(), is_pr: false, state: GithubState::Open, closed_at: None }])
     }
+    async fn owners(&self) -> BTreeMap<String, String> {
+        // The server roster: bird-claude is Betty's.
+        BTreeMap::from([(BIRD.to_owned(), BETTY.to_owned())])
+    }
     fn now(&self) -> i64 {
         NOW
     }
@@ -61,8 +65,8 @@ async fn a_spoofed_publisher_is_ignored() {
     assert!(out.contains("repo_not_in_this_room"), "a forged event adds no repository: {out}");
     let io = fake(vec![published(BETTY, BETTY, "reviewed"), published(MALLORY, MALLORY, "merged")], Vec::new(), Vec::new());
     let out = answer(&io, None).await;
-    assert!(!out.contains("bird-claude (Mallory") && !out.contains("bird-claude (Betty, @betty:hs.test)"), "a contested Agent shows nobody's claim: {out}");
-    assert!(out.contains("claimed by more than one owner"));
+    assert!(out.contains("bird-claude (Betty, @betty:hs.test)") && !out.contains("Mallory"), "the roster owner's state stands, the claim is ignored: {out}");
+    assert!(out.contains("not from the Agent's own owner"));
 }
 
 #[tokio::test]

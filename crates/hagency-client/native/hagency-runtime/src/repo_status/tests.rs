@@ -18,6 +18,10 @@ fn event(sender: &str, key: &str, content: Value) -> Value {
 fn joined(ids: &'static [&'static str]) -> impl Fn(&str) -> Member {
     move |id| Member { joined: ids.contains(&id), name: None }
 }
+/// The server roster: bird belongs to Betty.
+fn roster(agent: &str) -> Option<String> {
+    (agent == BIRD).then(|| BETTY.to_owned())
+}
 
 #[test]
 fn offered_with_the_watch_tools_and_arguments_are_bounded() {
@@ -81,22 +85,45 @@ fn spoofed_state_keys_strangers_and_non_agents_are_ignored() {
         event(BETTY, BETTY, content("@betty-alt:hs.test")),     // not an Agent puppet
         json!({"type": "m.room.name", "sender": BETTY, "state_key": BETTY, "content": content(BIRD)}),
     ];
-    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD, "@betty-alt:hs.test"]));
+    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD, "@betty-alt:hs.test"]), roster, NOW);
     assert_eq!(got.seen.len(), 1);
     assert_eq!((got.seen[0].publisher.as_str(), got.seen[0].issue.agent.as_str()), (BETTY, BIRD));
     assert_eq!(got.ignored_events, 2);
-    let absent_agent = accepted(&events[..1], joined(&[BETTY]));
+    let absent_agent = accepted(&events[..1], joined(&[BETTY]), roster, NOW);
     assert!(absent_agent.seen.is_empty(), "an Agent that is not in the room is never shown");
 }
 
 #[test]
-fn an_agent_claimed_by_two_publishers_is_shown_by_neither() {
-    let content = json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Reviewed, NOW)]});
-    let events = vec![event(BETTY, BETTY, content.clone()), event(MALLORY, MALLORY, content)];
-    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD]));
-    assert!(got.seen.is_empty());
-    assert_eq!(got.conflicts, vec![BIRD.to_owned()]);
+fn only_the_agents_roster_owner_is_believed_and_the_real_state_is_never_hidden() {
+    let real = json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Reviewed, NOW)]});
+    let forged = json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Merged, NOW)]});
+    let events = vec![event(BETTY, BETTY, real), event(MALLORY, MALLORY, forged.clone())];
+    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD]), roster, NOW);
+    assert_eq!(got.seen.len(), 1);
+    assert_eq!((got.seen[0].publisher.as_str(), got.seen[0].issue.state), (BETTY, TrackState::Reviewed));
+    assert_eq!(got.ignored_claims, 1);
+    let lone = accepted(&events[1..], joined(&[BETTY, MALLORY, BIRD]), roster, NOW);
+    assert!(lone.seen.is_empty(), "a lone false claim is not shown either");
+    let unknown = accepted(&events[..1], joined(&[BETTY, BIRD]), |_| None, NOW);
+    assert!(unknown.seen.is_empty(), "an Agent whose owner the roster does not name shows nothing");
     assert!(people_in(&events).contains(BIRD));
+}
+
+#[test]
+fn readable_puppet_ids_count_and_lookalikes_do_not() {
+    for agent in ["@_hagency_agt_01abc:hs.test", "@_hagency_csheargm_bird-claude:hs.test"] {
+        assert!(is_puppet(agent), "{agent}");
+    }
+    for other in ["@_hagency_service:hs.test", "@hagency_agt_x:hs.test", "@betty:hs.test", "_hagency_agt_x"] {
+        assert!(!is_puppet(other), "{other}");
+    }
+}
+
+#[test]
+fn a_not_finished_state_nobody_refreshed_goes_stale() {
+    let old = json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Reviewed, NOW - STALE_SECS - 1), issue(BIRD, REPO, 32, TrackState::Merged, NOW - STALE_SECS - 1)]});
+    let got = accepted(&[event(BETTY, BETTY, old)], joined(&[BETTY, BIRD]), roster, NOW);
+    assert_eq!(got.seen.iter().map(|s| s.issue.number).collect::<Vec<_>>(), vec![32], "a moved or abandoned watch stops showing work in progress");
 }
 
 #[test]
@@ -142,7 +169,7 @@ use table::Table;
 fn junk_events_do_not_use_up_the_publisher_cap() {
     let mut events: Vec<Value> = (0..MAX_PUBLISHERS * 2).map(|n| event(MALLORY, &format!("@other{n}:hs.test"), json!({}))).collect();
     events.push(event(BETTY, BETTY, json!({"v": 1, "issues": [issue(BIRD, REPO, 31, TrackState::Reviewed, NOW)]})));
-    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD]));
+    let got = accepted(&events, joined(&[BETTY, MALLORY, BIRD]), roster, NOW);
     assert_eq!(got.seen.len(), 1, "Betty's event is still read");
 }
 

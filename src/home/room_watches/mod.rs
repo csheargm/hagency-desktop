@@ -131,8 +131,11 @@ pub fn link_error(room: &RoomId) -> Option<String> {
 /// Links (`true`) or unlinks `repo` for `room`, then reloads the tab.
 pub fn set_link(room: &RoomId, repo: String, link: bool) {
     let key = (account(), room.to_owned());
+    // The client of the account that clicked, taken now; a later switch refuses (GPT review).
+    let client = crate::sliding_sync::get_client();
     crate::sliding_sync::spawn_async_task(async move {
-        let outcome = match crate::sliding_sync::get_client() {
+        let outcome = match client {
+            Some(_) if account() != key.0 => Err(crate::i18n::tr("The signed-in account changed; nothing was changed").to_owned()),
             Some(client) => status::set_link(&client, &key.1, &repo, link).await,
             None => Err("Signed out".to_owned()),
         };
