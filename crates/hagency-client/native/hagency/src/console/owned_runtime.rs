@@ -1448,6 +1448,7 @@ fn provider_failure(stage: &'static str, error: &codex::Error) -> RuntimeError {
         return RuntimeError::Execution(login.code());
     }
     match error {
+        codex::Error::Profile(codex::CODEX_ACCOUNT_UNVERIFIED) => RuntimeError::Provider,
         codex::Error::Profile(_) | codex::Error::Ledger(_) => RuntimeError::Profile,
         codex::Error::Timeout => RuntimeError::Execution("codex_provider_timeout"),
         codex::Error::Protocol(hagency_runtime::codex::version::REQUIRED) => {

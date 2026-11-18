@@ -104,6 +104,9 @@ mod tests {
         assert!(matches!(provider_failure("turn", &claude), RuntimeError::Execution("claude_login_required")));
         assert!(matches!(provider_failure("turn", &codex), RuntimeError::Execution("codex_login_required")));
         assert!(matches!(startup_check_failure(&Error::Protocol("Claude initialize")), RuntimeError::Provider));
+        let unverified = Error::Profile(hagency_agent_local::codex::CODEX_ACCOUNT_UNVERIFIED);
+        assert!(matches!(startup_check_failure(&unverified), RuntimeError::Provider));
+        assert!(matches!(provider_failure("turn", &unverified), RuntimeError::Provider), "an unusable account keeps its old mapping");
         assert!(matches!(provider_failure("turn", &Error::Profile("room tools already bound")), RuntimeError::Profile));
         assert!(matches!(provider_failure("turn", &Error::Timeout), RuntimeError::Execution("codex_provider_timeout")));
     }
