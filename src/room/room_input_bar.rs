@@ -31,6 +31,7 @@ use crate::{block_user_modal::{BlockUserModalAction, BlockUserRequest}, home::{e
 use crate::room::reply_preview::CollapsiblePreviewWidgetRefExt;
 use crate::home::editing_pane::EditingPaneRef;
 use crate::shared::mentionable_text_input::MentionableTextInputRef;
+use crate::room::thread_followup::ThreadFollowupHintWidgetExt;
 
 /// The composer's placeholder in a thread.
 pub(crate) const THREAD_EMPTY_TEXT: &str = "Reply in thread…";
@@ -156,6 +157,9 @@ script_mod! {
 
         // The top-most element is a preview of the message that the user is replying to, if any.
         replying_preview := ReplyingPreview { }
+
+        // "Replying to <agent>" in a requester's one-Agent thread (thread_followup.rs).
+        thread_followup_hint := ThreadFollowupHint { }
 
         // Below that, display a preview of the current location that a user is about to send.
         location_preview := LocationPreview { }
@@ -1050,7 +1054,10 @@ impl RoomInputBar {
             let entered_text = mentionable_text_input.text().trim().to_string();
             if !entered_text.is_empty() {
                 match mentionable_text_input.parse_input(&entered_text) {
-                    SlashCommandOutcome::Message(message) => {
+                    SlashCommandOutcome::Message(mut message) => {
+                        if let Some(agent) = self.view.thread_followup_hint(cx, ids!(thread_followup_hint)).active() {
+                            crate::room::thread_followup::address_followup(&mut message, &agent, self.replying_to.as_ref().map(|(event, _)| event.sender()));
+                        }
                         let settings = crate::agent_access::current();
                         let routing = match crate::agent_access::routing::directives(&settings, crate::sliding_sync::current_user_id().as_deref(), timeline_kind.room_id(), cx.get_global::<RoomsListRef>().is_direct_room(timeline_kind.room_id()).unwrap_or(false), &message, self.replying_to.as_ref().map(|(event, _)|event.sender())) {
                             Ok(routing) => routing,
@@ -1750,6 +1757,7 @@ impl RoomInputBarRef {
         if inner.timeline_kind.as_ref() != Some(&timeline_kind) {
             inner.stop_typing();
             inner.cancel_dictation(cx);
+            inner.view.thread_followup_hint(cx, ids!(thread_followup_hint)).set_target(cx, None);
         }
         inner.room_screen_widget_uid = Some(room_screen_widget_uid);
         inner.timeline_kind = Some(timeline_kind);
@@ -1759,6 +1767,14 @@ impl RoomInputBarRef {
             .set_room_context(cx, room_id.clone(), room_members.clone());
         inner.mentionable_text_input(cx, ids!(editing_pane.editing_content.edit_text_input))
             .set_room_context(cx, room_id, room_members);
+    }
+
+    // TODO(R4): room_input_bar.rs is over budget; split thread mode (banner, follow-up hint) out.
+    /// Shows which Agent a plain reply in this thread continues with, if any.
+    pub fn set_thread_followup(&self, cx: &mut Cx, target: Option<crate::room::thread_followup::FollowupTarget>) {
+        let Some(inner) = self.borrow() else { return };
+        let target = target.filter(|_| inner.in_thread());
+        inner.view.thread_followup_hint(cx, ids!(thread_followup_hint)).set_target(cx, target);
     }
 
     /// Save a snapshot of the UI state of this `RoomInputBar`.

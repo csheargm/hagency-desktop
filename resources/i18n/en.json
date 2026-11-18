@@ -3638,5 +3638,6 @@
   "Leaving \"{room}\" ends your private chat with this Agent for now. The Agent's Message button reopens it: the Agent invites you back, or starts a new private chat if this one can no longer be used.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.": "Leaving \"{room}\" ends your private chat with this Agent for now. The Agent's Message button reopens it: the Agent invites you back, or starts a new private chat if this one can no longer be used.\n\nTo only remove it from your Chats list, use Delete Chat instead: Message brings it back.",
   "Opening the private chat…": "Opening the private chat…",
   "The private chat is still being set up. Click Message again in a moment.": "The private chat is still being set up. Click Message again in a moment.",
-  "Could not open the private chat: {code}": "Could not open the private chat: {code}"
+  "Could not open the private chat: {code}": "Could not open the private chat: {code}",
+  "Replying to {0}": "Replying to {0}"
 }
