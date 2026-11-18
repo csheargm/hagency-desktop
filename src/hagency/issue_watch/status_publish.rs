@@ -103,20 +103,34 @@ async fn write(room_id: &OwnedRoomId, agent_mxid: &str, repo: &str, mut fresh: V
     let Some(content) = publish_content(&current, agent_mxid, repo, &fresh, now) else { return Ok(()) };
     let Err(error) = room.send_state_event_raw(ISSUE_STATUS_STATE_TYPE, me.as_str(), content).await else { return Ok(()) };
     let forbidden = error.client_api_error_kind() == Some(&matrix_sdk::ruma::api::error::ErrorKind::Forbidden);
-    let below = room.power_levels().await.is_ok_and(|l| !l.user_can_send_state(&me, StateEventType::from(ISSUE_STATUS_STATE_TYPE)));
-    Err(share_failure(forbidden && below, error.to_string()))
+    let refusal = match room.power_levels().await {
+        Ok(l) if forbidden && !l.user_can_send_state(&me, StateEventType::from(ISSUE_STATUS_STATE_TYPE)) => {
+            Some(if l.events.contains_key(&ISSUE_STATUS_STATE_TYPE.into()) { Refusal::Restricted } else { Refusal::NotYetAllowed })
+        }
+        _ => None,
+    };
+    Err(share_failure(refusal, error.to_string()))
 }
 
-/// The room refused for want of power: that is the room's setting, so the
-/// watch panel says who can change it instead of the server's raw 403.
+/// Why the room refused for want of power: that is the room's setting, so
+/// the watch panel says who can change it instead of the server's raw 403.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Refusal {
+    /// No entry for the event: an admin linking a repository adds it.
+    NotYetAllowed,
+    /// An admin set the event's level on purpose; linking keeps it (GPT review).
+    Restricted,
+}
+
 pub(crate) const NEEDS_ADMIN: &str = "Issue status can't be shared in this room yet — a room admin needs to allow it (linking a repository does this).";
+pub(crate) const RESTRICTED: &str = "Issue status can't be shared in this room — a room admin restricted it in the room's permissions.";
 
 /// The watch panel's line for a failed status write.
-fn share_failure(lacks_power: bool, raw: String) -> String {
-    if lacks_power {
-        crate::i18n::tr(NEEDS_ADMIN).to_owned()
-    } else {
-        crate::i18n::format("Issue status not shared with the room: {error}", &[("error", raw)])
+fn share_failure(refusal: Option<Refusal>, raw: String) -> String {
+    match refusal {
+        Some(Refusal::NotYetAllowed) => crate::i18n::tr(NEEDS_ADMIN).to_owned(),
+        Some(Refusal::Restricted) => crate::i18n::tr(RESTRICTED).to_owned(),
+        None => crate::i18n::format("Issue status not shared with the room: {error}", &[("error", raw)]),
     }
 }
 
@@ -132,11 +146,13 @@ mod tests {
     #[test]
     fn a_refusal_for_power_reads_as_a_plain_admin_step_in_both_languages() {
         let raw = "M_FORBIDDEN: sender does not have enough power to send event".to_owned();
-        assert_eq!(share_failure(true, raw.clone()), crate::i18n::tr(NEEDS_ADMIN));
+        assert_eq!(share_failure(Some(Refusal::NotYetAllowed), raw.clone()), crate::i18n::tr(NEEDS_ADMIN));
+        assert_eq!(share_failure(Some(Refusal::Restricted), raw), crate::i18n::tr(RESTRICTED), "linking would not help there");
+        assert_ne!(crate::i18n::text_for(crate::i18n::Language::Chinese, RESTRICTED), RESTRICTED);
         assert!(!crate::i18n::tr(NEEDS_ADMIN).contains("M_FORBIDDEN"));
         let zh = crate::i18n::text_for(crate::i18n::Language::Chinese, NEEDS_ADMIN);
         assert_ne!(zh, NEEDS_ADMIN, "the Chinese catalog translates it");
-        assert!(share_failure(false, "timed out".into()).ends_with("timed out"), "other failures keep their reason");
+        assert!(share_failure(None, "timed out".into()).ends_with("timed out"), "other failures keep their reason");
     }
 
     #[test]
