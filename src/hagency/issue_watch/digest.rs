@@ -129,6 +129,8 @@ pub fn text(repo: &str, digest: &Digest) -> String {
     lines.join("\n")
 }
 
+// TODO(ADR 0028): a digest-specific ledger query: the Activity view holds the newest
+// 20 requests only, and a card counts by its request's receipt, not when it went unanswered.
 /// The issues of `repo` whose hand-off run stopped at an approval card
 /// nobody answered within `window` (the Activity view's `requests`, already
 /// narrowed to this account's own hand-offs).

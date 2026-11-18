@@ -18,6 +18,8 @@ use serde_json::{Map, Value, json};
 pub(crate) trait DigestIo {
     /// Whether this window may send for the Agent (see [`own_window`]).
     async fn own_window(&self) -> Result<bool, String>;
+    /// The Agent's owner-API record (tracks, sent days) read now.
+    async fn fresh(&self) -> Result<Value, String>;
     /// The Activity view's requests that this account sent (its own hand-offs).
     async fn own_requests(&self) -> Result<Value, String>;
     /// One room notice, deduplicated by repository and day.
@@ -41,43 +43,58 @@ pub(crate) fn own_window(agent: &Value, me: Option<&str>, devices: &Value) -> bo
 /// Send every due digest of one Agent's watches; the failures, for its status line.
 pub(crate) async fn send_due(io: &impl DigestIo, saved: &Value, window: Option<Window>) -> Vec<String> {
     let Some(window) = window else { return Vec::new() };
-    let due: Vec<(String, String)> = digest::report_rooms(saved).into_iter().filter(|(repo, _)| !digest::sent(saved, repo, &window.day)).collect();
+    let fail = |error: String| vec![format!("{}: {error}", crate::i18n::tr("Daily digest"))];
     // Stop All holds the digest too; it goes out once the Agent is resumed that day.
-    if due.is_empty() || io.paused() {
+    if due(saved, &window).is_empty() || io.paused() {
         return Vec::new();
     }
     match io.own_window().await {
         Ok(true) => {}
         Ok(false) => return Vec::new(),
-        Err(error) => return vec![format!("{}: {error}", crate::i18n::tr("Daily digest"))],
+        Err(error) => return fail(error),
     }
-    let tracks: Vec<Track> = if saved["track"].is_null() { Vec::new() } else {
-        match serde_json::from_value(saved["track"].clone()) {
+    // Read again after the cutoff: the check's snapshot may predate a move
+    // this same check recorded before the send hour (GPT review).
+    let fresh = match io.fresh().await {
+        Ok(fresh) => fresh,
+        Err(error) => return fail(error),
+    };
+    let tracks: Vec<Track> = if fresh["track"].is_null() { Vec::new() } else {
+        match serde_json::from_value(fresh["track"].clone()) {
             Ok(tracks) => tracks,
             Err(error) => return vec![format!("Unreadable issue tracks: {error}")],
         }
     };
     let requests = match io.own_requests().await {
         Ok(requests) => requests,
-        Err(error) => return vec![format!("{}: {error}", crate::i18n::tr("Daily digest"))],
+        Err(error) => return fail(error),
     };
     let mut errors = Vec::new();
-    for (repo, room) in due {
-        let unanswered = digest::unanswered_issues(&requests, &repo, &window);
-        let posted = match digest::summarize(&repo, &tracks, &unanswered, &window) {
-            Some(day) => io.post(&room, &repo, &window.day, digest::text(&repo, &day)).await,
-            None => Ok(()),
-        };
-        // Claimed only after the post went through: a failed post is tried again next check.
-        let claimed = match posted {
-            Ok(()) => io.claim(&repo, &window.day).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = claimed {
+    for (repo, room) in due(&fresh, &window) {
+        if let Err(error) = send_one(io, (&repo, &room), &tracks, &requests, &window).await {
             errors.push(format!("{repo}: {error}"));
         }
     }
     errors
+}
+
+/// The watched repositories whose digest for `window`'s day is not recorded yet.
+fn due(saved: &Value, window: &Window) -> Vec<(String, String)> {
+    digest::report_rooms(saved).into_iter().filter(|(repo, _)| !digest::sent(saved, repo, &window.day)).collect()
+}
+
+/// One repository: post its digest (none on a quiet day), then record the day.
+async fn send_one(io: &impl DigestIo, (repo, room): (&str, &str), tracks: &[Track], requests: &Value, window: &Window) -> Result<(), String> {
+    // Checked again right before each post or record: a pause during the reads holds the day (GPT review).
+    if io.paused() {
+        return Ok(());
+    }
+    let unanswered = digest::unanswered_issues(requests, repo, window);
+    if let Some(day) = digest::summarize(repo, tracks, &unanswered, window) {
+        // Recorded only after the post went through: a failed post is tried again next check.
+        io.post(room, repo, &window.day, digest::text(repo, &day)).await?;
+    }
+    io.claim(repo, &window.day).await
 }
 
 /// The live I/O of one Agent's digest, within account session `epoch`.
@@ -98,6 +115,9 @@ impl DigestIo for LiveDigest<'_> {
         let me = crate::sliding_sync::current_user_id().map(|id| id.to_string());
         let devices = self.service.execute(Command::Devices).await?;
         Ok(own_window(self.agent, me.as_deref(), &devices))
+    }
+    async fn fresh(&self) -> Result<Value, String> {
+        super::live::saved(self.service, self.agent_id(), None).await
     }
     async fn own_requests(&self) -> Result<Value, String> {
         let ask = Command::Local { agent_id: self.agent_id().into(), action: LocalAction::RecentActivity, input: None, binding_id: None, requester: None };

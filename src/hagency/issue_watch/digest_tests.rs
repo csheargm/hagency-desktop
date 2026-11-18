@@ -113,12 +113,23 @@ struct Fake {
     posts: RefCell<Vec<(String, String, String)>>,
     sent: RefCell<BTreeMap<String, String>>,
     fail_post: Cell<bool>,
+    /// The records the owner API answers now (`fresh`).
+    tracks: RefCell<Vec<Track>>,
+    /// Stop All, and whether it is pressed while the Activity view is read.
+    paused: Cell<bool>,
+    pause_while_reading: bool,
 }
 impl DigestIo for Fake {
     async fn own_window(&self) -> Result<bool, String> {
         Ok(!self.not_own)
     }
+    async fn fresh(&self) -> Result<Value, String> {
+        Ok(saved(self, &self.tracks.borrow()))
+    }
     async fn own_requests(&self) -> Result<Value, String> {
+        if self.pause_while_reading {
+            self.paused.set(true);
+        }
         Ok(self.requests.clone())
     }
     async fn post(&self, room: &str, repo: &str, day: &str, text: String) -> Result<(), String> {
@@ -137,7 +148,7 @@ impl DigestIo for Fake {
         Ok(())
     }
     fn paused(&self) -> bool {
-        false
+        self.paused.get()
     }
 }
 /// What one check reads from the owner API: the watch, the records, the sent days.
@@ -152,7 +163,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 fn the_digest_is_sent_once_a_day_even_across_a_restart() {
     let w = today();
     let tracks = day_of_moves(&w);
-    let fake = Fake { requests: json!([]), ..Fake::default() };
+    let fake = Fake { requests: json!([]), tracks: RefCell::new(tracks.clone()), ..Fake::default() };
     assert!(run(send_due(&fake, &saved(&fake, &tracks), window_at(&at(18, 17, 59)))).is_empty());
     assert!(fake.posts.borrow().is_empty(), "nothing before the send hour");
     // A failed post is not recorded, so the next check tries again.
@@ -165,12 +176,13 @@ fn the_digest_is_sent_once_a_day_even_across_a_restart() {
     }
     assert_eq!(fake.posts.borrow().len(), 1);
     // A restart keeps only the ledger's record: still nothing more today.
-    let restarted = Fake { requests: json!([]), sent: RefCell::new(fake.sent.borrow().clone()), ..Fake::default() };
+    let restarted = Fake { requests: json!([]), sent: RefCell::new(fake.sent.borrow().clone()), tracks: RefCell::new(tracks.clone()), ..Fake::default() };
     run(send_due(&restarted, &saved(&restarted, &tracks), window_at(&at(18, 22, 0))));
     assert!(restarted.posts.borrow().is_empty());
     // The next day is a new digest.
     let tomorrow = window_at(&at(19, SEND_HOUR, 1)).unwrap();
     let next = track(50, &[(tomorrow.start + 1, json!({"handed": 1})), (tomorrow.start + 2, json!({"state": "pr_opened", "pr": 51})), (tomorrow.start + 3, json!({"state": "merged"}))]);
+    *restarted.tracks.borrow_mut() = vec![next.clone()];
     run(send_due(&restarted, &saved(&restarted, &[next]), Some(tomorrow)));
     assert_eq!(restarted.posts.borrow().len(), 1);
     assert!(restarted.posts.borrow()[0].1.contains("Today: 1 fixed, 1 merged, 0 need you"));
@@ -187,7 +199,7 @@ fn a_quiet_day_posts_nothing_and_is_not_asked_again() {
 #[test]
 fn only_the_owners_own_window_sends() {
     let w = today();
-    let fake = Fake { not_own: true, requests: json!([]), ..Fake::default() };
+    let fake = Fake { not_own: true, requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
     run(send_due(&fake, &saved(&fake, &day_of_moves(&w)), Some(w)));
     assert!(fake.posts.borrow().is_empty() && fake.sent.borrow().is_empty());
     let devices = json!({"currentDeviceId": "d1", "devices": [{"id": "d1", "revoked": false}, {"id": "d2", "revoked": false}]});
@@ -198,4 +210,26 @@ fn only_the_owners_own_window_sends() {
     assert!(!own_window(&shared, Some("@chris:x"), &devices), "another owner's Agent");
     let elsewhere = json!({"id": "a1", "state": "active", "executionDeviceId": "d2"});
     assert!(!own_window(&elsewhere, Some("@chris:x"), &devices), "the owner's other device sends it");
+}
+
+#[test]
+fn a_move_recorded_just_before_the_send_hour_is_in_the_digest() {
+    // The check's snapshot was read at 17:59, before its own merge was recorded (GPT review).
+    let w = today();
+    let merged = track(33, &[(w.end - 120, json!({"handed": 1})), (w.end - 60, json!({"state": "pr_opened", "pr": 41})), (w.end - 1, json!({"state": "merged", "notified": true}))]);
+    let fake = Fake { requests: json!([]), tracks: RefCell::new(vec![merged]), ..Fake::default() };
+    let stale = saved(&fake, &[]);
+    assert!(run(send_due(&fake, &stale, Some(w))).is_empty());
+    assert!(fake.posts.borrow()[0].1.contains("Today: 1 fixed, 1 merged, 0 need you"), "{:?}", fake.posts.borrow());
+}
+
+#[test]
+fn stop_all_pressed_during_the_reads_holds_the_day() {
+    let w = today();
+    let fake = Fake { requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), pause_while_reading: true, ..Fake::default() };
+    run(send_due(&fake, &saved(&fake, &day_of_moves(&w)), Some(w.clone())));
+    assert!(fake.posts.borrow().is_empty() && fake.sent.borrow().is_empty(), "nothing posted, the day not used up");
+    let resumed = Fake { requests: json!([]), tracks: RefCell::new(day_of_moves(&w)), ..Fake::default() };
+    run(send_due(&resumed, &saved(&resumed, &day_of_moves(&w)), Some(w)));
+    assert_eq!(resumed.posts.borrow().len(), 1, "sent once resumed the same day");
 }

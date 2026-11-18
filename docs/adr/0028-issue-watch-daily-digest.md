@@ -95,3 +95,20 @@ any device but the execution device anyway.
 - Merges the review loop carried for pull requests that close no tracked
   issue are not counted: `review_loop_sent` has no time.
 - The send hour is a constant, not a setting.
+- Unanswered cards come from the Activity view, which holds the newest 20
+  requests (the same read the tracker's run check uses), and count by the
+  request's receipt time: a busy Agent can hide a card, and a card that
+  expires across the send hour is in neither day. A digest-specific ledger
+  query is the follow-up (TODO in `digest.rs`).
+- `changed_at` keeps only the latest move. The counts read terminal states
+  (`merged`, `failed`, `needs_human`), which never move again, and the
+  current hold, so they are exact; an informational line for an issue that
+  moved again after the send hour shows in the next day's digest instead.
+
+## GPT review (adopted)
+
+- The check's ledger snapshot can predate a move the same check recorded
+  just before the send hour: the digest reads the ledger again after the
+  cutoff before it summarizes.
+- Stop All pressed during the digest's reads: checked again right before
+  each repository's post or quiet-day record, so the day is not used up.
