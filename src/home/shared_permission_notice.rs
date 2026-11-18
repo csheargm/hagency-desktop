@@ -126,7 +126,15 @@ impl SharedPermissionNotice {
     fn sync_animation(&mut self,cx:&mut Cx) {
         self.view.widget(cx,ids!(activity_spinner)).set_visible(cx,self.active && self.waiting);
     }
+    /// What to show; an unreadable queue is said beside any status or card.
     fn display(&mut self)->Display {
+        let mut shown=self.display_request();
+        if shown.visible && !self.unreadable.is_empty() && shown.title!=self.unreadable {
+            shown.context=[shown.context.as_str(),self.unreadable.as_str()].iter().filter(|t|!t.is_empty()).copied().collect::<Vec<_>>().join("\n");
+        }
+        shown
+    }
+    fn display_request(&mut self)->Display {
         use crate::hagency::pending_approvals::{self as approvals,LocalDecision};
         use crate::i18n::{format,tr};
         let Some(row)=self.rows.get(self.selected) else {
@@ -456,6 +464,12 @@ mod tests {
         assert!(shown.visible,"never blank");
         assert_eq!(shown.title,"Could not read bird-claude's requests (approvals_read_timeout); some may be missing.");
         assert!(!shown.once && !shown.deny,"nothing to decide");
+        // The Agent is working (GPT review): the warning shows beside its status.
+        n.execution_busy=true;n.execution_text="Agent is working…".into();
+        let working=n.display();
+        assert_eq!(working.title,"Agent is working…");
+        assert_eq!(working.context,"Could not read bird-claude's requests (approvals_read_timeout); some may be missing.");
+        n.execution_busy=false;n.execution_text.clear();
         n.unreadable=crate::hagency::owner_inbox_model::unreadable_notice(&json!({"approvals":[],"unreadableAgents":[]}));
         assert!(!n.display().visible,"a reading that read every queue clears it");
     }

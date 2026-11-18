@@ -35,6 +35,8 @@ impl NativeOwner {
                 let e = super::super::owned_agents::runtime_error(e);
                 failure(e.status, &e.code)
             })?;
+        // Current-profile readiness may change while the read waited (GPT review).
+        self.admit_owner_command(&command).await?;
         Ok(json!({ "approvals": approvals }))
     }
 

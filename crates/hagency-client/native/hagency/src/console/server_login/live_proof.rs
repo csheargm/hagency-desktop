@@ -19,7 +19,8 @@ impl ServerLogin {
     /// The current device while its server proof is still valid for at least
     /// `LIVE_MARGIN`, without taking the renewal line. A lapsed, invalidated
     /// or stopped proof falls back to `authorized_device` (which renews or
-    /// refuses), so this never serves authority the full path would not.
+    /// refuses). Tradeoff: a withdrawal on the server is seen at the next
+    /// renewal or when the proof lapses, as for any request already admitted.
     pub(in crate::console) async fn live_device(&self) -> Result<AuthorizedDevice, Error> {
         if let Some(device) = self.live_device_now().await {
             return Ok(device);
