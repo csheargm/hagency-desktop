@@ -3762,6 +3762,7 @@
   "The signed-in account changed; nothing was changed": "登录的账号已变更，未做任何修改",
   "your merge (trial)": "由你合并（试用期）",
   "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.": "试用期：第 {next}/{required} 个 PR 需要你来合并 — 你合并 {required} 个之后，此监视会自行合并低风险 PR。",
+  "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.": "此提交需要一个 Agent 批准（合并闸门说 {said}）。通过 Hagency 发布的审查 Agent 结论（Codex 或 Claude）才算数，普通 GitHub 评论不算；结论未被记录时 Hagency 会再次请审查者审查，而此提交目前还没有任何记录的批准。请你自己审查并合并。",
   "Safeguards": "安全保障",
   "May do alone": "可以自行完成",
   "Needs you": "需要你确认",

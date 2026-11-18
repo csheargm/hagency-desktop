@@ -61,6 +61,8 @@ pub(crate) trait TrackIo {
     /// The Agent's cannot-fix comment during the current attempt.
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
+    /// Ask the Agent once per head to mark its draft pull request ready (live PR #104).
+    async fn ask_ready(&self, pr: &PullRequest) -> Result<(), String>;
     /// The room line saying the reviewer is a fallback ("No Codex reviewer
     /// in the room; asked anna-claude", ADR 0025), when it is one.
     fn reviewer_notice(&self) -> Option<String>;
@@ -154,7 +156,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
             io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
             Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
         }
-        Action::FollowPr { pr } => follow_one(io, &track.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
+        Action::FollowPr { pr } => follow_one(io, (&track.repo, inputs.now), track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
         Action::AnnounceFixed => announce(io, &track.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
@@ -170,12 +172,15 @@ pub(super) fn change_of(repo: &str, number: i64, extra: Value) -> Value {
 
 /// The Agent's pull request is open: record it, ask for its review (or the
 /// merge gate), and tell a person once when no other Agent can review.
-async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullRequest, pr: u64, holds: &mut Vec<(i64, String)>) -> Result<String, String> {
+async fn follow_one(io: &impl TrackIo, (repo, now): (&str, i64), track: &Track, pull: &PullRequest, pr: u64, holds: &mut Vec<(i64, String)>) -> Result<String, String> {
     let n = track.number;
     if track.state == State::HandedOff || track.pr != Some(pr) {
         io.record(change_of(repo, n, json!({"state": "pr_opened", "pr": pr}))).await?;
     }
     let followed = io.follow_pr(pull).await?;
+    if followed == Followed::Draft {
+        super::review_again::ready_draft(io, track, pull, now).await?;
+    }
     if let Some(hold) = hold_of(&followed) {
         holds.push((n, hold));
     }

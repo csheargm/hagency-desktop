@@ -3762,6 +3762,7 @@
   "The signed-in account changed; nothing was changed": "The signed-in account changed; nothing was changed",
   "your merge (trial)": "your merge (trial)",
   "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.": "Trial: PR {next} of {required} needs you to merge — after {required} owner merges this watch merges low-risk PRs by itself.",
+  "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.": "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.",
   "Safeguards": "Safeguards",
   "May do alone": "May do alone",
   "Needs you": "Needs you",

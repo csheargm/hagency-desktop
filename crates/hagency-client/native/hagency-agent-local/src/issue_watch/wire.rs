@@ -175,17 +175,30 @@ struct WireReview {
     body: Option<String>,
 }
 
+// TODO(R4): wire.rs is over budget; split the review reads (WireReview, parse_reviews, approved_by_other) into wire/reviews.rs.
+/// The state a COMMENTED review reads as when its body is an Agent's
+/// approving verdict of its own commit (`<APPROVE_MARKER> <commit>`): every
+/// Agent shares one login, so its approval is a comment (never decisive here).
+pub const APPROVE_VERDICT: &str = "VERDICT_APPROVE";
+
 /// GitHub's JSON review list as `(login, state, commit)`, oldest first.
 /// An APPROVED review whose body does not name its commit reads `UNBOUND`
-/// (the merge gate's rule: the reviewer may have read another head).
+/// (the merge gate's rule: the reviewer may have read another head); an
+/// Agent's approving verdict comment reads [`APPROVE_VERDICT`].
 pub fn parse_reviews(body: &str) -> Result<Vec<(String, String, String)>, FetchError> {
     let wire: Vec<WireReview> = serde_json::from_str(body).map_err(|e| FetchError::Parse(e.to_string()))?;
     // One entry per review (a deleted account reads as an empty login), so a
     // full page stays full for pagination.
     Ok(wire.into_iter().map(|r| {
         let (login, commit) = (r.user.map(|u| u.login).unwrap_or_default(), r.commit_id.unwrap_or_default());
-        let bound = !commit.is_empty() && r.body.unwrap_or_default().contains(&commit);
-        let state = if r.state == "APPROVED" && !bound { "UNBOUND".to_owned() } else { r.state };
+        let body = r.body.unwrap_or_default();
+        let bound = !commit.is_empty() && body.contains(&commit);
+        let verdict = !commit.is_empty() && body.contains(&format!("{} {commit}", crate::merge_policy::gate::APPROVE_MARKER));
+        let state = match r.state.as_str() {
+            "APPROVED" if !bound => "UNBOUND".to_owned(),
+            "COMMENTED" if verdict => APPROVE_VERDICT.to_owned(),
+            _ => r.state,
+        };
         (login, state, commit)
     }).collect())
 }

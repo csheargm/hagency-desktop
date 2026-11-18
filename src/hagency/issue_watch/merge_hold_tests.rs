@@ -86,7 +86,9 @@ fn pr_36_an_unrecorded_approval_is_named_once_instead_of_waiting_silently() {
     assert_eq!(bodies.len(), 1, "one notice, not one per check: {bodies:?}");
     assert!(bodies[0].contains("PR #36 in csheargm/hagency-demo-sandbox at ad395c6d9cde cannot be merged yet"), "{}", bodies[0]);
     assert!(bodies[0].contains(&format!("an Agent approval of this head (the merge gate says \"{NO_APPROVAL}\")")));
-    assert!(bodies[0].contains("Codex Agent's review") && bodies[0].contains("review and merge it yourself"));
+    // Codex verdicts are recorded (and preferred): the notice never says otherwise (Nov 18).
+    assert!(!bodies[0].contains("Codex Agent's review") && !bodies[0].contains("(Claude) Agent"), "{}", bodies[0]);
+    assert!(bodies[0].contains("asks the reviewer again") && bodies[0].contains("Review and merge it yourself"));
     assert!(bodies[0].ends_with("https://github.com/csheargm/hagency-demo-sandbox/pull/36"));
 }
 

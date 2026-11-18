@@ -152,6 +152,9 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
 
 /// Characters that would chain, redirect or substitute; any one refuses the command.
 const SHELL_METACHARACTERS: [char; 7] = [';', '|', '\n', '`', '$', '<', '>'];
+/// Of those, the ones that only chain when unquoted: inside a quoted review
+/// body they are text (live PR #105: "… link; no issues found").
+const CHAINING: [char; 2] = [';', '|'];
 
 /// The directory and words of a command proposal. `claude.Bash` and Codex's
 /// `codex.command` give one shell line; Codex may instead give an argv array,
@@ -192,7 +195,8 @@ fn is_shell(program: &str) -> bool {
 
 /// One shell line: a single command, or one in-workspace `cd <dir> &&` then one command.
 fn shell_words(line: &str, cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
-    if line.contains(SHELL_METACHARACTERS) {
+    let always = SHELL_METACHARACTERS.iter().filter(|c| !CHAINING.contains(c)).any(|c| line.contains(*c));
+    if always || chains_unquoted(line) {
         return None;
     }
     let mut segments = shell::parse(line)?.segments;
@@ -207,6 +211,25 @@ fn shell_words(line: &str, cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
         }
         _ => None,
     }
+}
+
+/// Whether `line` holds a [`CHAINING`] character outside single or double
+/// quotes (a backslash inside double quotes escapes the next character).
+fn chains_unquoted(line: &str) -> bool {
+    let (mut quote, mut escaped) = (None, false);
+    for c in line.chars() {
+        match quote {
+            Some('\'') if c == '\'' => quote = None,
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some('"') if c == '"' => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if CHAINING.contains(&c) => return true,
+            None => {}
+        }
+    }
+    false
 }
 
 #[derive(Default)]

@@ -8,7 +8,7 @@ pub use hagency_agent_local::issue_watch::wire::{FetchError, GITHUB_API, UNREACH
 pub use hagency_agent_local::watch_info::{RoomWatch, WatchEntry, entries as watch_entries};
 pub use hagency_agent_local::issue_watch::{DEFAULT_LABEL, Issue, IssueWatch, WatchMode, WatchSetting, select, valid_repo};
 use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, parse_issues, parse_login, parse_comments, parse_permission, parse_pulls, parse_reviews, pulls_url, comments_url, reviews_url};
-pub use hagency_agent_local::issue_watch::wire::{Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
+pub use hagency_agent_local::issue_watch::wire::{APPROVE_VERDICT, Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
 
 /// The issue loop's follow-through records and state machine (ADR 0020).
 pub use hagency_agent_local::issue_track;
