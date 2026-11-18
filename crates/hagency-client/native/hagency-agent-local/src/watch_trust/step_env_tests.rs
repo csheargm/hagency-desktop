@@ -76,13 +76,35 @@ fn no_token_means_gh_is_signed_out() {
 }
 
 #[test]
-fn identity_comes_from_the_host_not_the_steps_home() {
-    let mut sh = Command::new("/bin/sh");
-    sh.args(["-c", "env"]);
-    isolate_with(&mut sh, Path::new("/nonexistent/home"), Path::new("/nonexistent/gh"), None, owner_env);
-    with_identity(&mut sh);
-    let env = String::from_utf8(sh.output().unwrap().stdout).unwrap();
-    let host_name = std::env::var_os("GIT_AUTHOR_NAME").or_else(|| global_config("user.name"));
-    let step_name = env.lines().find_map(|l| l.strip_prefix("GIT_AUTHOR_NAME=")).map(OsString::from);
-    assert_eq!(step_name, host_name.filter(|n| !n.is_empty()));
+fn a_pinned_gh_line_is_recognised_and_a_git_line_is_not() {
+    assert!(runs_gh("GH_HOST='github.com' gh pr review 7 --approve -R a/b -b 'x'"));
+    assert!(runs_gh("GIT_CONFIG_COUNT='3' GH_HOST='github.com' gh api repos/a/b/issues"));
+    assert!(runs_gh("gh pr create --repo a/b"));
+    assert!(!runs_gh("GIT_CONFIG_COUNT='3' env -u GIT_DIR git -C 'app' commit -m 'fix gh thing'"));
+    assert!(!runs_gh("printf %s gh"));
+}
+
+/// The identity a commit runs with: `dir`'s `git var` under the step's
+/// global config `global` and an empty system config.
+fn ident(dir: &Path, global: &Path, var: &str) -> String {
+    let out = Command::new("git").arg("-C").arg(dir).args(["var", var]).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", global.parent().unwrap()).env("GIT_CONFIG_GLOBAL", global).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// GPT review (Nov 18): the host identity is a fallback below the
+/// checkout's own; author and committer settings are kept too.
+#[test]
+fn the_host_identity_is_a_global_fallback_the_checkout_overrides() {
+    let dir = empty_dir("ident");
+    let entries = [("user.name", "Host Name"), ("user.email", "host@x"), ("committer.name", "Host Committer")].map(|(k, v)| (k.to_owned(), v.to_owned()));
+    let global = write_global_config(&dir.join("home"), &entries).unwrap();
+    let repo = dir.join("repo");
+    assert!(Command::new("git").args(["init", "-q"]).arg(&repo).env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap().success());
+    assert!(ident(&repo, &global, "GIT_AUTHOR_IDENT").starts_with("Host Name <host@x>"));
+    assert!(ident(&repo, &global, "GIT_COMMITTER_IDENT").starts_with("Host Committer <host@x>"));
+    assert!(Command::new("git").arg("-C").arg(&repo).args(["config", "user.name", "Checkout"]).status().unwrap().success());
+    assert!(ident(&repo, &global, "GIT_AUTHOR_IDENT").starts_with("Checkout <host@x>"), "the checkout's identity wins");
+    assert!(write_global_config(&dir.join("home"), &[]).is_err(), "an existing home is never reused");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

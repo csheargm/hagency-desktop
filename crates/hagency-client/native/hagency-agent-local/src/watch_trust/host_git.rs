@@ -17,7 +17,7 @@ use std::process::Command;
 
 /// Config of every host network command; with no system or global config
 /// read, this is all the config there is (the scratch repository has none).
-const HOST_CONFIG: [&str; 10] = [
+const HOST_CONFIG: [&str; 9] = [
     "core.hooksPath=/dev/null",
     "core.fsmonitor=false",
     "core.sshCommand=false",
@@ -25,7 +25,6 @@ const HOST_CONFIG: [&str; 10] = [
     "core.alternateRefsCommand=true",
     "protocol.allow=never",
     "credential.helper=",
-    "credential.helper=!gh auth git-credential",
     // Keep fetched objects as one pack the host can hand to the checkout.
     "fetch.unpackLimit=1",
     "transfer.unpackLimit=1",
@@ -275,6 +274,11 @@ pub(crate) fn host_command(git_dir: &Path, protocol: Option<&str>, token: Option
     command.arg("--git-dir").arg(git_dir);
     for pin in HOST_CONFIG {
         command.arg("-c").arg(pin);
+    }
+    // gh is asked only for the Agent's own token: without one it would fall
+    // back to a stored (keyring) login, which may be the owner's.
+    if token.is_some_and(|t| !t.trim().is_empty()) {
+        command.arg("-c").arg("credential.helper=!gh auth git-credential");
     }
     if let Some(protocol) = protocol {
         command.arg("-c").arg(format!("protocol.{protocol}.allow=always"));

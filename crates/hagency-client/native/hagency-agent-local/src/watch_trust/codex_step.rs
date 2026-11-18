@@ -100,15 +100,22 @@ pub(crate) fn run_with(step: TrustedStep, root: &Path, ctx: &HostCtx, host: impl
 
 /// `command` (a pinned line push trust produced, never the model's text)
 /// under `/bin/sh` in `root`, in the step environment ([`super::step_env`]):
-/// the Agent's token, an empty gh config and a `HOME` that holds nothing
-/// (never the daemon's login), plus the host's commit identity.
+/// the Agent's token, an empty gh config and a `HOME` holding only the
+/// host's commit identity (never the daemon's login). With no token, a `gh`
+/// step is refused before it runs.
 fn shell(command: &str, root: &Path, ctx: &HostCtx) -> Result<String, String> {
+    use super::step_env;
+    let token = ctx.token.as_deref().filter(|t| !t.trim().is_empty());
+    if token.is_none() && step_env::runs_gh(command) {
+        return Err(step_env::NO_TOKEN.into());
+    }
     let config = GhConfig::new()?;
+    let home = config.0.join("home");
     let mut sh = Command::new("/bin/sh");
     sh.arg("-c").arg(command).current_dir(root);
-    // Inside the owner-only config directory and never created.
-    super::step_env::isolate(&mut sh, &config.0.join("home"), &config.0, ctx.token.as_deref());
-    super::step_env::with_identity(&mut sh);
+    step_env::isolate(&mut sh, &home, &config.0, token);
+    // Pinned git lines unset GIT_CONFIG_GLOBAL, so the same file is $HOME/.gitconfig.
+    sh.env("GIT_CONFIG_GLOBAL", step_env::write_global_config(&home, &step_env::host_identity())?);
     super::host_run::run(&mut sh, None, ctx)
 }
 
