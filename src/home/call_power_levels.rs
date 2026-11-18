@@ -125,30 +125,35 @@ pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<bool> {
     tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))?
 }
 
-/// Apply [`open_call_membership`] to a room the user just created (as creator
-/// they may edit power levels).
-pub async fn allow_call_membership(room: &Room) -> anyhow::Result<()> {
+/// Hagency's levels for a room the user just created (as creator they may
+/// edit power levels): `open_calls` (a private room) also opens call
+/// membership and issue status ([`open_call_membership`]); every room gets
+/// the admin-only merge-rules entry when missing.
+pub async fn allow_call_membership(room: &Room, open_calls: bool) -> anyhow::Result<()> {
     let current = server_levels(room).await?;
     // The room was created a moment ago by this user with no other members, so no
     // concurrent power-level change can be overwritten by this full-content PUT.
-    if let Some(updated) = open_call_membership(current)? {
+    let updated = if open_calls { open_call_membership(current)? } else { add_missing_member_state(current, &ADMIN_STATE_EVENTS)? };
+    if let Some(updated) = updated {
         room.send_state_event_raw("m.room.power_levels", "", updated).await?;
     }
     Ok(())
 }
 
-/// Creation flows call this once the room exists. A failure is deliberately
-/// not a creation failure: the room is already made, so reporting an error
-/// would invite a duplicate; the room then behaves as before this fix (calls
-/// need a moderator) and the warning records why.
-pub async fn allow_call_membership_after_create(room: &Room) {
-    let outcome = tokio::time::timeout(FOLLOW_UP_TIMEOUT, allow_call_membership(room)).await;
+/// Creation flows call this once a (non-space) room exists. A failure is
+/// deliberately not a creation failure: the room is already made, so
+/// reporting an error would invite a duplicate; the room then behaves as
+/// before this fix (calls need a moderator, merge rules follow
+/// `state_default`) until an admin links a repository, which retries the
+/// merge-rules entry ([`allow_member_state_in`]); the warning records why.
+pub async fn allow_call_membership_after_create(room: &Room, open_calls: bool) {
+    let outcome = tokio::time::timeout(FOLLOW_UP_TIMEOUT, allow_call_membership(room, open_calls)).await;
     let error = match outcome {
         Ok(Ok(())) => return,
         Ok(Err(error)) => format!("{error:#}"),
         Err(_) => "timed out".to_owned(),
     };
-    makepad_widgets::warning!("room {} created but call access not opened: {error}", room.room_id());
+    makepad_widgets::warning!("room {} created but its power levels (calls, admin-only merge rules) not set: {error}", room.room_id());
 }
 
 #[cfg(test)]
@@ -216,15 +221,13 @@ mod tests {
             .set_body_json(json!({"errcode":"M_FORBIDDEN","error":"no"}))).mount(&server).await;
         let client = signed_in(&server).await;
         let room = client.create_room(Default::default()).await.unwrap();
-        tokio::time::timeout(FOLLOW_UP_TIMEOUT * 2, allow_call_membership_after_create(&room)).await.unwrap();
-        assert!(allow_call_membership(&room).await.is_err());
+        tokio::time::timeout(FOLLOW_UP_TIMEOUT * 2, allow_call_membership_after_create(&room, true)).await.unwrap();
+        assert!(allow_call_membership(&room, true).await.is_err());
         assert!(server.received_requests().await.unwrap().iter().all(|r| r.method.as_str() != "PUT"));
     }
 
-    /// User flow: create a private room, then the follow-up keeps the server's
-    /// power levels and opens only call membership.
-    #[tokio::test]
-    async fn created_room_gets_call_membership_opened_on_the_server() {
+    /// Creates a room against a mock server and returns the server's levels and the levels sent back.
+    async fn created_room_put(open_calls: bool) -> (Value, Value) {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path, path_regex}};
         let server = MockServer::start().await;
         Mock::given(method("POST")).and(path("/_matrix/client/v3/createRoom"))
@@ -232,24 +235,41 @@ mod tests {
             .mount(&server).await;
         let defaults = json!({"users":{"@o:x":100},"state_default":50,
             "events":{"m.room.tombstone":150,"m.room.power_levels":100}});
-        Mock::given(method("GET")).and(path_regex(r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$"))
+        let at = r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$";
+        Mock::given(method("GET")).and(path_regex(at))
             .respond_with(ResponseTemplate::new(200).set_body_json(defaults.clone()))
             .mount(&server).await;
-        Mock::given(method("PUT")).and(path_regex(r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$"))
+        Mock::given(method("PUT")).and(path_regex(at))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"event_id":"$pl"})))
             .mount(&server).await;
         let client = signed_in(&server).await;
-        let config = crate::home::space_management::CreateRoomConfig { name: "Team".into(), ..Default::default() };
+        let config = crate::home::space_management::CreateRoomConfig { name: "Team".into(), public: !open_calls, ..Default::default() };
         let room = client.create_room(config.request().unwrap()).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), allow_call_membership(&room))
+        tokio::time::timeout(std::time::Duration::from_secs(10), allow_call_membership(&room, open_calls))
             .await.unwrap().unwrap();
         let put = server.received_requests().await.unwrap().into_iter()
             .find(|r| r.method.as_str() == "PUT").expect("power levels were sent");
-        let mut expected = defaults;
+        (defaults, serde_json::from_slice(&put.body).unwrap())
+    }
+
+    /// User flow: create a private room, then the follow-up keeps the server's
+    /// power levels, opens call membership and makes the merge rules admin-only.
+    #[tokio::test]
+    async fn created_room_gets_call_membership_opened_on_the_server() {
+        let (mut expected, sent) = created_room_put(true).await;
         expected["events"][CALL_MEMBER_EVENT] = json!(0);
         expected["events"][::hagency::repo_status::ISSUE_STATUS_STATE_TYPE] = json!(0);
         expected["events"][ADMIN_STATE_EVENTS[0]] = json!(ADMIN_LEVEL);
-        assert_eq!(serde_json::from_slice::<Value>(&put.body).unwrap(), expected);
+        assert_eq!(sent, expected);
+    }
+
+    /// User flow: a public room keeps calls as the server set them but still
+    /// gets admin-only merge rules (GPT review).
+    #[tokio::test]
+    async fn created_public_room_gets_only_admin_only_merge_rules() {
+        let (mut expected, sent) = created_room_put(false).await;
+        expected["events"][ADMIN_STATE_EVENTS[0]] = json!(ADMIN_LEVEL);
+        assert_eq!(sent, expected);
     }
 }
 

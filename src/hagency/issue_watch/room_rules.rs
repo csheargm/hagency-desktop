@@ -8,8 +8,8 @@ use crate::hagency::backend::Service;
 use ::hagency::issue_watch::safeguards::{MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, watch_entries};
 use matrix_sdk::Room;
-use matrix_sdk::ruma::UserId;
-use matrix_sdk::ruma::events::{StateEventType, room::power_levels::RoomPowerLevels};
+use matrix_sdk::ruma::events::{StateEventType, room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource}};
+use matrix_sdk::ruma::{OwnedUserId, UserId, room_version_rules::AuthorizationRules};
 use serde_json::{Value, json};
 
 /// What a room's state says about its merge rules.
@@ -94,21 +94,34 @@ pub async fn can_edit(room: &Room) -> bool {
     room.power_levels().await.is_ok_and(|levels| may_set_rules(&levels, &user))
 }
 
-/// `room`'s rules, read from the homeserver now (rules and membership in one
-/// response). This account must be joined, or nothing counts.
+/// `room`'s rules, read from the homeserver now (rules, membership and power
+/// levels in one response). This account must be joined, or nothing counts.
 pub async fn read(room: &Room) -> Result<RoomRead, String> {
-    let events = crate::home::room_memory::server_state::events_of_types(&room.client(), room.room_id(), &[MERGE_RULES_STATE_TYPE, MEMBER_EVENT]).await?;
+    let types = [MERGE_RULES_STATE_TYPE, MEMBER_EVENT, POWER_LEVELS_EVENT];
+    let events = crate::home::room_memory::server_state::events_of_types(&room.client(), room.room_id(), &types).await?;
     let me = room.client().user_id().map(|u| u.to_string()).unwrap_or_default();
     if room.state() != matrix_sdk::RoomState::Joined || !joined(&events, &me) {
         return Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned());
     }
-    // Unreadable power levels: nobody's rules count (fail closed).
-    let levels = room.power_levels().await.ok();
+    // The server's power levels, not the sync store's (GPT review: the store can
+    // lag a raised level or a demotion). Unreadable: nobody's rules count (fail closed).
+    let rules = room.clone_info().room_version_rules_or_default().authorization;
+    let levels = room.creators().and_then(|creators| levels_of(&events, &rules, creators));
     let may_send = |sender: &str| {
         let user = UserId::parse(sender).ok();
         levels.as_ref().zip(user).is_some_and(|(l, u)| may_set_rules(l, &u))
     };
     Ok(accept(&events, room.room_id().as_str(), may_send))
+}
+
+const POWER_LEVELS_EVENT: &str = "m.room.power_levels";
+
+/// The power levels among the server's state `events`, or `None` when they
+/// are missing or unreadable.
+pub fn levels_of(events: &[Value], rules: &AuthorizationRules, creators: Vec<OwnedUserId>) -> Option<RoomPowerLevels> {
+    let event = events.iter().find(|e| e["type"] == POWER_LEVELS_EVENT && e["state_key"] == "")?;
+    let content: RoomPowerLevelsEventContent = serde_json::from_value(event["content"].clone()).ok()?;
+    Some(RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), rules, creators))
 }
 
 /// Save `policy` as `room`'s rules; the homeserver refuses a member below the event's level.
