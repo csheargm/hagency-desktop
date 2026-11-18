@@ -215,6 +215,7 @@ async fn gpt_review_fixes_hold() {
     ledger.settle_agent_review("rv", true).unwrap();
     let changes = format!("gh pr review 7 --repo {A} --request-changes -b \"Hagency verdict: CHANGES - no\"");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&changes, temp.path(), "anna"), "rc", 11, &src).await, Some(true));
+    ledger.settle_tool_call("rc", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg", 11, &src).await, None, "the approval was withdrawn");
     // Even with the switch off (the owner's card answers), and a held approval cannot settle afterwards.
     let again = format!("gh pr review 7 --repo {A} --approve -b \"Hagency verdict: APPROVE {HEAD} - second look\"");

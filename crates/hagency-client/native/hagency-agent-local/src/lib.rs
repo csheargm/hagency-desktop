@@ -382,6 +382,7 @@ impl Ledger {
         issue_watch::ensure_schema(&db)?;
         outside::ensure_schema(&db)?;
         db.execute_batch(merge_policy::gate::SCHEMA)?;
+        db.execute_batch(merge_policy::pending::SCHEMA)?;
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;

@@ -27,7 +27,6 @@ pub const APPROVE_MARKER: &str = "Hagency verdict: APPROVE";
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS auto_merge (agent TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1))) STRICT;
 DROP TABLE IF EXISTS auto_merge_reviews;
 CREATE TABLE IF NOT EXISTS auto_merge_head_reviews (pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL, PRIMARY KEY(pr,head,reviewer)) STRICT;
-CREATE TABLE IF NOT EXISTS auto_merge_used (pr TEXT PRIMARY KEY, agent TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS auto_merge_pending_reviews (call TEXT PRIMARY KEY, pr TEXT NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL) STRICT;";
 
 impl Ledger {
@@ -60,8 +59,10 @@ impl Ledger {
         Ok(())
     }
     /// Tool call `call` finished: a held review counts only if it succeeded.
+    /// A merge claim held under it is given back unless it succeeded ([`super::pending`]).
     pub fn settle_agent_review(&mut self, call: &str, succeeded: bool) -> Result<()> {
         use rusqlite::OptionalExtension;
+        self.settle_auto_merge(call, succeeded)?;
         let held: Option<(String, String, String)> = self
             .db
             .query_row("DELETE FROM auto_merge_pending_reviews WHERE call=? RETURNING pr, head, reviewer", [call], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -76,10 +77,6 @@ impl Ledger {
         let mut statement = self.db.prepare("SELECT reviewer FROM auto_merge_head_reviews WHERE pr=? AND head=?")?;
         let rows = statement.query_map([pr, head], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-    /// Take the one automatic merge of `pr`; false when it was already taken.
-    pub(crate) fn claim_auto_merge(&mut self, pr: &str, agent: &str) -> Result<bool> {
-        Ok(self.db.execute("INSERT OR IGNORE INTO auto_merge_used VALUES (?,?)", (pr, agent))? == 1)
     }
 }
 
@@ -260,10 +257,10 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     let agent = proposal.scope.agent.clone();
     if command.kind == Kind::RequestChanges {
         // Whatever answers it (this gate or the owner's card), a blocking
-        // verdict withdraws this Agent's approvals of the pull request first.
+        // verdict withdraws this Agent's approvals once it has run ([`super::pending`]).
         // An unreadable pull request leaves the card to the owner.
         let url = source.pull_request(&command).await?.url;
-        ledger.withdraw_agent_review(&url, &agent).ok()?;
+        ledger.hold_withdrawal(call, &url, &agent).ok()?;
     }
     if !ledger.auto_merge(&agent).ok()? {
         return None;
@@ -280,6 +277,14 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         ToolPolicy::AskOwner => ledger.approve_tool(owner, proposal, now).and_then(|_| ledger.authorize_tool(proposal, now)).is_ok(),
         _ => ledger.authorize_tool(proposal, now).is_ok(),
     };
+    if command.kind == Kind::Merge {
+        // The claim `qualifies` took counts once this merge has run ([`super::pending`]).
+        if !allowed {
+            ledger.release_auto_merge(&view.url, &view.head_sha).ok()?;
+        } else if !call.is_empty() {
+            ledger.hold_auto_merge(call, &view.url, &view.head_sha).ok()?;
+        }
+    }
     if allowed && command.kind == Kind::Review && !call.is_empty() {
         // Residual race: a push between this read and the review lands an
         // approval on the old head; it then never matches the new one.
@@ -321,5 +326,5 @@ async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super::github::Pr
         return Some(false);
     }
     let decision = super::review_loop::judge(ledger, command, repo, view, agent, source).await?;
-    Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, agent).ok()?)
+    Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
 }

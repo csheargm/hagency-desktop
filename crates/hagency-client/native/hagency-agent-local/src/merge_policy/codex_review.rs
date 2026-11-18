@@ -50,7 +50,10 @@ pub fn settle(ledger: &mut Ledger, (thread, turn): (&str, &str), item: &Value, s
         return Ok(());
     };
     let key = call_key(thread, turn, id);
-    let succeeded = sent.remove(&key) && item["status"] == "completed" && item["exitCode"] == 0;
+    let ran = item["status"] == "completed" && item["exitCode"] == 0;
+    // A request for changes withdraws approvals once it ran, whoever allowed it.
+    ledger.settle_withdrawal(&key, ran)?;
+    let succeeded = sent.remove(&key) && ran;
     ledger.settle_agent_review(&key, succeeded)
 }
 

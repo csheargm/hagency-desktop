@@ -1189,7 +1189,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         .await
     }
     fn tool_finished(&mut self, tool_use_id: &str, succeeded: bool) -> Result<()> {
-        self.ledger.settle_agent_review(tool_use_id, succeeded).map_err(Into::into)
+        self.ledger.settle_tool_call(tool_use_id, succeeded).map_err(Into::into)
     }
 }
 // Personal accounting is retained by its original session ledger and native
