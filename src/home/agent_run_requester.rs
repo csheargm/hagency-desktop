@@ -76,18 +76,32 @@ pub(crate) fn pick_agent_name(names: &[Option<&str>], agent: &UserId) -> Option<
         .map(str::to_owned)
 }
 
-/// The text of the mention pill for `agent` in a message's HTML body.
+/// The text of the mention pill for `agent` in a message's HTML body: an
+/// anchor whose `href` is exactly a matrix.to link to `agent`.
 fn pill_name(html: &str, agent: &UserId) -> Option<String> {
-    let encoded = agent.as_str().replace('@', "%40").replace(':', "%3A");
-    [agent.as_str(), encoded.as_str()].into_iter().find_map(|target| {
-        let href = format!("matrix.to/#/{target}");
-        let rest = &html[html.find(&href)? + href.len()..];
-        // The exact ID, not one it is a prefix of.
-        if !rest.starts_with(['"', '\'', '?']) { return None; }
-        let text = &rest[rest.find('>')? + 1..];
-        let text = text[..text.find("</a>")?].trim();
-        Some(text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'"))
+    html.match_indices("<a ").find_map(|(at, _)| {
+        let tag = &html[at..at + html[at..].find('>')?];
+        let href = ["href=\"", "href='"].into_iter().find_map(|open| {
+            let start = tag.find(open)? + open.len();
+            let close = open.chars().last()?;
+            Some(&tag[start..start + tag[start..].find(close)?])
+        })?;
+        let target = href.strip_prefix("https://matrix.to/#/")?;
+        let target = target.split('?').next().unwrap_or_default().replace("%40", "@").replace("%3A", ":").replace("%3a", ":");
+        if target != agent.as_str() { return None; }
+        let body = &html[at + tag.len() + 1..];
+        Some(html_text(&body[..body.find("</a>")?]))
     })
+}
+
+/// The visible text of an HTML fragment: tags dropped, entities decoded.
+fn html_text(fragment: &str) -> String {
+    let (mut text, mut in_tag) = (String::new(), false);
+    for c in fragment.chars() {
+        match c { '<' => in_tag = true, '>' => in_tag = false, c if !in_tag => text.push(c), _ => {} }
+    }
+    // `&amp;` last, so "&amp;lt;" stays the text "&lt;".
+    text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&").trim().to_owned()
 }
 
 /// The first Agent a message mentions.
@@ -150,8 +164,10 @@ mod tests {
         assert_eq!(pick_agent_name(&[Some("@_hagency_agt_01k:beta"), Some(" ")], agent), None);
         let encoded = r#"<a href='https://matrix.to/#/%40_hagency_agt_01k%3Abeta'>bird &amp; co</a>"#;
         assert_eq!(pill_name(encoded, agent).as_deref(), Some("bird & co"));
-        let other = r#"<a href="https://matrix.to/#/@_hagency_agt_01kx:beta">someone else</a>"#;
-        assert_eq!(pill_name(other, agent), None, "a longer ID is another Agent");
+        let other = r#"<a href="https://matrix.to/#/@_hagency_agt_01kx:beta">someone else</a> <a href="https://matrix.to/#/@_hagency_agt_01k:beta"><b>bird</b> &amp;lt;2&amp;gt;</a>"#;
+        assert_eq!(pill_name(other, agent).as_deref(), Some("bird &lt;2&gt;"), "a longer ID is another Agent; nested tags drop; no double decoding");
+        let fake = r#"<a href="https://example.org/matrix.to/#/@_hagency_agt_01k:beta">not a pill</a> matrix.to/#/@_hagency_agt_01k:beta"#;
+        assert_eq!(pill_name(fake, agent), None, "only a matrix.to anchor counts");
     }
 
     #[test]

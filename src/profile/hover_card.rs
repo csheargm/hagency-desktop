@@ -18,9 +18,8 @@ use crate::{
 };
 use super::{
     hover_card_route::{dispatch, request_for, room_name, CardButton},
-    agent_facts::{self, AgentFacts, AgentFactsChanged},
+    agent_facts::{self, AgentFacts},
     member_summary,
-    own_agents::OwnAgentsChanged,
     profile_route,
     user_profile::UserProfileAndRoomId,
 };
@@ -61,7 +60,7 @@ impl Widget for AvatarHoverCard {
             self.populate_details(cx);
         }
         if let Event::Actions(actions) = event
-            && actions.iter().any(|a| a.downcast_ref::<AgentFactsChanged>().is_some() || a.downcast_ref::<OwnAgentsChanged>().is_some())
+            && actions.iter().any(|a| agent_facts::is_facts_update(a))
         {
             self.populate(cx);
         }

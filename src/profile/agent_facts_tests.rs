@@ -87,3 +87,18 @@ fn the_owner_shows_with_its_matrix_id_unless_the_name_is_the_id() {
     assert_eq!(owner_label("@bird:beta", Some(id)), "@bird:beta", "no name: the ID once");
     assert_eq!(owner_label("Anna", None), "Anna");
 }
+
+/// GPT review: a profile opened before a run card arrived kept "Owner not
+/// shared"; an admitted card or a room's Status list now re-reads it.
+#[test]
+fn run_cards_and_room_status_refresh_open_cards() {
+    let updates: [makepad_widgets::Action; 4] = [
+        Box::new(AgentFactsChanged),
+        Box::new(super::own_agents::OwnAgentsChanged),
+        Box::new(crate::hagency::pending_questions::PendingQuestionsChanged),
+        Box::new(crate::home::room_watches::WatchesChanged { room_id: matrix_sdk::ruma::owned_room_id!("!r:s") }),
+    ];
+    assert!(updates.iter().all(is_facts_update));
+    let other: makepad_widgets::Action = Box::new(());
+    assert!(!is_facts_update(&other));
+}

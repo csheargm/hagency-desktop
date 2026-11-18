@@ -73,7 +73,9 @@ fn entry_name(cx: &mut Cx, entry: &Entry, room: &OwnedRoomId) -> String {
 
 /// The row's name and "agent" tag, and an avatar that opens the Agent's
 /// profile (or, for one's own Agent, its panel) like its timeline avatar.
-fn show_agent(cx: &mut Cx, item: &WidgetRef, name: &str, agent: Option<OwnedUserId>, room: &OwnedRoomId) {
+/// `profile_name` is the name of the Agent the avatar opens (the first one
+/// when the row names several).
+fn show_agent(cx: &mut Cx, item: &WidgetRef, name: &str, profile_name: String, agent: Option<OwnedUserId>, room: &OwnedRoomId) {
     item.label(cx, ids!(agent_runs.agent_name)).set_text(cx, name);
     let badge = item.widget(cx, ids!(agent_runs.agent_badge));
     badge.set_visible(cx, true);
@@ -87,7 +89,7 @@ fn show_agent(cx: &mut Cx, item: &WidgetRef, name: &str, agent: Option<OwnedUser
         script_apply_eval!(cx, label, {draw_text +: {color: (mod.widgets.RBX_NEUTRAL_FG)}});
     }
     let color = crate::shared::avatar::avatar_color(agent.as_ref().map_or(name, |a| a.as_str()));
-    let info = agent.map(|user_id| crate::shared::avatar::AvatarTextInfo { user_id, username: Some(name.to_owned()), room_id: room.clone() });
+    let info = agent.map(|user_id| crate::shared::avatar::AvatarTextInfo { user_id, username: Some(profile_name), room_id: room.clone() });
     item.avatar(cx, ids!(agent_runs.agent_avatar)).show_text(cx, Some(color), info, name);
 }
 
@@ -110,12 +112,12 @@ pub fn populate(cx: &mut Cx, item: &WidgetRef, room: &OwnedRoomId, entries: &[En
         card.set_pending(cx, if index == 0 { pending.clone() } else { None });
         card.set_entries(cx, shown);
     }
-    let (name, agent) = match (entries.first(), &pending) {
-        (Some(first), _) => (names(entries, |e| entry_name(cx, e, room)), OwnedUserId::try_from(first.agent.as_str()).ok()),
-        (None, Some(p)) => (p.name.clone(), Some(p.agent.clone())),
+    let (name, first_name, agent) = match (entries.first(), &pending) {
+        (Some(first), _) => (names(entries, |e| entry_name(cx, e, room)), entry_name(cx, first, room), OwnedUserId::try_from(first.agent.as_str()).ok()),
+        (None, Some(p)) => (p.name.clone(), p.name.clone(), Some(p.agent.clone())),
         (None, None) => return,
     };
-    show_agent(cx, item, &name, agent, room);
+    show_agent(cx, item, &name, first_name, agent, room);
 }
 
 #[cfg(test)]
@@ -155,6 +157,12 @@ mod tests {
         let avatar = widget.avatar(&mut cx, ids!(agent_runs.agent_avatar));
         let info = avatar.profile_info().expect("a click shows this Agent, not nothing");
         assert_eq!((info.user_id.as_str(), info.room_id.as_str()), ("@_hagency_agt_a:alpha", "!dev:alpha"));
+        let mut other = entry.clone();
+        (other.key, other.agent, other.name) = ("$b".into(), "@_hagency_agt_b:beta".into(), "bird-codex".into());
+        populate(&mut cx, &widget, &room(), &[entry, other], None);
+        assert_eq!(widget.label(&mut cx, ids!(agent_runs.agent_name)).text(), "anna-claude · bird-codex");
+        let info = widget.avatar(&mut cx, ids!(agent_runs.agent_avatar)).profile_info().expect("the first Agent's profile");
+        assert_eq!((info.user_id.as_str(), info.username.as_deref()), ("@_hagency_agt_a:alpha", Some("anna-claude")), "its own name, not both");
     }
 
     #[test]

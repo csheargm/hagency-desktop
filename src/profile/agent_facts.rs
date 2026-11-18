@@ -32,6 +32,16 @@ const MAX_ROWS: usize = 128;
 #[derive(Clone, Debug)]
 pub struct AgentFactsChanged;
 
+/// Whether `action` may change what an open card or profile says about an
+/// Agent: a fetch here, a new own-Agents listing, a run card admitted in a
+/// room (it can name a federated Agent's owner), or a room's Status list.
+pub fn is_facts_update(action: &makepad_widgets::Action) -> bool {
+    action.downcast_ref::<AgentFactsChanged>().is_some()
+        || action.downcast_ref::<own_agents::OwnAgentsChanged>().is_some()
+        || action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some()
+        || action.downcast_ref::<crate::home::room_watches::WatchesChanged>().is_some()
+}
+
 /// What is known about one Agent; `None` fields are unknown or still loading.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentFacts {

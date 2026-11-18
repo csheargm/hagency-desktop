@@ -44,13 +44,12 @@ pub struct ProfileSidePanel {
 impl Widget for ProfileSidePanel {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
+        // The owner's display name may just have loaded: re-read the details too.
         if let Event::Signal = event
             && self.info.as_mut().is_some_and(|info| profile_view_fill::refresh_info(cx, info))
-        { self.view.redraw(cx); }
+        { self.fill_details(cx); self.view.redraw(cx); }
         let Event::Actions(actions) = event else { return };
-        if actions.iter().any(|a| a.downcast_ref::<super::own_agents::OwnAgentsChanged>().is_some()
-            || a.downcast_ref::<super::agent_facts::AgentFactsChanged>().is_some()
-            || a.downcast_ref::<crate::home::room_watches::WatchesChanged>().is_some())
+        if actions.iter().any(super::agent_facts::is_facts_update)
             && let Some(user_id) = self.info.as_ref().map(|i| i.user_id.clone())
         {
             self.show_agent_settings(cx, &user_id);
