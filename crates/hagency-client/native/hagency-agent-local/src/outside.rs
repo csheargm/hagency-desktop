@@ -44,6 +44,97 @@ pub(crate) fn stays_in_workspace(proposal: &ToolProposal) -> bool {
     }
 }
 
+/// True when `proposal` only LOOKS inside `cwd` (the Room workspace), ADR
+/// 0025: a Claude `Read` whose only path is an absolute `file_path` inside it,
+/// or a shell line of plain viewers ([`VIEWERS`]: no recursion, no option that
+/// names a file or runs a program) and `cd` inside, every directory entered
+/// and every file named resolved through links and none of it git metadata.
+/// No git, `gh`, search tool, write or redirect.
+pub(crate) fn inspects_workspace(proposal: &ToolProposal) -> bool {
+    if proposal.risk == "permission_expansion" {
+        return false;
+    }
+    let cwd = Path::new(&proposal.canonical_directory);
+    let args = &proposal.arguments;
+    match proposal.tool.as_str() {
+        // Exactly the field Read opens (GPT review): a second path field asks.
+        "claude.Read" => {
+            let allowed = args.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "file_path" | "offset" | "limit")));
+            let Some(path) = args.get("file_path").and_then(Value::as_str).filter(|p| p.starts_with('/')) else { return false };
+            allowed && resolves_inside(path, cwd) && not_metadata(cwd, path)
+        }
+        "claude.Bash" if args["run_in_background"] != true => args["command"].as_str().is_some_and(|line| plain_viewers(line, cwd)),
+        _ => false,
+    }
+}
+
+/// Programs a member may run to look, with the options each may take (none
+/// of them names a file, follows links or recurses).
+/// `ls -l` is left out: a long listing prints where links point (GPT review).
+const VIEWERS: [(&str, &[&str]); 7] = [
+    ("pwd", &[]),
+    ("ls", &["-a", "-A", "-1", "-F"]),
+    ("cat", &["-n"]),
+    ("head", &["-n", "-c"]),
+    ("tail", &["-n", "-c"]),
+    ("wc", &["-l", "-w", "-c"]),
+    ("date", &[]),
+];
+
+/// Whether `path` has a `..` step.
+fn has_parent_step(path: &str) -> bool {
+    path.split('/').any(|part| part == "..")
+}
+
+/// `path` from `cwd`, named and resolved through every link, is not git metadata.
+fn not_metadata(cwd: &Path, path: &str) -> bool {
+    !is_git_metadata(Path::new(path)) && real_path(cwd, path).is_some_and(|real| !is_git_metadata(&real))
+}
+
+/// Every segment of `line` a viewer (or `cd`) staying inside `root`.
+fn plain_viewers(line: &str, root: &Path) -> bool {
+    let Some(parsed) = shell::parse(line) else { return false };
+    // No `$` at all: the reader keeps a quoted `$?` literal, the shell expands it.
+    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '$']) {
+        return false;
+    }
+    let mut dirs = vec![root.to_path_buf()];
+    parsed.segments.iter().all(|words| {
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            // No `..`: the shell's logical `cd` and this check would part ways.
+            ["cd", target] => !has_parent_step(target) && dirs.iter().all(|d| not_metadata(d, target)) && enter_dir(target, &mut dirs, root),
+            [program, rest @ ..] => {
+                let Some((_, options)) = VIEWERS.iter().find(|(p, _)| p == program) else { return false };
+                // `pwd` and `date` take nothing (a `date` operand sets the clock).
+                if matches!(*program, "pwd" | "date") && !rest.is_empty() {
+                    return false;
+                }
+                let (mut words, mut operands) = (rest.iter(), false);
+                while let Some(word) = words.next() {
+                    // BSD tools stop reading options at the first file; `+` is tail's legacy follow form.
+                    if word.starts_with('+') || has_parent_step(word) || (operands && word.starts_with('-')) {
+                        return false;
+                    }
+                    if word.starts_with('-') {
+                        // `head -n 5`: a counting option's value is a number.
+                        let counted = matches!(*word, "-n" | "-c") && !matches!(*program, "ls" | "cat" | "wc");
+                        if !options.contains(word) || (counted && !words.next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))) {
+                            return false;
+                        }
+                    } else if !(inside_all(word, &dirs, root) && dirs.iter().all(|d| not_metadata(d, word))) {
+                        return false;
+                    } else {
+                        operands = true;
+                    }
+                }
+                true
+            }
+            [] => false,
+        }
+    })
+}
+
 /// A path argument that resolves inside `cwd`; an absent one means `cwd` itself
 /// where `absent_ok` (the search tools default to the working directory).
 fn path_in(value: Option<&Value>, cwd: &Path, absent_ok: bool) -> bool {

@@ -275,6 +275,11 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     if !ledger.auto_merge(&agent).ok()? {
         return None;
     }
+    // A member's request under a layer the owner never saved is the owner's
+    // card to answer, never this gate's (ADR 0025, GPT review).
+    if ledger.member_default_asks(proposal, now).ok()? {
+        return None;
+    }
     // A room member's review skips the card here only while the owner lets
     // the Agent review PRs in that room (ADR 0025, GPT review).
     let review = matches!(command.kind, Kind::Review | Kind::RequestChanges);

@@ -137,3 +137,77 @@ Rejected or left open:
 - The pre-existing withdrawal of an Agent's approvals on a request-changes
   proposal (before it runs) is unchanged here.
 - Cross-owner runtimes stay unknown until the roster publishes them (open).
+
+## Asks, never a silent deny (E2E finding, 2026-11-17 21:37)
+Live: in "e2e room" (no linked repositories, not a watch report room), room
+members asked Betty's Agent and even `pwd; ls`, `gh api ...` and `gh pr view`
+were refused with "the owner's rules blocked", and nothing reached Betty. The
+cause: Betty saved only her Agent's rule (Ask), and for anyone but the owner
+an unsaved Room or member layer kept its built-in default, high-risk Deny.
+
+Decision:
+- For a room member's request, an unsaved Room or member layer now ASKS the
+  owner (`lib.rs`, `applicable_marked`): the request card goes to the owner's
+  approval queue (their inbox), the run card says it waits for the owner, and
+  an unanswered card is reported as "needs Betty's approval in her window"
+  (never "rules blocked"). Only a Deny the owner SAVED on a layer refuses.
+  Full trust still needs the owner to save full trust on every layer.
+- That default card is never skipped by the owner's approval mode or by
+  remembered "Always allow" rules: those are the owner's choices for their
+  own Agent, and a member's request meets the owner's card first.
+- A member's harmless look inside the Room workspace needs no card
+  (`member_inspection.rs`, `outside::inspects_workspace`): a Claude `Read`
+  whose only path is an absolute `file_path` inside the workspace, or a shell
+  line of plain viewers (`pwd`, `ls -a|-A|-1|-F` (no recursion, long listing or link following),
+  `cat`, `head`/`tail -n|-c <number>`, `wc`, `date`) and `cd` inside, every
+  directory entered and file named resolved through links, inside the
+  workspace and never git metadata; no search tool (Grep, Glob, `grep`, `rg`
+  descend into `.git`), no git, no `gh`, no write, no redirect, not in the
+  background. It is checked against the Room workspace (never the directory
+  derived from the call's own path argument) and a shell line runs as
+  `cd '<workspace>' && ( <line> )`. A saved Deny, a saved tool rule that
+  leaves out the tool or the workspace, a policy saved since admission, or
+  refused requests end it. Codex's native commands are not covered (they
+  cannot be pinned) and ask.
+- No automatic path answers that default card in the owner's name: the
+  auto-merge gate returns to the card for a member's request under an
+  unsaved layer (`Ledger::member_default_asks`).
+- Read-only GitHub queries keep ADR 0019/0023's scope (the room's repository
+  set); in a room without repositories they now ask instead of failing.
+
+### What "outside" mode is (`outside.rs`)
+The per-Agent approval mode `outside`, "Ask only for outside changes"
+(`HAGENCY_DEMO_APPROVAL_MODE=outside` in the demo), is stored in this
+device's `approval_modes` table. It only narrows a SAVED Ask-owner rule: a
+request that cannot change anything outside the Agent's workspace
+(`outside::stays_in_workspace`: Codex's own sandboxed commands and file
+changes; Claude reads and edits inside the working directory, never git
+metadata; a short list of read-only shell commands and `gh` reads; and
+local issue-fix steps such as `mkdir -p`, `gh repo clone` into it, a new
+branch, `git add`, `git commit`) runs without a card. It never touches Deny,
+never applies to `permission_expansion`, and (now) never skips the card of a
+member's request under a layer the owner did not save. It was not the cause
+of the E2E refusals: the unsaved member layers' Deny was decided before the
+mode is consulted.
+
+### GPT review of "Asks, never a silent deny" (2026-11-17)
+Adopted: `rg --hostname-bin` runs a program (now denied in outside mode too)
+and search tools reach git metadata, so the inspection allowlist is viewers
+only (no grep/rg/Grep/Glob, no file-naming options); every `cd` target and
+file is checked for git metadata through links; `Read` is checked on exactly
+`file_path` (another path field asks); saved directory rules are honored; the
+auto-merge gate never answers a member's default card in the owner's name.
+Rejected: typed host-side reads in place of a pinned shell line (a larger
+redesign; the viewers here open only the files named, checked through
+links). Residual: a link swapped between the check and the run (the same
+residual as outside mode); a Room-file create replay returns the exact prior
+receipt of that same member's authorized operation before the card; the
+watch and shared-review shortcuts (`trusted_publish`) still override a saved
+Deny by design (ADR 0019, ADR 0022 "Deny").
+Second pass, adopted: options only before the first file (BSD tools stop
+reading options there), no `+` words (tail's legacy follow form), no `$`
+anywhere (a quoted `$?` would expand), no `..` step (the shell's logical `cd`
+differs from the physical check), `pwd` and `date` take no operands (a
+`date` operand sets the clock), and no `ls -l` (it prints link targets).
+Residual: a hard link inside the workspace to protected content reads as an
+ordinary file, and a link swapped between the check and the run.

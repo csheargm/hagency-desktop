@@ -110,8 +110,8 @@ fn a_room_member_reads_the_watched_repo_under_a_default_deny() {
     let mut ledger = owner_rule_only_ledger(db.path());
     let mut list = proposal(ROOM, "gh issue list -R csheargm/hagency-demo-sandbox --state open");
     list.policy_revision = [1, 0, 0];
-    // The ordinary path refuses it: the default Deny of Anna's layers.
-    assert!(ledger.tool_disposition(&list, 11).is_err(), "the bug's root cause");
+    // The ordinary path would ask Betty (Anna's unsaved layers ask, ADR 0025).
+    assert_eq!(ledger.tool_disposition(&list, 11).unwrap(), ToolPolicy::AskOwner);
     // The watch answers it: no card, pinned to github.com.
     let Some(TrustedStep::Command(pinned)) = ledger.trusted_publish(OWNER, &list, 11).unwrap() else { panic!("Anna's read-only query runs") };
     assert!(pinned.ends_with("GH_HOST='github.com' gh issue list -R csheargm/hagency-demo-sandbox --state open"));
@@ -120,7 +120,7 @@ fn a_room_member_reads_the_watched_repo_under_a_default_deny() {
         let mut write = proposal(ROOM, line);
         write.policy_revision = [1, 0, 0];
         assert_eq!(ledger.trusted_publish(OWNER, &write, 11).unwrap(), None, "{line}");
-        assert!(ledger.tool_disposition(&write, 11).is_err(), "{line}: still Deny");
+        assert_eq!(ledger.tool_disposition(&write, 11).unwrap(), ToolPolicy::AskOwner, "{line}: a card to Betty");
     }
     let mut elsewhere = list.clone();
     elsewhere.scope.room = "!other:example.org".into();

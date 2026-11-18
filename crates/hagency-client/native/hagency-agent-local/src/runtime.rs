@@ -1068,6 +1068,13 @@ async fn permission(
         Ok(None) => {}
         Err(_) => return ToolAnswer::Deny,
     }
+    // A room member's look inside the Room workspace (`pwd`, `ls`, reading
+    // its files): no card (ADR 0025), unless the owner saved a Deny.
+    match ledger.member_inspection(&trusted, now()) {
+        Ok(Some(step)) => return trusted_answer(step, None, Box::new(|| false)).await,
+        Ok(None) => {}
+        Err(_) => return ToolAnswer::Deny,
+    }
     match ledger.tool_disposition(&proposal, now()) {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
@@ -2105,6 +2112,8 @@ async fn trusted_answer(step: crate::watch_trust::TrustedStep, token: Option<Str
     }
 }
 
+#[cfg(test)]
+mod member_ask_tests;
 #[cfg(test)]
 mod tests {
     #[test]
