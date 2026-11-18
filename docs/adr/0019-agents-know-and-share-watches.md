@@ -66,6 +66,8 @@ merge rule and push setting, and only for that Agent.
 
 ## Limits
 
+Amended by ADR 0023: the read-only queries cover the room's whole repository set (this device's Agents' watches for the room, linked repositories, and published watches from publishers who could have linked them), for any of this device's Agents in the room. Publishing watch states as room state is done there (`io.hagency.issue_status`).
+
 Watches live in each owner's device ledger. `room_watches` and the tab show
 the watches of this device's owner's Agents; another owner's Agents in the
 same room are listed by their own owner's device. Publishing watches as room

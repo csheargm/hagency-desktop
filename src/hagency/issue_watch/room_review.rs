@@ -1,4 +1,4 @@
-//! The "Review by a different model" room state (ADR 0024), read from the
+//! The "Review by a different model" room state (ADR 0025), read from the
 //! homeserver itself: sliding sync does not carry custom state types, so the
 //! local store never holds it (see `home::room_memory::server_state`).
 use super::reviewer_pick::{DIFFERENT_MODEL, ROOM_REVIEW_STATE, different_model};

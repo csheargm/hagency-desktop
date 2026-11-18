@@ -269,7 +269,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     // A room member's review skips the card here only while the owner lets
-    // the Agent review PRs in that room (ADR 0024, GPT review).
+    // the Agent review PRs in that room (ADR 0025, GPT review).
     let review = matches!(command.kind, Kind::Review | Kind::RequestChanges);
     if review && proposal.scope.requester != owner && !ledger.room_share(&agent, &proposal.scope.room).ok()?.review {
         return None;

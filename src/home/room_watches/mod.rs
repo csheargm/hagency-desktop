@@ -1,10 +1,15 @@
-//! The room information pane's "Watches" tab (ADR 0019): which of this
-//! account's Agents watch which GitHub repository with reports to this room,
-//! and whether each watch is active or paused. Read-only; the same facts the
-//! `room_watches` Agent tool returns. Limits, tokens and watches reporting to
+//! The room information pane's "Status" tab (ADR 0019, ADR 0023): the
+//! room's open Agent tasks; which of this account's Agents watch which GitHub
+//! repository with reports to this room (active or paused); and, when the
+//! room has repositories, one status table per repository with every
+//! owner's published tracker states. The same facts the `room_watches` and
+//! `repo_status` Agent tools return. Limits, tokens and watches reporting to
 //! other rooms are never shown here.
 pub mod panel;
 pub mod review_setting;
+pub mod lines;
+pub mod status;
+pub mod tasks;
 #[cfg(test)]
 mod tests;
 
@@ -26,7 +31,13 @@ pub struct WatchesChanged {
     pub room_id: OwnedRoomId,
 }
 
-type Loaded = Result<Vec<RoomWatch>, String>;
+/// This account's watch rows and the room's status (whose failure is shown on its own).
+#[derive(Clone, Debug)]
+pub struct Watches {
+    pub rows: Vec<RoomWatch>,
+    pub status: Result<status::RoomStatus, String>,
+}
+type Loaded = Result<Watches, String>;
 /// Keyed by signed-in account and room, so another account on this device
 /// never sees these rows (GPT review); each key keeps its newest request.
 type Key = (String, OwnedRoomId);
@@ -71,6 +82,11 @@ fn finish(key: Key, ticket: u64, loaded: Loaded) -> bool {
 /// (`(agent id, owner API issue-watch reply)`). A watch is active only while
 /// it is on and its Agent is active.
 pub fn rows(room: &str, roster: &Value, saved: &[(String, Value)]) -> Result<Vec<RoomWatch>, String> {
+    Ok(watches_of(room, roster, saved)?.into_iter().map(|(_, row)| row).collect())
+}
+
+/// [`rows`] with each row's Agent ID, for the status table's token choice.
+fn watches_of(room: &str, roster: &Value, saved: &[(String, Value)]) -> Result<Vec<(String, RoomWatch)>, String> {
     let agents = roster["agents"].as_array().ok_or_else(|| crate::i18n::tr("Unreadable Agents list").to_owned())?;
     let owner = roster["ownerMxid"].as_str().unwrap_or_default();
     let mut out = Vec::new();
@@ -84,9 +100,9 @@ pub fn rows(room: &str, roster: &Value, saved: &[(String, Value)]) -> Result<Vec
         };
         let name = agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or(id);
         let running = agent["state"] == "active";
-        out.extend(watch_entries(&watch, &work).into_iter().filter(|e| e.room_id == room).map(|e| RoomWatch {
+        out.extend(watch_entries(&watch, &work).into_iter().filter(|e| e.room_id == room).map(|e| (id.to_owned(), RoomWatch {
             agent: name.to_owned(), owner: owner.to_owned(), repo: e.repo, active: e.active && running,
-        }));
+        })));
     }
     Ok(out)
 }
@@ -100,7 +116,43 @@ async fn load(room: &str) -> Loaded {
         let Some(id) = agent["id"].as_str() else { continue };
         saved.push((id.to_owned(), crate::hagency::issue_watch::live::saved(&service, id, None).await?));
     }
-    rows(room, &roster, &saved)
+    let watches = watches_of(room, &roster, &saved)?;
+    let own: Vec<status::OwnWatch> = watches.iter().map(|(id, w)| (id.clone(), w.repo.clone(), w.active)).collect();
+    let client = crate::sliding_sync::get_client().ok_or("Signed out")?;
+    let room_id = RoomId::parse(room).map_err(|e| e.to_string())?;
+    let status = status::load(&client, &room_id, &own).await;
+    Ok(Watches { rows: watches.into_iter().map(|(_, w)| w).collect(), status })
+}
+
+/// The newest link or unlink failure per room, shown above the list.
+static LINK_ERRORS: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
+pub fn link_error(room: &RoomId) -> Option<String> {
+    LINK_ERRORS.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned()
+}
+
+/// Links (`true`) or unlinks `repo` for `room`, then reloads the tab.
+pub fn set_link(room: &RoomId, repo: String, link: bool) {
+    let key = (account(), room.to_owned());
+    crate::sliding_sync::spawn_async_task(async move {
+        let outcome = match crate::sliding_sync::get_client() {
+            Some(client) => status::set_link(&client, &key.1, &repo, link).await,
+            None => Err("Signed out".to_owned()),
+        };
+        let mut errors = LINK_ERRORS.lock().unwrap_or_else(|p| p.into_inner());
+        match outcome {
+            Ok(()) => errors.remove(&key),
+            Err(error) => errors.insert(key.clone(), error),
+        };
+        drop(errors);
+        refresh(&key.1);
+    });
+}
+
+/// "bird-claude's" activity in `room` for the members list, once the tab loaded it.
+pub fn activity(room: &RoomId, agent: &str, owner: Option<&str>) -> Option<String> {
+    let loaded = current(room)?.ok()?;
+    let status = loaded.status.ok()?;
+    Some(status::activity(&status, agent, owner))
 }
 
 /// Reloads `room`'s list; the result (or the reason it failed) is shown in the tab.

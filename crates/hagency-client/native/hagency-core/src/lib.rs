@@ -1,5 +1,6 @@
 //! Shared native domain contracts. No HTTP, database, process or Matrix SDK IO.
 pub mod agent_inbox;
+pub mod agent_replies;
 pub mod allocation;
 pub mod attachments;
 pub mod authority;

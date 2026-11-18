@@ -1,4 +1,4 @@
-//! The Watches tab's "Review by a different model" switch (ADR 0024): room
+//! The Watches tab's "Review by a different model" switch (ADR 0025): room
 //! state that any admin of the room may change, ON unless one turned it off.
 //! The issue tracker reads it when it picks a pull request's reviewer.
 use crate::hagency::issue_watch::room_review;

@@ -5,7 +5,7 @@ use super::Source;
 use hagency_agent_local::{Ledger, attribution, watch_info};
 
 /// The ledger of the dispatch's owner profile, opened read-side.
-fn ledger(source: &Source) -> Result<Ledger, &'static str> {
+pub(super) fn ledger(source: &Source) -> Result<Ledger, &'static str> {
     let console = &source.gate.console;
     let root = console.console.0.server_login.state_directory().ok_or("watches_unavailable")?;
     let p = &console.pin;
@@ -16,7 +16,7 @@ fn ledger(source: &Source) -> Result<Ledger, &'static str> {
     Ledger::open_scoped(&path, &p.owner, &identity).map_err(|_| "watches_unavailable")
 }
 
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, &'static str> + Send + 'static) -> Result<T, &'static str> {
+pub(super) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, &'static str> + Send + 'static) -> Result<T, &'static str> {
     tokio::task::spawn_blocking(work).await.map_err(|_| "watches_unavailable")?
 }
 

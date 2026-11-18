@@ -1,5 +1,5 @@
 //! What an owner's Agent does for the other members of a group room it was
-//! added to (ADR 0024): a shared team member with per-room defaults kept in
+//! added to (ADR 0025): a shared team member with per-room defaults kept in
 //! the OWNER's ledger (never room state, so only the owner changes them,
 //! through the owner API's approval settings).
 //!

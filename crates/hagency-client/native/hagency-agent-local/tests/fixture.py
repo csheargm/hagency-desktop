@@ -49,7 +49,7 @@ def read():
 
 if sys.argv[1:3] == ['auth', 'status']:
     (root / 'auth-config').write_text(os.environ.get('CLAUDE_CONFIG_DIR', '<native-default>'))
-    send({'loggedIn': True})
+    send({'loggedIn': mode != 'signed_out'})
     sys.exit(0)
 with (root / 'argv').open('a') as out:
     out.write(json.dumps(sys.argv[1:]) + '\n')

@@ -65,6 +65,25 @@ pub(crate) fn take_room_info_request(room: &RoomId) -> bool {
     false
 }
 
+/// `/status` asked for `room`'s Status tab (ADR 0023), by this account.
+static STATUS_REQUEST: Mutex<Option<(OwnedRoomId, Option<OwnedUserId>, Instant)>> = Mutex::new(None);
+
+/// The app answers `/status` itself: the room's information pane opens on
+/// its Status tab at the next draw; no message is sent and no Agent runs.
+pub(crate) fn request_status(room: &RoomId) {
+    *STATUS_REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some((room.to_owned(), crate::sliding_sync::current_user_id(), Instant::now()));
+}
+
+/// Whether `/status` asked to show `room`'s Status tab; answers `true` once.
+pub(crate) fn take_status_request(room: &RoomId) -> bool {
+    let mut request = STATUS_REQUEST.lock().unwrap_or_else(|e| e.into_inner());
+    let fresh = request.as_ref().is_some_and(|(id, owner, asked)| id == room && *owner == crate::sliding_sync::current_user_id() && asked.elapsed() <= ROOM_INFO_REQUEST_TTL);
+    if fresh || request.as_ref().is_some_and(|(_, _, asked)| asked.elapsed() > ROOM_INFO_REQUEST_TTL) {
+        *request = None;
+    }
+    fresh
+}
+
 /// Delete Chat in an Agent's private chat: it only leaves this device's list,
 /// so the Agent's Message button opens it again.
 pub(crate) fn agent_chat_delete_body() -> &'static str {

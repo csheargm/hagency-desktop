@@ -1,4 +1,5 @@
-//! "Replying to <agent>" above a thread composer.
+//! "Replying to <agent>" above a thread composer, and above the room's
+//! composer when the requester replies to the Agent's answer (ADR 0024).
 //!
 //! A group room wakes an Agent only on an explicit mention (ADR-188 §3). In a
 //! thread that is plainly a one-on-one with one Agent — the requester's own
@@ -17,10 +18,10 @@
 //! would add, so every server-side rule (who may ask, consent, private Agents,
 //! completed-task follow-ups) applies to it unchanged.
 use makepad_widgets::*;
-use matrix_sdk_ui::timeline::{MsgLikeKind, TimelineDetails, TimelineItem, TimelineItemContent};
+use matrix_sdk_ui::timeline::{EventTimelineItem, MsgLikeKind, TimelineDetails, TimelineItem, TimelineItemContent};
 use ruma::{
     OwnedUserId, UserId,
-    events::{Mentions, room::message::{MessageType, RoomMessageEventContent}},
+    events::{Mentions, room::message::{AddMentions, MessageType, RoomMessageEventContent}},
 };
 use std::sync::Arc;
 
@@ -128,6 +129,58 @@ pub fn target_in(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineItem>>) -
         .and_then(|e| match e.sender_profile() { TimelineDetails::Ready(p) => p.display_name.clone(), _ => None })
         .unwrap_or_else(|| agent.to_string());
     Some(FollowupTarget { agent, name })
+}
+
+/// [`followup_agent`] for a reply in the main timeline to `replied`, an
+/// Agent's answer (ADR 0024): the answer quotes the request it answers, so
+/// the request is its `m.in_reply_to` target. Only that request's sender,
+/// whose request named this one Agent, continues with it. Nothing when the
+/// request is not loaded: the reply is then sent as typed.
+pub fn reply_target(replied: &EventTimelineItem, items: &imbl::Vector<Arc<TimelineItem>>) -> Option<FollowupTarget> {
+    let me = crate::sliding_sync::current_user_id()?;
+    let request_id = match replied.content() {
+        TimelineItemContent::MsgLike(m) => m.in_reply_to.as_ref()?.event_id.clone(),
+        _ => return None,
+    };
+    let request = items.iter().filter_map(|i| i.as_event()).find(|e| e.event_id() == Some(request_id.as_ref()))?;
+    let mentions = match request.content() {
+        TimelineItemContent::MsgLike(m) => match &m.kind { MsgLikeKind::Message(msg) => msg.mentions().cloned(), _ => None },
+        _ => None,
+    };
+    let agent = answer_followup(&me, replied.sender(), request.sender(), mentions.as_ref(), crate::profile::profile_route::is_agent)?;
+    let name = match replied.sender_profile() { TimelineDetails::Ready(p) => p.display_name.clone(), _ => None }
+        .unwrap_or_else(|| agent.to_string());
+    Some(FollowupTarget { agent, name })
+}
+
+/// The Agent `me`'s reply to `answer_sender`'s answer continues with: the
+/// thread rule ([`followup_agent`]) with the request as root and the answer
+/// as the Agent's reply.
+pub fn answer_followup(
+    me: &UserId,
+    answer_sender: &UserId,
+    request_sender: &UserId,
+    request_mentions: Option<&Mentions>,
+    is_agent: impl Fn(&UserId) -> bool,
+) -> Option<OwnedUserId> {
+    if !is_agent(answer_sender) {
+        return None;
+    }
+    followup_agent(me, request_sender, request_mentions, [answer_sender], is_agent)
+}
+
+/// Whether a reply to `replied_sender` mentions it by itself. A reply to an
+/// Agent in a group room does not: it would wake the Agent for anyone who
+/// quotes it. The requester's follow-up mentions it through the hint instead,
+/// which shows and can be removed. Everyone else's replies mention as before.
+pub fn reply_mentions(replied_sender: &UserId, direct: bool, is_agent: impl Fn(&UserId) -> bool) -> AddMentions {
+    if !direct && is_agent(replied_sender) { AddMentions::No } else { AddMentions::Yes }
+}
+
+/// Whether quoting `quoted` may route the message to it as an Agent target:
+/// a person, a direct room, or the Agent the hint addresses (not removed).
+pub fn quote_routes(quoted: &UserId, direct: bool, hinted: Option<&UserId>, is_agent: impl Fn(&UserId) -> bool) -> bool {
+    direct || !is_agent(quoted) || hinted == Some(quoted)
 }
 
 #[derive(Script, ScriptHook, Widget)]

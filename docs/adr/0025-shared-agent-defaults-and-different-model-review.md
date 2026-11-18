@@ -1,4 +1,4 @@
-# 0024. Shared-agent defaults in group rooms; review by a different model
+# 0025. Shared-agent defaults in group rooms; review by a different model
 
 Status: accepted (Chris, 2026-11-17)
 

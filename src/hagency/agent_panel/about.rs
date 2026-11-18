@@ -69,7 +69,7 @@ impl AgentPanel {
         if let (Some(owner), Some(row)) = (owner.as_ref(), agent.as_object_mut()) { row.insert("ownerMxid".into(), owner.to_string().into()); }
         let mut lines: Vec<String> = about_rows(&agent, &self.status, &self.model, name.as_deref()).into_iter()
             .map(|(label, value)| format!("{}: {value}", crate::i18n::tr(label))).collect();
-        // What it does for each group room's members (ADR 0024).
+        // What it does for each group room's members (ADR 0025).
         lines.extend(crate::hagency::room_share::summaries(&self.status, name.as_deref().unwrap_or(crate::i18n::tr("its owner"))));
         self.view.label(cx, ids!(about)).set_text(cx, &lines.join("\n"));
         let text = rooms_line(rooms::joined_rooms(&self.status).len());

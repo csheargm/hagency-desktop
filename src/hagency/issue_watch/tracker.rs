@@ -48,7 +48,7 @@ pub(crate) trait TrackIo {
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
     /// The room line saying the reviewer is a fallback ("No Codex reviewer
-    /// in the room; asked anna-claude", ADR 0024), when it is one.
+    /// in the room; asked anna-claude", ADR 0025), when it is one.
     fn reviewer_notice(&self) -> Option<String>;
     fn paused(&self) -> bool;
 }
@@ -70,6 +70,8 @@ pub(crate) struct Inputs<'a> {
 pub(crate) struct Followups {
     pub lines: Vec<String>,
     pub errors: Vec<String>,
+    /// Why a followed pull request waits, by issue (room-shareable, ADR 0023).
+    pub holds: Vec<(i64, String)>,
 }
 
 pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups {
@@ -84,7 +86,7 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
         }
     }
     for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo)) {
-        match step(io, inputs, track).await {
+        match step(io, inputs, track, &mut out.holds).await {
             Ok(Some(line)) => out.lines.push(line),
             Ok(None) => {}
             Err(error) => out.errors.push(format!("#{}: {error}", track.number)),
@@ -94,7 +96,7 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
 }
 
 /// Advance one record by one step; the status part it shows afterwards.
-async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track) -> Result<Option<String>, String> {
+async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut Vec<(i64, String)>) -> Result<Option<String>, String> {
     if track.state.is_terminal() {
         return Ok(terminal_line(track));
     }
@@ -136,7 +138,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track) -> Result<O
             io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
             Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
         }
-        Action::FollowPr { pr } => follow_one(io, inputs.repo, track, open_pr.ok_or("the pull request is gone")?, pr).await.map(Some),
+        Action::FollowPr { pr } => follow_one(io, inputs.repo, track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
         Action::AnnounceFixed => announce(io, inputs.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
@@ -152,12 +154,15 @@ fn change_of(repo: &str, number: i64, extra: Value) -> Value {
 
 /// The Agent's pull request is open: record it, ask for its review (or the
 /// merge gate), and tell a person once when no other Agent can review.
-async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullRequest, pr: u64) -> Result<String, String> {
+async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullRequest, pr: u64, holds: &mut Vec<(i64, String)>) -> Result<String, String> {
     let n = track.number;
     if track.state == State::HandedOff || track.pr != Some(pr) {
         io.record(change_of(repo, n, json!({"state": "pr_opened", "pr": pr}))).await?;
     }
     let followed = io.follow_pr(pull).await?;
+    if let Some(hold) = hold_of(&followed) {
+        holds.push((n, hold));
+    }
     let told = track.state == State::Reviewed && track.notified && track.pr == Some(pr);
     if followed == Followed::NeedsPerson && !told {
         io.say(n, &format!("needs-review-{pr}"), crate::i18n::format(NEEDS_YOU, &[("pr", pr.to_string()), ("number", n.to_string()), ("url", pull.url.clone())])).await?;
@@ -210,6 +215,16 @@ pub const GAVE_UP: &str = "⚠️ #{number}: no pull request after {max} hand-of
 pub const CANNOT_FIX: &str = "🙋 #{number}: the Agent says it cannot fix this — see its comment on the issue: {url}";
 pub const NEEDS_YOU: &str = "👀 PR #{pr} for #{number} needs your review and merge approval: {url}";
 pub const FIXED: &str = "✅ #{number} fixed → PR #{pr} merged";
+
+/// What a followed pull request waits for, in the words the room already saw.
+pub(crate) fn hold_of(followed: &Followed) -> Option<String> {
+    match followed {
+        Followed::Held(missing) => Some(missing.iter().map(|m| m.label()).collect::<Vec<_>>().join("; ")),
+        Followed::NeedsPerson => Some("a person's review and merge approval".to_owned()),
+        Followed::WaitingCi => Some("CI".to_owned()),
+        _ => None,
+    }
+}
 
 fn waiting_line(track: &Track) -> String {
     let n = track.number.to_string();

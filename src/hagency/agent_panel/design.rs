@@ -119,7 +119,7 @@ script_mod! {
                 auto_merge := Select {labels: [#(crate::i18n::tr("People merge")) #(crate::i18n::tr("Agents merge low-risk PRs"))]}
                 Hint {text: #(crate::i18n::tr(super::mapping::AUTO_MERGE_HINT))}
             }
-            // What the Agent does for a group room's members (ADR 0024).
+            // What the Agent does for a group room's members (ADR 0025).
             Card {
                 Title {text: #(crate::i18n::tr("In group rooms")) i18n_text: "In group rooms"}
                 share_room := Select {labels: [#(crate::i18n::tr("Not in a group room yet"))]}

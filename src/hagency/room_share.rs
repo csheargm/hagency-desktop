@@ -1,5 +1,5 @@
 //! What an owner's Agent does for the members of a group room it was added
-//! to (ADR 0024), as the owner API's approval settings report it
+//! to (ADR 0025), as the owner API's approval settings report it
 //! (`approvals.roomShares`, kept in the owner's ledger). A room the owner
 //! saved nothing for has the shared-team-member defaults. This module only
 //! words and edits them; the ledger enforces them.

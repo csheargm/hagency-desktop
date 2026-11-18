@@ -1080,7 +1080,7 @@ impl Ledger {
             }
         }
         // A room member's request waits for the owner when the owner turned
-        // "answer questions" off for this Agent in this room (ADR 0024).
+        // "answer questions" off for this Agent in this room (ADR 0025).
         if scope.requester != self.owner && !self.room_share(&scope.agent, &scope.room)?.answer {
             ask = true;
         }
@@ -1209,7 +1209,7 @@ impl Ledger {
                 let line = proposal.arguments["command"].as_str().unwrap_or_default();
                 watch_trust::TrustedStep::Command(watch_trust::read_only::command(line))
             }
-            // A shared Agent's PR review verdict on a room repository (ADR 0024).
+            // A shared Agent's PR review verdict on a room repository (ADR 0025).
             None => match watch_trust::review_step(&self.db, proposal)? {
                 Some(step) => step,
                 None => return Ok(None),
@@ -1218,7 +1218,7 @@ impl Ledger {
         // Inside the exact scope (the owner's run in the watch's Room for every
         // step `pinned` answers; anyone's read-only query on a repository
         // watched from this Room, or review verdict where the owner lets the
-        // Agent review PRs, ADR 0024) the watch is the owner's decision, so it
+        // Agent review PRs, ADR 0025) the watch is the owner's decision, so it
         // overrides the high-risk tool rule, Deny included (Chris, Nov 17;
         // ADR 0022 "Deny", ADR 0019 "Anyone in the report Room"). The dispatch
         // itself must still check out: a Requests Deny for this requester

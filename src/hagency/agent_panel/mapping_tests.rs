@@ -99,6 +99,9 @@ fn runs_on_and_service_lines() {
     assert!(service_running("running") && service_running("waiting"));
     assert!(!service_running("stopped") && !service_running("elsewhere"));
     assert_eq!(service_line("stopped"), "Paused");
+    assert_eq!(service_line("claude_sign_in"), "Claude sign-in needed — run `claude login`");
+    assert_eq!(service_line("codex_sign_in"), "Codex sign-in needed — run `codex login`");
+    assert!(service_running("claude_sign_in"), "a signed-out Agent is still started: Pause stays offered");
 }
 
 #[test]

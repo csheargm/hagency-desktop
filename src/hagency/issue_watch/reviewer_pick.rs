@@ -1,4 +1,4 @@
-//! "Review by a different model" (ADR 0024): a project room's setting, kept
+//! "Review by a different model" (ADR 0025): a project room's setting, kept
 //! as room state any admin may change, ON unless an admin turned it off.
 //! When the tracker asks for a review of a pull request a Claude Agent
 //! opened, it picks a reviewer in the room running another runtime (Codex),

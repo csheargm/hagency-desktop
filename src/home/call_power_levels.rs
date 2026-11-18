@@ -1,4 +1,5 @@
-//! Let every member of a private room the desktop creates join an Element Call.
+//! Let every member of a private room the desktop creates join an Element Call
+//! and publish their own Agents' issue status (ADR 0023).
 //! MatrixRTC (Element Call v0.16) publishes each participant as an
 //! `org.matrix.msc3401.call.member` state event; under the private_chat preset
 //! members have PL 0 while state needs 50, so non-moderators got 403.
@@ -16,19 +17,26 @@ use serde_json::Value;
 /// MatrixRTC membership state event used by Element Call v0.16.
 pub const CALL_MEMBER_EVENT: &str = "org.matrix.msc3401.call.member";
 const MEMBER_LEVEL: i64 = 0;
+/// State every member may write. The issue status (ADR 0023) is keyed by its
+/// sender's own Matrix ID, which the homeserver lets nobody else write, so
+/// opening it lets each owner publish only their own Agents' states.
+const MEMBER_STATE_EVENTS: [&str; 2] = [CALL_MEMBER_EVENT, ::hagency::repo_status::ISSUE_STATUS_STATE_TYPE];
 /// Bound on the follow-up so a stalled server cannot leave creation at "Creating…".
 const FOLLOW_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The power levels with call membership opened to PL 0, or `None` when they
+/// The power levels with call membership and issue status opened to PL 0, or `None` when they
 /// already allow it (nothing to send). Every other field is kept verbatim.
 pub fn open_call_membership(mut levels: Value) -> anyhow::Result<Option<Value>> {
     let object = levels.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels are not an object"))?;
     let events = object.entry("events").or_insert_with(|| Value::Object(Default::default()));
     let events = events.as_object_mut().ok_or_else(|| anyhow::anyhow!("power levels events is not an object"))?;
-    if events.get(CALL_MEMBER_EVENT).and_then(Value::as_i64) == Some(MEMBER_LEVEL) {
+    let closed: Vec<&str> = MEMBER_STATE_EVENTS.into_iter().filter(|key| events.get(*key).and_then(Value::as_i64) != Some(MEMBER_LEVEL)).collect();
+    if closed.is_empty() {
         return Ok(None);
     }
-    events.insert(CALL_MEMBER_EVENT.into(), MEMBER_LEVEL.into());
+    for key in closed {
+        events.insert(key.into(), MEMBER_LEVEL.into());
+    }
     Ok(Some(levels))
 }
 
@@ -75,6 +83,7 @@ mod tests {
         let updated = open_call_membership(server.clone()).unwrap().unwrap();
         let mut expected = server;
         expected["events"][CALL_MEMBER_EVENT] = json!(0);
+        expected["events"][::hagency::repo_status::ISSUE_STATUS_STATE_TYPE] = json!(0);
         assert_eq!(updated, expected);
     }
 
@@ -82,7 +91,10 @@ mod tests {
     fn adds_events_map_when_missing_and_skips_when_already_open() {
         let updated = open_call_membership(json!({"users_default":0})).unwrap().unwrap();
         assert_eq!(updated["events"][CALL_MEMBER_EVENT], 0);
+        assert_eq!(updated["events"][::hagency::repo_status::ISSUE_STATUS_STATE_TYPE], 0);
         assert!(open_call_membership(updated).unwrap().is_none());
+        let call_only = json!({"events": {CALL_MEMBER_EVENT: 0}});
+        assert!(open_call_membership(call_only).unwrap().is_some(), "a room with calls open still opens issue status");
         assert!(open_call_membership(json!([])).is_err());
         assert!(open_call_membership(json!({"events":[]})).is_err(), "malformed is an error, not 'already open'");
     }
@@ -140,6 +152,7 @@ mod tests {
             .find(|r| r.method.as_str() == "PUT").expect("power levels were sent");
         let mut expected = defaults;
         expected["events"][CALL_MEMBER_EVENT] = json!(0);
+        expected["events"][::hagency::repo_status::ISSUE_STATUS_STATE_TYPE] = json!(0);
         assert_eq!(serde_json::from_slice::<Value>(&put.body).unwrap(), expected);
     }
 }

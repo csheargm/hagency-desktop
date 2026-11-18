@@ -18,6 +18,7 @@ pub(crate) mod reviewer_pick;
 pub mod room_review;
 mod tracker;
 mod tracker_live;
+mod status_publish;
 #[cfg(test)]
 mod tracker_tests;
 mod work;

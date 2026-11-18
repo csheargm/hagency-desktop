@@ -301,6 +301,8 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
         "shared_claude_version_unsupported" | "claude_version_unsupported" => "Update Claude Code to version 2.1.322 or newer, then retry.",
         "octos_binary_unavailable" => "Octos is not installed or could not be started. Check the local installation.",
         "claude_account_unavailable" | "local_provider_not_signed_in" => "Check your local Claude sign-in, then connect the account again.",
+        "claude_login_required" => "Claude is signed out on this computer. Run `claude login` in a terminal, then ask again.",
+        "codex_login_required" => "Codex is signed out on this computer. Run `codex login` in a terminal, then ask again.",
         "local_provider_home_unavailable" => "The local runtime's account directory is unavailable. Check its local setup.",
         "octos_profiles_unavailable" => "No usable Octos profiles were found. Configure a local Octos profile, then refresh.",
         "provider_authorization_lost" => "The local runtime's account or configuration is unavailable. Check Model & resources and reconnect.",

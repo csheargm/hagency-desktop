@@ -1,4 +1,4 @@
-//! Settings tab, "In group rooms" card (ADR 0024): for one of the Agent's
+//! Settings tab, "In group rooms" card (ADR 0025): for one of the Agent's
 //! group rooms at a time, what it does for the room's members without asking
 //! the owner (answer questions, review PRs, fix issues). Saved through the
 //! approval settings call into the owner's ledger; the kill switch and the

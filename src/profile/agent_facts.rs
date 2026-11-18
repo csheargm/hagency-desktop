@@ -41,7 +41,7 @@ pub struct AgentFacts {
     /// An English status key ("Running", "Paused", …), translated when shown.
     pub status: Option<&'static str>,
     /// An own Agent in one of its group rooms: what it does there for the
-    /// room's members (ADR 0024).
+    /// room's members (ADR 0025).
     pub shared: Option<crate::hagency::room_share::RoomShare>,
 }
 
@@ -53,6 +53,8 @@ pub fn own_status(state: &str, service: Option<&str>) -> Option<&'static str> {
         "running" | "processing" | "waiting" | "starting" | "attention" => "Running",
         "stopped" | "paused" => "Paused",
         "elsewhere" => "On another device",
+        "claude_sign_in" => crate::hagency::agent_panel::mapping::CLAUDE_SIGN_IN,
+        "codex_sign_in" => crate::hagency::agent_panel::mapping::CODEX_SIGN_IN,
         // The host could not read the service: claim nothing.
         "unknown" => return None,
         _ => "Offline",
@@ -75,7 +77,7 @@ pub struct RosterRow {
     pub binding_state: String,
     /// "claude", "codex" or "octos" when the server shares it.
     // TODO(roster-runtime): the server does not publish it yet; the
-    // different-model reviewer pick (ADR 0024) reads it once it does.
+    // different-model reviewer pick (ADR 0025) reads it once it does.
     pub runtime: Option<&'static str>,
 }
 

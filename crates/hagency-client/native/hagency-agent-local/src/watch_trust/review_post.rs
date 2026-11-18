@@ -1,5 +1,5 @@
 //! A shared Agent's PR review verdict on a room repository posts without a
-//! card (ADR 0024), for any requester in the room while the owner's
+//! card (ADR 0025), for any requester in the room while the owner's
 //! "review PRs" choice for that room is on ([`crate::room_share`]).
 //!
 //! Exactly one shape, nothing else: `gh pr review <N>` with exactly one of

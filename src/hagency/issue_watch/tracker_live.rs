@@ -39,7 +39,7 @@ pub(crate) fn on_work_list(saved: &Value, repo: &str) -> bool {
 pub(crate) async fn follow_repo(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value) -> Followups {
     match follow_inner(worker, watched, saved).await {
         Ok(followups) => followups,
-        Err(error) => Followups { lines: Vec::new(), errors: vec![format!("{}: {error}", watched.watch.setting.repo)] },
+        Err(error) => Followups { errors: vec![format!("{}: {error}", watched.watch.setting.repo)], ..Default::default() },
     }
 }
 
@@ -48,7 +48,7 @@ pub(crate) async fn follow_repo(worker: &Worker<'_>, watched: &Watched<'_>, save
 pub(crate) async fn follow_work(worker: &Worker<'_>, entry: &OwnerRules, watch: &IssueWatch, saved: &Value, seen: &HashSet<i64>) -> Followups {
     let issues = match fetch_open_issues(worker.client, GITHUB_API, &entry.repo, worker.token).await {
         Ok(issues) => issues,
-        Err(error) => return Followups { lines: Vec::new(), errors: vec![format!("{}: {error}", entry.repo)] },
+        Err(error) => return Followups { errors: vec![format!("{}: {error}", entry.repo)], ..Default::default() },
     };
     follow_repo(worker, &Watched { watch, entry: Some(entry), open_issues: &issues, seen }, saved).await
 }
@@ -63,7 +63,7 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let now = chrono::Utc::now().timestamp();
     if !busy {
         // Only finished records: their lines need no GitHub read.
-        return Ok(Followups { lines: tracks.iter().filter(ours).filter_map(tracker::terminal_line).collect(), errors: Vec::new() });
+        return Ok(Followups { lines: tracks.iter().filter(ours).filter_map(tracker::terminal_line).collect(), ..Default::default() });
     }
     let login = fetch_login(worker.client, GITHUB_API, worker.token).await.map_err(|e| e.to_string())?;
     let pulls = fetch_open_pulls(worker.client, GITHUB_API, repo, worker.token).await.map_err(|e| e.to_string())?;
@@ -72,12 +72,29 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let permission = fetch_permission(worker.client, GITHUB_API, repo, &login, worker.token).await.map_err(|e| e.to_string());
     let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
     let peer = pick_peer(worker, &room).await;
-    let io = LiveTrack { worker, watched, repo, room, login, peer, permission };
-    Ok(tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, open_issues: watched.open_issues, own_pulls: &own }).await)
+    let io = LiveTrack { worker, watched, repo, room: room.clone(), login, peer, permission };
+    let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, open_issues: watched.open_issues, own_pulls: &own }).await;
+    if let Err(error) = share(worker, watched, &room, &followed.holds).await {
+        followed.errors.push(error);
+    }
+    Ok(followed)
+}
+
+/// The room's copy of this repository's tracker states (ADR 0023), read
+/// back from the owner API after this check's changes.
+async fn share(worker: &Worker<'_>, watched: &Watched<'_>, room: &OwnedRoomId, holds: &[(i64, String)]) -> Result<(), String> {
+    let agent = worker.agent["id"].as_str().unwrap_or_default();
+    let mxid = worker.agent["puppetMxid"].as_str().ok_or("Unreadable Agent Matrix ID")?;
+    let saved = super::live::saved(worker.service, agent, None).await?;
+    let tracks: Vec<Track> = if saved["track"].is_null() { Vec::new() } else { serde_json::from_value(saved["track"].clone()).map_err(|e| format!("Unreadable issue tracks: {e}"))? };
+    let titles = watched.open_issues.iter().map(|i| (i.number, i.title.clone())).collect();
+    let now = chrono::Utc::now().timestamp();
+    let fresh = super::status_publish::entries(mxid, &watched.watch.setting.repo, &tracks, &titles, holds, now)?;
+    super::status_publish::publish(room, mxid, &watched.watch.setting.repo, fresh, now).await
 }
 
 /// Another Agent in the room to review, any owner's, preferring one on a
-/// different runtime while the room asks for that (ADR 0024).
+/// different runtime while the room asks for that (ADR 0025).
 async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<Pick> {
     let me = worker.agent["id"].as_str().unwrap_or_default();
     let joined = crate::sliding_sync::get_client()?.get_room(room)?;

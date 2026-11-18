@@ -283,7 +283,7 @@ async fn anyone_may_be_reviewed_but_an_untrusted_author_is_never_merged() {
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mm", 11, &mallory).await, None);
 }
 
-/// GPT review (ADR 0024): a room member's review skips the card through the
+/// GPT review (ADR 0025): a room member's review skips the card through the
 /// auto-merge gate too only while the owner lets the Agent review PRs there.
 #[tokio::test]
 async fn a_members_review_skips_the_card_only_while_reviews_are_on_in_the_room() {

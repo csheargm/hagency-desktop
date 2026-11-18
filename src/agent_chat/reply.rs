@@ -147,6 +147,7 @@ script_mod! {
         // A fixed-height row: the actions appear on hover without moving the text below.
         answer_actions := View {
             width: Fill height: 36 flow: Right spacing: 6 align: Align{y: 0.5}
+            answer_reply := AnswerButton {visible: false icon.draw_icon.svg: ICON_REPLY}
             answer_copy := AnswerButton {visible: false icon.draw_icon.svg: ICON_COPY}
             answer_forward := AnswerButton {visible: false icon.draw_icon.svg: ICON_ANSWER_FORWARD}
             answer_more := AnswerButton {visible: false icon.draw_icon.svg: ICON_MORE_VERT}
@@ -196,6 +197,7 @@ impl AgentReply {
         let shown = finished && self.hovered;
         let more = shown && self.more_open;
         for (path, label, visible) in [
+            (ids!(answer_actions.answer_reply), "Reply", shown),
             (ids!(answer_actions.answer_copy), "Copy", shown),
             (ids!(answer_actions.answer_forward), "Forward answer", shown),
             (ids!(answer_actions.answer_more), "More", shown),
@@ -350,6 +352,7 @@ impl AgentReplyRef {
         let inner = self.borrow()?;
         if !inner.view.visible() || inner.identity.is_empty() || inner.reveal.live || inner.reveal.target.is_empty() { return None; }
         [
+            (ids!(answer_actions.answer_reply), AnswerAction::Reply),
             (ids!(answer_actions.answer_copy), AnswerAction::Copy),
             (ids!(answer_actions.answer_forward), AnswerAction::Forward),
             (ids!(answer_actions.answer_markdown), AnswerAction::Markdown),
@@ -419,7 +422,8 @@ impl AgentReplyRef {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnswerAction { Copy, Forward, Markdown, Pdf }
+/// `Reply` quotes the answer in the composer (ADR 0024).
+pub enum AnswerAction { Reply, Copy, Forward, Markdown, Pdf }
 
 #[cfg(test)]
 mod tests {
@@ -438,6 +442,7 @@ mod tests {
         let body = format!("# 长答案\n{}\nFULL-END", "正文\n".repeat(100));
         reply.populate(&mut cx, "account|room|first".into(), &body, None, false, false);
         for (path, expected) in [
+            (ids!(answer_actions.answer_reply), AnswerAction::Reply),
             (ids!(answer_actions.answer_copy), AnswerAction::Copy),
             (ids!(answer_actions.answer_forward), AnswerAction::Forward),
             (ids!(answer_actions.answer_markdown), AnswerAction::Markdown),
@@ -481,7 +486,7 @@ mod tests {
             assert!(!visible(&mut cx, path), "{path:?} shows without hover");
         }
         reply.borrow_mut().unwrap().set_hovered(&mut cx, true);
-        for path in [ids!(answer_actions.answer_copy), ids!(answer_actions.answer_forward), ids!(answer_actions.answer_more), ids!(answer_actions.answer_meta)] {
+        for path in [ids!(answer_actions.answer_reply), ids!(answer_actions.answer_copy), ids!(answer_actions.answer_forward), ids!(answer_actions.answer_more), ids!(answer_actions.answer_meta)] {
             assert!(visible(&mut cx, path), "{path:?} hidden on hover");
         }
         assert!(!visible(&mut cx, ids!(answer_actions.answer_markdown)) && !visible(&mut cx, ids!(answer_actions.answer_pdf)));
