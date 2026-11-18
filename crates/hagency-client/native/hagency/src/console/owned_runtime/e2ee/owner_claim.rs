@@ -11,9 +11,12 @@ use matrix_sdk::ruma::api::client::profile::ProfileFieldValue;
 use std::collections::HashMap;
 
 /// (Agent, field) → the value this process last published (or is
-/// publishing). Only the last value counts: after A → B, naming A again must
-/// write A.
-static CLAIMED: LazyLock<std::sync::Mutex<HashMap<(String, &'static str), String>>> = LazyLock::new(Default::default);
+/// publishing), and the claim that started it. Only the last claim counts:
+/// after A → B, naming A again must write A, and the first A's write is not it.
+static CLAIMED: LazyLock<std::sync::Mutex<HashMap<(String, &'static str), (String, u64)>>> = LazyLock::new(Default::default);
+/// Numbers each started claim, so a stale write's outcome can be told from
+/// a newer claim of the same value (GPT batch review, Nov 18).
+static NEXT_CLAIM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Profile writes go out one at a time, so an older write still in flight
 /// can never land after a newer one (GPT review); they are rare.
 static WRITES: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
@@ -33,17 +36,17 @@ impl AgentDevice {
 
     fn claim(&self, field: &'static str, value: &str) {
         let Some(agent) = self.client.user_id().map(ToString::to_string) else { return };
-        if !start_claim(&agent, field, value) { return; }
+        let Some(claim) = start_claim(&agent, field, value) else { return };
         let (client, value) = (self.client.clone(), value.to_owned());
         tokio::spawn(async move {
             let _turn = WRITES.lock().await;
             // A newer value started meanwhile: its own write is the one that counts.
-            if !is_latest(&agent, field, &value) { return; }
+            if !is_latest(&agent, field, claim) { return; }
             if let Err(error) = publish(&client, field, &value).await {
                 // Retried on the next use; until then readers fall back to
                 // the room roster and the Agent's run cards.
                 tracing::warn!(stage = "agent_profile_claim", field, %error, "Agent profile field not published; retrying on next use");
-                forget_claim(&agent, field, &value);
+                forget_claim(&agent, field, claim);
             }
         });
     }
@@ -58,10 +61,10 @@ pub(super) fn claim_profile<T: Transport>(transport: &T, device: &AgentDevice, c
     }
 }
 
-/// Whether to publish `value` for `agent`'s `field` now: not when it is
+/// The claim to publish `value` for `agent`'s `field` now; none when it is
 /// already the last value published there, or not a claim the Agent may make
 /// (an owner on another server, an unknown runtime).
-fn start_claim(agent: &str, field: &'static str, value: &str) -> bool {
+fn start_claim(agent: &str, field: &'static str, value: &str) -> Option<u64> {
     let allowed = match field {
         OWNER_FIELD => may_claim(agent, value),
         RUNTIME_FIELD => may_claim_runtime(agent, value),
@@ -69,27 +72,28 @@ fn start_claim(agent: &str, field: &'static str, value: &str) -> bool {
     };
     if !allowed {
         tracing::warn!(stage = "agent_profile_claim", field, "Agent may not publish this value; not published");
-        return false;
+        return None;
     }
     let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
     let key = (agent.to_owned(), field);
-    if claimed.get(&key).is_some_and(|last| last == value) { return false; }
-    claimed.insert(key, value.to_owned());
-    true
+    if claimed.get(&key).is_some_and(|(last, _)| last == value) { return None; }
+    let claim = NEXT_CLAIM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    claimed.insert(key, (value.to_owned(), claim));
+    Some(claim)
 }
 
-/// Whether `value` is still the last one started for `agent`'s `field`.
-fn is_latest(agent: &str, field: &'static str, value: &str) -> bool {
+/// Whether `claim` is still the last one started for `agent`'s `field`.
+fn is_latest(agent: &str, field: &'static str, claim: u64) -> bool {
     let claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
-    claimed.get(&(agent.to_owned(), field)).is_some_and(|last| last == value)
+    claimed.get(&(agent.to_owned(), field)).is_some_and(|(_, last)| *last == claim)
 }
 
-/// A failed write of `value`: forgotten so the next use retries, unless a
-/// newer value was started since (that write is the one that counts).
-fn forget_claim(agent: &str, field: &'static str, value: &str) {
+/// A failed write of `claim`: forgotten so the next use retries, unless a
+/// newer claim was started since, even of the same value (its write counts).
+fn forget_claim(agent: &str, field: &'static str, claim: u64) {
     let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
     let key = (agent.to_owned(), field);
-    if claimed.get(&key).is_some_and(|last| last == value) { claimed.remove(&key); }
+    if claimed.get(&key).is_some_and(|(_, last)| *last == claim) { claimed.remove(&key); }
 }
 
 async fn publish(client: &Client, field: &str, value: &str) -> Result<(), matrix_sdk::Error> {
@@ -104,11 +108,11 @@ mod tests {
     #[test]
     fn a_pair_is_published_once_and_again_after_a_failure() {
         let (agent, owner) = ("@_hagency_agt_claim1:beta", "@bird:beta");
-        assert!(start_claim(agent, OWNER_FIELD, owner), "first use publishes");
-        assert!(!start_claim(agent, OWNER_FIELD, owner), "a second use does not send again");
-        forget_claim(agent, OWNER_FIELD, owner);
-        assert!(start_claim(agent, OWNER_FIELD, owner), "a failed write is retried");
-        assert!(start_claim(agent, OWNER_FIELD, "@eve:beta"), "a new owner is published");
+        let first = start_claim(agent, OWNER_FIELD, owner).expect("first use publishes");
+        assert!(start_claim(agent, OWNER_FIELD, owner).is_none(), "a second use does not send again");
+        forget_claim(agent, OWNER_FIELD, first);
+        assert!(start_claim(agent, OWNER_FIELD, owner).is_some(), "a failed write is retried");
+        assert!(start_claim(agent, OWNER_FIELD, "@eve:beta").is_some(), "a new owner is published");
     }
 
     /// GPT integration review: the cache held every pair ever published, so
@@ -116,20 +120,20 @@ mod tests {
     #[test]
     fn going_back_to_an_earlier_owner_publishes_it_again() {
         let agent = "@_hagency_agt_claim4:beta";
-        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta"));
-        assert!(start_claim(agent, OWNER_FIELD, "@eve:beta"));
-        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta"), "A → B → A writes A again");
-        assert!(!start_claim(agent, OWNER_FIELD, "@bird:beta"), "A is now the last value");
-        forget_claim(agent, OWNER_FIELD, "@eve:beta");
-        assert!(!start_claim(agent, OWNER_FIELD, "@bird:beta"), "an older failed write does not drop the newer owner");
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_some());
+        let eve = start_claim(agent, OWNER_FIELD, "@eve:beta").unwrap();
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_some(), "A → B → A writes A again");
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_none(), "A is now the last value");
+        forget_claim(agent, OWNER_FIELD, eve);
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_none(), "an older failed write does not drop the newer owner");
     }
 
     #[test]
     fn an_owner_on_another_server_or_an_unknown_runtime_is_never_published() {
-        assert!(!start_claim("@_hagency_agt_claim2:beta", OWNER_FIELD, "@anna:alpha"));
-        assert!(!start_claim("@bird:beta", OWNER_FIELD, "@bird:beta"), "not an Agent");
-        assert!(!start_claim("@_hagency_agt_claim2:beta", RUNTIME_FIELD, "gpt-9"));
-        assert!(!start_claim("@bird:beta", RUNTIME_FIELD, "claude"), "not an Agent");
+        assert!(start_claim("@_hagency_agt_claim2:beta", OWNER_FIELD, "@anna:alpha").is_none());
+        assert!(start_claim("@bird:beta", OWNER_FIELD, "@bird:beta").is_none(), "not an Agent");
+        assert!(start_claim("@_hagency_agt_claim2:beta", RUNTIME_FIELD, "gpt-9").is_none());
+        assert!(start_claim("@bird:beta", RUNTIME_FIELD, "claude").is_none(), "not an Agent");
     }
 
     /// The runtime is its own field: publishing it never stands in for the
@@ -137,11 +141,11 @@ mod tests {
     #[test]
     fn the_runtime_is_claimed_beside_the_owner() {
         let agent = "@_hagency_agt_claim5:beta";
-        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta"));
-        assert!(start_claim(agent, RUNTIME_FIELD, "claude"), "the owner's claim does not cover the runtime");
-        assert!(!start_claim(agent, RUNTIME_FIELD, "claude"));
-        assert!(start_claim(agent, RUNTIME_FIELD, "codex"), "a new runtime is published");
-        assert!(!start_claim(agent, OWNER_FIELD, "@bird:beta"), "the owner is untouched");
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_some());
+        assert!(start_claim(agent, RUNTIME_FIELD, "claude").is_some(), "the owner's claim does not cover the runtime");
+        assert!(start_claim(agent, RUNTIME_FIELD, "claude").is_none());
+        assert!(start_claim(agent, RUNTIME_FIELD, "codex").is_some(), "a new runtime is published");
+        assert!(start_claim(agent, OWNER_FIELD, "@bird:beta").is_none(), "the owner is untouched");
     }
 
     /// GPT review: a delayed Claude write landing after a newer Codex write
@@ -150,11 +154,28 @@ mod tests {
     #[test]
     fn a_superseded_value_is_not_written() {
         let agent = "@_hagency_agt_claim6:beta";
-        assert!(start_claim(agent, RUNTIME_FIELD, "claude"));
-        assert!(is_latest(agent, RUNTIME_FIELD, "claude"));
-        assert!(start_claim(agent, RUNTIME_FIELD, "codex"));
-        assert!(!is_latest(agent, RUNTIME_FIELD, "claude"), "the older write is skipped");
-        assert!(is_latest(agent, RUNTIME_FIELD, "codex"));
+        let claude = start_claim(agent, RUNTIME_FIELD, "claude").unwrap();
+        assert!(is_latest(agent, RUNTIME_FIELD, claude));
+        let codex = start_claim(agent, RUNTIME_FIELD, "codex").unwrap();
+        assert!(!is_latest(agent, RUNTIME_FIELD, claude), "the older write is skipped");
+        assert!(is_latest(agent, RUNTIME_FIELD, codex));
+    }
+
+    /// GPT batch review (Nov 18): Claude → Codex → Claude, and the first
+    /// Claude write fails: its failure cleared the newer Claude claim, so the
+    /// pending newer write skipped itself and nothing was published.
+    #[test]
+    fn an_older_failed_write_does_not_forget_a_newer_claim_of_the_same_value() {
+        let agent = "@_hagency_agt_claim7:beta";
+        let first = start_claim(agent, RUNTIME_FIELD, "claude").unwrap();
+        assert!(start_claim(agent, RUNTIME_FIELD, "codex").is_some());
+        let newer = start_claim(agent, RUNTIME_FIELD, "claude").unwrap();
+        forget_claim(agent, RUNTIME_FIELD, first);
+        assert!(!is_latest(agent, RUNTIME_FIELD, first), "the stale write skips itself");
+        assert!(is_latest(agent, RUNTIME_FIELD, newer), "the newer claude write still runs");
+        assert!(start_claim(agent, RUNTIME_FIELD, "claude").is_none(), "and is not started twice");
+        forget_claim(agent, RUNTIME_FIELD, newer);
+        assert!(start_claim(agent, RUNTIME_FIELD, "claude").is_some(), "its own failure is retried");
     }
 
     /// User flow: the Agent's device is signed in and the claim reaches
