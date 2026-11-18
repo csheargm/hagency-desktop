@@ -146,3 +146,64 @@ fn a_hand_off_whose_approval_card_went_unanswered_says_so() {
     assert_eq!((json[1]["dispatchId"].as_str(), json[1].get("unanswered")), (Some("done"), None));
     assert_eq!((json[2]["dispatchId"].as_str(), json[2]["unanswered"].as_bool(), json[2]["outcome"].as_str()), (Some("waited"), Some(true), Some("answered")));
 }
+
+/// The live path of a hand-off refused before the model started: receive,
+/// prepare, start, then the owner-policy notice instead of a model reply.
+fn refused_hand_off(l: &mut Ledger, d: &Dispatch, at: i64, reason: &str) {
+    l.register_binding(OWNER, &d.scope()).unwrap();
+    l.receive_dispatch(OWNER, d, Limits::default(), at).unwrap();
+    l.acknowledge_dispatch(OWNER, &d.id).unwrap();
+    let p = l.prepare_execution(OWNER, &d.id).unwrap();
+    let mut running = p.dispatch.clone();
+    running.state = "running".into();
+    running.execution_id = Some(p.execution_id.clone());
+    l.confirm_execution_start(OWNER, &crate::inbox::ServerStart { dispatch: running, newly_started: true }).unwrap();
+    l.persist_no_provider_reply(OWNER, &d.id, &p.execution_id, reason).unwrap();
+}
+
+#[test]
+fn three_hand_offs_refused_by_a_used_up_budget_say_no_run_and_the_budget_says_used_up() {
+    // Nov 18 08:16-08:19: #93's run took bird-claude's UTC-day spend from
+    // 9.98 M to 10.28 M of its 10 M tokens; every later hand-off (#90-#92,
+    // three each) was answered "budget reached, model not called" and the
+    // loop counted each as an ended attempt.
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let now = 1_795_018_600;
+    let mut policy = l.agent_policy(OWNER, "agent").unwrap().policy;
+    policy.budget = crate::Budget { limit: crate::Limit::Tokens(10_000_000), period: crate::Period::UtcDay };
+    let scope = dispatch("x", "agent", "bind").scope();
+    l.register_binding(OWNER, &scope).unwrap();
+    l.set_policy(OWNER, &scope, crate::Layer::Agent, 0, &policy).unwrap();
+    assert!(!l.agent_budget_used_up(OWNER, "agent", now).unwrap());
+    let window = crate::Period::UtcDay.window(now).unwrap();
+    l.db.execute("INSERT INTO accounts VALUES (?,?,10277116,0)", (crate::json(&("agent", "agent")).unwrap(), &window)).unwrap();
+    assert!(l.agent_budget_used_up(OWNER, "agent", now).unwrap());
+    assert!(!l.agent_budget_used_up(OWNER, "agent", now + 86_400).unwrap(), "a new UTC day allows again");
+    for (i, number) in [90, 91, 92].into_iter().enumerate() {
+        let mut d = dispatch(&format!("h{number}"), "agent", "bind");
+        d.thread_root = format!("$root{number}:test");
+        d.body = format!("🔔 New GitHub issue #{number} in a/b — @bird please fix it");
+        let refused = l.begin_postpaid(&d.scope(), &format!("exec-probe-{number}"), &d.id, now);
+        assert!(matches!(refused, Err(Error::Budget)), "the precondition: the ledger refuses the run");
+        refused_hand_off(&mut l, &d, now + i as i64, "⏸️ budget reached");
+    }
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    for row in json.as_array().unwrap() {
+        assert_eq!((row["outcome"].as_str(), row["noRun"].as_bool()), (Some("answered"), Some(true)), "{row}");
+    }
+}
+
+#[test]
+fn a_model_reply_and_a_declined_request_are_not_no_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let measured = usage(120, 30, "provider-v1");
+    let zero = usage(0, 0, crate::inbox::NO_PROVIDER_CALL);
+    record(&mut l, &dispatch("ran", "agent", "b1"), 10, "replied", Some(("settled", &measured)));
+    record(&mut l, &dispatch("declined", "agent", "b2"), 20, "rejected", Some(("settled", &zero)));
+    record(&mut l, &dispatch("noted", "agent", "b3"), 30, "replied", Some(("settled", &zero)));
+    let json = serde_json::to_value(l.recent_activity(OWNER, "agent", 5).unwrap()).unwrap();
+    let marks: Vec<_> = json.as_array().unwrap().iter().map(|r| (r["dispatchId"].as_str().unwrap().to_owned(), r.get("noRun").is_some())).collect();
+    assert_eq!(marks, [("noted".to_owned(), true), ("declined".to_owned(), false), ("ran".to_owned(), false)]);
+}

@@ -118,6 +118,12 @@ pub struct Facts {
     /// That run stopped at an approval card its owner never answered (e2e,
     /// Nov 17 23:32: #69 used all three attempts on unanswered cards).
     pub unanswered: bool,
+    /// That run ended with no model call: an owner-policy notice (budget,
+    /// denial, sign-in) answered it, so the Agent never ran (Nov 18, #90-#92).
+    pub no_run: bool,
+    /// The Agent's token budget for this period is used up: any hand-off
+    /// now would be refused the same way, so none is posted.
+    pub budget_out: bool,
 }
 
 /// How the Agent tells the loop it cannot fix an issue: an issue comment
@@ -130,67 +136,7 @@ pub fn says_cannot_fix(comments: &[crate::issue_watch::wire::Comment], login: &s
     comments.iter().any(|c| c.author.eq_ignore_ascii_case(login) && c.created_at >= since && c.body.trim_start().starts_with(CANNOT_FIX_MARKER))
 }
 
-/// The one step the poller takes for a record this check.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Action {
-    Wait,
-    /// Hand the issue off again as attempt `attempt`.
-    Retry { attempt: u32 },
-    /// A restart interrupted the run, or it waited on an unanswered approval
-    /// card: hand it off again, same attempt.
-    Rehand,
-    /// Out of attempts: record `failed` and say so once.
-    GiveUp,
-    /// A linked pull request is open: request its review, or carry it to the merge gate.
-    FollowPr { pr: u64 },
-    /// Merged: record it and post "#N fixed → PR #M merged" once.
-    AnnounceFixed,
-    /// Closed without a merge: record it quietly.
-    Close,
-    /// The Agent gave up: record `needs_human` and say so once.
-    NeedsHuman,
-}
-
-/// The deadline of the current attempt: the timeout doubles per attempt.
-pub fn deadline(track: &Track) -> i64 {
-    let doubling = 1i64 << track.attempts.saturating_sub(1).min(8);
-    track.handed_at.saturating_add(HANDOFF_TIMEOUT_SECS.saturating_mul(doubling))
-}
-
-/// The next step for `track` given `facts`. Terminal records never act; a
-/// closed issue wins over everything; an open pull request stops retries.
-pub fn decide(track: &Track, facts: &Facts) -> Action {
-    if track.state.is_terminal() {
-        return Action::Wait;
-    }
-    match facts.issue {
-        IssueFact::Done => return Action::AnnounceFixed,
-        IssueFact::ClosedOther => return Action::Close,
-        IssueFact::Open => {}
-    }
-    if facts.cannot_fix {
-        return Action::NeedsHuman;
-    }
-    if let Some(pr) = facts.open_pr.or(track.pr.filter(|_| track.state != State::HandedOff)) {
-        // A pull request seen once is followed until the issue closes; if it
-        // was closed unmerged, the record waits for a person (no retry).
-        return if facts.open_pr.is_some() { Action::FollowPr { pr } } else { Action::Wait };
-    }
-    let ended = facts.run_ended && track.state == State::HandedOff;
-    // Never charged to the Agent, and never the final give-up (Nov 17 22:35):
-    // a restart, or a person who did not answer its card (Nov 17 23:32).
-    if ended && (facts.interrupted || facts.unanswered) && track.free_retries < MAX_FREE_RETRIES {
-        return Action::Rehand;
-    }
-    if facts.now < deadline(track) && !ended {
-        return Action::Wait;
-    }
-    if track.attempts >= MAX_ATTEMPTS {
-        Action::GiveUp
-    } else {
-        Action::Retry { attempt: track.attempts + 1 }
-    }
-}
+pub use decide::{Action, REHAND_BACKOFF_SECS, deadline, decide};
 
 /// One owner-API change to a record (validated by the ledger).
 #[derive(Clone, Debug, Deserialize)]
@@ -299,6 +245,7 @@ fn apply_fields(current: Option<Track>, change: &TrackChange, now: i64) -> Resul
     Ok(track)
 }
 
+mod decide;
 pub mod digest;
 #[cfg(test)]
 mod tests;

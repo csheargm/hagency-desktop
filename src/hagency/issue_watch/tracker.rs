@@ -7,7 +7,7 @@
 //! and attempt, so a check that dies in between repeats a duplicate the
 //! homeserver drops. The I/O is a trait so the whole flow runs on fakes.
 use super::merge_hold::Missing;
-use super::run_end::{Again, RunEnd, branch_names_issue, hand_again};
+use super::run_end::{Again, RunEnd, branch_names_issue, hand_again, hold_for_budget};
 use super::work_slots::closes_issue;
 use ::hagency::issue_watch::issue_track::{Action, Facts, IssueFact, MAX_ATTEMPTS, State, Track, decide};
 use ::hagency::issue_watch::{Issue, PullRequest};
@@ -128,7 +128,11 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     } else {
         RunEnd::Running
     };
-    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted, unanswered: run == RunEnd::Unanswered };
+    let (no_run, budget_out) = match run {
+        RunEnd::NoRun { budget_out } => (true, budget_out),
+        _ => (false, false),
+    };
+    let facts = Facts { now: inputs.now, issue: fact, open_pr: open_pr.map(|p| p.number), cannot_fix, run_ended: run.ended(), interrupted: run == RunEnd::Interrupted, unanswered: run == RunEnd::Unanswered, no_run, budget_out };
     if io.paused() {
         return Err(crate::i18n::tr("Agent paused by the owner").to_owned());
     }
@@ -139,6 +143,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
         Action::Wait => Ok(Some(waiting_line(track))),
         Action::Retry { attempt } => hand_again(io, issue.ok_or("the issue is not open")?, track, run, Again::Attempt(attempt)).await,
         Action::Rehand => hand_again(io, issue.ok_or("the issue is not open")?, track, run, Again::Rehand).await,
+        Action::HoldBudget => hold_for_budget(io, track).await,
         Action::GiveUp => {
             io.say(n, "failed", crate::i18n::format(GAVE_UP, &[("number", n.to_string()), ("max", MAX_ATTEMPTS.to_string())])).await?;
             io.record(change(json!({"state": "failed", "notified": true}))).await?;

@@ -30,6 +30,10 @@ pub enum RunEnd {
     /// The run ended at an approval card its owner never answered: it
     /// stopped on a person, not the Agent (Nov 17 23:32, #69).
     Unanswered,
+    /// An owner-policy notice answered before the model started (a used-up
+    /// budget, a denial, a signed-out provider): the Agent never ran
+    /// (Nov 18, #90-#92). `budget_out`: the Agent's budget is used up now.
+    NoRun { budget_out: bool },
 }
 
 impl RunEnd {
@@ -51,11 +55,22 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
     });
     let Some(newest) = ours.max_by_key(|r| r["receivedAt"].as_i64()) else { return RunEnd::Running };
     match newest["outcome"].as_str() {
+        Some("answered") if newest["noRun"] == true => RunEnd::NoRun { budget_out: false },
         Some("answered") if newest["unanswered"] == true => RunEnd::Unanswered,
         Some("answered" | "declined") => RunEnd::Ended,
         Some("failed") if newest["interrupted"] == true => RunEnd::Interrupted,
         Some("failed") => RunEnd::Lost,
         _ => RunEnd::Running,
+    }
+}
+
+/// The current hand-off's run of `track` in the owner API's Activity view
+/// (`{requests, budgetUsedUp}`), counting only `requester`'s hand-offs.
+pub fn run_end_in(activity: &Value, requester: &str, track: &Track) -> RunEnd {
+    let ours = requested_by(&activity["requests"], requester);
+    match run_end_of(&ours, &track.repo, track.number, track.handed_at) {
+        RunEnd::NoRun { .. } => RunEnd::NoRun { budget_out: activity["budgetUsedUp"] == true },
+        run => run,
     }
 }
 
@@ -106,6 +121,8 @@ pub const PUSHED_NO_PR: &str = "🔁 #{number}: {agent} pushed {branch} but open
 pub const ENDED_NO_PR: &str = "🔁 #{number}: the run ended without a pull request — retrying (attempt {attempt} of {max})";
 pub const RUN_LOST: &str = "🔁 #{number}: the run was lost before it finished — retrying (attempt {attempt} of {max})";
 pub const RESTARTED: &str = "🔁 #{number}: the run was interrupted (this app or its Agent host restarted or lost its connection) — handing it off again (attempt {attempt} of {max}, not counted)";
+pub const NO_RUN: &str = "🔁 #{number}: the run ended before the model started (an owner limit or a signed-out provider answered instead) — handing it off again (attempt {attempt} of {max}, not counted)";
+pub const BUDGET_HELD: &str = "⏸️ #{number}: {agent}'s token budget for this period is used up, so its run was refused before the model started — the issue waits until the budget allows again (not counted)";
 pub const UNANSWERED: &str = "🔁 #{number}: the run stopped at an approval card nobody answered — handing it off again (attempt {attempt} of {max}, not counted); approve its card in the owner's Hagency window";
 
 /// Which hand-off a retry is.
@@ -143,6 +160,7 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
     let status = crate::i18n::format("#{number} retrying ({attempt}/{max})", &args);
     let (key, template) = match (again, run, branch) {
         (Again::Rehand, RunEnd::Unanswered, _) => (format!("rehand-{attempt}-{free}"), UNANSWERED),
+        (Again::Rehand, RunEnd::NoRun { .. }, _) => (format!("rehand-{attempt}-{free}"), NO_RUN),
         (Again::Rehand, ..) => (format!("rehand-{attempt}-{free}"), RESTARTED),
         (_, RunEnd::Running, _) => (format!("retry-{attempt}"), RETRYING),
         (_, _, Some(branch)) => {
@@ -150,8 +168,20 @@ pub async fn hand_again(io: &impl TrackIo, issue: &Issue, track: &Track, run: Ru
             (format!("retry-{attempt}"), PUSHED_NO_PR)
         }
         (_, RunEnd::Lost | RunEnd::Interrupted, None) => (format!("retry-{attempt}"), RUN_LOST),
-        (_, RunEnd::Ended | RunEnd::Unanswered, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
+        (_, RunEnd::Ended | RunEnd::Unanswered | RunEnd::NoRun { .. }, None) => (format!("retry-{attempt}"), ENDED_NO_PR),
     };
     io.say(n, &key, crate::i18n::format(template, &args)).await?;
     Ok(Some(status))
+}
+
+/// A hand-off is due while every run would be refused for the budget: post
+/// nothing to the Agent, say so once per attempt, and wait (Nov 18).
+pub async fn hold_for_budget(io: &impl TrackIo, track: &Track) -> Result<Option<String>, String> {
+    let n = track.number;
+    if !track.notified {
+        let text = crate::i18n::format(BUDGET_HELD, &[("number", n.to_string()), ("agent", io.agent_label())]);
+        io.say(n, &format!("budget-{}-{}", track.attempts, track.free_retries), text).await?;
+        io.record(change_of(&track.repo, n, json!({"notified": true}))).await?;
+    }
+    Ok(Some(crate::i18n::format("#{number} waiting for the Agent's token budget", &[("number", n.to_string())])))
 }

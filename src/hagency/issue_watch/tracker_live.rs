@@ -221,8 +221,7 @@ impl TrackIo for LiveTrack<'_> {
     async fn run_end(&self, track: &Track) -> Result<RunEnd, String> {
         let ask = crate::hagency::model::Command::Local { agent_id: self.agent_id().into(), action: crate::hagency::model::LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
         let activity = self.worker.service.execute(ask).await?;
-        let ours = super::run_end::requested_by(&activity["requests"], crate::sliding_sync::current_user_id().ok_or("Signed out")?.as_str());
-        Ok(super::run_end::run_end_of(&ours, &track.repo, track.number, track.handed_at))
+        Ok(super::run_end::run_end_in(&activity, crate::sliding_sync::current_user_id().ok_or("Signed out")?.as_str(), track))
     }
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
         let branches = fetch_branches(self.worker.client, GITHUB_API, self.repo, self.worker.token).await.map_err(|e| e.to_string())?;

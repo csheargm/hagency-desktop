@@ -60,6 +60,11 @@ pub struct Activity {
     /// the issue loop does not count it as an attempt (e2e, Nov 17 23:32).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unanswered: bool,
+    /// Answered with no model call: an owner-policy notice (a used-up
+    /// budget, a denial, a signed-out provider) replied instead of the
+    /// Agent, so the issue loop does not count it as an attempt (Nov 18).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_run: bool,
 }
 
 /// Which issue each received hand-off names, kept apart from the request
@@ -108,9 +113,12 @@ fn charged(call_state: Option<&str>, usage: Option<&str>) -> Option<u64> {
     Some(usage.input.saturating_add(usage.output))
 }
 
-const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number,u.dispatch IS NOT NULL FROM local_inbox i \
+/// Column 8 is the zero-call proof `Ledger::persist_no_provider_reply`
+/// settles: nothing reserved, no policy snapshots, no-provider accounting.
+const RECENT: &str = "SELECT i.envelope,i.state,i.received_at,c.state,c.usage,h.repo,h.number,u.dispatch IS NOT NULL,\
+coalesce(c.state='settled' AND c.reserved=0 AND c.snapshots='[]' AND json_extract(c.usage,'$.accounting_version')=?3,0) FROM local_inbox i \
 JOIN bindings b ON b.id=i.binding LEFT JOIN calls c ON c.id=i.execution_id LEFT JOIN handoff_issues h ON h.dispatch=i.id \
-LEFT JOIN handoff_unanswered u ON u.dispatch=i.id WHERE b.agent=? ORDER BY i.received_at DESC,i.id DESC LIMIT ?";
+LEFT JOIN handoff_unanswered u ON u.dispatch=i.id WHERE b.agent=?1 ORDER BY i.received_at DESC,i.id DESC LIMIT ?2";
 
 impl Ledger {
     /// The run of `dispatch` asked its owner to approve a tool call and the
@@ -121,6 +129,16 @@ impl Ledger {
         Ok(())
     }
 
+    /// Whether `agent`'s own token budget for the period of `now` is used
+    /// up, so `begin_postpaid` refuses every new task with `Error::Budget`
+    /// until the period turns or the owner raises it (Nov 18, #90-#92).
+    pub fn agent_budget_used_up(&self, owner: &str, agent: &str, now: i64) -> Result<bool> {
+        let budget = self.agent_policy(owner, agent)?.policy.budget;
+        let crate::Limit::Tokens(limit) = budget.limit else { return Ok(false) };
+        let (spent, _) = self.agent_account(owner, agent, budget.period, now)?;
+        Ok(spent >= limit)
+    }
+
     /// The last `limit` requests for `agent`, newest first.
     pub fn recent_activity(&self, owner: &str, agent: &str, limit: usize) -> Result<Vec<Activity>> {
         self.owner(owner)?;
@@ -129,7 +147,7 @@ impl Ledger {
             return Err(Error::Invalid("activity query limit"));
         }
         let mut stmt = self.db.prepare(RECENT)?;
-        let rows = stmt.query_map((agent, limit), |r| {
+        let rows = stmt.query_map((agent, limit, crate::inbox::NO_PROVIDER_CALL), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -139,23 +157,27 @@ impl Ledger {
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, Option<i64>>(6)?,
                 r.get::<_, bool>(7)?,
+                r.get::<_, bool>(8)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (envelope, state, received_at, call_state, usage, repo, number, unanswered) = row?;
+            let (envelope, state, received_at, call_state, usage, repo, number, unanswered, no_call) = row?;
             let dispatch: Dispatch = serde_json::from_str(&envelope)?;
+            let outcome = Outcome::of_state(&state);
             out.push(Activity {
                 dispatch_id: dispatch.id,
                 binding_id: dispatch.binding_id,
                 room_id: dispatch.room_id,
                 requester: dispatch.requester_mxid,
                 received_at,
-                outcome: Outcome::of_state(&state),
+                outcome,
                 tokens: charged(call_state.as_deref(), usage.as_deref()),
                 issue: repo.zip(number).map(|(repo, number)| IssueRef { repo, number }).or_else(|| handoff_issue(&dispatch.body)),
                 interrupted: state == "unknown",
                 unanswered,
+                // A declined request also settles the zero-call proof; only a reply is a no-run.
+                no_run: no_call && outcome == Outcome::Answered,
             });
         }
         Ok(out)
