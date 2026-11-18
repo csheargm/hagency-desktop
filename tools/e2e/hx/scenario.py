@@ -30,6 +30,7 @@ class Ctx:
     created_issues: list = field(default_factory=list)
     created_branches: list = field(default_factory=list)
     loop_states: dict = field(default_factory=dict)
+    setup_log: list = field(default_factory=list)
 
     def agent_in_room(self, name: str) -> bool:
         return self.setup.get(f"agent:{name}") == "join"
@@ -119,7 +120,8 @@ def blocked(name: str, ctx: Ctx, agents: list) -> Result | None:
         return None
     owners = sorted({config.AGENTS[a][0] for a in missing})
     return Result(name, BLOCKED, note=f"not in e2e room: {', '.join(missing)} — one-time setup: "
-                  f"{' and '.join(owners)} must accept the e2e room invite in their window (see SETUP.md)",
+                  f"{' and '.join(owners)} not set up — the runner does it through each window's bridge "
+                  f"(see the report's 'Owner UI setup' lines and SETUP.md)",
                   kind="setup")
 
 

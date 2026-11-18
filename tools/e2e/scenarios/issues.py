@@ -2,7 +2,8 @@
 import time
 from datetime import datetime
 
-from hx import config, evidence, github, personas
+from hx import config, evidence, github, owner_ui, personas
+from hx.bridge import BridgeDown, StepNotFound
 from hx.scenario import FAIL, PASS, Result, blocked, first_reply, mention_content, now_ms, wait_for
 
 LOOP_TIMEOUT_S = 25 * 60
@@ -99,9 +100,21 @@ def s7_issue_loop(ctx) -> Result:
     r.evidence = [_describe(n, states[n]) for n in numbers]
     ok = all(_complete(states[n]) for n in numbers)
     if not ok:
+        r.evidence.append(_agent_said(numbers))
         r.note = f"not every stage reached in order within {LOOP_TIMEOUT_S // 60} min"
     r.status, r.seconds, r.kind = (PASS if ok else FAIL), time.time() - t0, "" if ok else "finding"
     return r
+
+
+def _agent_said(numbers: list) -> str:
+    """What the loop agent told the dev room about these issues, read from
+    Betty's window (read only; zz users are not dev-room members)."""
+    try:
+        texts = owner_ui.visible_texts("betty", "dev room", tuple(f"#{n}" for n in numbers))
+    except (BridgeDown, StepNotFound) as e:
+        return f"dev room not read: {e}"
+    return "dev room (Betty's window): " + " / ".join(t[:200] for t in texts[-6:]) if texts \
+        else "dev room (Betty's window): nothing visible mentions these issues"
 
 
 def _activity_since(number: int, since_s: float) -> list:

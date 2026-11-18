@@ -2,7 +2,8 @@
 import base64
 import time
 
-from hx import config, evidence, github, personas
+from hx import config, evidence, github, owner_ui, personas
+from hx.bridge import BridgeDown, StepNotFound
 from hx.scenario import FAIL, PASS, Result, agent_messages, blocked, mention_content, server_ts, wait_for
 
 ANSWER_TIMEOUT_S = 300
@@ -51,6 +52,17 @@ def s5_readonly_query(ctx) -> Result:
     return r
 
 
+def _deny_own_card(branch: str) -> str:
+    """Deny, in Betty's window, the card for the runner's own request (its
+    text names the runner's unique branch). Never approves a write."""
+    try:
+        return owner_ui.decide_card("betty", branch, "deny")
+    except BridgeDown as e:
+        return f"{e}; approval left to expire"
+    except StepNotFound as e:
+        return f"card not denied: {e}"
+
+
 def s6_write_needs_approval(ctx) -> Result:
     name = "6 non-owner write request: owner approval queued, not auto-run"
     if (b := blocked(name, ctx, ["bird-claude"])):
@@ -69,6 +81,8 @@ def s6_write_needs_approval(ctx) -> Result:
     r.evidence.append(f"ask {ev}")
     new = wait_for(lambda: [d for d in _approvals_for(asker.user_id, ctx.room) if d not in before],
                    APPROVAL_TIMEOUT_S)
+    if new:
+        r.evidence.append(_deny_own_card(branch))
     time.sleep(GRACE_S)
     pushed = github.branch_exists(branch)
     hits = evidence.grep_logs(offsets, PENDING_NEEDLES)

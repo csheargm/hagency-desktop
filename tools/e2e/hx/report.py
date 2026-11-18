@@ -19,6 +19,8 @@ def write_report(started: datetime, ctx, results: list, wrong_names: list, clean
              f"Room: `{ctx.room}` (\"{config.E2E_ROOM_NAME}\" on alpha). Run id `{ctx.run_id}`.", "",
              "## Setup state", ""]
     lines += [f"- {k}: {v}" for k, v in ctx.setup.items()]
+    if ctx.setup_log:
+        lines += ["", "Owner UI setup (bridge):"] + [f"- {x}" for x in ctx.setup_log]
     if wrong_names:
         lines += ["", "Agent name mismatches (config.AGENTS stale):"] + [f"- {w}" for w in wrong_names]
     lines += ["", "## Results", "", "| Scenario | Result | Time | Evidence | Notes |", "|---|---|---|---|---|"]

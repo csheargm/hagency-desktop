@@ -11,7 +11,41 @@ The runner does everything it can by itself:
   (`@bird:localhost:8452`). The room id is kept in
   `hagency-server/.run/e2e/room.json`.
 
-## What still needs the owners' windows (once)
+## Owner steps: automated through each window's bridge
+
+An Agent serves a room only after its **owner binds it** there, and that is an
+owner command the desktop runs in-process (no external endpoint; the server
+ignores a bare puppet invite). The runner therefore drives the owners' own
+windows through Makepad's localhost bridge (`MAKEPAD_REMOTE`, enabled in
+`int-demo-up.sh`: Anna 127.0.0.1:8771, Betty 127.0.0.1:8772).
+
+`run.py` preflight, per owner, skipped when the owner and all their Agents are
+already joined (checked over Matrix as zz-anna):
+
+1. open **e2e room** in the room list → click **Join Room** (`accept_button`),
+   then wait until Matrix shows the owner joined;
+2. answer only prompts whose sentence names the e2e room: **Bring**
+   (`bring`) / **Allow in group rooms**;
+3. for each Agent still absent: **+** (`new_or_join_button`) → **Add agent to
+   this room** (`plus_add_agent`) → the Agent's row → **Invite**
+   (`confirm_button`) → **Allow in group rooms** if the private-Agent prompt
+   appears; then wait until Matrix shows the Agent joined.
+
+If a port is closed the report says "bridge not up yet" and the agent
+scenarios stay BLOCKED. A missing button stops that owner's setup with a named
+`StepNotFound` (never a guess). `--no-ui-setup` skips all of this.
+
+Other bridge uses, all scoped to what the runner caused:
+- scenario 6 **denies** (never approves) the permission card whose own text
+  (`title`/`context`/`details`) names the runner's unique branch;
+- scenario 7, on failure, opens the dev room in Betty's window and copies the
+  visible lines that mention the test issues (read only, sends nothing).
+
+The bridge's `/gq`, `/quit` and `/close` routes are refused by the client.
+
+## History: before the bridge
+
+
 
 An Agent serves a room only after its **owner binds it** there. The binding is
 an owner command (`agent.bind`) that the desktop runs in-process through its
@@ -40,19 +74,4 @@ Why the runner does not do this itself:
 - Driving the windows with desktop automation was attempted on 2026-11-17 and
   stopped (the room list is a Makepad canvas that needs foreground clicks).
 
-## Removing the gap (proposed)
-
-Cheapest route, no product change: every Makepad app has a localhost control
-bridge (`MAKEPAD_REMOTE=<port>`, used by `tools/agentchat-probe/probe_approval.py`:
-`/snap?q=<text>` lists widgets, `/click?x=&y=&wait=1` clicks with real
-hit-testing). The demo windows are launched by `int-demo-up.sh` without it
-(checked 2026-11-17: neither window listens on a bridge port). Adding
-`--env MAKEPAD_REMOTE=<port>` per window there (next demo restart) lets the
-runner click **e2e room → Join** itself. Not done here: it needs a window
-restart, which would interrupt the live demo.
-
-Alternatively a test-only owner hook, for example a
-`HAGENCY_DEMO_AUTOMATION=1`-gated local socket in the desktop that accepts
-`agent.bind {agentId, roomId}` from the same machine user, or a
-"auto-accept invites from <prefix>" demo flag. Either is a product change and
-belongs in its own session (R8).
+The bridge route above replaced the manual clicks (2026-11-17).

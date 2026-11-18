@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hx import github, room  # noqa: E402
+from hx import config, github, owner_ui, room  # noqa: E402
+from hx.bridge import BridgeDown, StepNotFound  # noqa: E402
 from hx.report import write_report  # noqa: E402
 from hx.scenario import BLOCKED, FAIL, Ctx, Result  # noqa: E402
 from scenarios import approvals, chat, issues, manual  # noqa: E402
@@ -39,13 +40,30 @@ def run_one(key, fn, ctx) -> Result:
                       time.time() - t0, tb, f"runner error: {e}", kind="runner")
 
 
-def preflight() -> tuple:
+def preflight(ui_setup: bool) -> tuple:
     if github.whoami() != github.GH_ACCOUNT:
         raise SystemExit(f"gh does not act as {github.GH_ACCOUNT}")
     ctx_room = room.ensure_room()
-    setup = room.setup_status(ctx_room)
-    wrong = room.verify_agent_names()
-    return ctx_room, setup, wrong
+    log = owner_setup(ctx_room) if ui_setup else ["owner UI setup skipped (--no-ui-setup)"]
+    return ctx_room, room.setup_status(ctx_room), room.verify_agent_names(), log
+
+
+def owner_setup(room_id: str) -> list:
+    """One-time owner steps through each window's bridge; skipped per owner
+    when the owner and all their Agents are already in the room."""
+    log = []
+    status = room.setup_status(room_id)
+    for owner in config.OWNERS:
+        agents = [a for a, (o, _) in config.AGENTS.items() if o == owner]
+        keys = [f"owner:{owner}"] + [f"agent:{a}" for a in agents]
+        if all(status.get(k) == "join" for k in keys):
+            log.append(f"{owner}: setup already done")
+            continue
+        try:
+            log += owner_ui.setup_owner(owner, room_id)
+        except (BridgeDown, StepNotFound) as e:
+            log.append(f"{owner}: setup incomplete: {e}")
+    return log
 
 
 def run_all(args, ctx) -> list:
@@ -79,10 +97,13 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--inject", default="", choices=["", "pause-betty"])
     ap.add_argument("--no-cleanup", action="store_true")
+    ap.add_argument("--no-ui-setup", action="store_true", help="do not drive the owners' windows")
     args = ap.parse_args()
     started = datetime.now()
-    e2e_room, setup, wrong = preflight()
-    ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"))
+    e2e_room, setup, wrong, setup_log = preflight(not args.no_ui_setup)
+    ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"), setup_log=setup_log)
+    for line in setup_log:
+        print(f"setup: {line}", flush=True)
     results, cleanup = [], []
     try:
         results = run_all(args, ctx)

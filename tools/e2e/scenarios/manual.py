@@ -70,8 +70,7 @@ def _betty_pid() -> int:
 def s10_agent_lifecycle(ctx) -> Result:
     name = "10 agent add / remove / Leave→Message"
     return Result(name, BLOCKED_MANUAL, note=(
-        "not API-drivable: binding, removing or pausing an Agent in a room is an owner command that the "
-        "desktop executes in-process (console/api/owned-agents/{id}/bindings via the native owner engine); "
-        "the server refuses a bare puppet invite, and there is no external owner endpoint. Needs a test hook "
-        "(see README 'Gaps') or a UI driver."))
+        "add is exercised by the owner UI setup (bridge: + → Add agent to this room → pick → Invite → "
+        "Allow in group rooms); remove and Leave→Message are owner-UI only and not driven yet (their "
+        "widget ids are not mapped). There is no external owner endpoint for them."))
 
