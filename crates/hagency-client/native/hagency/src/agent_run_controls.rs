@@ -37,7 +37,9 @@ impl State {
             Self::Stopping => "Stopping; waiting for the runtime to finish and settle.",
             Self::Completed => "Done",
             Self::Interrupted => "Stopped",
-            Self::Failed => "Failed",
+            // The policy guidance the server's failure notice gave: the card is
+            // the run's one failure line (the device reports it `FinishOnCard`).
+            Self::Failed => "Failed. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again.",
             Self::Unknown => "The run went offline; check its result.",
         }
     }

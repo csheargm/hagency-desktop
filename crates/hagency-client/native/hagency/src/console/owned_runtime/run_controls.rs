@@ -240,18 +240,22 @@ impl CardHost {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some((device, path, record));
         Ok(())
     }
-    pub(in crate::console) fn finish(&self, state: CardState) {
-        self.finish_answered(state, None);
+    /// Closes the card; true when it was open, so its saved record carries
+    /// `state` to the room (now, or by recovery).
+    pub(in crate::console) fn finish(&self, state: CardState) -> bool {
+        self.finish_answered(state, None)
     }
     /// Closes the card; a completed run's `answer` becomes its final text
-    /// when it fits, so the run stays one message.
-    pub(in crate::console) fn finish_answered(&self, state: CardState, answer: Option<&str>) {
+    /// when it fits, so the run stays one message. True when the card was
+    /// open and its record saved: the room will show `state`.
+    pub(in crate::console) fn finish_answered(&self, state: CardState, answer: Option<&str>) -> bool {
         // The runtime future/stream must be dropped before this call. Its
         // unsent actions yield Unavailable; uncertain writes yield Unknown.
         // Keep their receivers outside serve(), which select may have dropped
         // in the very same poll that the provider completed.
         self.drain_receipts(true);
         let mut held = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shown = false;
         if let Some((device, path, record)) = held.as_mut() {
             record.closed_at_ms.get_or_insert_with(wall_ms);
             if record.card.state.active() {
@@ -268,8 +272,9 @@ impl CardHost {
                         record.card.set_answer(answer);
                     }
                 }
-                if save(path, record).is_err() {
-                    tracing::warn!("Run card outcome awaits recovery");
+                match save(path, record) {
+                    Ok(()) => shown = true,
+                    Err(()) => tracing::warn!("Run card outcome awaits recovery"),
                 }
             }
             ACTIVE
@@ -278,6 +283,7 @@ impl CardHost {
                 .remove(path);
             device_ready(device.clone());
         }
+        shown
     }
     pub(in crate::console) async fn publish(&self) -> Result<(), ()> {
         self.refresh_text();
@@ -517,11 +523,12 @@ impl Controller {
         let text = hagency_runtime::live_text::LiveText::with_messages(messages.clone());
         Ok(Self { sender: None, card: None, messages, text })
     }
-    pub(super) fn finish(&self, state: CardState) {
-        self.finish_answered(state, None);
+    /// True when the run's card was open and now shows `state`.
+    pub(super) fn finish(&self, state: CardState) -> bool {
+        self.finish_answered(state, None)
     }
-    pub(super) fn finish_answered(&self, state: CardState, answer: Option<&str>) {
-        if let Some(card) = &self.card { card.finish_answered(state, answer); }
+    pub(super) fn finish_answered(&self, state: CardState, answer: Option<&str>) -> bool {
+        self.card.as_ref().is_some_and(|card| card.finish_answered(state, answer))
     }
     /// A run card shows the request is being worked on, so no 👀 is needed.
     pub(super) fn has_card(&self) -> bool {

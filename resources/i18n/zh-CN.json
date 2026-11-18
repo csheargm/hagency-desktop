@@ -3290,6 +3290,7 @@
   "Stopping; waiting for the runtime to finish and settle.": "正在停止，等待运行时结束并结算。",
   "Stopped": "已停止",
   "Failed": "执行失败",
+  "Failed. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again.": "执行失败。若 Agent 需要的工具被策略拒绝（高风险工具：拒绝），请在“额度与审批”中调整或改为“询问我”后重试。",
   "The run went offline; check its result.": "运行已离线，结果需要核对。",
   "Working… {step}": "正在处理… {step}",
   "Done in {s} s · {n} steps": "已完成，用时 {s} 秒 · {n} 步",
