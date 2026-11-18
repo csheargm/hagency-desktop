@@ -80,7 +80,6 @@ pub(crate) fn level_line(watch: &Watch) -> String {
 /// What is known about the repository's default branch and the room's rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Repo {
-    Loading,
     Failed(String),
     Read { branch: String, protected: Option<bool>, rules: RoomRulesState },
 }
@@ -168,7 +167,6 @@ fn limits(repo: &Repo, enforced: &Enforced) -> Vec<String> {
 /// "Merge rule (room policy): docs/**, up to 50 changed lines, CI not required, 1 approval(s) from another Agent".
 fn merge_rule(repo: &Repo, enforced: &Enforced) -> String {
     match repo {
-        Repo::Loading => tr("Merge rule (room policy): reading the room's rules…").to_owned(),
         Repo::Failed(error) => format("Merge rule (room policy): could not be read: {error}", &[("error", error.clone())]),
         Repo::Read { rules: RoomRulesState::Absent, .. } => format(
             "Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {paths})",

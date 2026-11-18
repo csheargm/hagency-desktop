@@ -3751,7 +3751,6 @@
   "Room members may ask it. Merges follow each room's merge rules, anything outside the room's repositories asks you, and Pause and the budget still apply.": "房间成员可以向它提问。合并遵循各房间的合并规则，房间仓库之外的任何操作都会询问你，暂停和预算依然有效。",
   "Every merge: this room has no merge rules — a room admin can set them in Room info → Status": "每次合并：此房间没有合并规则——房间管理员可以在“房间信息 → 状态”中设置",
   "Every merge: the room's merge rules have a rule Hagency does not accept": "每次合并：房间的合并规则中有 Hagency 不接受的规则",
-  "Merge rule (room policy): reading the room's rules…": "合并规则（房间策略）：正在读取房间规则…",
   "Merge rule (room policy): could not be read: {error}": "合并规则（房间策略）：无法读取：{error}",
   "Merge rule (room policy): none — a room admin can set them in Room info → Status (suggested paths: {paths})": "合并规则（房间策略）：无——房间管理员可以在“房间信息 → 状态”中设置（建议路径：{paths}）",
   "Merge rule (room policy): not valid, so the gate merges nothing": "合并规则（房间策略）：无效，因此不会自动合并任何内容",

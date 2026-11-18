@@ -95,10 +95,9 @@ fn merges_need_a_person_unless_autonomous_with_valid_room_rules() {
 #[test]
 fn without_push_freely_nothing_runs_alone() {
     let ask = Watch { push_freely: false, level: Level::Assist, ..sandbox_watch() };
-    let shown = card(&ask, &Repo::Loading, &Enforced::current());
+    let shown = card(&ask, &Repo::Failed("HTTP 403".into()), &Enforced::current());
     assert_eq!(shown.alone, vec!["Nothing yet: every step asks you".to_owned()]);
     assert_eq!(shown.needs_you[0], "Every push, pull request and command");
-    assert_eq!(shown.limits[4], "Merge rule (room policy): reading the room's rules…");
 }
 
 #[test]
