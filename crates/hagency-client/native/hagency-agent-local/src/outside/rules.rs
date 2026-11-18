@@ -14,7 +14,7 @@
 
 use super::filters;
 
-const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
+pub(super) const READ_ONLY_PROGRAMS: [&str; 10] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "echo", "date"];
 /// Git subcommands that only read local history. `fetch` is deliberately not
 /// here: `-u`/`--upload-pack`, URLs, `remote::` helpers, remotes, submodules
 /// and refspecs make it a network and code-execution surface (GPT review,

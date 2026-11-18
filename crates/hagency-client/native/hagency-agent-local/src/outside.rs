@@ -44,6 +44,48 @@ pub(crate) fn stays_in_workspace(proposal: &ToolProposal) -> bool {
     }
 }
 
+/// True when `proposal` only LOOKS inside `cwd` (the Room workspace): a Claude
+/// Read/Glob/Grep there, or a shell line of plain readers (`ls`, `pwd`,
+/// `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `echo`, `date`, `cd` inside),
+/// every path inside and none of it git metadata (ADR 0025). No git, no `gh`,
+/// no write of any kind.
+pub(crate) fn inspects_workspace(proposal: &ToolProposal) -> bool {
+    if proposal.risk == "permission_expansion" {
+        return false;
+    }
+    let cwd = Path::new(&proposal.canonical_directory);
+    let args = &proposal.arguments;
+    match proposal.tool.as_str() {
+        "claude.Read" | "claude.Glob" | "claude.Grep" => {
+            let value = args.get("path").or(args.get("file_path"));
+            let named = value.and_then(Value::as_str).unwrap_or(".");
+            let real = real_path(cwd, named);
+            path_in(value, cwd, true) && !is_git_metadata(Path::new(named)) && real.is_some_and(|r| !is_git_metadata(&r))
+        }
+        "claude.Bash" if args["run_in_background"] != true => args["command"].as_str().is_some_and(|line| plain_readers(line, cwd)),
+        _ => false,
+    }
+}
+
+/// Every segment of `line` a plain reader (or `cd`) staying inside `root`.
+fn plain_readers(line: &str, root: &Path) -> bool {
+    let Some(parsed) = shell::parse(line) else { return false };
+    let mut dirs = vec![root.to_path_buf()];
+    parsed.heredoc_at.is_none()
+        && parsed.segments.iter().all(|words| {
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            match words.as_slice() {
+                ["cd", target] => enter_dir(target, &mut dirs, root),
+                // A recursive grep also reads git metadata (remote URLs can hold a token).
+                ["grep", rest @ ..] if rest.iter().any(|w| matches!(*w, "-r" | "-R" | "--recursive" | "-d") || w.starts_with("--directories") || (w.starts_with('-') && !w.starts_with("--") && w.contains(['r', 'R', 'd']))) => false,
+                [program, ..] if rules::READ_ONLY_PROGRAMS.contains(program) => {
+                    segment_in_workspace(&words, &dirs, root) && rules::paths(&words).all(|w| !is_git_metadata(Path::new(w)))
+                }
+                _ => false,
+            }
+        })
+}
+
 /// A path argument that resolves inside `cwd`; an absent one means `cwd` itself
 /// where `absent_ok` (the search tools default to the working directory).
 fn path_in(value: Option<&Value>, cwd: &Path, absent_ok: bool) -> bool {

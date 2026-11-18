@@ -292,7 +292,7 @@ fn full_trust_on_the_agent_covers_layers_the_owner_never_saved() {
     ));
 }
 /// Another member's messages meet every layer under the Agent's full trust: an
-/// unsaved Room or member layer still denies, and they are fully trusted only
+/// unsaved Room or member layer asks the owner, and they are fully trusted only
 /// where the owner also saved full trust on that Room and on that member.
 #[test]
 fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
@@ -309,10 +309,8 @@ fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
     ledger.reserve(&member, "call", "dispatch", 10, 10).unwrap();
     assert!(!ledger.fully_trusts(&member, "dispatch"));
     let first = tool(&member, [1, 0, 0], "high");
-    assert!(matches!(
-        ledger.tool_disposition(&first, 11),
-        Err(Error::Denied)
-    ));
+    // The unsaved Room and member layers ask the owner (ADR 0025), never trust.
+    assert_eq!(ledger.tool_disposition(&first, 11).unwrap(), ToolPolicy::AskOwner);
     assert!(matches!(
         ledger.authorize_tool(&first, 11),
         Err(Error::Denied)
@@ -322,7 +320,7 @@ fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
     own.requester = OWNER.into();
     ledger.reserve(&own, "own call", "own", 10, 12).unwrap();
     assert!(ledger.fully_trusts(&own, "own"));
-    // Full trust saved on the Room but not on this member: still denied.
+    // Full trust saved on the Room but not on this member: still asks (ADR 0025).
     ledger
         .set_policy(OWNER, &member, Layer::Room, 0, &trusted)
         .unwrap();
@@ -330,10 +328,8 @@ fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
     assert!(!ledger.fully_trusts(&member, "room only"));
     let mut room_only = tool(&member, [1, 1, 0], "high");
     room_only.dispatch = "room only".into();
-    assert!(matches!(
-        ledger.tool_disposition(&room_only, 14),
-        Err(Error::Denied)
-    ));
+    assert_eq!(ledger.tool_disposition(&room_only, 14).unwrap(), ToolPolicy::AskOwner);
+    assert!(matches!(ledger.authorize_tool(&room_only, 14), Err(Error::Denied)), "no card answered: no run");
     // Saved on this member too: now they are fully trusted.
     ledger
         .set_policy(OWNER, &member, Layer::Requester, 0, &trusted)
@@ -386,7 +382,7 @@ fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
         ledger.tool_disposition(&later, 13).unwrap(),
         ToolPolicy::AskOwner
     );
-    // An Agent that asks, with a Room nobody saved, still denies there.
+    // An Agent that asks, with a Room nobody saved, asks there too (ADR 0025).
     let mut other = s.clone();
     other.binding = "b2".into();
     other.room = "!other:example.org".into();
@@ -394,10 +390,7 @@ fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
     ledger.reserve(&other, "third", "elsewhere", 10, 14).unwrap();
     let mut elsewhere = tool(&other, [1, 0, 0], "high");
     elsewhere.dispatch = "elsewhere".into();
-    assert!(matches!(
-        ledger.tool_disposition(&elsewhere, 15),
-        Err(Error::Denied)
-    ));
+    assert_eq!(ledger.tool_disposition(&elsewhere, 15).unwrap(), ToolPolicy::AskOwner);
 }
 /// Regression: an issue handoff the owner's device sent into the owner's own
 /// Room, to an Agent whose rule is "ask owner per tool", must ask (a card), not

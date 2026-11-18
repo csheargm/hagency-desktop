@@ -137,3 +137,49 @@ Rejected or left open:
 - The pre-existing withdrawal of an Agent's approvals on a request-changes
   proposal (before it runs) is unchanged here.
 - Cross-owner runtimes stay unknown until the roster publishes them (open).
+
+## Asks, never a silent deny (E2E finding, 2026-11-17 21:37)
+Live: in "e2e room" (no linked repositories, not a watch report room), room
+members asked Betty's Agent and even `pwd; ls`, `gh api ...` and `gh pr view`
+were refused with "the owner's rules blocked", and nothing reached Betty. The
+cause: Betty saved only her Agent's rule (Ask), and for anyone but the owner
+an unsaved Room or member layer kept its built-in default, high-risk Deny.
+
+Decision:
+- For a room member's request, an unsaved Room or member layer now ASKS the
+  owner (`lib.rs`, `applicable_marked`): the request card goes to the owner's
+  approval queue (their inbox), the run card says it waits for the owner, and
+  an unanswered card is reported as "needs Betty's approval in her window"
+  (never "rules blocked"). Only a Deny the owner SAVED on a layer refuses.
+  Full trust still needs the owner to save full trust on every layer.
+- That default card is never skipped by the owner's approval mode or by
+  remembered "Always allow" rules: those are the owner's choices for their
+  own Agent, and a member's request meets the owner's card first.
+- A member's harmless look inside the Room workspace needs no card
+  (`member_inspection.rs`, `outside::inspects_workspace`): Claude
+  Read/Glob/Grep of a path inside the workspace, or a shell line of plain
+  readers (`ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `grep` without
+  recursion, `rg`, `echo`, `date`, `cd` inside), every path inside it, never
+  git metadata, no git, no `gh`, no write, no redirect, not in the
+  background. It is checked against the Room workspace (never the directory
+  derived from the call's own path argument) and a shell line runs as
+  `cd '<workspace>' && ( <line> )`. A saved Deny, a saved tool rule leaving
+  the tool out, a policy saved since admission, or refused requests end it.
+  Codex's native commands are not covered (they cannot be pinned) and ask.
+- Read-only GitHub queries keep ADR 0019/0023's scope (the room's repository
+  set); in a room without repositories they now ask instead of failing.
+
+### What "outside" mode is (`outside.rs`)
+The per-Agent approval mode `outside`, "Ask only for outside changes"
+(`HAGENCY_DEMO_APPROVAL_MODE=outside` in the demo), is stored in this
+device's `approval_modes` table. It only narrows a SAVED Ask-owner rule: a
+request that cannot change anything outside the Agent's workspace
+(`outside::stays_in_workspace`: Codex's own sandboxed commands and file
+changes; Claude reads and edits inside the working directory, never git
+metadata; a short list of read-only shell commands and `gh` reads; and
+local issue-fix steps such as `mkdir -p`, `gh repo clone` into it, a new
+branch, `git add`, `git commit`) runs without a card. It never touches Deny,
+never applies to `permission_expansion`, and (now) never skips the card of a
+member's request under a layer the owner did not save. It was not the cause
+of the E2E refusals: the unsaved member layers' Deny was decided before the
+mode is consulted.

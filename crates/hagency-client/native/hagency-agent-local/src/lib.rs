@@ -20,6 +20,7 @@ pub mod demo_env;
 pub mod inbox;
 pub mod questions;
 pub mod room_share;
+pub mod member_inspection;
 pub mod room_tools;
 pub mod run_controls;
 pub mod reconciliation;
@@ -192,11 +193,18 @@ type ToolLayer<'a> = [(bool, &'a ToolPolicy); 2];
 /// The owner's own messages follow the Agent's rule: for those, a Room or
 /// member layer the owner never saved adds no rule of its own (so an Agent that
 /// asks its owner asks, rather than an unsaved Room silently denying); one the
-/// owner saved still applies. Anyone else meets every layer, and an unsaved
-/// layer keeps its default, which is to deny: another member is fully trusted
-/// only where the owner saved full trust on the Agent, on that Room and on that
-/// member.
+/// owner saved still applies. Anyone else meets every layer. An unsaved Room
+/// or member layer of their request ASKS the owner (ADR 0025 "Asks, never a
+/// silent deny"); only a Deny the owner saved refuses. Another member is
+/// still fully trusted only where the owner saved full trust on the Agent, on
+/// that Room and on that member.
 fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPolicy> {
+    applicable_marked(layers, from_owner).into_iter().map(|(rule, _)| rule).collect()
+}
+/// The rule an unsaved Room or member layer gives another member's request.
+static MEMBER_DEFAULT: ToolPolicy = ToolPolicy::AskOwner;
+/// [`applicable`], each rule marked when it is that member default.
+fn applicable_marked<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<(&'a ToolPolicy, bool)> {
     layers
         .iter()
         .enumerate()
@@ -204,7 +212,7 @@ fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPol
             layer
                 .iter()
                 .filter(move |(saved, _)| index == 0 || *saved || !from_owner)
-                .map(|(_, rule)| *rule)
+                .map(move |(saved, rule)| if index > 0 && !saved { (&MEMBER_DEFAULT, true) } else { (*rule, false) })
         })
         .collect()
 }
@@ -1498,9 +1506,12 @@ fn validate_tool(
         },
     };
     let from_owner = proposal.scope.requester == owner;
-    for tool_policy in applicable(&tool_layers(&original, &current), from_owner) {
+    for (tool_policy, member_default) in applicable_marked(&tool_layers(&original, &current), from_owner) {
         match tool_policy {
             ToolPolicy::Deny => return Err(Error::Denied),
+            // A member's request under a layer the owner never saved: a card,
+            // never skipped by the owner's approval mode or remembered rules.
+            ToolPolicy::AskOwner if member_default => effective.high_risk = ToolPolicy::AskOwner,
             // "Ask only for outside changes" (this Agent, this device) skips the
             // question for a request that cannot leave the workspace.
             ToolPolicy::AskOwner if approval_mode(db, &proposal.scope.agent)? == outside::MODE_OUTSIDE && outside::stays_in_workspace(proposal) => {}
