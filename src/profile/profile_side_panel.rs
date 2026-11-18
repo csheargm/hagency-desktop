@@ -3,7 +3,8 @@
 //! sliding pane shows, with the same fill and actions, plus the user's
 //! server. An Agent's profile is read-only apart from Message and Copy Link;
 //! it says whose Agent it is, its runtime and status ([`super::agent_facts`]),
-//! and offers "Agent details" on this account's own Agents.
+//! and offers "Agent details" on this account's own Agents. Every profile
+//! here has Copy Matrix ID.
 
 use makepad_widgets::*;
 use crate::{
@@ -43,12 +44,12 @@ pub struct ProfileSidePanel {
 impl Widget for ProfileSidePanel {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
+        // The owner's display name may just have loaded: re-read the details too.
         if let Event::Signal = event
             && self.info.as_mut().is_some_and(|info| profile_view_fill::refresh_info(cx, info))
-        { self.view.redraw(cx); }
+        { self.fill_details(cx); self.view.redraw(cx); }
         let Event::Actions(actions) = event else { return };
-        if actions.iter().any(|a| a.downcast_ref::<super::own_agents::OwnAgentsChanged>().is_some()
-            || a.downcast_ref::<super::agent_facts::AgentFactsChanged>().is_some())
+        if actions.iter().any(super::agent_facts::is_facts_update)
             && let Some(user_id) = self.info.as_ref().map(|i| i.user_id.clone())
         {
             self.show_agent_settings(cx, &user_id);
@@ -94,6 +95,7 @@ impl ProfileSidePanel {
         let agent = route == ProfileRoute::Agent;
         self.view.button(cx, ids!(profile_moments)).set_visible(cx, !agent);
         self.view.view(cx, ids!(desktop_moderation)).set_visible(cx, false);
+        self.view.button(cx, ids!(copy_user_id_button)).set_visible(cx, true);
         self.show_agent_settings(cx, &info.user_id);
         self.moderation.request((!agent).then_some(&info));
         self.view.user_rooms_in_common(cx, ids!(user_profile_view.rooms_in_common)).load(cx, info.user_id.clone());
@@ -140,6 +142,9 @@ impl ProfileSidePanel {
         }
         if self.view.button(cx, ids!(copy_link_to_user_button)).clicked(actions) {
             profile_view_fill::copy_user_link(cx, &info);
+        }
+        if self.view.button(cx, ids!(copy_user_id_button)).clicked(actions) {
+            super::hover_card_route::dispatch(cx, super::hover_card_route::CardRequest::CopyId(info.user_id.to_string()));
         }
         if self.view.button(cx, ids!(open_agent_panel_button)).clicked(actions)
             && let Some(agent_id) = super::own_agents::agent_for(&info.user_id)
@@ -226,5 +231,6 @@ mod tests {
         assert!(!panel.view.button(&mut cx, ids!(profile_moments)).visible());
         assert!(!panel.view.view(&mut cx, ids!(desktop_moderation)).visible());
         assert!(!panel.view.button(&mut cx, ids!(open_agent_panel_button)).visible(), "an Agent not listed as ours has no Agent details");
+        assert!(panel.view.button(&mut cx, ids!(copy_user_id_button)).visible(), "its Matrix ID has Copy");
     }
 }

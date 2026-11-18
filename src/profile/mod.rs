@@ -3,6 +3,8 @@ use makepad_widgets::ScriptVm;
 pub mod own_profile_watch;
 pub mod own_agents;
 pub mod agent_facts;
+pub mod agent_fact_lines;
+pub mod agent_room_cards;
 pub mod agent_chat_button;
 pub mod hover_card;
 pub mod hover_card_route;

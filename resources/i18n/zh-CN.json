@@ -1772,6 +1772,7 @@
   "Only your Agents connected to this Room are shown. Service settings apply to the selected Agent across its connected Rooms.": "这里只显示你已连接到此房间的 Agent。服务设置会影响所选 Agent 连接的所有房间。",
   "Some Agent ownership could not be verified. Unmatched members are shown separately.": "部分 Agent 的所有者暂时无法确认，未关联的成员将单独显示。",
   "Copy Link": "复制链接",
+  "Copy Matrix ID": "复制 Matrix ID",
   "Read Receipt": "已读回执",
   "Room reply behavior": "Room 回复方式",
   "Enable automatic thread follow-ups": "开启同一话题内自动回复",

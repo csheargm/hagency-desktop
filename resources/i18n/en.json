@@ -1765,6 +1765,7 @@
   "Only your Agents connected to this Room are shown. Service settings apply to the selected Agent across its connected Rooms.": "Only your Agents connected to this Room are shown. Service settings apply to the selected Agent across its connected Rooms.",
   "Some Agent ownership could not be verified. Unmatched members are shown separately.": "Some Agent ownership could not be verified. Unmatched members are shown separately.",
   "Copy Link": "Copy Link",
+  "Copy Matrix ID": "Copy Matrix ID",
   "Read Receipt": "Read Receipt",
   "Room reply behavior": "Room reply behavior",
   "Enable automatic thread follow-ups": "Enable automatic thread follow-ups",
