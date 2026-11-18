@@ -53,6 +53,24 @@ impl Service {
         }
     }
 
+    /// One of this app's Agents' waiting requests (`{"approvals": [...]}`).
+    /// In process, this reads the queue beside the owner command line
+    /// (`NativeOwner::local_approvals`): a slow listing, decision or renewal
+    /// held during the Agent's own turn hid the cards that turn waited on
+    /// (Nov 18). Through the owner daemon it is an ordinary command.
+    pub(crate) async fn local_approvals(&self, agent_id: String) -> Result<Value, String> {
+        if self.remote_client().await?.is_some() {
+            let command = Command::Local { agent_id, action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
+            return self.execute(command).await;
+        }
+        self.check()?;
+        self.verify_matrix(false).await?;
+        let answer = self.native_owner().await?.local_approvals(&agent_id).await.map_err(|e| e.code);
+        // An owner retired meanwhile answers nothing; the next command drains it.
+        self.check()?;
+        answer
+    }
+
     /// Drops `failed` only if it is still the cached owner: a concurrent
     /// caller may already have replaced it, and that owner must keep running.
     async fn drop_stale_native_owner(&self, failed: &NativeOwner) -> Result<(), String> {

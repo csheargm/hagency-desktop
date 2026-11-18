@@ -118,6 +118,7 @@ pub use resource_create::ResourceConfigurationReview;
 pub use hagency_store::{ProfileChange, CeilingChange};
 mod resource_alerts;
 mod approval_bindings;
+mod local_approvals;
 mod tool_approvals;
 mod execution_policy;
 pub use hagency_store::management::{ExecutionPolicyListQuery, AgentExecutionPolicyPage, ExecutionPolicyQuery, ExecutionPolicyValue, PolicyApplication, AgentExecutionPolicy, EditExecutionPolicy};

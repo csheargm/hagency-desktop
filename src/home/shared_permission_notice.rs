@@ -111,6 +111,8 @@ pub struct SharedPermissionNotice {
     #[rust] selected:usize,
     #[rust] execution_text:String,
     #[rust] execution_busy:bool,
+    /// The last reading could not read some Agents' queues: said, never blank.
+    #[rust] unreadable:String,
     #[rust] waiting:bool,
     /// Request ids shown in this room or thread, in order, to number them.
     #[rust] seen:Vec<String>,
@@ -142,10 +144,12 @@ impl SharedPermissionNotice {
                 return Display {visible:true,title:format("Expired, not answered: {title}",&[("title",asked)]),details,
                     hint:tr("The Agent was told nobody answered. Ask it again when you are here.").to_owned(),..Display::default()};
             }
+            let title=if !self.error.is_empty(){tr(&self.error).to_owned()}
+                else if !self.execution_text.is_empty(){tr(&self.execution_text).to_owned()}else{self.unreadable.clone()};
             return Display {
-                visible:!self.execution_text.is_empty() || !self.error.is_empty(),
+                visible:!title.is_empty(),
                 waiting:self.execution_busy && self.error.is_empty(),
-                title:if self.error.is_empty(){tr(&self.execution_text).to_owned()}else{tr(&self.error).to_owned()},
+                title,
                 hint,
                 ..Display::default()
             };
@@ -266,6 +270,7 @@ impl Widget for SharedPermissionNotice {
                             self.error.clear();
                             self.execution_busy=execution_busy(value,&self.room,&self.thread);
                             self.execution_text=execution_notice(value,&self.room,&self.thread).unwrap_or_default().into();
+                            self.unreadable=crate::hagency::owner_inbox_model::unreadable_notice(value);
                             self.rows=value["approvals"].as_array().cloned().unwrap_or_default().into_iter().filter(|r|r["approval"]["roomId"]==self.room && (self.thread.is_empty() || r["approval"]["threadRoot"]==self.thread)).take(16).collect();
                             if self.selected>=self.rows.len(){self.selected=0;}
                             // The cards on the messages read the same requests.
@@ -309,7 +314,7 @@ impl SharedPermissionNoticeRef {
         let Some(mut this)=self.borrow_mut()else{return};
         let identity=Service::for_current().map(|s|s.identity()).unwrap_or_default();
         if this.identity!=identity || this.room!=room || this.thread!=thread {
-            cx.stop_timer(this.timer);this.timer=Timer::default();this.execution_busy=false;this.waiting=false;this.sync_animation(cx);this.identity=identity;this.room=room.into();this.thread=thread.into();this.error.clear();this.execution_text.clear();this.nonce=this.nonce.wrapping_add(1);this.loading=false;this.rows.clear();this.selected=0;this.seen.clear();this.last_decision=None;this.active=true;this.view.set_visible(cx,false);this.poll(cx);
+            cx.stop_timer(this.timer);this.timer=Timer::default();this.execution_busy=false;this.waiting=false;this.sync_animation(cx);this.identity=identity;this.room=room.into();this.thread=thread.into();this.error.clear();this.execution_text.clear();this.unreadable.clear();this.nonce=this.nonce.wrapping_add(1);this.loading=false;this.rows.clear();this.selected=0;this.seen.clear();this.last_decision=None;this.active=true;this.view.set_visible(cx,false);this.poll(cx);
         }else if this.active && !this.loading && this.timer.is_empty(){this.poll(cx);}
     }
 }
@@ -431,6 +436,28 @@ mod tests {
             // not start a clock that redraws every visible message on each tick.
             assert_eq!(started,0,"{step}: the notice must not start its own redraw clock");
         }
+    }
+
+    /// Nov 18: an Agent's queue timed out on every poll and the room showed
+    /// nothing while its requests expired. A reading that names a queue it
+    /// could not read shows that, until a reading succeeds.
+    #[test]
+    fn an_unreadable_agent_queue_is_said_in_the_room_not_left_blank() {
+        let _turn=crate::hagency::pending_approvals::TEST_TURN.lock().unwrap_or_else(|e|e.into_inner());
+        crate::hagency::pending_approvals::forget_identity();
+        let mut cx=Cx::new(Box::new(|_,_|{}));
+        let widget=notice(&mut cx);
+        let mut n=widget.borrow_mut().unwrap();
+        n.active=true;
+        let read=json!({"approvals":[],"unreadableAgents":[{"agent":"bird-claude","agentId":"a1","code":"approvals_read_timeout"},
+            {"agent":"","agentId":"","code":crate::hagency::approvals_read::STALE_AGENT_LIST}]});
+        n.unreadable=crate::hagency::owner_inbox_model::unreadable_notice(&read);
+        let shown=n.display();
+        assert!(shown.visible,"never blank");
+        assert_eq!(shown.title,"Could not read bird-claude's requests (approvals_read_timeout); some may be missing.");
+        assert!(!shown.once && !shown.deny,"nothing to decide");
+        n.unreadable=crate::hagency::owner_inbox_model::unreadable_notice(&json!({"approvals":[],"unreadableAgents":[]}));
+        assert!(!n.display().visible,"a reading that read every queue clears it");
     }
 
     /// The person who sent the message approves an Agent's tool calls one after

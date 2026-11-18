@@ -15,6 +15,7 @@ use std::{
 use tokio::sync::Mutex;
 
 pub(super) mod matrix_creations;
+mod live_proof;
 mod profiles;
 mod sdk_resume;
 mod shared_matrix;

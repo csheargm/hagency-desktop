@@ -919,7 +919,9 @@ impl OwnedRuntime {
         console: &Console,
         agent: &str,
     ) -> Result<Vec<ApprovalView>, RuntimeError> {
-        let device = console.authorized_device().await.map_err(device_error)?;
+        // A still-valid proof, not a fresh one: a renewal held by the Agent's
+        // own turn must not hide the requests that turn waits on.
+        let device = console.0.server_login.live_device().await.map_err(device_error)?;
         device.bearer().map_err(|_| RuntimeError::Authorization)?;
         let mut entries = self.entries_for(&device).await?;
         let Some(entry) = entries.get_mut(&identity(&device, agent)) else {

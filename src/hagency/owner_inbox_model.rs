@@ -106,10 +106,23 @@ pub fn header(entries: &[Entry]) -> String {
     if let Some(code) = error {
         lines.push(format("Could not check for approvals ({code}); retrying.", &[("code", code)]));
     }
-    for (agent, code) in unreadable {
-        lines.push(format("Could not read {agent}'s requests ({code}); some may be missing.", &[("agent", agent), ("code", code)]));
-    }
+    lines.extend(unreadable.iter().map(|(agent, code)| unreadable_line(agent, code)));
     lines.join("\n")
+}
+
+fn unreadable_line(agent: &str, code: &str) -> String {
+    format("Could not read {agent}'s requests ({code}); some may be missing.", &[("agent", agent.to_owned()), ("code", code.to_owned())])
+}
+
+/// What a room's permission notice says when its reading could not read some
+/// of this app's Agents' queues (Nov 18: a queue that timed out on every poll
+/// left the room blank while its requests expired). Empty when all were read;
+/// an Agent list that is only stale is not named, its queues were read.
+pub fn unreadable_notice(value: &serde_json::Value) -> String {
+    pending_approvals::unreadable_agents(value).iter()
+        .filter(|(_, code)| code != super::approvals_read::STALE_AGENT_LIST)
+        .map(|(agent, code)| unreadable_line(agent, code))
+        .collect::<Vec<_>>().join("\n")
 }
 
 /// Whether the inbox has anything to show.

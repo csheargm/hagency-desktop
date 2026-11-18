@@ -105,10 +105,7 @@ pub fn ensure_watching() {
 pub(crate) async fn read(service: &crate::hagency::backend::Service) -> Result<(Vec<Value>, Vec<Value>), String> {
     use super::approvals_read::{QUEUE_WAIT, STALE_AGENT_LIST, own_agents};
     let (agents, stale) = own_agents(service).await?;
-    let (rows, mut unreadable) = read_queues(agents, QUEUE_WAIT, |id| {
-        let local = Command::Local { agent_id: id, action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
-        service.execute(local)
-    }).await;
+    let (rows, mut unreadable) = read_queues(agents, QUEUE_WAIT, |id| service.local_approvals(id)).await;
     if stale {
         // An Agent started since the last list may be missing: say so.
         unreadable.insert(0, json!({"agent": "", "agentId": "", "code": STALE_AGENT_LIST}));
