@@ -199,3 +199,24 @@ fn message_after_leaving_the_private_chat_reopens_it() {
     assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &Err("owner_scope_required".into())))).is_empty());
     assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "Could not open the private chat: owner_scope_required");
 }
+
+/// Live finding (2026-11-18): bird-claude / anna-claude, in the dev and e2e
+/// rooms, showed "In 0 rooms · View" on the About card. No count before the
+/// status has read the Rooms; the right count once it has.
+#[test]
+fn about_counts_the_rooms_once_the_status_has_loaded() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let mut panel = panel(&mut cx);
+    panel.agent = json!({"id": "agt_01m7k84kgg5a5mtm2epqhbpjb5", "displayName": "bird-claude"});
+    panel.render(&mut cx);
+    assert_eq!(panel.view.button(&mut cx, ids!(about_rooms)).text(), "Rooms · View", "still loading: not \"In 0 rooms\"");
+    let binding = |id: &str, room: &str, scope: &str| json!({"id": id, "agentId": "agt_01m7k84kgg5a5mtm2epqhbpjb5", "scopeKind": scope, "roomId": room, "state": "active"});
+    let rows = [binding("bnd_dm", "!UGKDID7ea14wLtXxlh:localhost:8452", "owner_direct"),
+        binding("bnd_dev", "!a3cQXHR8GZ4RP5n71s:localhost:8450", "project"), binding("bnd_e2e", "!VBvsrVXbTdOC6fOclj:localhost:8450", "project")];
+    let rooms = crate::host::hagency::local::group_room_entries(&rows, |_| String::new());
+    panel.status = json!({"here": true, "rooms": rooms, "approvals": {"roomShares": []}});
+    panel.render(&mut cx);
+    assert_eq!(panel.view.button(&mut cx, ids!(about_rooms)).text(), "In 2 rooms · View");
+    let about = panel.view.label(&mut cx, ids!(about)).text();
+    assert_eq!(about.matches("Shared in ").count(), 2, "the count and the \"Shared in\" lines agree: {about}");
+}

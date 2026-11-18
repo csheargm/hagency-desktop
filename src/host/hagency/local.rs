@@ -180,10 +180,14 @@ pub(crate) fn room_name(room: &matrix_sdk::Room) -> String {
         .unwrap_or_default()
 }
 
+// TODO(R4): local.rs is over budget; split the status reply (status,
+// group_room_entries, room_entry) into local/status.rs.
 struct Agent {
     here: bool,
     device_name: String,
     bindings: Vec<Value>,
+    /// False when a tolerated Rooms read failed: `bindings` is then unknown, not empty.
+    rooms_read: bool,
 }
 /// `tolerate`: a failed Rooms read leaves the Rooms empty (status, service,
 /// approvals); chat actions need the bindings and pass the failure on.
@@ -197,15 +201,15 @@ async fn agent(service: &Service, id: &str, tolerate: bool) -> Result<Agent, Str
     let (here, device_name) = device_of(record, &devices);
     // Rooms are a part of the status, not a condition for it: a failed read
     // must not hide that the Agent runs here.
-    let bindings = match service.execute(Command::Bindings { agent_id: id.into() }).await {
-        Ok(reply) => agent_bindings(&reply, id),
+    let (bindings, rooms_read) = match service.execute(Command::Bindings { agent_id: id.into() }).await {
+        Ok(reply) => (agent_bindings(&reply, id), true),
         Err(code) if tolerate => {
             log_failure("bindings", &code);
-            Vec::new()
+            (Vec::new(), false)
         }
         Err(code) => return Err(code),
     };
-    Ok(Agent { here, device_name, bindings })
+    Ok(Agent { here, device_name, bindings, rooms_read })
 }
 /// Whether `record` runs on this device, by the same check as My Agents'
 /// "This device" badge, and the assigned device's name.
@@ -266,19 +270,14 @@ async fn status(account: &str, id: &str) -> Result<Value, String> {
             "encrypted": room.as_ref().is_some_and(|r| r.encryption_state().is_encrypted()),
         })
     });
-    let rooms: Vec<Value> = agent
-        .bindings
-        .iter()
-        .filter(|b| text(b, "scopeKind") != "owner_direct")
-        .map(|b| {
-            let name = matrix_sdk::ruma::OwnedRoomId::try_from(text(b, "roomId"))
-                .ok()
-                .and_then(|room_id| client.as_ref().and_then(|c| c.get_room(&room_id)))
-                .map(|room| room_name(&room))
-                .unwrap_or_default();
-            room_entry(b, name)
-        })
-        .collect();
+    // `null`, not `[]`, when the Rooms read failed: the panel must not say "In 0 rooms".
+    let rooms = agent.rooms_read.then(|| group_room_entries(&agent.bindings, |room_id| {
+        matrix_sdk::ruma::OwnedRoomId::try_from(room_id)
+            .ok()
+            .and_then(|room_id| client.as_ref().and_then(|c| c.get_room(&room_id)))
+            .map(|room| room_name(&room))
+            .unwrap_or_default()
+    }));
     // Daily and monthly limits reset at UTC midnight; show it in local time.
     let reset = chrono::Utc::now()
         .date_naive()
@@ -311,6 +310,15 @@ async fn local_service_state(service: &Service, account: &str, id: &str) -> &'st
 }
 /// One project Room of the status reply. `roomId` is what issue watching
 /// saves; without it the Agent's Rooms were never offered there.
+/// The status reply's Rooms: every group Room binding (not the private
+/// chat), named by `name_of(room id)`.
+pub(crate) fn group_room_entries(bindings: &[Value], name_of: impl Fn(&str) -> String) -> Vec<Value> {
+    bindings
+        .iter()
+        .filter(|b| text(b, "scopeKind") != "owner_direct")
+        .map(|b| room_entry(b, name_of(text(b, "roomId"))))
+        .collect()
+}
 pub(crate) fn room_entry(binding: &Value, name: String) -> Value {
     json!({"id": text(binding, "id"), "roomId": text(binding, "roomId"), "name": name, "state": text(binding, "state")})
 }
